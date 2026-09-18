@@ -7,11 +7,20 @@
 // variants.
 //
 // Feature flags:
-//   VERTEX_POSITION      read the compressed per-vertex position; without it
-//                        the geometry is a single point at the instance origin
-//   VERTEX_UV            read and decode the per-vertex UV
-//   VERTEX_COLOR         read the per-vertex color and multiply it into the
+//   VERTEX_POSITION      read a per-vertex position; without it the geometry
+//                        is a single point at the instance origin
+//   UNCOMPRESSED_POSITION  the position is a full-precision `vec3<f32>` and
+//                        needs no decode; otherwise it is a compressed
+//                        `vec4<f32>` decoded through `mesh_meta`
+//   VERTEX_UV            read a per-vertex UV
+//   UNCOMPRESSED_UV      the UV is a full-precision `vec2<f32>` and needs no
+//                        decode; otherwise it is compressed and remapped by
+//                        the mesh metadata
+//   VERTEX_COLOR         read a per-vertex color and multiply it into the
 //                        base color
+//   VERTEX_INSTANCE      read the per-instance model matrix and base color;
+//                        without it every vertex is modeled at the origin
+//                        and the base color is white
 //   BASE_COLOR_TEXTURE   sample the material base-color texture
 //
 //   group 0  binding 0  camera        `view::View` uniform
@@ -21,10 +30,16 @@
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
 //   group 2  binding 0  mesh_info     `MeshInfo` metadata index
 //
-//   slot 0  position   Snorm16x4, decoded through `mesh_meta` [VERTEX_POSITION]
-//   slot 1  uv         Snorm16x2 [VERTEX_UV] + color Unorm8x4 [VERTEX_COLOR]
+//   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
+//                      decoded through `mesh_meta`
+//   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
+//                      plus color Unorm8x4 [VERTEX_COLOR]
 //   slot 2  instance   Float32x4x3 model matrix + Float32x4 base color,
-//                      stepped per instance
+//                      stepped per instance [VERTEX_INSTANCE]
+//
+// The mesh metadata bindings exist only when a channel is compressed: a
+// variant that reads every channel uncompressed declares no metadata binding
+// at all.
 
 import package::globals;
 import package::mesh_compression;
@@ -33,29 +48,34 @@ import package::view;
 
 @group(0) @binding(0) var<uniform> camera: view::View;
 @group(0) @binding(1) var<uniform> frame: globals::Globals;
+
+@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
 @group(0) @binding(2) var<storage, read> mesh_meta: array<mesh_metadata::MeshMetadata>;
 
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
 
+@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
 @group(2) @binding(0) var<uniform> mesh_info: mesh_metadata::MeshInfo;
 
 struct VertexInput {
-    /// Per-vertex position, Snorm16x4 relative to the mesh AABB.
-    @if(VERTEX_POSITION) @location(0) position: vec4<f32>,
+    /// Per-vertex position: full precision, or compressed to Snorm16x4
+    /// relative to the mesh AABB.
+    @if(VERTEX_POSITION && UNCOMPRESSED_POSITION) @location(0) position: vec3<f32>,
+    @if(VERTEX_POSITION && !UNCOMPRESSED_POSITION) @location(0) position: vec4<f32>,
 
-    /// Per-vertex UV, Snorm16x2 remapped by the mesh metadata.
+    /// Per-vertex UV: full precision, or remapped by the mesh metadata.
     @if(VERTEX_UV) @location(1) uv: vec2<f32>,
-    /// Per-vertex color, Unorm8x4 (straight linear RGBA).
+    /// Per-vertex color, Unorm8x4.
     @if(VERTEX_COLOR) @location(2) color: vec4<f32>,
 
     /// Per-instance affine model matrix: one column per location, with each
     /// column's `.w` holding the translation component.
-    @location(3) model_0: vec4<f32>,
-    @location(4) model_1: vec4<f32>,
-    @location(5) model_2: vec4<f32>,
-    /// Per-instance base color (linear RGBA).
-    @location(6) base_color: vec4<f32>,
+    @if(VERTEX_INSTANCE) @location(3) model_0: vec4<f32>,
+    @if(VERTEX_INSTANCE) @location(4) model_1: vec4<f32>,
+    @if(VERTEX_INSTANCE) @location(5) model_2: vec4<f32>,
+    /// Per-instance base color.
+    @if(VERTEX_INSTANCE) @location(6) base_color: vec4<f32>,
 }
 
 struct VertexOut {
@@ -74,6 +94,9 @@ public fn transform_point(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, p: vec3<f
 
 @vertex
 public fn vs_main(in: VertexInput) -> VertexOut {
+    // The block form would scope `metadata` to the block, so the declaration
+    // itself carries the condition.
+    @if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
     let metadata = mesh_meta[mesh_info.metadata_index];
 
     // Without a position stream the geometry is a single point at the
@@ -81,15 +104,31 @@ public fn vs_main(in: VertexInput) -> VertexOut {
     // translation. This is what point, particle and impostor draws want: the
     // per-instance data alone places the vertex.
     var local = vec3<f32>(0.0, 0.0, 0.0);
-    @if(VERTEX_POSITION) {
+    @if(VERTEX_POSITION && UNCOMPRESSED_POSITION) {
+        local = in.position;
+    }
+    @if(VERTEX_POSITION && !UNCOMPRESSED_POSITION) {
         local = mesh_compression::decode_position(in.position.xyz, metadata);
     }
-    let world = transform_point(in.model_0, in.model_1, in.model_2, local);
+
+    // Without an instance stream nothing transforms the vertex: the
+    // positions are already in world space, which is what screen-space draws
+    // such as a UI pass want.
+    var world = local;
+    @if(VERTEX_INSTANCE) {
+        world = transform_point(in.model_0, in.model_1, in.model_2, local);
+    }
 
     var out: VertexOut;
     out.clip = camera.clip_from_world * vec4<f32>(world, 1.0);
-    out.color = in.base_color;
-    @if(VERTEX_UV) {
+    out.color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
+    @if(VERTEX_INSTANCE) {
+        out.color = in.base_color;
+    }
+    @if(VERTEX_UV && UNCOMPRESSED_UV) {
+        out.uv = in.uv;
+    }
+    @if(VERTEX_UV && !UNCOMPRESSED_UV) {
         out.uv = mesh_compression::decode_uv(in.uv, metadata.uv_min_and_extents);
     }
     @if(VERTEX_COLOR) {

@@ -1,19 +1,10 @@
-//! The built-in unlit pipeline and WESL shader composition.
+//! The built-in unlit pipeline and the WESL composition behind it.
 //!
-//! [`compose`] runs the WESL compiler over a main module, resolving imports
-//! against the built-in package ([`crate::shader`]) plus the caller's own
-//! modules, and returns the WGSL that a [`wgpu::ShaderModule`] needs. Custom
-//! shaders import the built-in modules directly:
-//!
-//! ```wgsl
-//! import wgpu_unlit_render::mesh_compression;
-//! import wgpu_unlit_render::view::View;
-//! ```
-//!
-//! [`UnlitPipeline`] is the ready-made pipeline: it composes `unlit.wesl`
-//! with a variant selected by [`UnlitOptions`], builds the layouts the shader
-//! expects, and exposes the vertex-buffer layouts the caller declares when
-//! creating meshes.
+//! [`UnlitPipeline`] composes the built-in `unlit.wesl` with a variant
+//! selected by [`UnlitOptions`], builds the layouts the shader expects, and
+//! exposes the vertex-buffer layouts the caller declares when creating meshes.
+//! Each variant contains exactly the bindings and attributes the selected
+//! channels need, so nothing unused reaches the GPU.
 
 use crate::mesh::{CompressedColor, CompressedUv, MeshInfo};
 use wgpu::WriteOnly;
@@ -62,51 +53,157 @@ mod location {
     pub const BASE_COLOR: u32 = 6;
 }
 
+bitflags::bitflags! {
+    /// The channels and bindings the built-in shader variant reads.
+    ///
+    /// Each flag adds both a shader code path and the matching vertex
+    /// attribute or binding, so a variant contains exactly what it uses. The
+    /// flags are independent except where noted.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub struct UnlitFlags: u8 {
+        /// Read a per-vertex position.
+        ///
+        /// Without it the geometry is a single point at the instance origin,
+        /// so the draw needs no position vertex buffer — what point, particle
+        /// and impostor draws want, where the per-instance data alone places
+        /// the vertex.
+        const VERTEX_POSITION = 1 << 0;
+        /// Store [`Self::VERTEX_POSITION`] as full-precision `Float32x3`
+        /// instead of the compressed `Snorm16x4`.
+        const UNCOMPRESSED_POSITION = 1 << 1;
+        /// Read a per-vertex UV. Required by [`Self::BASE_COLOR_TEXTURE`],
+        /// which samples with it.
+        const VERTEX_UV = 1 << 2;
+        /// Store [`Self::VERTEX_UV`] as full-precision `Float32x2` instead of
+        /// the compressed `Snorm16x2`.
+        const UNCOMPRESSED_UV = 1 << 3;
+        /// Read a per-vertex color and multiply it into the base color.
+        const VERTEX_COLOR = 1 << 4;
+        /// Read the [`INSTANCE_SLOT`] vertex stream: the per-instance affine
+        /// model matrix and base color.
+        ///
+        /// Without it nothing transforms the vertices — they are already in
+        /// world space — and the base color is white, which is what
+        /// screen-space draws (a user-interface pass, for example) want.
+        const VERTEX_INSTANCE = 1 << 5;
+        /// Sample a base-color texture from the material group.
+        const BASE_COLOR_TEXTURE = 1 << 6;
+    }
+}
+
 /// The variant of the built-in unlit shader to compose.
 ///
-/// [`Self::default`] enables nothing, which draws a single point at each
-/// instance's origin.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// [`UnlitOptions::standard`] is the usual starting point: compressed
+/// positions, per-instance transforms and blending off.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnlitOptions {
-    /// Read the compressed per-vertex position.
+    /// The channels and bindings the variant reads.
+    pub flags: UnlitFlags,
+    /// How the pipeline assembles and culls primitives.
+    pub primitive: wgpu::PrimitiveState,
+    /// The pipeline's depth-stencil state, used when the pipeline is created
+    /// for a pass with a depth attachment.
     ///
-    /// Without it the geometry is a single point at the instance origin, so
-    /// the draw needs no position vertex buffer — what point, particle and
-    /// impostor draws want, where the per-instance data alone places the
-    /// vertex.
-    pub vertex_position: bool,
-    /// Read and decode the per-vertex UV. Required by
-    /// [`Self::base_color_texture`], which samples with it.
-    pub vertex_uv: bool,
-    /// Sample a base-color texture from the material group.
-    pub base_color_texture: bool,
-    /// Read a per-vertex color and multiply it into the base color.
-    pub vertex_color: bool,
+    /// Its format is overwritten with the format the pass attaches, so only
+    /// the comparison, the write mask and the stencil and bias settings need
+    /// to be chosen here. [`Self::standard`] is the renderer's reverse-z
+    /// convention: the pass clears depth to [`crate::renderer::DEPTH_CLEAR`],
+    /// so nearer geometry carries the greater value.
+    pub depth: wgpu::DepthStencilState,
+    /// How the pipeline blends its output into the color target.
+    ///
+    /// `None` writes the fragment output unblended.
+    pub blend: Option<wgpu::BlendState>,
 }
 
 impl UnlitOptions {
-    /// The feature flags this variant enables, as WESL `@if` names.
-    pub fn features(&self) -> [(&'static str, bool); 4] {
+    /// The usual starting point: the full compressed mesh variant — positions,
+    /// UVs, vertex colors, a base-color texture and per-instance transforms —
+    /// with the renderer's reverse-z depth and no blending.
+    ///
+    /// Every variant must read at least one vertex attribute: one reading
+    /// nothing composes a `VertexInput` struct with no members, which is not
+    /// valid WGSL.
+    pub fn standard() -> Self {
+        Self {
+            flags: UnlitFlags::VERTEX_POSITION
+                | UnlitFlags::VERTEX_UV
+                | UnlitFlags::VERTEX_COLOR
+                | UnlitFlags::VERTEX_INSTANCE
+                | UnlitFlags::BASE_COLOR_TEXTURE,
+            primitive: wgpu::PrimitiveState::default(),
+            depth: wgpu::DepthStencilState {
+                // Replaced with the pass's format when the pipeline is built.
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            },
+            blend: None,
+        }
+    }
+
+    /// Which of [`Self::flags`] are set, as WESL `@if` names paired with their
+    /// state.
+    ///
+    /// Every name appears, so the composed variant never sees a name it does
+    /// not know.
+    pub fn features(&self) -> [(&'static str, bool); 7] {
         [
-            ("VERTEX_POSITION", self.vertex_position),
-            ("VERTEX_UV", self.vertex_uv),
-            ("BASE_COLOR_TEXTURE", self.base_color_texture),
-            ("VERTEX_COLOR", self.vertex_color),
+            (
+                "VERTEX_POSITION",
+                self.flags.contains(UnlitFlags::VERTEX_POSITION),
+            ),
+            (
+                "UNCOMPRESSED_POSITION",
+                self.flags.contains(UnlitFlags::UNCOMPRESSED_POSITION),
+            ),
+            ("VERTEX_UV", self.flags.contains(UnlitFlags::VERTEX_UV)),
+            (
+                "UNCOMPRESSED_UV",
+                self.flags.contains(UnlitFlags::UNCOMPRESSED_UV),
+            ),
+            (
+                "VERTEX_COLOR",
+                self.flags.contains(UnlitFlags::VERTEX_COLOR),
+            ),
+            (
+                "VERTEX_INSTANCE",
+                self.flags.contains(UnlitFlags::VERTEX_INSTANCE),
+            ),
+            (
+                "BASE_COLOR_TEXTURE",
+                self.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
+            ),
         ]
+    }
+
+    /// Whether this variant reads a compressed channel and therefore needs the
+    /// mesh-metadata bindings: the global group's storage buffer and the mesh
+    /// group's [`MeshInfo`] uniform.
+    ///
+    /// Mirrors the shader's metadata condition, so the layouts and the
+    /// composed variant agree on whether the bindings exist.
+    pub fn needs_metadata(&self) -> bool {
+        let compressed_position = self.flags.contains(UnlitFlags::VERTEX_POSITION)
+            && !self.flags.contains(UnlitFlags::UNCOMPRESSED_POSITION);
+        let compressed_uv = self.flags.contains(UnlitFlags::VERTEX_UV)
+            && !self.flags.contains(UnlitFlags::UNCOMPRESSED_UV);
+        compressed_position || compressed_uv
     }
 
     /// The UV-and-color vertex stream this variant expects.
     pub fn uv_color_stream(&self) -> MeshUvColorStream {
         MeshUvColorStream {
-            uv: self.vertex_uv,
-            color: self.vertex_color,
+            flags: self.flags & MeshUvColorStream::FLAGS,
         }
     }
 }
 
-/// Failure reasons reported by [`compose`].
+/// Failure reasons reported by [`compose_builtin`].
 #[derive(Debug)]
-pub enum ComposeError {
+enum ComposeError {
     /// The WESL compiler rejected the module.
     Compile(wesl::Error),
 }
@@ -130,21 +227,45 @@ impl std::error::Error for ComposeError {}
 /// interleaves them straight into the target buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MeshUvColorStream {
-    /// Include the `Snorm16x2` UV attribute at location 1.
-    pub uv: bool,
-    /// Include the `Unorm8x4` color attribute at location 2.
-    pub color: bool,
+    /// The variant's own channels, narrowed to the three this stream writes:
+    /// [`UnlitFlags::VERTEX_UV`], [`UnlitFlags::UNCOMPRESSED_UV`] and
+    /// [`UnlitFlags::VERTEX_COLOR`].
+    pub flags: UnlitFlags,
 }
 
 impl MeshUvColorStream {
+    /// The stream flags this type reads.
+    ///
+    /// A variant often carries channels belonging to other streams; this mask
+    /// selects the three that belong here, so [`UnlitOptions::uv_color_stream`]
+    /// can hand over the whole set unchanged.
+    const FLAGS: UnlitFlags = UnlitFlags::VERTEX_UV
+        .union(UnlitFlags::UNCOMPRESSED_UV)
+        .union(UnlitFlags::VERTEX_COLOR);
+
+    /// Whether the UV attribute is written.
+    pub fn uv(&self) -> bool {
+        self.flags.contains(UnlitFlags::VERTEX_UV)
+    }
+
+    /// Whether the color attribute is written.
+    pub fn color(&self) -> bool {
+        self.flags.contains(UnlitFlags::VERTEX_COLOR)
+    }
+
+    /// Whether the UV is written full precision rather than compressed to
+    /// `Snorm16x2`.
+    ///
+    /// An uncompressed UV needs no decode parameters, so [`Self::write`]
+    /// leaves the metadata alone.
+    pub fn uncompressed_uv(&self) -> bool {
+        self.flags.contains(UnlitFlags::UNCOMPRESSED_UV)
+    }
+
     /// Bytes per vertex of the packed stream.
     pub fn stride(&self) -> u32 {
-        let uv = if self.uv {
-            wgpu::VertexFormat::Snorm16x2.size() as u32
-        } else {
-            0
-        };
-        let color = if self.color {
+        let uv = if self.uv() { self.uv_size() } else { 0 };
+        let color = if self.color() {
             wgpu::VertexFormat::Unorm8x4.size() as u32
         } else {
             0
@@ -152,10 +273,20 @@ impl MeshUvColorStream {
         uv + color
     }
 
+    /// Bytes the UV attribute occupies in this encoding.
+    fn uv_size(&self) -> u32 {
+        let format = if self.uncompressed_uv() {
+            wgpu::VertexFormat::Float32x2
+        } else {
+            wgpu::VertexFormat::Snorm16x2
+        };
+        format.size() as u32
+    }
+
     /// Whether the variant declares no attributes at all, in which case the
     /// slot must be omitted from the vertex-buffer list.
     pub fn is_empty(&self) -> bool {
-        !self.uv && !self.color
+        !self.uv() && !self.color()
     }
 
     /// Bytes one `vertex_count`-long stream occupies.
@@ -199,10 +330,12 @@ impl MeshUvColorStream {
         }
 
         // Deriving the UV range is the only pass over the input; the encoding
-        // itself streams straight into `out`.
-        let (write_uv, write_color) = (self.uv, self.color);
+        // itself streams straight into `out`. An uncompressed channel is
+        // copied as it is, so it never derives metadata.
+        let (write_uv, write_color) = (self.uv(), self.color());
+        let compress_uv = write_uv && !self.uncompressed_uv();
         let stride = self.stride() as usize;
-        let mut packed_uvs = write_uv
+        let mut packed_uvs = compress_uv
             .then(|| crate::mesh::compress_uvs(uvs, metadata))
             .into_iter()
             .flatten();
@@ -213,14 +346,23 @@ impl MeshUvColorStream {
 
         // Each vertex is assembled as a fixed-size array on the stack and
         // streamed out.
-        out.write_iter((0..vertex_count).flat_map(move |_| {
+        out.write_iter((0..vertex_count).flat_map(move |index| {
             let mut vertex = [0u8; MAX_UV_COLOR_STRIDE];
             let mut len = 0;
             if write_uv {
-                let uv = packed_uvs.next().expect("one UV per vertex");
-                let bytes = uv.as_bytes();
-                vertex[..bytes.len()].copy_from_slice(bytes);
-                len += bytes.len();
+                // A compressed UV is produced lazily as a temporary, so it
+                // is copied out while it is still alive; an uncompressed one
+                // is the caller's `f32` pair verbatim.
+                if compress_uv {
+                    let uv = packed_uvs.next().expect("one UV per vertex");
+                    let bytes = uv.as_bytes();
+                    vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                    len += bytes.len();
+                } else {
+                    let bytes = uvs[index].as_bytes();
+                    vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                    len += bytes.len();
+                }
             }
             if write_color {
                 let color = packed_colors.next().expect("one color per vertex");
@@ -264,12 +406,12 @@ impl MeshUvColorStream {
         out.write_iter((0..vertex_count).flat_map(move |index| {
             let mut vertex = [0u8; MAX_UV_COLOR_STRIDE];
             let mut len = 0;
-            if self.uv {
+            if self.uv() {
                 let bytes = uvs[index].as_bytes();
                 vertex[..bytes.len()].copy_from_slice(bytes);
                 len += bytes.len();
             }
-            if self.color {
+            if self.color() {
                 let bytes = colors[index].as_bytes();
                 vertex[len..len + bytes.len()].copy_from_slice(bytes);
                 len += bytes.len();
@@ -281,7 +423,7 @@ impl MeshUvColorStream {
 
     /// Number of vertices the raw channel slices describe.
     fn raw_vertex_count(&self, uvs: &[[f32; 2]], colors: &[[f32; 4]]) -> usize {
-        match (self.uv, self.color) {
+        match (self.uv(), self.color()) {
             (true, true) => {
                 assert_eq!(
                     uvs.len(),
@@ -298,7 +440,7 @@ impl MeshUvColorStream {
 
     /// Number of vertices the compressed channel slices describe.
     fn compressed_vertex_count(&self, uvs: &[CompressedUv], colors: &[CompressedColor]) -> usize {
-        match (self.uv, self.color) {
+        match (self.uv(), self.color()) {
             (true, true) => {
                 assert_eq!(
                     uvs.len(),
@@ -316,47 +458,11 @@ impl MeshUvColorStream {
 
 /// Bytes per vertex of the widest UV-and-color stream, used to size the
 /// per-vertex scratch the writer assembles on the stack.
+///
+/// The widest encoding the stream can write is an uncompressed UV followed by
+/// the color, so the scratch covers those two attribute formats.
 const MAX_UV_COLOR_STRIDE: usize =
-    wgpu::VertexFormat::Snorm16x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
-
-/// Compose the WESL `main_module` (a module path inside `package_root`) into
-/// WGSL.
-///
-/// Imports resolve against the built-in package, so a main module can import
-/// `wgpu_unlit_render::*` modules as well as its own siblings. `features`
-/// toggles WESL `@if` flags; flags left unset are disabled.
-///
-/// ```no_run
-/// # use wgpu_unlit_render::pipeline::compose;
-/// let wgsl = compose("shaders", "main", &[("VERTEX_COLOR", true)]).unwrap();
-/// ```
-pub fn compose(
-    package_root: impl AsRef<std::path::Path>,
-    main_module: &str,
-    features: &[(&str, bool)],
-) -> Result<String, ComposeError> {
-    // `package::main_module` — the `package` prefix sets the absolute origin.
-    let main_path = wesl::syntax::ModulePath::new(
-        wesl::syntax::PathOrigin::Absolute,
-        vec![main_module.to_owned()],
-    );
-
-    let mut options = wesl::CompileOptions::default();
-    for (name, enabled) in features {
-        options.features.set(*name, *enabled);
-    }
-    // Keep every entry point so a caller can address several of them from one
-    // module (for example a depth-only and a color pass).
-    options.keep_main = true;
-
-    let mut resolver = wesl::resolver::StandardResolver::new(package_root);
-    resolver.add_package(&crate::shader::PACKAGE);
-
-    wesl::Compiler::new_with_resolver(options, resolver)
-        .compile_module(&main_path)
-        .map(|result| result.syntax.to_string())
-        .map_err(ComposeError::Compile)
-}
+    wgpu::VertexFormat::Float32x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
 
 /// The built-in unlit pipeline, its layouts and its vertex-buffer
 /// declarations.
@@ -372,8 +478,9 @@ pub struct UnlitPipeline {
     /// Layout of the material bind group (index 1), present only when the
     /// variant samples a base-color texture.
     pub material_layout: Option<wgpu::BindGroupLayout>,
-    /// Layout of the mesh bind group (index 2).
-    pub mesh_layout: wgpu::BindGroupLayout,
+    /// Layout of the mesh bind group (index 2), present only when the variant
+    /// reads a compressed channel and therefore decodes mesh metadata.
+    pub mesh_layout: Option<wgpu::BindGroupLayout>,
     /// The variant this pipeline was built for.
     pub options: UnlitOptions,
 }
@@ -384,10 +491,13 @@ impl UnlitPipeline {
     ///
     /// `color_format` and `sample_count` must match the render target the
     /// pipeline will be used with; `depth_format` must match its depth
-    /// attachment, or be `None` for a pass without depth.
+    /// attachment, or be `None` for a pass without depth. When it is `Some`,
+    /// the format replaces the one [`UnlitOptions::depth`] declares, so the
+    /// options carry the comparison and the write mask and the pass carries
+    /// the format.
     pub fn new(
         device: &wgpu::Device,
-        options: UnlitOptions,
+        options: &UnlitOptions,
         color_format: wgpu::TextureFormat,
         depth_format: Option<wgpu::TextureFormat>,
         sample_count: u32,
@@ -398,34 +508,36 @@ impl UnlitPipeline {
             source: wgpu::ShaderSource::Wgsl(wgsl.into()),
         });
 
-        let global_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgpu_unlit_render::unlit::globals"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: CAMERA_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
-                        ),
-                    },
-                    count: None,
+        let global_layout = {
+            // Mesh metadata solves a compressed channel; a variant that reads
+            // every channel uncompressed declares no binding for it.
+            let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 3>::new();
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: CAMERA_BINDING,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
+                    ),
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: FRAME_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
-                        ),
-                    },
-                    count: None,
+                count: None,
+            });
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: FRAME_BINDING,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
+                    ),
                 },
-                wgpu::BindGroupLayoutEntry {
+                count: None,
+            });
+            if options.needs_metadata() {
+                entries.push(wgpu::BindGroupLayoutEntry {
                     binding: MESH_METADATA_BINDING,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
@@ -438,52 +550,63 @@ impl UnlitPipeline {
                         ),
                     },
                     count: None,
-                },
-            ],
-        });
-
-        let material_layout = options.base_color_texture.then(|| {
+                });
+            }
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("wgpu_unlit_render::unlit::material"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: BASE_COLOR_TEXTURE_BINDING,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: BASE_COLOR_SAMPLER_BINDING,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
+                label: Some("wgpu_unlit_render::unlit::globals"),
+                entries: &entries,
             })
-        });
+        };
 
-        let mesh_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgpu_unlit_render::unlit::mesh"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: MESH_INFO_BINDING,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(<MeshInfo as const_shader_layout::ShaderLayout>::SIZE),
-                },
-                count: None,
-            }],
+        let material_layout = options
+            .flags
+            .contains(UnlitFlags::BASE_COLOR_TEXTURE)
+            .then(|| {
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("wgpu_unlit_render::unlit::material"),
+                    entries: &[
+                        wgpu::BindGroupLayoutEntry {
+                            binding: BASE_COLOR_TEXTURE_BINDING,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Texture {
+                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                view_dimension: wgpu::TextureViewDimension::D2,
+                                multisampled: false,
+                            },
+                            count: None,
+                        },
+                        wgpu::BindGroupLayoutEntry {
+                            binding: BASE_COLOR_SAMPLER_BINDING,
+                            visibility: wgpu::ShaderStages::FRAGMENT,
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            count: None,
+                        },
+                    ],
+                })
+            });
+
+        let mesh_layout = options.needs_metadata().then(|| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgpu_unlit_render::unlit::mesh"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: MESH_INFO_BINDING,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            <MeshInfo as const_shader_layout::ShaderLayout>::SIZE,
+                        ),
+                    },
+                    count: None,
+                }],
+            })
         });
 
         let layouts = [
             Some(&global_layout),
             material_layout.as_ref(),
-            Some(&mesh_layout),
+            mesh_layout.as_ref(),
         ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgpu_unlit_render::unlit::layout"),
@@ -492,6 +615,14 @@ impl UnlitPipeline {
         });
 
         let vertex_buffers = Self::vertex_buffer_layouts(options);
+        // A strip or line-list topology resets its strip at the primitive
+        // restart index, whose width follows the index buffer the draw uses.
+        let strip_index_format =
+            (options.primitive.topology.is_strip()).then_some(wgpu::IndexFormat::Uint32);
+        let primitive = wgpu::PrimitiveState {
+            strip_index_format,
+            ..options.primitive
+        };
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgpu_unlit_render::unlit"),
             layout: Some(&pipeline_layout),
@@ -501,18 +632,14 @@ impl UnlitPipeline {
                 compilation_options: Default::default(),
                 buffers: &vertex_buffers,
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                ..Default::default()
-            },
+            primitive,
+            // A pass with a depth attachment requires every pipeline it uses
+            // to declare a matching state, so the pass's format replaces the
+            // one the options carry and their comparison and write mask are
+            // kept.
             depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
                 format,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
+                ..options.depth.clone()
             }),
             multisample: wgpu::MultisampleState {
                 count: sample_count,
@@ -524,7 +651,7 @@ impl UnlitPipeline {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: options.blend,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -537,39 +664,59 @@ impl UnlitPipeline {
             global_layout,
             material_layout,
             mesh_layout,
-            options,
+            options: options.clone(),
         }
     }
 
     /// The vertex-buffer declarations the built-in shader expects, in slot
     /// order.
     ///
-    /// The strides are derived from the attribute formats, so they follow any
-    /// change to the compressed vertex layout. A slot whose variant declares
-    /// no attributes — the UV-and-color slot without either channel — is
-    /// reported as `None`.
+    /// A slot whose variant declares no attributes — the UV-and-color slot
+    /// without either channel, or the instance slot without
+    /// [`UnlitFlags::VERTEX_INSTANCE`] — is reported as `None`, so a variant
+    /// never binds a buffer the shader does not declare.
     pub fn vertex_buffer_layouts(
-        options: UnlitOptions,
+        options: &UnlitOptions,
     ) -> [Option<wgpu::VertexBufferLayout<'static>>; 3] {
-        const POSITION_ATTRIBUTES: [wgpu::VertexAttribute; 1] =
-            wgpu::vertex_attr_array![location::POSITION => Snorm16x4];
+        let flags = options.flags;
 
-        // One static slice per UV/color combination: the layout must be
+        // One static slice per position encoding: the layout must be
         // `'static` to live on the pipeline descriptor.
-        const UV_ONLY: [wgpu::VertexAttribute; 1] =
+        const POSITION_COMPRESSED: [wgpu::VertexAttribute; 1] =
+            wgpu::vertex_attr_array![location::POSITION => Snorm16x4];
+        const POSITION_UNCOMPRESSED: [wgpu::VertexAttribute; 1] =
+            wgpu::vertex_attr_array![location::POSITION => Float32x3];
+
+        // One static slice per UV / color combination.
+        const UV_COMPRESSED_ONLY: [wgpu::VertexAttribute; 1] =
             wgpu::vertex_attr_array![location::UV => Snorm16x2];
+        const UV_UNCOMPRESSED_ONLY: [wgpu::VertexAttribute; 1] =
+            wgpu::vertex_attr_array![location::UV => Float32x2];
         const COLOR_ONLY: [wgpu::VertexAttribute; 1] =
             wgpu::vertex_attr_array![location::COLOR => Unorm8x4];
-        const UV_COLOR: [wgpu::VertexAttribute; 2] =
+        const UV_COMPRESSED_COLOR: [wgpu::VertexAttribute; 2] =
             wgpu::vertex_attr_array![location::UV => Snorm16x2, location::COLOR => Unorm8x4];
+        const UV_UNCOMPRESSED_COLOR: [wgpu::VertexAttribute; 2] =
+            wgpu::vertex_attr_array![location::UV => Float32x2, location::COLOR => Unorm8x4];
+
+        let position_attributes = flags.contains(UnlitFlags::VERTEX_POSITION).then(|| {
+            if flags.contains(UnlitFlags::UNCOMPRESSED_POSITION) {
+                &POSITION_UNCOMPRESSED[..]
+            } else {
+                &POSITION_COMPRESSED[..]
+            }
+        });
 
         let stream = options.uv_color_stream();
+        let uncompressed_uv = stream.uncompressed_uv();
         let uv_color_attributes: Option<&'static [wgpu::VertexAttribute]> =
-            match (stream.uv, stream.color) {
+            match (stream.uv(), stream.color()) {
                 (false, false) => None,
-                (true, false) => Some(&UV_ONLY),
+                (true, false) if uncompressed_uv => Some(&UV_UNCOMPRESSED_ONLY),
+                (true, false) => Some(&UV_COMPRESSED_ONLY),
                 (false, true) => Some(&COLOR_ONLY),
-                (true, true) => Some(&UV_COLOR),
+                (true, true) if uncompressed_uv => Some(&UV_UNCOMPRESSED_COLOR),
+                (true, true) => Some(&UV_COMPRESSED_COLOR),
             };
 
         const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
@@ -580,15 +727,13 @@ impl UnlitPipeline {
         ];
 
         [
-            options
-                .vertex_position
-                .then(|| vertex_layout(&POSITION_ATTRIBUTES, wgpu::VertexStepMode::Vertex)),
+            position_attributes
+                .map(|attributes| vertex_layout(attributes, wgpu::VertexStepMode::Vertex)),
             uv_color_attributes
                 .map(|attributes| vertex_layout(attributes, wgpu::VertexStepMode::Vertex)),
-            Some(vertex_layout(
-                &INSTANCE_ATTRIBUTES,
-                wgpu::VertexStepMode::Instance,
-            )),
+            flags
+                .contains(UnlitFlags::VERTEX_INSTANCE)
+                .then(|| vertex_layout(&INSTANCE_ATTRIBUTES, wgpu::VertexStepMode::Instance)),
         ]
     }
 }
@@ -621,11 +766,28 @@ fn vertex_layout(
 }
 
 /// Compose the built-in `unlit.wesl` for `options`.
-fn compose_builtin(options: UnlitOptions) -> Result<String, ComposeError> {
+///
+/// # Panics
+/// If the flags contradict each other: a channel cannot be uncompressed
+/// without being read, and the base-color texture is sampled with the
+/// per-vertex UV.
+fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
+    let flags = options.flags;
     assert!(
-        !options.base_color_texture || options.vertex_uv,
+        !flags.contains(UnlitFlags::UNCOMPRESSED_POSITION)
+            || flags.contains(UnlitFlags::VERTEX_POSITION),
+        "an uncompressed position is a position channel, so \
+         `UNCOMPRESSED_POSITION` requires `VERTEX_POSITION`"
+    );
+    assert!(
+        !flags.contains(UnlitFlags::UNCOMPRESSED_UV) || flags.contains(UnlitFlags::VERTEX_UV),
+        "an uncompressed UV is a UV channel, so `UNCOMPRESSED_UV` \
+         requires `VERTEX_UV`"
+    );
+    assert!(
+        !flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) || flags.contains(UnlitFlags::VERTEX_UV),
         "the base-color texture is sampled with the per-vertex UV, so \
-         `base_color_texture` requires `vertex_uv`"
+         `BASE_COLOR_TEXTURE` requires `VERTEX_UV`"
     );
 
     let main_path = wesl::syntax::ModulePath::new(
@@ -651,26 +813,113 @@ fn compose_builtin(options: UnlitOptions) -> Result<String, ComposeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zerocopy::IntoBytes;
 
-    /// Every `UnlitOptions` combination that composes.
+    /// A caller composes their own entry shader against the built-in package
+    /// with `wesl` directly: [`crate::shader`] is the `StaticPackage` that
+    /// resolves `import wgpu_unlit_render::…`.
+    #[test]
+    fn a_caller_composes_against_the_built_in_package() {
+        let source = "\
+import wgpu_unlit_render::mesh_compression;
+import wgpu_unlit_render::mesh_metadata::MeshMetadata;
+import wgpu_unlit_render::view::View;
+
+@group(0) @binding(0) var<uniform> camera: View;
+@group(0) @binding(2) var<storage, read> mesh_meta: array<MeshMetadata>;
+
+@vertex
+fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
+    let decoded = mesh_compression::decode_position(position.xyz, mesh_meta[0]);
+    return camera.clip_from_world * vec4<f32>(decoded, 1.0);
+}
+";
+        // The caller's own module is virtual here; a real one would come from
+        // a `FileResolver`. Anything not under the local namespace falls
+        // through to the built-in package, which is how
+        // `import wgpu_unlit_render::mesh_compression;` resolves.
+        let namespace = wesl::syntax::ModulePath::new(
+            wesl::syntax::PathOrigin::Absolute,
+            vec!["app".to_owned()],
+        );
+        let main_path = wesl::syntax::ModulePath::new(
+            wesl::syntax::PathOrigin::Absolute,
+            vec!["app".to_owned(), "main".to_owned()],
+        );
+        let mut virtual_modules = wesl::resolver::VirtualResolver::new();
+        virtual_modules.add_module(
+            wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, vec!["main".into()]),
+            source.into(),
+        );
+
+        let mut resolver = wesl::resolver::Router::new();
+        resolver.mount_resolver(namespace, virtual_modules);
+        resolver.mount_fallback_resolver({
+            let mut packages = wesl::resolver::PackageResolver::new();
+            packages.add_package(&crate::shader::PACKAGE);
+            packages
+        });
+
+        let options = wesl::CompileOptions {
+            keep_main: true,
+            ..Default::default()
+        };
+        let wgsl = wesl::Compiler::new_with_resolver(options, resolver)
+            .compile_module(&main_path)
+            .expect("the caller's module composes")
+            .syntax
+            .to_string();
+
+        // The imports resolved into the composed module.
+        assert!(wgsl.contains("fn vs_main"));
+        assert!(wgsl.contains("decode_position"));
+    }
+
+    /// Every flag combination that composes.
     ///
-    /// `base_color_texture` implies `vertex_uv`, so texture variants always
-    /// carry the UV flag.
+    /// `BASE_COLOR_TEXTURE` implies `VERTEX_UV`, and an uncompressed channel
+    /// implies its channel, so the invalid combinations are skipped.
     fn all_variants() -> Vec<UnlitOptions> {
         let mut variants = Vec::new();
         for vertex_position in [false, true] {
-            for vertex_uv in [false, true] {
-                for vertex_color in [false, true] {
-                    for base_color_texture in [false, true] {
-                        if base_color_texture && !vertex_uv {
-                            continue;
+            for uncompressed_position in [false, true] {
+                for vertex_uv in [false, true] {
+                    for uncompressed_uv in [false, true] {
+                        for vertex_color in [false, true] {
+                            for vertex_instance in [false, true] {
+                                for base_color_texture in [false, true] {
+                                    let mut flags = UnlitFlags::empty();
+                                    flags.set(UnlitFlags::VERTEX_POSITION, vertex_position);
+                                    flags.set(
+                                        UnlitFlags::UNCOMPRESSED_POSITION,
+                                        uncompressed_position,
+                                    );
+                                    flags.set(UnlitFlags::VERTEX_UV, vertex_uv);
+                                    flags.set(UnlitFlags::UNCOMPRESSED_UV, uncompressed_uv);
+                                    flags.set(UnlitFlags::VERTEX_COLOR, vertex_color);
+                                    flags.set(UnlitFlags::VERTEX_INSTANCE, vertex_instance);
+                                    flags.set(UnlitFlags::BASE_COLOR_TEXTURE, base_color_texture);
+                                    if base_color_texture && !vertex_uv {
+                                        continue;
+                                    }
+                                    if uncompressed_position && !vertex_position {
+                                        continue;
+                                    }
+                                    if uncompressed_uv && !vertex_uv {
+                                        continue;
+                                    }
+                                    // A variant reading nothing composes an
+                                    // empty vertex-input struct.
+                                    if flags.is_empty() {
+                                        continue;
+                                    }
+                                    variants.push(UnlitOptions {
+                                        flags,
+                                        ..UnlitOptions::standard()
+                                    });
+                                }
+                            }
                         }
-                        variants.push(UnlitOptions {
-                            vertex_position,
-                            vertex_uv,
-                            base_color_texture,
-                            vertex_color,
-                        });
                     }
                 }
             }
@@ -681,21 +930,42 @@ mod tests {
     #[test]
     fn composes_each_variant_to_valid_wgsl() {
         for options in all_variants() {
-            let wgsl = compose_builtin(options)
+            let wgsl = compose_builtin(&options)
                 .unwrap_or_else(|error| panic!("variant {options:?} failed: {error}"));
             assert!(wgsl.contains("fn vs_main"), "variant {options:?}");
             assert!(wgsl.contains("fn fs_main"), "variant {options:?}");
             // Disabled features must leave no conditional attributes behind.
             assert!(!wgsl.contains("@if"), "variant {options:?} kept @if");
+
+            let flags = options.flags;
             // Each channel appears exactly when its flag is on.
             assert_eq!(
                 wgsl.contains("base_color_tex"),
-                options.base_color_texture,
+                flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
                 "variant {options:?}"
             );
             assert_eq!(
                 wgsl.contains("decode_uv"),
-                options.vertex_uv,
+                flags.contains(UnlitFlags::VERTEX_UV)
+                    && !flags.contains(UnlitFlags::UNCOMPRESSED_UV),
+                "variant {options:?}"
+            );
+            let compressed_position = flags.contains(UnlitFlags::VERTEX_POSITION)
+                && !flags.contains(UnlitFlags::UNCOMPRESSED_POSITION);
+            assert_eq!(
+                wgsl.contains("decode_position"),
+                compressed_position,
+                "variant {options:?}"
+            );
+            // The metadata bindings exist only while a channel is compressed.
+            assert_eq!(
+                wgsl.contains("mesh_meta"),
+                options.needs_metadata(),
+                "variant {options:?}"
+            );
+            assert_eq!(
+                wgsl.contains("mesh_info"),
+                options.needs_metadata(),
                 "variant {options:?}"
             );
             // Without a position stream the vertex input declares no
@@ -710,34 +980,39 @@ mod tests {
                 .0;
             assert_eq!(
                 vertex_input.contains("position:"),
-                options.vertex_position,
+                flags.contains(UnlitFlags::VERTEX_POSITION),
                 "variant {options:?}"
             );
         }
     }
 
+    /// A flag combination that contradicts itself must be rejected rather than
+    /// composed into a shader that cannot work.
     #[test]
-    fn base_color_texture_requires_vertex_uv() {
-        let result = std::panic::catch_unwind(|| {
-            compose_builtin(UnlitOptions {
-                vertex_position: true,
-                vertex_uv: false,
-                base_color_texture: true,
-                vertex_color: false,
-            })
-        });
-        assert!(
-            result.is_err(),
-            "sampling a base-color texture without UVs must be rejected"
-        );
+    fn contradictory_flags_are_rejected() {
+        for flags in [
+            UnlitFlags::BASE_COLOR_TEXTURE,
+            UnlitFlags::BASE_COLOR_TEXTURE | UnlitFlags::VERTEX_POSITION,
+            UnlitFlags::UNCOMPRESSED_POSITION,
+            UnlitFlags::UNCOMPRESSED_UV,
+        ] {
+            let result = std::panic::catch_unwind(|| {
+                compose_builtin(&UnlitOptions {
+                    flags,
+                    ..UnlitOptions::standard()
+                })
+            });
+            assert!(result.is_err(), "flags {flags:?} must be rejected");
+        }
     }
 
     #[test]
     fn vertex_strides_follow_the_attribute_formats() {
-        let layouts = UnlitPipeline::vertex_buffer_layouts(UnlitOptions {
-            vertex_position: true,
-            vertex_uv: true,
-            ..Default::default()
+        let layouts = UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+            flags: UnlitFlags::VERTEX_POSITION
+                | UnlitFlags::VERTEX_UV
+                | UnlitFlags::VERTEX_INSTANCE,
+            ..UnlitOptions::standard()
         });
         let position = layouts[POSITION_SLOT as usize]
             .as_ref()
@@ -757,54 +1032,71 @@ mod tests {
         assert_eq!(instance.step_mode, wgpu::VertexStepMode::Instance);
     }
 
+    /// An uncompressed channel widens its slot to the full-precision format
+    /// and drops the metadata bindings it no longer needs.
+    #[test]
+    fn uncompressed_channels_widen_their_slots() {
+        // The screen-space flags: uncompressed channels and no per-instance
+        // stream.
+        let options = UnlitOptions {
+            flags: UnlitFlags::VERTEX_POSITION
+                | UnlitFlags::UNCOMPRESSED_POSITION
+                | UnlitFlags::VERTEX_UV
+                | UnlitFlags::UNCOMPRESSED_UV
+                | UnlitFlags::VERTEX_COLOR
+                | UnlitFlags::BASE_COLOR_TEXTURE,
+            ..UnlitOptions::standard()
+        };
+        assert!(!options.needs_metadata());
+
+        let layouts = UnlitPipeline::vertex_buffer_layouts(&options);
+        let position = layouts[POSITION_SLOT as usize]
+            .as_ref()
+            .expect("position slot");
+        assert_eq!(position.array_stride, wgpu::VertexFormat::Float32x3.size());
+        assert_eq!(position.attributes[0].format, wgpu::VertexFormat::Float32x3);
+
+        let uv_color = layouts[UV_COLOR_SLOT as usize].as_ref().expect("uv slot");
+        assert_eq!(
+            uv_color.array_stride,
+            wgpu::VertexFormat::Float32x2.size() + wgpu::VertexFormat::Unorm8x4.size()
+        );
+
+        // Screen-space draws need no per-instance stream.
+        assert!(layouts[INSTANCE_SLOT as usize].is_none());
+    }
+
     #[test]
     fn uv_color_slot_follows_its_channels() {
-        let stride = |options: UnlitOptions| {
-            UnlitPipeline::vertex_buffer_layouts(options)[UV_COLOR_SLOT as usize]
+        let stride = |flags: UnlitFlags| {
+            UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+                flags,
+                ..UnlitOptions::standard()
+            })[UV_COLOR_SLOT as usize]
                 .as_ref()
                 .map(|layout| layout.array_stride)
         };
 
         let uv = wgpu::VertexFormat::Snorm16x2.size();
+        let uv_uncompressed = wgpu::VertexFormat::Float32x2.size();
         let color = wgpu::VertexFormat::Unorm8x4.size();
 
         // No channel: the slot disappears entirely, so a variant never binds
         // a buffer the shader does not declare.
+        assert_eq!(stride(UnlitFlags::empty()), None);
+        assert_eq!(stride(UnlitFlags::VERTEX_UV), Some(uv));
         assert_eq!(
-            stride(UnlitOptions {
-                vertex_position: true,
-                vertex_uv: false,
-                base_color_texture: false,
-                vertex_color: false,
-            }),
-            None
+            stride(UnlitFlags::VERTEX_UV | UnlitFlags::UNCOMPRESSED_UV),
+            Some(uv_uncompressed)
         );
+        assert_eq!(stride(UnlitFlags::VERTEX_COLOR), Some(color));
         assert_eq!(
-            stride(UnlitOptions {
-                vertex_position: true,
-                vertex_uv: true,
-                base_color_texture: false,
-                vertex_color: false,
-            }),
-            Some(uv)
-        );
-        assert_eq!(
-            stride(UnlitOptions {
-                vertex_position: true,
-                vertex_uv: false,
-                base_color_texture: false,
-                vertex_color: true,
-            }),
-            Some(color)
-        );
-        assert_eq!(
-            stride(UnlitOptions {
-                vertex_position: true,
-                vertex_uv: true,
-                base_color_texture: false,
-                vertex_color: true,
-            }),
+            stride(UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR),
             Some(uv + color)
+        );
+        assert_eq!(
+            stride(UnlitFlags::VERTEX_UV | UnlitFlags::UNCOMPRESSED_UV | UnlitFlags::VERTEX_COLOR),
+            Some(uv_uncompressed + color)
         );
     }
 
@@ -812,24 +1104,31 @@ mod tests {
     /// position buffer at all.
     #[test]
     fn position_slot_follows_its_flag() {
-        let position = |options: UnlitOptions| {
-            UnlitPipeline::vertex_buffer_layouts(options)[POSITION_SLOT as usize]
+        let position = |flags: UnlitFlags| {
+            UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+                flags,
+                ..UnlitOptions::standard()
+            })[POSITION_SLOT as usize]
                 .as_ref()
                 .map(|layout| (layout.array_stride, layout.step_mode))
         };
 
         assert_eq!(
-            position(UnlitOptions::default()),
+            position(UnlitFlags::empty()),
             None,
             "no position stream means no position slot"
         );
         assert_eq!(
-            position(UnlitOptions {
-                vertex_position: true,
-                ..Default::default()
-            }),
+            position(UnlitFlags::VERTEX_POSITION),
             Some((
                 wgpu::VertexFormat::Snorm16x4.size(),
+                wgpu::VertexStepMode::Vertex
+            ))
+        );
+        assert_eq!(
+            position(UnlitFlags::VERTEX_POSITION | UnlitFlags::UNCOMPRESSED_POSITION),
+            Some((
+                wgpu::VertexFormat::Float32x3.size(),
                 wgpu::VertexStepMode::Vertex
             ))
         );
@@ -867,16 +1166,13 @@ mod tests {
 
         for stream in [
             MeshUvColorStream {
-                uv: true,
-                color: true,
+                flags: UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR,
             },
             MeshUvColorStream {
-                uv: true,
-                color: false,
+                flags: UnlitFlags::VERTEX_UV,
             },
             MeshUvColorStream {
-                uv: false,
-                color: true,
+                flags: UnlitFlags::VERTEX_COLOR,
             },
         ] {
             let mut metadata = crate::mesh::MeshMetadata::default();
@@ -884,12 +1180,12 @@ mod tests {
 
             // Compress separately, exactly as a caller sharing one stream
             // across meshes would.
-            let packed_uvs: Vec<_> = if stream.uv {
+            let packed_uvs: Vec<_> = if stream.uv() {
                 crate::mesh::compress_uvs(&uvs, &mut metadata).collect()
             } else {
                 Vec::new()
             };
-            let packed_colors: Vec<_> = if stream.color {
+            let packed_colors: Vec<_> = if stream.color() {
                 crate::mesh::compress_colors(&colors).collect()
             } else {
                 Vec::new()
@@ -915,8 +1211,7 @@ mod tests {
 
         let out = write_stream(
             MeshUvColorStream {
-                uv: true,
-                color: true,
+                flags: UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR,
             },
             &uvs,
             &colors,
@@ -945,8 +1240,7 @@ mod tests {
         // UV only: four bytes per vertex.
         let out = write_stream(
             MeshUvColorStream {
-                uv: true,
-                color: false,
+                flags: UnlitFlags::VERTEX_UV,
             },
             &uvs,
             &[],
@@ -958,8 +1252,7 @@ mod tests {
         // Color only: four bytes per vertex, no UV bytes.
         let out = write_stream(
             MeshUvColorStream {
-                uv: false,
-                color: true,
+                flags: UnlitFlags::VERTEX_COLOR,
             },
             &[],
             &colors,
@@ -968,6 +1261,26 @@ mod tests {
         );
         assert_eq!(out.len(), 2 * 4);
         assert_eq!(&out[0..4], &[0, 64, 128, 255]);
+    }
+
+    /// An uncompressed UV is copied at full precision: it neither derives
+    /// metadata nor quantizes, so the bytes are the input `f32`s.
+    #[test]
+    fn uncompressed_uv_is_written_at_full_precision() {
+        let uvs = [[0.0f32, 0.0], [0.5, 0.75]];
+        let stream = MeshUvColorStream {
+            flags: UnlitFlags::VERTEX_UV | UnlitFlags::UNCOMPRESSED_UV,
+        };
+        let mut metadata = crate::mesh::MeshMetadata::default();
+        let out = write_stream(stream, &uvs, &[], 2, &mut metadata);
+
+        let stride = wgpu::VertexFormat::Float32x2.size() as usize;
+        assert_eq!(out.len(), 2 * stride);
+        for (vertex, uv) in out.chunks(stride).zip(&uvs) {
+            assert_eq!(vertex, uv.as_bytes());
+        }
+        // No compression happened, so the metadata is untouched.
+        assert_eq!(metadata, crate::mesh::MeshMetadata::default());
     }
 
     /// The instance slot's GPU attribute offsets and stride must match the
@@ -980,7 +1293,10 @@ mod tests {
         use crate::mesh::MeshInstance;
         use core::mem::{offset_of, size_of};
 
-        let layouts = UnlitPipeline::vertex_buffer_layouts(UnlitOptions::default());
+        let layouts = UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+            flags: UnlitFlags::VERTEX_INSTANCE,
+            ..UnlitOptions::standard()
+        });
         let instance = layouts[INSTANCE_SLOT as usize]
             .as_ref()
             .expect("instance slot");

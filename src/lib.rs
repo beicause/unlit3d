@@ -24,9 +24,15 @@
 //! # Shaders
 //!
 //! Built-in shaders are authored in WESL and bundled at build time; see
-//! [`shader`]. Custom shaders can import the same built-in modules, so a
-//! custom pipeline can reuse the vertex-decode helpers and the fixed camera
-//! and frame-globals layouts.
+//! [`shader`]. [`pipeline::UnlitPipeline`] composes them into the variant
+//! [`pipeline::UnlitOptions`] selects, so a caller never writes WGSL to use
+//! this renderer.
+//!
+//! A caller who wants their own entry shader composes it directly with
+//! [`wesl`](https://docs.rs/wesl): [`shader`] is a WESL `StaticPackage`, so
+//! `wesl::resolver::PackageResolver` can resolve
+//! `import wgpu_unlit_render::mesh_compression;` against the same modules the
+//! built-in pipeline uses.
 //!
 //! # Example
 //!
@@ -42,7 +48,8 @@
 //! use wgpu_unlit_render::pipeline::{
 //!     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
 //!     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-//!     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitPipeline,
+//!     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
+//!     UnlitPipeline,
 //! };
 //! use wgpu_unlit_render::renderer::{RenderTarget, Renderer, RendererOptions};
 //! use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
@@ -73,15 +80,10 @@
 //!
 //!     // 1. Pick the shader variant. Each flag adds both a shader code path
 //!     //    and the matching vertex attributes / bindings.
-//!     let options = UnlitOptions {
-//!         vertex_position: true,
-//!         vertex_uv: true,
-//!         base_color_texture: true,
-//!         vertex_color: true,
-//!     };
+//!     let options = UnlitOptions::standard();
 //!     let pipeline = UnlitPipeline::new(
 //!         device,
-//!         options,
+//!         &options,
 //!         COLOR_FORMAT,
 //!         Some(DEPTH_FORMAT),
 //!         RendererOptions::default().sample_count,
@@ -196,7 +198,8 @@
 //!     });
 //!
 //!     // 6. The mesh group selects which metadata entry decodes this draw, so
-//!     //    one pipeline can draw many differently-compressed meshes.
+//!     //    one pipeline can draw many differently-compressed meshes. It
+//!     //    exists only while a channel is compressed.
 //!     let mesh_info = upload(
 //!         MeshInfo::new(0).as_bytes(),
 //!         wgpu::BufferUsages::UNIFORM,
@@ -204,7 +207,7 @@
 //!     );
 //!     let mesh = device.create_bind_group(&wgpu::BindGroupDescriptor {
 //!         label: Some("mesh"),
-//!         layout: &pipeline.mesh_layout,
+//!         layout: pipeline.mesh_layout.as_ref().expect("a compressed mesh"),
 //!         entries: &[wgpu::BindGroupEntry {
 //!             binding: MESH_INFO_BINDING,
 //!             resource: mesh_info.as_entire_binding(),
@@ -358,33 +361,11 @@
 //! example.draw(&view, 256, 192);
 //! device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 //! ```
-//!
-//! # Custom shaders
-//!
-//! [`pipeline::compose`] compiles a WESL main module against the built-in
-//! package, so a custom entry shader can import the shared pieces instead of
-//! reimplementing them:
-//!
-//! ```wgsl
-//! import wgpu_unlit_render::mesh_compression;
-//! import wgpu_unlit_render::mesh_metadata;
-//! import wgpu_unlit_render::view::View;
-//!
-//! @group(0) @binding(0) var<uniform> camera: View;
-//! @group(0) @binding(2) var<storage, read> mesh_meta: array<mesh_metadata::MeshMetadata>;
-//!
-//! @vertex
-//! fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
-//!     let decoded = mesh_compression::decode_position(position.xyz, mesh_meta[0]);
-//!     return camera.clip_from_world * vec4<f32>(decoded, 1.0);
-//! }
-//! ```
 
 #![forbid(unsafe_code)]
 
 // The built-in WESL shader package is generated at build time from
-// `shaders/*.wesl`; custom shaders resolve `import wgpu_unlit_render::…`
-// against `shader::PACKAGE`.
+// `shaders/*.wesl`; the built-in pipeline composes its variants against it.
 wesl_core::wesl_pkg!(pub shader, "wgpu_unlit_render.rs");
 
 pub mod globals;

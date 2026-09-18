@@ -16,7 +16,7 @@ use wgpu_unlit_render::mesh::{
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitPipeline,
+    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
 use wgpu_unlit_render::renderer::{RenderTarget, Renderer, RendererOptions};
 use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
@@ -71,7 +71,7 @@ impl GpuMesh {
     fn upload(
         ctx: &Ctx,
         label: &str,
-        options: UnlitOptions,
+        options: &UnlitOptions,
         positions: &[[f32; 3]],
         uvs: &[[f32; 2]],
         colors: &[[f32; 4]],
@@ -79,7 +79,9 @@ impl GpuMesh {
     ) -> Self {
         let stream = options.uv_color_stream();
         let mut metadata = MeshMetadata::default();
-        let packed_positions: Vec<_> = if options.vertex_position {
+        let compressed_positions = options.flags.contains(UnlitFlags::VERTEX_POSITION)
+            && !options.flags.contains(UnlitFlags::UNCOMPRESSED_POSITION);
+        let packed_positions: Vec<_> = if compressed_positions {
             compress_positions(positions, &mut metadata).collect()
         } else {
             Vec::new()
@@ -90,14 +92,19 @@ impl GpuMesh {
         };
 
         let vertex_usage = wgpu::BufferUsages::VERTEX;
-        let positions_buffer = options.vertex_position.then(|| {
-            uploaded(
-                ctx,
-                packed_positions.as_bytes(),
-                vertex_usage,
-                format!("{label}::positions"),
-            )
-        });
+        // An uncompressed position needs no decode parameters, so it is
+        // uploaded exactly as the caller supplies it.
+        let positions_buffer = options
+            .flags
+            .contains(UnlitFlags::VERTEX_POSITION)
+            .then(|| {
+                let bytes = if compressed_positions {
+                    packed_positions.as_bytes()
+                } else {
+                    positions.as_bytes()
+                };
+                uploaded(ctx, bytes, vertex_usage, format!("{label}::positions"))
+            });
         // The stream writer compresses and writes into the mapped buffer in
         // one step, so no intermediate byte buffer exists.
         let uv_color_buffer = (!stream.is_empty()).then(|| {
@@ -117,16 +124,17 @@ impl GpuMesh {
 
         // Indices only address geometry, so a position-less variant draws its
         // point range unindexed.
-        let indices = (options.vertex_position && !indices.is_empty()).then(|| {
-            let narrowed: Vec<u16> = compress_indices(indices).expect("indices").collect();
-            let buffer = uploaded(
-                ctx,
-                narrowed.as_bytes(),
-                wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                format!("{label}::indices"),
-            );
-            (buffer, narrowed.len() as u32)
-        });
+        let indices = (options.flags.contains(UnlitFlags::VERTEX_POSITION) && !indices.is_empty())
+            .then(|| {
+                let narrowed: Vec<u16> = compress_indices(indices).expect("indices").collect();
+                let buffer = uploaded(
+                    ctx,
+                    narrowed.as_bytes(),
+                    wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                    format!("{label}::indices"),
+                );
+                (buffer, narrowed.len() as u32)
+            });
 
         Self {
             positions: positions_buffer,
@@ -280,7 +288,7 @@ struct SceneFixture {
 
 /// Build the built-in pipeline for `options`, upload the cube and — when the
 /// variant samples a base-color texture — create its material bind group.
-fn fixture(ctx: &Ctx, options: UnlitOptions, sample_count: u32) -> SceneFixture {
+fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture {
     let pipeline = UnlitPipeline::new(
         &ctx.device,
         options,
@@ -300,26 +308,29 @@ fn fixture(ctx: &Ctx, options: UnlitOptions, sample_count: u32) -> SceneFixture 
         &indices,
     );
 
-    let material = options.base_color_texture.then(|| {
-        let texture = checkerboard_texture(ctx);
-        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test::material"),
-            layout: pipeline
-                .material_layout
-                .as_ref()
-                .expect("a textured variant has a material layout"),
-            entries: &[
-                bg_entry(
-                    BASE_COLOR_TEXTURE_BINDING,
-                    wgpu::BindingResource::TextureView(&texture.view),
-                ),
-                bg_entry(
-                    BASE_COLOR_SAMPLER_BINDING,
-                    wgpu::BindingResource::Sampler(&texture.sampler),
-                ),
-            ],
-        })
-    });
+    let material = options
+        .flags
+        .contains(UnlitFlags::BASE_COLOR_TEXTURE)
+        .then(|| {
+            let texture = checkerboard_texture(ctx);
+            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("test::material"),
+                layout: pipeline
+                    .material_layout
+                    .as_ref()
+                    .expect("a textured variant has a material layout"),
+                entries: &[
+                    bg_entry(
+                        BASE_COLOR_TEXTURE_BINDING,
+                        wgpu::BindingResource::TextureView(&texture.view),
+                    ),
+                    bg_entry(
+                        BASE_COLOR_SAMPLER_BINDING,
+                        wgpu::BindingResource::Sampler(&texture.sampler),
+                    ),
+                ],
+            })
+        });
 
     SceneFixture {
         pipeline,
@@ -356,20 +367,29 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         globals.as_bytes(),
         wgpu::BufferUsages::UNIFORM,
     );
+    // The metadata bindings (and the mesh group that indexes them) exist only
+    // while a channel is compressed.
+    let metadata = fixture.pipeline.options.needs_metadata();
     let metadata_buffer = upload_buffer(
         ctx,
         "test::mesh_meta",
         fixture.mesh.metadata.as_bytes(),
         wgpu::BufferUsages::STORAGE,
     );
+    let mut global_entries = vec![
+        bg_entry(CAMERA_BINDING, camera_buffer.as_entire_binding()),
+        bg_entry(FRAME_BINDING, globals_buffer.as_entire_binding()),
+    ];
+    if metadata {
+        global_entries.push(bg_entry(
+            MESH_METADATA_BINDING,
+            metadata_buffer.as_entire_binding(),
+        ));
+    }
     let global_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test::globals"),
         layout: &fixture.pipeline.global_layout,
-        entries: &[
-            bg_entry(CAMERA_BINDING, camera_buffer.as_entire_binding()),
-            bg_entry(FRAME_BINDING, globals_buffer.as_entire_binding()),
-            bg_entry(MESH_METADATA_BINDING, metadata_buffer.as_entire_binding()),
-        ],
+        entries: &global_entries,
     });
 
     // Mesh group: which metadata entry decodes this draw.
@@ -379,10 +399,16 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         MeshInfo::new(0).as_bytes(),
         wgpu::BufferUsages::UNIFORM,
     );
-    let mesh_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("test::mesh"),
-        layout: &fixture.pipeline.mesh_layout,
-        entries: &[bg_entry(MESH_INFO_BINDING, info_buffer.as_entire_binding())],
+    let mesh_group = metadata.then(|| {
+        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("test::mesh"),
+            layout: fixture
+                .pipeline
+                .mesh_layout
+                .as_ref()
+                .expect("a variant that needs metadata has a mesh layout"),
+            entries: &[bg_entry(MESH_INFO_BINDING, info_buffer.as_entire_binding())],
+        })
     });
 
     let instance_data = upload_buffer(
@@ -392,6 +418,11 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         wgpu::BufferUsages::VERTEX,
     );
     let instance_count = instances.len() as u32;
+    let instanced = fixture
+        .pipeline
+        .options
+        .flags
+        .contains(UnlitFlags::VERTEX_INSTANCE);
     let range = match &fixture.mesh.indices {
         Some((_, count)) => DrawRange::Indexed {
             indices: 0..*count,
@@ -404,9 +435,15 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         },
     };
 
-    let mut mesh_draw = MeshDraw::new(range)
-        .with_bind_group(MESH_GROUP, &mesh_group)
-        .with_vertex_buffer(INSTANCE_SLOT, instance_data.slice(..));
+    let mut mesh_draw = MeshDraw::new(range);
+    if let Some(mesh_group) = &mesh_group {
+        mesh_draw = mesh_draw.with_bind_group(MESH_GROUP, mesh_group);
+    }
+    // Per-instance data places the geometry, so the slot is bound only when
+    // the variant reads it. A variant without it draws one instance.
+    if instanced {
+        mesh_draw = mesh_draw.with_vertex_buffer(INSTANCE_SLOT, instance_data.slice(..));
+    }
     if let Some(positions) = &fixture.mesh.positions {
         mesh_draw = mesh_draw.with_vertex_buffer(POSITION_SLOT, positions.slice(..));
     }
@@ -459,17 +496,15 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 /// The vertex-color variant the pixel tests use.
 fn vertex_color_options() -> UnlitOptions {
     UnlitOptions {
-        vertex_position: true,
-        vertex_uv: false,
-        base_color_texture: false,
-        vertex_color: true,
+        flags: UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
+        ..UnlitOptions::standard()
     }
 }
 
 #[test]
 fn renders_a_cube_over_the_clear_color() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
 
     assert_eq!(frame.width, WIDTH);
@@ -499,7 +534,7 @@ fn renders_a_cube_over_the_clear_color() {
 #[test]
 fn base_color_reaches_the_frame() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(), 4);
 
     let brightest = |base_color: [f32; 4]| {
         let frame = render(&ctx, &fixture, &[placed_cube(base_color)]);
@@ -523,7 +558,7 @@ fn base_color_reaches_the_frame() {
 #[test]
 fn depth_ordering_hides_the_far_instance() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(), 4);
 
     // A far red cube and a near green one, drawn far-first so a missing depth
     // test would let the far cube show through.
@@ -556,7 +591,7 @@ fn msaa_produces_more_partial_coverage_than_no_msaa() {
     // Pixels that are neither fully clear nor fully covered: the
     // antialiased silhouette, which a single-sample render cannot produce.
     let partial = |sample_count: u32| {
-        let fixture = fixture(&ctx, vertex_color_options(), sample_count);
+        let fixture = fixture(&ctx, &vertex_color_options(), sample_count);
         let frame = render(&ctx, &fixture, std::slice::from_ref(&instance));
         frame
             .as_chunks::<4>()
@@ -580,7 +615,7 @@ fn msaa_produces_more_partial_coverage_than_no_msaa() {
 #[test]
 fn unlit_cube_matches_snapshot() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
     assert_image_snapshot("unlit_cube.webp", &frame, frame.width, frame.height);
 }
@@ -591,7 +626,7 @@ fn unlit_cube_matches_snapshot() {
 #[test]
 fn instanced_cubes_match_snapshot() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(), 4);
 
     // A row of cubes at different depths, each with its own base color, all
     // drawn by one instanced draw call.
@@ -657,8 +692,11 @@ fn instanced_cubes_match_snapshot() {
 #[test]
 fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless();
-    let options = UnlitOptions::default();
-    let fixture = fixture(&ctx, options, 1);
+    let options = UnlitOptions {
+        flags: UnlitFlags::VERTEX_INSTANCE,
+        ..UnlitOptions::standard()
+    };
+    let fixture = fixture(&ctx, &options, 1);
     assert!(
         fixture.mesh.positions.is_none(),
         "a position-less variant must not upload a position buffer"
@@ -705,16 +743,8 @@ fn position_less_variant_draws_points_at_instance_origins() {
 #[test]
 fn textured_cube_matches_snapshot() {
     let ctx = Ctx::headless();
-    let fixture = fixture(
-        &ctx,
-        UnlitOptions {
-            vertex_position: true,
-            vertex_uv: true,
-            base_color_texture: true,
-            vertex_color: true,
-        },
-        4,
-    );
+    let options = UnlitOptions::standard();
+    let fixture = fixture(&ctx, &options, 4);
     let instance = placed(0.8, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
     let frame = render(&ctx, &fixture, &[instance]);
     assert_image_snapshot(
@@ -724,6 +754,13 @@ fn textured_cube_matches_snapshot() {
         frame.height,
     );
 }
+
+/// Two minimal WGSL modules: the resource graph tracks identity, so the
+/// shader bodies only need to differ.
+const TRIVIAL_WGSL: &str =
+    "@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }";
+const TRIVIAL_WGSL_2: &str =
+    "@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(1.0); }";
 
 #[test]
 fn resource_graph_rebuilds_a_pipeline_after_a_target_change() {
@@ -737,15 +774,9 @@ fn resource_graph_rebuilds_a_pipeline_after_a_target_change() {
             ctx.device
                 .create_shader_module(wgpu::ShaderModuleDescriptor {
                     label: Some("test::shader"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        wgpu_unlit_render::pipeline::compose(
-                            "shaders",
-                            "unlit",
-                            &[("VERTEX_COLOR", true)],
-                        )
-                        .expect("compose")
-                        .into(),
-                    ),
+                    // A trivial module: the graph tracks the resource, not
+                    // what the shader does.
+                    source: wgpu::ShaderSource::Wgsl(TRIVIAL_WGSL.into()),
                 }),
             &[],
         )
@@ -773,11 +804,9 @@ fn resource_graph_rebuilds_a_pipeline_after_a_target_change() {
         ctx.device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("test::shader2"),
-                source: wgpu::ShaderSource::Wgsl(
-                    wgpu_unlit_render::pipeline::compose("shaders", "unlit", &[])
-                        .expect("compose")
-                        .into(),
-                ),
+                // A genuinely different module, so the dependent rebuilds
+                // over something new rather than an identical copy.
+                source: wgpu::ShaderSource::Wgsl(TRIVIAL_WGSL_2.into()),
             }),
     );
     assert!(graph.is_dirty(shader));
