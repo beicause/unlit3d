@@ -32,7 +32,7 @@ use crate::pipeline::{
 };
 use crate::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene, ScissorRect};
 use core::ops::Range;
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 /// egui's own texture format: gamma-space RGBA, never sRGB-aware.
 ///

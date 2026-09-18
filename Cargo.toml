@@ -26,6 +26,7 @@ zerocopy-derive = { version = "0.8.56", default-features = false }
 glam = { version = "0.33", default-features = false, features = ["std", "zerocopy"] }
 arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
+hashbrown = { version = "0.17.1", default-features = false, features = ["default"] }
 
 [build-dependencies]
 wesl = { version = "0.5.0", default-features = false, features = ["package"] }

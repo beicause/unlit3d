@@ -16,7 +16,7 @@
 //! existing buffer does not dirty anything, reallocating it does, and only the
 //! resources that actually consumed the old handle are affected.
 
-use std::collections::HashSet;
+use hashbrown::HashSet;
 
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
