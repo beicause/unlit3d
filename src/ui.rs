@@ -1,16 +1,58 @@
 //! An [egui](https://egui.rs) backend built on the built-in unlit pipeline.
 //!
-//! [`UiRenderer`] takes what egui produces each frame — tessellated, clipped
+//! [`EguiIntegration`] takes what egui produces each frame — tessellated, clipped
 //! meshes plus a set of texture updates — and draws it with the built-in
 //! pipeline as ordinary screen-space geometry. Nothing in the shader knows
 //! about egui: the UI is premultiplied, textured, screen-space vertices, and
 //! egui's clip rectangles become scissor rectangles.
 //!
 //! ```no_run
-//! # use wgpu_unlit_render::ui::UiRenderer;
+//! # use wgpu_unlit_render::globals::Globals;
+//! # use wgpu_unlit_render::pipeline::{
+//! #     CAMERA_BINDING, FRAME_BINDING, UnlitOptions, UnlitPipeline,
+//! # };
+//! # use wgpu_unlit_render::resources::{Resource, ResourceGraph};
+//! # use wgpu_unlit_render::ui::{screen_view, ui_options, EguiIntegration};
+//! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
-//! #          color_format: wgpu::TextureFormat) {
-//! let mut ui = UiRenderer::new(device, color_format, 1);
+//! #          color_format: wgpu::TextureFormat, sample_count: u32) {
+//! // The caller owns the globals: a camera uniform (written every frame with
+//! // `screen_view`), a frame-globals uniform, and the bind group binding both.
+//! let pipeline = UnlitPipeline::new(
+//!     device,
+//!     // The target here encodes sRGB: the UI converts its output.
+//!     &ui_options(true),
+//!     color_format,
+//!     None,
+//!     sample_count,
+//! );
+//! let camera = uniform_buffer(device, "ui::camera");
+//! let globals = uniform_buffer(device, "ui::globals");
+//! let global_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+//!     label: Some("ui::globals"),
+//!     layout: &pipeline.global_layout,
+//!     entries: &[
+//!         wgpu::BindGroupEntry {
+//!             binding: CAMERA_BINDING,
+//!             resource: camera.as_entire_binding(),
+//!         },
+//!         wgpu::BindGroupEntry {
+//!             binding: FRAME_BINDING,
+//!             resource: globals.as_entire_binding(),
+//!         },
+//!     ],
+//! });
+//!
+//! // The UI's per-texture resources join the caller's ledger.
+//! let mut graph = ResourceGraph::new();
+//! let camera_id = graph.insert(Resource::Buffer(camera), &[]).unwrap();
+//! let globals_id = graph.insert(Resource::Buffer(globals), &[]).unwrap();
+//! let group_id = graph
+//!     .insert(Resource::BindGroup(global_group), &[camera_id, globals_id])
+//!     .unwrap();
+//!
+//! let options = ui_options(/* the target encodes sRGB: */ true);
+//! let mut ui = EguiIntegration::new(device, group_id, &options, color_format, sample_count);
 //! let mut input = egui::RawInput::default();
 //! input.screen_rect = Some(egui::Rect::from_min_size(
 //!     egui::Pos2::ZERO,
@@ -19,17 +61,25 @@
 //! let output = ctx.run_ui(input, |ui| {
 //!     ui.label("hello world");
 //! });
-//! ui.update(device, queue, ctx, output, 1.0, [256.0, 192.0]);
-//! let scene = ui.scene();
+//! ui.update(&mut graph, queue, ctx, output, 1.0);
+//! let scene = ui.scene(&mut graph);
+//! # }
+//! # fn uniform_buffer(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
+//! #     device.create_buffer(&wgpu::BufferDescriptor {
+//! #         label: Some(label),
+//! #         size: 256,
+//! #         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+//! #         mapped_at_creation: false,
+//! #     })
 //! # }
 //! ```
 
-use crate::globals::{Globals, View};
+use crate::globals::View;
 use crate::pipeline::{
-    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, MATERIAL_GROUP, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
-    UnlitPipeline,
+    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, MATERIAL_GROUP,
+    POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
+use crate::resources::{Resource, ResourceGraph, ResourceId};
 use crate::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene, ScissorRect};
 use core::ops::Range;
 use hashbrown::HashMap;
@@ -54,7 +104,10 @@ const UV_COLOR_STRIDE: usize =
 /// left and Y growing downwards, so the Y coefficient is negated; Z collapses
 /// to zero, since everything the UI draws sits at one depth. The physical
 /// density never enters: the target's format already encodes its pixels.
-fn screen_view(viewport_points: [f32; 2]) -> View {
+///
+/// The caller writes this into their camera uniform, since the camera buffer
+/// is theirs.
+pub fn screen_view(viewport_points: [f32; 2]) -> View {
     let [width, height] = viewport_points;
     View::new(
         glam::Mat4::from_cols_array(&[
@@ -80,7 +133,11 @@ fn screen_view(viewport_points: [f32; 2]) -> View {
 }
 
 /// The pipeline variant a UI is drawn with.
-fn ui_options(srgb_target: bool) -> UnlitOptions {
+///
+/// `srgb_to_linear_output` is the caller's call, not this function's: it
+/// depends on the target's format, which this function never sees. Set it
+/// when the target encodes sRGB.
+pub fn ui_options(srgb_to_linear_output: bool) -> UnlitOptions {
     let mut options = UnlitOptions::standard();
     // Full-precision screen-space vertices carrying a premultiplied color and
     // a texture coordinate: no compression, no per-instance stream.
@@ -90,7 +147,7 @@ fn ui_options(srgb_target: bool) -> UnlitOptions {
         | UnlitFlags::UNCOMPRESSED_UV
         | UnlitFlags::VERTEX_COLOR
         | UnlitFlags::BASE_COLOR_TEXTURE;
-    if srgb_target {
+    if srgb_to_linear_output {
         flags |= UnlitFlags::SRGB_TO_LINEAR_OUTPUT;
     }
     options.flags = flags;
@@ -146,19 +203,29 @@ struct UiDraw {
 }
 
 /// Draws tessellated egui output with the built-in unlit pipeline.
-pub struct UiRenderer {
+///
+/// The UI's GPU resources are registered in a [`ResourceGraph`] the caller
+/// supplies — normally the one inside a
+/// [`RenderContext`](crate::render_context::RenderContext) — so the whole
+/// frame shares one ledger. Every method that touches the graph takes it as
+/// an argument: the renderer holds only the bookkeeping (ids, keys) that
+/// maps egui's world onto graph nodes.
+pub struct EguiIntegration {
     /// Kept to build the resources a frame turns out to need.
     device: wgpu::Device,
     pipeline: UnlitPipeline,
-    camera: wgpu::Buffer,
-    globals: wgpu::Buffer,
-    global_group: wgpu::BindGroup,
-    /// GPU texture of every egui texture slot currently allocated.
-    textures: HashMap<egui::TextureId, wgpu::Texture>,
-    /// One sampler per distinct set of egui sampling options seen.
-    samplers: Vec<(egui::TextureOptions, wgpu::Sampler)>,
-    /// One material bind group per (texture, options) pair.
-    materials: Vec<Material>,
+    /// Graph node of the caller's global bind group: camera and frame
+    /// globals, written by the caller.
+    global_group: ResourceId,
+    /// Graph node of the egui texture *view* of every allocated texture
+    /// slot, keyed by egui's own id; the view depends on its texture node.
+    textures: HashMap<egui::TextureId, ResourceId>,
+    /// One sampler per distinct set of egui sampling options seen, with its
+    /// graph node.
+    samplers: Vec<(egui::TextureOptions, ResourceId)>,
+    /// One material bind group per (texture, options) pair, with its graph
+    /// node; the node depends on the texture's view and the sampler.
+    materials: Vec<(MaterialKey, ResourceId)>,
     /// Positions, then interleaved UVs and colors.
     vertices: Option<wgpu::Buffer>,
     /// `Uint32` indices.
@@ -171,24 +238,35 @@ pub struct UiRenderer {
     draws: Vec<UiDraw>,
 }
 
-/// One material bind group and what it binds.
-struct Material {
+/// What one material bind group was built from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MaterialKey {
     texture: egui::TextureId,
     options: egui::TextureOptions,
-    group: wgpu::BindGroup,
 }
 
-impl UiRenderer {
-    /// Build the UI pipeline for a target of `color_format` and `sample_count`.
+impl EguiIntegration {
+    /// Build the UI pipeline for a target of `color_format` and
+    /// `sample_count`, registering the UI's per-texture resources in
+    /// `graph`.
+    ///
+    /// The global bind group — the camera and frame-globals uniforms — is
+    /// the caller's, as is everything else the UI overlays: the integration
+    /// owns only egui's textures and the geometry they are drawn with.
+    /// Sharing the caller's graph — usually the one inside a
+    /// [`crate::render_context::RenderContext`] — means those resources live
+    /// in the same ledger as the rest of the frame's, with the same
+    /// dependency tracking.
     pub fn new(
         device: &wgpu::Device,
+        global_group: ResourceId,
+        options: &UnlitOptions,
         color_format: wgpu::TextureFormat,
         sample_count: u32,
     ) -> Self {
-        let options = ui_options(color_format.is_srgb());
         let pipeline = UnlitPipeline::new(
             device,
-            &options,
+            options,
             color_format,
             // The UI overlays whatever the pass holds, so it neither tests nor
             // writes depth — but every pipeline in a pass with a depth
@@ -198,28 +276,9 @@ impl UiRenderer {
             sample_count,
         );
 
-        let camera = uniform_buffer(device, "ui::camera", view_size());
-        let globals = uniform_buffer(device, "ui::globals", globals_size());
-        let global_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ui::globals"),
-            layout: &pipeline.global_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: CAMERA_BINDING,
-                    resource: camera.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: FRAME_BINDING,
-                    resource: globals.as_entire_binding(),
-                },
-            ],
-        });
-
         Self {
             device: device.clone(),
             pipeline,
-            camera,
-            globals,
             global_group,
             textures: HashMap::new(),
             samplers: Vec::new(),
@@ -237,34 +296,30 @@ impl UiRenderer {
         &self.pipeline
     }
 
-    /// Advance the frame globals the UI's shader reads.
-    pub fn set_globals(&self, queue: &wgpu::Queue, globals: &Globals) {
-        use zerocopy::IntoBytes;
-        queue.write_buffer(&self.globals, 0, globals.as_bytes());
+    /// The bind group behind a graph node that is known to be one.
+    fn bind_group<'a>(&self, graph: &'a ResourceGraph, id: ResourceId) -> &'a wgpu::BindGroup {
+        graph
+            .get(id)
+            .and_then(Resource::as_bind_group)
+            .expect("the node is a bind group the UI created")
     }
 
     /// Apply `output`'s texture updates and upload its tessellated shapes,
     /// ready for [`Self::scene`].
     ///
-    /// `viewport_points` is the target's size in logical points — the space
-    /// egui tessellates into — which the projection maps onto clip space.
-    /// `pixels_per_point` tells egui how to rasterise text but never enters
-    /// the projection.
+    /// `pixels_per_point` tells egui how to rasterise text and how to scale
+    /// the tessellated points.
     pub fn update(
         &mut self,
-        device: &wgpu::Device,
+        graph: &mut ResourceGraph,
         queue: &wgpu::Queue,
         ctx: &egui::Context,
         mut output: egui::FullOutput,
         pixels_per_point: f32,
-        viewport_points: [f32; 2],
     ) {
-        use zerocopy::IntoBytes;
-
-        self.apply_textures(device, queue, &output.textures_delta);
+        self.apply_textures(graph, queue, &output.textures_delta);
         // egui panics if a delta is dropped unapplied, so mark it handled.
         output.textures_delta.clear();
-        queue.write_buffer(&self.camera, 0, screen_view(viewport_points).as_bytes());
 
         let primitives = ctx.tessellate(output.shapes, pixels_per_point);
         self.draws.clear();
@@ -272,7 +327,7 @@ impl UiRenderer {
         if vertices == 0 {
             return;
         }
-        self.reserve(device, vertices, indices);
+        self.reserve(graph, vertices, indices);
         self.draws = upload(
             queue,
             self.vertices.as_ref().expect("just reserved"),
@@ -285,11 +340,11 @@ impl UiRenderer {
     ///
     /// Every draw sets a scissor rectangle, and a scissor stays set for the
     /// rest of the pass, so record this after the draws it overlays.
-    pub fn scene(&mut self) -> Scene<'_> {
-        let mut scene = Scene::new();
+    pub fn scene<'ui>(&'ui mut self, graph: &'ui mut ResourceGraph) -> Scene<'ui> {
         if self.vertices.is_none() || self.indices.is_none() || self.draws.is_empty() {
-            return scene;
+            return Scene::new();
         }
+        let mut scene = Scene::new();
 
         // Build every material the frame needs first: the scene borrows them
         // all, which it cannot do while any is still being inserted.
@@ -299,7 +354,7 @@ impl UiRenderer {
             .map(|draw| (draw.texture, draw.options))
             .collect();
         for (id, options) in wanted {
-            self.build_material(&id, &options);
+            self.build_material(graph, id, options);
         }
 
         let (vertices, indices) = (
@@ -310,12 +365,12 @@ impl UiRenderer {
         // UVs and colors the second; each holds `vertex_capacity` vertices.
         let positions_size = (self.vertex_capacity * POSITION_STRIDE) as u64;
         let mut group = PipelineGroup::new(&self.pipeline.pipeline)
-            .with_bind_group(GLOBAL_GROUP, &self.global_group);
+            .with_bind_group(GLOBAL_GROUP, self.bind_group(graph, self.global_group));
         for draw in &self.draws {
             // Its own material group per draw: each carries its own scissor
             // rectangle, so consecutive draws sharing one are what the
             // recorder's deduplication is for.
-            let Some(material) = self.find_material(&draw.texture, &draw.options) else {
+            let Some(material) = self.material(graph, draw.texture, draw.options) else {
                 // A primitive whose texture was freed this frame has nothing
                 // to sample, so it is skipped rather than bound to a stale view.
                 continue;
@@ -327,7 +382,7 @@ impl UiRenderer {
             let mesh = MeshDraw::new(
                 DrawRange::indexed(draw.indices.clone()).with_base_vertex(draw.first_vertex as i32),
             )
-            .with_bind_group(MATERIAL_GROUP, &material.group)
+            .with_bind_group(MATERIAL_GROUP, material)
             .with_vertex_buffer(POSITION_SLOT, vertices.slice(..positions_size))
             .with_vertex_buffer(UV_COLOR_SLOT, vertices.slice(positions_size..))
             .with_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32)
@@ -338,117 +393,151 @@ impl UiRenderer {
         scene
     }
 
-    /// Reallocate the buffers when they cannot hold `vertices` and `indices`.
-    fn reserve(&mut self, device: &wgpu::Device, vertices: usize, indices: usize) {
+    /// Reallocate the buffers when they cannot hold `vertices` and `indices`,
+    /// registering any new buffer in `graph`.
+    fn reserve(&mut self, graph: &mut ResourceGraph, vertices: usize, indices: usize) {
         // Grow geometrically so a UI that grows over a few frames does not
         // reallocate every frame.
         if self.vertices.is_none() || self.vertex_capacity < vertices {
             self.vertex_capacity = vertices.max(self.vertex_capacity * 2).max(1);
-            self.vertices = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ui::vertices"),
                 size: (self.vertex_capacity * (POSITION_STRIDE + UV_COLOR_STRIDE)) as u64,
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }));
+            });
+            graph
+                .insert(Resource::Buffer(buffer.clone()), &[])
+                .expect("an empty dependency list always resolves");
+            self.vertices = Some(buffer);
         }
         if self.indices.is_none() || self.index_capacity < indices {
             self.index_capacity = indices.max(self.index_capacity * 2).max(1);
-            self.indices = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ui::indices"),
                 size: (self.index_capacity * size_of::<u32>()) as u64,
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
-            }));
+            });
+            graph
+                .insert(Resource::Buffer(buffer.clone()), &[])
+                .expect("an empty dependency list always resolves");
+            self.indices = Some(buffer);
         }
     }
 
-    /// Build the material group for (`id`, `options`) if it does not exist.
-    fn build_material(&mut self, id: &egui::TextureId, options: &egui::TextureOptions) {
-        if self.find_material(id, options).is_some() {
+    /// The material bind group for (`id`, `options`), if it exists.
+    fn material<'a>(
+        &self,
+        graph: &'a ResourceGraph,
+        id: egui::TextureId,
+        options: egui::TextureOptions,
+    ) -> Option<&'a wgpu::BindGroup> {
+        let key = MaterialKey {
+            texture: id,
+            options,
+        };
+        let index = self.materials.iter().position(|(seen, _)| *seen == key)?;
+        graph.get(self.materials[index].1)?.as_bind_group()
+    }
+
+    /// Build the material bind group for (`id`, `options`) if it does not
+    /// exist, registered in the graph as a dependent of its texture's view
+    /// and its sampler.
+    fn build_material(
+        &mut self,
+        graph: &mut ResourceGraph,
+        id: egui::TextureId,
+        options: egui::TextureOptions,
+    ) {
+        let key = MaterialKey {
+            texture: id,
+            options,
+        };
+        if self.materials.iter().any(|(seen, _)| *seen == key) {
             return;
         }
-        // The sampler is cloned out first, so no borrow of `self` is held
-        // while the texture and the layout are borrowed.
-        let sampler = self.sampler(options).clone();
-        let Some(texture) = self.textures.get(id) else {
+        let Some(texture) = self.textures.get(&id).copied() else {
             return;
         };
+        let sampler_id = self.sampler(graph, options);
         let Some(layout) = self.pipeline.material_layout.as_ref() else {
             return;
         };
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let Some(Resource::TextureView(view)) = graph.get(texture) else {
+            return;
+        };
+        let Some(Resource::Sampler(sampler)) = graph.get(sampler_id) else {
+            return;
+        };
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ui::material"),
             layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: BASE_COLOR_TEXTURE_BINDING,
-                    resource: wgpu::BindingResource::TextureView(&view),
+                    resource: wgpu::BindingResource::TextureView(view),
                 },
                 wgpu::BindGroupEntry {
                     binding: BASE_COLOR_SAMPLER_BINDING,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(sampler),
                 },
             ],
         });
-        self.materials.push(Material {
-            texture: *id,
-            options: *options,
-            group,
+        let id = graph
+            .insert(Resource::BindGroup(group), &[texture, sampler_id])
+            .expect("both dependencies were registered");
+        self.materials.push((key, id));
+    }
+
+    /// The sampler for `options`, created and registered on first use.
+    fn sampler(&mut self, graph: &mut ResourceGraph, options: egui::TextureOptions) -> ResourceId {
+        if let Some(&(_, id)) = self.samplers.iter().find(|(seen, _)| *seen == options) {
+            return id;
+        }
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("ui::sampler"),
+            address_mode_u: address_mode(options.wrap_mode),
+            address_mode_v: address_mode(options.wrap_mode),
+            mag_filter: texture_filter(options.magnification),
+            min_filter: texture_filter(options.minification),
+            ..Default::default()
         });
-    }
-
-    fn find_material(
-        &self,
-        id: &egui::TextureId,
-        options: &egui::TextureOptions,
-    ) -> Option<&Material> {
-        self.materials
-            .iter()
-            .find(|material| material.texture == *id && material.options == *options)
-    }
-
-    /// The sampler for `options`, created on first use.
-    fn sampler(&mut self, options: &egui::TextureOptions) -> &wgpu::Sampler {
-        let index = self.samplers.iter().position(|(seen, _)| seen == options);
-        let index = match index {
-            Some(index) => index,
-            None => {
-                let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-                    label: Some("ui::sampler"),
-                    address_mode_u: address_mode(options.wrap_mode),
-                    address_mode_v: address_mode(options.wrap_mode),
-                    mag_filter: texture_filter(options.magnification),
-                    min_filter: texture_filter(options.minification),
-                    ..Default::default()
-                });
-                self.samplers.push((*options, sampler));
-                self.samplers.len() - 1
-            }
-        };
-        &self.samplers[index].1
+        let id = graph
+            .insert(Resource::Sampler(sampler), &[])
+            .expect("an empty dependency list always resolves");
+        self.samplers.push((options, id));
+        id
     }
 
     fn apply_textures(
         &mut self,
-        device: &wgpu::Device,
+        graph: &mut ResourceGraph,
         queue: &wgpu::Queue,
         delta: &egui::TexturesDelta,
     ) {
         for (&id, deltas) in &delta.set {
             for image in deltas {
-                self.upload_texture(device, queue, id, image);
+                self.upload_texture(graph, queue, id, image);
             }
         }
         for &id in &delta.free {
-            self.textures.remove(&id);
-            self.materials.retain(|material| material.texture != id);
+            // Removing the texture drops its view, and with it every
+            // material that samples it — the graph propagates the removal
+            // along the dependency edges.
+            if let Some(view) = self.textures.remove(&id) {
+                graph.remove(view);
+            }
+            // A material whose nodes were removed no longer resolves; drop
+            // its bookkeeping entry so it can be rebuilt if egui reuses the
+            // (texture, options) pair.
+            self.materials.retain(|(key, _)| key.texture != id);
         }
     }
 
     fn upload_texture(
         &mut self,
-        device: &wgpu::Device,
+        graph: &mut ResourceGraph,
         queue: &wgpu::Queue,
         id: egui::TextureId,
         delta: &egui::epaint::ImageDelta,
@@ -475,7 +564,10 @@ impl UiRenderer {
         match delta.pos {
             // A patch written into the texture already there.
             Some([x, y]) => {
-                let Some(texture) = self.textures.get(&id) else {
+                let Some(&texture_id) = self.textures.get(&id) else {
+                    return;
+                };
+                let Some(Resource::Texture(texture)) = graph.get(texture_id) else {
                     return;
                 };
                 queue.write_texture(
@@ -495,7 +587,7 @@ impl UiRenderer {
                 );
             }
             None => {
-                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                let texture = self.device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("ui::texture"),
                     size,
                     mip_level_count: 1,
@@ -506,7 +598,14 @@ impl UiRenderer {
                     view_formats: &[],
                 });
                 queue.write_texture(texture.as_image_copy(), pixels.as_bytes(), layout, size);
-                self.textures.insert(id, texture);
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let texture_id = graph
+                    .insert(Resource::Texture(texture), &[])
+                    .expect("an empty dependency list always resolves");
+                let view_id = graph
+                    .insert(Resource::TextureView(view), &[texture_id])
+                    .expect("the texture was just registered");
+                self.textures.insert(id, view_id);
             }
         }
     }
@@ -517,26 +616,6 @@ fn texture_bytes() -> u32 {
     TEXTURE_FORMAT
         .block_copy_size(None)
         .expect("rgba8 has a known texel size")
-}
-
-/// Shader size of the camera uniform, straight from its layout.
-fn view_size() -> u64 {
-    <View as const_shader_layout::ShaderLayout>::SIZE.get()
-}
-
-/// Shader size of the frame-globals uniform.
-fn globals_size() -> u64 {
-    <Globals as const_shader_layout::ShaderLayout>::SIZE.get()
-}
-
-/// A uniform buffer of `size` bytes, written through the queue.
-fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 fn address_mode(mode: egui::TextureWrapMode) -> wgpu::AddressMode {
@@ -668,8 +747,11 @@ mod tests {
         assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
     }
 
+    /// The conversion flag is deliberately left unset by [`ui_options`] — it
+    /// The conversion flag follows the parameter, since it depends on the
+    /// target's format, not the UI.
     #[test]
-    fn srgb_target_adds_the_output_conversion() {
+    fn srgb_flag_follows_the_parameter() {
         assert!(
             !ui_options(false)
                 .flags

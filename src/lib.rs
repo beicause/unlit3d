@@ -51,7 +51,7 @@
 //!     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
 //!     UnlitPipeline,
 //! };
-//! use wgpu_unlit_render::renderer::{RenderTarget, Renderer, RendererOptions};
+//! use wgpu_unlit_render::render_context::{RenderContext, RendererOptions};
 //! use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
 //! use wgpu_unlit_render::util::busy_wait_block_on;
 //! use zerocopy::IntoBytes;
@@ -86,7 +86,7 @@
 //!         &options,
 //!         COLOR_FORMAT,
 //!         Some(DEPTH_FORMAT),
-//!         RendererOptions::default().sample_count,
+//!         RendererOptions::new(1, 1).sample_count,
 //!     );
 //!
 //!     // 2. Compress the mesh. Positions and UVs become 16-bit normalized
@@ -231,14 +231,15 @@
 //! }
 //!
 //! /// Record one frame into `view` and submit it.
-//! fn draw(&self, view: &wgpu::TextureView, width: u32, height: u32) {
+//! fn draw(&self, view: wgpu::TextureView, width: u32, height: u32) {
 //!     // The renderer owns the multisample and depth attachments and
 //!     // recreates them when the target changes.
-//!     let renderer = Renderer::new(
+//!     let context = RenderContext::new(
 //!         &self.device,
-//!         RenderTarget::new(view, wgpu::TextureFormat::Rgba8UnormSrgb, width, height),
-//!         RendererOptions::default(),
+//!         Some(view),
+//!         RendererOptions::new(width, height),
 //!     );
+//!     let renderer = context.renderer();
 //!
 //!     // One draw: the mesh's bind groups and vertex buffers, and what to
 //!     // draw. Slots are bound by index, so a variant only binds the buffers
@@ -358,7 +359,7 @@
 //!     view_formats: &[],
 //! });
 //! let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-//! example.draw(&view, 256, 192);
+//! example.draw(view, 256, 192);
 //! device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 //! ```
 
@@ -371,6 +372,7 @@ wesl_core::wesl_pkg!(pub shader, "wgpu_unlit_render.rs");
 pub mod globals;
 pub mod mesh;
 pub mod pipeline;
+pub mod render_context;
 pub mod renderer;
 pub mod resources;
 pub mod scene;

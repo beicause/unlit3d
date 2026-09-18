@@ -18,7 +18,7 @@ use wgpu_unlit_render::pipeline::{
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
-use wgpu_unlit_render::renderer::{RenderTarget, Renderer, RendererOptions};
+use wgpu_unlit_render::render_context::{RenderContext, RendererOptions};
 use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
 use zerocopy::IntoBytes;
 
@@ -350,14 +350,18 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
 /// Render `instances` of `fixture`'s mesh and read the frame back.
 fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Frame {
     let target = ColorTarget::new(&ctx.device, "test::target", WIDTH, HEIGHT);
-    let renderer = Renderer::new(
+    let context = RenderContext::new(
         &ctx.device,
-        RenderTarget::new(&target.view, COLOR_FORMAT, WIDTH, HEIGHT),
+        Some(target.view.clone()),
         RendererOptions {
+            color: Some(COLOR_FORMAT),
             depth: Some(DEPTH_FORMAT),
+            width: WIDTH,
+            height: HEIGHT,
             sample_count: fixture.sample_count,
         },
     );
+    let renderer = context.renderer();
 
     // Global group: camera, frame globals and the mesh-metadata array.
     let view = camera(WIDTH as f32 / HEIGHT as f32);

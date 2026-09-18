@@ -7,8 +7,10 @@
 mod common;
 
 use common::*;
-use wgpu_unlit_render::renderer::{RenderTarget, Renderer, RendererOptions};
-use wgpu_unlit_render::ui::UiRenderer;
+use wgpu_unlit_render::globals::Globals;
+use wgpu_unlit_render::render_context::{RenderContext, RendererOptions};
+use wgpu_unlit_render::resources::{Resource, ResourceGraph};
+use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
 
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
@@ -70,48 +72,77 @@ fn render_ui_with(
     pixels_per_point: f32,
     mut contents: impl FnMut(&mut egui::Ui),
 ) -> Frame {
-    let mut ui = UiRenderer::new(&ctx.device, COLOR_FORMAT, SAMPLES);
+    // The caller owns the globals: camera and frame buffers, registered in
+    // the shared ledger, and the bind group binding them.
+    let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
+    let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
+    let mut graph = ResourceGraph::new();
+    let camera_id = graph
+        .insert(Resource::Buffer(camera.clone()), &[])
+        .expect("an empty dependency list always resolves");
+    let globals_id = graph
+        .insert(Resource::Buffer(globals.clone()), &[])
+        .expect("an empty dependency list always resolves");
+    let global_group_id = graph
+        .insert(
+            Resource::BindGroup(global_group(
+                &ctx.device,
+                &camera,
+                &globals,
+                COLOR_FORMAT,
+                SAMPLES,
+            )),
+            &[camera_id, globals_id],
+        )
+        .expect("both dependencies were registered");
+
+    // The test target is sRGB: the UI converts its output to linear light.
+    let ui_opts = ui_options(true);
+    let mut ui = EguiIntegration::new(
+        &ctx.device,
+        global_group_id,
+        &ui_opts,
+        COLOR_FORMAT,
+        SAMPLES,
+    );
     let egui_ctx = egui::Context::default();
     // egui positions its vertices in points, and the projection maps points
     // onto clip space, so the viewport the projection needs is the point size
     // regardless of the pixel density.
     let viewport = [WIDTH as f32, HEIGHT as f32];
     let warm = egui_ctx.run_ui(input(pixels_per_point), &mut contents);
-    ui.update(
-        &ctx.device,
-        &ctx.queue,
-        &egui_ctx,
-        warm,
-        pixels_per_point,
-        viewport,
-    );
+    ui.update(&mut graph, &ctx.queue, &egui_ctx, warm, pixels_per_point);
+    // egui's tessellated points map onto clip space through the caller's
+    // camera uniform, written once: the viewport does not change.
+    use zerocopy::IntoBytes;
+    ctx.queue
+        .write_buffer(&camera, 0, screen_view(viewport).as_bytes());
+    ctx.queue
+        .write_buffer(&globals, 0, Globals::default().as_bytes());
     let output = egui_ctx.run_ui(input(pixels_per_point), &mut contents);
-    ui.update(
-        &ctx.device,
-        &ctx.queue,
-        &egui_ctx,
-        output,
-        pixels_per_point,
-        viewport,
-    );
+    ui.update(&mut graph, &ctx.queue, &egui_ctx, output, pixels_per_point);
 
     let (width, height) = (WIDTH, HEIGHT);
     let target = ColorTarget::new(&ctx.device, "test::ui_target", width, height);
-    let renderer = Renderer::new(
+    let context = RenderContext::new(
         &ctx.device,
-        RenderTarget::new(&target.view, COLOR_FORMAT, width, height),
+        Some(target.view.clone()),
         RendererOptions {
+            color: Some(COLOR_FORMAT),
             depth: Some(wgpu::TextureFormat::Depth32Float),
+            width,
+            height,
             sample_count: SAMPLES,
         },
     );
-
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("test::encoder"),
         });
-    renderer.render(&mut encoder, rgb(CLEAR[0], CLEAR[1], CLEAR[2]), &ui.scene());
+    let scene = ui.scene(&mut graph);
+    let renderer = context.renderer().clone();
+    renderer.render(&mut encoder, rgb(CLEAR[0], CLEAR[1], CLEAR[2]), &scene);
     ctx.queue.submit([encoder.finish()]);
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
@@ -128,6 +159,63 @@ fn render_ui_with(
         width,
         height,
     }
+}
+
+/// A uniform buffer of `size` bytes, written through the queue.
+fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// Shader size of the camera uniform, straight from its layout.
+fn view_size() -> u64 {
+    <wgpu_unlit_render::globals::View as const_shader_layout::ShaderLayout>::SIZE.get()
+}
+
+/// Shader size of the frame-globals uniform.
+fn globals_size() -> u64 {
+    <Globals as const_shader_layout::ShaderLayout>::SIZE.get()
+}
+
+/// The UI's global bind group: camera and frame-globals uniforms.
+///
+/// The layout is the built-in UI pipeline's global layout, built here from
+/// the same options the integration will use — bind group layouts with
+/// identical entries are interchangeable.
+fn global_group(
+    device: &wgpu::Device,
+    camera: &wgpu::Buffer,
+    globals: &wgpu::Buffer,
+    color_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::BindGroup {
+    use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
+
+    let pipeline = UnlitPipeline::new(
+        device,
+        &ui_options(true),
+        color_format,
+        Some(wgpu::TextureFormat::Depth32Float),
+        sample_count,
+    );
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("ui::globals"),
+        layout: &pipeline.global_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: CAMERA_BINDING,
+                resource: camera.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: FRAME_BINDING,
+                resource: globals.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 #[test]

@@ -108,7 +108,7 @@ bitflags::bitflags! {
 ///
 /// [`UnlitOptions::standard`] is the usual starting point: compressed
 /// positions, per-instance transforms and blending off.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct UnlitOptions {
     /// The channels and bindings the variant reads.
     pub flags: UnlitFlags,
