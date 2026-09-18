@@ -53,6 +53,11 @@ mod location {
     pub const BASE_COLOR: u32 = 6;
 }
 
+/// Entry point name of the built-in shader's vertex stage.
+pub const VS_MAIN: &str = "vs_main";
+/// Entry point name of the built-in shader's fragment stage.
+pub const FS_MAIN: &str = "fs_main";
+
 bitflags::bitflags! {
     /// The channels and bindings the built-in shader variant reads.
     ///
@@ -88,6 +93,14 @@ bitflags::bitflags! {
         const VERTEX_INSTANCE = 1 << 5;
         /// Sample a base-color texture from the material group.
         const BASE_COLOR_TEXTURE = 1 << 6;
+        /// The color target is sRGB-aware: it encodes the values written to
+        /// it, so the fragment converts them from sRGB to linear first.
+        ///
+        /// The shader multiplies the caller's colors in whichever space they
+        /// arrive in — premultiplied sRGB for a user-interface pass, say — and
+        /// a target that encodes sRGB would otherwise encode them a second
+        /// time. Alpha is coverage rather than color, so it never converts.
+        const SRGB_TO_LINEAR_OUTPUT = 1 << 7;
     }
 }
 
@@ -121,6 +134,9 @@ impl UnlitOptions {
     /// UVs, vertex colors, a base-color texture and per-instance transforms —
     /// with the renderer's reverse-z depth and no blending.
     ///
+    /// Back faces are culled: the geometry this variant is for is closed
+    /// meshes wound counter-clockwise, whose insides are never meant to show.
+    ///
     /// Every variant must read at least one vertex attribute: one reading
     /// nothing composes a `VertexInput` struct with no members, which is not
     /// valid WGSL.
@@ -131,7 +147,10 @@ impl UnlitOptions {
                 | UnlitFlags::VERTEX_COLOR
                 | UnlitFlags::VERTEX_INSTANCE
                 | UnlitFlags::BASE_COLOR_TEXTURE,
-            primitive: wgpu::PrimitiveState::default(),
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
             depth: wgpu::DepthStencilState {
                 // Replaced with the pass's format when the pipeline is built.
                 format: wgpu::TextureFormat::Depth32Float,
@@ -149,7 +168,7 @@ impl UnlitOptions {
     ///
     /// Every name appears, so the composed variant never sees a name it does
     /// not know.
-    pub fn features(&self) -> [(&'static str, bool); 7] {
+    pub fn features(&self) -> [(&'static str, bool); 8] {
         [
             (
                 "VERTEX_POSITION",
@@ -175,6 +194,10 @@ impl UnlitOptions {
             (
                 "BASE_COLOR_TEXTURE",
                 self.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
+            ),
+            (
+                "SRGB_TO_LINEAR_OUTPUT",
+                self.flags.contains(UnlitFlags::SRGB_TO_LINEAR_OUTPUT),
             ),
         ]
     }
@@ -495,6 +518,10 @@ impl UnlitPipeline {
     /// the format replaces the one [`UnlitOptions::depth`] declares, so the
     /// options carry the comparison and the write mask and the pass carries
     /// the format.
+    ///
+    /// The fragment entry point follows `color_format`: a target that encodes
+    /// sRGB needs its input converted to linear, and the format is the
+    /// authority on whether it does.
     pub fn new(
         device: &wgpu::Device,
         options: &UnlitOptions,
@@ -628,7 +655,7 @@ impl UnlitPipeline {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &module,
-                entry_point: Some("vs_main"),
+                entry_point: Some(VS_MAIN),
                 compilation_options: Default::default(),
                 buffers: &vertex_buffers,
             },
@@ -647,7 +674,7 @@ impl UnlitPipeline {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some("fs_main"),
+                entry_point: Some(FS_MAIN),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
@@ -925,6 +952,35 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             }
         }
         variants
+    }
+
+    /// `SRGB_TO_LINEAR_OUTPUT` decides what the fragment writes: plain values
+    /// for a target that stores what it is given, linear light for one that
+    /// encodes sRGB. Both variants carry the same single entry point.
+    #[test]
+    fn srgb_output_flag_switches_the_conversion() {
+        let composed = |flags: UnlitFlags| {
+            let options = UnlitOptions {
+                flags: UnlitOptions::standard().flags | flags,
+                ..UnlitOptions::standard()
+            };
+            compose_builtin(&options).expect("compose")
+        };
+
+        let plain = composed(UnlitFlags::empty());
+        assert!(plain.contains("fn fs_main"), "one entry point either way");
+        assert!(
+            !plain.contains("srgb_to_linear(color.r)"),
+            "a plain target stores what it is given"
+        );
+
+        let converted = composed(UnlitFlags::SRGB_TO_LINEAR_OUTPUT);
+        // Only RGB converts: alpha is coverage, not color.
+        assert!(converted.contains("srgb_to_linear(color.r)"));
+        assert!(converted.contains("srgb_to_linear(color.g)"));
+        assert!(converted.contains("srgb_to_linear(color.b)"));
+        assert!(converted.contains("color.a"), "alpha passes through");
+        assert!(!converted.contains("srgb_to_linear(color.a)"));
     }
 
     #[test]

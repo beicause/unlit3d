@@ -22,6 +22,9 @@
 //                        without it every vertex is modeled at the origin
 //                        and the base color is white
 //   BASE_COLOR_TEXTURE   sample the material base-color texture
+//   SRGB_TO_LINEAR_OUTPUT  the color target encodes sRGB, so convert the
+//                        fragment's RGB from sRGB to linear before writing;
+//                        alpha is coverage and never converts
 //
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
@@ -137,11 +140,39 @@ public fn vs_main(in: VertexInput) -> VertexOut {
     return out;
 }
 
-@fragment
-public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+/// The premultiplied color of one fragment, before the target's encoding.
+///
+/// `in.color` and the base-color texel are already premultiplied and in the
+/// space the caller supplied, so they multiply directly.
+fn fragment_color(in: VertexOut) -> vec4<f32> {
     var color = in.color;
     @if(BASE_COLOR_TEXTURE) {
         color = color * textureSample(base_color_tex, base_color_sampler, in.uv);
+    }
+    return color;
+}
+
+/// Convert a channel from sRGB (gamma) to linear light.
+fn srgb_to_linear(channel: f32) -> f32 {
+    if channel <= 0.04045 {
+        return channel / 12.92;
+    }
+    return pow((channel + 0.055) / 1.055, 2.4);
+}
+
+@fragment
+public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let color = fragment_color(in);
+    // An sRGB-aware target encodes whatever it is given, so hand it linear
+    // light and let its own encode produce the color the caller asked for.
+    // Only RGB converts: alpha is coverage, not color.
+    @if(SRGB_TO_LINEAR_OUTPUT) {
+        return vec4<f32>(
+            srgb_to_linear(color.r),
+            srgb_to_linear(color.g),
+            srgb_to_linear(color.b),
+            color.a,
+        );
     }
     return color;
 }

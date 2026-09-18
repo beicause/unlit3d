@@ -186,14 +186,16 @@ type MeshData = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>, Vec<u32>);
 /// A unit cube centred on the origin, with UVs and vertex colors that exercise
 /// both decode paths (the unlit shader ignores normals).
 fn cube() -> MeshData {
-    // Per face: outward normal, tangent and bitangent axes.
+    // Per face: outward normal and tangent axis. The bitangent is derived as
+    // normal x tangent, which winds every face counter-clockwise as seen from
+    // outside so it survives back-face culling.
     let faces = [
-        ([-1.0f32, 0.0, 0.0], [0.0f32, 0.0, -1.0], [0.0f32, 1.0, 0.0]),
-        ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
-        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-        ([0.0, 0.0, -1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
-        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]),
+        ([-1.0f32, 0.0, 0.0], [0.0f32, 0.0, 1.0]),
+        ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0]),
+        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]),
+        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
     ];
 
     let mut positions = Vec::new();
@@ -201,15 +203,20 @@ fn cube() -> MeshData {
     let mut colors = Vec::new();
     let mut indices = Vec::new();
 
-    for (normal, tangent, bitangent) in faces {
+    for (normal, tangent) in faces {
         let base = positions.len() as u32;
         let normal = glam::Vec3::from(normal);
         let tangent = glam::Vec3::from(tangent);
-        let bitangent = glam::Vec3::from(bitangent);
+        let bitangent = normal.cross(tangent);
         for (u, v) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            positions.push((normal + tangent * u + bitangent * v).to_array());
+            let position = normal + tangent * u + bitangent * v;
+            positions.push(position.to_array());
             uvs.push([(u + 1.0) * 0.5, (v + 1.0) * 0.5]);
-            colors.push([(u + 1.0) * 0.5, (v + 1.0) * 0.5, 1.0, 1.0]);
+            // Color from the position itself, not the per-face UV: a corner
+            // shared by three faces then carries one color, so the gradients
+            // meet seamlessly across faces.
+            let color = (position + 1.0) * 0.5;
+            colors.push([color.x, color.y, color.z, 1.0]);
         }
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }

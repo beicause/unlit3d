@@ -374,4 +374,5 @@ pub mod pipeline;
 pub mod renderer;
 pub mod resources;
 pub mod scene;
+pub mod ui;
 pub mod util;

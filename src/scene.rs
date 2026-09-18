@@ -23,6 +23,11 @@
 //!
 //! Consecutive draws that bind the same resource skip the redundant
 //! `set_*` call.
+//!
+//! Scissor rectangles are the exception to "a draw is independent": wgpu has
+//! no reset call, so a rectangle set by one draw stays set for every draw
+//! after it in the pass. A scene therefore orders its clipped draws last —
+//! or sets [`MeshDraw::scissor`] on every draw.
 
 use arrayvec::ArrayVec;
 use core::ops::Range;
@@ -32,6 +37,40 @@ pub type BindGroupBinding<'a> = (u32, &'a wgpu::BindGroup);
 
 /// One vertex-buffer slot: the slot index and the buffer slice to bind there.
 pub type VertexBufferBinding<'a> = (u32, wgpu::BufferSlice<'a>);
+
+/// A scissor rectangle, in pixels.
+///
+/// Fragments outside it are discarded, which is how a clipped draw — a
+/// tessellated user-interface primitive, for example — keeps to its clip
+/// rectangle without extra geometry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ScissorRect {
+    /// Left edge, in pixels.
+    pub x: u32,
+    /// Top edge, in pixels.
+    pub y: u32,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
+impl ScissorRect {
+    /// A rectangle covering `width` x `height` pixels from the origin.
+    pub fn new(width: u32, height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    /// Same rectangle, with its origin moved to (`x`, `y`).
+    pub fn at(self, x: u32, y: u32) -> Self {
+        Self { x, y, ..self }
+    }
+}
 
 /// What to draw for one mesh.
 #[derive(Clone, Debug)]
@@ -121,18 +160,27 @@ pub struct MeshDraw<'a> {
     pub vertex_buffers: Vec<VertexBufferBinding<'a>>,
     /// Index buffer and its format, when the draw is indexed.
     pub index_buffer: Option<(wgpu::BufferSlice<'a>, wgpu::IndexFormat)>,
+    /// Pixels outside this rectangle are discarded.
+    ///
+    /// A draw that sets it clips in the rasterizer instead of in the geometry.
+    /// `None` means "leave whatever the pass already has", **not** "cover the
+    /// whole target": wgpu's scissor is pass state with no reset call, so
+    /// once a draw sets one it stays set for every later draw in the pass —
+    /// ordering a clipped draw last is the caller's job.
+    pub scissor: Option<ScissorRect>,
     /// What to draw.
     pub range: DrawRange,
 }
 
 impl<'a> MeshDraw<'a> {
-    /// A mesh draw with no bind groups, no vertex buffers and no index
-    /// buffer; fill in the fields the pipeline needs.
+    /// A mesh draw with no bind groups, no vertex buffers, no index buffer
+    /// and no scissor; fill in the fields the pipeline needs.
     pub fn new(range: DrawRange) -> Self {
         Self {
             bind_groups: Vec::new(),
             vertex_buffers: Vec::new(),
             index_buffer: None,
+            scissor: None,
             range,
         }
     }
@@ -146,6 +194,13 @@ impl<'a> MeshDraw<'a> {
     /// Bind `buffer` at vertex-buffer `slot`.
     pub fn with_vertex_buffer(mut self, slot: u32, buffer: wgpu::BufferSlice<'a>) -> Self {
         self.vertex_buffers.push((slot, buffer));
+        self
+    }
+
+    /// Discard fragments outside `scissor`. It stays set for every draw after
+    /// this one in the pass, so see [`MeshDraw::scissor`].
+    pub fn with_scissor(mut self, scissor: ScissorRect) -> Self {
+        self.scissor = Some(scissor);
         self
     }
 
@@ -291,6 +346,9 @@ impl<'a> Scene<'a> {
                     if let Some((buffer, format)) = &mesh.index_buffer {
                         state.set_index_buffer(pass, *buffer, *format);
                     }
+                    if let Some(scissor) = &mesh.scissor {
+                        state.set_scissor(pass, *scissor);
+                    }
 
                     match &mesh.range {
                         DrawRange::Vertices {
@@ -330,6 +388,7 @@ struct PassState<'a> {
     bind_groups: ArrayVec<(u32, &'a wgpu::BindGroup), MAX_BIND_GROUPS>,
     vertex_buffers: ArrayVec<(u32, wgpu::BufferSlice<'a>), MAX_VERTEX_BUFFERS>,
     index_buffer: Option<(wgpu::BufferSlice<'a>, wgpu::IndexFormat)>,
+    scissor: Option<ScissorRect>,
 }
 
 impl<'a> PassState<'a> {
@@ -398,6 +457,17 @@ impl<'a> PassState<'a> {
         self.index_buffer = Some((buffer, format));
         pass.set_index_buffer(buffer, format);
     }
+
+    /// Narrow rasterization to `scissor`, skipping the call when the pass
+    /// already has that rectangle — a clip rectangle is usually shared by
+    /// many consecutive draws.
+    fn set_scissor(&mut self, pass: &mut wgpu::RenderPass<'_>, scissor: ScissorRect) {
+        if self.scissor == Some(scissor) {
+            return;
+        }
+        self.scissor = Some(scissor);
+        pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+    }
 }
 
 #[cfg(test)]
@@ -439,6 +509,96 @@ mod tests {
     fn base_vertex_is_ignored_for_non_indexed_draws() {
         let range = DrawRange::vertices(0..3).with_base_vertex(9);
         assert!(matches!(range, DrawRange::Vertices { .. }));
+    }
+
+    #[test]
+    fn scissor_rect_builders_compose() {
+        let rect = ScissorRect::new(64, 32).at(8, 16);
+        assert_eq!(
+            rect,
+            ScissorRect {
+                x: 8,
+                y: 16,
+                width: 64,
+                height: 32
+            }
+        );
+        assert_eq!(ScissorRect::new(64, 32), rect.at(0, 0));
+    }
+
+    /// The builders thread through a draw unchanged, so a draw keeps every
+    /// bound resource while adding the scissor.
+    #[test]
+    fn draw_builders_keep_the_scissor() {
+        let draw = MeshDraw::new(DrawRange::indexed(0..6)).with_scissor(ScissorRect::new(8, 8));
+        assert_eq!(draw.scissor, Some(ScissorRect::new(8, 8)));
+        assert!(matches!(
+            draw.range,
+            DrawRange::Indexed { ref indices, .. } if *indices == (0..6)
+        ));
+
+        // A draw that never sets one leaves the pass's rectangle alone.
+        let plain = MeshDraw::new(DrawRange::vertices(0..3));
+        assert_eq!(plain.scissor, None);
+    }
+
+    /// Recording must issue a `set_scissor_rect` for a draw that sets one and
+    /// none for a draw that does not, so a draw never silently inherits the
+    /// previous draw's clip. Verified on a real pass, since wgpu offers no
+    /// way to inspect the commands otherwise.
+    #[test]
+    fn a_scissored_draw_records() {
+        let (device, queue) = crate::util::test_device::device();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test::encoder"),
+        });
+
+        // A pass with no pipeline: recording only needs the scissor call to
+        // be accepted, which is the behaviour under test.
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test::color"),
+            size: wgpu::Extent3d {
+                width: 32,
+                height: 32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("test::pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Discard,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let mut state = PassState::default();
+        state.set_scissor(&mut pass, ScissorRect::new(16, 8).at(4, 2));
+        // The same rectangle again is a no-op: the pass already has it.
+        state.set_scissor(&mut pass, ScissorRect::new(16, 8).at(4, 2));
+        state.set_scissor(&mut pass, ScissorRect::new(16, 8).at(0, 0));
+        drop(pass);
+
+        assert_eq!(state.scissor, Some(ScissorRect::new(16, 8)));
+        queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("poll");
     }
 
     #[test]
