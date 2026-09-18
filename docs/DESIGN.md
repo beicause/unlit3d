@@ -82,7 +82,7 @@ for pipeline in scene.pipelines {
 
 ## 实施计划
 
-- [ ] `wgpu`资源管理、基本的pipeline和mesh绘制API。
+- [x] `wgpu`资源管理、基本的pipeline和mesh绘制API。
 - [ ] 支持`egui`。
 - [ ] 支持skinning和morph targets。
 
