@@ -1,6 +1,6 @@
-# wgpu_unlit_render
+# wgpu_unlit_render和unlit3d
 
-wgpu_unlit_render是基于wgpu的、紧凑的、有主见的、无光照（unlit）3D渲染器。
+`wgpu_unlit_render`是基于`wgpu`的、紧凑的、有主见的、无光照（unlit）3D渲染器。`unlit3d`是基于`wgpu_unlit_render`的完整的、易用的上层API。
 
 目标硬件为WebGPU，并且移动端优先。不支持WebGL、GLES。
 
@@ -81,7 +81,7 @@ for pipeline in scene.pipelines {
 
 ### 上层API
 
-TODO，一些初步想法：
+上层API在`unlit3d`包中实现，并且依赖于`wgpu_unlit_render`。
 
 基本功能：
 - 拓展性和移植性。要将自身视作游戏引擎一部分，考虑架构、拓展性，便于与其他功能如物理、音频等集成。
