@@ -393,6 +393,53 @@ pub const MAX_BIND_GROUPS: usize = 8;
 /// Maximum number of vertex-buffer slots a pass is tracked for.
 pub const MAX_VERTEX_BUFFERS: usize = 16;
 
+/// The render-pass operations [`PassState`] records through.
+///
+/// [`wgpu::RenderPass`] is the production implementation. Tests implement it
+/// with a mock that counts calls, so the state-reuse rules — a `set_*` whose
+/// target is already bound is skipped — can be checked without asking wgpu to
+/// expose its command stream.
+trait RenderPassInterface<'a> {
+    /// Bind `bind_group` at `index`.
+    fn set_bind_group(&mut self, index: u32, bind_group: &'a wgpu::BindGroup);
+    /// Bind `buffer` at vertex-buffer `slot`.
+    fn set_vertex_buffer(&mut self, slot: u32, buffer: wgpu::BufferSlice<'a>);
+    /// Bind the index buffer.
+    fn set_index_buffer(&mut self, buffer: wgpu::BufferSlice<'a>, format: wgpu::IndexFormat);
+    /// Set the scissor rectangle.
+    fn set_scissor_rect(&mut self, scissor: ScissorRect);
+    /// Set the stencil reference.
+    fn set_stencil_reference(&mut self, reference: u32);
+}
+
+impl<'a, 'p> RenderPassInterface<'a> for wgpu::RenderPass<'p> {
+    fn set_bind_group(&mut self, index: u32, bind_group: &'a wgpu::BindGroup) {
+        wgpu::RenderPass::set_bind_group(self, index, bind_group, &[]);
+    }
+
+    fn set_vertex_buffer(&mut self, slot: u32, buffer: wgpu::BufferSlice<'a>) {
+        wgpu::RenderPass::set_vertex_buffer(self, slot, buffer);
+    }
+
+    fn set_index_buffer(&mut self, buffer: wgpu::BufferSlice<'a>, format: wgpu::IndexFormat) {
+        wgpu::RenderPass::set_index_buffer(self, buffer, format);
+    }
+
+    fn set_scissor_rect(&mut self, scissor: ScissorRect) {
+        wgpu::RenderPass::set_scissor_rect(
+            self,
+            scissor.x,
+            scissor.y,
+            scissor.width,
+            scissor.height,
+        );
+    }
+
+    fn set_stencil_reference(&mut self, reference: u32) {
+        wgpu::RenderPass::set_stencil_reference(self, reference);
+    }
+}
+
 /// Which resources the previous draw left bound.
 ///
 /// `wgpu` resources compare by identity, so a plain `==` is the fast
@@ -412,7 +459,7 @@ struct PassState<'a> {
 impl<'a> PassState<'a> {
     fn set_bind_group(
         &mut self,
-        pass: &mut wgpu::RenderPass<'_>,
+        pass: &mut impl RenderPassInterface<'a>,
         index: u32,
         bind_group: &'a wgpu::BindGroup,
     ) {
@@ -432,12 +479,12 @@ impl<'a> PassState<'a> {
             );
             self.bind_groups.push((index, bind_group));
         }
-        pass.set_bind_group(index, bind_group, &[]);
+        pass.set_bind_group(index, bind_group);
     }
 
     fn set_vertex_buffer(
         &mut self,
-        pass: &mut wgpu::RenderPass<'_>,
+        pass: &mut impl RenderPassInterface<'a>,
         slot: u32,
         buffer: wgpu::BufferSlice<'a>,
     ) {
@@ -462,7 +509,7 @@ impl<'a> PassState<'a> {
 
     fn set_index_buffer(
         &mut self,
-        pass: &mut wgpu::RenderPass<'_>,
+        pass: &mut impl RenderPassInterface<'a>,
         buffer: wgpu::BufferSlice<'a>,
         format: wgpu::IndexFormat,
     ) {
@@ -479,17 +526,17 @@ impl<'a> PassState<'a> {
     /// Narrow rasterization to `scissor`, skipping the call when the pass
     /// already has that rectangle — a clip rectangle is usually shared by
     /// many consecutive draws.
-    fn set_scissor(&mut self, pass: &mut wgpu::RenderPass<'_>, scissor: ScissorRect) {
+    fn set_scissor(&mut self, pass: &mut impl RenderPassInterface<'a>, scissor: ScissorRect) {
         if self.scissor == Some(scissor) {
             return;
         }
         self.scissor = Some(scissor);
-        pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+        pass.set_scissor_rect(scissor);
     }
 
     /// Set the stencil reference, skipping the call when the pass already
     /// holds it.
-    fn set_stencil_reference(&mut self, pass: &mut wgpu::RenderPass<'_>, reference: u32) {
+    fn set_stencil_reference(&mut self, pass: &mut impl RenderPassInterface<'a>, reference: u32) {
         if self.stencil_reference == reference {
             return;
         }
@@ -584,123 +631,133 @@ mod tests {
         assert_eq!(plain.stencil_reference, 0);
     }
 
-    /// Recording must issue a `set_scissor_rect` for a draw that sets one and
-    /// none for a draw that does not, so a draw never silently inherits the
-    /// previous draw's clip. Verified on a real pass, since wgpu offers no
-    /// way to inspect the commands otherwise.
-    #[test]
-    fn a_scissored_draw_records() {
-        let (device, queue) = crate::util::test_device::device();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("test::encoder"),
-        });
-
-        // A pass with no pipeline: recording only needs the scissor call to
-        // be accepted, which is the behaviour under test.
-        let color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test::color"),
-            size: wgpu::Extent3d {
-                width: 32,
-                height: 32,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = color.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("test::pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Discard,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-
-        let mut state = PassState::default();
-        state.set_scissor(&mut pass, ScissorRect::new(16, 8).at(4, 2));
-        // The same rectangle again is a no-op: the pass already has it.
-        state.set_scissor(&mut pass, ScissorRect::new(16, 8).at(4, 2));
-        state.set_scissor(&mut pass, ScissorRect::new(16, 8).at(0, 0));
-        drop(pass);
-
-        assert_eq!(state.scissor, Some(ScissorRect::new(16, 8)));
-        queue.submit([encoder.finish()]);
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("poll");
+    /// A mock [`RenderPassInterface`] that records the calls it receives, so a
+    /// test can assert exactly which `set_*` calls `PassState` skipped.
+    /// Recording needs no device and no render pass of its own.
+    #[derive(Default)]
+    struct MockPass {
+        bind_groups: Vec<u32>,
+        vertex_buffers: Vec<u32>,
+        index_buffers: Vec<wgpu::IndexFormat>,
+        scissors: Vec<ScissorRect>,
+        stencil_references: Vec<u32>,
     }
 
-    /// The stencil reference must be set on every draw, so a value an earlier
-    /// draw left behind never leaks into one that does not name it. Verified
-    /// on a real pass, since wgpu offers no way to inspect the commands
-    /// otherwise.
+    impl<'a> RenderPassInterface<'a> for MockPass {
+        fn set_bind_group(&mut self, index: u32, _bind_group: &'a wgpu::BindGroup) {
+            self.bind_groups.push(index);
+        }
+
+        fn set_vertex_buffer(&mut self, slot: u32, _buffer: wgpu::BufferSlice<'a>) {
+            self.vertex_buffers.push(slot);
+        }
+
+        fn set_index_buffer(&mut self, _buffer: wgpu::BufferSlice<'a>, format: wgpu::IndexFormat) {
+            self.index_buffers.push(format);
+        }
+
+        fn set_scissor_rect(&mut self, scissor: ScissorRect) {
+            self.scissors.push(scissor);
+        }
+
+        fn set_stencil_reference(&mut self, reference: u32) {
+            self.stencil_references.push(reference);
+        }
+    }
+
+    /// A repeated scissor rectangle is recorded once; a different one after it
+    /// again — so a draw never silently inherits a stale clip.
     #[test]
-    fn a_stencil_reference_records() {
-        let (device, queue) = crate::util::test_device::device();
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("test::encoder"),
-        });
-
-        // A pass with no pipeline: recording only needs the stencil calls to
-        // be accepted, which is the behaviour under test.
-        let color = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test::color"),
-            size: wgpu::Extent3d {
-                width: 32,
-                height: 32,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = color.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("test::pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &view,
-                depth_slice: None,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                    store: wgpu::StoreOp::Discard,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-
+    fn scissor_calls_are_deduplicated() {
+        let mut pass = MockPass::default();
         let mut state = PassState::default();
+        let first = ScissorRect::new(16, 8).at(4, 2);
+        let second = ScissorRect::new(16, 8).at(0, 0);
+
+        state.set_scissor(&mut pass, first);
+        // The same rectangle again is a no-op: the pass already has it.
+        state.set_scissor(&mut pass, first);
+        state.set_scissor(&mut pass, second);
+
+        assert_eq!(pass.scissors, vec![first, second]);
+        assert_eq!(state.scissor, Some(second));
+    }
+
+    /// The stencil reference is recorded once per distinct value, so a value
+    /// an earlier draw left behind never leaks into one that names none.
+    #[test]
+    fn stencil_reference_calls_are_deduplicated() {
+        let mut pass = MockPass::default();
+        let mut state = PassState::default();
+
         state.set_stencil_reference(&mut pass, 3);
         // The same value again is a no-op: the pass already holds it.
         state.set_stencil_reference(&mut pass, 3);
-        // A later draw that names no reference resets it to zero.
+        // A later draw that names none resets it to zero.
         state.set_stencil_reference(&mut pass, 0);
-        drop(pass);
 
+        assert_eq!(pass.stencil_references, vec![3, 0]);
         assert_eq!(state.stencil_reference, 0);
-        queue.submit([encoder.finish()]);
-        device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .expect("poll");
+    }
+
+    /// Bind groups, vertex buffers and index buffers are recorded once per
+    /// distinct target too. The handles are real — identity is what the
+    /// dedup compares — but the pass is the mock, so the calls are visible.
+    #[test]
+    fn bound_resources_are_deduplicated() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("test::buffer"),
+            size: 64,
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::INDEX
+                | wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("test::layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("test::bind_group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+
+        let mut pass = MockPass::default();
+        let mut state = PassState::default();
+        let slice = buffer.slice(..);
+
+        state.set_bind_group(&mut pass, 0, &bind_group);
+        state.set_bind_group(&mut pass, 0, &bind_group);
+        state.set_bind_group(&mut pass, 3, &bind_group);
+
+        state.set_vertex_buffer(&mut pass, 0, slice);
+        state.set_vertex_buffer(&mut pass, 0, slice);
+        state.set_vertex_buffer(&mut pass, 2, slice);
+
+        state.set_index_buffer(&mut pass, slice, wgpu::IndexFormat::Uint16);
+        state.set_index_buffer(&mut pass, slice, wgpu::IndexFormat::Uint16);
+        state.set_index_buffer(&mut pass, slice, wgpu::IndexFormat::Uint32);
+
+        assert_eq!(pass.bind_groups, vec![0, 3]);
+        assert_eq!(pass.vertex_buffers, vec![0, 2]);
+        assert_eq!(
+            pass.index_buffers,
+            vec![wgpu::IndexFormat::Uint16, wgpu::IndexFormat::Uint32]
+        );
     }
 
     #[test]

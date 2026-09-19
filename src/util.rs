@@ -23,18 +23,14 @@ pub fn busy_wait_block_on<T>(future: impl Future<Output = T>) -> T {
 
 /// Headless device setup shared by the crate's unit tests.
 #[cfg(test)]
-pub(crate) mod test_device {
-    /// A `(device, queue)` pair on whatever backend the machine offers.
+pub(crate) mod test {
+    /// A `(device, queue)` pair on wgpu's noop backend.
     ///
-    /// No adapter filtering: a software backend is fine for validation and
-    /// command-encoding tests.
-    pub(crate) fn device() -> (wgpu::Device, wgpu::Queue) {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let adapter = super::busy_wait_block_on(
-            instance.request_adapter(&wgpu::RequestAdapterOptions::default()),
-        )
-        .expect("an adapter");
-        super::busy_wait_block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
-            .expect("a device")
+    /// The noop backend stubs every GPU operation out — except buffer creation
+    /// and mapping — so it needs no adapter and works everywhere, including
+    /// machines with no GPU at all. That is enough for the unit tests, which
+    /// only exercise validation, resource bookkeeping and command encoding.
+    pub(crate) fn noop_device() -> (wgpu::Device, wgpu::Queue) {
+        wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
     }
 }

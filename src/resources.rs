@@ -370,7 +370,7 @@ mod tests {
     }
 
     fn device() -> wgpu::Device {
-        crate::util::test_device::device().0
+        crate::util::test::noop_device().0
     }
 
     #[test]
