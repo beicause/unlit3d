@@ -1,6 +1,6 @@
 # wgpu_unlit_render
 
-wgpu_unlit_render是基于wgpu的紧凑的、有主见的、无光照（unlit）3D渲染器。
+wgpu_unlit_render是基于wgpu的、紧凑的、有主见的、无光照（unlit）3D渲染器。
 
 目标硬件为WebGPU，并且移动端优先。不支持WebGL、GLES。
 
@@ -20,7 +20,6 @@ wgpu_unlit_render是基于wgpu的紧凑的、有主见的、无光照（unlit）
 - 渲染何时结束是确定性的，便于快照测试。
 
 不支持：
-- 视锥剔除、遮挡剔除，用户需自行剔除。
 - 光照、阴影。
 - 后处理。
 
@@ -80,10 +79,15 @@ for pipeline in scene.pipelines {
 
 作为优化：在循环中，快速比较本次循环设置的资源和上次循环设置的资源是否相等，若相等可避免循环中频繁的状态切换。
 
+### 易用的上层API
+
+采用CPU视锥剔除
+
 ## 实施计划
 
-- [x] `wgpu`资源管理、基本的pipeline和mesh绘制API。
-- [ ] 支持`egui`。
+- [x] `wgpu`资源管理、基本的pipeline和mesh绘制API、unlit管线。
+- [x] 支持`egui`。
+- [x] 易用的上层API
 - [ ] 支持skinning和morph targets。
 
 提示：
