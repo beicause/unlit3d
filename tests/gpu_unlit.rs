@@ -53,8 +53,8 @@ struct GpuMesh {
     /// position stream.
     positions: Option<wgpu::Buffer>,
     /// Slot 1: `Snorm16x2` UVs and/or `Unorm8x4` colors, interleaved by the
-    /// variant's [`MeshUvColorStream`]; `None` when the variant declares no
-    /// channel.
+    /// variant's [`wgpu_unlit_render::mesh::MeshUvColorStream`]; `None` when the
+    /// variant declares no channel.
     uv_color: Option<wgpu::Buffer>,
     /// Index buffer and its index count, when the mesh is drawn indexed.
     indices: Option<(wgpu::Buffer, u32)>,
@@ -290,18 +290,22 @@ struct SceneFixture {
     pipeline: UnlitPipeline,
     mesh: GpuMesh,
     material: Option<wgpu::BindGroup>,
-    /// Sample count the pipeline was compiled for; the render pass must match.
-    sample_count: u32,
+    /// Multisample state the pipeline was compiled for; the render pass's
+    /// attachments must match it.
+    multisample: wgpu::MultisampleState,
 }
 
 /// Build the built-in pipeline for `options`, upload the cube and — when the
 /// variant samples a base-color texture — create its material bind group.
 fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture {
     // The pipeline is built for the test's render target, so its color format
-    // and sample count come from here rather than the options' defaults.
+    // and multisample state come from here rather than the options' defaults.
     let mut options = options.clone();
     options.color_target.format = COLOR_FORMAT;
-    options.sample_count = sample_count;
+    options.multisample = wgpu::MultisampleState {
+        count: sample_count,
+        ..Default::default()
+    };
     let pipeline = UnlitPipeline::new(&ctx.device, &options);
 
     let (positions, uvs, colors, indices) = cube();
@@ -343,7 +347,7 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
         pipeline,
         mesh,
         material,
-        sample_count,
+        multisample: options.multisample,
     }
 }
 
@@ -356,7 +360,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
             depth_stencil: Some(default_depth_stencil_format(&ctx.device)),
             width: WIDTH,
             height: HEIGHT,
-            sample_count: fixture.sample_count,
+            sample_count: fixture.multisample.count,
             transient_depth: true,
         },
     );

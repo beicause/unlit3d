@@ -15,12 +15,12 @@
 //! # use wgpu_unlit_render::ui::{screen_view, ui_options, EguiIntegration};
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
-//! #          color_format: wgpu::TextureFormat, sample_count: u32) {
+//! #          color_format: wgpu::TextureFormat, multisample: wgpu::MultisampleState) {
 //! // The caller owns the globals: a camera uniform (written every frame with
 //! // `screen_view`), a frame-globals uniform, and the bind group binding both.
 //! let mut options = ui_options(device, /* the target encodes sRGB: */ true);
 //! options.color_target.format = color_format;
-//! options.sample_count = sample_count;
+//! options.multisample = multisample;
 //! let pipeline = UnlitPipeline::new(device, &options);
 //! let camera = uniform_buffer(device, "ui::camera");
 //! let globals = uniform_buffer(device, "ui::globals");

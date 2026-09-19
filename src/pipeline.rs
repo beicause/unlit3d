@@ -6,9 +6,8 @@
 //! Each variant contains exactly the bindings and attributes the selected
 //! channels need, so nothing unused reaches the GPU.
 
-use crate::mesh::{CompressedColor, CompressedUv, MeshInfo};
+use crate::mesh::{MeshInfo, MeshUvColorStream};
 use crate::render_attachments::default_depth_stencil_format;
-use wgpu::WriteOnly;
 
 /// Binding slot of the camera uniform in the global bind group.
 pub const CAMERA_BINDING: u32 = 0;
@@ -134,9 +133,12 @@ pub struct UnlitOptions {
     ///
     /// `blend` of `None` writes the fragment output unblended.
     pub color_target: wgpu::ColorTargetState,
-    /// The MSAA sample count the pipeline renders with; `1` disables
-    /// multisampling.
-    pub sample_count: u32,
+    /// The pipeline multisampling state: the sample count it renders with,
+    /// plus the sample mask and alpha-to-coverage settings.
+    ///
+    /// A count of `1` disables multisampling. The state must match the
+    /// render pass attachments.
+    pub multisample: wgpu::MultisampleState,
 }
 
 impl UnlitOptions {
@@ -161,8 +163,9 @@ impl UnlitOptions {
     }
 
     /// The standard variant's device-independent fields: the flags, primitive
-    /// state, color target and sample count, with a placeholder depth-stencil
-    /// format that [`Self::standard`] replaces with the device's default.
+    /// state, color target and multisample state, with a placeholder
+    /// depth-stencil format that [`Self::standard`] replaces with the device's
+    /// default.
     ///
     /// Available crate-wide so tests and builders that have no device can
     /// construct the standard configuration without one.
@@ -189,7 +192,10 @@ impl UnlitOptions {
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             },
-            sample_count: 4,
+            multisample: wgpu::MultisampleState {
+                count: 4,
+                ..Default::default()
+            },
         }
     }
 
@@ -271,252 +277,6 @@ impl core::fmt::Display for ComposeError {
 
 impl std::error::Error for ComposeError {}
 
-/// The optional per-vertex channels of the built-in pipeline's UV-and-color
-/// vertex stream.
-///
-/// Each channel adds one attribute to [`UV_COLOR_SLOT`] in the order UV then
-/// color, so the packed stream matches the shader's declared locations for
-/// any combination. [`Self::write`] compresses the raw attributes and
-/// interleaves them straight into the target buffer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MeshUvColorStream {
-    /// The variant's own channels, narrowed to the three this stream writes:
-    /// [`UnlitFlags::VERTEX_UV`], [`UnlitFlags::UNCOMPRESSED_UV`] and
-    /// [`UnlitFlags::VERTEX_COLOR`].
-    pub flags: UnlitFlags,
-}
-
-impl MeshUvColorStream {
-    /// The stream flags this type reads.
-    ///
-    /// A variant often carries channels belonging to other streams; this mask
-    /// selects the three that belong here, so [`UnlitOptions::uv_color_stream`]
-    /// can hand over the whole set unchanged.
-    const FLAGS: UnlitFlags = UnlitFlags::VERTEX_UV
-        .union(UnlitFlags::UNCOMPRESSED_UV)
-        .union(UnlitFlags::VERTEX_COLOR);
-
-    /// Whether the UV attribute is written.
-    pub fn uv(&self) -> bool {
-        self.flags.contains(UnlitFlags::VERTEX_UV)
-    }
-
-    /// Whether the color attribute is written.
-    pub fn color(&self) -> bool {
-        self.flags.contains(UnlitFlags::VERTEX_COLOR)
-    }
-
-    /// Whether the UV is written full precision rather than compressed to
-    /// `Snorm16x2`.
-    ///
-    /// An uncompressed UV needs no decode parameters, so [`Self::write`]
-    /// leaves the metadata alone.
-    pub fn uncompressed_uv(&self) -> bool {
-        self.flags.contains(UnlitFlags::UNCOMPRESSED_UV)
-    }
-
-    /// Bytes per vertex of the packed stream.
-    pub fn stride(&self) -> u32 {
-        let uv = if self.uv() { self.uv_size() } else { 0 };
-        let color = if self.color() {
-            wgpu::VertexFormat::Unorm8x4.size() as u32
-        } else {
-            0
-        };
-        uv + color
-    }
-
-    /// Bytes the UV attribute occupies in this encoding.
-    fn uv_size(&self) -> u32 {
-        let format = if self.uncompressed_uv() {
-            wgpu::VertexFormat::Float32x2
-        } else {
-            wgpu::VertexFormat::Snorm16x2
-        };
-        format.size() as u32
-    }
-
-    /// Whether the variant declares no attributes at all, in which case the
-    /// slot must be omitted from the vertex-buffer list.
-    pub fn is_empty(&self) -> bool {
-        !self.uv() && !self.color()
-    }
-
-    /// Bytes one `vertex_count`-long stream occupies.
-    pub fn byte_len(&self, vertex_count: usize) -> usize {
-        vertex_count * self.stride() as usize
-    }
-
-    /// Compress the raw `uvs` and `colors` and write the interleaved result
-    /// into `out`, which must be exactly [`Self::byte_len`]`(vertex_count)`
-    /// bytes — normally a mapped-at-creation vertex buffer, so the vertices
-    /// land in GPU memory without an intermediate byte buffer.
-    ///
-    /// `metadata` receives the UV decode parameters the compression derives,
-    /// exactly as [`crate::mesh::compress_uvs`] would.
-    ///
-    /// Nothing is allocated: the compressed values are produced lazily and
-    /// written as they are computed. Use [`Self::write_compressed`] to write
-    /// channels that are already compressed, for example to share one stream
-    /// across several meshes.
-    ///
-    /// # Panics
-    /// If an enabled channel has no matching slice, if the channel lengths
-    /// disagree, or if `out` is not exactly one stream long.
-    pub fn write(
-        &self,
-        uvs: &[[f32; 2]],
-        colors: &[[f32; 4]],
-        metadata: &mut crate::mesh::MeshMetadata,
-        out: WriteOnly<'_, [u8]>,
-    ) {
-        use zerocopy::IntoBytes;
-
-        let vertex_count = self.raw_vertex_count(uvs, colors);
-        assert_eq!(
-            out.len(),
-            self.byte_len(vertex_count),
-            "the target must hold exactly one packed vertex stream"
-        );
-        if vertex_count == 0 {
-            return;
-        }
-
-        // Deriving the UV range is the only pass over the input; the encoding
-        // itself streams straight into `out`. An uncompressed channel is
-        // copied as it is, so it never derives metadata.
-        let (write_uv, write_color) = (self.uv(), self.color());
-        let compress_uv = write_uv && !self.uncompressed_uv();
-        let stride = self.stride() as usize;
-        let mut packed_uvs = compress_uv
-            .then(|| crate::mesh::compress_uvs(uvs, metadata))
-            .into_iter()
-            .flatten();
-        let mut packed_colors = write_color
-            .then(|| crate::mesh::compress_colors(colors))
-            .into_iter()
-            .flatten();
-
-        // Each vertex is assembled as a fixed-size array on the stack and
-        // streamed out.
-        out.write_iter((0..vertex_count).flat_map(move |index| {
-            let mut vertex = [0u8; MAX_UV_COLOR_STRIDE];
-            let mut len = 0;
-            if write_uv {
-                // A compressed UV is produced lazily as a temporary, so it
-                // is copied out while it is still alive; an uncompressed one
-                // is the caller's `f32` pair verbatim.
-                if compress_uv {
-                    let uv = packed_uvs.next().expect("one UV per vertex");
-                    let bytes = uv.as_bytes();
-                    vertex[len..len + bytes.len()].copy_from_slice(bytes);
-                    len += bytes.len();
-                } else {
-                    let bytes = uvs[index].as_bytes();
-                    vertex[len..len + bytes.len()].copy_from_slice(bytes);
-                    len += bytes.len();
-                }
-            }
-            if write_color {
-                let color = packed_colors.next().expect("one color per vertex");
-                let bytes = color.as_bytes();
-                vertex[len..len + bytes.len()].copy_from_slice(bytes);
-                len += bytes.len();
-            }
-            debug_assert_eq!(len, stride);
-            vertex.into_iter().take(len)
-        }));
-    }
-
-    /// Write the already compressed `uvs` and `colors` into `out` as the
-    /// interleaved vertex stream, which must be exactly
-    /// [`Self::byte_len`]`(vertex_count)` bytes.
-    ///
-    /// Takes the packed form produced by [`crate::mesh::compress_uvs`] and
-    /// [`crate::mesh::compress_colors`], so one compressed stream can be
-    /// uploaded for several meshes without recompressing it.
-    ///
-    /// # Panics
-    /// If an enabled channel has no matching slice, if the channel lengths
-    /// disagree, or if `out` is not exactly one stream long.
-    pub fn write_compressed(
-        &self,
-        uvs: &[CompressedUv],
-        colors: &[CompressedColor],
-        out: WriteOnly<'_, [u8]>,
-    ) {
-        use zerocopy::IntoBytes;
-
-        let vertex_count = self.compressed_vertex_count(uvs, colors);
-        assert_eq!(
-            out.len(),
-            self.byte_len(vertex_count),
-            "the target must hold exactly one packed vertex stream"
-        );
-
-        // Each vertex is assembled as a fixed-size array on the stack and
-        // streamed out, so writing never allocates at all.
-        out.write_iter((0..vertex_count).flat_map(move |index| {
-            let mut vertex = [0u8; MAX_UV_COLOR_STRIDE];
-            let mut len = 0;
-            if self.uv() {
-                let bytes = uvs[index].as_bytes();
-                vertex[..bytes.len()].copy_from_slice(bytes);
-                len += bytes.len();
-            }
-            if self.color() {
-                let bytes = colors[index].as_bytes();
-                vertex[len..len + bytes.len()].copy_from_slice(bytes);
-                len += bytes.len();
-            }
-            debug_assert_eq!(len, self.stride() as usize);
-            vertex.into_iter().take(len)
-        }));
-    }
-
-    /// Number of vertices the raw channel slices describe.
-    fn raw_vertex_count(&self, uvs: &[[f32; 2]], colors: &[[f32; 4]]) -> usize {
-        match (self.uv(), self.color()) {
-            (true, true) => {
-                assert_eq!(
-                    uvs.len(),
-                    colors.len(),
-                    "the UV and color streams must describe the same vertices"
-                );
-                uvs.len()
-            }
-            (true, false) => uvs.len(),
-            (false, true) => colors.len(),
-            (false, false) => 0,
-        }
-    }
-
-    /// Number of vertices the compressed channel slices describe.
-    fn compressed_vertex_count(&self, uvs: &[CompressedUv], colors: &[CompressedColor]) -> usize {
-        match (self.uv(), self.color()) {
-            (true, true) => {
-                assert_eq!(
-                    uvs.len(),
-                    colors.len(),
-                    "the UV and color streams must describe the same vertices"
-                );
-                uvs.len()
-            }
-            (true, false) => uvs.len(),
-            (false, true) => colors.len(),
-            (false, false) => 0,
-        }
-    }
-}
-
-/// Bytes per vertex of the widest UV-and-color stream, used to size the
-/// per-vertex scratch the writer assembles on the stack.
-///
-/// The widest encoding the stream can write is an uncompressed UV followed by
-/// the color, so the scratch covers those two attribute formats.
-const MAX_UV_COLOR_STRIDE: usize =
-    wgpu::VertexFormat::Float32x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
-
 /// The built-in unlit pipeline, its layouts and its vertex-buffer
 /// declarations.
 ///
@@ -544,7 +304,7 @@ impl UnlitPipeline {
     ///
     /// `options` carries everything the pipeline is built from: the shader
     /// variant, the color target (its format, blend state and write mask),
-    /// the depth state (including its format) and the sample count, so a
+    /// the depth state (including its format) and the multisample state, so a
     /// pipeline is only ever valid for the target those options describe.
     ///
     /// The fragment entry point follows [`UnlitOptions::color_target`]'s
@@ -680,10 +440,7 @@ impl UnlitPipeline {
             // to declare a matching state; `standard` sets this to the
             // device's default depth-stencil format.
             depth_stencil: Some(options.depth_stencil.clone()),
-            multisample: wgpu::MultisampleState {
-                count: options.sample_count,
-                ..Default::default()
-            },
+            multisample: options.multisample,
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some(FS_MAIN),
@@ -848,7 +605,6 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zerocopy::IntoBytes;
 
     /// A caller composes their own entry shader against the built-in package
     /// with `wesl` directly: [`crate::shader`] is the `StaticPackage` that
@@ -1196,155 +952,6 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 wgpu::VertexStepMode::Vertex
             ))
         );
-    }
-
-    /// Compress raw channels, write them through the mapped-buffer path and
-    /// return the bytes.
-    fn write_stream(
-        stream: MeshUvColorStream,
-        uvs: &[[f32; 2]],
-        colors: &[[f32; 4]],
-        vertex_count: usize,
-        metadata: &mut crate::mesh::MeshMetadata,
-    ) -> Vec<u8> {
-        let mut out = vec![0u8; stream.byte_len(vertex_count)];
-        stream.write(
-            uvs,
-            colors,
-            metadata,
-            WriteOnly::from_mut(out.as_mut_slice()),
-        );
-        out
-    }
-
-    /// Both writers must produce byte-identical streams, since the raw one
-    /// compresses into exactly what the compressed one expects.
-    #[test]
-    fn raw_and_compressed_writers_agree() {
-        let uvs = [[0.0f32, 0.25], [0.5, 1.0], [1.0, 0.0]];
-        let colors = [
-            [0.0f32, 0.25, 0.5, 1.0],
-            [1.0, 0.0, 0.0, 1.0],
-            [0.2, 0.4, 0.6, 0.8],
-        ];
-
-        for stream in [
-            MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR,
-            },
-            MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV,
-            },
-            MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_COLOR,
-            },
-        ] {
-            let mut metadata = crate::mesh::MeshMetadata::default();
-            let from_raw = write_stream(stream, &uvs, &colors, 3, &mut metadata);
-
-            // Compress separately, exactly as a caller sharing one stream
-            // across meshes would.
-            let packed_uvs: Vec<_> = if stream.uv() {
-                crate::mesh::compress_uvs(&uvs, &mut metadata).collect()
-            } else {
-                Vec::new()
-            };
-            let packed_colors: Vec<_> = if stream.color() {
-                crate::mesh::compress_colors(&colors).collect()
-            } else {
-                Vec::new()
-            };
-            let mut from_compressed = vec![0u8; stream.byte_len(3)];
-            stream.write_compressed(
-                &packed_uvs,
-                &packed_colors,
-                WriteOnly::from_mut(from_compressed.as_mut_slice()),
-            );
-
-            assert_eq!(from_raw, from_compressed, "stream {stream:?}");
-            assert_eq!(from_raw.len(), stream.byte_len(3), "stream {stream:?}");
-        }
-    }
-
-    #[test]
-    fn uv_color_stream_interleaves_in_attribute_order() {
-        let uvs = [[0.0f32, 0.0], [1.0, 1.0]];
-        // Colors are linear RGBA in [0, 1]; they quantize to Unorm8.
-        let colors = [[0.0f32, 0.25, 0.5, 1.0], [1.0, 0.0, 0.0, 1.0]];
-        let mut metadata = crate::mesh::MeshMetadata::default();
-
-        let out = write_stream(
-            MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR,
-            },
-            &uvs,
-            &colors,
-            2,
-            &mut metadata,
-        );
-        assert_eq!(out.len(), 2 * 8);
-        // Vertex 0 starts with the UV then the color, matching the shader's
-        // location order 1 then 2. The UV remaps [0, 1] to Snorm16 [-1, 1],
-        // so 0.0 quantizes to -32767 (little-endian) and 1.0 to 32767.
-        let expected_uv = [(-32767i16).to_le_bytes(), (-32767i16).to_le_bytes()].concat();
-        assert_eq!(&out[0..4], &expected_uv[..]);
-        assert_eq!(&out[4..8], &[0, 64, 128, 255]);
-        // The second vertex sits at the far corner of the UV range.
-        assert_eq!(
-            &out[8..12],
-            &[32767i16.to_le_bytes(), 32767i16.to_le_bytes()].concat()
-        );
-
-        // The UV compression still produced the decode parameters.
-        assert_eq!(
-            metadata.uv_min_and_extents,
-            glam::Vec4::new(0.0, 0.0, 1.0, 1.0)
-        );
-
-        // UV only: four bytes per vertex.
-        let out = write_stream(
-            MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV,
-            },
-            &uvs,
-            &[],
-            2,
-            &mut crate::mesh::MeshMetadata::default(),
-        );
-        assert_eq!(out.len(), 2 * 4);
-
-        // Color only: four bytes per vertex, no UV bytes.
-        let out = write_stream(
-            MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_COLOR,
-            },
-            &[],
-            &colors,
-            2,
-            &mut crate::mesh::MeshMetadata::default(),
-        );
-        assert_eq!(out.len(), 2 * 4);
-        assert_eq!(&out[0..4], &[0, 64, 128, 255]);
-    }
-
-    /// An uncompressed UV is copied at full precision: it neither derives
-    /// metadata nor quantizes, so the bytes are the input `f32`s.
-    #[test]
-    fn uncompressed_uv_is_written_at_full_precision() {
-        let uvs = [[0.0f32, 0.0], [0.5, 0.75]];
-        let stream = MeshUvColorStream {
-            flags: UnlitFlags::VERTEX_UV | UnlitFlags::UNCOMPRESSED_UV,
-        };
-        let mut metadata = crate::mesh::MeshMetadata::default();
-        let out = write_stream(stream, &uvs, &[], 2, &mut metadata);
-
-        let stride = wgpu::VertexFormat::Float32x2.size() as usize;
-        assert_eq!(out.len(), 2 * stride);
-        for (vertex, uv) in out.chunks(stride).zip(&uvs) {
-            assert_eq!(vertex, uv.as_bytes());
-        }
-        // No compression happened, so the metadata is untouched.
-        assert_eq!(metadata, crate::mesh::MeshMetadata::default());
     }
 
     /// The instance slot's GPU attribute offsets and stride must match the

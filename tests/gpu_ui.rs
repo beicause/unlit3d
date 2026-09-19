@@ -91,7 +91,10 @@ fn render_ui_with(
     // from its layout, and the UI draws with it.
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
-    ui_opts.sample_count = SAMPLES;
+    ui_opts.multisample = wgpu::MultisampleState {
+        count: SAMPLES,
+        ..Default::default()
+    };
     let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
     let global_group_id = graph
         .insert(
