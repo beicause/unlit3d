@@ -75,19 +75,12 @@
 //! impl Example {
 //! /// Build the pipeline, the geometry and every bind group.
 //! fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Example {
-//!     const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-//!     const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-//!
 //!     // 1. Pick the shader variant. Each flag adds both a shader code path
-//!     //    and the matching vertex attributes / bindings.
+//!     //    and the matching vertex attributes / bindings. The pipeline is
+//!     //    built for `standard`'s target: an `Rgba8UnormSrgb` color format
+//!     //    with 4x MSAA, which is what the render target uses below.
 //!     let options = UnlitOptions::standard();
-//!     let pipeline = UnlitPipeline::new(
-//!         device,
-//!         &options,
-//!         COLOR_FORMAT,
-//!         Some(DEPTH_FORMAT),
-//!         AttachmentsInfo::new(1, 1).sample_count,
-//!     );
+//!     let pipeline = UnlitPipeline::new(device, &options);
 //!
 //!     // 2. Compress the mesh. Positions and UVs become 16-bit normalized
 //!     //    integers relative to a bounding box; the decode parameters go

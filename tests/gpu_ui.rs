@@ -8,6 +8,7 @@ mod common;
 
 use common::*;
 use wgpu_unlit_render::globals::Globals;
+use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
 use wgpu_unlit_render::render_attachments::{AttachmentsInfo, RenderAttachments};
 use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
@@ -83,28 +84,20 @@ fn render_ui_with(
     let globals_id = graph
         .insert(Resource::Buffer(globals.clone()), &[])
         .expect("an empty dependency list always resolves");
+    // The test target is sRGB: the UI converts its output to linear light.
+    // The pipeline is built once and shared: the global bind group is created
+    // from its layout, and the UI draws with it.
+    let mut ui_opts = ui_options(true);
+    ui_opts.color_target.format = COLOR_FORMAT;
+    ui_opts.sample_count = SAMPLES;
+    let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
     let global_group_id = graph
         .insert(
-            Resource::BindGroup(global_group(
-                &ctx.device,
-                &camera,
-                &globals,
-                COLOR_FORMAT,
-                SAMPLES,
-            )),
+            Resource::BindGroup(global_group(&ctx.device, &pipeline, &camera, &globals)),
             &[camera_id, globals_id],
         )
         .expect("both dependencies were registered");
-
-    // The test target is sRGB: the UI converts its output to linear light.
-    let ui_opts = ui_options(true);
-    let mut ui = EguiIntegration::new(
-        &ctx.device,
-        global_group_id,
-        &ui_opts,
-        COLOR_FORMAT,
-        SAMPLES,
-    );
+    let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     // egui positions its vertices in points, and the projection maps points
     // onto clip space, so the viewport the projection needs is the point size
@@ -187,25 +180,14 @@ fn globals_size() -> u64 {
 
 /// The UI's global bind group: camera and frame-globals uniforms.
 ///
-/// The layout is the built-in UI pipeline's global layout, built here from
-/// the same options the integration will use — bind group layouts with
-/// identical entries are interchangeable.
+/// The layout is the built-in UI pipeline's global layout, so the bind group
+/// is created from the shared pipeline ahead of the UI that draws with it.
 fn global_group(
     device: &wgpu::Device,
+    pipeline: &UnlitPipeline,
     camera: &wgpu::Buffer,
     globals: &wgpu::Buffer,
-    color_format: wgpu::TextureFormat,
-    sample_count: u32,
 ) -> wgpu::BindGroup {
-    use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
-
-    let pipeline = UnlitPipeline::new(
-        device,
-        &ui_options(true),
-        color_format,
-        Some(wgpu::TextureFormat::Depth32Float),
-        sample_count,
-    );
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("ui::globals"),
         layout: &pipeline.global_layout,

@@ -18,14 +18,10 @@
 //! #          color_format: wgpu::TextureFormat, sample_count: u32) {
 //! // The caller owns the globals: a camera uniform (written every frame with
 //! // `screen_view`), a frame-globals uniform, and the bind group binding both.
-//! let pipeline = UnlitPipeline::new(
-//!     device,
-//!     // The target here encodes sRGB: the UI converts its output.
-//!     &ui_options(true),
-//!     color_format,
-//!     None,
-//!     sample_count,
-//! );
+//! let mut options = ui_options(/* the target encodes sRGB: */ true);
+//! options.color_target.format = color_format;
+//! options.sample_count = sample_count;
+//! let pipeline = UnlitPipeline::new(device, &options);
 //! let camera = uniform_buffer(device, "ui::camera");
 //! let globals = uniform_buffer(device, "ui::globals");
 //! let global_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -51,8 +47,7 @@
 //!     .insert(Resource::BindGroup(global_group), &[camera_id, globals_id])
 //!     .unwrap();
 //!
-//! let options = ui_options(/* the target encodes sRGB: */ true);
-//! let mut ui = EguiIntegration::new(device, group_id, &options, color_format, sample_count);
+//! let mut ui = EguiIntegration::new(device, group_id, pipeline);
 //! let mut input = egui::RawInput::default();
 //! input.screen_rect = Some(egui::Rect::from_min_size(
 //!     egui::Pos2::ZERO,
@@ -158,7 +153,7 @@ pub fn ui_options(srgb_to_linear_output: bool) -> UnlitOptions {
     options.primitive.cull_mode = None;
     // egui tessellates premultiplied colors, so the source's RGB is added to
     // the destination scaled by the alpha it leaves behind.
-    options.blend = Some(wgpu::BlendState {
+    options.color_target.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
@@ -246,9 +241,13 @@ struct MaterialKey {
 }
 
 impl EguiIntegration {
-    /// Build the UI pipeline for a target of `color_format` and
-    /// `sample_count`, registering the UI's per-texture resources in
-    /// `graph`.
+    /// Build the UI integration around a caller-supplied `pipeline`,
+    /// registering the UI's per-texture resources in `graph`.
+    ///
+    /// `pipeline` is the built-in unlit pipeline the UI draws with, configured
+    /// for the target the pass renders into — its color format, sample count
+    /// and blend state. The caller builds it (and the global bind group from
+    /// its layout) up front, so the UI does not compile a pipeline of its own.
     ///
     /// The global bind group — the camera and frame-globals uniforms — is
     /// the caller's, as is everything else the UI overlays: the integration
@@ -257,25 +256,7 @@ impl EguiIntegration {
     /// [`crate::render_attachments::RenderAttachments`] — means those
     /// resources live in the same ledger as the rest of the frame's, with the
     /// same dependency tracking.
-    pub fn new(
-        device: &wgpu::Device,
-        global_group: ResourceId,
-        options: &UnlitOptions,
-        color_format: wgpu::TextureFormat,
-        sample_count: u32,
-    ) -> Self {
-        let pipeline = UnlitPipeline::new(
-            device,
-            options,
-            color_format,
-            // The UI overlays whatever the pass holds, so it neither tests nor
-            // writes depth — but every pipeline in a pass with a depth
-            // attachment must declare that attachment's format, which `new`
-            // takes from here rather than guessing.
-            Some(wgpu::TextureFormat::Depth32Float),
-            sample_count,
-        );
-
+    pub fn new(device: &wgpu::Device, global_group: ResourceId, pipeline: UnlitPipeline) -> Self {
         Self {
             device: device.clone(),
             pipeline,
@@ -742,7 +723,7 @@ mod tests {
             Some(wgpu::CompareFunction::Always)
         );
         // egui's colors premultiply their own alpha.
-        let blend = options.blend.expect("the UI variant blends");
+        let blend = options.color_target.blend.expect("the UI variant blends");
         assert_eq!(blend.color.src_factor, wgpu::BlendFactor::One);
         assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
     }

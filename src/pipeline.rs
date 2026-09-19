@@ -114,20 +114,21 @@ pub struct UnlitOptions {
     pub flags: UnlitFlags,
     /// How the pipeline assembles and culls primitives.
     pub primitive: wgpu::PrimitiveState,
-    /// The pipeline's depth-stencil state, used when the pipeline is created
-    /// for a pass with a depth attachment.
+    /// The pipeline's depth-stencil state.
     ///
-    /// Its format is overwritten with the format the pass attaches, so only
-    /// the comparison, the write mask and the stencil and bias settings need
-    /// to be chosen here. [`Self::standard`] is the renderer's reverse-z
-    /// convention: depth is cleared to the far plane (see
+    /// [`Self::standard`] is the renderer's reverse-z convention: depth is
+    /// cleared to the far plane (see
     /// [`crate::render_attachments::RenderAttachments::depth_clear`]), so
     /// nearer geometry carries the greater value.
     pub depth: wgpu::DepthStencilState,
-    /// How the pipeline blends its output into the color target.
+    /// The color target the pipeline writes: its format, blend state and
+    /// write mask.
     ///
-    /// `None` writes the fragment output unblended.
-    pub blend: Option<wgpu::BlendState>,
+    /// `blend` of `None` writes the fragment output unblended.
+    pub color_target: wgpu::ColorTargetState,
+    /// The MSAA sample count the pipeline renders with; `1` disables
+    /// multisampling.
+    pub sample_count: u32,
 }
 
 impl UnlitOptions {
@@ -153,14 +154,18 @@ impl UnlitOptions {
                 ..Default::default()
             },
             depth: wgpu::DepthStencilState {
-                // Replaced with the pass's format when the pipeline is built.
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             },
-            blend: None,
+            color_target: wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+            sample_count: 4,
         }
     }
 
@@ -513,23 +518,15 @@ impl UnlitPipeline {
     /// Compose the built-in `unlit.wesl` for `options` and build the
     /// pipeline.
     ///
-    /// `color_format` and `sample_count` must match the render target the
-    /// pipeline will be used with; `depth_format` must match its depth
-    /// attachment, or be `None` for a pass without depth. When it is `Some`,
-    /// the format replaces the one [`UnlitOptions::depth`] declares, so the
-    /// options carry the comparison and the write mask and the pass carries
-    /// the format.
+    /// `options` carries everything the pipeline is built from: the shader
+    /// variant, the color target (its format, blend state and write mask),
+    /// the depth state (including its format) and the sample count, so a
+    /// pipeline is only ever valid for the target those options describe.
     ///
-    /// The fragment entry point follows `color_format`: a target that encodes
-    /// sRGB needs its input converted to linear, and the format is the
-    /// authority on whether it does.
-    pub fn new(
-        device: &wgpu::Device,
-        options: &UnlitOptions,
-        color_format: wgpu::TextureFormat,
-        depth_format: Option<wgpu::TextureFormat>,
-        sample_count: u32,
-    ) -> Self {
+    /// The fragment entry point follows [`UnlitOptions::color_target`]'s
+    /// format: a target that encodes sRGB needs its input converted to
+    /// linear, and the format is the authority on whether it does.
+    pub fn new(device: &wgpu::Device, options: &UnlitOptions) -> Self {
         let wgsl = compose_builtin(options).expect("the built-in unlit shader composes");
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgpu_unlit_render::unlit"),
@@ -662,26 +659,18 @@ impl UnlitPipeline {
             },
             primitive,
             // A pass with a depth attachment requires every pipeline it uses
-            // to declare a matching state, so the pass's format replaces the
-            // one the options carry and their comparison and write mask are
-            // kept.
-            depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
-                format,
-                ..options.depth.clone()
-            }),
+            // to declare a matching state, so the format lives in the options
+            // alongside the comparison and the write mask.
+            depth_stencil: Some(options.depth.clone()),
             multisample: wgpu::MultisampleState {
-                count: sample_count,
+                count: options.sample_count,
                 ..Default::default()
             },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some(FS_MAIN),
                 compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: options.blend,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(options.color_target.clone())],
             }),
             multiview_mask: None,
             cache: None,

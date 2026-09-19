@@ -296,19 +296,18 @@ struct SceneFixture {
 /// Build the built-in pipeline for `options`, upload the cube and — when the
 /// variant samples a base-color texture — create its material bind group.
 fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture {
-    let pipeline = UnlitPipeline::new(
-        &ctx.device,
-        options,
-        COLOR_FORMAT,
-        Some(DEPTH_FORMAT),
-        sample_count,
-    );
+    // The pipeline is built for the test's render target, so its color format
+    // and sample count come from here rather than the options' defaults.
+    let mut options = options.clone();
+    options.color_target.format = COLOR_FORMAT;
+    options.sample_count = sample_count;
+    let pipeline = UnlitPipeline::new(&ctx.device, &options);
 
     let (positions, uvs, colors, indices) = cube();
     let mesh = GpuMesh::upload(
         ctx,
         "test::cube",
-        options,
+        &options,
         &positions,
         &uvs,
         &colors,
