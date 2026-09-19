@@ -1,10 +1,6 @@
-[package]
-name = "wgpu_unlit_render"
-edition.workspace = true
-license.workspace = true
-
 [workspace]
-members = []
+resolver = "3"
+members = ["crates/wgpu_unlit_render"]
 
 [workspace.package]
 edition = "2024"
@@ -13,29 +9,3 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.clippy]
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
-
-[dependencies]
-arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
-bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
-const_shader_layout = { version = "0.4.2", default-features = false, features = ["derive", "glam", "std"] }
-egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
-glam = { version = "0.33", default-features = false, features = ["std", "zerocopy"] }
-hashbrown = { version = "0.17.1", default-features = false, features = ["default"] }
-petgraph = { version = "0.8.3", default-features = false, features = ["graphmap", "matrix_graph", "stable_graph", "std"] }
-smallvec = { version = "1.16.1", default-features = false }
-wesl = { version = "0.5.0", default-features = false }
-wesl-core = { version = "0.1.0", default-features = false }
-wgpu = { version = "30.0.1", default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
-zerocopy = { version = "0.8.56", default-features = false, features = ["alloc", "std"] }
-zerocopy-derive = { version = "0.8.56", default-features = false }
-
-[dev-dependencies]
-fast-ssim2 = { version = "0.8", default-features = false }  # SSIMULACRA2 perceptual image scoring for GPU snapshots.
-image = { version = "0.25", default-features = false, features = ["webp"] }
-wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
-
-[build-dependencies]
-wesl = { version = "0.5.0", default-features = false, features = ["package"] }
-
-[lints]
-workspace = true

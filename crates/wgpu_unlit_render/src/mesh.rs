@@ -216,7 +216,7 @@ fn encode_scale2(extents: glam::Vec2) -> glam::Vec2 {
 ///
 /// The parameters are the bounding box the compression needs: positions
 /// encode to `[-1, 1]` relative to it, which is what
-/// [`mesh_compression.wesl`](../../shaders/mesh_compression.wesl) reverses.
+/// [`mesh_compression.wesl`](../shaders/mesh_compression.wesl) reverses.
 ///
 /// # Panics
 /// If `positions` is empty.
