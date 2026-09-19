@@ -16,8 +16,8 @@
 //!   the compact vertex formats usable in a shader.
 //! - [`scene`]: the declarative description of a frame — pipelines, their
 //!   bindings, materials, meshes and vertex buffers.
-//! - [`renderer`]: the render target configuration and the single-pass
-//!   recorder that turns a [`scene::Scene`] into wgpu commands.
+//! - [`render_attachments`]: the attachments a pass renders into and the
+//!   pass-opening entry point.
 //! - [`pipeline`]: the built-in unlit pipeline and the WESL composition that
 //!   produces its shader module.
 //!
@@ -51,7 +51,7 @@
 //!     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
 //!     UnlitPipeline,
 //! };
-//! use wgpu_unlit_render::render_context::{RenderContext, RendererOptions};
+//! use wgpu_unlit_render::render_attachments::{RenderAttachments, AttachmentsInfo};
 //! use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
 //! use wgpu_unlit_render::util::busy_wait_block_on;
 //! use zerocopy::IntoBytes;
@@ -86,7 +86,7 @@
 //!         &options,
 //!         COLOR_FORMAT,
 //!         Some(DEPTH_FORMAT),
-//!         RendererOptions::new(1, 1).sample_count,
+//!         AttachmentsInfo::new(1, 1).sample_count,
 //!     );
 //!
 //!     // 2. Compress the mesh. Positions and UVs become 16-bit normalized
@@ -230,16 +230,16 @@
 //!     }
 //! }
 //!
-//! /// Record one frame into `view` and submit it.
-//! fn draw(&self, view: wgpu::TextureView, width: u32, height: u32) {
-//!     // The renderer owns the multisample and depth attachments and
-//!     // recreates them when the target changes.
-//!     let context = RenderContext::new(
+//! /// Record one frame and submit it.
+//! fn draw(&self, width: u32, height: u32) {
+//!     // The attachment set owns every attachment — the color target, the
+//!     // multisample and depth textures — and recreates them when the target
+//!     // changes. Recording the pass is the caller's: load ops are chosen
+//!     // per pass.
+//!     let attachments = RenderAttachments::new(
 //!         &self.device,
-//!         Some(view),
-//!         RendererOptions::new(width, height),
+//!         AttachmentsInfo::new(width, height),
 //!     );
-//!     let renderer = context.renderer();
 //!
 //!     // One draw: the mesh's bind groups and vertex buffers, and what to
 //!     // draw. Slots are bound by index, so a variant only binds the buffers
@@ -267,7 +267,14 @@
 //!         .device
 //!         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 //!     // Everything the scene draws happens in this one pass.
-//!     renderer.render(&mut encoder, wgpu::Color::BLACK, &scene);
+//!     {
+//!         let mut pass = attachments.begin_pass(
+//!             &mut encoder,
+//!             Some(wgpu::Color::BLACK),
+//!             Some(attachments.depth_clear()),
+//!         );
+//!         scene.record(&mut pass);
+//!     }
 //!     self.queue.submit([encoder.finish()]);
 //! }
 //! # }
@@ -348,18 +355,7 @@
 //! #         .expect("a device");
 //! let example = Example::new(&device, &queue);
 //!
-//! let target = device.create_texture(&wgpu::TextureDescriptor {
-//!     label: Some("frame"),
-//!     size: wgpu::Extent3d { width: 256, height: 192, depth_or_array_layers: 1 },
-//!     mip_level_count: 1,
-//!     sample_count: 1,
-//!     dimension: wgpu::TextureDimension::D2,
-//!     format: wgpu::TextureFormat::Rgba8UnormSrgb,
-//!     usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-//!     view_formats: &[],
-//! });
-//! let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-//! example.draw(view, 256, 192);
+//! example.draw(256, 192);
 //! device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 //! ```
 
@@ -372,8 +368,7 @@ wesl_core::wesl_pkg!(pub shader, "wgpu_unlit_render.rs");
 pub mod globals;
 pub mod mesh;
 pub mod pipeline;
-pub mod render_context;
-pub mod renderer;
+pub mod render_attachments;
 pub mod resources;
 pub mod scene;
 pub mod ui;

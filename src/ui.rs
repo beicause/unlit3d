@@ -205,11 +205,11 @@ struct UiDraw {
 /// Draws tessellated egui output with the built-in unlit pipeline.
 ///
 /// The UI's GPU resources are registered in a [`ResourceGraph`] the caller
-/// supplies — normally the one inside a
-/// [`RenderContext`](crate::render_context::RenderContext) — so the whole
-/// frame shares one ledger. Every method that touches the graph takes it as
-/// an argument: the renderer holds only the bookkeeping (ids, keys) that
-/// maps egui's world onto graph nodes.
+/// supplies — normally the one kept alongside the
+/// [`RenderAttachments`](crate::render_attachments::RenderAttachments) — so
+/// the whole frame shares one ledger. Every method that touches the graph
+/// takes it as an argument: the renderer holds only the bookkeeping (ids,
+/// keys) that maps egui's world onto graph nodes.
 pub struct EguiIntegration {
     /// Kept to build the resources a frame turns out to need.
     device: wgpu::Device,
@@ -253,10 +253,10 @@ impl EguiIntegration {
     /// The global bind group — the camera and frame-globals uniforms — is
     /// the caller's, as is everything else the UI overlays: the integration
     /// owns only egui's textures and the geometry they are drawn with.
-    /// Sharing the caller's graph — usually the one inside a
-    /// [`crate::render_context::RenderContext`] — means those resources live
-    /// in the same ledger as the rest of the frame's, with the same
-    /// dependency tracking.
+    /// Sharing the caller's graph — usually the one kept alongside the
+    /// [`crate::render_attachments::RenderAttachments`] — means those
+    /// resources live in the same ledger as the rest of the frame's, with the
+    /// same dependency tracking.
     pub fn new(
         device: &wgpu::Device,
         global_group: ResourceId,

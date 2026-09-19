@@ -120,8 +120,9 @@ pub struct UnlitOptions {
     /// Its format is overwritten with the format the pass attaches, so only
     /// the comparison, the write mask and the stencil and bias settings need
     /// to be chosen here. [`Self::standard`] is the renderer's reverse-z
-    /// convention: the pass clears depth to [`crate::renderer::DEPTH_CLEAR`],
-    /// so nearer geometry carries the greater value.
+    /// convention: depth is cleared to the far plane (see
+    /// [`crate::render_attachments::RenderAttachments::depth_clear`]), so
+    /// nearer geometry carries the greater value.
     pub depth: wgpu::DepthStencilState,
     /// How the pipeline blends its output into the color target.
     ///

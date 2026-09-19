@@ -8,7 +8,7 @@ mod common;
 
 use common::*;
 use wgpu_unlit_render::globals::Globals;
-use wgpu_unlit_render::render_context::{RenderContext, RendererOptions};
+use wgpu_unlit_render::render_attachments::{AttachmentsInfo, RenderAttachments};
 use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
 
@@ -123,39 +123,43 @@ fn render_ui_with(
     ui.update(&mut graph, &ctx.queue, &egui_ctx, output, pixels_per_point);
 
     let (width, height) = (WIDTH, HEIGHT);
-    let target = ColorTarget::new(&ctx.device, "test::ui_target", width, height);
-    let context = RenderContext::new(
+    let context = RenderAttachments::new(
         &ctx.device,
-        Some(target.view.clone()),
-        RendererOptions {
+        AttachmentsInfo {
             color: Some(COLOR_FORMAT),
             depth: Some(wgpu::TextureFormat::Depth32Float),
             width,
             height,
             sample_count: SAMPLES,
+            transient_depth: true,
         },
     );
+    // Readback comes from the context's own color texture.
+    let target = context
+        .color_texture()
+        .expect("a color pass has a color texture")
+        .clone();
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("test::encoder"),
         });
     let scene = ui.scene(&mut graph);
-    let renderer = context.renderer().clone();
-    renderer.render(&mut encoder, rgb(CLEAR[0], CLEAR[1], CLEAR[2]), &scene);
+    {
+        let mut pass = context.begin_pass(
+            &mut encoder,
+            Some(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            Some(context.depth_clear()),
+        );
+        scene.record(&mut pass);
+    }
     ctx.queue.submit([encoder.finish()]);
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll");
 
     Frame {
-        rgba: read_texture_bytes(
-            ctx,
-            &target.texture,
-            width,
-            height,
-            texel_bytes(&target.texture),
-        ),
+        rgba: read_texture_bytes(ctx, &target, width, height, texel_bytes(&target)),
         width,
         height,
     }

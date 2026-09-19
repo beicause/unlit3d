@@ -1,7 +1,11 @@
 //! Dependency-tracked GPU resource graph.
 //!
 //! The graph is the renderer's single source of truth for the wgpu resources a
-//! frame uses. Resources are plain wgpu handles — the graph does not wrap
+//! frame draws with — textures and their views, samplers, buffers and bind
+//! groups. Pipeline objects (shader modules, layouts, pipelines) are not
+//! tracked: they are immutable once built, and the render pipelines this
+//! crate builds are cached by their variant rather than rebuilt from
+//! dependencies. Resources are plain wgpu handles — the graph does not wrap
 //! them — but it remembers which resource was built from which, so that
 //! derived resources can be rebuilt when their inputs change:
 //!
@@ -16,11 +20,11 @@
 //! existing buffer does not dirty anything, reallocating it does, and only the
 //! resources that actually consumed the old handle are affected.
 
-use hashbrown::HashSet;
+use smallvec::SmallVec;
 
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
-use petgraph::visit::Dfs;
+use petgraph::visit::{Dfs, DfsPostOrder, Topo};
 
 /// Handle to a resource stored in a [`ResourceGraph`].
 ///
@@ -44,16 +48,8 @@ pub enum Resource {
     TextureView(wgpu::TextureView),
     /// A sampler.
     Sampler(wgpu::Sampler),
-    /// A shader module.
-    ShaderModule(wgpu::ShaderModule),
-    /// A bind group layout.
-    BindGroupLayout(wgpu::BindGroupLayout),
-    /// A pipeline layout.
-    PipelineLayout(wgpu::PipelineLayout),
     /// A bind group.
     BindGroup(wgpu::BindGroup),
-    /// A render pipeline.
-    RenderPipeline(wgpu::RenderPipeline),
 }
 
 impl Resource {
@@ -64,11 +60,7 @@ impl Resource {
             Self::Texture(_) => "texture",
             Self::TextureView(_) => "texture view",
             Self::Sampler(_) => "sampler",
-            Self::ShaderModule(_) => "shader module",
-            Self::BindGroupLayout(_) => "bind group layout",
-            Self::PipelineLayout(_) => "pipeline layout",
             Self::BindGroup(_) => "bind group",
-            Self::RenderPipeline(_) => "render pipeline",
         }
     }
 
@@ -104,42 +96,10 @@ impl Resource {
         }
     }
 
-    /// The shader module handle, if this resource is a shader module.
-    pub fn as_shader_module(&self) -> Option<&wgpu::ShaderModule> {
-        match self {
-            Self::ShaderModule(module) => Some(module),
-            _ => None,
-        }
-    }
-
-    /// The bind group layout handle, if this resource is a bind group layout.
-    pub fn as_bind_group_layout(&self) -> Option<&wgpu::BindGroupLayout> {
-        match self {
-            Self::BindGroupLayout(layout) => Some(layout),
-            _ => None,
-        }
-    }
-
-    /// The pipeline layout handle, if this resource is a pipeline layout.
-    pub fn as_pipeline_layout(&self) -> Option<&wgpu::PipelineLayout> {
-        match self {
-            Self::PipelineLayout(layout) => Some(layout),
-            _ => None,
-        }
-    }
-
     /// The bind group handle, if this resource is a bind group.
     pub fn as_bind_group(&self) -> Option<&wgpu::BindGroup> {
         match self {
             Self::BindGroup(bind_group) => Some(bind_group),
-            _ => None,
-        }
-    }
-
-    /// The render pipeline handle, if this resource is a render pipeline.
-    pub fn as_render_pipeline(&self) -> Option<&wgpu::RenderPipeline> {
-        match self {
-            Self::RenderPipeline(pipeline) => Some(pipeline),
             _ => None,
         }
     }
@@ -169,33 +129,9 @@ impl From<wgpu::Sampler> for Resource {
     }
 }
 
-impl From<wgpu::ShaderModule> for Resource {
-    fn from(value: wgpu::ShaderModule) -> Self {
-        Self::ShaderModule(value)
-    }
-}
-
-impl From<wgpu::BindGroupLayout> for Resource {
-    fn from(value: wgpu::BindGroupLayout) -> Self {
-        Self::BindGroupLayout(value)
-    }
-}
-
-impl From<wgpu::PipelineLayout> for Resource {
-    fn from(value: wgpu::PipelineLayout) -> Self {
-        Self::PipelineLayout(value)
-    }
-}
-
 impl From<wgpu::BindGroup> for Resource {
     fn from(value: wgpu::BindGroup) -> Self {
         Self::BindGroup(value)
-    }
-}
-
-impl From<wgpu::RenderPipeline> for Resource {
-    fn from(value: wgpu::RenderPipeline) -> Self {
-        Self::RenderPipeline(value)
     }
 }
 
@@ -217,6 +153,10 @@ struct Node {
     /// Set when this resource or one of its dependencies was replaced.
     dirty: bool,
 }
+
+/// Direct dependencies `rebuild_dirty` collects on the stack; beyond this,
+/// they spill onto the heap.
+const MAX_DIRECT_DEPENDENCIES: usize = 8;
 
 /// A directed acyclic graph of wgpu resources.
 ///
@@ -291,21 +231,20 @@ impl ResourceGraph {
     /// The removed resources are returned in dependency order (dependencies
     /// first), so the last entries are the roots of the removed subtree.
     pub fn remove(&mut self, id: ResourceId) -> Vec<Resource> {
-        let mut doomed = self.dependents(id);
-        doomed.insert(id);
-        // Remove in reverse topological order so that no edge is left
-        // dangling while the graph is being mutated.
-        let order = self.topological_order();
+        // The doomed set: the resource and everything built from it. Collect
+        // the ids first, since the removal mutates the graph the DFS walks.
+        let mut doomed: Vec<_> = self.dependents(id).collect();
+        doomed.push(id);
+        // A post-order DFS from the root yields each doomed node after the
+        // nodes it was built from, so removing as we go never leaves a
+        // dangling edge mid-removal.
+        let mut dfs = DfsPostOrder::new(&self.graph, id.0);
         let mut removed = Vec::with_capacity(doomed.len());
-        for candidate in order.into_iter().rev() {
-            if doomed.contains(&candidate)
-                && let Some(node) = self.graph.remove_node(candidate.0)
-            {
-                removed.push(node.resource);
+        while let Some(node) = dfs.next(&self.graph) {
+            if let Some(node_weight) = self.graph.remove_node(node) {
+                removed.push(node_weight.resource);
             }
         }
-        // `remove_node` keeps surviving edges, so nothing else to fix up.
-        removed.reverse();
         removed
     }
 
@@ -327,47 +266,44 @@ impl ResourceGraph {
         }
     }
 
-    /// Every resource transitively built from `id`, in dependency order and
-    /// excluding `id` itself.
-    pub fn dependents(&self, id: ResourceId) -> HashSet<ResourceId> {
-        let mut found = HashSet::new();
-        if self.graph.node_weight(id.0).is_none() {
-            return found;
-        }
-        let mut dfs = Dfs::new(&self.graph, id.0);
-        while let Some(node) = dfs.next(&self.graph) {
-            if node != id.0 {
-                found.insert(ResourceId(node));
+    /// Every resource transitively built from `id`, excluding `id` itself.
+    ///
+    /// The iteration order is unspecified; nothing allocates.
+    pub fn dependents(&self, id: ResourceId) -> impl Iterator<Item = ResourceId> + '_ {
+        let graph = &self.graph;
+        let mut dfs = Dfs::new(graph, id.0);
+        core::iter::from_fn(move || {
+            loop {
+                let node = dfs.next(graph)?;
+                if node != id.0 {
+                    return Some(ResourceId(node));
+                }
             }
-        }
-        found
+        })
     }
 
     /// The immediate dependencies recorded for `id`.
-    pub fn dependencies(&self, id: ResourceId) -> Vec<ResourceId> {
+    pub fn dependencies(&self, id: ResourceId) -> impl Iterator<Item = ResourceId> + '_ {
         self.graph
             .neighbors_directed(id.0, petgraph::Direction::Incoming)
             .map(ResourceId)
-            .collect()
     }
 
     /// Every dirty resource, in dependency order (a resource always follows
     /// the resources it was built from).
-    pub fn dirty(&self) -> Vec<ResourceId> {
-        self.topological_order()
-            .into_iter()
-            .filter(|id| self.is_dirty(*id))
-            .collect()
-    }
-
-    /// All resources, in dependency order.
-    pub fn topological_order(&self) -> Vec<ResourceId> {
-        // `StableDiGraph` cannot contain a cycle here because edges are only
-        // ever added from existing nodes to a brand-new node, but stay
-        // defensive: fall back to node order if that ever changes.
-        petgraph::algo::toposort(&self.graph, None)
-            .map(|order| order.into_iter().map(ResourceId).collect())
-            .unwrap_or_else(|_| self.graph.node_indices().map(ResourceId).collect())
+    pub fn dirty(&self) -> impl Iterator<Item = ResourceId> + '_ {
+        let graph = &self.graph;
+        // The graph is acyclic by construction, so the traversal visits
+        // every node and the order is a true topological order.
+        let mut topo = Topo::new(graph);
+        core::iter::from_fn(move || {
+            loop {
+                let node = topo.next(graph)?;
+                if graph.node_weight(node).is_some_and(|node| node.dirty) {
+                    return Some(ResourceId(node));
+                }
+            }
+        })
     }
 
     /// Rebuild every dirty resource by calling `rebuild` in dependency order.
@@ -383,12 +319,16 @@ impl ResourceGraph {
     where
         F: FnMut(ResourceId, &Resource, &[Resource]) -> Option<Resource>,
     {
-        for id in self.dirty() {
-            let dependencies = self
+        // Iterate over a materialized dirty list: `rebuild` mutates the
+        // graph, which would corrupt a lazy traversal over it.
+        let dirty: Vec<_> = self.dirty().collect();
+        for id in dirty {
+            // Dependency handles are cheap reference-counted clones, so the
+            // common case — a handful of dependencies — stays on the stack.
+            let dependencies: SmallVec<[Resource; MAX_DIRECT_DEPENDENCIES]> = self
                 .dependencies(id)
-                .into_iter()
                 .filter_map(|dependency| self.get(dependency).cloned())
-                .collect::<Vec<_>>();
+                .collect();
             let Some(current) = self.get(id) else {
                 continue;
             };
@@ -403,9 +343,12 @@ impl ResourceGraph {
     }
 
     fn mark_dependents_dirty(&mut self, id: ResourceId) {
-        for dependent in self.dependents(id) {
-            if let Some(node) = self.graph.node_weight_mut(dependent.0) {
-                node.dirty = true;
+        let mut dfs = Dfs::new(&self.graph, id.0);
+        while let Some(node) = dfs.next(&self.graph) {
+            if node != id.0
+                && let Some(node_weight) = self.graph.node_weight_mut(node)
+            {
+                node_weight.dirty = true;
             }
         }
     }
@@ -451,7 +394,7 @@ mod tests {
         assert!(graph.is_dirty(middle));
         assert!(graph.is_dirty(leaf));
         // Dependency order: base before middle before leaf.
-        assert_eq!(graph.dirty(), vec![base, middle, leaf]);
+        assert_eq!(graph.dirty().collect::<Vec<_>>(), vec![base, middle, leaf]);
     }
 
     #[test]

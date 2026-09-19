@@ -18,7 +18,7 @@ use wgpu_unlit_render::pipeline::{
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
-use wgpu_unlit_render::render_context::{RenderContext, RendererOptions};
+use wgpu_unlit_render::render_attachments::{AttachmentsInfo, RenderAttachments};
 use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
 use zerocopy::IntoBytes;
 
@@ -349,19 +349,22 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
 
 /// Render `instances` of `fixture`'s mesh and read the frame back.
 fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Frame {
-    let target = ColorTarget::new(&ctx.device, "test::target", WIDTH, HEIGHT);
-    let context = RenderContext::new(
+    let context = RenderAttachments::new(
         &ctx.device,
-        Some(target.view.clone()),
-        RendererOptions {
+        AttachmentsInfo {
             color: Some(COLOR_FORMAT),
             depth: Some(DEPTH_FORMAT),
             width: WIDTH,
             height: HEIGHT,
             sample_count: fixture.sample_count,
+            transient_depth: true,
         },
     );
-    let renderer = context.renderer();
+    // Readback comes from the context's own color texture.
+    let target = context
+        .color_texture()
+        .expect("a color pass has a color texture")
+        .clone();
 
     // Global group: camera, frame globals and the mesh-metadata array.
     let view = camera(WIDTH as f32 / HEIGHT as f32);
@@ -480,20 +483,21 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("test::encoder"),
         });
-    renderer.render(&mut encoder, rgb(CLEAR[0], CLEAR[1], CLEAR[2]), &scene);
+    {
+        let mut pass = context.begin_pass(
+            &mut encoder,
+            Some(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            Some(context.depth_clear()),
+        );
+        scene.record(&mut pass);
+    }
     ctx.queue.submit([encoder.finish()]);
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll");
 
     Frame {
-        rgba: read_texture_bytes(
-            ctx,
-            &target.texture,
-            WIDTH,
-            HEIGHT,
-            texel_bytes(&target.texture),
-        ),
+        rgba: read_texture_bytes(ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
         width: WIDTH,
         height: HEIGHT,
     }
@@ -766,75 +770,125 @@ fn textured_cube_matches_snapshot() {
     );
 }
 
-/// Two minimal WGSL modules: the resource graph tracks identity, so the
-/// shader bodies only need to differ.
-const TRIVIAL_WGSL: &str =
-    "@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }";
-const TRIVIAL_WGSL_2: &str =
-    "@vertex fn vs_main() -> @builtin(position) vec4<f32> { return vec4<f32>(1.0); }";
+/// A loaded color attachment keeps its previous contents: the second pass
+/// draws nothing, so the frame the first pass left is still there.
+///
+/// This pins the `None` load-op path of `begin_pass`, which the other tests
+/// never exercise — they all clear.
+#[test]
+fn a_loaded_color_attachment_keeps_its_contents() {
+    let ctx = Ctx::headless();
+    // No MSAA: the pass draws straight into the context's color texture, so
+    // a stored frame survives into a second pass that loads.
+    let context = RenderAttachments::new(
+        &ctx.device,
+        AttachmentsInfo {
+            color: Some(COLOR_FORMAT),
+            depth: Some(DEPTH_FORMAT),
+            width: WIDTH,
+            height: HEIGHT,
+            sample_count: 1,
+            transient_depth: true,
+        },
+    );
+
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test::encoder"),
+        });
+    // Pass one: clear to the test clear color. Draws nothing.
+    {
+        let mut pass = context.begin_pass(
+            &mut encoder,
+            Some(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            Some(context.depth_clear()),
+        );
+        Scene::new().record(&mut pass);
+    }
+    // Pass two: load the color (the depth attachment is transient, so it
+    // still clears) and draw nothing. If the color load were a clear to the
+    // wgpu default (transparent black), the frame would come back empty.
+    {
+        let mut pass = context.begin_pass(&mut encoder, None, Some(context.depth_clear()));
+        Scene::new().record(&mut pass);
+    }
+    ctx.queue.submit([encoder.finish()]);
+    ctx.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("poll");
+
+    let texture = context.color_texture().expect("a color pass");
+    let frame = Frame {
+        rgba: read_texture_bytes(&ctx, texture, WIDTH, HEIGHT, texel_bytes(texture)),
+        width: WIDTH,
+        height: HEIGHT,
+    };
+    // The clear color of pass one survived pass two. The readback is the
+    // texture's own encoding (sRGB here), not the linear clear value.
+    let expected = rgb(CLEAR[0], CLEAR[1], CLEAR[2]);
+    let first = frame.pixel_u8(0, 0);
+    let encode = |linear: f64| {
+        let c = if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0) as u8
+    };
+    // Off-by-one rounding tolerance on each channel.
+    let within = |a: u8, b: u8| a.abs_diff(b) <= 1;
+    assert!(
+        within(first[0], encode(expected.r))
+            && within(first[1], encode(expected.g))
+            && within(first[2], encode(expected.b))
+            && first[3] == 255,
+        "a loaded attachment must keep its contents"
+    );
+}
+
+/// A uniform buffer the graph tests can stand in for any resource kind.
+fn uniform(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: 64,
+        usage: wgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: false,
+    })
+}
 
 #[test]
-fn resource_graph_rebuilds_a_pipeline_after_a_target_change() {
+fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
     use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 
     let ctx = Ctx::headless();
     let mut graph = ResourceGraph::new();
 
-    let shader = graph
-        .insert(
-            ctx.device
-                .create_shader_module(wgpu::ShaderModuleDescriptor {
-                    label: Some("test::shader"),
-                    // A trivial module: the graph tracks the resource, not
-                    // what the shader does.
-                    source: wgpu::ShaderSource::Wgsl(TRIVIAL_WGSL.into()),
-                }),
-            &[],
-        )
-        .expect("insert shader");
+    let base = graph
+        .insert(Resource::Buffer(uniform(&ctx.device, "test::base")), &[])
+        .expect("insert base");
 
     // A stand-in dependent: rebuilding is driven purely by the graph.
     let dependent = graph
         .insert(
-            ctx.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("test::dependent"),
-                size: 64,
-                usage: wgpu::BufferUsages::UNIFORM,
-                mapped_at_creation: false,
-            }),
-            &[shader],
+            Resource::Buffer(uniform(&ctx.device, "test::dependent")),
+            &[base],
         )
         .expect("insert dependent");
 
     assert!(!graph.is_dirty(dependent));
 
-    // Swapping the shader must dirty the dependent, which the rebuild pass
+    // Swapping the base must dirty the dependent, which the rebuild pass
     // then refreshes in dependency order.
-    graph.replace(
-        shader,
-        ctx.device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some("test::shader2"),
-                // A genuinely different module, so the dependent rebuilds
-                // over something new rather than an identical copy.
-                source: wgpu::ShaderSource::Wgsl(TRIVIAL_WGSL_2.into()),
-            }),
-    );
-    assert!(graph.is_dirty(shader));
+    graph.replace(base, Resource::Buffer(uniform(&ctx.device, "test::base2")));
+    assert!(graph.is_dirty(base));
     assert!(graph.is_dirty(dependent));
 
     let mut rebuilt = Vec::new();
     graph.rebuild_dirty(|id, _current, _dependencies| {
         rebuilt.push(id);
-        Some(Resource::Buffer(ctx.device.create_buffer(
-            &wgpu::BufferDescriptor {
-                label: Some("test::rebuilt"),
-                size: 64,
-                usage: wgpu::BufferUsages::UNIFORM,
-                mapped_at_creation: false,
-            },
-        )))
+        Some(Resource::Buffer(uniform(&ctx.device, "test::rebuilt")))
     });
-    assert_eq!(rebuilt, vec![shader, dependent]);
+    assert_eq!(rebuilt, vec![base, dependent]);
     assert!(!graph.any_dirty());
 }
