@@ -27,7 +27,10 @@
 //! Scissor rectangles are the exception to "a draw is independent": wgpu has
 //! no reset call, so a rectangle set by one draw stays set for every draw
 //! after it in the pass. A scene therefore orders its clipped draws last —
-//! or sets [`MeshDraw::scissor`] on every draw.
+//! or sets [`MeshDraw::scissor`] on every draw. The stencil reference is the
+//! same kind of pass state, but it is set on every draw (from
+//! [`MeshDraw::stencil_reference`]), so it never leaks from one draw to the
+//! next.
 
 use arrayvec::ArrayVec;
 use core::ops::Range;
@@ -168,19 +171,26 @@ pub struct MeshDraw<'a> {
     /// once a draw sets one it stays set for every later draw in the pass —
     /// ordering a clipped draw last is the caller's job.
     pub scissor: Option<ScissorRect>,
+    /// The stencil reference value the draw tests against.
+    ///
+    /// Set on every draw (defaulting to `0`, the pass's own default), so a
+    /// draw that does not name one resets a value an earlier draw left behind.
+    pub stencil_reference: u32,
     /// What to draw.
     pub range: DrawRange,
 }
 
 impl<'a> MeshDraw<'a> {
-    /// A mesh draw with no bind groups, no vertex buffers, no index buffer
-    /// and no scissor; fill in the fields the pipeline needs.
+    /// A mesh draw with no bind groups, no vertex buffers, no index buffer,
+    /// no scissor and a zero stencil reference; fill in the fields the
+    /// pipeline needs.
     pub fn new(range: DrawRange) -> Self {
         Self {
             bind_groups: Vec::new(),
             vertex_buffers: Vec::new(),
             index_buffer: None,
             scissor: None,
+            stencil_reference: 0,
             range,
         }
     }
@@ -201,6 +211,12 @@ impl<'a> MeshDraw<'a> {
     /// this one in the pass, so see [`MeshDraw::scissor`].
     pub fn with_scissor(mut self, scissor: ScissorRect) -> Self {
         self.scissor = Some(scissor);
+        self
+    }
+
+    /// Test against stencil reference `reference`.
+    pub fn with_stencil_reference(mut self, reference: u32) -> Self {
+        self.stencil_reference = reference;
         self
     }
 
@@ -349,6 +365,7 @@ impl<'a> Scene<'a> {
                     if let Some(scissor) = &mesh.scissor {
                         state.set_scissor(pass, *scissor);
                     }
+                    state.set_stencil_reference(pass, mesh.stencil_reference);
 
                     match &mesh.range {
                         DrawRange::Vertices {
@@ -389,6 +406,7 @@ struct PassState<'a> {
     vertex_buffers: ArrayVec<(u32, wgpu::BufferSlice<'a>), MAX_VERTEX_BUFFERS>,
     index_buffer: Option<(wgpu::BufferSlice<'a>, wgpu::IndexFormat)>,
     scissor: Option<ScissorRect>,
+    stencil_reference: u32,
 }
 
 impl<'a> PassState<'a> {
@@ -468,6 +486,16 @@ impl<'a> PassState<'a> {
         self.scissor = Some(scissor);
         pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
     }
+
+    /// Set the stencil reference, skipping the call when the pass already
+    /// holds it.
+    fn set_stencil_reference(&mut self, pass: &mut wgpu::RenderPass<'_>, reference: u32) {
+        if self.stencil_reference == reference {
+            return;
+        }
+        self.stencil_reference = reference;
+        pass.set_stencil_reference(reference);
+    }
 }
 
 #[cfg(test)]
@@ -542,6 +570,20 @@ mod tests {
         assert_eq!(plain.scissor, None);
     }
 
+    /// The stencil reference defaults to zero and the builder sets it without
+    /// disturbing the rest of the draw.
+    #[test]
+    fn stencil_reference_builder_composes() {
+        let draw = MeshDraw::new(DrawRange::indexed(0..6))
+            .with_stencil_reference(3)
+            .with_scissor(ScissorRect::new(8, 8));
+        assert_eq!(draw.stencil_reference, 3);
+        assert_eq!(draw.scissor, Some(ScissorRect::new(8, 8)));
+
+        let plain = MeshDraw::new(DrawRange::vertices(0..3));
+        assert_eq!(plain.stencil_reference, 0);
+    }
+
     /// Recording must issue a `set_scissor_rect` for a draw that sets one and
     /// none for a draw that does not, so a draw never silently inherits the
     /// previous draw's clip. Verified on a real pass, since wgpu offers no
@@ -595,6 +637,66 @@ mod tests {
         drop(pass);
 
         assert_eq!(state.scissor, Some(ScissorRect::new(16, 8)));
+        queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("poll");
+    }
+
+    /// The stencil reference must be set on every draw, so a value an earlier
+    /// draw left behind never leaks into one that does not name it. Verified
+    /// on a real pass, since wgpu offers no way to inspect the commands
+    /// otherwise.
+    #[test]
+    fn a_stencil_reference_records() {
+        let (device, queue) = crate::util::test_device::device();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test::encoder"),
+        });
+
+        // A pass with no pipeline: recording only needs the stencil calls to
+        // be accepted, which is the behaviour under test.
+        let color = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test::color"),
+            size: wgpu::Extent3d {
+                width: 32,
+                height: 32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = color.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("test::pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Discard,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        let mut state = PassState::default();
+        state.set_stencil_reference(&mut pass, 3);
+        // The same value again is a no-op: the pass already holds it.
+        state.set_stencil_reference(&mut pass, 3);
+        // A later draw that names no reference resets it to zero.
+        state.set_stencil_reference(&mut pass, 0);
+        drop(pass);
+
+        assert_eq!(state.stencil_reference, 0);
         queue.submit([encoder.finish()]);
         device
             .poll(wgpu::PollType::wait_indefinitely())

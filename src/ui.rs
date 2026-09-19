@@ -18,7 +18,7 @@
 //! #          color_format: wgpu::TextureFormat, sample_count: u32) {
 //! // The caller owns the globals: a camera uniform (written every frame with
 //! // `screen_view`), a frame-globals uniform, and the bind group binding both.
-//! let mut options = ui_options(/* the target encodes sRGB: */ true);
+//! let mut options = ui_options(device, /* the target encodes sRGB: */ true);
 //! options.color_target.format = color_format;
 //! options.sample_count = sample_count;
 //! let pipeline = UnlitPipeline::new(device, &options);
@@ -132,8 +132,15 @@ pub fn screen_view(viewport_points: [f32; 2]) -> View {
 /// `srgb_to_linear_output` is the caller's call, not this function's: it
 /// depends on the target's format, which this function never sees. Set it
 /// when the target encodes sRGB.
-pub fn ui_options(srgb_to_linear_output: bool) -> UnlitOptions {
-    let mut options = UnlitOptions::standard();
+pub fn ui_options(device: &wgpu::Device, srgb_to_linear_output: bool) -> UnlitOptions {
+    let mut options = UnlitOptions::standard(device);
+    apply_ui_settings(&mut options, srgb_to_linear_output);
+    options
+}
+
+/// Apply the UI variant's device-independent settings — flags, culling,
+/// blending and the overlaid depth behavior — to a standard options set.
+fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
     // Full-precision screen-space vertices carrying a premultiplied color and
     // a texture coordinate: no compression, no per-instance stream.
     let mut flags = UnlitFlags::VERTEX_POSITION
@@ -167,9 +174,8 @@ pub fn ui_options(srgb_to_linear_output: bool) -> UnlitOptions {
     });
     // The UI overlays whatever the pass holds, so it neither tests nor writes
     // depth.
-    options.depth.depth_write_enabled = Some(false);
-    options.depth.depth_compare = Some(wgpu::CompareFunction::Always);
-    options
+    options.depth_stencil.depth_write_enabled = Some(false);
+    options.depth_stencil.depth_compare = Some(wgpu::CompareFunction::Always);
 }
 
 /// Vertex count and index count the buffers must hold for `primitives`.
@@ -702,9 +708,18 @@ fn upload(
 mod tests {
     use super::*;
 
+    /// A UI options set for tests that have no device. Only the fields these
+    /// tests assert on matter, so the depth-stencil format is the
+    /// device-independent placeholder.
+    fn ui_options_for_tests(srgb_to_linear_output: bool) -> UnlitOptions {
+        let mut options = UnlitOptions::standard_shape();
+        apply_ui_settings(&mut options, srgb_to_linear_output);
+        options
+    }
+
     #[test]
     fn ui_variant_is_screen_space_and_uncompressed() {
-        let options = ui_options(false);
+        let options = ui_options_for_tests(false);
         let flags = options.flags;
         assert!(flags.contains(UnlitFlags::VERTEX_POSITION));
         assert!(flags.contains(UnlitFlags::UNCOMPRESSED_POSITION));
@@ -717,9 +732,9 @@ mod tests {
         assert!(!flags.contains(UnlitFlags::VERTEX_INSTANCE));
         assert!(!options.needs_metadata());
         // Overlaid rather than depth-tested.
-        assert_eq!(options.depth.depth_write_enabled, Some(false));
+        assert_eq!(options.depth_stencil.depth_write_enabled, Some(false));
         assert_eq!(
-            options.depth.depth_compare,
+            options.depth_stencil.depth_compare,
             Some(wgpu::CompareFunction::Always)
         );
         // egui's colors premultiply their own alpha.
@@ -728,18 +743,17 @@ mod tests {
         assert_eq!(blend.color.dst_factor, wgpu::BlendFactor::OneMinusSrcAlpha);
     }
 
-    /// The conversion flag is deliberately left unset by [`ui_options`] — it
     /// The conversion flag follows the parameter, since it depends on the
     /// target's format, not the UI.
     #[test]
     fn srgb_flag_follows_the_parameter() {
         assert!(
-            !ui_options(false)
+            !ui_options_for_tests(false)
                 .flags
                 .contains(UnlitFlags::SRGB_TO_LINEAR_OUTPUT)
         );
         assert!(
-            ui_options(true)
+            ui_options_for_tests(true)
                 .flags
                 .contains(UnlitFlags::SRGB_TO_LINEAR_OUTPUT)
         );

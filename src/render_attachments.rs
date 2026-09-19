@@ -20,13 +20,14 @@
 //! # use wgpu_unlit_render::render_attachments::{RenderAttachments, AttachmentsInfo};
 //! # use wgpu_unlit_render::scene::Scene;
 //! # fn frame(device: &wgpu::Device, scene: &Scene<'_>) {
-//! let attachments = RenderAttachments::new(device, AttachmentsInfo::new(1280, 720));
+//! let attachments = RenderAttachments::new(device, AttachmentsInfo::new(device, 1280, 720));
 //!
 //! let mut encoder = device.create_command_encoder(&Default::default());
 //! let mut pass = attachments.begin_pass(
 //!     &mut encoder,
-//!     Some(wgpu::Color::BLACK),
-//!     Some(attachments.depth_clear()),
+//!     wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+//!     wgpu::LoadOp::Clear(attachments.depth_clear()),
+//!     wgpu::LoadOp::Clear(0),
 //! );
 //! scene.record(&mut pass);
 //! # }
@@ -41,11 +42,11 @@ pub struct AttachmentsInfo {
     /// Color attachment format, matching the color view when that is `Some`;
     /// `None` exactly when the pass is depth-only.
     pub color: Option<wgpu::TextureFormat>,
-    /// Depth attachment format, or `None` for a pass without depth.
+    /// Depth-stencil attachment format, or `None` for a pass without depth.
     ///
     /// At least one of [`Self::color`] and this must be `Some`: a pass with
     /// neither attachment cannot exist.
-    pub depth: Option<wgpu::TextureFormat>,
+    pub depth_stencil: Option<wgpu::TextureFormat>,
     /// Width of the attachments, in pixels.
     pub width: u32,
     /// Height of the attachments, in pixels.
@@ -61,17 +62,37 @@ pub struct AttachmentsInfo {
 }
 
 impl AttachmentsInfo {
-    /// The color, depth, size and sample count for an `Rgba8UnormSrgb` +
-    /// `Depth32Float` target of `width` x `height` pixels.
-    pub fn new(width: u32, height: u32) -> Self {
+    /// The color, depth, size and sample count for an `Rgba8UnormSrgb` target
+    /// of `width` x `height` pixels.
+    ///
+    /// The depth format is [`default_depth_stencil_format`]'s choice for `device`, so
+    /// the default attachment set matches a device that supports it.
+    pub fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
         Self {
             color: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
-            depth: Some(wgpu::TextureFormat::Depth32Float),
+            depth_stencil: Some(default_depth_stencil_format(device)),
             width,
             height,
             sample_count: 4,
             transient_depth: true,
         }
+    }
+}
+
+/// The depth-stencil format a render target should use on `device`:
+/// `Depth32FloatStencil8` when the device supports it, otherwise the
+/// universally-available `Depth24PlusStencil8`.
+///
+/// Both formats carry a stencil aspect, so the render pass and pipelines must
+/// account for it (see [`RenderAttachments::begin_pass`]).
+pub fn default_depth_stencil_format(device: &wgpu::Device) -> wgpu::TextureFormat {
+    if device
+        .features()
+        .contains(wgpu::Features::DEPTH32FLOAT_STENCIL8)
+    {
+        wgpu::TextureFormat::Depth32FloatStencil8
+    } else {
+        wgpu::TextureFormat::Depth24PlusStencil8
     }
 }
 
@@ -82,7 +103,7 @@ pub struct RenderAttachments {
     /// The color attachment, or `None` for a depth-only pass.
     color_view: Option<wgpu::TextureView>,
     /// The depth attachment, or `None` for a pass without depth.
-    depth_view: Option<wgpu::TextureView>,
+    depth_stencil_view: Option<wgpu::TextureView>,
     /// The multisample attachment the pass draws into, resolved into
     /// [`Self::color_view`]; `None` when multisampling is disabled or the
     /// pass is depth-only.
@@ -101,7 +122,7 @@ impl RenderAttachments {
     /// through [`Self::new_with_targets`].
     ///
     /// # Panics
-    /// If both `options.color` and `options.depth` are `None`: a pass needs
+    /// If both `options.color` and `options.depth_stencil` are `None`: a pass needs
     /// at least one attachment.
     pub fn new(device: &wgpu::Device, mut options: AttachmentsInfo) -> Self {
         // This constructor allocates the transient depth texture itself, so
@@ -131,20 +152,20 @@ impl RenderAttachments {
             .map(|texture| texture.create_view(&Default::default()));
         // The depth texture is this constructor's own allocation, so it is
         // transient; `new_with_targets` passes its caller's choice.
-        let depth_view = options.depth.map(|format| {
+        let depth_stencil_view = options.depth_stencil.map(|format| {
             transient_texture(device, &options, "wgpu_unlit_render::depth", format)
                 .create_view(&Default::default())
         });
-        Self::from_parts(device, options, color_view, depth_view)
+        Self::from_parts(device, options, color_view, depth_stencil_view)
     }
 
-    /// Create an attachment set drawing into `color_view` (and `depth_view`),
+    /// Create an attachment set drawing into `color_view` (and `depth_stencil_view`),
     /// the caller's own targets — the swapchain's texture, a shadow map, a
     /// preprocessed depth buffer. The transient attachments `options` asks for
     /// are still allocated here.
     ///
     /// The color view's format must be `options.color`'s, the depth view's
-    /// `options.depth`'s, and the sizes must match. The depth view is
+    /// `options.depth_stencil`'s, and the sizes must match. The depth view is
     /// persistent from the caller's side, so a depth pass stores its results
     /// into it.
     ///
@@ -156,7 +177,7 @@ impl RenderAttachments {
         device: &wgpu::Device,
         mut options: AttachmentsInfo,
         color_view: Option<wgpu::TextureView>,
-        depth_view: Option<wgpu::TextureView>,
+        depth_stencil_view: Option<wgpu::TextureView>,
     ) -> Self {
         assert_eq!(
             color_view.is_some(),
@@ -164,12 +185,12 @@ impl RenderAttachments {
             "a color view and its format must be present together"
         );
         assert_eq!(
-            depth_view.is_some(),
-            options.depth.is_some(),
+            depth_stencil_view.is_some(),
+            options.depth_stencil.is_some(),
             "a depth view and its format must be present together"
         );
         assert!(
-            color_view.is_some() || depth_view.is_some(),
+            color_view.is_some() || depth_stencil_view.is_some(),
             "a render pass needs at least one attachment"
         );
         if let Some(view) = color_view.as_ref() {
@@ -189,11 +210,11 @@ impl RenderAttachments {
                 "the color view's height must match `options.height`"
             );
         }
-        if let Some(view) = depth_view.as_ref() {
+        if let Some(view) = depth_stencil_view.as_ref() {
             assert_eq!(
                 view.texture().format(),
-                options.depth.expect("checked above"),
-                "the depth view's format must match `options.depth`"
+                options.depth_stencil.expect("checked above"),
+                "the depth view's format must match `options.depth_stencil`"
             );
             assert_eq!(
                 view.texture().width(),
@@ -209,7 +230,7 @@ impl RenderAttachments {
         // The depth view the caller supplies is their persistent texture: a
         // depth pass stores into it.
         options.transient_depth = false;
-        Self::from_parts(device, options, color_view, depth_view)
+        Self::from_parts(device, options, color_view, depth_stencil_view)
     }
 
     /// Assemble an attachment set from the caller's views: the color view
@@ -220,7 +241,7 @@ impl RenderAttachments {
         device: &wgpu::Device,
         options: AttachmentsInfo,
         color_view: Option<wgpu::TextureView>,
-        depth_view: Option<wgpu::TextureView>,
+        depth_stencil_view: Option<wgpu::TextureView>,
     ) -> Self {
         let msaa_view = options.color.and_then(|format| {
             (options.sample_count > 1).then(|| {
@@ -231,17 +252,9 @@ impl RenderAttachments {
         Self {
             options,
             color_view,
-            depth_view,
+            depth_stencil_view,
             msaa_view,
         }
-    }
-
-    /// Replace the depth attachment with a caller-supplied view of the same
-    /// format — the persistent texture a depth pass stores into, such as a
-    /// shadow map or a preprocessed depth buffer.
-    pub fn set_depth_view(&mut self, depth_view: wgpu::TextureView) {
-        self.depth_view = Some(depth_view);
-        self.options.transient_depth = false;
     }
 
     /// The color texture the frame is rendered into, for copying or reading
@@ -256,8 +269,8 @@ impl RenderAttachments {
     }
 
     /// The depth attachment, if any.
-    pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
-        self.depth_view.as_ref()
+    pub fn depth_stencil_view(&self) -> Option<&wgpu::TextureView> {
+        self.depth_stencil_view.as_ref()
     }
 
     /// The multisample attachment, if any.
@@ -277,8 +290,8 @@ impl RenderAttachments {
 
     /// The depth format the pass renders into, or `None` for a pass without
     /// depth.
-    pub fn depth_format(&self) -> Option<wgpu::TextureFormat> {
-        Some(self.depth_view.as_ref()?.texture().format())
+    pub fn depth_stencil_format(&self) -> Option<wgpu::TextureFormat> {
+        Some(self.depth_stencil_view.as_ref()?.texture().format())
     }
 
     /// The sample count the pass renders with: the MSAA attachment's when one
@@ -314,7 +327,7 @@ impl RenderAttachments {
         self.msaa_view
             .as_ref()
             .or(self.color_view.as_ref())
-            .or(self.depth_view.as_ref())
+            .or(self.depth_stencil_view.as_ref())
     }
 
     /// The depth value this renderer's reverse-z convention clears to: the
@@ -325,15 +338,18 @@ impl RenderAttachments {
 
     /// Begin a render pass over the attachments.
     ///
-    /// `color_clear`/`depth_clear` of `Some(value)` clear the matching
-    /// attachment to `value`; `None` loads its previous contents. The color
+    /// Each `*_load` value is the load op of its attachment:
+    /// [`wgpu::LoadOp::Clear(value)`](wgpu::LoadOp) clears it to `value`,
+    /// [`wgpu::LoadOp::Load`] keeps its previous contents. The color
     /// attachment discards on store with MSAA (the resolve carries the pixels
     /// into the color view) and stores without it (the color view *is* the
     /// attachment). The depth attachment discards after a clear and stores
     /// after a load: the attachment set's own depth texture is transient and
     /// only accepts `Clear + Discard`, while a caller's persistent depth
     /// texture — a shadow map, a preprocessed depth buffer — keeps the
-    /// results for a later pass to sample.
+    /// results for a later pass to sample. The stencil aspect follows the same
+    /// rules (the renderer never writes it, so `Clear` clears it and `Load`
+    /// leaves a persistent buffer's contents alone).
     ///
     /// # Panics
     /// If the attachment set has no attachments, if a clear value is given
@@ -342,19 +358,33 @@ impl RenderAttachments {
     pub fn begin_pass<'a>(
         &'a self,
         encoder: &'a mut wgpu::CommandEncoder,
-        color_clear: Option<wgpu::Color>,
-        depth_clear: Option<f32>,
+        color_load: wgpu::LoadOp<wgpu::Color>,
+        depth_load: wgpu::LoadOp<f32>,
+        stencil_load: wgpu::LoadOp<u32>,
     ) -> wgpu::RenderPass<'a> {
         assert!(
-            self.color_view.is_some() || self.depth_view.is_some(),
+            self.color_view.is_some() || self.depth_stencil_view.is_some(),
             "a render pass needs at least one attachment"
         );
-        if depth_clear.is_none() {
+        if matches!(depth_load, wgpu::LoadOp::Load) {
             assert!(
                 !self.options.transient_depth,
                 "the attachment set's depth texture is transient: load its \
-                 previous contents with `set_depth_view` on a persistent \
-                 texture"
+                 previous contents only through `new_with_targets` on a \
+                 persistent texture"
+            );
+        }
+        if matches!(stencil_load, wgpu::LoadOp::Load)
+            && self
+                .depth_stencil_view
+                .as_ref()
+                .is_some_and(|view| view.texture().format().has_stencil_aspect())
+        {
+            assert!(
+                !self.options.transient_depth,
+                "the attachment set's stencil is transient: load its \
+                 previous contents only through `new_with_targets` on a \
+                 persistent texture"
             );
         }
 
@@ -379,8 +409,7 @@ impl RenderAttachments {
                     depth_slice: None,
                     resolve_target: resolve_target.as_ref(),
                     ops: wgpu::Operations {
-                        // `Some` clears, `None` loads the previous contents.
-                        load: color_clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                        load: color_load,
                         // With MSAA the resolved pixels reach the color
                         // view through the resolve, so the multisample
                         // attachment itself can be discarded. Without MSAA
@@ -396,12 +425,22 @@ impl RenderAttachments {
             })
             .unwrap_or([None]);
 
-        let depth_stencil_attachment = self.depth_view.as_ref().map(|view| {
+        let depth_stencil_attachment = self.depth_stencil_view.as_ref().map(|view| {
+            // A stencil-capable format must be given stencil load/store ops.
+            // The renderer never writes stencil, so it is discarded either
+            // way.
+            let stencil_ops =
+                view.texture()
+                    .format()
+                    .has_stencil_aspect()
+                    .then_some(wgpu::Operations {
+                        load: stencil_load,
+                        store: wgpu::StoreOp::Discard,
+                    });
             wgpu::RenderPassDepthStencilAttachment {
                 view,
                 depth_ops: Some(wgpu::Operations {
-                    // `Some` clears, `None` loads the previous contents.
-                    load: depth_clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                    load: depth_load,
                     // The attachment set's own depth texture is transient and
                     // only accepts `Clear + Discard`; a caller's persistent
                     // depth texture stores, so a later pass can sample the
@@ -412,7 +451,7 @@ impl RenderAttachments {
                         wgpu::StoreOp::Store
                     },
                 }),
-                stencil_ops: None,
+                stencil_ops,
             }
         });
 

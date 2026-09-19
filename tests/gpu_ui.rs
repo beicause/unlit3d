@@ -9,7 +9,9 @@ mod common;
 use common::*;
 use wgpu_unlit_render::globals::Globals;
 use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
-use wgpu_unlit_render::render_attachments::{AttachmentsInfo, RenderAttachments};
+use wgpu_unlit_render::render_attachments::{
+    AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
+};
 use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
 
@@ -87,7 +89,7 @@ fn render_ui_with(
     // The test target is sRGB: the UI converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
     // from its layout, and the UI draws with it.
-    let mut ui_opts = ui_options(true);
+    let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
     ui_opts.sample_count = SAMPLES;
     let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
@@ -120,7 +122,7 @@ fn render_ui_with(
         &ctx.device,
         AttachmentsInfo {
             color: Some(COLOR_FORMAT),
-            depth: Some(wgpu::TextureFormat::Depth32Float),
+            depth_stencil: Some(default_depth_stencil_format(&ctx.device)),
             width,
             height,
             sample_count: SAMPLES,
@@ -141,8 +143,9 @@ fn render_ui_with(
     {
         let mut pass = context.begin_pass(
             &mut encoder,
-            Some(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
-            Some(context.depth_clear()),
+            wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            wgpu::LoadOp::Clear(context.depth_clear()),
+            wgpu::LoadOp::Clear(0),
         );
         scene.record(&mut pass);
     }

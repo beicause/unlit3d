@@ -79,7 +79,7 @@
 //!     //    and the matching vertex attributes / bindings. The pipeline is
 //!     //    built for `standard`'s target: an `Rgba8UnormSrgb` color format
 //!     //    with 4x MSAA, which is what the render target uses below.
-//!     let options = UnlitOptions::standard();
+//!     let options = UnlitOptions::standard(device);
 //!     let pipeline = UnlitPipeline::new(device, &options);
 //!
 //!     // 2. Compress the mesh. Positions and UVs become 16-bit normalized
@@ -231,7 +231,7 @@
 //!     // per pass.
 //!     let attachments = RenderAttachments::new(
 //!         &self.device,
-//!         AttachmentsInfo::new(width, height),
+//!         AttachmentsInfo::new(&self.device, width, height),
 //!     );
 //!
 //!     // One draw: the mesh's bind groups and vertex buffers, and what to
@@ -263,8 +263,9 @@
 //!     {
 //!         let mut pass = attachments.begin_pass(
 //!             &mut encoder,
-//!             Some(wgpu::Color::BLACK),
-//!             Some(attachments.depth_clear()),
+//!             wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+//!             wgpu::LoadOp::Clear(attachments.depth_clear()),
+//!             wgpu::LoadOp::Clear(0),
 //!         );
 //!         scene.record(&mut pass);
 //!     }

@@ -7,6 +7,7 @@
 //! channels need, so nothing unused reaches the GPU.
 
 use crate::mesh::{CompressedColor, CompressedUv, MeshInfo};
+use crate::render_attachments::default_depth_stencil_format;
 use wgpu::WriteOnly;
 
 /// Binding slot of the camera uniform in the global bind group.
@@ -112,15 +113,22 @@ bitflags::bitflags! {
 pub struct UnlitOptions {
     /// The channels and bindings the variant reads.
     pub flags: UnlitFlags,
-    /// How the pipeline assembles and culls primitives.
+    /// How the pipeline assembles and culls primitives, including the strip
+    /// index format a strip topology requires.
+    ///
+    /// [`Self::standard`] leaves `strip_index_format` at its default, so a
+    /// caller drawing strips must set it to the width of the index buffer the
+    /// draw uses.
     pub primitive: wgpu::PrimitiveState,
     /// The pipeline's depth-stencil state.
     ///
-    /// [`Self::standard`] is the renderer's reverse-z convention: depth is
-    /// cleared to the far plane (see
+    /// Its format is the device's default depth-stencil format
+    /// ([`crate::render_attachments::default_depth_stencil_format`]) when built with
+    /// [`Self::standard`]. [`Self::standard`] is the renderer's reverse-z
+    /// convention: depth is cleared to the far plane (see
     /// [`crate::render_attachments::RenderAttachments::depth_clear`]), so
     /// nearer geometry carries the greater value.
-    pub depth: wgpu::DepthStencilState,
+    pub depth_stencil: wgpu::DepthStencilState,
     /// The color target the pipeline writes: its format, blend state and
     /// write mask.
     ///
@@ -134,7 +142,11 @@ pub struct UnlitOptions {
 impl UnlitOptions {
     /// The usual starting point: the full compressed mesh variant — positions,
     /// UVs, vertex colors, a base-color texture and per-instance transforms —
-    /// with the renderer's reverse-z depth and no blending.
+    /// with the device's default depth-stencil format.
+    ///
+    /// The depth-stencil format is [`default_depth_stencil_format`]'s choice
+    /// for `device`, so the pipeline's depth-stencil state matches the render
+    /// target's depth attachment on that device.
     ///
     /// Back faces are culled: the geometry this variant is for is closed
     /// meshes wound counter-clockwise, whose insides are never meant to show.
@@ -142,7 +154,19 @@ impl UnlitOptions {
     /// Every variant must read at least one vertex attribute: one reading
     /// nothing composes a `VertexInput` struct with no members, which is not
     /// valid WGSL.
-    pub fn standard() -> Self {
+    pub fn standard(device: &wgpu::Device) -> Self {
+        let mut options = Self::standard_shape();
+        options.depth_stencil.format = default_depth_stencil_format(device);
+        options
+    }
+
+    /// The standard variant's device-independent fields: the flags, primitive
+    /// state, color target and sample count, with a placeholder depth-stencil
+    /// format that [`Self::standard`] replaces with the device's default.
+    ///
+    /// Available crate-wide so tests and builders that have no device can
+    /// construct the standard configuration without one.
+    pub(crate) fn standard_shape() -> Self {
         Self {
             flags: UnlitFlags::VERTEX_POSITION
                 | UnlitFlags::VERTEX_UV
@@ -153,8 +177,8 @@ impl UnlitOptions {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth: wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
+            depth_stencil: wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: wgpu::StencilState::default(),
@@ -640,14 +664,6 @@ impl UnlitPipeline {
         });
 
         let vertex_buffers = Self::vertex_buffer_layouts(options);
-        // A strip or line-list topology resets its strip at the primitive
-        // restart index, whose width follows the index buffer the draw uses.
-        let strip_index_format =
-            (options.primitive.topology.is_strip()).then_some(wgpu::IndexFormat::Uint32);
-        let primitive = wgpu::PrimitiveState {
-            strip_index_format,
-            ..options.primitive
-        };
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgpu_unlit_render::unlit"),
             layout: Some(&pipeline_layout),
@@ -657,11 +673,13 @@ impl UnlitPipeline {
                 compilation_options: Default::default(),
                 buffers: &vertex_buffers,
             },
-            primitive,
+            // The primitive state — including `strip_index_format` for strip
+            // topologies — is the caller's, so it is used as given.
+            primitive: options.primitive,
             // A pass with a depth attachment requires every pipeline it uses
-            // to declare a matching state, so the format lives in the options
-            // alongside the comparison and the write mask.
-            depth_stencil: Some(options.depth.clone()),
+            // to declare a matching state; `standard` sets this to the
+            // device's default depth-stencil format.
+            depth_stencil: Some(options.depth_stencil.clone()),
             multisample: wgpu::MultisampleState {
                 count: options.sample_count,
                 ..Default::default()
@@ -932,7 +950,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                     }
                                     variants.push(UnlitOptions {
                                         flags,
-                                        ..UnlitOptions::standard()
+                                        ..UnlitOptions::standard_shape()
                                     });
                                 }
                             }
@@ -951,8 +969,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn srgb_output_flag_switches_the_conversion() {
         let composed = |flags: UnlitFlags| {
             let options = UnlitOptions {
-                flags: UnlitOptions::standard().flags | flags,
-                ..UnlitOptions::standard()
+                flags: UnlitOptions::standard_shape().flags | flags,
+                ..UnlitOptions::standard_shape()
             };
             compose_builtin(&options).expect("compose")
         };
@@ -1045,7 +1063,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             let result = std::panic::catch_unwind(|| {
                 compose_builtin(&UnlitOptions {
                     flags,
-                    ..UnlitOptions::standard()
+                    ..UnlitOptions::standard_shape()
                 })
             });
             assert!(result.is_err(), "flags {flags:?} must be rejected");
@@ -1058,7 +1076,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             flags: UnlitFlags::VERTEX_POSITION
                 | UnlitFlags::VERTEX_UV
                 | UnlitFlags::VERTEX_INSTANCE,
-            ..UnlitOptions::standard()
+            ..UnlitOptions::standard_shape()
         });
         let position = layouts[POSITION_SLOT as usize]
             .as_ref()
@@ -1091,7 +1109,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 | UnlitFlags::UNCOMPRESSED_UV
                 | UnlitFlags::VERTEX_COLOR
                 | UnlitFlags::BASE_COLOR_TEXTURE,
-            ..UnlitOptions::standard()
+            ..UnlitOptions::standard_shape()
         };
         assert!(!options.needs_metadata());
 
@@ -1117,7 +1135,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let stride = |flags: UnlitFlags| {
             UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
                 flags,
-                ..UnlitOptions::standard()
+                ..UnlitOptions::standard_shape()
             })[UV_COLOR_SLOT as usize]
                 .as_ref()
                 .map(|layout| layout.array_stride)
@@ -1153,7 +1171,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let position = |flags: UnlitFlags| {
             UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
                 flags,
-                ..UnlitOptions::standard()
+                ..UnlitOptions::standard_shape()
             })[POSITION_SLOT as usize]
                 .as_ref()
                 .map(|layout| (layout.array_stride, layout.step_mode))
@@ -1341,7 +1359,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
         let layouts = UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
             flags: UnlitFlags::VERTEX_INSTANCE,
-            ..UnlitOptions::standard()
+            ..UnlitOptions::standard_shape()
         });
         let instance = layouts[INSTANCE_SLOT as usize]
             .as_ref()

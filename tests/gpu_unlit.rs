@@ -18,7 +18,9 @@ use wgpu_unlit_render::pipeline::{
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
-use wgpu_unlit_render::render_attachments::{AttachmentsInfo, RenderAttachments};
+use wgpu_unlit_render::render_attachments::{
+    AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
+};
 use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
 use zerocopy::IntoBytes;
 
@@ -26,7 +28,6 @@ const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
 /// Background the tests clear to, as normalized sRGB components.
 const CLEAR: [f64; 3] = [0.05, 0.05, 0.08];
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// A uniformly scaled, Y-rotated instance at `translation`.
@@ -352,7 +353,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         &ctx.device,
         AttachmentsInfo {
             color: Some(COLOR_FORMAT),
-            depth: Some(DEPTH_FORMAT),
+            depth_stencil: Some(default_depth_stencil_format(&ctx.device)),
             width: WIDTH,
             height: HEIGHT,
             sample_count: fixture.sample_count,
@@ -485,8 +486,9 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     {
         let mut pass = context.begin_pass(
             &mut encoder,
-            Some(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
-            Some(context.depth_clear()),
+            wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            wgpu::LoadOp::Clear(context.depth_clear()),
+            wgpu::LoadOp::Clear(0),
         );
         scene.record(&mut pass);
     }
@@ -508,17 +510,17 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 }
 
 /// The vertex-color variant the pixel tests use.
-fn vertex_color_options() -> UnlitOptions {
+fn vertex_color_options(device: &wgpu::Device) -> UnlitOptions {
     UnlitOptions {
         flags: UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
-        ..UnlitOptions::standard()
+        ..UnlitOptions::standard(device)
     }
 }
 
 #[test]
 fn renders_a_cube_over_the_clear_color() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, &vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
 
     assert_eq!(frame.width, WIDTH);
@@ -548,7 +550,7 @@ fn renders_a_cube_over_the_clear_color() {
 #[test]
 fn base_color_reaches_the_frame() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, &vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
 
     let brightest = |base_color: [f32; 4]| {
         let frame = render(&ctx, &fixture, &[placed_cube(base_color)]);
@@ -572,7 +574,7 @@ fn base_color_reaches_the_frame() {
 #[test]
 fn depth_ordering_hides_the_far_instance() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, &vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
 
     // A far red cube and a near green one, drawn far-first so a missing depth
     // test would let the far cube show through.
@@ -605,7 +607,7 @@ fn msaa_produces_more_partial_coverage_than_no_msaa() {
     // Pixels that are neither fully clear nor fully covered: the
     // antialiased silhouette, which a single-sample render cannot produce.
     let partial = |sample_count: u32| {
-        let fixture = fixture(&ctx, &vertex_color_options(), sample_count);
+        let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), sample_count);
         let frame = render(&ctx, &fixture, std::slice::from_ref(&instance));
         frame
             .as_chunks::<4>()
@@ -629,7 +631,7 @@ fn msaa_produces_more_partial_coverage_than_no_msaa() {
 #[test]
 fn unlit_cube_matches_snapshot() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, &vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
     assert_image_snapshot("unlit_cube.webp", &frame, frame.width, frame.height);
 }
@@ -640,7 +642,7 @@ fn unlit_cube_matches_snapshot() {
 #[test]
 fn instanced_cubes_match_snapshot() {
     let ctx = Ctx::headless();
-    let fixture = fixture(&ctx, &vertex_color_options(), 4);
+    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
 
     // A row of cubes at different depths, each with its own base color, all
     // drawn by one instanced draw call.
@@ -708,7 +710,7 @@ fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless();
     let options = UnlitOptions {
         flags: UnlitFlags::VERTEX_INSTANCE,
-        ..UnlitOptions::standard()
+        ..UnlitOptions::standard(&ctx.device)
     };
     let fixture = fixture(&ctx, &options, 1);
     assert!(
@@ -757,7 +759,7 @@ fn position_less_variant_draws_points_at_instance_origins() {
 #[test]
 fn textured_cube_matches_snapshot() {
     let ctx = Ctx::headless();
-    let options = UnlitOptions::standard();
+    let options = UnlitOptions::standard(&ctx.device);
     let fixture = fixture(&ctx, &options, 4);
     let instance = placed(0.8, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
     let frame = render(&ctx, &fixture, &[instance]);
@@ -772,7 +774,7 @@ fn textured_cube_matches_snapshot() {
 /// A loaded color attachment keeps its previous contents: the second pass
 /// draws nothing, so the frame the first pass left is still there.
 ///
-/// This pins the `None` load-op path of `begin_pass`, which the other tests
+/// This pins the `LoadOp::Load` path of `begin_pass`, which the other tests
 /// never exercise — they all clear.
 #[test]
 fn a_loaded_color_attachment_keeps_its_contents() {
@@ -783,7 +785,7 @@ fn a_loaded_color_attachment_keeps_its_contents() {
         &ctx.device,
         AttachmentsInfo {
             color: Some(COLOR_FORMAT),
-            depth: Some(DEPTH_FORMAT),
+            depth_stencil: Some(default_depth_stencil_format(&ctx.device)),
             width: WIDTH,
             height: HEIGHT,
             sample_count: 1,
@@ -800,8 +802,9 @@ fn a_loaded_color_attachment_keeps_its_contents() {
     {
         let mut pass = context.begin_pass(
             &mut encoder,
-            Some(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
-            Some(context.depth_clear()),
+            wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            wgpu::LoadOp::Clear(context.depth_clear()),
+            wgpu::LoadOp::Clear(0),
         );
         Scene::new().record(&mut pass);
     }
@@ -809,7 +812,12 @@ fn a_loaded_color_attachment_keeps_its_contents() {
     // still clears) and draw nothing. If the color load were a clear to the
     // wgpu default (transparent black), the frame would come back empty.
     {
-        let mut pass = context.begin_pass(&mut encoder, None, Some(context.depth_clear()));
+        let mut pass = context.begin_pass(
+            &mut encoder,
+            wgpu::LoadOp::Load,
+            wgpu::LoadOp::Clear(context.depth_clear()),
+            wgpu::LoadOp::Clear(0),
+        );
         Scene::new().record(&mut pass);
     }
     ctx.queue.submit([encoder.finish()]);
