@@ -149,6 +149,13 @@ impl<M: Mode> Archetype<M> {
 pub struct Archetypes<M: Mode> {
     archetypes: Vec<Archetype<M>>,
     by_types: HashMap<Box<[TypeId]>, u32>,
+    /// `(source, added) -> target` for archetypes one component away. The edge
+    /// is remembered on the first structural change, so later ones look the
+    /// archetype up without rebuilding its component list.
+    add_edges: HashMap<(u32, TypeId), u32>,
+    /// `(source, removed) -> target`, the removal counterpart of
+    /// [`Archetypes::add_edges`].
+    remove_edges: HashMap<(u32, TypeId), u32>,
 }
 
 impl<M: Mode> Archetypes<M> {
@@ -157,6 +164,8 @@ impl<M: Mode> Archetypes<M> {
         let mut pool = Self {
             archetypes: Vec::new(),
             by_types: HashMap::new(),
+            add_edges: HashMap::new(),
+            remove_edges: HashMap::new(),
         };
         pool.register(Archetype::new(Box::new([]), Box::new([])));
         pool
@@ -202,6 +211,26 @@ impl<M: Mode> Archetypes<M> {
         } else {
             (high_ref, low_ref)
         }
+    }
+
+    /// The archetype reached from `source` by adding `added`, if it is known.
+    pub(crate) fn add_edge(&self, source: u32, added: TypeId) -> Option<u32> {
+        self.add_edges.get(&(source, added)).copied()
+    }
+
+    /// Remember the archetype reached from `source` by adding `added`.
+    pub(crate) fn set_add_edge(&mut self, source: u32, added: TypeId, target: u32) {
+        self.add_edges.insert((source, added), target);
+    }
+
+    /// The archetype reached from `source` by removing `removed`, if known.
+    pub(crate) fn remove_edge(&self, source: u32, removed: TypeId) -> Option<u32> {
+        self.remove_edges.get(&(source, removed)).copied()
+    }
+
+    /// Remember the archetype reached from `source` by removing `removed`.
+    pub(crate) fn set_remove_edge(&mut self, source: u32, removed: TypeId, target: u32) {
+        self.remove_edges.insert((source, removed), target);
     }
 
     /// Every archetype.

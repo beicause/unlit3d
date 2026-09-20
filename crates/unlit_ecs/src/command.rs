@@ -30,7 +30,7 @@
 //! assert!(!world.contains(child));
 //! world.apply();
 //! assert!(world.contains(child));
-//! assert_eq!(world.child_entities(parent), [child]);
+//! assert_eq!(world.children(parent).collect::<Vec<_>>(), [child]);
 //! `````
 
 use crate::bundle::Bundle;
@@ -248,7 +248,7 @@ mod tests {
         world.apply();
         assert!(world.contains(child));
         assert_eq!(world.parent(child), Some(parent));
-        assert_eq!(world.child_entities(parent), [child]);
+        assert_eq!(world.children(parent).collect::<Vec<_>>(), [child]);
     }
 
     #[test]

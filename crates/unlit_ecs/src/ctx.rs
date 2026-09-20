@@ -87,13 +87,12 @@ impl<'w, M: Mode> Ctx<'w, M> {
             .then(|| self.world.get_mut::<C>(other))?
     }
 
-    /// The children of this scope's entity.
-    pub fn children(&self) -> Vec<Ctx<'w, M>> {
-        self.world
-            .child_entities(self.entity)
-            .into_iter()
-            .map(|child| Ctx::new(self.world, child))
-            .collect()
+    /// Iterate the children of this scope's entity as scopes of their own.
+    pub fn children(&self) -> impl Iterator<Item = Ctx<'w, M>> + 'w {
+        let world: &'w World<M> = self.world;
+        world
+            .children(self.entity)
+            .map(move |child| Ctx::new(world, child))
     }
 
     /// A queue of structural changes to apply after the callback returns.
@@ -183,7 +182,7 @@ mod tests {
         let child = world.spawn(("child",));
         world.set_parent(child, root);
         let ctx = world.ctx(root);
-        let children = ctx.children();
+        let children: Vec<_> = ctx.children().collect();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].entity(), child);
     }

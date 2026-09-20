@@ -505,26 +505,44 @@ impl<M: Mode> World<M> {
 
     /// The archetype of `source` plus the component `added`.
     fn archetype_with_added(&mut self, source: u32, added: TypeId) -> u32 {
-        let mut types = self.archetypes.get(source).types().to_vec();
-        match types.binary_search(&added) {
-            Ok(_) => source,
-            Err(index) => {
-                types.insert(index, added);
-                self.archetype_for_types(&types)
-            }
+        if self.archetypes.get(source).column_index(added).is_some() {
+            return source;
         }
+        if let Some(target) = self.archetypes.add_edge(source, added) {
+            return target;
+        }
+        // First time this transition is taken: build the component list, which
+        // is the only allocation left on a structural change.
+        let mut types = self.archetypes.get(source).types().to_vec();
+        let index = match types.binary_search(&added) {
+            // The early return above already handled the present case.
+            Ok(_) => return source,
+            Err(index) => index,
+        };
+        types.insert(index, added);
+        let target = self.archetype_for_types(&types);
+        self.archetypes.set_add_edge(source, added, target);
+        target
     }
 
     /// The archetype of `source` without the component `removed`.
     fn archetype_without(&mut self, source: u32, removed: TypeId) -> u32 {
-        let mut types = self.archetypes.get(source).types().to_vec();
-        match types.binary_search(&removed) {
-            Ok(index) => {
-                types.remove(index);
-                self.archetype_for_types(&types)
-            }
-            Err(_) => source,
+        if self.archetypes.get(source).column_index(removed).is_none() {
+            return source;
         }
+        if let Some(target) = self.archetypes.remove_edge(source, removed) {
+            return target;
+        }
+        let mut types = self.archetypes.get(source).types().to_vec();
+        let index = match types.binary_search(&removed) {
+            Ok(index) => index,
+            // The early return above already handled the absent case.
+            Err(_) => return source,
+        };
+        types.remove(index);
+        let target = self.archetype_for_types(&types);
+        self.archetypes.set_remove_edge(source, removed, target);
+        target
     }
 
     /// Move the row at `location` into archetype `target`, optionally
@@ -596,12 +614,15 @@ impl<M: Mode> World<M> {
 
     /// Depth-first despawning of a subtree, children before the parent.
     fn despawn_subtree(&mut self, entity: Entity) {
-        let children: Vec<Entity> = self
-            .get::<crate::hierarchy::Children>(entity)
-            .map(|children| children.as_slice().to_vec())
-            .unwrap_or_default();
-        for child in children {
-            self.despawn_subtree(child);
+        // Despawning a child detaches it from this entity, which would
+        // invalidate a borrow of the list; move the list out instead of
+        // copying it, leaving the component empty for the detach to find.
+        if let Some(children) =
+            self.with_mut::<crate::hierarchy::Children, _>(entity, crate::hierarchy::Children::take)
+        {
+            for child in children {
+                self.despawn_subtree(child);
+            }
         }
         if let Some(parent) = self
             .get::<crate::hierarchy::ChildOf>(entity)
@@ -748,6 +769,32 @@ mod tests {
         world.spawn_at(entity, (Marker(5),));
         assert!(world.contains(entity));
         assert_eq!(world.get::<Marker>(entity).unwrap().0, 5);
+    }
+
+    #[test]
+    fn adding_and_removing_a_component_reuses_one_archetype() {
+        let mut world = LocalWorld::new();
+        let entities: Vec<_> = (0..4u32)
+            .map(|value| world.spawn((Marker(value),)))
+            .collect();
+        for entity in &entities {
+            world.insert(*entity, Addable(1)).unwrap();
+        }
+        let with_component = world.archetype_count();
+        for entity in &entities {
+            world.remove::<Addable>(*entity).unwrap();
+        }
+        for entity in &entities {
+            world.insert(*entity, Addable(2)).unwrap();
+        }
+        for entity in &entities {
+            world.remove::<Addable>(*entity).unwrap();
+        }
+        assert_eq!(
+            world.archetype_count(),
+            with_component,
+            "every round trip reuses the two archetypes"
+        );
     }
 
     #[test]

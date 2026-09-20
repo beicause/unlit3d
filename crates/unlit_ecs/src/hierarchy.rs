@@ -12,9 +12,11 @@
 //! [`World::clear_children`], which are the only supported way to change the
 //! hierarchy — do not spawn a non-empty [`Children`] or a [`ChildOf`].
 
+use core::ops::Deref;
+
 use crate::component::AddableComponent;
 use crate::entity::Entity;
-use crate::mode::Mode;
+use crate::mode::{CellRef, Mode};
 use crate::world::World;
 
 /// The children of an entity, in order.
@@ -62,8 +64,9 @@ impl Children {
         self.0.retain(|other| *other != child);
     }
 
-    pub(crate) fn remove_all(&mut self) {
-        self.0.clear();
+    /// Take the list of children, leaving the component empty.
+    pub(crate) fn take(&mut self) -> Vec<Entity> {
+        core::mem::take(&mut self.0)
     }
 }
 
@@ -107,11 +110,15 @@ impl<M: Mode> World<M> {
         self.get::<ChildOf>(entity).map(|child_of| child_of.0)
     }
 
-    /// The children of `entity`, in order.
-    pub fn child_entities(&self, entity: Entity) -> Vec<Entity> {
-        self.get::<Children>(entity)
-            .map(|children| children.as_slice().to_vec())
-            .unwrap_or_default()
+    /// Borrow the children of `entity`, in order.
+    ///
+    /// An entity without children borrows an empty slice. The borrow is held for
+    /// as long as the returned view is alive, so this does not copy the list.
+    pub fn children(&self, entity: Entity) -> ChildrenView<'_, M> {
+        ChildrenView {
+            children: self.get::<Children>(entity),
+            index: 0,
+        }
     }
 
     /// The number of children of `entity`.
@@ -133,7 +140,7 @@ impl<M: Mode> World<M> {
     /// let child = world.spawn(("leaf",));
     /// world.set_parent(child, parent);
     /// assert_eq!(world.parent(child), Some(parent));
-    /// assert_eq!(world.child_entities(parent), [child]);
+    /// assert_eq!(world.children(parent).collect::<Vec<_>>(), [child]);
     /// `````
     pub fn set_parent(&mut self, child: Entity, parent: Entity) {
         if child == parent {
@@ -185,11 +192,12 @@ impl<M: Mode> World<M> {
 
     /// Detach every child of `entity`.
     pub fn clear_children(&mut self, entity: Entity) {
-        for child in self.child_entities(entity) {
-            let _ = self.remove_erased(child, core::any::TypeId::of::<ChildOf>());
-        }
-        if let Some(mut children) = self.get_mut::<Children>(entity) {
-            children.remove_all();
+        // Move the list out first: detaching would otherwise invalidate a
+        // borrow of it, and this avoids copying it.
+        if let Some(children) = self.with_mut::<Children, _>(entity, Children::take) {
+            for child in children {
+                let _ = self.remove_erased(child, core::any::TypeId::of::<ChildOf>());
+            }
         }
     }
 
@@ -221,18 +229,53 @@ impl<M: Mode> World<M> {
     }
 
     /// Iterate the descendants of `entity`, depth first and in child order.
+    ///
+    /// The entity itself is not yielded; `ancestors` walks the other way.
     pub fn descendants(&self, entity: Entity) -> impl Iterator<Item = Entity> + '_ {
-        let mut stack: Vec<Entity> = self.child_entities(entity);
-        stack.reverse();
+        // One open view per level, so descending costs a pop rather than a
+        // collect per entity.
+        let mut stack: Vec<ChildrenView<'_, M>> = vec![self.children(entity)];
         core::iter::from_fn(move || {
-            let next = stack.pop()?;
-            let mut children = self.child_entities(next);
-            children.reverse();
-            stack.extend(children);
-            Some(next)
+            while let Some(open) = stack.last_mut() {
+                if let Some(child) = open.next() {
+                    stack.push(self.children(child));
+                    return Some(child);
+                }
+                stack.pop();
+            }
+            None
         })
     }
 }
+
+/// A borrowed view of one entity's children.
+///
+/// The view is both a slice (through [`Deref`]) and an iterator, and it holds
+/// the component borrow for its whole lifetime, so it neither copies the list
+/// nor looks it up again per child.
+pub struct ChildrenView<'w, M: Mode> {
+    children: Option<CellRef<'w, M, Children>>,
+    index: usize,
+}
+
+impl<M: Mode> Deref for ChildrenView<'_, M> {
+    type Target = [Entity];
+
+    fn deref(&self) -> &[Entity] {
+        self.children.as_deref().map_or(&[], Children::as_slice)
+    }
+}
+
+impl<M: Mode> Iterator for ChildrenView<'_, M> {
+    type Item = Entity;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let child = self.deref().get(self.index).copied();
+        self.index += 1;
+        child
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::tests_common::Marker;
@@ -244,7 +287,7 @@ mod tests {
         let child = world.spawn(("leaf",));
         world.set_parent(child, parent);
         assert_eq!(world.parent(child), Some(parent));
-        assert_eq!(world.child_entities(parent), [child]);
+        assert_eq!(world.children(parent).collect::<Vec<_>>(), [child]);
         assert_eq!(world.child_count(parent), 1);
     }
 
@@ -258,7 +301,7 @@ mod tests {
         for child in [a, b, c] {
             world.set_parent(child, parent);
         }
-        assert_eq!(world.child_entities(parent), [a, b, c]);
+        assert_eq!(world.children(parent).collect::<Vec<_>>(), [a, b, c]);
     }
 
     #[test]
@@ -269,8 +312,8 @@ mod tests {
         let child = world.spawn(("leaf",));
         world.set_parent(child, first);
         world.set_parent(child, second);
-        assert!(world.child_entities(first).is_empty());
-        assert_eq!(world.child_entities(second), [child]);
+        assert!(world.children(first).next().is_none());
+        assert_eq!(world.children(second).collect::<Vec<_>>(), [child]);
         assert_eq!(world.parent(child), Some(second));
     }
 
@@ -293,7 +336,7 @@ mod tests {
         let child = world.spawn(("leaf",));
         world.set_parent(child, parent);
         world.remove_child(parent, child);
-        assert!(world.child_entities(parent).is_empty());
+        assert!(world.children(parent).next().is_none());
         assert_eq!(world.parent(child), None);
     }
 
@@ -306,7 +349,7 @@ mod tests {
         world.set_parent(a, parent);
         world.set_parent(b, parent);
         world.clear_children(parent);
-        assert!(world.child_entities(parent).is_empty());
+        assert!(world.children(parent).next().is_none());
         assert_eq!(world.parent(a), None);
         assert_eq!(world.parent(b), None);
     }
@@ -354,7 +397,7 @@ mod tests {
             .insert(child, crate::tests_common::Addable(2))
             .unwrap();
         assert_eq!(world.parent(child), Some(parent));
-        assert_eq!(world.child_entities(parent), [child]);
+        assert_eq!(world.children(parent).collect::<Vec<_>>(), [child]);
         world.remove::<crate::tests_common::Addable>(child).unwrap();
         assert_eq!(world.parent(child), Some(parent));
     }
