@@ -354,10 +354,19 @@
 //! ```
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 // The built-in WESL shader package is generated at build time from
 // `shaders/*.wesl`; the built-in pipeline composes its variants against it.
-wesl_core::wesl_pkg!(pub shader, "wgpu_unlit_render.rs");
+wesl_core::wesl_pkg!(
+    #[doc = "The WESL modules of the built-in shader package."]
+    #[expect(
+        missing_docs,
+        reason = "the package is generated from `shaders/*.wesl`; its items carry no docs of their own"
+    )]
+    pub shader,
+    "wgpu_unlit_render.rs"
+);
 
 pub mod globals;
 pub mod mesh;
