@@ -20,6 +20,7 @@ wesl-core = { version = "0.1.0", default-features = false }
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
 zerocopy = { version = "0.8.56", default-features = false, features = ["alloc", "std"] }
 zerocopy-derive = { version = "0.8.56", default-features = false }
+async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
 
 [workspace.lints.clippy]
 allow_attributes = "warn"
