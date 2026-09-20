@@ -1,8 +1,8 @@
 //! `unlit_ecs` — a compact archetype ECS for the `unlit3d` layer.
 //!
 //! The design is deliberately small. There is no change detection, no component
-//! hooks, no resource registry and no scheduler; everything that would need
-//! those is done by the caller on the entities themselves.
+//! hooks and no scheduler; everything that would need those is done by the
+//! caller on the entities themselves.
 //!
 //! # Worlds
 //!
@@ -10,8 +10,8 @@
 //! cell. That has two consequences:
 //!
 //! - Reading and writing components needs only `&World`. Structural changes —
-//!   spawning, despawning, adding or removing components, reparenting — need
-//!   `&mut World`, or a [`Commands`] queue applied by the driver.
+//!   spawning and despawning — need `&mut World`, or a [`Commands`] queue
+//!   applied by the driver.
 //! - The two worlds differ only in their cells. [`LocalWorld`] uses
 //!   `RefCell` and cannot leave its thread; [`SendWorld`] uses `RwLock` and
 //!   is `Send + Sync`. Everything else is shared code.
@@ -19,44 +19,36 @@
 //! # Model
 //!
 //! - An entity's components are fixed when it is spawned. To change the set of
-//!   components, despawn and respawn. The exceptions are components that opt in
-//!   with [`AddableComponent`]: [`Children`], [`ChildOf`] and
-//!   [`Resource`].
-//! - [`Ctx`] is one entity's view of the world: itself, its descendants, and
-//!   resource entities. A behaviour component cannot reach its parent or a
-//!   sibling, so an entity's state stays its own.
-//! - There are no events or observers. To reach another entity, call its
-//!   behaviour component with [`World::call`]; a caller composes a direction
-//!   from the hierarchy walkers (`ancestors`, `descendants`) when it wants
-//!   one.
+//!   components, despawn the entity and spawn a new one.
+//! - When one entity should point at another, store the [`Entity`] handle in
+//!   a component and keep it up to date yourself; the world does not track the
+//!   reference or clean it up.
+//! - There are no events or observers. To drive behaviour, the caller reads the
+//!   world and calls the closure or method it wants on the entities it chooses,
+//!   using [`World::with_mut`] or a query.
 //! - Asynchronous behaviour returns a future; the driver polls it with
 //!   [`Tasks`]. No executor is built in.
 //!
 //! # Example
 //!
 //! `````
-//! use unlit_ecs::{Ctx, LocalWorld, Query, Resource};
+//! use unlit_ecs::{LocalWorld, Query, Resource};
 //!
-//! // A behaviour component: a closure the driver calls every frame.
+//! // A behaviour component: data the driver reads and writes every frame.
 //! struct Spin {
 //!     radians_per_second: f32,
 //!     angle: f32,
 //! }
 //!
 //! let mut world = LocalWorld::new();
-//! let scene = world.spawn(("scene",));
 //! let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-//! world.set_parent(cube, scene);
+//! let clock = world.spawn((Resource, 0.016f32));
 //!
-//! // Drive every Spin under the scene, depth first. The caller picks the
-//! // order; the library has no built-in notion of "down".
-//! let clock = Resource;
-//! let _clock = world.spawn((clock, 0.016f32));
-//! for entity in world.descendants(scene) {
-//!     world.call::<Spin, _>(entity, |spin, ctx: Ctx<'_, _>| {
-//!         let Some(clock) = ctx.get_in::<f32>(_clock) else { return };
-//!         spin.angle += spin.radians_per_second * *clock;
-//!     });
+//! // Drive every Spin. The caller picks which entities to touch and in what
+//! // order; the library has no built-in notion of a scene graph.
+//! let delta = world.get::<f32>(clock).unwrap().to_owned();
+//! for (_, mut spin) in world.query::<&mut Spin>() {
+//!     spin.angle += spin.radians_per_second * delta;
 //! }
 //!
 //! assert_ne!(world.get::<Spin>(cube).unwrap().angle, 0.0);
@@ -70,10 +62,8 @@ mod archetype;
 mod bundle;
 mod command;
 mod component;
-mod ctx;
 mod entity;
 mod hash;
-mod hierarchy;
 mod mode;
 mod query;
 mod tasks;
@@ -86,11 +76,9 @@ pub use bundle::{ArchetypeBuilder, Bundle};
 pub use command::{Command, CommandErase, Commands};
 #[doc(hidden)]
 pub use component::Component;
-pub use component::{AddableComponent, InsertError, NoSuchEntity, RemoveError, Resource};
-pub use ctx::Ctx;
+pub use component::Resource;
 pub use entity::Entity;
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
-pub use hierarchy::{ChildOf, Children};
 pub use mode::{LocalMode, Mode, SendMode};
 pub use query::{Query, QueryIter, With, Without};
 pub use tasks::Tasks;
@@ -109,8 +97,5 @@ pub type SendWorld = World<SendMode>;
 
 /// The types most callers need.
 pub mod prelude {
-    pub use crate::{
-        AddableComponent, ChildOf, Children, Ctx, Entity, LocalWorld, Query, Resource, SendWorld,
-        Without, World,
-    };
+    pub use crate::{Entity, LocalWorld, Query, Resource, SendWorld, Without, World};
 }

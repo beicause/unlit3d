@@ -4,8 +4,6 @@
 //! generation, so a handle to a dead entity never resolves to a new entity that
 //! happened to reuse the index.
 
-use crate::component::NoSuchEntity;
-
 /// A handle to an entity.
 ///
 /// The handle is a plain value: it stays valid across world mutations as long
@@ -174,13 +172,18 @@ impl Entities {
 
     /// Release a dead entity's index, so a later entity reuses it with a new
     /// generation.
-    pub(crate) fn free(&mut self, entity: Entity) -> Result<(), NoSuchEntity> {
-        let meta = self
-            .meta
-            .get_mut(entity.index as usize)
-            .ok_or(NoSuchEntity)?;
+    ///
+    /// Returns whether the handle referred to a reserved or live entity; a
+    /// stale handle, or one already freed, is a no-op.
+    pub(crate) fn free(&mut self, entity: Entity) -> bool {
+        let Some(meta) = self.meta.get_mut(entity.index as usize) else {
+            return false;
+        };
         if meta.generation != entity.generation {
-            return Err(NoSuchEntity);
+            return false;
+        }
+        if !meta.reserved && meta.location.is_none() {
+            return false;
         }
         meta.location = None;
         meta.generation = meta.generation.wrapping_add(1);
@@ -189,7 +192,7 @@ impl Entities {
             self.reserved -= 1;
         }
         self.free.push(entity.index);
-        Ok(())
+        true
     }
 }
 #[cfg(test)]
@@ -210,7 +213,7 @@ mod tests {
                 row: 0,
             },
         );
-        entities.free(first).unwrap();
+        assert!(entities.free(first));
 
         let second = entities.alloc();
         assert_eq!(second.index(), 0, "the index is reused");
@@ -249,8 +252,8 @@ mod tests {
                 row: 0,
             },
         );
-        entities.free(entity).unwrap();
-        assert!(entities.free(entity).is_err());
+        assert!(entities.free(entity));
+        assert!(!entities.free(entity), "the handle is already stale");
     }
 
     #[test]
@@ -274,7 +277,7 @@ mod tests {
             },
         );
         assert_eq!(entities.len(), 2);
-        entities.free(first).unwrap();
+        assert!(entities.free(first));
         assert_eq!(entities.len(), 1);
         assert!(entities.contains(second));
     }

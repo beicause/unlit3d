@@ -7,30 +7,31 @@
 //!   `RefCell`s and therefore cannot leave its thread. This is the world that
 //!   holds a renderer or any other `!Send` state.
 //! - [`SendWorld`](crate::SendWorld) stores components in `RwLock`s, so it is
-//!   `Send + Sync`
-//!   and several threads may read and write it at once.
+//!   `Send + Sync` and several threads may read and write it at once.
 //!
 //! Reading and writing components needs only `&World`, because every value
-//! lives in a cell. Structural changes — spawning, despawning, adding or
-//! removing components, and reparenting — need `&mut World`. A callback that
-//! only has a shared world can queue those changes instead with
-//! [`World::queue`] and apply them later with [`World::apply`].
+//! lives in a cell. Structural changes — spawning and despawning — need
+//! `&mut World`. A callback that only has a shared world can queue those
+//! changes instead with [`World::queue`] and apply them later with
+//! [`World::apply`].
+//!
+//! An entity's components are fixed when it is spawned; there is no way to add
+//! or remove one later. To change the set of components, despawn the entity and
+//! spawn a new one.
 //!
 //! A borrow conflict is a panic, not a compile error: asking for a component
 //! that is already borrowed, or fetching the same component as `&mut` twice
 //! in one query, reports the component's name and stops. This is the trade for
 //! not doing access analysis.
 
-use core::any::{Any, TypeId};
+use core::any::TypeId;
 
 use crate::archetype::{Archetype, Archetypes};
 use crate::bundle::{ArchetypeBuilder, Bundle};
 use crate::command::{Command as _, Commands};
-use crate::component::{AddableComponent, InsertError, RemoveError};
-use crate::ctx::Ctx;
 use crate::entity::{Entities, Entity, Location};
 use crate::hash::TypeIdHashMap;
-use crate::mode::{Cell, CellRef, CellRefMut, Column, ColumnErase, Mode};
+use crate::mode::{Cell, CellRef, CellRefMut, Mode};
 use crate::query::{Query, QueryIter};
 
 /// Entities and their components.
@@ -57,21 +58,10 @@ impl<M: Mode> Default for World<M> {
 impl<M: Mode> World<M> {
     /// An empty world holding only the empty archetype.
     pub fn new() -> Self {
-        let mut ctors: TypeIdHashMap<fn() -> Box<M::ErasedColumn>> = TypeIdHashMap::default();
-        // The hierarchy components are the ones a live entity gains and loses,
-        // so their columns must always be constructible.
-        ctors.insert(
-            TypeId::of::<crate::hierarchy::Children>(),
-            <M as Mode>::children_column,
-        );
-        ctors.insert(
-            TypeId::of::<crate::hierarchy::ChildOf>(),
-            <M as Mode>::child_of_column,
-        );
         Self {
             entities: M::Cell::new(Entities::default()),
             archetypes: Archetypes::new(),
-            ctors,
+            ctors: TypeIdHashMap::default(),
             commands: M::Cell::new(Vec::new()),
         }
     }
@@ -134,7 +124,9 @@ impl<M: Mode> World<M> {
     /// Run `f` on the component of `entity`.
     ///
     /// This is the scoped form of [`World::get_mut`]: the borrow ends with the
-    /// closure, so nothing else can trip over it.
+    /// closure, so nothing else can trip over it. It is also how a behaviour
+    /// component is driven: the closure is the behaviour, and the caller
+    /// decides which entities to run it on.
     ///
     /// `````
     /// # use unlit_ecs::LocalWorld;
@@ -220,145 +212,20 @@ impl<M: Mode> World<M> {
         if !self.entities_read().is_reserved(entity) {
             return false;
         }
-        self.entities_write().free(entity).is_ok()
+        self.entities_write().free(entity)
     }
 
-    /// Despawn `entity` and every descendant of it.
+    /// Despawn `entity`.
     ///
-    /// Returns `false` when the entity was not alive. Despawning cascades, so
-    /// a subtree leaves as a unit.
+    /// Returns `false` when the entity was not alive. Only the named entity is
+    /// removed; handles to it that the caller kept elsewhere resolve to nothing
+    /// afterwards, and it is the caller's job to notice.
     pub fn despawn(&mut self, entity: Entity) -> bool {
-        if !self.contains(entity) {
+        let Some(location) = self.archetype_of(entity) else {
             return false;
-        }
-        self.despawn_subtree(entity);
-        true
-    }
-
-    /// Add `component` to a live entity.
-    ///
-    /// Only a component that implements [`AddableComponent`] may be added at
-    /// run time; an entity's other components are fixed when it is spawned.
-    ///
-    /// `````
-    /// # use unlit_ecs::{AddableComponent, LocalWorld};
-    /// #[derive(Debug, PartialEq)]
-    /// struct Health(u32);
-    /// impl AddableComponent for Health {}
-    ///
-    /// let mut world = LocalWorld::new();
-    /// let entity = world.spawn(());
-    /// world.insert(entity, Health(3)).unwrap();
-    /// assert!(world.has::<Health>(entity));
-    /// `````
-    pub fn insert<C: AddableComponent>(
-        &mut self,
-        entity: Entity,
-        component: C,
-    ) -> Result<(), InsertError>
-    where
-        Column<M, C>: ColumnErase<M>,
-    {
-        if self.get::<C>(entity).is_some() {
-            return Err(InsertError::AlreadyPresent {
-                component: core::any::type_name::<C>(),
-            });
-        }
-        let location = self
-            .entities_read()
-            .location(entity)
-            .ok_or(InsertError::NoSuchEntity)?;
-        self.ctors
-            .entry(TypeId::of::<C>())
-            .or_insert(Column::<M, C>::eraser());
-        let target = self.archetype_with_added(location.archetype, TypeId::of::<C>());
-        self.move_row(
-            location,
-            target,
-            Some((TypeId::of::<C>(), Box::new(component))),
-        );
-        Ok(())
-    }
-
-    /// Remove component `C` from a live entity and return it.
-    ///
-    /// Only a component that implements [`AddableComponent`] may be removed
-    /// at run time.
-    pub fn remove<C: AddableComponent>(&mut self, entity: Entity) -> Result<C, RemoveError>
-    where
-        Column<M, C>: ColumnErase<M>,
-    {
-        let location = self
-            .entities_read()
-            .location(entity)
-            .ok_or(RemoveError::NoSuchEntity)?;
-        if self.get::<C>(entity).is_none() {
-            return Err(RemoveError::Missing {
-                component: core::any::type_name::<C>(),
-            });
-        }
-        let target = self.archetype_without(location.archetype, TypeId::of::<C>());
-        let removed = self.move_row(location, target, None);
-        Ok(*removed
-            .expect("a removed component is always returned")
-            .downcast::<C>()
-            .expect("the removed component has its own type"))
-    }
-
-    /// Add an already boxed component of component type `type_id`.
-    ///
-    /// This is the form the hierarchy uses: it knows its components by type id,
-    /// and their column constructors are always registered.
-    pub(crate) fn insert_erased(
-        &mut self,
-        entity: Entity,
-        type_id: TypeId,
-        value: Box<dyn Any>,
-    ) -> Result<(), InsertError> {
-        let location = self
-            .entities_read()
-            .location(entity)
-            .ok_or(InsertError::NoSuchEntity)?;
-        if self
-            .archetypes
-            .get(location.archetype)
-            .column_index(type_id)
-            .is_some()
-        {
-            return Err(InsertError::AlreadyPresent {
-                component: "a component",
-            });
-        }
-        let target = self.archetype_with_added(location.archetype, type_id);
-        self.move_row(location, target, Some((type_id, value)));
-        Ok(())
-    }
-
-    /// Remove the component of component type `type_id` and return it boxed.
-    pub(crate) fn remove_erased(
-        &mut self,
-        entity: Entity,
-        type_id: TypeId,
-    ) -> Result<Box<dyn Any>, RemoveError> {
-        let location = self
-            .entities_read()
-            .location(entity)
-            .ok_or(RemoveError::NoSuchEntity)?;
-        if self
-            .archetypes
-            .get(location.archetype)
-            .column_index(type_id)
-            .is_none()
-        {
-            return Err(RemoveError::Missing {
-                component: "a component",
-            });
-        }
-        let target = self.archetype_without(location.archetype, type_id);
-        self.move_row(location, target, None)
-            .ok_or(RemoveError::Missing {
-                component: "a component",
-            })
+        };
+        self.remove_row(location);
+        self.free_entity(entity)
     }
 
     // -- queries -----------------------------------------------------------
@@ -442,33 +309,6 @@ impl<M: Mode> World<M> {
         }
     }
 
-    /// Panic unless the handle refers to a live entity.
-    pub(crate) fn expect_alive(&self, entity: Entity) {
-        assert!(self.contains(entity), "{entity:?} is not a live entity");
-    }
-
-    /// A scope for invoking a behaviour component on `entity` and its
-    /// descendants, with the data isolation enforced.
-    pub fn ctx(&self, entity: Entity) -> Ctx<'_, M> {
-        Ctx::new(self, entity)
-    }
-
-    /// Run behaviour component `B` of one entity, if it has one, with a
-    /// scope the entity is allowed to see.
-    ///
-    /// It says nothing about which entity to call: a caller that wants to reach
-    /// a subtree walks [`World::descendants`](Self::descendants) and calls
-    /// each one.
-    pub fn call<B: 'static, R>(
-        &self,
-        entity: Entity,
-        f: impl FnOnce(&mut B, Ctx<'_, M>) -> R,
-    ) -> Option<R> {
-        let mut component = self.get_mut::<B>(entity)?;
-        let ctx = Ctx::new(self, entity);
-        Some(f(&mut component, ctx))
-    }
-
     // -- internals ---------------------------------------------------------
 
     pub(crate) fn entities_read(&self) -> <M::Cell<Entities> as Cell<Entities>>::Ref<'_> {
@@ -514,89 +354,6 @@ impl<M: Mode> World<M> {
             .register(Archetype::new(types.into(), columns.into_boxed_slice()))
     }
 
-    /// The archetype of `source` plus the component `added`.
-    fn archetype_with_added(&mut self, source: u32, added: TypeId) -> u32 {
-        if self.archetypes.get(source).column_index(added).is_some() {
-            return source;
-        }
-        if let Some(target) = self.archetypes.add_edge(source, added) {
-            return target;
-        }
-        // First time this transition is taken: build the component list, which
-        // is the only allocation left on a structural change.
-        let mut types = self.archetypes.get(source).types().to_vec();
-        let index = match types.binary_search(&added) {
-            // The early return above already handled the present case.
-            Ok(_) => return source,
-            Err(index) => index,
-        };
-        types.insert(index, added);
-        let target = self.archetype_for_types(&types);
-        self.archetypes.set_add_edge(source, added, target);
-        target
-    }
-
-    /// The archetype of `source` without the component `removed`.
-    fn archetype_without(&mut self, source: u32, removed: TypeId) -> u32 {
-        if self.archetypes.get(source).column_index(removed).is_none() {
-            return source;
-        }
-        if let Some(target) = self.archetypes.remove_edge(source, removed) {
-            return target;
-        }
-        let mut types = self.archetypes.get(source).types().to_vec();
-        let index = match types.binary_search(&removed) {
-            Ok(index) => index,
-            // The early return above already handled the absent case.
-            Err(_) => return source,
-        };
-        types.remove(index);
-        let target = self.archetype_for_types(&types);
-        self.archetypes.set_remove_edge(source, removed, target);
-        target
-    }
-
-    /// Move the row at `location` into archetype `target`, optionally
-    /// attaching `extra`, and return the component that did not fit.
-    fn move_row(
-        &mut self,
-        location: Location,
-        target: u32,
-        extra: Option<(TypeId, Box<dyn Any>)>,
-    ) -> Option<Box<dyn Any>> {
-        let entity = self
-            .archetypes
-            .get(location.archetype)
-            .entity_at(location.row());
-        let (source, target_archetype) = self.archetypes.split_mut(location.archetype, target);
-        let (removed, swapped) = source.move_row(location.row(), target_archetype, extra);
-        let target_row = (target_archetype.len() - 1) as u32;
-        if let Some(swapped) = swapped {
-            self.entities_write().set_location(
-                swapped,
-                Location {
-                    archetype: location.archetype,
-                    row: location.row,
-                },
-            );
-        }
-        self.entities_write().set_location(
-            entity,
-            Location {
-                archetype: target,
-                row: target_row,
-            },
-        );
-        removed
-    }
-
-    /// Detach the entity from its parent's child list.
-    pub(crate) fn detach_from_parent(&mut self, parent: Entity, child: Entity) {
-        let _ = self.with_mut::<crate::hierarchy::Children, _>(parent, |children| {
-            children.remove(child);
-        });
-    }
-
     pub(crate) fn archetype_of(&self, entity: Entity) -> Option<Location> {
         self.entities_read().location(entity)
     }
@@ -620,36 +377,7 @@ impl<M: Mode> World<M> {
     }
 
     pub(crate) fn free_entity(&mut self, entity: Entity) -> bool {
-        self.entities_write().free(entity).is_ok()
-    }
-
-    /// Depth-first despawning of a subtree, children before the parent.
-    ///
-    /// The walk keeps its own stack instead of recursing, so a deep chain of
-    /// entities cannot overflow the call stack.
-    fn despawn_subtree(&mut self, entity: Entity) {
-        let mut stack = vec![entity];
-        while let Some(current) = stack.pop() {
-            // Despawning a child detaches it from its parent, which would
-            // invalidate a borrow of the list; move the list out instead of
-            // copying it, leaving the component empty for the detach to find.
-            if let Some(children) = self.with_mut::<crate::hierarchy::Children, _>(
-                current,
-                crate::hierarchy::Children::take,
-            ) {
-                stack.extend(children);
-            }
-            if let Some(parent) = self
-                .get::<crate::hierarchy::ChildOf>(current)
-                .map(|child| child.0)
-            {
-                self.detach_from_parent(parent, current);
-            }
-            if let Some(location) = self.archetype_of(current) {
-                self.remove_row(location);
-            }
-            self.free_entity(current);
-        }
+        self.entities_write().free(entity)
     }
 }
 
@@ -661,11 +389,11 @@ fn borrow_conflict<C: 'static>(kind: &str) -> ! {
         kind,
     )
 }
+
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::LocalWorld;
-    use crate::tests_common::{Addable, Marker, Name};
+    use crate::tests_common::{Marker, Name};
 
     #[test]
     fn spawn_makes_an_entity_with_its_components() {
@@ -729,55 +457,6 @@ mod tests {
     }
 
     #[test]
-    fn addable_components_can_be_added_and_removed_while_running() {
-        let mut world = LocalWorld::new();
-        let entity = world.spawn((Marker(1),));
-        world.insert(entity, Addable(7)).unwrap();
-        assert!(world.has::<Addable>(entity));
-        assert_eq!(world.get::<Addable>(entity).unwrap().0, 7);
-        assert_eq!(
-            world.get::<Marker>(entity).unwrap().0,
-            1,
-            "other components survive"
-        );
-
-        assert_eq!(world.remove::<Addable>(entity).unwrap(), Addable(7));
-        assert!(!world.has::<Addable>(entity));
-        assert!(world.get::<Marker>(entity).is_some());
-    }
-
-    #[test]
-    fn adding_a_component_twice_is_an_error() {
-        let mut world = LocalWorld::new();
-        let entity = world.spawn((Addable(1),));
-        let error = world.insert(entity, Addable(2)).unwrap_err();
-        assert!(matches!(error, InsertError::AlreadyPresent { .. }));
-    }
-
-    #[test]
-    fn removing_a_missing_component_is_an_error() {
-        let mut world = LocalWorld::new();
-        let entity = world.spawn((Marker(1),));
-        let error = world.remove::<Addable>(entity).unwrap_err();
-        assert!(matches!(error, RemoveError::Missing { .. }));
-    }
-
-    #[test]
-    fn structures_on_a_dead_entity_error() {
-        let mut world = LocalWorld::new();
-        let entity = world.spawn((Marker(1),));
-        world.despawn(entity);
-        assert!(matches!(
-            world.insert(entity, Addable(1)),
-            Err(InsertError::NoSuchEntity)
-        ));
-        assert!(matches!(
-            world.remove::<Addable>(entity),
-            Err(RemoveError::NoSuchEntity)
-        ));
-    }
-
-    #[test]
     fn spawn_at_puts_a_bundle_on_a_reserved_entity() {
         let mut world = LocalWorld::new();
         let entity = world.reserve_entity();
@@ -807,32 +486,6 @@ mod tests {
         assert_eq!(fresh.index(), reserved.index(), "the index was reused");
         assert_ne!(fresh.generation(), reserved.generation());
         assert_eq!(world.len(), 1);
-    }
-
-    #[test]
-    fn adding_and_removing_a_component_reuses_one_archetype() {
-        let mut world = LocalWorld::new();
-        let entities: Vec<_> = (0..4u32)
-            .map(|value| world.spawn((Marker(value),)))
-            .collect();
-        for entity in &entities {
-            world.insert(*entity, Addable(1)).unwrap();
-        }
-        let with_component = world.archetype_count();
-        for entity in &entities {
-            world.remove::<Addable>(*entity).unwrap();
-        }
-        for entity in &entities {
-            world.insert(*entity, Addable(2)).unwrap();
-        }
-        for entity in &entities {
-            world.remove::<Addable>(*entity).unwrap();
-        }
-        assert_eq!(
-            world.archetype_count(),
-            with_component,
-            "every round trip reuses the two archetypes"
-        );
     }
 
     #[test]

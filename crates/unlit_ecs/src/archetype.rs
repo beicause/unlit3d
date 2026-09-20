@@ -12,7 +12,6 @@ use core::any::{Any, TypeId};
 
 use hashbrown::HashMap;
 
-use crate::bundle::ErasedValue;
 use crate::entity::Entity;
 use crate::mode::{AnyColumn, Column, Mode};
 
@@ -77,11 +76,6 @@ impl<M: Mode> Archetype<M> {
         self.columns[index].as_any().downcast_ref::<Column<M, C>>()
     }
 
-    /// The entity at `row`.
-    pub(crate) fn entity_at(&self, row: usize) -> Entity {
-        self.entities[row]
-    }
-
     /// Append an already erased component value.
     ///
     /// Every caller supplies a value whose type is one of the archetype's
@@ -110,57 +104,12 @@ impl<M: Mode> Archetype<M> {
         self.entities.swap_remove(row);
         (row != last).then(|| self.entities[row])
     }
-
-    /// Move the row at `row` into `target`, attaching `extra` when given,
-    /// then drop the row.
-    ///
-    /// A component that `target` has no column for is returned: that is how
-    /// [`World::remove`](crate::LocalWorld::remove) takes its value back. The
-    /// moved-into-the-hole entity is returned too, so its location can be
-    /// updated.
-    pub(crate) fn move_row(
-        &mut self,
-        row: usize,
-        target: &mut Archetype<M>,
-        extra: Option<ErasedValue>,
-    ) -> (Option<Box<dyn Any>>, Option<Entity>) {
-        let last = self.entities.len() - 1;
-        let entity = self.entities[row];
-        if let Some((type_id, value)) = extra {
-            target.push_erased(type_id, value);
-        }
-        let mut removed = None;
-        for index in 0..self.types.len() {
-            let type_id = self.types[index];
-            let value = self.columns[index].swap_remove(row);
-            match target.column_index(type_id) {
-                Some(target_index) => target.columns[target_index].push_boxed(value),
-                None => {
-                    debug_assert!(
-                        removed.is_none(),
-                        "only one component can be missing from the target archetype"
-                    );
-                    removed = Some(value);
-                }
-            }
-        }
-        target.push_entity(entity);
-        self.entities.swap_remove(row);
-        (removed, (row != last).then(|| self.entities[row]))
-    }
 }
 
 /// Every archetype of a world.
 pub struct Archetypes<M: Mode> {
     archetypes: Vec<Archetype<M>>,
     by_types: HashMap<Box<[TypeId]>, u32>,
-    /// `(source, added) -> target` for archetypes one component away. The edge
-    /// is remembered on the first structural change, so later ones look the
-    /// archetype up without rebuilding its component list.
-    add_edges: HashMap<(u32, TypeId), u32>,
-    /// `(source, removed) -> target`, the removal counterpart of
-    /// [`Archetypes::add_edges`].
-    remove_edges: HashMap<(u32, TypeId), u32>,
 }
 
 impl<M: Mode> Archetypes<M> {
@@ -169,8 +118,6 @@ impl<M: Mode> Archetypes<M> {
         let mut pool = Self {
             archetypes: Vec::new(),
             by_types: HashMap::new(),
-            add_edges: HashMap::new(),
-            remove_edges: HashMap::new(),
         };
         pool.register(Archetype::new(Box::new([]), Box::new([])));
         pool
@@ -202,40 +149,6 @@ impl<M: Mode> Archetypes<M> {
     /// The number of archetypes.
     pub(crate) fn len(&self) -> usize {
         self.archetypes.len()
-    }
-
-    /// Mutably borrow two different archetypes at once.
-    pub(crate) fn split_mut(&mut self, a: u32, b: u32) -> (&mut Archetype<M>, &mut Archetype<M>) {
-        assert_ne!(a, b, "a structural change always targets another archetype");
-        let (low, high) = if a < b { (a, b) } else { (b, a) };
-        let (first, second) = self.archetypes.split_at_mut(high as usize);
-        let low_ref = &mut first[low as usize];
-        let high_ref = &mut second[0];
-        if a < b {
-            (low_ref, high_ref)
-        } else {
-            (high_ref, low_ref)
-        }
-    }
-
-    /// The archetype reached from `source` by adding `added`, if it is known.
-    pub(crate) fn add_edge(&self, source: u32, added: TypeId) -> Option<u32> {
-        self.add_edges.get(&(source, added)).copied()
-    }
-
-    /// Remember the archetype reached from `source` by adding `added`.
-    pub(crate) fn set_add_edge(&mut self, source: u32, added: TypeId, target: u32) {
-        self.add_edges.insert((source, added), target);
-    }
-
-    /// The archetype reached from `source` by removing `removed`, if known.
-    pub(crate) fn remove_edge(&self, source: u32, removed: TypeId) -> Option<u32> {
-        self.remove_edges.get(&(source, removed)).copied()
-    }
-
-    /// Remember the archetype reached from `source` by removing `removed`.
-    pub(crate) fn set_remove_edge(&mut self, source: u32, removed: TypeId, target: u32) {
-        self.remove_edges.insert((source, removed), target);
     }
 
     /// Every archetype.

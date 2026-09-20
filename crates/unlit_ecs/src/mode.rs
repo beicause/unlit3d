@@ -7,9 +7,8 @@
 //!
 //! Component access goes through the cells, which is what lets a shared
 //! `&World` read and write components without any `unsafe`. Structural
-//! changes (spawning, despawning, adding or removing components, changing the
-//! hierarchy) still need `&mut World`, so a component borrow can never be
-//! held while the storage it lives in is moved around.
+//! changes (spawning and despawning) still need `&mut World`, so a component
+//! borrow can never be held while the storage it lives in is moved around.
 
 use core::any::Any;
 use core::cell::{Ref, RefCell, RefMut};
@@ -240,15 +239,6 @@ pub trait Mode: 'static + Sized + sealed::Sealed {
     type ErasedCommand: ?Sized + Command<Self>;
     /// A type-erased future owned by a [`Tasks`](crate::Tasks) table.
     type ErasedTask: ?Sized + Future<Output = ()>;
-
-    /// An empty [`Children`](crate::Children) column.
-    ///
-    /// The hierarchy components are the ones a live entity always gains and
-    /// loses, so the mode constructs their columns directly and no generic
-    /// caller needs the component's erase bound.
-    fn children_column() -> Box<Self::ErasedColumn>;
-    /// An empty [`ChildOf`](crate::ChildOf) column.
-    fn child_of_column() -> Box<Self::ErasedColumn>;
 }
 
 impl sealed::Sealed for LocalMode {}
@@ -262,14 +252,6 @@ impl Mode for LocalMode {
     type ErasedColumn = dyn AnyColumn;
     type ErasedCommand = dyn Command<LocalMode>;
     type ErasedTask = dyn Future<Output = ()>;
-
-    fn children_column() -> Box<dyn AnyColumn> {
-        Column::<LocalMode, crate::Children>::new().erase()
-    }
-
-    fn child_of_column() -> Box<dyn AnyColumn> {
-        Column::<LocalMode, crate::ChildOf>::new().erase()
-    }
 }
 
 /// The `Send` storage mode, used by [`SendWorld`](crate::SendWorld).
@@ -280,14 +262,6 @@ impl Mode for SendMode {
     type ErasedColumn = dyn AnyColumn + Send + Sync;
     type ErasedCommand = dyn Command<SendMode> + Send + Sync;
     type ErasedTask = dyn Future<Output = ()> + Send;
-
-    fn children_column() -> Box<dyn AnyColumn + Send + Sync> {
-        Column::<SendMode, crate::Children>::new().erase()
-    }
-
-    fn child_of_column() -> Box<dyn AnyColumn + Send + Sync> {
-        Column::<SendMode, crate::ChildOf>::new().erase()
-    }
 }
 
 /// The borrow of a component value.
