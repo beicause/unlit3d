@@ -106,6 +106,7 @@ impl AddableComponent for ChildOf {}
 
 impl<M: Mode> World<M> {
     /// The parent of `entity`, if it has one.
+    #[must_use]
     pub fn parent(&self, entity: Entity) -> Option<Entity> {
         self.get::<ChildOf>(entity).map(|child_of| child_of.0)
     }
@@ -122,6 +123,7 @@ impl<M: Mode> World<M> {
     }
 
     /// The number of children of `entity`.
+    #[must_use]
     pub fn child_count(&self, entity: Entity) -> usize {
         self.get::<Children>(entity)
             .map(|children| children.len())
@@ -183,7 +185,15 @@ impl<M: Mode> World<M> {
     }
 
     /// Detach `child` from `parent`.
+    ///
+    /// `parent` must be the child's actual parent. The `ChildOf` component is
+    /// the source of truth: when `parent` does not match it, nothing happens,
+    /// so a caller that names the wrong parent cannot leave a stale entry in
+    /// the real parent's [`Children`].
     pub fn remove_child(&mut self, parent: Entity, child: Entity) {
+        if self.parent(child) != Some(parent) {
+            return;
+        }
         if let Some(mut children) = self.get_mut::<Children>(parent) {
             children.remove(child);
         }
@@ -202,6 +212,7 @@ impl<M: Mode> World<M> {
     }
 
     /// Whether `entity` is `other` or a descendant of it.
+    #[must_use]
     pub fn is_descendant_of(&self, entity: Entity, other: Entity) -> bool {
         let mut current = Some(entity);
         while let Some(candidate) = current {
@@ -214,6 +225,7 @@ impl<M: Mode> World<M> {
     }
 
     /// Whether `entity` is `other` or an ancestor of it.
+    #[must_use]
     pub fn is_ancestor_of(&self, entity: Entity, other: Entity) -> bool {
         self.is_descendant_of(other, entity)
     }
@@ -400,5 +412,60 @@ mod tests {
         assert_eq!(world.children(parent).collect::<Vec<_>>(), [child]);
         world.remove::<crate::tests_common::Addable>(child).unwrap();
         assert_eq!(world.parent(child), Some(parent));
+    }
+
+    #[test]
+    fn remove_child_with_the_wrong_parent_does_nothing() {
+        let mut world = crate::LocalWorld::new();
+        let real = world.spawn(("real",));
+        let wrong = world.spawn(("wrong",));
+        let child = world.spawn(("child",));
+        world.set_parent(child, real);
+        world.remove_child(wrong, child);
+        assert_eq!(
+            world.parent(child),
+            Some(real),
+            "the real parent still owns it"
+        );
+        assert_eq!(world.children(real).collect::<Vec<_>>(), [child]);
+    }
+
+    #[test]
+    fn a_failed_remove_child_cannot_make_despawn_reach_a_reparented_child() {
+        let mut world = crate::LocalWorld::new();
+        let first = world.spawn(("first",));
+        let wrong = world.spawn(("wrong",));
+        let second = world.spawn(("second",));
+        let child = world.spawn(("child",));
+        world.set_parent(child, first);
+        world.remove_child(wrong, child);
+        world.set_parent(child, second);
+        assert!(world.despawn(first));
+        assert!(world.contains(child), "the child belongs to `second`");
+        assert_eq!(world.parent(child), Some(second));
+    }
+
+    #[test]
+    fn a_deep_chain_despawns_without_recursing() {
+        // Built through the hierarchy components directly, so the test does not
+        // pay `set_parent`'s per-call ancestor walk. The chain is deep enough
+        // that a recursive despawn would overflow the thread stack.
+        use crate::{ChildOf, Children};
+
+        let mut world = crate::LocalWorld::new();
+        let root = world.spawn(("root",));
+        let mut parent = root;
+        for _ in 0..50_000 {
+            let child = world.spawn(("node",));
+            world.insert(child, ChildOf(parent)).unwrap();
+            if world.has::<Children>(parent) {
+                let _ = world.with_mut::<Children, _>(parent, |c| c.push(child));
+            } else {
+                world.insert(parent, Children::from_iter([child])).unwrap();
+            }
+            parent = child;
+        }
+        assert!(world.despawn(root));
+        assert!(world.is_empty());
     }
 }

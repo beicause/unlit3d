@@ -33,16 +33,23 @@ impl Entity {
     }
 
     /// The index part.
+    #[must_use]
     pub const fn index(self) -> u32 {
         self.index
     }
 
     /// The generation part.
+    #[must_use]
     pub const fn generation(self) -> u32 {
         self.generation
     }
 
-    /// The two parts as one value.
+    /// The two parts as one value, generation high.
+    ///
+    /// This is not the order [`Ord`] uses: the comparison is by index first,
+    /// then generation, which is what makes entities spawned together sort
+    /// together.
+    #[must_use]
     pub const fn to_bits(self) -> u64 {
         ((self.generation as u64) << 32) | self.index as u64
     }
@@ -65,6 +72,9 @@ impl Location {
 struct Meta {
     generation: u32,
     location: Option<Location>,
+    /// Whether the index is handed out by [`Entities::reserve`] and not
+    /// spawned or freed yet.
+    reserved: bool,
 }
 
 /// Allocates entity handles and maps them to their row in an archetype.
@@ -74,15 +84,16 @@ pub(crate) struct Entities {
     /// Indices whose entity is despawned and whose current generation is
     /// already recorded in `meta`.
     free: Vec<u32>,
-    /// Indices handed out by [`reserve`](Self::reserve) that have not been
-    /// spawned yet.
-    reserved: Vec<u32>,
+    /// How many indices are reserved but not spawned. Every reserved index is
+    /// flagged in its [`Meta`], so releasing one is a flag flip rather than a
+    /// search.
+    reserved: usize,
 }
 
 impl Entities {
     /// Number of live entities.
     pub(crate) fn len(&self) -> usize {
-        self.meta.len() - self.free.len() - self.reserved.len()
+        self.meta.len() - self.free.len() - self.reserved
     }
 
     /// Whether the handle refers to a live entity.
@@ -113,11 +124,13 @@ impl Entities {
                 self.meta.push(Meta {
                     generation: 0,
                     location: None,
+                    reserved: false,
                 });
                 (self.meta.len() - 1) as u32
             }
         };
-        self.reserved.push(index);
+        self.meta[index as usize].reserved = true;
+        self.reserved += 1;
         Entity {
             index,
             generation: self.meta[index as usize].generation,
@@ -132,6 +145,7 @@ impl Entities {
                 self.meta.push(Meta {
                     generation: 0,
                     location: None,
+                    reserved: false,
                 });
                 (self.meta.len() - 1) as u32
             }
@@ -143,20 +157,18 @@ impl Entities {
     }
 
     /// Whether the handle came from [`reserve`](Self::reserve) and has not
-    /// been spawned yet.
-    #[cfg(test)]
+    /// been spawned or freed yet.
     pub(crate) fn is_reserved(&self, entity: Entity) -> bool {
-        self.reserved.contains(&entity.index)
+        self.meta
+            .get(entity.index as usize)
+            .is_some_and(|meta| meta.reserved && meta.generation == entity.generation)
     }
 
     /// Mark a reserved handle as spawned.
     pub(crate) fn take_reserved(&mut self, entity: Entity) {
-        if let Some(position) = self
-            .reserved
-            .iter()
-            .position(|index| *index == entity.index)
-        {
-            self.reserved.swap_remove(position);
+        if self.is_reserved(entity) {
+            self.meta[entity.index as usize].reserved = false;
+            self.reserved -= 1;
         }
     }
 
@@ -172,6 +184,10 @@ impl Entities {
         }
         meta.location = None;
         meta.generation = meta.generation.wrapping_add(1);
+        if meta.reserved {
+            meta.reserved = false;
+            self.reserved -= 1;
+        }
         self.free.push(entity.index);
         Ok(())
     }

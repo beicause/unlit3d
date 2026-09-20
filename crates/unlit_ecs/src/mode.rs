@@ -21,8 +21,6 @@ use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::command::Command;
 
-use crate::observer::Observer;
-
 /// The interior-mutability cell holding one component value.
 pub trait Cell<T: 'static>: 'static {
     /// Shared borrow of the value.
@@ -40,7 +38,10 @@ pub trait Cell<T: 'static>: 'static {
     fn try_read(&self) -> Option<Self::Ref<'_>>;
     /// Borrow exclusively, or `None` while borrowed at all.
     fn try_write(&self) -> Option<Self::RefMut<'_>>;
-    /// Take the value back out, panicking if it is borrowed.
+    /// Take the value back out.
+    ///
+    /// Consuming the cell means no borrow can be outstanding, so this cannot
+    /// fail.
     fn into_inner(self) -> T;
 }
 
@@ -217,18 +218,25 @@ impl<T: 'static> ColumnErase<LocalMode> for Column<LocalMode, T> {
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// The storage choice of a world.
 ///
 /// This trait is sealed: the only two implementations are [`LocalMode`] and
-/// [`SendMode`], which is what the `World` type aliases use.
-pub trait Mode: 'static + Sized {
+/// [`SendMode`], which is what the `World` type aliases use. A caller never
+/// names it directly; the type aliases in the crate root do.
+pub trait Mode: 'static + Sized + sealed::Sealed {
     /// The cell holding one component value.
     type Cell<T: 'static>: Cell<T>;
     /// A type-erased column (with the mode's thread-safety bound).
     type ErasedColumn: ?Sized + AnyColumn;
-    /// A type-erased observer.
-    type ErasedObserver: ?Sized + Observer<Self>;
     /// A type-erased command.
+    ///
+    /// [`LocalMode`] leaves this unconstrained, so a `!Send` command may be
+    /// queued on a `!Send` world; [`SendMode`] adds `Send + Sync` at the
+    /// point where a command is boxed.
     type ErasedCommand: ?Sized + Command<Self>;
     /// A type-erased future owned by a [`Tasks`](crate::Tasks) table.
     type ErasedTask: ?Sized + Future<Output = ()>;
@@ -241,11 +249,10 @@ pub trait Mode: 'static + Sized {
     fn children_column() -> Box<Self::ErasedColumn>;
     /// An empty [`ChildOf`](crate::ChildOf) column.
     fn child_of_column() -> Box<Self::ErasedColumn>;
-    /// Box a command into this mode's command storage.
-    ///
-    /// The `Send` mode adds its own bound on the implementation.
-    fn erase_command<C: Command<Self>>(command: C) -> Box<Self::ErasedCommand>;
 }
+
+impl sealed::Sealed for LocalMode {}
+impl sealed::Sealed for SendMode {}
 
 /// The `!Send` storage mode, used by [`LocalWorld`](crate::LocalWorld).
 pub struct LocalMode;
@@ -253,7 +260,6 @@ pub struct LocalMode;
 impl Mode for LocalMode {
     type Cell<T: 'static> = LocalCell<T>;
     type ErasedColumn = dyn AnyColumn;
-    type ErasedObserver = dyn Observer<LocalMode>;
     type ErasedCommand = dyn Command<LocalMode>;
     type ErasedTask = dyn Future<Output = ()>;
 
@@ -264,10 +270,6 @@ impl Mode for LocalMode {
     fn child_of_column() -> Box<dyn AnyColumn> {
         Column::<LocalMode, crate::ChildOf>::new().erase()
     }
-
-    fn erase_command<C: Command<Self>>(command: C) -> Box<dyn Command<LocalMode>> {
-        Box::new(command)
-    }
 }
 
 /// The `Send` storage mode, used by [`SendWorld`](crate::SendWorld).
@@ -276,7 +278,6 @@ pub struct SendMode;
 impl Mode for SendMode {
     type Cell<T: 'static> = SyncCell<T>;
     type ErasedColumn = dyn AnyColumn + Send + Sync;
-    type ErasedObserver = dyn Observer<SendMode> + Send + Sync;
     type ErasedCommand = dyn Command<SendMode> + Send + Sync;
     type ErasedTask = dyn Future<Output = ()> + Send;
 
@@ -286,10 +287,6 @@ impl Mode for SendMode {
 
     fn child_of_column() -> Box<dyn AnyColumn + Send + Sync> {
         Column::<SendMode, crate::ChildOf>::new().erase()
-    }
-
-    fn erase_command<C: Command<Self>>(command: C) -> Box<dyn Command<SendMode> + Send + Sync> {
-        Box::new(command)
     }
 }
 

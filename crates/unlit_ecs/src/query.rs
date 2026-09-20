@@ -24,7 +24,7 @@ use core::marker::PhantomData;
 
 use crate::archetype::Archetype;
 use crate::entity::Entity;
-use crate::mode::{Cell, CellRef, CellRefMut, Mode};
+use crate::mode::{Cell, CellRef, CellRefMut, Column, Mode};
 use crate::world::World;
 
 /// Panics when a matched archetype unexpectedly lacks a component. Only a
@@ -46,31 +46,47 @@ fn borrowed<C: 'static>(kind: &str) -> ! {
 }
 
 /// What to fetch from every entity a query matches.
+///
+/// A query resolves the columns it needs once per archetype — that is
+/// [`Query::fetch_state`] — and then fetches rows through that state without
+/// looking a component type up again.
 pub trait Query {
     /// What one match yields.
     type Item<'a, M: Mode>;
 
+    /// The per-archetype state the query resolves once and reuses for every
+    /// row of that archetype.
+    type Fetch<'a, M: Mode>;
+
     /// Whether an archetype has the components the query needs.
     fn matches<M: Mode>(archetype: &Archetype<M>) -> bool;
+
+    /// Resolve [`Query::Fetch`] for an archetype [`Query::matches`] accepted.
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M>;
 
     /// Fetch the item of row `row`.
     ///
     /// Panics when the component is already borrowed in a conflicting way, or
     /// when a query asks for the same component as `&mut` twice without
     /// dropping the first item.
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M>;
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M>;
 }
 
 impl<T: 'static> Query for &T {
     type Item<'a, M: Mode> = CellRef<'a, M, T>;
+    type Fetch<'a, M: Mode> = &'a Column<M, T>;
 
     fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
         archetype.column_index(TypeId::of::<T>()).is_some()
     }
 
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-        archetype
-            .cell::<T>(row)
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+        archetype.column::<T>().unwrap_or_else(|| missing::<T>())
+    }
+
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+        state
+            .cell(row)
             .unwrap_or_else(|| missing::<T>())
             .try_read()
             .unwrap_or_else(|| borrowed::<T>("read"))
@@ -79,14 +95,19 @@ impl<T: 'static> Query for &T {
 
 impl<T: 'static> Query for &mut T {
     type Item<'a, M: Mode> = CellRefMut<'a, M, T>;
+    type Fetch<'a, M: Mode> = &'a Column<M, T>;
 
     fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
         archetype.column_index(TypeId::of::<T>()).is_some()
     }
 
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-        archetype
-            .cell::<T>(row)
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+        archetype.column::<T>().unwrap_or_else(|| missing::<T>())
+    }
+
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+        state
+            .cell(row)
             .unwrap_or_else(|| missing::<T>())
             .try_write()
             .unwrap_or_else(|| borrowed::<T>("write"))
@@ -95,41 +116,67 @@ impl<T: 'static> Query for &mut T {
 
 impl<T: 'static> Query for Option<&T> {
     type Item<'a, M: Mode> = Option<CellRef<'a, M, T>>;
+    type Fetch<'a, M: Mode> = Option<&'a Column<M, T>>;
 
     fn matches<M: Mode>(_archetype: &Archetype<M>) -> bool {
         true
     }
 
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-        archetype.cell::<T>(row).and_then(|cell| cell.try_read())
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+        archetype.column::<T>()
+    }
+
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+        let column: Option<&'a Column<M, T>> = *state;
+        column
+            .and_then(|column| column.cell(row))
+            .and_then(Cell::try_read)
     }
 }
 
 impl<T: 'static> Query for Option<&mut T> {
     type Item<'a, M: Mode> = Option<CellRefMut<'a, M, T>>;
+    type Fetch<'a, M: Mode> = Option<&'a Column<M, T>>;
 
     fn matches<M: Mode>(_archetype: &Archetype<M>) -> bool {
         true
     }
 
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-        archetype.cell::<T>(row).and_then(|cell| cell.try_write())
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+        archetype.column::<T>()
+    }
+
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+        let column: Option<&'a Column<M, T>> = *state;
+        column
+            .and_then(|column| column.cell(row))
+            .and_then(Cell::try_write)
     }
 }
 
 impl Query for Entity {
     type Item<'a, M: Mode> = Entity;
+    type Fetch<'a, M: Mode> = &'a Archetype<M>;
 
     fn matches<M: Mode>(_archetype: &Archetype<M>) -> bool {
         true
     }
 
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-        archetype.entities()[row]
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+        archetype
+    }
+
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+        state.entities()[row]
     }
 }
 
 /// Requires the components of `R` without fetching them.
+///
+/// `R` is a filter, so it must be a query whose [`matches`](Query::matches)
+/// is about presence. `Option<&T>` always matches, so
+/// `Without<Q, Option<&T>>` matches nothing; filters compose by nesting, as in
+/// `With<With<&A, &B>, &C>`.
 ///
 /// `````
 /// # use unlit_ecs::{LocalWorld, Query, With};
@@ -146,17 +193,24 @@ pub struct With<Q, R>(PhantomData<fn() -> (Q, R)>);
 
 impl<Q: Query, R: Query> Query for With<Q, R> {
     type Item<'a, M: Mode> = Q::Item<'a, M>;
+    type Fetch<'a, M: Mode> = Q::Fetch<'a, M>;
 
     fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
         Q::matches(archetype) && R::matches(archetype)
     }
 
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-        Q::fetch(archetype, row)
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+        Q::fetch_state(archetype)
+    }
+
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+        Q::fetch(state, row)
     }
 }
 
 /// Forbids the components of `R`.
+///
+/// Like [`With`], `R` is a presence filter; see its docs for the shape.
 ///
 /// `````
 /// # use unlit_ecs::{LocalWorld, Query, Without};
@@ -173,13 +227,18 @@ pub struct Without<Q, R>(PhantomData<fn() -> (Q, R)>);
 
 impl<Q: Query, R: Query> Query for Without<Q, R> {
     type Item<'a, M: Mode> = Q::Item<'a, M>;
+    type Fetch<'a, M: Mode> = Q::Fetch<'a, M>;
 
     fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
         Q::matches(archetype) && !R::matches(archetype)
     }
 
-    fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-        Q::fetch(archetype, row)
+    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+        Q::fetch_state(archetype)
+    }
+
+    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+        Q::fetch(state, row)
     }
 }
 
@@ -187,13 +246,20 @@ macro_rules! impl_query_tuple {
     ($($name:ident),*) => {
         impl<$($name: Query),*> Query for ($($name,)*) {
             type Item<'a, M: Mode> = ($($name::Item<'a, M>,)*);
+            type Fetch<'a, M: Mode> = ($($name::Fetch<'a, M>,)*);
 
             fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
                 $($name::matches(archetype))&&*
             }
 
-            fn fetch<M: Mode>(archetype: &Archetype<M>, row: usize) -> Self::Item<'_, M> {
-                ($($name::fetch(archetype, row),)*)
+            fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
+                ($($name::fetch_state(archetype),)*)
+            }
+
+            #[expect(non_snake_case, reason = "the macro names bindings after the type parameters")]
+            fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
+                let ($($name,)*) = state;
+                ($($name::fetch($name, row),)*)
             }
         }
     };
@@ -216,8 +282,11 @@ impl_query_tuple!(A, B, C, D, E, F, G, H);
 /// dropped before the next is fetched.
 pub struct QueryIter<'w, M: Mode, Q: Query> {
     world: &'w World<M>,
-    archetype: u32,
+    archetype: usize,
     row: usize,
+    /// The columns of the archetype currently being visited, resolved once in
+    /// [`Query::fetch_state`].
+    state: Option<Q::Fetch<'w, M>>,
     _query: PhantomData<fn() -> Q>,
 }
 
@@ -227,6 +296,7 @@ impl<'w, M: Mode, Q: Query> QueryIter<'w, M, Q> {
             world,
             archetype: 0,
             row: 0,
+            state: None,
             _query: PhantomData,
         }
     }
@@ -236,18 +306,31 @@ impl<'w, M: Mode, Q: Query> Iterator for QueryIter<'w, M, Q> {
     type Item = (Entity, Q::Item<'w, M>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while (self.archetype as usize) < self.world.archetype_count() {
-            let archetype = self.world.archetypes().nth(self.archetype as usize)?;
-            if Q::matches(archetype) && self.row < archetype.len() {
-                let row = self.row;
-                self.row += 1;
-                let entity = archetype.entities()[row];
-                return Some((entity, Q::fetch(archetype, row)));
+        let archetypes = self.world.archetypes_slice();
+        loop {
+            let archetype = archetypes.get(self.archetype)?;
+            if self.row >= archetype.len() {
+                // Done with this archetype; move to the next and resolve its
+                // columns lazily.
+                self.archetype += 1;
+                self.row = 0;
+                self.state = None;
+                continue;
             }
-            self.archetype += 1;
-            self.row = 0;
+            if self.state.is_none() {
+                if !Q::matches(archetype) {
+                    self.archetype += 1;
+                    self.row = 0;
+                    continue;
+                }
+                self.state = Some(Q::fetch_state(archetype));
+            }
+            let row = self.row;
+            self.row += 1;
+            let entity = archetype.entities()[row];
+            let state = self.state.as_ref().expect("the state was just resolved");
+            return Some((entity, Q::fetch(state, row)));
         }
-        None
     }
 }
 #[cfg(test)]

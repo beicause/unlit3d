@@ -42,7 +42,13 @@ impl<'w, M: Mode> Ctx<'w, M> {
         self.entity
     }
 
-    /// The world, for the parts of the API that are not isolated.
+    /// The whole world.
+    ///
+    /// This is an escape hatch: it hands out a `&World`, so a caller can read
+    /// or write any entity, not just the ones this scope is allowed to reach.
+    /// [`Ctx::get_in`], [`Ctx::get_mut_in`] and [`Ctx::children`] are the
+    /// isolated forms; reach for `world` only for what they cannot express,
+    /// such as a query over the whole world.
     pub fn world(&self) -> &'w World<M> {
         self.world
     }

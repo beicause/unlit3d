@@ -11,6 +11,13 @@
 //! [`Commands::set_parent`], stored in a component, or handed to another
 //! callback — and refers to a live entity once the queue is applied.
 //!
+//! Commands run in the order they were queued. A command that acts on a
+//! reserved entity must therefore be queued after the `Spawn` that brings it
+//! to life: [`Commands::set_parent`] and friends panic when the entity is not
+//! alive yet. This holds for the handles [`Commands::spawn`] itself returns;
+//! a `Spawn` pushed by hand with [`Commands::push`] must be ordered the same
+//! way.
+//!
 //! A queued command is `Send`, so a spawn that carries a component which
 //! cannot cross threads must use [`World::spawn`](crate::LocalWorld::spawn)
 //! directly instead of the queue.
@@ -36,13 +43,39 @@
 use crate::bundle::Bundle;
 use crate::component::AddableComponent;
 use crate::entity::Entity;
-use crate::mode::{Column, ColumnErase, Mode};
+use crate::mode::{Column, ColumnErase, LocalMode, Mode, SendMode};
 use crate::world::World;
 
 /// A structural change that can be applied later.
-pub trait Command<M: Mode>: Send + Sync + 'static {
+///
+/// The `Send + Sync` bound belongs to [`CommandErase`]'s `SendMode`
+/// implementation rather than to this trait, so a `!Send` world may queue a
+/// command that carries `!Send` state.
+pub trait Command<M: Mode>: 'static {
     /// Apply the change to the world.
     fn apply(self: Box<Self>, world: &mut World<M>);
+}
+
+/// Erases a command into a mode's command storage.
+///
+/// The `Send` implementation is only available for commands that are
+/// `Send + Sync`, which is what keeps [`SendWorld`](crate::SendWorld) `Send`
+/// and `Sync`.
+pub trait CommandErase<M: Mode>: Command<M> {
+    /// Erase the command.
+    fn erase(self) -> Box<M::ErasedCommand>;
+}
+
+impl<C: Command<LocalMode>> CommandErase<LocalMode> for C {
+    fn erase(self) -> Box<dyn Command<LocalMode>> {
+        Box::new(self)
+    }
+}
+
+impl<C: Command<SendMode> + Send + Sync> CommandErase<SendMode> for C {
+    fn erase(self) -> Box<dyn Command<SendMode> + Send + Sync> {
+        Box::new(self)
+    }
 }
 
 /// A queue of structural changes.
@@ -62,7 +95,14 @@ impl<'w, M: Mode> Commands<'w, M> {
     ///
     /// The handle is reserved now and refers to a live entity once the queue is
     /// applied.
-    pub fn spawn<B: Bundle<M> + Send + Sync + 'static>(&self, bundle: B) -> Entity {
+    ///
+    /// The bundled components must be [`CommandErase`]-able for this mode:
+    /// `Send + Sync` for a [`SendWorld`](crate::SendWorld), unconstrained for
+    /// a [`LocalWorld`](crate::LocalWorld).
+    pub fn spawn<B: Bundle<M> + 'static>(&self, bundle: B) -> Entity
+    where
+        Spawn<B>: CommandErase<M>,
+    {
         let entity = self.world.reserve_entity();
         self.push(Spawn {
             entity,
@@ -72,14 +112,18 @@ impl<'w, M: Mode> Commands<'w, M> {
     }
 
     /// Queue the despawn of `entity` and its descendants.
-    pub fn despawn(&self, entity: Entity) {
+    pub fn despawn(&self, entity: Entity)
+    where
+        Despawn: CommandErase<M>,
+    {
         self.push(Despawn { entity });
     }
 
     /// Queue adding `component` to `entity`.
-    pub fn insert<C: AddableComponent + Send + Sync + 'static>(&self, entity: Entity, component: C)
+    pub fn insert<C: AddableComponent + 'static>(&self, entity: Entity, component: C)
     where
         Column<M, C>: ColumnErase<M>,
+        Insert<C>: CommandErase<M>,
     {
         self.push(Insert {
             entity,
@@ -88,9 +132,10 @@ impl<'w, M: Mode> Commands<'w, M> {
     }
 
     /// Queue removing component `C` from `entity`.
-    pub fn remove<C: AddableComponent + Send + Sync + 'static>(&self, entity: Entity)
+    pub fn remove<C: AddableComponent + 'static>(&self, entity: Entity)
     where
         Column<M, C>: ColumnErase<M>,
+        Remove<C>: CommandErase<M>,
     {
         self.push(Remove::<C> {
             entity,
@@ -99,18 +144,24 @@ impl<'w, M: Mode> Commands<'w, M> {
     }
 
     /// Queue making `child` a child of `parent`.
-    pub fn set_parent(&self, child: Entity, parent: Entity) {
+    pub fn set_parent(&self, child: Entity, parent: Entity)
+    where
+        SetParent: CommandErase<M>,
+    {
         self.push(SetParent { child, parent });
     }
 
     /// Queue detaching `child` from `parent`.
-    pub fn remove_child(&self, parent: Entity, child: Entity) {
+    pub fn remove_child(&self, parent: Entity, child: Entity)
+    where
+        RemoveChild: CommandErase<M>,
+    {
         self.push(RemoveChild { parent, child });
     }
 
     /// Queue a command.
-    pub fn push<C: Command<M>>(&self, command: C) {
-        self.world.push_command(M::erase_command(command));
+    pub fn push<C: Command<M> + CommandErase<M>>(&self, command: C) {
+        self.world.push_command(command.erase());
     }
 }
 
@@ -121,7 +172,7 @@ pub struct Spawn<B> {
     bundle: Option<B>,
 }
 
-impl<M: Mode, B: Bundle<M> + Send + Sync + 'static> Command<M> for Spawn<B> {
+impl<M: Mode, B: Bundle<M> + 'static> Command<M> for Spawn<B> {
     fn apply(mut self: Box<Self>, world: &mut World<M>) {
         let bundle = self.bundle.take().expect("a command is applied only once");
         world.spawn_at(self.entity, bundle);
@@ -147,7 +198,7 @@ pub struct Insert<C> {
     component: Option<C>,
 }
 
-impl<M: Mode, C: AddableComponent + Send + Sync + 'static> Command<M> for Insert<C>
+impl<M: Mode, C: AddableComponent + 'static> Command<M> for Insert<C>
 where
     Column<M, C>: ColumnErase<M>,
 {
@@ -167,7 +218,7 @@ pub struct Remove<C> {
     _component: core::marker::PhantomData<fn() -> C>,
 }
 
-impl<M: Mode, C: AddableComponent + Send + Sync + 'static> Command<M> for Remove<C>
+impl<M: Mode, C: AddableComponent + 'static> Command<M> for Remove<C>
 where
     Column<M, C>: ColumnErase<M>,
 {

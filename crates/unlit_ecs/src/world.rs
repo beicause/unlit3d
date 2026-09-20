@@ -29,7 +29,7 @@ use crate::command::{Command as _, Commands};
 use crate::component::{AddableComponent, InsertError, RemoveError};
 use crate::ctx::Ctx;
 use crate::entity::{Entities, Entity, Location};
-use crate::hash::{EntityHashMap, TypeIdHashMap};
+use crate::hash::TypeIdHashMap;
 use crate::mode::{Cell, CellRef, CellRefMut, Column, ColumnErase, Mode};
 use crate::query::{Query, QueryIter};
 
@@ -40,19 +40,12 @@ pub struct World<M: Mode> {
     /// Column constructors, one per component type that ever entered the world.
     ctors: TypeIdHashMap<fn() -> Box<M::ErasedColumn>>,
     commands: M::Cell<Vec<Box<M::ErasedCommand>>>,
-    observers: M::Cell<EntityHashMap<Vec<Box<M::ErasedObserver>>>>,
 }
 
 /// The exclusive borrow of a world's command queue.
 pub(crate) type CommandsGuard<'w, M> =
     <<M as Mode>::Cell<Vec<Box<<M as Mode>::ErasedCommand>>> as Cell<
         Vec<Box<<M as Mode>::ErasedCommand>>,
-    >>::RefMut<'w>;
-
-/// The exclusive borrow of a world's observer table.
-pub(crate) type ObserversGuard<'w, M> =
-    <<M as Mode>::Cell<EntityHashMap<Vec<Box<<M as Mode>::ErasedObserver>>>> as Cell<
-        EntityHashMap<Vec<Box<<M as Mode>::ErasedObserver>>>,
     >>::RefMut<'w>;
 
 impl<M: Mode> Default for World<M> {
@@ -80,7 +73,6 @@ impl<M: Mode> World<M> {
             archetypes: Archetypes::new(),
             ctors,
             commands: M::Cell::new(Vec::new()),
-            observers: M::Cell::new(EntityHashMap::default()),
         }
     }
 
@@ -110,6 +102,7 @@ impl<M: Mode> World<M> {
     /// entity is not alive.
     ///
     /// Panics when the component is already exclusively borrowed.
+    #[must_use]
     pub fn get<C: 'static>(&self, entity: Entity) -> Option<CellRef<'_, M, C>> {
         let location = self.entities_read().location(entity)?;
         let cell = self
@@ -125,6 +118,7 @@ impl<M: Mode> World<M> {
     /// The component of `entity`, exclusively.
     ///
     /// Panics when the component is already borrowed, shared or exclusive.
+    #[must_use]
     pub fn get_mut<C: 'static>(&self, entity: Entity) -> Option<CellRefMut<'_, M, C>> {
         let location = self.entities_read().location(entity)?;
         let cell = self
@@ -149,6 +143,7 @@ impl<M: Mode> World<M> {
     /// world.with_mut::<u32, _>(entity, |value| *value += 10).unwrap();
     /// assert_eq!(world.with_mut::<u32, _>(entity, |value| *value).unwrap(), 11);
     /// `````
+    #[must_use]
     pub fn with_mut<C: 'static, R>(
         &self,
         entity: Entity,
@@ -181,11 +176,13 @@ impl<M: Mode> World<M> {
 
     /// Spawn `bundle` on a handle from [`World::reserve_entity`].
     ///
-    /// Panics when the handle already refers to a live entity.
+    /// Panics when the handle already refers to a live entity. This is a hard
+    /// check rather than a debug assertion: a second spawn would leave the
+    /// entity with two rows, one of them unreachable and impossible to free.
     pub fn spawn_at<B: Bundle<M>>(&mut self, entity: Entity, bundle: B) {
-        debug_assert!(
+        assert!(
             !self.entities_read().contains(entity),
-            "the entity is already spawned"
+            "{entity:?} is already spawned"
         );
         let mut builder = ArchetypeBuilder::new();
         bundle.put_into(&mut builder);
@@ -211,6 +208,19 @@ impl<M: Mode> World<M> {
     /// [`World::spawn_at`] or by applying a queued [`Commands::spawn`].
     pub fn reserve_entity(&self) -> Entity {
         self.entities_write().reserve()
+    }
+
+    /// Release a handle from [`World::reserve_entity`] that will never be
+    /// spawned.
+    ///
+    /// A reserved handle that is dropped without ever being spawned keeps its
+    /// index out of the pool; releasing it puts the index back, so a later
+    /// spawn reuses it. Returns whether `entity` was such a handle.
+    pub fn release_entity(&mut self, entity: Entity) -> bool {
+        if !self.entities_read().is_reserved(entity) {
+            return false;
+        }
+        self.entities_write().free(entity).is_ok()
     }
 
     /// Despawn `entity` and every descendant of it.
@@ -383,8 +393,10 @@ impl<M: Mode> World<M> {
             if !Q::matches(archetype) {
                 continue;
             }
+            // Resolve the query's columns once, then walk the rows.
+            let state = Q::fetch_state(archetype);
             for row in 0..archetype.len() {
-                f(Q::fetch(archetype, row));
+                f(Q::fetch(&state, row));
             }
         }
     }
@@ -392,6 +404,11 @@ impl<M: Mode> World<M> {
     /// Iterate the archetypes, including the empty one.
     pub fn archetypes(&self) -> impl Iterator<Item = &Archetype<M>> {
         self.archetypes.iter()
+    }
+
+    /// The archetypes, including the empty one, as a slice.
+    pub(crate) fn archetypes_slice(&self) -> &[Archetype<M>] {
+        self.archetypes.as_slice()
     }
 
     /// The number of archetypes, including the empty one.
@@ -475,12 +492,6 @@ impl<M: Mode> World<M> {
     /// Append a command to the deferred queue.
     pub(crate) fn push_command(&self, command: Box<M::ErasedCommand>) {
         self.commands_write().push(command);
-    }
-
-    pub(crate) fn observers_write(&self) -> ObserversGuard<'_, M> {
-        self.observers
-            .try_write()
-            .unwrap_or_else(|| panic!("the observer table is already borrowed"))
     }
 
     /// The archetype with exactly `types` (sorted), creating it when it is
@@ -613,27 +624,32 @@ impl<M: Mode> World<M> {
     }
 
     /// Depth-first despawning of a subtree, children before the parent.
+    ///
+    /// The walk keeps its own stack instead of recursing, so a deep chain of
+    /// entities cannot overflow the call stack.
     fn despawn_subtree(&mut self, entity: Entity) {
-        // Despawning a child detaches it from this entity, which would
-        // invalidate a borrow of the list; move the list out instead of
-        // copying it, leaving the component empty for the detach to find.
-        if let Some(children) =
-            self.with_mut::<crate::hierarchy::Children, _>(entity, crate::hierarchy::Children::take)
-        {
-            for child in children {
-                self.despawn_subtree(child);
+        let mut stack = vec![entity];
+        while let Some(current) = stack.pop() {
+            // Despawning a child detaches it from its parent, which would
+            // invalidate a borrow of the list; move the list out instead of
+            // copying it, leaving the component empty for the detach to find.
+            if let Some(children) = self.with_mut::<crate::hierarchy::Children, _>(
+                current,
+                crate::hierarchy::Children::take,
+            ) {
+                stack.extend(children);
             }
+            if let Some(parent) = self
+                .get::<crate::hierarchy::ChildOf>(current)
+                .map(|child| child.0)
+            {
+                self.detach_from_parent(parent, current);
+            }
+            if let Some(location) = self.archetype_of(current) {
+                self.remove_row(location);
+            }
+            self.free_entity(current);
         }
-        if let Some(parent) = self
-            .get::<crate::hierarchy::ChildOf>(entity)
-            .map(|child| child.0)
-        {
-            self.detach_from_parent(parent, entity);
-        }
-        if let Some(location) = self.archetype_of(entity) {
-            self.remove_row(location);
-        }
-        self.free_entity(entity);
     }
 }
 
@@ -769,6 +785,28 @@ mod tests {
         world.spawn_at(entity, (Marker(5),));
         assert!(world.contains(entity));
         assert_eq!(world.get::<Marker>(entity).unwrap().0, 5);
+    }
+
+    #[test]
+    #[should_panic(expected = "is already spawned")]
+    fn spawn_at_on_a_live_entity_panics() {
+        let mut world = LocalWorld::new();
+        let entity = world.spawn((Marker(1),));
+        world.spawn_at(entity, (Marker(2),));
+    }
+
+    #[test]
+    fn releasing_a_reserved_handle_returns_its_index_to_the_pool() {
+        let mut world = LocalWorld::new();
+        let reserved = world.reserve_entity();
+        assert!(!world.contains(reserved));
+        assert_eq!(world.len(), 0);
+        assert!(world.release_entity(reserved));
+        assert!(!world.release_entity(reserved), "already released");
+        let fresh = world.spawn((Marker(1),));
+        assert_eq!(fresh.index(), reserved.index(), "the index was reused");
+        assert_ne!(fresh.generation(), reserved.generation());
+        assert_eq!(world.len(), 1);
     }
 
     #[test]

@@ -1,17 +1,20 @@
 //! Specialized hash containers.
 //!
-//! Two keys in this crate are already high-quality hashes and do not need to be
-//! hashed again:
+//! Two keys in this crate already carry enough entropy to skip the default
+//! hasher:
 //!
-//! - [`Entity`] is a pair of integers that is packed into one `u64`, so
-//!   [`EntityHashMap`] feeds those bits straight to the table. This keeps
-//!   entities spawned together close together in the table.
-//! - [`TypeId`] already carries a hash, so [`TypeIdHashMap`] forwards it
-//!   unchanged.
+//! - [`Entity`] is a pair of integers packed into one `u64`. [`EntityHash`]
+//!   spreads that value upward with a Fibonacci multiply, which is where the
+//!   SwissTable needs the bits, while leaving the low bits so that entities
+//!   spawned together land together.
+//! - [`TypeId`] is itself a high-quality hash, so [`TypeIdHashMap`] uses
+//!   [`NoOpHash`] and [`NoOpHasher`] forwards the `u64` the `Hash` impl
+//!   writes.
 //!
-//! Both hashers are the ones Bevy uses for the same keys; they panic on keys
-//! that are not `u64`-shaped, which is a programming error in this crate's
-//! own use of them.
+//! [`EntityHasher`] panics on a key that is not `u64`-shaped, which is a
+//! programming error in this crate's own use of it. [`NoOpHasher`] does not:
+//! it folds byte-wise writes rather than panicking, so a container that hashes
+//! a non-`u64` key still works, if with a worse hash.
 
 use core::any::TypeId;
 use core::hash::{BuildHasher, Hash, Hasher};

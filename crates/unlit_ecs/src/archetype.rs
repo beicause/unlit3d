@@ -65,11 +65,16 @@ impl<M: Mode> Archetype<M> {
 
     /// The storage cell of component `C` at `row`.
     pub(crate) fn cell<C: 'static>(&self, row: usize) -> Option<&M::Cell<C>> {
+        self.column::<C>()?.cell(row)
+    }
+
+    /// The column of component `C`.
+    ///
+    /// A query resolves this once per archetype instead of doing the lookup per
+    /// row; see [`Query::Fetch`](crate::Query::Fetch).
+    pub(crate) fn column<C: 'static>(&self) -> Option<&Column<M, C>> {
         let index = self.column_index(TypeId::of::<C>())?;
-        let column = self.columns[index]
-            .as_any()
-            .downcast_ref::<Column<M, C>>()?;
-        column.cell(row)
+        self.columns[index].as_any().downcast_ref::<Column<M, C>>()
     }
 
     /// The entity at `row`.
@@ -236,6 +241,11 @@ impl<M: Mode> Archetypes<M> {
     /// Every archetype.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Archetype<M>> {
         self.archetypes.iter()
+    }
+
+    /// Every archetype, as a slice.
+    pub(crate) fn as_slice(&self) -> &[Archetype<M>] {
+        &self.archetypes
     }
 }
 #[cfg(test)]

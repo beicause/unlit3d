@@ -25,10 +25,10 @@
 //! - [`Ctx`] is one entity's view of the world: itself, its descendants, and
 //!   resource entities. A behaviour component cannot reach its parent or a
 //!   sibling, so an entity's state stays its own.
-//! - Events reach entities through observers: [`World::trigger`] runs one
-//!   entity's observers, and [`World::call`] runs one entity's behaviour
-//!   component. A caller composes a direction from the hierarchy walkers
-//!   (`ancestors`, `descendants`) when it wants one.
+//! - There are no events or observers. To reach another entity, call its
+//!   behaviour component with [`World::call`]; a caller composes a direction
+//!   from the hierarchy walkers (`ancestors`, `descendants`) when it wants
+//!   one.
 //! - Asynchronous behaviour returns a future; the driver polls it with
 //!   [`Tasks`]. No executor is built in.
 //!
@@ -75,7 +75,6 @@ mod entity;
 mod hash;
 mod hierarchy;
 mod mode;
-mod observer;
 mod query;
 mod tasks;
 #[cfg(test)]
@@ -84,7 +83,7 @@ mod world;
 
 pub use archetype::{Archetype, Archetypes};
 pub use bundle::{ArchetypeBuilder, Bundle};
-pub use command::{Command, Commands};
+pub use command::{Command, CommandErase, Commands};
 #[doc(hidden)]
 pub use component::Component;
 pub use component::{AddableComponent, InsertError, NoSuchEntity, RemoveError, Resource};
@@ -92,8 +91,7 @@ pub use ctx::Ctx;
 pub use entity::Entity;
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use hierarchy::{ChildOf, Children};
-pub use mode::{LocalMode, SendMode};
-pub use observer::{FnObserver, Observer, ObserverErase};
+pub use mode::{LocalMode, Mode, SendMode};
 pub use query::{Query, QueryIter, With, Without};
 pub use tasks::Tasks;
 pub use world::World;
