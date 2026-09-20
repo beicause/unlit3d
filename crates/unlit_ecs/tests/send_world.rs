@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use unlit_ecs::{SendMode, SendWorld, Tasks};
+use unlit_ecs::SendWorld;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Counter(u64);
@@ -11,15 +11,11 @@ struct Counter(u64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Shared;
 
-fn assert_send<T: Send>() {}
 fn assert_send_sync<T: Send + Sync>() {}
 
 #[test]
 fn the_send_world_is_send_and_sync() {
     assert_send_sync::<SendWorld>();
-    // A task table owns its futures, so it moves between threads; it is not
-    // shared, so it needs `Send` but not `Sync`.
-    assert_send::<Tasks<SendMode>>();
 }
 
 #[test]

@@ -26,8 +26,8 @@
 //! - There are no events or observers. To drive behaviour, the caller reads the
 //!   world and calls the closure or method it wants on the entities it chooses,
 //!   using [`World::with_mut`] or a query.
-//! - Asynchronous behaviour returns a future; the driver polls it with
-//!   [`Tasks`]. No executor is built in.
+//! - A behaviour that needs to wait returns a future, and the caller decides
+//!   when to poll it. No executor is built in.
 //!
 //! # Example
 //!
@@ -66,7 +66,6 @@ mod entity;
 mod hash;
 mod mode;
 mod query;
-mod tasks;
 #[cfg(test)]
 mod tests_common;
 mod world;
@@ -81,7 +80,6 @@ pub use entity::Entity;
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use mode::{LocalMode, Mode, SendMode};
 pub use query::{Query, QueryIter, With, Without};
-pub use tasks::Tasks;
 pub use world::World;
 
 /// The world whose components live in `RefCell`s.

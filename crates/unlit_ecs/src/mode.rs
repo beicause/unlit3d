@@ -12,7 +12,6 @@
 
 use core::any::Any;
 use core::cell::{Ref, RefCell, RefMut};
-use core::future::Future;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
@@ -237,8 +236,6 @@ pub trait Mode: 'static + Sized + sealed::Sealed {
     /// queued on a `!Send` world; [`SendMode`] adds `Send + Sync` at the
     /// point where a command is boxed.
     type ErasedCommand: ?Sized + Command<Self>;
-    /// A type-erased future owned by a [`Tasks`](crate::Tasks) table.
-    type ErasedTask: ?Sized + Future<Output = ()>;
 }
 
 impl sealed::Sealed for LocalMode {}
@@ -251,7 +248,6 @@ impl Mode for LocalMode {
     type Cell<T: 'static> = LocalCell<T>;
     type ErasedColumn = dyn AnyColumn;
     type ErasedCommand = dyn Command<LocalMode>;
-    type ErasedTask = dyn Future<Output = ()>;
 }
 
 /// The `Send` storage mode, used by [`SendWorld`](crate::SendWorld).
@@ -261,7 +257,6 @@ impl Mode for SendMode {
     type Cell<T: 'static> = SyncCell<T>;
     type ErasedColumn = dyn AnyColumn + Send + Sync;
     type ErasedCommand = dyn Command<SendMode> + Send + Sync;
-    type ErasedTask = dyn Future<Output = ()> + Send;
 }
 
 /// The borrow of a component value.
