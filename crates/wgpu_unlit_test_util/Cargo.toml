@@ -1,0 +1,26 @@
+[package]
+name = "wgpu_unlit_test_util"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+glam.workspace = true
+wgpu = { workspace = true, default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
+
+[features]
+snapshot = ["dep:fast-ssim2", "dep:image"]
+
+[dependencies.fast-ssim2]
+version = "0.8"
+default-features = false
+optional = true
+
+[dependencies.image]
+version = "0.25"
+default-features = false
+features = ["webp"]
+optional = true
+
+[lints]
+workspace = true

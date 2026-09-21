@@ -16,7 +16,7 @@
 //! [`crate::scene::Scene`] stays the caller's, assembled per frame from the
 //! handles they hand out.
 //!
-//! ```no_run
+//! ```
 //! # use wgpu_unlit_render::render_attachments::{RenderAttachments, AttachmentsInfo};
 //! # use wgpu_unlit_render::scene::Scene;
 //! # fn frame(device: &wgpu::Device, scene: &Scene<'_>) {
@@ -175,7 +175,7 @@ impl RenderAttachments {
     /// matching size, and at least one of the two must be present.
     pub fn new_with_targets(
         device: &wgpu::Device,
-        mut options: AttachmentsInfo,
+        options: AttachmentsInfo,
         color_view: Option<wgpu::TextureView>,
         depth_stencil_view: Option<wgpu::TextureView>,
     ) -> Self {
@@ -227,9 +227,6 @@ impl RenderAttachments {
                 "the depth view's height must match `options.height`"
             );
         }
-        // The depth view the caller supplies is their persistent texture: a
-        // depth pass stores into it.
-        options.transient_depth = false;
         Self::from_parts(device, options, color_view, depth_stencil_view)
     }
 

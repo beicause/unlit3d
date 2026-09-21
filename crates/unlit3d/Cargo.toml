@@ -21,5 +21,9 @@ unlit_ecs = { path = "../unlit_ecs", version = "0.1.0" }
 zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
+[dev-dependencies]
+wgpu = { workspace = true, features = ["noop"] }
+wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
+
 [lints]
 workspace = true

@@ -123,7 +123,8 @@ for pipeline in scene.pipelines {
 
 - [x] `wgpu`资源管理、基本的pipeline和mesh绘制API、unlit管线。
 - [x] 支持`egui`。
-- [ ] 设计并实施上层API
+- [x] 初步实现`unlit_ecs`。
+- [ ] 设计并实施上层渲染API。
 - [ ] 支持skinning和morph targets。
 
 提示：

@@ -20,9 +20,8 @@ zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
 [dev-dependencies]
-fast-ssim2 = { version = "0.8", default-features = false }  # SSIMULACRA2 perceptual image scoring for GPU snapshots.
-image = { version = "0.25", default-features = false, features = ["webp"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
+wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
 
 [build-dependencies]
 wesl = { version = "0.5.0", default-features = false, features = ["package"] }

@@ -213,6 +213,36 @@ impl ResourceGraph {
         self.graph.node_weight(id.0).map(|node| &node.resource)
     }
 
+    /// The bind group behind `id`, or `None` when the id is unknown or the
+    /// resource is not a bind group.
+    pub fn get_bind_group(&self, id: ResourceId) -> Option<&wgpu::BindGroup> {
+        self.get(id)?.as_bind_group()
+    }
+
+    /// The buffer behind `id`, or `None` when the id is unknown or the
+    /// resource is not a buffer.
+    pub fn get_buffer(&self, id: ResourceId) -> Option<&wgpu::Buffer> {
+        self.get(id)?.as_buffer()
+    }
+
+    /// The texture behind `id`, or `None` when the id is unknown or the
+    /// resource is not a texture.
+    pub fn get_texture(&self, id: ResourceId) -> Option<&wgpu::Texture> {
+        self.get(id)?.as_texture()
+    }
+
+    /// The texture view behind `id`, or `None` when the id is unknown or the
+    /// resource is not a texture view.
+    pub fn get_texture_view(&self, id: ResourceId) -> Option<&wgpu::TextureView> {
+        self.get(id)?.as_texture_view()
+    }
+
+    /// The sampler behind `id`, or `None` when the id is unknown or the
+    /// resource is not a sampler.
+    pub fn get_sampler(&self, id: ResourceId) -> Option<&wgpu::Sampler> {
+        self.get(id)?.as_sampler()
+    }
+
     /// Replace the resource behind `id` and mark it — and every resource
     /// transitively built from it — dirty.
     ///
