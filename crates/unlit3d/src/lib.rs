@@ -29,22 +29,21 @@
 //!     ),
 //! ));
 //!
-//! // 2. Upload geometry and a texture through the renderer.
+//! // 2. Allocate geometry and a material through the renderer.
 //! let mesh = world.with_mut::<Renderer, _>(renderer, |r| {
 //!     let positions = [[0.0; 3]; 3];
 //!     let uvs = [[0.0; 2]; 3];
 //!     let colors = [[1.0; 4]; 3];
 //!     let indices = [0u32, 1, 2];
-//!     r.upload_mesh(&positions, &uvs, &colors, &indices)
+//!     r.allocate_mesh(&positions, Some(&uvs), Some(&colors), Some(&indices))
 //! });
 //! let material = world.with_mut::<Renderer, _>(renderer, |r| {
-//!     let rgba8 = vec![255u8; 256 * 256 * 4];
-//!     r.upload_texture(
-//!         &rgba8,
+//!     let texture = r.allocate_unlit_texture(
 //!         256,
 //!         256,
 //!         wgpu::TextureFormat::Rgba8UnormSrgb,
-//!     )
+//!     );
+//!     r.allocate_unlit_material(texture)
 //! });
 //!
 //! // 3. Spawn a renderable entity.
@@ -74,6 +73,9 @@ pub use renderer::Renderer;
 pub mod prelude {
     pub use crate::{
         Renderer,
-        components::{BoundingSphere, Camera, GpuMaterial, GpuMesh, InstanceData, Transform},
+        components::{
+            BoundingSphere, Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceData, Transform,
+            Transparent,
+        },
     };
 }

@@ -123,10 +123,10 @@ pub fn camera_view(aspect: f32) -> Camera {
     }
 }
 
-/// Upload the cube mesh through the renderer and return a `GpuMesh` handle.
-pub fn upload_cube_mesh(r: &mut Renderer) -> GpuMesh {
+/// Allocate the cube mesh through the renderer and return a `GpuMesh` handle.
+pub fn allocate_cube_mesh(r: &mut Renderer) -> GpuMesh {
     let (positions, uvs, colors, indices) = cube();
-    r.upload_mesh(&positions, &uvs, &colors, &indices)
+    r.allocate_mesh(&positions, Some(&uvs), Some(&colors), Some(&indices))
 }
 
 /// A simple offscreen colour target on which to render, returning

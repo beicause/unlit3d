@@ -1,8 +1,11 @@
-# wgpu_unlit_render和unlit3d
+# wgpu_unlit_render 和 unlit3d
 
 `wgpu_unlit_render`是基于`wgpu`的、紧凑的、有主见的、无光照（unlit）3D渲染器。`unlit3d`是基于`wgpu_unlit_render`的完整的、易用的上层API。
 
 目标硬件为WebGPU，并且移动端优先。不支持WebGL、GLES。
+
+编码原则：
+- **尽量采用通用方法而不是给内置功能特权**，要考虑功能的通用性，便于用户使用本库进行自定义和拓展。本库的一些内置实现（如unlit渲染）不应该拥有特权和内部专用实现，内部实现应该挪到外部以保证本库的可自定义性和可拓展性。
 
 ## 功能
 

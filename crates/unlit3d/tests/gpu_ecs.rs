@@ -25,7 +25,7 @@ fn ecs_cube_covers_the_frame() {
 
     // Upload a cube mesh through the renderer.
     let mesh = world
-        .with_mut::<Renderer, _>(*renderer, |r| upload_cube_mesh(r))
+        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
         .unwrap();
 
     // Dedicated camera entity, then the renderable entity.
@@ -79,10 +79,10 @@ fn ecs_depth_ordering_hides_the_far_instance() {
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     let mesh_far = world
-        .with_mut::<Renderer, _>(*renderer, |r| upload_cube_mesh(r))
+        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
         .unwrap();
     let mesh_near = world
-        .with_mut::<Renderer, _>(*renderer, |r| upload_cube_mesh(r))
+        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
         .unwrap();
 
     // Far cube, red — Transform with InstanceData color override.
@@ -161,7 +161,7 @@ fn ecs_unlit_cube_matches_snapshot() {
     let renderer = &mut renderer_entity;
 
     let mesh = world
-        .with_mut::<Renderer, _>(*renderer, |r| upload_cube_mesh(r))
+        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
         .unwrap();
 
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));

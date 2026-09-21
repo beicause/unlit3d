@@ -34,6 +34,17 @@ use petgraph::visit::{Dfs, DfsPostOrder, Topo};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceId(NodeIndex);
 
+impl ResourceId {
+    /// The graph index this id refers to.
+    ///
+    /// Ids are never reused, so this is a stable key for resources that are
+    /// alive: callers can group or sort by it (ordering draws so consecutive
+    /// ones share a bind group, for example) without holding a borrow.
+    pub fn index(&self) -> usize {
+        self.0.index()
+    }
+}
+
 /// A wgpu resource owned by the graph.
 ///
 /// Variants are thin: each holds the wgpu handle itself, so callers can keep

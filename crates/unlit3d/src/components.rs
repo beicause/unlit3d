@@ -54,7 +54,7 @@ pub struct Camera {
 
 /// A handle to a mesh stored in the renderer's GPU resource graph.
 ///
-/// Created by [`Renderer::upload_mesh`](crate::Renderer::upload_mesh). The
+/// Created by [`Renderer::allocate_mesh`](crate::Renderer::allocate_mesh). The
 /// mesh is ready to draw immediately; the handle stays valid for the lifetime
 /// of the renderer (or until the mesh is explicitly removed from the graph).
 #[derive(Clone, Debug)]
@@ -77,10 +77,26 @@ pub struct GpuMesh {
     pub indexed: bool,
 }
 
+/// A handle to a pipeline registered with the renderer.
+///
+/// Created by
+/// [`Renderer::create_unlit_pipeline`](crate::Renderer::create_unlit_pipeline).
+/// Entities without this component use the pipeline at
+/// [`DEFAULT_PIPELINE_INDEX`](crate::renderer::DEFAULT_PIPELINE_INDEX), the
+/// one [Renderer::new](crate::Renderer::new) registers.
+#[derive(Clone, Debug)]
+pub struct GpuPipeline {
+    /// Index into the renderer's pipeline list, as returned by
+    /// [`Renderer::create_unlit_pipeline`](crate::Renderer::create_unlit_pipeline).
+    /// Draws are ordered by it, so a lower index is drawn first.
+    pub pipeline_index: u32,
+}
+
 /// A handle to a material (base-color texture + sampler) in the renderer's
 /// GPU resource graph.
 ///
-/// Created by [`Renderer::upload_texture`](crate::Renderer::upload_texture).
+/// Created by
+/// [`Renderer::allocate_unlit_material`](crate::Renderer::allocate_unlit_material).
 #[derive(Clone, Debug)]
 pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).
@@ -89,10 +105,29 @@ pub struct GpuMaterial {
     pub bind_group_id: ResourceId,
 }
 
+impl GpuMaterial {
+    /// A stable key that groups draws sharing this material.
+    ///
+    /// The renderer sorts by it so consecutive draws bind the same material
+    /// bind group. Equal keys mean the same material, so [`Ord`] on the
+    /// underlying graph index is all the ordering the sort needs.
+    pub fn sort_key(&self) -> u64 {
+        self.bind_group_id.index() as u64
+    }
+}
+
+/// Marker for transparent objects.
+///
+/// Entities with this component are drawn after opaque objects and sorted
+/// back-to-front by camera distance. Entities without it are drawn in
+/// pipeline-registration order and are considered opaque.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Transparent;
+
 /// Bounding sphere used for frustum culling.
 ///
-/// The renderer derives this from the mesh AABB at upload time. Entities
-/// without this component are always drawn (no culling).
+/// The user provides this per-entity. Entities without this component are
+/// always drawn (no culling).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoundingSphere {
     /// Center of the bounding sphere, in local (pre-transform) space.
