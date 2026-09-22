@@ -79,7 +79,7 @@ pub use component::Resource;
 pub use entity::Entity;
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use mode::{LocalMode, Mode, SendMode};
-pub use query::{Query, QueryIter, With, Without};
+pub use query::{Or, Query, QueryFilter, QueryIter, With, Without};
 pub use world::World;
 
 /// The world whose components live in `RefCell`s.

@@ -1,22 +1,34 @@
 //! Queries: picking entities by the components they have.
 //!
-//! A query is a type describing what to fetch from each matching entity: a
-//! shared reference `&T`, an exclusive reference `&mut T`, an optional
-//! reference `Option<&T>`, the [`Entity`] itself, or a tuple of those. A
-//! component can be required without being fetched with [`With`], and
-//! required to be absent with [`Without`].
+//! A query has two halves, given as two type parameters: *what to fetch* and
+//! *which entities to fetch it from*.
 //!
-//! An entity matches when it has every component the query names. Iteration
-//! visits archetypes in creation order and rows in storage order, so it is
-//! deterministic.
+//! The data half is a [`Query`]: a shared reference `&T`, an exclusive
+//! reference `&mut T`, an optional reference `Option<&T>`, the [`Entity`]
+//! itself, or a tuple of those.
+//!
+//! The filter half is a [`QueryFilter`]: it narrows the archetypes a query
+//! visits without fetching anything. [`With<T>`] requires `T`, [`Without<T>`]
+//! forbids it, [`Or`] takes the union of several, and a tuple of them requires
+//! all. `()` matches everything, which is what plain `query::<D>()` uses.
+//!
+//! An entity matches when the data finds what it names and the filter accepts
+//! the archetype. Iteration visits archetypes in creation order and rows in
+//! storage order, so it is deterministic.
 //!
 //! `````
-//! # use unlit_ecs::{LocalWorld, Query};
+//! # use unlit_ecs::{LocalWorld, Query, Without};
 //! let mut world = LocalWorld::new();
 //! world.spawn((1u32, 10.0f32));
 //! world.spawn((2u32, true));
 //! let sum: u32 = world.query::<&u32>().map(|(_, value)| *value).sum();
 //! assert_eq!(sum, 3);
+//! // Only the entity without a `bool`.
+//! let sum: u32 = world
+//!     .query_filtered::<&u32, Without<bool>>()
+//!     .map(|(_, value)| *value)
+//!     .sum();
+//! assert_eq!(sum, 1);
 //! `````
 
 use core::any::TypeId;
@@ -31,7 +43,7 @@ use crate::world::World;
 /// malformed `matches` implementation can reach this.
 fn missing<C: 'static>() -> ! {
     panic!(
-        "component @@{}@@ is missing from an archetype the query matched",
+        "component `{}` is missing from an archetype the query matched",
         core::any::type_name::<C>(),
     )
 }
@@ -39,7 +51,7 @@ fn missing<C: 'static>() -> ! {
 /// Panics when a component is already borrowed in a conflicting way.
 fn borrowed<C: 'static>(kind: &str) -> ! {
     panic!(
-        "component @@{}@@ is already borrowed while it is being {}",
+        "component `{}` is already borrowed while it is being {}",
         core::any::type_name::<C>(),
         kind,
     )
@@ -171,76 +183,150 @@ impl Query for Entity {
     }
 }
 
-/// Requires the components of `R` without fetching them.
+/// Narrows the entities a query visits without fetching anything from them.
 ///
-/// `R` is a filter, so it must be a query whose [`matches`](Query::matches)
-/// is about presence. `Option<&T>` always matches, so
-/// `Without<Q, Option<&T>>` matches nothing; filters compose by nesting, as in
-/// `With<With<&A, &B>, &C>`.
+/// A filter is answered from the archetype alone: an archetype either has a
+/// component or it does not, so a filter needs no per-row work and no borrow
+/// of the world's cells. `Query::matches` answers the data half of a query and
+/// this answers the rest.
+///
+/// Implemented for [`With`], [`Without`], [`Or`], and tuples of them up to
+/// arity eight. `()` accepts every archetype.
+///
+/// The trait is sealed: the set of filters is fixed, because a filter is only
+/// sound while it stays a pure function of the archetype's component set.
+pub trait QueryFilter: sealed::Sealed {
+    /// Whether entities of `archetype` pass this filter.
+    fn matches<M: Mode>(archetype: &Archetype<M>) -> bool;
+}
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Requires the component `T`, without fetching it.
 ///
 /// `````
-/// # use unlit_ecs::{LocalWorld, Query, With};
+/// # use unlit_ecs::{LocalWorld, With};
 /// let mut world = LocalWorld::new();
-/// let visible = world.spawn((1u32, true));
+/// let flagged = world.spawn((1u32, true));
 /// world.spawn((2u32,));
-/// let found: Vec<_> = world
-///     .query::<With<&u32, &bool>>()
-///     .map(|(entity, _)| entity)
-///     .collect();
-/// assert_eq!(found, [visible]);
+/// let found: Vec<_> = world.query_filtered::<&u32, With<bool>>().collect();
+/// assert_eq!(found.len(), 1);
 /// `````
-pub struct With<Q, R>(PhantomData<fn() -> (Q, R)>);
+pub struct With<T>(PhantomData<fn() -> T>);
 
-impl<Q: Query, R: Query> Query for With<Q, R> {
-    type Item<'a, M: Mode> = Q::Item<'a, M>;
-    type Fetch<'a, M: Mode> = Q::Fetch<'a, M>;
+impl<T: 'static> sealed::Sealed for With<T> {}
 
+impl<T: 'static> QueryFilter for With<T> {
     fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
-        Q::matches(archetype) && R::matches(archetype)
-    }
-
-    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
-        Q::fetch_state(archetype)
-    }
-
-    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
-        Q::fetch(state, row)
+        archetype.column_index(TypeId::of::<T>()).is_some()
     }
 }
 
-/// Forbids the components of `R`.
-///
-/// Like [`With`], `R` is a presence filter; see its docs for the shape.
+/// Forbids the component `T`.
 ///
 /// `````
-/// # use unlit_ecs::{LocalWorld, Query, Without};
+/// # use unlit_ecs::{LocalWorld, Without};
 /// let mut world = LocalWorld::new();
-/// let hidden = world.spawn((1u32,));
+/// let plain = world.spawn((1u32,));
 /// world.spawn((2u32, true));
-/// let found: Vec<_> = world
-///     .query::<Without<&u32, &bool>>()
-///     .map(|(entity, _)| entity)
-///     .collect();
-/// assert_eq!(found, [hidden]);
+/// let found: Vec<_> = world.query_filtered::<&u32, Without<bool>>().collect();
+/// assert_eq!(found.len(), 1);
 /// `````
-pub struct Without<Q, R>(PhantomData<fn() -> (Q, R)>);
+pub struct Without<T>(PhantomData<fn() -> T>);
 
-impl<Q: Query, R: Query> Query for Without<Q, R> {
-    type Item<'a, M: Mode> = Q::Item<'a, M>;
-    type Fetch<'a, M: Mode> = Q::Fetch<'a, M>;
+impl<T: 'static> sealed::Sealed for Without<T> {}
 
+impl<T: 'static> QueryFilter for Without<T> {
     fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
-        Q::matches(archetype) && !R::matches(archetype)
-    }
-
-    fn fetch_state<'a, M: Mode>(archetype: &'a Archetype<M>) -> Self::Fetch<'a, M> {
-        Q::fetch_state(archetype)
-    }
-
-    fn fetch<'a, M: Mode>(state: &Self::Fetch<'a, M>, row: usize) -> Self::Item<'a, M> {
-        Q::fetch(state, row)
+        archetype.column_index(TypeId::of::<T>()).is_none()
     }
 }
+
+/// Accepts an entity that passes at least one of `T`'s filters.
+///
+/// The union of the filters, as opposed to a tuple's intersection.
+///
+/// `````
+/// # use unlit_ecs::{LocalWorld, Or, With};
+/// let mut world = LocalWorld::new();
+/// world.spawn((1u32, true));
+/// world.spawn((2u32, 1i64));
+/// world.spawn((3u32,));
+/// let found: Vec<_> = world
+///     .query_filtered::<&u32, Or<(With<bool>, With<i64>)>>()
+///     .collect();
+/// assert_eq!(found.len(), 2);
+/// `````
+pub struct Or<T>(PhantomData<fn() -> T>);
+
+impl<T> sealed::Sealed for Or<T> {}
+
+/// Whether at least one of `T`'s filters accepts the archetype.
+///
+/// The disjunction a tuple of filters cannot express, since a tuple is the
+/// conjunction. It is what [`Or`] accepts.
+pub trait AnyMatch: sealed::Sealed {
+    /// Whether any filter in `T` accepts `archetype`.
+    fn any_matches<M: Mode>(archetype: &Archetype<M>) -> bool;
+}
+
+/// The empty disjunction: no filter to accept an archetype, so nothing passes.
+impl AnyMatch for () {
+    fn any_matches<M: Mode>(_archetype: &Archetype<M>) -> bool {
+        false
+    }
+}
+
+impl<T: AnyMatch> QueryFilter for Or<T> {
+    fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
+        T::any_matches(archetype)
+    }
+}
+
+/// A single filter: its own disjunction.
+impl<F: QueryFilter> AnyMatch for Or<F> {
+    fn any_matches<M: Mode>(archetype: &Archetype<M>) -> bool {
+        F::matches(archetype)
+    }
+}
+
+/// Every archetype passes: the filter a query with no filtering uses.
+impl QueryFilter for () {
+    fn matches<M: Mode>(_archetype: &Archetype<M>) -> bool {
+        true
+    }
+}
+
+impl sealed::Sealed for () {}
+
+macro_rules! impl_filter_tuple {
+    ($($name:ident),+) => {
+        impl<$($name: QueryFilter),+> sealed::Sealed for ($($name,)+) {}
+
+        impl<$($name: QueryFilter),+> QueryFilter for ($($name,)+) {
+            fn matches<M: Mode>(archetype: &Archetype<M>) -> bool {
+                $($name::matches(archetype))&&+
+            }
+        }
+
+        impl<$($name: QueryFilter),+> AnyMatch for ($($name,)+) {
+            fn any_matches<M: Mode>(archetype: &Archetype<M>) -> bool {
+                $($name::matches(archetype))||+
+            }
+        }
+    };
+}
+
+impl_filter_tuple!(A);
+impl_filter_tuple!(A, B);
+impl_filter_tuple!(A, B, C);
+impl_filter_tuple!(A, B, C, D);
+impl_filter_tuple!(A, B, C, D, E);
+impl_filter_tuple!(A, B, C, D, E, F);
+impl_filter_tuple!(A, B, C, D, E, F, G);
+impl_filter_tuple!(A, B, C, D, E, F, G, H);
 
 macro_rules! impl_query_tuple {
     ($($name:ident),*) => {
@@ -280,17 +366,17 @@ impl_query_tuple!(A, B, C, D, E, F, G, H);
 /// same time. Asking for `&mut` components twice without dropping the first
 /// item panics; [`World::for_each`] is the form that guarantees each item is
 /// dropped before the next is fetched.
-pub struct QueryIter<'w, M: Mode, Q: Query> {
+pub struct QueryIter<'w, M: Mode, Q: Query, F: QueryFilter = ()> {
     world: &'w World<M>,
     archetype: usize,
     row: usize,
     /// The columns of the archetype currently being visited, resolved once in
     /// [`Query::fetch_state`].
     state: Option<Q::Fetch<'w, M>>,
-    _query: PhantomData<fn() -> Q>,
+    _query: PhantomData<fn() -> (Q, F)>,
 }
 
-impl<'w, M: Mode, Q: Query> QueryIter<'w, M, Q> {
+impl<'w, M: Mode, Q: Query, F: QueryFilter> QueryIter<'w, M, Q, F> {
     pub(crate) fn new(world: &'w World<M>) -> Self {
         Self {
             world,
@@ -300,9 +386,17 @@ impl<'w, M: Mode, Q: Query> QueryIter<'w, M, Q> {
             _query: PhantomData,
         }
     }
+
+    /// Whether the archetype at `self.archetype` is one this query visits.
+    fn archetype_matches(&self) -> bool {
+        let Some(archetype) = self.world.archetypes_slice().get(self.archetype) else {
+            return false;
+        };
+        Q::matches(archetype) && F::matches(archetype)
+    }
 }
 
-impl<'w, M: Mode, Q: Query> Iterator for QueryIter<'w, M, Q> {
+impl<'w, M: Mode, Q: Query, F: QueryFilter> Iterator for QueryIter<'w, M, Q, F> {
     type Item = (Entity, Q::Item<'w, M>);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -318,7 +412,7 @@ impl<'w, M: Mode, Q: Query> Iterator for QueryIter<'w, M, Q> {
                 continue;
             }
             if self.state.is_none() {
-                if !Q::matches(archetype) {
+                if !self.archetype_matches() {
                     self.archetype += 1;
                     self.row = 0;
                     continue;
@@ -387,15 +481,67 @@ mod tests {
         let plain = world.spawn((Marker(1),));
         let flagged = world.spawn((Marker(2), true));
         let with: Vec<Entity> = world
-            .query::<With<&Marker, &bool>>()
+            .query_filtered::<&Marker, With<bool>>()
             .map(|(e, _)| e)
             .collect();
         let without: Vec<Entity> = world
-            .query::<Without<&Marker, &bool>>()
+            .query_filtered::<&Marker, Without<bool>>()
             .map(|(e, _)| e)
             .collect();
         assert_eq!(with, [flagged]);
         assert_eq!(without, [plain]);
+    }
+
+    /// A tuple of filters is the conjunction, [`Or`] the disjunction: the two
+    /// compose into "has a `bool` and one of `u8` or `i64`".
+    #[test]
+    fn filters_compose_by_conjunction_and_disjunction() {
+        let mut world = crate::LocalWorld::new();
+        let both = world.spawn((Marker(1), true, 7u8));
+        world.spawn((Marker(2), true, 7i64));
+        world.spawn((Marker(3), true));
+        world.spawn((Marker(4), 7u8));
+
+        let conjunctive: Vec<Entity> = world
+            .query_filtered::<&Marker, (With<bool>, With<u8>)>()
+            .map(|(e, _)| e)
+            .collect();
+        assert_eq!(conjunctive, [both]);
+
+        let disjunctive: Vec<Entity> = world
+            .query_filtered::<&Marker, (With<bool>, Or<(With<u8>, With<i64>)>)>()
+            .map(|(e, _)| e)
+            .collect();
+        assert_eq!(
+            disjunctive.len(),
+            2,
+            "the two entities with bool and u8/i64"
+        );
+
+        let nested: Vec<Entity> = world
+            .query_filtered::<&Marker, Or<(With<u8>, With<i64>)>>()
+            .map(|(e, _)| e)
+            .collect();
+        assert_eq!(nested.len(), 3, "every entity with a u8 or an i64");
+    }
+
+    /// A filter is answered from the archetype alone: it fetches nothing, so
+    /// naming components in it costs no borrow of them.
+    #[test]
+    fn a_filter_borrows_nothing() {
+        let mut world = crate::LocalWorld::new();
+        world.spawn((Marker(1), true));
+
+        // Hold an exclusive borrow of `Marker`, then query `bool` with a
+        // filter that names `Marker`. It works: the filter is answered from
+        // the archetype's component set and never touches a cell, so it asks
+        // for no borrow at all.
+        let held = world.query::<&mut Marker>().next().expect("one entity");
+        let count = world
+            .query_filtered::<&bool, (With<Marker>, With<bool>)>()
+            .count();
+        assert_eq!(count, 1);
+        drop(held);
     }
 
     #[test]

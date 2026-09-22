@@ -1,6 +1,6 @@
 //! Querying entities through the public API.
 
-use unlit_ecs::{Entity, LocalWorld, With, Without};
+use unlit_ecs::{Entity, LocalWorld, Or, With, Without};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -121,7 +121,7 @@ fn with_requires_a_component_without_fetching_it() {
     // Only the mover has both: the hidden entity is not visible, and the still
     // one does not move.
     let found: Vec<Entity> = world
-        .query::<With<&Velocity, &Visible>>()
+        .query_filtered::<&Velocity, With<Visible>>()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(found, [mover]);
@@ -132,21 +132,35 @@ fn without_forbids_a_component() {
     let (world, _, _, still) = scene();
 
     let found: Vec<Entity> = world
-        .query::<Without<&Position, &Velocity>>()
+        .query_filtered::<&Position, Without<Velocity>>()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(found, [still]);
 }
 
 #[test]
-fn filters_nest() {
+fn filters_compose_in_a_tuple() {
     let (world, _, hidden, _) = scene();
 
+    // A tuple is the conjunction: both `Velocity` and `Hidden`.
     let found: Vec<Entity> = world
-        .query::<With<With<&Position, &Velocity>, &Hidden>>()
+        .query_filtered::<&Position, (With<Velocity>, With<Hidden>)>()
         .map(|(entity, _)| entity)
         .collect();
     assert_eq!(found, [hidden]);
+}
+
+#[test]
+fn or_takes_the_union_of_its_filters() {
+    let (world, mover, hidden, _) = scene();
+
+    let found: Vec<Entity> = world
+        .query_filtered::<&Position, Or<(With<Velocity>, With<Hidden>)>>()
+        .map(|(entity, _)| entity)
+        .collect();
+    assert_eq!(found.len(), 2);
+    assert!(found.contains(&mover));
+    assert!(found.contains(&hidden));
 }
 
 #[test]

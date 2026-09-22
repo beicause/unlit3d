@@ -32,7 +32,7 @@ use crate::command::{Command as _, Commands};
 use crate::entity::{Entities, Entity, Location};
 use crate::hash::TypeIdHashMap;
 use crate::mode::{Cell, CellRef, CellRefMut, Mode};
-use crate::query::{Query, QueryIter};
+use crate::query::{Query, QueryFilter, QueryIter};
 
 /// Entities and their components.
 pub struct World<M: Mode> {
@@ -243,7 +243,31 @@ impl<M: Mode> World<M> {
     ///     .collect();
     /// assert_eq!(values, [2]);
     /// `````
+    ///
+    /// This is [`World::query_filtered`] with an empty filter; use that one to
+    /// narrow the entities visited without fetching anything more.
     pub fn query<Q: Query>(&self) -> QueryIter<'_, M, Q> {
+        QueryIter::new(self)
+    }
+
+    /// Iterate the entities matching `Q` that pass the filter `F`.
+    ///
+    /// The filter is a [`QueryFilter`]: it narrows the archetypes visited and
+    /// fetches nothing, so [`With`] and [`Without`] cost no borrow and nothing
+    /// appears in the item.
+    ///
+    /// `````
+    /// # use unlit_ecs::{LocalWorld, Query, Without};
+    /// let mut world = LocalWorld::new();
+    /// let plain = world.spawn((1u32,));
+    /// world.spawn((2u32, true));
+    /// let values: Vec<u32> = world
+    ///     .query_filtered::<&u32, Without<bool>>()
+    ///     .map(|(_, value)| *value)
+    ///     .collect();
+    /// assert_eq!(values, [1]);
+    /// `````
+    pub fn query_filtered<Q: Query, F: QueryFilter>(&self) -> QueryIter<'_, M, Q, F> {
         QueryIter::new(self)
     }
 
@@ -252,12 +276,25 @@ impl<M: Mode> World<M> {
     /// Each item is fetched and dropped before the next one, so a query may ask
     /// for `&mut` components. Use [`World::query`] when two items must be
     /// alive at the same time.
-    pub fn for_each<Q: Query, F>(&self, mut f: F)
+    ///
+    /// This is [`World::for_each_filtered`] with an empty filter.
+    pub fn for_each<Q: Query, F>(&self, f: F)
+    where
+        F: FnMut(Q::Item<'_, M>),
+    {
+        self.for_each_filtered::<Q, (), F>(f);
+    }
+
+    /// Run `f` for every entity matching `Q` that passes the filter `T`.
+    ///
+    /// The filter narrows the archetypes visited and fetches nothing, so it
+    /// costs no borrow and nothing appears in the item.
+    pub fn for_each_filtered<Q: Query, T: QueryFilter, F>(&self, mut f: F)
     where
         F: FnMut(Q::Item<'_, M>),
     {
         for archetype in self.archetypes.iter() {
-            if !Q::matches(archetype) {
+            if !Q::matches(archetype) || !T::matches(archetype) {
                 continue;
             }
             // Resolve the query's columns once, then walk the rows.
