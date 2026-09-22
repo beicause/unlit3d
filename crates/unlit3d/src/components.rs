@@ -220,13 +220,17 @@ impl GpuMaterial {
     }
 }
 
-/// Marker for transparent objects.
+/// Marker for entities whose draw order decides how they look.
 ///
-/// Entities with this component are drawn after opaque objects and sorted
-/// back-to-front by camera distance. Entities without it are drawn in
-/// pipeline-registration order and are considered opaque.
+/// Entities with this component are drawn after the ones without it and
+/// sorted back-to-front by camera distance, which is what a blended draw
+/// needs to composite correctly. Entities without it are drawn in
+/// pipeline-registration order.
+///
+/// The marker only orders draws: it selects no pipeline and changes no blend
+/// state, so the pipeline an entity resolves to has to blend on its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Transparent;
+pub struct ZSortedDrawing;
 
 /// Per-instance color, multiplying the base color.
 ///

@@ -64,17 +64,6 @@ pub enum Resource {
 }
 
 impl Resource {
-    /// Human-readable kind, used in diagnostics.
-    pub fn kind(&self) -> &'static str {
-        match self {
-            Self::Buffer(_) => "buffer",
-            Self::Texture(_) => "texture",
-            Self::TextureView(_) => "texture view",
-            Self::Sampler(_) => "sampler",
-            Self::BindGroup(_) => "bind group",
-        }
-    }
-
     /// The buffer handle, if this resource is a buffer.
     pub fn as_buffer(&self) -> Option<&wgpu::Buffer> {
         match self {

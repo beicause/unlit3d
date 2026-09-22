@@ -100,9 +100,8 @@ pub use components::*;
 pub use culling::is_culled;
 pub use mesh::{MeshDesc, VertexBufferDesc};
 pub use pipeline::{
-    DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineBinding,
-    PipelineDesc, PipelineFactory, PipelineKey, RenderPipelineFactory, RenderResources,
-    TrivialSpecializer,
+    DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineDesc,
+    PipelineFactory, PipelineKey, RenderPipelineFactory, RenderResources, TrivialSpecializer,
 };
 pub use renderer::{Renderer, UnlitPipelineKey};
 pub use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
@@ -115,7 +114,7 @@ pub mod prelude {
         TrivialSpecializer, UnlitPipelineKey, VertexBufferDesc, color_clear,
         components::{
             Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, RenderLoadOps, Transform,
-            Transparent, UnlitPipeline,
+            UnlitPipeline, ZSortedDrawing,
         },
         depth_clear, is_culled, stencil_clear,
     };

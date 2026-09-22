@@ -1370,7 +1370,7 @@ fn frame_load_ops(world: &LocalWorld) -> RenderLoadOps {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{Transform, Transparent, UnlitPipeline};
+    use crate::components::{Transform, UnlitPipeline, ZSortedDrawing};
     use unlit_ecs::Entity;
 
     fn test_perspective() -> glam::Mat4 {
@@ -1637,33 +1637,33 @@ mod tests {
     }
 
     #[test]
-    fn opaque_entities_are_drawn_before_transparent_ones() {
+    fn entities_without_a_sort_marker_are_drawn_first() {
         let (mut renderer, key) = noop_renderer();
         let mesh = tri_mesh(&mut renderer, &key);
         let mut world = LocalWorld::new();
 
-        // The transparent entity is the nearer of the two, so depth alone
-        // would put it first: it is drawn second because it is transparent.
-        let transparent = world.spawn((
+        // The z-sorted entity is the nearer of the two, so depth alone would
+        // put it first: it is drawn second because it carries the marker.
+        let z_sorted = world.spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 4.0),
                 ..Default::default()
             },
             mesh.clone(),
             UnlitPipeline::new(key.clone()),
-            Transparent,
+            ZSortedDrawing,
         ));
         let opaque = world.spawn((Transform::default(), mesh.clone(), UnlitPipeline::new(key)));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
 
-        assert_eq!(drawn(&renderer), vec![opaque, transparent]);
+        assert_eq!(drawn(&renderer), vec![opaque, z_sorted]);
         assert!(renderer.visible_cache[0].depth > renderer.visible_cache[1].depth);
     }
 
     #[test]
-    fn transparent_entities_are_drawn_back_to_front() {
+    fn z_sorted_entities_are_drawn_back_to_front() {
         let (mut renderer, key) = noop_renderer();
         let mesh = tri_mesh(&mut renderer, &key);
         let mut world = LocalWorld::new();
@@ -1675,7 +1675,7 @@ mod tests {
             },
             mesh.clone(),
             UnlitPipeline::new(key.clone()),
-            Transparent,
+            ZSortedDrawing,
         ));
         let middle = world.spawn((
             Transform {
@@ -1684,7 +1684,7 @@ mod tests {
             },
             mesh.clone(),
             UnlitPipeline::new(key.clone()),
-            Transparent,
+            ZSortedDrawing,
         ));
         let far = world.spawn((
             Transform {
@@ -1693,10 +1693,10 @@ mod tests {
             },
             mesh.clone(),
             UnlitPipeline::new(key.clone()),
-            Transparent,
+            ZSortedDrawing,
         ));
         // Spawned out of order on purpose: registration order is not draw
-        // order for transparent entities.
+        // order for z-sorted entities.
         assert_ne!(drawn(&renderer), vec![far, middle, near]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
@@ -1797,21 +1797,21 @@ mod tests {
             mesh.clone(),
             UnlitPipeline::new(key.clone()),
         ));
-        let transparent = world.spawn((
+        let z_sorted = world.spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(key),
-            Transparent,
+            ZSortedDrawing,
         ));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
-        assert_eq!(drawn(&renderer), vec![opaque, transparent]);
+        assert_eq!(drawn(&renderer), vec![opaque, z_sorted]);
 
         // The cache is cleared and refilled, not reallocated.
         let capacity = renderer.visible_cache.capacity();
         renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
-        assert_eq!(drawn(&renderer), vec![opaque, transparent]);
+        assert_eq!(drawn(&renderer), vec![opaque, z_sorted]);
         assert_eq!(renderer.visible_cache.capacity(), capacity);
     }
 

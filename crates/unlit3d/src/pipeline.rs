@@ -46,15 +46,6 @@ use wgpu_unlit_render::specialize::{
 
 use crate::components::GpuMesh;
 
-/// A bind group together with the layout it was created from.
-#[derive(Clone, Debug)]
-pub struct PipelineBinding {
-    /// The layout the bind group was built from.
-    pub layout: wgpu::BindGroupLayout,
-    /// The bind group itself.
-    pub bind_group: wgpu::BindGroup,
-}
-
 /// Rebuilds a pipeline's global bind group against the renderer's current
 /// buffers.
 ///

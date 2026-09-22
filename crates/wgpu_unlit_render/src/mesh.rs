@@ -36,9 +36,6 @@ impl core::fmt::Display for CompressError {
 
 impl std::error::Error for CompressError {}
 
-/// Result type used by the compression helpers.
-pub type CompressResult = Result<(), CompressError>;
-
 /// Per-mesh vertex-decode parameters.
 ///
 /// Mirrors `mesh_metadata.wesl::MeshMetadata`; the layout is checked at
@@ -154,11 +151,6 @@ impl MeshInstance {
             ],
             base_color,
         }
-    }
-
-    /// An instance at the origin with the given base color.
-    pub fn translated(translation: glam::Vec3, base_color: glam::Vec4) -> Self {
-        Self::new(glam::Affine3A::from_translation(translation), base_color)
     }
 }
 

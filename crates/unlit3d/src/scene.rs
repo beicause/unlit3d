@@ -17,7 +17,7 @@ use wgpu_unlit_render::pipeline::{GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, M
 use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
 
 use crate::bounds::FrustumPlanes;
-use crate::components::{Camera, GpuMaterial, GpuMesh, GpuPipeline, Transparent};
+use crate::components::{Camera, GpuMaterial, GpuMesh, GpuPipeline, ZSortedDrawing};
 use crate::culling::{VisibleMesh, collect_visible};
 use crate::pipeline::{
     DrawKey, FamilyContext, PipelineDesc, PipelineFactory, PipelineId, PipelineKey, RenderResources,
@@ -69,7 +69,7 @@ where
 /// Entries are sorted once per frame so a single linear pass can emit every
 /// pipeline and material group without intermediate scratch buffers: opaque
 /// entries first, keyed by material so shared-state draws stay adjacent, then
-/// transparent entries keyed by camera distance so they are drawn
+/// z-sorted entries keyed by camera distance so they are drawn
 /// back-to-front.
 pub(crate) struct VisibleEntry {
     /// The culled mesh this draw came from, with its entity and placement.
@@ -79,13 +79,13 @@ pub(crate) struct VisibleEntry {
     /// it.
     pub(crate) pipeline_id: PipelineId,
     /// Groups opaque draws by material, so neighbours share a bind group.
-    /// Ignored for transparent entries.
+    /// Ignored for z-sorted entries.
     pub(crate) sort_key: u64,
-    /// Distance to the camera, used to order transparent entries back-to-front.
+    /// Distance to the camera, used to order z-sorted entries back-to-front.
     /// Ignored for opaque entries.
     pub(crate) depth: f32,
-    /// True when the entity carries [Transparent].
-    pub(crate) transparent: bool,
+    /// True when the entity carries [ZSortedDrawing].
+    pub(crate) z_sorted: bool,
 }
 
 /// The inputs a family needs to collect and resolve one frame.
@@ -97,7 +97,7 @@ pub(crate) struct FamilyFrame<'a> {
     pub(crate) world: &'a LocalWorld,
     /// The visible meshes culled this frame, with placement resolved.
     pub(crate) meshes: &'a [VisibleMesh],
-    /// The frame's camera, for the transparent sort.
+    /// The frame's camera, for the z-sorted sort.
     pub(crate) camera: &'a Camera,
     /// The frame's render target.
     pub(crate) surface: SurfaceKey,
@@ -200,7 +200,7 @@ where
             pipeline_id,
             sort_key,
             depth,
-            transparent: self.frame.world.has::<Transparent>(entity),
+            z_sorted: self.frame.world.has::<ZSortedDrawing>(entity),
         });
     }
 }
@@ -267,7 +267,7 @@ pub(crate) struct SceneFrame<'a> {
 ///
 /// The ordering is the whole point of this pass: opaque entities first,
 /// grouped by pipeline and then by material so a draw never re-binds state a
-/// neighbour already set; transparent entities after them, sorted back-to-front
+/// neighbour already set; z-sorted entities after them, sorted back-to-front
 /// by camera distance so blending is order-independent.
 pub(crate) fn collect_and_sort_visible(
     frame: SceneFrame<'_>,
@@ -299,16 +299,16 @@ pub(crate) fn collect_and_sort_visible(
         family.collect_and_resolve(&frame, visible, register);
     }
 
-    // Sort: opaque before transparent, then by pipeline, then by the key that
+    // Sort: not z-sorted before z-sorted, then by pipeline, then by the key that
     // matters for that kind. Opaque draws are keyed by material so neighbours
-    // share a bind group; transparent ones by camera distance so they are
+    // share a bind group; z-sorted ones by camera distance so they are
     // composited back-to-front.
     visible.sort_unstable_by(|a, b| {
-        a.transparent
-            .cmp(&b.transparent)
+        a.z_sorted
+            .cmp(&b.z_sorted)
             .then_with(|| a.pipeline_id.cmp(&b.pipeline_id))
             .then_with(|| {
-                if a.transparent {
+                if a.z_sorted {
                     // Back-to-front: the farthest entity is drawn first.
                     b.depth.partial_cmp(&a.depth).unwrap_or(Ordering::Equal)
                 } else {
