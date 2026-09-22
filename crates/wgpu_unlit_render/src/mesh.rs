@@ -8,9 +8,8 @@
 //!
 //! The Rust side and the WGSL side (`mesh_metadata.wesl`) are kept in sync by
 //! the crate. [`MeshUvColorStream`] packs the optional per-vertex UV and color
-//! channels the built-in pipeline consumes.
+//! channels a vertex stream declares, whichever pipeline then draws it.
 
-use crate::pipeline::UnlitFlags;
 use wgpu::WriteOnly;
 use zerocopy::IntoBytes;
 
@@ -324,10 +323,13 @@ pub fn encode_uvs<'a>(
     })
 }
 
-/// Quantize colors to `Unorm8x4`, clamping out-of-range components.
+/// Quantize `[f32; 4]` colors to `Unorm8x4`, clamping out-of-range
+/// components.
 ///
+/// Colors are normally already `[u8; 4]` and need no conversion; this is
+/// for callers whose colors come from a float source such as a [glam::Vec4].
 /// Computed on demand, so nothing is allocated.
-pub fn compress_colors(colors: &[[f32; 4]]) -> impl Iterator<Item = CompressedColor> + '_ {
+pub fn quantize_colors(colors: &[[f32; 4]]) -> impl Iterator<Item = CompressedColor> + '_ {
     colors.iter().map(|color| color.map(f32_to_unorm8))
 }
 
@@ -400,8 +402,29 @@ fn f32_to_snorm16<const N: usize>(value: [f32; N]) -> [i16; N] {
     value.map(|component| (component.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16)
 }
 
-/// The optional per-vertex channels of the built-in pipeline's UV-and-color
-/// vertex stream.
+bitflags::bitflags! {
+    /// The optional per-vertex channels of a UV-and-color vertex stream.
+    ///
+    /// A stream is described by what it carries rather than by which pipeline
+    /// consumes it, so packing a stream needs nothing the built-in pipeline
+    /// defines: the built-in pipeline derives one of these from its own
+    /// variant, and a custom pipeline declares one directly.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+    pub struct UvColorFlags: u8 {
+        /// The stream carries a per-vertex UV.
+        const UV = 1 << 0;
+        /// The UV is written full precision -- `Float32x2` -- rather than
+        /// compressed to `Snorm16x2`.
+        ///
+        /// An uncompressed UV needs no decode parameters, so writing it
+        /// leaves [`crate::mesh::MeshMetadata`] alone.
+        const UNCOMPRESSED_UV = 1 << 1;
+        /// The stream carries a per-vertex color.
+        const COLOR = 1 << 2;
+    }
+}
+
+/// The optional per-vertex channels of a UV-and-color vertex stream.
 ///
 /// Each channel adds one attribute to [`crate::pipeline::UV_COLOR_SLOT`], in
 /// the order UV then color, so the packed stream matches the shader's declared
@@ -409,32 +432,19 @@ fn f32_to_snorm16<const N: usize>(value: [f32; N]) -> [i16; N] {
 /// attributes and interleaves them straight into the target buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MeshUvColorStream {
-    /// The variant's own channels, narrowed to the three this stream writes:
-    /// [`crate::pipeline::UnlitFlags::VERTEX_UV`],
-    /// [`crate::pipeline::UnlitFlags::UNCOMPRESSED_UV`] and
-    /// [`crate::pipeline::UnlitFlags::VERTEX_COLOR`].
-    pub flags: UnlitFlags,
+    /// The channels this stream writes.
+    pub flags: UvColorFlags,
 }
 
 impl MeshUvColorStream {
-    /// The stream flags this type reads.
-    ///
-    /// A variant often carries channels belonging to other streams; this mask
-    /// selects the three that belong here, so
-    /// [`crate::pipeline::UnlitOptions::uv_color_stream`] can hand over the
-    /// whole set unchanged.
-    pub(crate) const FLAGS: UnlitFlags = UnlitFlags::VERTEX_UV
-        .union(UnlitFlags::UNCOMPRESSED_UV)
-        .union(UnlitFlags::VERTEX_COLOR);
-
     /// Whether the UV attribute is written.
     pub fn uv(&self) -> bool {
-        self.flags.contains(UnlitFlags::VERTEX_UV)
+        self.flags.contains(UvColorFlags::UV)
     }
 
     /// Whether the color attribute is written.
     pub fn color(&self) -> bool {
-        self.flags.contains(UnlitFlags::VERTEX_COLOR)
+        self.flags.contains(UvColorFlags::COLOR)
     }
 
     /// Whether the UV is written full precision rather than compressed to
@@ -443,7 +453,7 @@ impl MeshUvColorStream {
     /// An uncompressed UV needs no decode parameters, so [`Self::write`]
     /// leaves the metadata alone.
     pub fn uncompressed_uv(&self) -> bool {
-        self.flags.contains(UnlitFlags::UNCOMPRESSED_UV)
+        self.flags.contains(UvColorFlags::UNCOMPRESSED_UV)
     }
 
     /// Bytes per vertex of the packed stream.
@@ -478,15 +488,20 @@ impl MeshUvColorStream {
         vertex_count * self.stride() as usize
     }
 
-    /// Compress the raw `uvs` and `colors` and write the interleaved result
-    /// into `out`, which must be exactly [`Self::byte_len`]`(vertex_count)`
-    /// bytes — normally a mapped-at-creation vertex buffer, so the vertices
-    /// land in GPU memory without an intermediate byte buffer.
+    /// Compress the raw `uvs` and write the interleaved result, together
+    /// with the already compressed `colors`, into `out` — which must be
+    /// exactly [`Self::byte_len`]`(vertex_count)` bytes, normally a
+    /// mapped-at-creation vertex buffer, so the vertices land in GPU memory
+    /// without an intermediate byte buffer.
+    ///
+    /// Colors are taken as [`CompressedColor`] because that is what the
+    /// stream stores; float colors from a [glam::Vec4] can be quantized with
+    /// [`quantize_colors`] first.
     ///
     /// `metadata` receives the UV decode parameters the compression derives,
     /// exactly as [`compress_uvs`] would.
     ///
-    /// Nothing is allocated: the compressed values are produced lazily and
+    /// Nothing is allocated: the compressed UVs are produced lazily and
     /// written as they are computed. Use [`Self::write_compressed`] to write
     /// channels that are already compressed, for example to share one stream
     /// across several meshes.
@@ -497,7 +512,7 @@ impl MeshUvColorStream {
     pub fn write(
         &self,
         uvs: &[[f32; 2]],
-        colors: &[[f32; 4]],
+        colors: &[CompressedColor],
         metadata: &mut MeshMetadata,
         out: WriteOnly<'_, [u8]>,
     ) {
@@ -523,10 +538,6 @@ impl MeshUvColorStream {
             .then(|| compress_uvs(uvs, metadata))
             .into_iter()
             .flatten();
-        let mut packed_colors = write_color
-            .then(|| compress_colors(colors))
-            .into_iter()
-            .flatten();
 
         // Each vertex is assembled as a fixed-size array on the stack and
         // streamed out.
@@ -549,8 +560,7 @@ impl MeshUvColorStream {
                 }
             }
             if write_color {
-                let color = packed_colors.next().expect("one color per vertex");
-                let bytes = color.as_bytes();
+                let bytes = colors[index].as_bytes();
                 vertex[len..len + bytes.len()].copy_from_slice(bytes);
                 len += bytes.len();
             }
@@ -564,7 +574,7 @@ impl MeshUvColorStream {
     /// [`Self::byte_len`]`(vertex_count)` bytes.
     ///
     /// Takes the packed form produced by [`compress_uvs`] and
-    /// [`compress_colors`], so one compressed stream can be
+    /// [`quantize_colors`], so one compressed stream can be
     /// uploaded for several meshes without recompressing it.
     ///
     /// # Panics
@@ -606,7 +616,7 @@ impl MeshUvColorStream {
     }
 
     /// Number of vertices the raw channel slices describe.
-    fn raw_vertex_count(&self, uvs: &[[f32; 2]], colors: &[[f32; 4]]) -> usize {
+    fn raw_vertex_count(&self, uvs: &[[f32; 2]], colors: &[CompressedColor]) -> usize {
         match (self.uv(), self.color()) {
             (true, true) => {
                 assert_eq!(
@@ -652,12 +662,12 @@ const MAX_UV_COLOR_STRIDE: usize =
 mod tests {
     use super::*;
 
-    /// Compress raw channels, write them through the mapped-buffer path and
-    /// return the bytes.
+    /// Write raw UVs and compressed colors through the mapped-buffer path
+    /// and return the bytes.
     fn write_stream(
         stream: MeshUvColorStream,
         uvs: &[[f32; 2]],
-        colors: &[[f32; 4]],
+        colors: &[CompressedColor],
         vertex_count: usize,
         metadata: &mut MeshMetadata,
     ) -> Vec<u8> {
@@ -672,25 +682,27 @@ mod tests {
     }
 
     /// Both writers must produce byte-identical streams, since the raw one
-    /// compresses into exactly what the compressed one expects.
+    /// compresses its UVs into exactly what the compressed one expects and
+    /// both copy the colors verbatim.
     #[test]
     fn raw_and_compressed_writers_agree() {
         let uvs = [[0.0f32, 0.25], [0.5, 1.0], [1.0, 0.0]];
-        let colors = [
+        let colors: Vec<CompressedColor> = quantize_colors(&[
             [0.0f32, 0.25, 0.5, 1.0],
             [1.0, 0.0, 0.0, 1.0],
             [0.2, 0.4, 0.6, 0.8],
-        ];
+        ])
+        .collect();
 
         for stream in [
             MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR,
+                flags: UvColorFlags::UV | UvColorFlags::COLOR,
             },
             MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV,
+                flags: UvColorFlags::UV,
             },
             MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_COLOR,
+                flags: UvColorFlags::COLOR,
             },
         ] {
             let mut metadata = MeshMetadata::default();
@@ -704,7 +716,7 @@ mod tests {
                 Vec::new()
             };
             let packed_colors: Vec<_> = if stream.color() {
-                compress_colors(&colors).collect()
+                colors.clone()
             } else {
                 Vec::new()
             };
@@ -724,12 +736,12 @@ mod tests {
     fn uv_color_stream_interleaves_in_attribute_order() {
         let uvs = [[0.0f32, 0.0], [1.0, 1.0]];
         // Colors are linear RGBA in [0, 1]; they quantize to Unorm8.
-        let colors = [[0.0f32, 0.25, 0.5, 1.0], [1.0, 0.0, 0.0, 1.0]];
+        let colors = [[0u8, 64, 128, 255], [255, 0, 0, 255]];
         let mut metadata = MeshMetadata::default();
 
         let out = write_stream(
             MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR,
+                flags: UvColorFlags::UV | UvColorFlags::COLOR,
             },
             &uvs,
             &colors,
@@ -758,7 +770,7 @@ mod tests {
         // UV only: four bytes per vertex.
         let out = write_stream(
             MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_UV,
+                flags: UvColorFlags::UV,
             },
             &uvs,
             &[],
@@ -770,7 +782,7 @@ mod tests {
         // Color only: four bytes per vertex, no UV bytes.
         let out = write_stream(
             MeshUvColorStream {
-                flags: UnlitFlags::VERTEX_COLOR,
+                flags: UvColorFlags::COLOR,
             },
             &[],
             &colors,
@@ -787,7 +799,7 @@ mod tests {
     fn uncompressed_uv_is_written_at_full_precision() {
         let uvs = [[0.0f32, 0.0], [0.5, 0.75]];
         let stream = MeshUvColorStream {
-            flags: UnlitFlags::VERTEX_UV | UnlitFlags::UNCOMPRESSED_UV,
+            flags: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV,
         };
         let mut metadata = MeshMetadata::default();
         let out = write_stream(stream, &uvs, &[], 2, &mut metadata);
@@ -876,9 +888,9 @@ mod tests {
     }
 
     #[test]
-    fn colors_clamp_out_of_range_components() {
+    fn quantize_colors_clamp_out_of_range_components() {
         let colors: Vec<_> =
-            compress_colors(&[[0.0, 0.5, 1.0, 2.0], [-1.0, 0.0, 0.0, 0.0]]).collect();
+            quantize_colors(&[[0.0, 0.5, 1.0, 2.0], [-1.0, 0.0, 0.0, 0.0]]).collect();
         assert_eq!(colors[0], [0, 128, 255, 255]);
         assert_eq!(colors[1], [0, 0, 0, 0]);
     }

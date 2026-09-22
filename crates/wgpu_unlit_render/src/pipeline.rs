@@ -6,7 +6,9 @@
 //! Each variant contains exactly the bindings and attributes the selected
 //! channels need, so nothing unused reaches the GPU.
 
-use crate::mesh::{MeshInfo, MeshUvColorStream};
+#[cfg(feature = "unlit")]
+use crate::mesh::{MeshInfo, MeshUvColorStream, UvColorFlags};
+#[cfg(feature = "unlit")]
 use crate::render_attachments::default_depth_stencil_format;
 
 /// Binding slot of the camera uniform in the global bind group.
@@ -36,6 +38,7 @@ pub const UV_COLOR_SLOT: u32 = 1;
 pub const INSTANCE_SLOT: u32 = 2;
 
 /// Vertex attribute locations declared by the built-in shader.
+#[cfg(feature = "unlit")]
 mod location {
     /// Compressed position (`Snorm16x4`).
     pub const POSITION: u32 = 0;
@@ -54,10 +57,13 @@ mod location {
 }
 
 /// Entry point name of the built-in shader's vertex stage.
+#[cfg(feature = "unlit")]
 pub const VS_MAIN: &str = "vs_main";
 /// Entry point name of the built-in shader's fragment stage.
+#[cfg(feature = "unlit")]
 pub const FS_MAIN: &str = "fs_main";
 
+#[cfg(feature = "unlit")]
 bitflags::bitflags! {
     /// The channels and bindings the built-in shader variant reads.
     ///
@@ -108,6 +114,7 @@ bitflags::bitflags! {
 ///
 /// [`UnlitOptions::standard`] is the usual starting point: compressed
 /// positions, per-instance transforms and blending off.
+#[cfg(feature = "unlit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct UnlitOptions {
     /// The channels and bindings the variant reads.
@@ -141,6 +148,7 @@ pub struct UnlitOptions {
     pub multisample: wgpu::MultisampleState,
 }
 
+#[cfg(feature = "unlit")]
 impl UnlitOptions {
     /// The usual starting point: the full compressed mesh variant — positions,
     /// UVs, vertex colors, a base-color texture and per-instance transforms —
@@ -253,20 +261,45 @@ impl UnlitOptions {
     }
 
     /// The UV-and-color vertex stream this variant expects.
+    ///
+    /// The stream is described in [`crate::mesh`]'s own terms: this variant's
+    /// channels are translated into the ones that make up a vertex stream, so
+    /// packing meshes for this pipeline needs nothing specific to it.
     pub fn uv_color_stream(&self) -> MeshUvColorStream {
         MeshUvColorStream {
-            flags: self.flags & MeshUvColorStream::FLAGS,
+            flags: uv_color_flags(self.flags),
         }
     }
 }
 
+/// The UV-and-color stream channels `flags` imply.
+///
+/// A variant often carries channels belonging to other streams; this
+/// translation selects the ones that belong to the UV-and-color stream.
+#[cfg(feature = "unlit")]
+fn uv_color_flags(flags: UnlitFlags) -> UvColorFlags {
+    let mut stream = UvColorFlags::empty();
+    stream.set(UvColorFlags::UV, flags.contains(UnlitFlags::VERTEX_UV));
+    stream.set(
+        UvColorFlags::UNCOMPRESSED_UV,
+        flags.contains(UnlitFlags::UNCOMPRESSED_UV),
+    );
+    stream.set(
+        UvColorFlags::COLOR,
+        flags.contains(UnlitFlags::VERTEX_COLOR),
+    );
+    stream
+}
+
 /// Failure reasons reported by [`compose_builtin`].
+#[cfg(feature = "unlit")]
 #[derive(Debug)]
 enum ComposeError {
     /// The WESL compiler rejected the module.
     Compile(wesl::Error),
 }
 
+#[cfg(feature = "unlit")]
 impl core::fmt::Display for ComposeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
@@ -275,6 +308,7 @@ impl core::fmt::Display for ComposeError {
     }
 }
 
+#[cfg(feature = "unlit")]
 impl std::error::Error for ComposeError {}
 
 /// The built-in unlit pipeline, its layouts and its vertex-buffer
@@ -283,6 +317,7 @@ impl std::error::Error for ComposeError {}
 /// Created once and reused for every draw that shares the variant; the
 /// resources it owns can be registered with a [`crate::resources::ResourceGraph`]
 /// so a render-target change rebuilds it.
+#[cfg(feature = "unlit")]
 pub struct UnlitPipeline {
     /// The render pipeline.
     pub pipeline: wgpu::RenderPipeline,
@@ -298,6 +333,7 @@ pub struct UnlitPipeline {
     pub options: UnlitOptions,
 }
 
+#[cfg(feature = "unlit")]
 impl UnlitPipeline {
     /// Compose the built-in `unlit.wesl` for `options` and build the
     /// pipeline.
@@ -538,6 +574,7 @@ impl UnlitPipeline {
 ///
 /// # Panics
 /// If the derived stride is not a multiple of [`wgpu::VERTEX_ALIGNMENT`].
+#[cfg(feature = "unlit")]
 fn vertex_layout(
     attributes: &'static [wgpu::VertexAttribute],
     step_mode: wgpu::VertexStepMode,
@@ -563,6 +600,7 @@ fn vertex_layout(
 /// If the flags contradict each other: a channel cannot be uncompressed
 /// without being read, and the base-color texture is sampled with the
 /// per-vertex UV.
+#[cfg(feature = "unlit")]
 fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
     let flags = options.flags;
     assert!(
@@ -602,7 +640,7 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
         .map_err(ComposeError::Compile)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "unlit"))]
 mod tests {
     use super::*;
 

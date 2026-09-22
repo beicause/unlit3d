@@ -4,16 +4,33 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["unlit"]
+## The built-in unlit pipeline: the shader variants it composes from the WESL
+## package, its options, and its bind-group and vertex-buffer layouts.
+##
+## It is built on the core the same way a caller's own pipeline would be: it
+## uses the binding and slot conventions, the vertex compression and the
+## resource tracking the crate exposes to everyone, and composes the `unlit`
+## module of the crate's WESL package with `wesl`. Without it the crate keeps
+## those general facilities and drops everything specific to the built-in
+## pipeline -- including the WESL compiler it composes shaders with.
+unlit = ["dep:wesl"]
+## An [egui](https://egui.rs) backend that draws tessellated egui output as
+## ordinary screen-space draws. It draws with a built-in unlit pipeline, so
+## it implies `unlit`.
+egui = ["dep:egui", "dep:hashbrown", "unlit"]
+
 [dependencies]
 arrayvec.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
-egui.workspace = true
+egui = { workspace = true, optional = true }
 glam.workspace = true
-hashbrown.workspace = true
+hashbrown = { workspace = true, optional = true }
 petgraph.workspace = true
 smallvec.workspace = true
-wesl.workspace = true
+wesl = { workspace = true, optional = true }
 wesl-core.workspace = true
 wgpu.workspace = true
 zerocopy.workspace = true

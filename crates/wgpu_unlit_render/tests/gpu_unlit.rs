@@ -6,12 +6,16 @@
 //! The snapshot tests additionally compare frames against stored references
 //! with the SSIMULACRA2 perceptual metric.
 
+// They exercise the built-in pipeline, so they are built with the feature that
+// provides it.
+#![cfg(feature = "unlit")]
+
 mod common;
 
 use common::*;
 use wgpu_unlit_render::globals::{Globals, View};
 use wgpu_unlit_render::mesh::{
-    MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
+    MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions, quantize_colors,
 };
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
@@ -75,7 +79,7 @@ impl GpuMesh {
         options: &UnlitOptions,
         positions: &[[f32; 3]],
         uvs: &[[f32; 2]],
-        colors: &[[f32; 4]],
+        colors: &[[u8; 4]],
         indices: &[u32],
     ) -> Self {
         let stream = options.uv_color_stream();
@@ -182,7 +186,7 @@ fn camera(aspect: f32) -> View {
 }
 
 /// A CPU-side mesh: positions, UVs, vertex colors and `u32` indices.
-type MeshData = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>, Vec<u32>);
+type MeshData = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
 
 /// A unit cube centred on the origin, with UVs and vertex colors that exercise
 /// both decode paths (the unlit shader ignores normals).
@@ -222,6 +226,9 @@ fn cube() -> MeshData {
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
+    // The vertex stream stores colors as `Unorm8x4`; quantize them once
+    // here so the fixture hands the writer the width it uploads at.
+    let colors = quantize_colors(&colors).collect();
     (positions, uvs, colors, indices)
 }
 

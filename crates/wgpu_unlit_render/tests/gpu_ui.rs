@@ -4,6 +4,10 @@
 //! that come back, so a broken projection, a wrong blend or a missing texture
 //! shows up as a wrong frame rather than as a passing unit test.
 
+// They exercise the egui backend, so they are built with the feature that
+// provides it.
+#![cfg(feature = "egui")]
+
 mod common;
 
 use common::*;
