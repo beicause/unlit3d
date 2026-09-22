@@ -16,7 +16,7 @@ smallvec.workspace = true
 wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true
-wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0" }
+wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0", features = ["unlit"] }
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0" }
 zerocopy.workspace = true
 zerocopy-derive.workspace = true

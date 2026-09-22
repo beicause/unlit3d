@@ -4,7 +4,7 @@
 //! frames offscreen, and inspects the returned pixels.  Snapshot tests compare
 //! against stored WebP references with the SSIMULACRA2 perceptual metric.
 
-mod common;
+pub mod common;
 
 use common::*;
 use unlit3d::prelude::*;

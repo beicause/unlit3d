@@ -3,12 +3,9 @@
 //! Re-exports general GPU test helpers and adds crate-specific
 //! helpers tailored to the `unlit3d` ECS-based rendering API.
 
-#![expect(unused_imports, reason = "different test files use different subsets")]
-
 pub use wgpu_unlit_test_util::{
-    Ctx, Frame, assert_image_snapshot, assert_image_snapshot_with_threshold, bg_entry,
-    busy_wait_block_on, count_pixels_off_background, read_texture_bytes, readback_buffer, rgb,
-    srgb_to_linear_u8, texel_bytes,
+    Ctx, Frame, assert_image_snapshot, busy_wait_block_on, count_pixels_off_background,
+    read_texture_bytes, texel_bytes,
 };
 
 use unlit_ecs::LocalWorld;
@@ -29,7 +26,7 @@ pub fn test_world(ctx: &Ctx) -> (Renderer, LocalWorld) {
 
 /// Build a `Renderer` on `ctx`'s device with standard unlit options.
 pub fn create_renderer(ctx: &Ctx) -> Renderer {
-    Renderer::new(
+    Renderer::with_unlit(
         ctx.device.clone(),
         ctx.queue.clone(),
         unlit_options(&ctx.device),
@@ -68,10 +65,21 @@ fn unlit_options(device: &wgpu::Device) -> wgpu_unlit_render::pipeline::UnlitOpt
     }
 }
 
+/// The UV-and-color stream the ECS tests pack meshes into.
+///
+/// It is the one [`unlit_options`] declares, taken from the options
+/// themselves so the packed bytes and the pipeline's vertex layout can
+/// never disagree.
+pub fn uv_color_stream(device: &wgpu::Device) -> wgpu_unlit_render::mesh::MeshUvColorStream {
+    unlit_options(device).uv_color_stream()
+}
+
+/// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
+pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
+
 /// A unit cube centred at the origin, returned as
 /// `(positions, uvs, colors, indices)`.
-pub fn cube() -> (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>, Vec<u32>) {
-    use wgpu_unlit_render::pipeline::POSITION_SLOT;
+pub fn cube() -> RawMesh {
     let faces = [
         ([-1.0f32, 0.0, 0.0], [0.0f32, 0.0, 1.0]),
         ([1.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
@@ -101,6 +109,9 @@ pub fn cube() -> (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[f32; 4]>, Vec<u32>) {
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
+    // The stream stores colors as `Unorm8x4`, so quantize once here rather
+    // than carrying a float copy through the fixture.
+    let colors = wgpu_unlit_render::mesh::quantize_colors(&colors).collect();
     (positions, uvs, colors, indices)
 }
 
@@ -126,7 +137,14 @@ pub fn camera_view(aspect: f32) -> Camera {
 /// Allocate the cube mesh through the renderer and return a `GpuMesh` handle.
 pub fn allocate_cube_mesh(r: &mut Renderer) -> GpuMesh {
     let (positions, uvs, colors, indices) = cube();
-    r.allocate_mesh(&positions, Some(&uvs), Some(&colors), Some(&indices))
+    let stream = uv_color_stream(&r.device);
+    r.allocate_unlit_mesh(
+        stream,
+        &positions,
+        Some(&uvs),
+        Some(&colors),
+        Some(&indices),
+    )
 }
 
 /// A simple offscreen colour target on which to render, returning

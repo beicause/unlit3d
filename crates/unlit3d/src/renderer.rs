@@ -6,12 +6,14 @@
 //! entity) and call [Renderer::render] every frame.
 
 use core::cmp::Ordering;
+use std::sync::Arc;
 
 use glam::Vec3;
 use unlit_ecs::{Entity, LocalWorld};
 use wgpu_unlit_render::globals::{Globals, View};
 use wgpu_unlit_render::mesh::{
-    MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
+    CompressedPosition, MeshInfo, MeshInstance, MeshMetadata, MeshUvColorStream, compress_indices,
+    compress_positions,
 };
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
@@ -28,9 +30,13 @@ use zerocopy::IntoBytes;
 use crate::components::{
     BoundingSphere, Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceData, Transform, Transparent,
 };
+use crate::mesh::{MeshDesc, VertexBufferDesc};
+use crate::pipeline::{
+    GlobalBinding, GlobalGroupRebuild, PipelineDesc, RegisteredGlobal, RenderResources,
+};
 
-/// Index into [`Renderer::pipelines`] of the pipeline [Renderer::new] builds
-/// from its options.
+/// Index into the renderer\'s pipeline list of the pipeline
+/// [Renderer::new] builds from its options.
 ///
 /// Entities without a [GpuPipeline] component draw with it. The built-in
 /// pipeline is an ordinary registered pipeline in the same list as the ones
@@ -49,14 +55,6 @@ pub struct Renderer {
     pub device: wgpu::Device,
     /// WGPU queue.
     pub queue: wgpu::Queue,
-
-    /// The UV-and-colour vertex stream descriptor that meshes are packed
-    /// into, shared by every registered pipeline.
-    ///
-    /// A pipeline whose variant packs its vertices differently cannot draw
-    /// the meshes already uploaded, so [Renderer::create_unlit_pipeline]
-    /// requires a matching layout.
-    pub uv_color_stream: wgpu_unlit_render::mesh::MeshUvColorStream,
 
     /// Dependency-tracked GPU resource graph.
     pub graph: ResourceGraph,
@@ -84,9 +82,8 @@ pub struct Renderer {
 
     /// Every pipeline registered with this renderer, in registration order.
     ///
-    /// Index [`DEFAULT_PIPELINE_INDEX`] is the one [Renderer::new] built
-    /// from the options it was given; entities without a [GpuPipeline]
-    /// component draw with it.
+    /// An entity without a [GpuPipeline] component draws with the one at
+    /// [`DEFAULT_PIPELINE_INDEX`].
     pipelines: Vec<RegisteredPipeline>,
 
     // -- cached per-frame allocations ------------------------------------------
@@ -98,6 +95,39 @@ pub struct Renderer {
     bind_group_cache: Vec<wgpu::BindGroup>,
     /// Reused Vec for cloned buffers while the scene is built.
     buffer_cache: Vec<wgpu::Buffer>,
+}
+
+/// Build the unlit shader's global bind group from the renderer's buffers.
+///
+/// A free function rather than a method so the rebuild closure the pipeline is
+/// registered with can capture it without borrowing the renderer.
+fn create_unlit_global_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    resources: &RenderResources,
+    needs_metadata: bool,
+) -> wgpu::BindGroup {
+    let mut entries = vec![
+        wgpu::BindGroupEntry {
+            binding: CAMERA_BINDING,
+            resource: resources.camera.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: FRAME_BINDING,
+            resource: resources.globals.as_entire_binding(),
+        },
+    ];
+    if needs_metadata {
+        entries.push(wgpu::BindGroupEntry {
+            binding: MESH_METADATA_BINDING,
+            resource: resources.metadata.as_entire_binding(),
+        });
+    }
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("unlit3d::global"),
+        layout,
+        entries: &entries,
+    })
 }
 
 /// A visible entity awaiting its draw command, tagged with everything the
@@ -125,27 +155,29 @@ struct VisibleEntry {
 
 /// A pipeline registered with the renderer.
 struct RegisteredPipeline {
-    /// The compiled pipeline and the variant it was built for.
-    pipeline: UnlitPipeline,
-    /// The bind group for the global group (index 0), built from this
-    /// pipeline's layout.
-    global_group: ResourceId,
+    /// The compiled pipeline.
+    pipeline: wgpu::RenderPipeline,
+    /// The bind group bound at the global index (0), together with the id it
+    /// lives under in the resource graph and how to rebuild it. `None` for a
+    /// pipeline that binds nothing there.
+    global: Option<RegisteredGlobal>,
+    /// The layout a material bind group must be built from.
+    material_layout: Option<wgpu::BindGroupLayout>,
+    /// The layout a mesh bind group must be built from.
+    mesh_layout: Option<wgpu::BindGroupLayout>,
 }
 
 impl Renderer {
     /// Build a new renderer and its GPU resources.
     ///
-    /// `options` selects the shader variant. `width` and `height` are the
-    /// initial viewport size in physical pixels.
-    pub fn new(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        options: UnlitOptions,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let uv_color_stream = options.uv_color_stream();
-
+    /// The renderer starts with no pipelines: register the ones you draw
+    /// with through [`Renderer::register_pipeline`] — for the built-in
+    /// unlit shader, [`Renderer::create_unlit_pipeline`] does it for you.
+    /// [Renderer::with_unlit] is the shortcut that does both at once.
+    ///
+    /// `width` and `height` are the initial viewport size in physical
+    /// pixels.
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue, width: u32, height: u32) -> Self {
         let mut graph = ResourceGraph::new();
 
         // Camera uniform buffer.
@@ -203,10 +235,9 @@ impl Renderer {
         let attachments =
             RenderAttachments::new(&device, AttachmentsInfo::new(&device, width, height));
 
-        let mut renderer = Self {
+        Self {
             device,
             queue,
-            uv_color_stream,
             graph,
             attachments,
             camera_buf,
@@ -222,11 +253,24 @@ impl Renderer {
             packed_instances_cache: Vec::new(),
             bind_group_cache: Vec::new(),
             buffer_cache: Vec::new(),
-        };
+        }
+    }
 
-        // The built-in pipeline: registered like any other, so entities that
-        // name no pipeline fall back to DEFAULT_PIPELINE_INDEX by default.
-        renderer.register_pipeline(options);
+    /// Build a renderer with the built-in unlit pipeline registered at
+    /// [`DEFAULT_PIPELINE_INDEX`].
+    ///
+    /// `options` selects the shader variant; the pipeline is registered the
+    /// same way [`Renderer::create_unlit_pipeline`] registers one, so it sits
+    /// in the same list as any pipeline you add afterwards.
+    pub fn with_unlit(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        options: UnlitOptions,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let mut renderer = Self::new(device, queue, width, height);
+        renderer.create_unlit_pipeline(options);
         renderer
     }
 
@@ -238,21 +282,93 @@ impl Renderer {
         );
     }
 
-    /// Allocate GPU buffers for raw mesh data and return a [GpuMesh] handle.
+    /// Upload vertex and index data and return a [GpuMesh] handle.
     ///
-    /// The mesh is ready to draw immediately. Positions, UVs and colours are
-    /// compressed to the compact vertex formats the registered pipelines
-    /// expect, so every variant of the unlit shader can draw it.
+    /// The renderer assumes no vertex layout: `vertex_buffers` lists exactly
+    /// the buffers a draw binds, each tagged with the slot the pipeline's
+    /// vertex state declares, so a mesh may carry any combination of
+    /// attributes in any format. The pipeline specializes on the layout.
+    ///
+    /// [`Renderer::allocate_unlit_mesh`] is the helper that builds the
+    /// compressed layout the built-in unlit shader expects.
+    ///
+    /// # Panics
+    ///
+    /// If `count` is zero for a non-empty draw, or if the index format does
+    /// not match the packed data.
+    pub fn allocate_mesh(&mut self, desc: MeshDesc) -> GpuMesh {
+        let MeshDesc {
+            vertex_buffers,
+            index_buffer,
+            count,
+            indexed,
+            bind_group,
+        } = desc;
+
+        let mut buffers = Vec::with_capacity(vertex_buffers.len());
+        let mut vertex_slots = Vec::with_capacity(vertex_buffers.len());
+        for desc in vertex_buffers {
+            let id = self
+                .graph
+                .insert(Resource::Buffer(desc.buffer), &[])
+                .expect("a vertex buffer has no dependencies");
+            vertex_slots.push((desc.slot, id));
+            buffers.push(id);
+        }
+
+        let index_buffer = index_buffer.map(|(buffer, format)| {
+            let id = self
+                .graph
+                .insert(Resource::Buffer(buffer), &[])
+                .expect("an index buffer has no dependencies");
+            (id, format)
+        });
+
+        let bind_group_id = bind_group.map(|bind_group| {
+            self.graph
+                .insert(Resource::BindGroup(bind_group), &buffers)
+                .expect("a mesh bind group depends on its vertex buffers")
+        });
+
+        GpuMesh {
+            vertex_buffers: vertex_slots,
+            index_buffer,
+            count,
+            indexed,
+            bind_group_id,
+        }
+    }
+
+    /// Upload raw mesh channels in the layout the built-in unlit shader
+    /// expects, and return a [GpuMesh] handle.
+    ///
+    /// Positions and UVs are compressed to the compact vertex formats the
+    /// shader decodes, packed into a position buffer and an interleaved
+    /// UV-and-colour buffer, and bound with the mesh-metadata bind group the
+    /// shader reads its decode parameters from. Colours are already stored
+    /// in the width they are uploaded at, so they are copied through
+    /// unchanged.
+    ///
+    /// This is a convenience over [`Renderer::allocate_mesh`]: it builds the
+    /// same [`MeshDesc`] a caller could build by hand, and shares the
+    /// compression in [wgpu_unlit_render::mesh] with anyone else who wants
+    /// it.
+    ///
+    /// Which channels are packed is the default pipeline's own vertex layout,
+    /// taken from the options it was registered with: a slice for a channel
+    /// the pipeline does not declare is left out, so the buffer always matches
+    /// what the shader reads.
     ///
     /// # Panics
     ///
     /// If the input slices are empty or of mismatched length (see the
     /// compressors in [wgpu_unlit_render::mesh]).
-    pub fn allocate_mesh(
+    pub fn allocate_unlit_mesh(
         &mut self,
+        uv_color_stream: MeshUvColorStream,
         positions: &[[f32; 3]],
         uvs: Option<&[[f32; 2]]>,
-        colors: Option<&[[f32; 4]]>,
+        colors: Option<&[[u8; 4]]>,
         indices: Option<&[u32]>,
     ) -> GpuMesh {
         // Compress vertex streams.
@@ -260,24 +376,23 @@ impl Renderer {
         let packed_positions: Vec<_> = compress_positions(positions, &mut meta).collect();
         let vertex_count = packed_positions.len();
 
-        // Position vertex buffer.
-        let pos_stride = size_of::<wgpu_unlit_render::mesh::CompressedPosition>();
         let position_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("unlit3d::mesh::position"),
-            size: (vertex_count * pos_stride) as u64,
+            size: (vertex_count * size_of::<CompressedPosition>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         self.queue
             .write_buffer(&position_buf, 0, packed_positions.as_bytes());
-        let position_id = self
-            .graph
-            .insert(Resource::Buffer(position_buf), &[])
-            .expect("position buffer has no dependencies");
 
-        // UV and colour vertex buffer (interleaved via stream).
+        // UV and colour vertex buffer, interleaved in the order the shader
+        // declares: the channel a slice is given for is the channel packed.
         use wgpu::WriteOnly;
-        let uv_color_len = self.uv_color_stream.byte_len(vertex_count);
+        // The stream is the pipeline's, not the caller's: the buffer has to
+        // be packed the way the shader that reads it declares its vertex
+        // layout, so a channel the caller passes but the pipeline does not
+        // read is left out.
+        let uv_color_len = uv_color_stream.byte_len(vertex_count);
         let uv_color_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("unlit3d::mesh::uv_color"),
             size: uv_color_len as u64,
@@ -286,7 +401,7 @@ impl Renderer {
         });
         if uv_color_len > 0 {
             let mut staging = vec![0u8; uv_color_len];
-            self.uv_color_stream.write(
+            uv_color_stream.write(
                 uvs.unwrap_or(&[]),
                 colors.unwrap_or(&[]),
                 &mut meta,
@@ -294,17 +409,14 @@ impl Renderer {
             );
             self.queue.write_buffer(&uv_color_buf, 0, &staging);
         }
-        let uv_color_id = self
-            .graph
-            .insert(Resource::Buffer(uv_color_buf), &[])
-            .expect("uv_color buffer has no dependencies");
 
-        // Append metadata entry.
+        // Append metadata entry and rebuild the storage buffer it lives in.
         let metadata_index = self.metadata.len() as u32;
         self.metadata.push(meta);
         self.rebuild_metadata_buffer();
 
-        // MeshInfo uniform buffer (just the metadata index).
+        // MeshInfo uniform buffer (just the metadata index) and the bind
+        // group the shader reads it through.
         let mesh_info = MeshInfo::new(metadata_index);
         let mesh_info_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("unlit3d::mesh::info"),
@@ -319,12 +431,9 @@ impl Renderer {
             .insert(Resource::Buffer(mesh_info_buf), &[])
             .expect("mesh_info buffer has no dependencies");
 
-        // Mesh bind group (MESH_GROUP).
-        let mesh_layout = self
-            .default_pipeline()
-            .mesh_layout
-            .as_ref()
-            .expect("the default pipeline has a mesh layout when metadata is needed");
+        let mesh_layout = self.default_mesh_layout().expect(
+            "the default pipeline binds mesh metadata when it decodes a compressed channel",
+        );
         let mesh_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::mesh::bind_group"),
             layout: mesh_layout,
@@ -337,16 +446,11 @@ impl Renderer {
                     .as_entire_binding(),
             }],
         });
-        let mesh_bind_group_id = self
-            .graph
-            .insert(Resource::BindGroup(mesh_bind_group), &[mesh_info_id])
-            .expect("mesh_info buffer is a dependency");
 
-        // Index buffer (optional).  The format is chosen automatically:
-        // Uint16 when every index fits, otherwise Uint32.
+        // Index buffer (optional): `Uint16` when every index fits, otherwise
+        // `Uint32` — the same choice the compressor makes.
         let (index_buffer, count, indexed) = match indices {
             Some(indices) if !indices.is_empty() => {
-                // Number of indices before packing.
                 let index_count = indices.len() as u32;
                 let format = if compress_indices(indices).is_ok() {
                     wgpu::IndexFormat::Uint16
@@ -373,87 +477,138 @@ impl Renderer {
                     mapped_at_creation: false,
                 });
                 self.queue.write_buffer(&buf, 0, &padded);
-                let id = self
-                    .graph
-                    .insert(Resource::Buffer(buf), &[])
-                    .expect("index buffer has no dependencies");
-                (Some((id, format)), index_count, true)
+                (Some((buf, format)), index_count, true)
             }
             _ => (None, vertex_count as u32, false),
         };
 
-        GpuMesh {
-            bind_group_id: mesh_bind_group_id,
-            vertex_buffers: vec![(POSITION_SLOT, position_id), (UV_COLOR_SLOT, uv_color_id)],
+        self.allocate_mesh(MeshDesc {
+            vertex_buffers: vec![
+                VertexBufferDesc {
+                    slot: POSITION_SLOT,
+                    buffer: position_buf,
+                },
+                VertexBufferDesc {
+                    slot: UV_COLOR_SLOT,
+                    buffer: uv_color_buf,
+                },
+            ],
             index_buffer,
             count,
             indexed,
-        }
+            bind_group: Some(mesh_bind_group),
+        })
     }
 
-    /// Allocate a material bind group for `texture` and return a
-    /// [GpuMaterial] handle.
+    /// Insert `texture` into the resource graph and return the id of a view
+    /// of it.
     ///
-    /// The caller creates and fills the texture; this takes ownership of it
-    /// and inserts it into the renderer's resource graph together with a view
-    /// and a sampler, so the material is ready to use immediately.
-    ///
-    /// The bind group is built from the default pipeline's material layout,
-    /// so the texture must be a 2D texture that layout can sample — one from
-    /// [Renderer::allocate_unlit_texture], say. Returns `None` when that
-    /// pipeline's variant reads no base-color texture and so has no material
-    /// layout to bind against.
-    pub fn allocate_unlit_material(&mut self, texture: wgpu::Texture) -> Option<GpuMaterial> {
-        let material_layout = self.default_pipeline().material_layout.clone()?;
-
+    /// The view is recorded as depending on the texture, so replacing the
+    /// texture marks every material built from the view dirty. The caller
+    /// keeps ownership of the texture only until this call; afterwards the
+    /// graph holds it.
+    pub fn register_texture(&mut self, texture: wgpu::Texture) -> ResourceId {
         let texture_id = self
             .graph
             .insert(Resource::Texture(texture), &[])
-            .expect("texture has no dependencies");
-
+            .expect("a texture has no dependencies");
         let view = self
             .graph
             .get_texture(texture_id)
             .expect("texture exists")
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let view_id = self
-            .graph
+        self.graph
             .insert(Resource::TextureView(view), &[texture_id])
-            .expect("texture is a dependency");
+            .expect("the view depends on its texture")
+    }
 
-        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("unlit3d::material::sampler"),
-            ..Default::default()
-        });
-        let sampler_id = self
-            .graph
+    /// Create a sampler with `descriptor` — or the default one when `None` —
+    /// insert it into the resource graph and return its id.
+    pub fn register_sampler(
+        &mut self,
+        descriptor: Option<wgpu::SamplerDescriptor<'_>>,
+    ) -> ResourceId {
+        let sampler = self.device.create_sampler(&descriptor.unwrap_or_default());
+        self.graph
             .insert(Resource::Sampler(sampler), &[])
-            .expect("sampler has no dependencies");
+            .expect("a sampler has no dependencies")
+    }
 
+    /// Allocate the unlit material bind group from an existing base-colour
+    /// texture view and sampler, and return its [GpuMaterial] handle.
+    ///
+    /// Only the bind group is built. `view_id` and `sampler_id` name
+    /// resources the caller has already put in the graph, and they become the
+    /// group's dependencies, so replacing either marks it dirty. Returns
+    /// `None` when the default pipeline binds no material group to put them
+    /// in.
+    ///
+    /// # Panics
+    ///
+    /// If `view_id` or `sampler_id` is not a texture view or sampler in the
+    /// graph.
+    pub fn allocate_unlit_material(
+        &mut self,
+        view_id: ResourceId,
+        sampler_id: ResourceId,
+    ) -> Option<GpuMaterial> {
+        let layout = self.default_material_layout()?.clone();
+
+        // Clone the handles out so the entries borrow nothing from the graph
+        // while `allocate_material` mutates it.
+        let view = self
+            .graph
+            .get_texture_view(view_id)
+            .expect("the view is in the graph")
+            .clone();
+        let sampler = self
+            .graph
+            .get_sampler(sampler_id)
+            .expect("the sampler is in the graph")
+            .clone();
+        let entries = [
+            wgpu::BindGroupEntry {
+                binding: BASE_COLOR_TEXTURE_BINDING,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: BASE_COLOR_SAMPLER_BINDING,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ];
+        Some(self.allocate_material(&layout, &entries, &[view_id, sampler_id]))
+    }
+
+    /// Build a material bind group from `entries` against `layout` and return
+    /// its [GpuMaterial] handle.
+    ///
+    /// Only the bind group is created here: the resources it reads are the
+    /// caller's, already in the resource graph and named in `dependencies` so
+    /// replacing one marks the group dirty. `layout` is the material layout of
+    /// the pipeline the material is for —
+    /// [`Renderer::default_material_layout`] for the built-in shader, or the
+    /// one a custom pipeline registered.
+    ///
+    /// # Panics
+    ///
+    /// If a resource named in `entries` is not in the graph.
+    pub fn allocate_material(
+        &mut self,
+        layout: &wgpu::BindGroupLayout,
+        entries: &[wgpu::BindGroupEntry<'_>],
+        dependencies: &[ResourceId],
+    ) -> GpuMaterial {
         let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::material::bind_group"),
-            layout: &material_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: BASE_COLOR_TEXTURE_BINDING,
-                    resource: wgpu::BindingResource::TextureView(
-                        self.graph.get_texture_view(view_id).expect("view exists"),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: BASE_COLOR_SAMPLER_BINDING,
-                    resource: wgpu::BindingResource::Sampler(
-                        self.graph.get_sampler(sampler_id).expect("sampler exists"),
-                    ),
-                },
-            ],
+            layout,
+            entries,
         });
         let bind_group_id = self
             .graph
-            .insert(Resource::BindGroup(bind_group), &[view_id, sampler_id])
-            .expect("view and sampler are dependencies");
+            .insert(Resource::BindGroup(bind_group), dependencies)
+            .expect("a material bind group depends on graph resources");
 
-        Some(GpuMaterial { bind_group_id })
+        GpuMaterial { bind_group_id }
     }
 
     /// Render one frame from the ECS `world`.
@@ -522,21 +677,24 @@ impl Renderer {
             .clone();
 
         // Every registered pipeline's render handle and global bind group,
-        // indexed the same way [`Renderer::pipelines`] is.
+        // indexed the same way [`Renderer::pipelines`] is. A pipeline that
+        // binds no global group carries `None` and the scene records no bind
+        // for it.
         struct PipelineRes {
             handle: wgpu::RenderPipeline,
-            global_bg: wgpu::BindGroup,
+            global_bg: Option<wgpu::BindGroup>,
         }
         let pipeline_res: Vec<PipelineRes> = self
             .pipelines
             .iter()
             .map(|registered| PipelineRes {
-                handle: registered.pipeline.pipeline.clone(),
-                global_bg: self
-                    .graph
-                    .get_bind_group(registered.global_group)
-                    .expect("global group exists")
-                    .clone(),
+                handle: registered.pipeline.clone(),
+                global_bg: registered.global.as_ref().map(|global| {
+                    self.graph
+                        .get_bind_group(global.id)
+                        .expect("global group exists")
+                        .clone()
+                }),
             })
             .collect();
 
@@ -557,7 +715,7 @@ impl Renderer {
         // bind groups, and the range in buffer_cache holding its vertex
         // buffers followed by its optional index buffer.
         struct EntryHandles {
-            mesh_bg: usize,
+            mesh_bg: Option<usize>,
             material_bg: Option<usize>,
             vertex_start: usize,
             index_buffer: Option<(usize, wgpu::IndexFormat)>,
@@ -571,13 +729,15 @@ impl Renderer {
                     .get::<GpuMesh>(entry.entity)
                     .expect("visible entity has GpuMesh");
 
-                bind_group_cache.push(
-                    graph_ref
-                        .get_bind_group(mesh.bind_group_id)
-                        .expect("mesh bind group exists")
-                        .clone(),
-                );
-                let mesh_bg = bind_group_cache.len() - 1;
+                let mesh_bg = mesh.bind_group_id.map(|id| {
+                    bind_group_cache.push(
+                        graph_ref
+                            .get_bind_group(id)
+                            .expect("mesh bind group exists")
+                            .clone(),
+                    );
+                    bind_group_cache.len() - 1
+                });
 
                 let material_bg = match world.get::<GpuMaterial>(entry.entity) {
                     Some(material) => {
@@ -655,9 +815,11 @@ impl Renderer {
                 open_material = None;
                 material_open = false;
                 let res = &pipeline_res[entry.pipeline_index as usize];
-                open_pg = Some(
-                    PipelineGroup::new(&res.handle).with_bind_group(GLOBAL_GROUP, &res.global_bg),
-                );
+                let mut pg = PipelineGroup::new(&res.handle);
+                if let Some(global_bg) = &res.global_bg {
+                    pg = pg.with_bind_group(GLOBAL_GROUP, global_bg);
+                }
+                open_pg = Some(pg);
                 open_pipeline = Some(entry.pipeline_index);
             }
 
@@ -684,8 +846,10 @@ impl Renderer {
             } else {
                 DrawRange::vertices(0..mesh.count).with_instances(instance_range)
             };
-            let mut draw =
-                MeshDraw::new(range).with_bind_group(MESH_GROUP, &bind_group_cache[handle.mesh_bg]);
+            let mut draw = MeshDraw::new(range);
+            if let Some(index) = handle.mesh_bg {
+                draw = draw.with_bind_group(MESH_GROUP, &bind_group_cache[index]);
+            }
             for (offset, &(slot, _)) in mesh.vertex_buffers.iter().enumerate() {
                 let buffer = &buffer_cache[handle.vertex_start + offset];
                 draw = draw.with_vertex_buffer(slot, buffer.slice(..));
@@ -737,161 +901,185 @@ impl Renderer {
     /// The pipeline entities draw with when they carry no [GpuPipeline]:
     /// the one at [`DEFAULT_PIPELINE_INDEX`].
     ///
-    /// Its layouts are what [Renderer::allocate_mesh] packs vertices for and
-    /// what [Renderer::allocate_unlit_material] binds a texture against.
-    pub fn default_pipeline(&self) -> &UnlitPipeline {
-        &self.pipelines[DEFAULT_PIPELINE_INDEX as usize].pipeline
-    }
-
-    /// Create a texture for [`Renderer::allocate_unlit_material`] to bind.
-    ///
-    /// The texture is a 2D one with no mips, sampled by the material bind
-    /// group and writable by [`wgpu::Queue::write_texture`]. The caller
-    /// creates the texture so it can pick its own size, format and usage —
-    /// a render target to render into, say — rather than being given one
-    /// this renderer chose.
-    pub fn allocate_unlit_texture(
-        &self,
-        width: u32,
-        height: u32,
-        format: wgpu::TextureFormat,
-    ) -> wgpu::Texture {
-        self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("unlit3d::material::texture"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        })
-    }
-
-    /// Compile an unlit pipeline variant, register it with the renderer and
-    /// return a handle to it.
-    ///
-    /// The pipeline shares the renderer's camera, globals and mesh-metadata
-    /// buffers, and draws the same meshes as every other registered
-    /// pipeline. Entities that carry the returned [`GpuPipeline`] component
-    /// draw with this pipeline instead of the default one.
-    ///
-    /// The returned index is the pipeline's position in the registration
-    /// order [`Renderer::render`] sorts by, so pipelines register in the
-    /// order you want them drawn.
+    /// Its material layout is what [Renderer::allocate_unlit_material] binds
+    /// a texture against, so the index-0 pipeline is expected to be the unlit
+    /// one for that helper to return a material.
     ///
     /// # Panics
     ///
-    /// If `options` packs its vertices differently from the variant the
-    /// renderer was built with: meshes are already uploaded in that layout,
-    /// and a pipeline expecting another cannot draw them.
-    pub fn create_unlit_pipeline(&mut self, options: UnlitOptions) -> GpuPipeline {
-        assert_eq!(
-            options.uv_color_stream(),
-            self.uv_color_stream,
-            "the new pipeline must pack its vertices like the meshes already uploaded"
-        );
-        GpuPipeline {
-            pipeline_index: self.register_pipeline(options),
-        }
+    /// If no pipeline has been registered — a new renderer starts with none.
+    pub fn default_pipeline(&self) -> &wgpu::RenderPipeline {
+        &self.pipelines[DEFAULT_PIPELINE_INDEX as usize].pipeline
     }
 
-    /// Build `options`' pipeline, register it and return its index.
-    fn register_pipeline(&mut self, options: UnlitOptions) -> u32 {
-        let pipeline = UnlitPipeline::new(&self.device, &options);
-        let global_group = self.create_global_group(&pipeline, &options);
+    /// The material layout of the pipeline at [`DEFAULT_PIPELINE_INDEX`].
+    ///
+    /// `None` when that pipeline binds no material group.
+    ///
+    /// # Panics
+    ///
+    /// If no pipeline has been registered.
+    pub fn default_material_layout(&self) -> Option<&wgpu::BindGroupLayout> {
+        self.pipelines[DEFAULT_PIPELINE_INDEX as usize]
+            .material_layout
+            .as_ref()
+    }
+
+    /// The mesh layout of the pipeline at [`DEFAULT_PIPELINE_INDEX`].
+    ///
+    /// `None` when that pipeline binds no per-mesh group — a variant that
+    /// reads no compressed channel needs no metadata, for instance.
+    ///
+    /// # Panics
+    ///
+    /// If no pipeline has been registered.
+    pub fn default_mesh_layout(&self) -> Option<&wgpu::BindGroupLayout> {
+        self.pipelines[DEFAULT_PIPELINE_INDEX as usize]
+            .mesh_layout
+            .as_ref()
+    }
+
+    /// Register `desc` and return a handle to the pipeline.
+    ///
+    /// This is the only way a pipeline enters the renderer, for the built-in
+    /// unlit shader and for a caller's own alike. Its global bind group — if
+    /// it has one — is inserted into the resource graph keyed on the
+    /// renderer's own buffers, so a buffer rebuild marks it dirty and the
+    /// renderer refreshes it before the next frame.
+    ///
+    /// Entities that carry the returned [`GpuPipeline`] component draw with
+    /// this pipeline; the returned index is the pipeline's position in the
+    /// registration order [`Renderer::render`] sorts by, so pipelines
+    /// register in the order you want them drawn.
+    pub fn register_pipeline(&mut self, desc: PipelineDesc) -> GpuPipeline {
+        let PipelineDesc {
+            pipeline,
+            global,
+            material_layout,
+            mesh_layout,
+        } = desc;
+
+        // A globally bound pipeline reads the renderer's own camera, globals
+        // and metadata buffers, so it depends on all three: a rebuild of any
+        // of them marks the group dirty. The group is rebuilt through the
+        // pipeline's own closure, so a custom pipeline keeps control of what
+        // its layout binds.
+        let global = global.map(|binding| {
+            let GlobalBinding {
+                bind_group,
+                rebuild,
+            } = binding;
+            let id = self
+                .graph
+                .insert(
+                    Resource::BindGroup(bind_group),
+                    &[self.camera_buf, self.globals_buf, self.metadata_buf],
+                )
+                .expect("the renderer's buffers exist");
+            RegisteredGlobal { id, rebuild }
+        });
+
         self.pipelines.push(RegisteredPipeline {
             pipeline,
-            global_group,
+            global,
+            material_layout,
+            mesh_layout,
         });
-        // Length before the push is the index the pipeline landed on.
-        (self.pipelines.len() - 1) as u32
+        // The length before the push is the index the pipeline landed on.
+        GpuPipeline {
+            index: (self.pipelines.len() - 1) as u32,
+        }
     }
 
-    /// Build the global bind group `pipeline` needs, insert it into the
-    /// resource graph keyed on the buffers the variant binds, and return its
-    /// id.
-    fn create_global_group(
-        &mut self,
-        pipeline: &UnlitPipeline,
-        options: &UnlitOptions,
-    ) -> ResourceId {
-        let bind_group = self.build_global_bind_group(pipeline, options);
-
-        let mut deps = vec![self.camera_buf, self.globals_buf];
-        if options.needs_metadata() {
-            deps.push(self.metadata_buf);
-        }
-        self.graph
-            .insert(Resource::BindGroup(bind_group), &deps)
-            .expect("camera, globals and metadata buffers exist")
+    /// Compile an unlit pipeline variant, register it and return a handle to
+    /// it.
+    ///
+    /// A thin wrapper over [`Renderer::register_pipeline`]: it builds the
+    /// [`UnlitPipeline`] from `options`, binds the renderer's camera,
+    /// globals and — for variants that read a compressed channel — metadata
+    /// buffers, and hands the result over like any other pipeline.
+    pub fn create_unlit_pipeline(&mut self, options: UnlitOptions) -> GpuPipeline {
+        let pipeline = UnlitPipeline::new(&self.device, &options);
+        self.register_pipeline(self.unlit_desc(pipeline, &options))
     }
 
-    /// Bind the camera, globals and — for variants that read a compressed
-    /// channel — metadata buffers to `pipeline`'s global layout.
-    fn build_global_bind_group(
-        &self,
-        pipeline: &UnlitPipeline,
-        options: &UnlitOptions,
-    ) -> wgpu::BindGroup {
-        let camera_buf = self.graph.get_buffer(self.camera_buf).expect("camera buf");
-        let globals_buf = self
-            .graph
-            .get_buffer(self.globals_buf)
-            .expect("globals buf");
-        let meta_buf = options
-            .needs_metadata()
-            .then(|| self.graph.get_buffer(self.metadata_buf).expect("meta buf"));
-        let mut entries = vec![
-            wgpu::BindGroupEntry {
-                binding: CAMERA_BINDING,
-                resource: camera_buf.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: FRAME_BINDING,
-                resource: globals_buf.as_entire_binding(),
-            },
-        ];
-        if let Some(meta) = meta_buf {
-            entries.push(wgpu::BindGroupEntry {
-                binding: MESH_METADATA_BINDING,
-                resource: meta.as_entire_binding(),
-            });
+    /// Adapt a built [`UnlitPipeline`] into the renderer's pipeline
+    /// description, binding the renderer's own global buffers to it.
+    ///
+    /// This is the adapter that makes the built-in pipeline an ordinary
+    /// client of [`Renderer::register_pipeline`]: it packages the shader's
+    /// layouts and a closure over the shader's global bindings — the camera,
+    /// globals and, for variants that read a compressed channel, the
+    /// metadata buffer — and registers the result like any other pipeline.
+    fn unlit_desc(&self, pipeline: UnlitPipeline, options: &UnlitOptions) -> PipelineDesc {
+        let layout = pipeline.global_layout.clone();
+        let needs_metadata = options.needs_metadata();
+        let device = self.device.clone();
+        let resources = self.render_resources();
+
+        let rebuild_layout = layout.clone();
+        let rebuild: GlobalGroupRebuild = Arc::new(move |resources| {
+            create_unlit_global_group(&device, &rebuild_layout, resources, needs_metadata)
+        });
+
+        let bind_group = rebuild(&resources);
+        PipelineDesc {
+            pipeline: pipeline.pipeline,
+            global: Some(GlobalBinding {
+                bind_group,
+                rebuild,
+            }),
+            material_layout: pipeline.material_layout,
+            mesh_layout: pipeline.mesh_layout,
         }
-        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("unlit3d::global"),
-            layout: &pipeline.global_layout,
-            entries: &entries,
-        })
+    }
+
+    /// The renderer's global buffers, cloned out of the resource graph.
+    fn render_resources(&self) -> RenderResources {
+        RenderResources {
+            camera: self
+                .graph
+                .get_buffer(self.camera_buf)
+                .expect("camera buf")
+                .clone(),
+            globals: self
+                .graph
+                .get_buffer(self.globals_buf)
+                .expect("globals buf")
+                .clone(),
+            metadata: self
+                .graph
+                .get_buffer(self.metadata_buf)
+                .expect("meta buf")
+                .clone(),
+        }
     }
 
     /// Rebuild the global bind group of every registered pipeline whose
     /// dependencies changed.
     ///
-    /// The new bind groups are built before any is written back: building one
-    /// borrows the whole renderer, so collecting first is what lets the graph
-    /// be mutated afterwards.
+    /// Each pipeline supplies its own rebuild closure, so a replacement of
+    /// the camera, globals or metadata buffer refreshes the built-in unlit
+    /// pipeline and any custom one that binds those buffers alike.
     fn rebuild_dirty_global_groups(&mut self) {
+        let resources = self.render_resources();
         let rebuilt: Vec<_> = self
             .pipelines
             .iter()
-            .filter(|registered| self.graph.is_dirty(registered.global_group))
-            .map(|registered| {
-                let bind_group = self
-                    .build_global_bind_group(&registered.pipeline, &registered.pipeline.options);
-                (registered.global_group, bind_group)
+            .filter_map(|registered| {
+                let global = registered.global.as_ref()?;
+                self.graph
+                    .is_dirty(global.id)
+                    .then(|| (global.id, Arc::clone(&global.rebuild)))
             })
             .collect();
 
-        for (global_group, bind_group) in rebuilt {
+        for (id, rebuild) in rebuilt {
+            let bind_group = rebuild(&resources);
             self.graph
-                .replace(global_group, Resource::BindGroup(bind_group))
+                .replace(id, Resource::BindGroup(bind_group))
                 .expect("global group exists");
-            self.graph.mark_clean(global_group);
+            self.graph.mark_clean(id);
         }
     }
 
@@ -1016,7 +1204,7 @@ impl Renderer {
         let transparent = world.has::<Transparent>(entity);
         let pipeline_index = world
             .get::<GpuPipeline>(entity)
-            .map_or(DEFAULT_PIPELINE_INDEX, |pipeline| pipeline.pipeline_index);
+            .map_or(DEFAULT_PIPELINE_INDEX, |pipeline| pipeline.index);
         let centre = glam::Vec3A::new(
             instance.model[0].w,
             instance.model[1].w,
@@ -1223,7 +1411,29 @@ mod tests {
     fn noop_renderer() -> Renderer {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let options = UnlitOptions::standard(&device);
-        Renderer::new(device, queue, options, 64, 64)
+        Renderer::with_unlit(device, queue, options, 64, 64)
+    }
+
+    /// Register a 2D texture with `renderer` and return a view id and a
+    /// sampler id, ready for [`Renderer::allocate_unlit_material`].
+    fn test_material_resources(renderer: &mut Renderer) -> (ResourceId, ResourceId) {
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test::texture"),
+            size: wgpu::Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = renderer.register_texture(texture);
+        let sampler = renderer.register_sampler(None);
+        (view, sampler)
     }
 
     /// A variant of the standard one that reads no UV — so no base-color
@@ -1242,14 +1452,17 @@ mod tests {
         // It sits in the same list as the ones created later, with no field
         // of its own on the renderer.
         assert_eq!(renderer.pipelines.len(), 1);
-        assert_eq!(
-            renderer.default_pipeline().options,
-            UnlitOptions::standard(&renderer.device)
-        );
-        assert_eq!(
-            renderer.default_pipeline().options.uv_color_stream(),
-            renderer.uv_color_stream
-        );
+        assert!(renderer.pipelines[0].global.is_some());
+        assert!(renderer.default_material_layout().is_some());
+    }
+
+    #[test]
+    fn a_renderer_starts_with_no_pipelines() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let renderer = Renderer::new(device, queue, 64, 64);
+
+        // Nothing is privileged: pipelines arrive only through registration.
+        assert!(renderer.pipelines.is_empty());
     }
 
     #[test]
@@ -1261,8 +1474,8 @@ mod tests {
 
         // The default pipeline keeps index 0 and is drawn first; later ones
         // follow in the order they were created.
-        assert_eq!(first.pipeline_index, DEFAULT_PIPELINE_INDEX + 1);
-        assert_eq!(second.pipeline_index, DEFAULT_PIPELINE_INDEX + 2);
+        assert_eq!(first.index, DEFAULT_PIPELINE_INDEX + 1);
+        assert_eq!(second.index, DEFAULT_PIPELINE_INDEX + 2);
         assert_eq!(renderer.pipelines.len(), 3);
     }
 
@@ -1274,7 +1487,7 @@ mod tests {
         let ids: Vec<_> = renderer
             .pipelines
             .iter()
-            .map(|registered| registered.global_group)
+            .map(|registered| registered.global.as_ref().expect("has a global group").id)
             .collect();
         for (index, &id) in ids.iter().enumerate() {
             assert!(
@@ -1287,20 +1500,27 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "pack its vertices like the meshes")]
-    fn a_pipeline_packing_vertices_differently_is_rejected() {
+    fn pipelines_register_independently_of_the_meshes_already_uploaded() {
         let mut renderer = noop_renderer();
+        let _ = tri_mesh(&mut renderer);
+
+        // Nothing ties a pipeline to a vertex layout: a mesh carries whatever
+        // buffers it was uploaded with, and a pipeline that expects another
+        // layout draws only the meshes that match it.
         let options = uv_less_options(&renderer.device);
-        let _ = renderer.create_unlit_pipeline(options);
+        let pipeline = renderer.create_unlit_pipeline(options);
+
+        assert_eq!(pipeline.index, DEFAULT_PIPELINE_INDEX + 1);
+        assert_eq!(renderer.pipelines.len(), 2);
     }
 
     #[test]
-    fn a_material_is_allocated_from_a_caller_owned_texture() {
+    fn a_material_is_allocated_from_caller_owned_resources() {
         let mut renderer = noop_renderer();
-        let texture = renderer.allocate_unlit_texture(4, 4, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let (view, sampler) = test_material_resources(&mut renderer);
 
         let material = renderer
-            .allocate_unlit_material(texture)
+            .allocate_unlit_material(view, sampler)
             .expect("the standard variant reads a base-color texture");
         assert!(
             renderer
@@ -1314,10 +1534,10 @@ mod tests {
     fn a_variant_without_a_base_color_texture_allocates_no_material() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let options = uv_less_options(&device);
-        let mut renderer = Renderer::new(device, queue, options, 64, 64);
-        let texture = renderer.allocate_unlit_texture(4, 4, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let mut renderer = Renderer::with_unlit(device, queue, options, 64, 64);
+        let (view, sampler) = test_material_resources(&mut renderer);
 
-        assert!(renderer.allocate_unlit_material(texture).is_none());
+        assert!(renderer.allocate_unlit_material(view, sampler).is_none());
     }
 
     // -- draw ordering ------------------------------------------------------
@@ -1346,14 +1566,12 @@ mod tests {
     /// The standard variant declares UV and vertex-colour channels, so the
     /// three slices must be present and of equal length.
     fn tri_mesh(renderer: &mut Renderer) -> GpuMesh {
-        renderer.allocate_mesh(
+        let stream = UnlitOptions::standard(&renderer.device).uv_color_stream();
+        renderer.allocate_unlit_mesh(
+            stream,
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[
-                [1.0, 1.0, 1.0, 1.0],
-                [1.0, 0.0, 0.0, 1.0],
-                [0.0, 1.0, 0.0, 1.0],
-            ]),
+            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
             Some(&[0u32, 1, 2]),
         )
     }
@@ -1430,7 +1648,7 @@ mod tests {
         let early = renderer.create_unlit_pipeline(UnlitOptions::standard(&renderer.device));
         // `early` registered later, so it draws later — the order is the
         // index order, not the order the handles happen to be used in.
-        assert!(early.pipeline_index > late.pipeline_index);
+        assert!(early.index > late.index);
 
         let mesh = tri_mesh(&mut renderer);
         let mut world = LocalWorld::new();
@@ -1450,19 +1668,13 @@ mod tests {
     fn opaque_draws_sharing_a_material_stay_adjacent() {
         let mut renderer = noop_renderer();
         let mesh = tri_mesh(&mut renderer);
+        let (view, sampler) = test_material_resources(&mut renderer);
         let shared = renderer
-            .allocate_unlit_material(renderer.allocate_unlit_texture(
-                4,
-                4,
-                wgpu::TextureFormat::Rgba8UnormSrgb,
-            ))
+            .allocate_unlit_material(view, sampler)
             .expect("the standard variant reads a base-color texture");
+        let (view, sampler) = test_material_resources(&mut renderer);
         let other = renderer
-            .allocate_unlit_material(renderer.allocate_unlit_texture(
-                4,
-                4,
-                wgpu::TextureFormat::Rgba8UnormSrgb,
-            ))
+            .allocate_unlit_material(view, sampler)
             .expect("the standard variant reads a base-color texture");
         assert_ne!(shared.sort_key(), other.sort_key());
 

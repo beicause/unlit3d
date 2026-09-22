@@ -122,6 +122,8 @@ for pipeline in scene.pipelines {
 
 - 渲染，即unlit3d库
   - render世界系统驱动渲染。渲染器是组件，在render系统中渲染所有带有renderable组件的实体，并输出到render target上（纹理或交换链）。相机是渲染器的一个数据组件。
+  - 自定义管线是一等公民，unlit管线基于此之上。
+  - 管线可以在运行时针对顶点布局、透明度混合等参数特化。
 
 ## 实施计划
 

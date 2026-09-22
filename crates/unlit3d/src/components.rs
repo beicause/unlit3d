@@ -54,17 +54,14 @@ pub struct Camera {
 
 /// A handle to a mesh stored in the renderer's GPU resource graph.
 ///
-/// Created by [`Renderer::allocate_mesh`](crate::Renderer::allocate_mesh). The
-/// mesh is ready to draw immediately; the handle stays valid for the lifetime
-/// of the renderer (or until the mesh is explicitly removed from the graph).
+/// Created by [`Renderer::allocate_mesh`](crate::Renderer::allocate_mesh) or
+/// [`Renderer::allocate_unlit_mesh`](crate::Renderer::allocate_unlit_mesh).
+/// The mesh is ready to draw immediately; the handle stays valid for the
+/// lifetime of the renderer (or until the mesh is explicitly removed from
+/// the graph).
 #[derive(Clone, Debug)]
 pub struct GpuMesh {
-    /// Resource id of the mesh bind group (index [`MESH_GROUP`]).
-    ///
-    /// [`MESH_GROUP`]: wgpu_unlit_render::pipeline::MESH_GROUP
-    pub bind_group_id: ResourceId,
-
-    /// Vertex buffers, each tagged with its slot index.
+    /// Vertex buffers, each tagged with its slot index, in slot order.
     pub vertex_buffers: Vec<(u32, ResourceId)>,
 
     /// Index buffer, if the mesh is indexed.
@@ -75,28 +72,49 @@ pub struct GpuMesh {
 
     /// Whether to issue an indexed draw.
     pub indexed: bool,
+
+    /// Resource id of the mesh bind group, bound at
+    /// [`MESH_GROUP`](wgpu_unlit_render::pipeline::MESH_GROUP).
+    ///
+    /// `None` when the mesh was uploaded without one.
+    pub bind_group_id: Option<ResourceId>,
 }
 
 /// A handle to a pipeline registered with the renderer.
 ///
 /// Created by
+/// [`Renderer::register_pipeline`](crate::Renderer::register_pipeline) or
 /// [`Renderer::create_unlit_pipeline`](crate::Renderer::create_unlit_pipeline).
-/// Entities without this component use the pipeline at
+/// Entities without this component draw with the pipeline at
 /// [`DEFAULT_PIPELINE_INDEX`](crate::renderer::DEFAULT_PIPELINE_INDEX), the
-/// one [Renderer::new](crate::Renderer::new) registers.
-#[derive(Clone, Debug)]
+/// first one registered.
+///
+/// The handle is opaque and self-contained: it can be copied onto any number
+/// of entities, and it stays meaningful as long as the renderer that issued
+/// it. Draws are ordered by registration, so an earlier registration is
+/// drawn first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct GpuPipeline {
-    /// Index into the renderer's pipeline list, as returned by
-    /// [`Renderer::create_unlit_pipeline`](crate::Renderer::create_unlit_pipeline).
-    /// Draws are ordered by it, so a lower index is drawn first.
-    pub pipeline_index: u32,
+    /// Position in the renderer's registration order.
+    pub(crate) index: u32,
 }
 
-/// A handle to a material (base-color texture + sampler) in the renderer's
-/// GPU resource graph.
+impl GpuPipeline {
+    /// Position in the renderer's registration order; a lower value draws
+    /// first.
+    #[must_use]
+    pub fn index(&self) -> u32 {
+        self.index
+    }
+}
+
+/// A handle to a material bind group in the renderer's GPU resource graph.
 ///
 /// Created by
-/// [`Renderer::allocate_unlit_material`](crate::Renderer::allocate_unlit_material).
+/// [`Renderer::allocate_material`](crate::Renderer::allocate_material) for a
+/// caller's own layout, or by
+/// [`Renderer::allocate_unlit_material`](crate::Renderer::allocate_unlit_material)
+/// for the built-in shader's base-color texture and sampler.
 #[derive(Clone, Debug)]
 pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).
