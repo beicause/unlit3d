@@ -5,51 +5,46 @@
 //! [wgpu_unlit_render] GPU pipeline. Spawn it once (typically as a resource
 //! entity) and call [Renderer::render] every frame.
 
+use core::any::TypeId;
 use core::cmp::Ordering;
 use std::sync::Arc;
 
-use glam::Vec3;
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{LocalWorld, TypeIdHashMap};
 use wgpu_unlit_render::globals::{Globals, View};
 use wgpu_unlit_render::mesh::{
-    CompressedPosition, MeshInfo, MeshInstance, MeshMetadata, MeshUvColorStream, compress_indices,
-    compress_positions,
+    CompressedPosition, MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
 };
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitPipeline,
+    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
+    apply_surface,
 };
 use wgpu_unlit_render::render_attachments::{
     AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
 };
 use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
 use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
+use wgpu_unlit_render::specialize::{
+    Specializable, Specializer, SpecializerKey, SurfaceKey, VertexBufferLayoutDesc,
+};
 use zerocopy::IntoBytes;
 
-use crate::components::{
-    BoundingSphere, Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceData, Transform, Transparent,
-};
+use crate::components::{Camera, GpuMaterial, GpuMesh};
 use crate::mesh::{MeshDesc, VertexBufferDesc};
 use crate::pipeline::{
-    GlobalBinding, GlobalGroupRebuild, PipelineDesc, RegisteredGlobal, RenderResources,
+    AnyFamily, DrawKey, Family, FamilyContext, FamilyFrame, FrustumPlanes, GlobalBinding,
+    GlobalGroupRebuild, PipelineDesc, PipelineFactory, PipelineId, PipelineKey, RegisteredGlobal,
+    RenderResources, VisibleEntry,
 };
-
-/// Index into the renderer\'s pipeline list of the pipeline
-/// [Renderer::new] builds from its options.
-///
-/// Entities without a [GpuPipeline] component draw with it. The built-in
-/// pipeline is an ordinary registered pipeline in the same list as the ones
-/// [Renderer::create_unlit_pipeline] adds, so it is ordered — and looked up
-/// — by index like any other.
-pub const DEFAULT_PIPELINE_INDEX: u32 = 0;
 
 /// The renderer: ECS resource component that holds GPU state and orchestrates
 /// frame rendering.
 ///
 /// Spawn this as a component on a resource entity in a [LocalWorld]. Call
-/// [Renderer::render] each frame to draw every entity that carries both
-/// a [GpuMesh] and a [Transform] (or [InstanceData]).
+/// [Renderer::render] each frame to draw every entity that carries a
+/// [GpuMesh], a [GpuPipeline] and a [Transform] (or [InstanceData]). An entity
+/// missing any of them is not drawn.
 pub struct Renderer {
     /// WGPU device.
     pub device: wgpu::Device,
@@ -80,11 +75,20 @@ pub struct Renderer {
     /// Temporary attachments set for external-target rendering.
     external_attachments: Option<RenderAttachments>,
 
-    /// Every pipeline registered with this renderer, in registration order.
+    /// Every concrete pipeline registered with this renderer, in
+    /// registration order.
     ///
-    /// An entity without a [GpuPipeline] component draws with the one at
-    /// [`DEFAULT_PIPELINE_INDEX`].
+    /// A pipeline is appended the first time a family resolves a key that
+    /// needs it, so an entity's concrete pipeline exists once its family has
+    /// resolved the draw's surface and mesh layout.
     pipelines: Vec<RegisteredPipeline>,
+
+    /// Every pipeline family registered with this renderer, keyed by the
+    /// [TypeId] of its key type.
+    ///
+    /// Registration compiles nothing: a family appends to [`Self::pipelines`]
+    /// lazily, the first time one of its variant keys is resolved.
+    families: TypeIdHashMap<Box<dyn AnyFamily>>,
 
     // -- cached per-frame allocations ------------------------------------------
     /// Reused Vec for visible-entity collection and per-frame sorting.
@@ -130,27 +134,172 @@ fn create_unlit_global_group(
     })
 }
 
-/// A visible entity awaiting its draw command, tagged with everything the
-/// scene builder needs to group it.
+/// Register one concrete pipeline and return its index in `pipelines`.
 ///
-/// Entries are sorted once per frame (see [`Renderer::render`]) so that a
-/// single linear pass can emit every [`PipelineGroup`] and [`MaterialGroup`]
-/// without intermediate scratch buffers: opaque entries first, keyed by
-/// material so shared-state draws stay adjacent, then transparent entries
-/// keyed by camera distance so they are drawn back-to-front.
-struct VisibleEntry {
-    entity: Entity,
-    instance: MeshInstance,
-    /// Index into [`Renderer::pipelines`].
-    pipeline_index: u32,
-    /// Groups opaque draws by material, so neighbours share a bind group.
-    /// Ignored for transparent entries.
-    sort_key: u64,
-    /// Distance to the camera, used to order transparent entries back-to-front.
-    /// Ignored for opaque entries.
-    depth: f32,
-    /// True when the entity carries [`Transparent`].
-    transparent: bool,
+/// A free function rather than a method: the family that resolves the key
+/// holds the renderer mutably, so the closure it registers through can only
+/// borrow the disjoint fields this needs — the pipeline list, the resource
+/// graph and the ids of the renderer's global buffers.
+fn register_concrete(
+    pipelines: &mut Vec<RegisteredPipeline>,
+    graph: &mut ResourceGraph,
+    camera_buf: ResourceId,
+    globals_buf: ResourceId,
+    metadata_buf: ResourceId,
+    desc: PipelineDesc,
+) -> PipelineId {
+    // The material and mesh layouts describe a pipeline's binding interface,
+    // but they do not outlive registration: the renderer builds those groups
+    // from the family it registered, and wgpu already holds the pipeline's own
+    // layout internally.
+    let PipelineDesc {
+        pipeline, global, ..
+    } = desc;
+
+    // A globally bound pipeline reads the renderer's own camera, globals and
+    // metadata buffers, so it depends on all three: a rebuild of any of them
+    // marks the group dirty. The group is rebuilt through the pipeline's own
+    // closure, so a custom pipeline keeps control of what its layout binds.
+    let global = global.map(|binding| {
+        let GlobalBinding {
+            bind_group,
+            rebuild,
+        } = binding;
+        let id = graph
+            .insert(
+                Resource::BindGroup(bind_group),
+                &[camera_buf, globals_buf, metadata_buf],
+            )
+            .expect("the renderer's buffers exist");
+        RegisteredGlobal { id, rebuild }
+    });
+
+    pipelines.push(RegisteredPipeline { pipeline, global });
+    // The length before the push is the index the pipeline landed on.
+    PipelineId::new((pipelines.len() - 1) as u32)
+}
+
+/// The per-entity options the built-in unlit family draws with.
+///
+/// Two entities drawing the same family may start from different options, so
+/// the options live on the entity's key rather than on the renderer. The
+/// key's type is how the renderer finds the family it draws with.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct UnlitPipelineKey {
+    /// The options the entity's variants are specialized from.
+    pub options: UnlitOptions,
+}
+
+impl UnlitPipelineKey {
+    /// A key whose variants start from `options`.
+    pub fn new(options: UnlitOptions) -> Self {
+        Self { options }
+    }
+}
+
+impl PipelineKey for UnlitPipelineKey {
+    type Pipeline = UnlitPipeline;
+
+    fn base_descriptor(&self) -> UnlitOptions {
+        self.options.clone()
+    }
+}
+
+/// The full specialization key of the built-in unlit family: the entity's
+/// options, the frame's target and the mesh's vertex layout.
+///
+/// The mesh layout is not injective — two meshes whose raw attributes differ
+/// but imply the same [UnlitFlags] rewrite the options to the same thing — so
+/// the canonical form is the specialized options themselves, and those meshes
+/// share one compiled pipeline.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct UnlitDrawKey {
+    options: UnlitOptions,
+    surface: SurfaceKey,
+    vertex_buffers: Vec<(u32, VertexBufferLayoutDesc)>,
+}
+
+impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
+    fn from((key, draw): (UnlitPipelineKey, DrawKey)) -> Self {
+        Self {
+            options: key.options,
+            surface: draw.surface,
+            vertex_buffers: draw.vertex_buffers,
+        }
+    }
+}
+
+impl SpecializerKey for UnlitDrawKey {
+    // The raw mesh layout is not part of the descriptor, so the primary key
+    // alone is not injective; the canonical form below is.
+    const IS_CANONICAL: bool = false;
+    type Canonical = UnlitOptions;
+}
+
+/// The flag set a mesh's vertex layout implies, from every slot it declares.
+fn unlit_flags_for_layout(layout: &[(u32, VertexBufferLayoutDesc)]) -> UnlitFlags {
+    layout
+        .iter()
+        .fold(UnlitFlags::empty(), |flags, (slot, buffer)| {
+            flags | UnlitFlags::for_vertex_buffer(*slot, buffer)
+        })
+}
+
+/// Specializes the built-in unlit pipeline per entity options, frame target
+/// and mesh layout.
+///
+/// The descriptor starts from the entity's own options, so one family serves
+/// entities that differ in material or target policy. The target-dependent
+/// fields are rewritten through [apply_surface], the same helper the core
+/// crate's own specializer uses, and only the mesh-derived bits of
+/// [UnlitFlags::MESH_MASK] are replaced. The canonical key the cache indexes
+/// on is the resulting options: two draws whose specialized options agree
+/// share one compiled pipeline.
+#[derive(Clone, Copy, Debug, Default)]
+struct UnlitDrawSpecializer;
+
+impl Specializer<UnlitPipeline> for UnlitDrawSpecializer {
+    type Key = UnlitDrawKey;
+
+    fn specialize(&self, key: UnlitDrawKey, options: &mut UnlitOptions) -> UnlitOptions {
+        *options = key.options;
+        apply_surface(options, key.surface);
+        options.flags =
+            (options.flags & !UnlitFlags::MESH_MASK) | unlit_flags_for_layout(&key.vertex_buffers);
+        options.clone()
+    }
+}
+
+/// Describes a specialized [UnlitPipeline] the way the renderer registers it.
+///
+/// This is what keeps the built-in pipeline an ordinary client of the family
+/// machinery: it packages the shader's layouts and a closure over the
+/// shader's global bindings — the camera, globals and, for variants that read
+/// a compressed channel, the metadata buffer.
+struct UnlitFactory;
+
+impl PipelineFactory<UnlitPipeline> for UnlitFactory {
+    fn descriptor(&self, context: &FamilyContext<'_>, value: &UnlitPipeline) -> PipelineDesc {
+        let layout = value.global_layout.clone();
+        let needs_metadata = value.options.needs_metadata();
+        let device = context.device.clone();
+
+        let rebuild_layout = layout.clone();
+        let rebuild: GlobalGroupRebuild = Arc::new(move |resources| {
+            create_unlit_global_group(&device, &rebuild_layout, resources, needs_metadata)
+        });
+
+        let bind_group = rebuild(context.resources);
+        PipelineDesc {
+            pipeline: value.pipeline.clone(),
+            global: Some(GlobalBinding {
+                bind_group,
+                rebuild,
+            }),
+            material_layout: value.material_layout.clone(),
+            mesh_layout: value.mesh_layout.clone(),
+        }
+    }
 }
 
 /// A pipeline registered with the renderer.
@@ -161,19 +310,16 @@ struct RegisteredPipeline {
     /// lives under in the resource graph and how to rebuild it. `None` for a
     /// pipeline that binds nothing there.
     global: Option<RegisteredGlobal>,
-    /// The layout a material bind group must be built from.
-    material_layout: Option<wgpu::BindGroupLayout>,
-    /// The layout a mesh bind group must be built from.
-    mesh_layout: Option<wgpu::BindGroupLayout>,
 }
 
 impl Renderer {
     /// Build a new renderer and its GPU resources.
     ///
-    /// The renderer starts with no pipelines: register the ones you draw
-    /// with through [`Renderer::register_pipeline`] — for the built-in
-    /// unlit shader, [`Renderer::create_unlit_pipeline`] does it for you.
-    /// [Renderer::with_unlit] is the shortcut that does both at once.
+    /// The renderer starts with no families: register the ones you draw with
+    /// through [`Renderer::register_family`] — for the built-in unlit shader,
+    /// [`Renderer::register_unlit_family`] does it for you. Registration
+    /// compiles nothing; a family's first concrete pipeline is built the first
+    /// time an entity that uses it is drawn.
     ///
     /// `width` and `height` are the initial viewport size in physical
     /// pixels.
@@ -249,29 +395,12 @@ impl Renderer {
             instance_capacity: 0,
             external_attachments: None,
             pipelines: Vec::new(),
+            families: TypeIdHashMap::default(),
             visible_cache: Vec::new(),
             packed_instances_cache: Vec::new(),
             bind_group_cache: Vec::new(),
             buffer_cache: Vec::new(),
         }
-    }
-
-    /// Build a renderer with the built-in unlit pipeline registered at
-    /// [`DEFAULT_PIPELINE_INDEX`].
-    ///
-    /// `options` selects the shader variant; the pipeline is registered the
-    /// same way [`Renderer::create_unlit_pipeline`] registers one, so it sits
-    /// in the same list as any pipeline you add afterwards.
-    pub fn with_unlit(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        options: UnlitOptions,
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let mut renderer = Self::new(device, queue, width, height);
-        renderer.create_unlit_pipeline(options);
-        renderer
     }
 
     /// Resize the render target.
@@ -307,12 +436,23 @@ impl Renderer {
 
         let mut buffers = Vec::with_capacity(vertex_buffers.len());
         let mut vertex_slots = Vec::with_capacity(vertex_buffers.len());
+        let mut vertex_layout = Vec::with_capacity(vertex_buffers.len());
         for desc in vertex_buffers {
             let id = self
                 .graph
                 .insert(Resource::Buffer(desc.buffer), &[])
                 .expect("a vertex buffer has no dependencies");
             vertex_slots.push((desc.slot, id));
+            // The layout is owned by the mesh so a family can key on it
+            // without reading the description again.
+            vertex_layout.push((
+                desc.slot,
+                VertexBufferLayoutDesc {
+                    array_stride: desc.array_stride,
+                    step_mode: desc.step_mode,
+                    attributes: desc.attributes,
+                },
+            ));
             buffers.push(id);
         }
 
@@ -332,6 +472,7 @@ impl Renderer {
 
         GpuMesh {
             vertex_buffers: vertex_slots,
+            vertex_layout,
             index_buffer,
             count,
             indexed,
@@ -354,23 +495,37 @@ impl Renderer {
     /// compression in [wgpu_unlit_render::mesh] with anyone else who wants
     /// it.
     ///
-    /// Which channels are packed is the default pipeline's own vertex layout,
-    /// taken from the options it was registered with: a slice for a channel
-    /// the pipeline does not declare is left out, so the buffer always matches
-    /// what the shader reads.
+    /// Which channels are packed is the key's own vertex layout: a slice for a
+    /// channel the variant does not declare is left out, so the buffer always
+    /// matches what the shader reads.
     ///
     /// # Panics
     ///
     /// If the input slices are empty or of mismatched length (see the
-    /// compressors in [wgpu_unlit_render::mesh]).
+    /// compressors in [wgpu_unlit_render::mesh]), or if the key's options read
+    /// no compressed channel and so declare no mesh-metadata group.
     pub fn allocate_unlit_mesh(
         &mut self,
-        uv_color_stream: MeshUvColorStream,
+        key: &UnlitPipelineKey,
         positions: &[[f32; 3]],
         uvs: Option<&[[f32; 2]]>,
         colors: Option<&[[u8; 4]]>,
         indices: Option<&[u32]>,
     ) -> GpuMesh {
+        // The key's layouts are derived on the fly: the renderer keeps no
+        // per-family state, and the pure layout builder is the same one the
+        // family's factory uses, so the two cannot drift.
+        let options = &key.options;
+        let layouts = UnlitPipeline::bind_group_layouts(&self.device, options);
+        let mesh_layout = layouts
+            .mesh
+            .clone()
+            .expect("the unlit variant reads mesh metadata");
+        // The stream is the key's, not the caller's: the UV-and-color buffer
+        // has to be packed the way the shader reading it declares its vertex
+        // layout, so a channel the key does not read is left out.
+        let uv_color_stream = options.uv_color_stream();
+
         // Compress vertex streams.
         let mut meta = MeshMetadata::default();
         let packed_positions: Vec<_> = compress_positions(positions, &mut meta).collect();
@@ -388,10 +543,6 @@ impl Renderer {
         // UV and colour vertex buffer, interleaved in the order the shader
         // declares: the channel a slice is given for is the channel packed.
         use wgpu::WriteOnly;
-        // The stream is the pipeline's, not the caller's: the buffer has to
-        // be packed the way the shader that reads it declares its vertex
-        // layout, so a channel the caller passes but the pipeline does not
-        // read is left out.
         let uv_color_len = uv_color_stream.byte_len(vertex_count);
         let uv_color_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("unlit3d::mesh::uv_color"),
@@ -431,12 +582,9 @@ impl Renderer {
             .insert(Resource::Buffer(mesh_info_buf), &[])
             .expect("mesh_info buffer has no dependencies");
 
-        let mesh_layout = self.default_mesh_layout().expect(
-            "the default pipeline binds mesh metadata when it decodes a compressed channel",
-        );
         let mesh_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::mesh::bind_group"),
-            layout: mesh_layout,
+            layout: &mesh_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: MESH_INFO_BINDING,
                 resource: self
@@ -482,22 +630,55 @@ impl Renderer {
             _ => (None, vertex_count as u32, false),
         };
 
-        self.allocate_mesh(MeshDesc {
+        // The vertex layout the key's options declare, slot for slot. An empty
+        // stream still gets a buffer entry — the pipeline simply declares no
+        // attributes for that slot — so the mesh's layout matches the key's.
+        let vertex_layouts = UnlitPipeline::vertex_buffer_layouts(options);
+        let layout_of = |slot: u32| -> VertexBufferLayoutDesc {
+            vertex_layouts
+                .get(slot as usize)
+                .and_then(|layout| layout.as_ref())
+                .map(VertexBufferLayoutDesc::from_wgpu)
+                .unwrap_or(VertexBufferLayoutDesc {
+                    array_stride: 0,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: Vec::new(),
+                })
+        };
+        let position_layout = layout_of(POSITION_SLOT);
+        let uv_color_layout = layout_of(UV_COLOR_SLOT);
+        let instance_layout = layout_of(INSTANCE_SLOT);
+
+        let mut mesh = self.allocate_mesh(MeshDesc {
             vertex_buffers: vec![
                 VertexBufferDesc {
                     slot: POSITION_SLOT,
                     buffer: position_buf,
+                    array_stride: position_layout.array_stride,
+                    step_mode: position_layout.step_mode,
+                    attributes: position_layout.attributes,
                 },
                 VertexBufferDesc {
                     slot: UV_COLOR_SLOT,
                     buffer: uv_color_buf,
+                    array_stride: uv_color_layout.array_stride,
+                    step_mode: uv_color_layout.step_mode,
+                    attributes: uv_color_layout.attributes,
                 },
             ],
             index_buffer,
             count,
             indexed,
             bind_group: Some(mesh_bind_group),
-        })
+        });
+
+        // The renderer binds the per-instance buffer at [INSTANCE_SLOT] for
+        // every draw, so the mesh's layout declares that slot even though the
+        // buffer itself is not uploaded here. Without it the draw's key would
+        // imply no [UnlitFlags::VERTEX_INSTANCE] and the pipeline would ignore
+        // the instance transform.
+        mesh.vertex_layout.push((INSTANCE_SLOT, instance_layout));
+        mesh
     }
 
     /// Insert `texture` into the resource graph and return the id of a view
@@ -540,8 +721,8 @@ impl Renderer {
     /// Only the bind group is built. `view_id` and `sampler_id` name
     /// resources the caller has already put in the graph, and they become the
     /// group's dependencies, so replacing either marks it dirty. Returns
-    /// `None` when the default pipeline binds no material group to put them
-    /// in.
+    /// `None` when the key's options read no base-color texture, so the
+    /// variant binds no material group to put them in.
     ///
     /// # Panics
     ///
@@ -549,10 +730,17 @@ impl Renderer {
     /// graph.
     pub fn allocate_unlit_material(
         &mut self,
+        key: &UnlitPipelineKey,
         view_id: ResourceId,
         sampler_id: ResourceId,
     ) -> Option<GpuMaterial> {
-        let layout = self.default_material_layout()?.clone();
+        if !key.options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) {
+            return None;
+        }
+        let layout = UnlitPipeline::bind_group_layouts(&self.device, &key.options)
+            .material
+            .clone()
+            .expect("the base-color variant declares a material group");
 
         // Clone the handles out so the entries borrow nothing from the graph
         // while `allocate_material` mutates it.
@@ -586,8 +774,8 @@ impl Renderer {
     /// caller's, already in the resource graph and named in `dependencies` so
     /// replacing one marks the group dirty. `layout` is the material layout of
     /// the pipeline the material is for —
-    /// [`Renderer::default_material_layout`] for the built-in shader, or the
-    /// one a custom pipeline registered.
+    /// [`UnlitPipeline::bind_group_layouts`](wgpu_unlit_render::pipeline::UnlitPipeline::bind_group_layouts)
+    /// for the built-in shader, or the one a custom pipeline registered.
     ///
     /// # Panics
     ///
@@ -646,9 +834,20 @@ impl Renderer {
             view.as_bytes(),
         );
 
+        // Resolve the one render target this frame draws into, and key every
+        // pipeline against it. The target is the caller's when given, the
+        // renderer's own otherwise.
+        let surface = target
+            .map(|view| SurfaceKey {
+                color_format: view.texture().format(),
+                depth_stencil_format: Some(default_depth_stencil_format(&self.device)),
+                sample_count: 1,
+            })
+            .unwrap_or_else(|| self.attachments.surface_key());
+
         // Collect, cull and sort the visible set in one pass. The cache keeps
         // its allocation between frames, so a steady scene allocates nothing.
-        self.collect_and_sort_visible(world, &camera);
+        self.collect_and_sort_visible(world, &camera, surface);
         if self.visible_cache.is_empty() {
             self.clear_frame(target);
             return;
@@ -787,7 +986,7 @@ impl Renderer {
         let mut scene = Scene::new();
 
         // The pipeline group being filled, and which pipeline opened it.
-        let mut open_pipeline: Option<u32> = None;
+        let mut open_pipeline: Option<PipelineId> = None;
         let mut open_pg: Option<PipelineGroup> = None;
         // The material group being filled, and which material opened it.
         let mut open_material: Option<ResourceId> = None;
@@ -804,7 +1003,7 @@ impl Renderer {
             let handle = &handles[draw_idx];
 
             // -- pipeline change: close the open groups, open a new one -----
-            if Some(entry.pipeline_index) != open_pipeline {
+            if Some(entry.pipeline_id) != open_pipeline {
                 if let Some(mg) = open_mg.take() {
                     let pg = open_pg.take().expect("a pipeline group is open");
                     open_pg = Some(pg.with_material(mg));
@@ -814,13 +1013,13 @@ impl Renderer {
                 }
                 open_material = None;
                 material_open = false;
-                let res = &pipeline_res[entry.pipeline_index as usize];
+                let res = &pipeline_res[entry.pipeline_id.as_usize()];
                 let mut pg = PipelineGroup::new(&res.handle);
                 if let Some(global_bg) = &res.global_bg {
                     pg = pg.with_bind_group(GLOBAL_GROUP, global_bg);
                 }
                 open_pg = Some(pg);
-                open_pipeline = Some(entry.pipeline_index);
+                open_pipeline = Some(entry.pipeline_id);
             }
 
             // -- material change: close the material group, open a new one --
@@ -898,140 +1097,67 @@ impl Renderer {
     }
     // -- internal helpers ----------------------------------------------------
 
-    /// The pipeline entities draw with when they carry no [GpuPipeline]:
-    /// the one at [`DEFAULT_PIPELINE_INDEX`].
-    ///
-    /// Its material layout is what [Renderer::allocate_unlit_material] binds
-    /// a texture against, so the index-0 pipeline is expected to be the unlit
-    /// one for that helper to return a material.
-    ///
-    /// # Panics
-    ///
-    /// If no pipeline has been registered — a new renderer starts with none.
-    pub fn default_pipeline(&self) -> &wgpu::RenderPipeline {
-        &self.pipelines[DEFAULT_PIPELINE_INDEX as usize].pipeline
-    }
-
-    /// The material layout of the pipeline at [`DEFAULT_PIPELINE_INDEX`].
-    ///
-    /// `None` when that pipeline binds no material group.
-    ///
-    /// # Panics
-    ///
-    /// If no pipeline has been registered.
-    pub fn default_material_layout(&self) -> Option<&wgpu::BindGroupLayout> {
-        self.pipelines[DEFAULT_PIPELINE_INDEX as usize]
-            .material_layout
-            .as_ref()
-    }
-
-    /// The mesh layout of the pipeline at [`DEFAULT_PIPELINE_INDEX`].
-    ///
-    /// `None` when that pipeline binds no per-mesh group — a variant that
-    /// reads no compressed channel needs no metadata, for instance.
-    ///
-    /// # Panics
-    ///
-    /// If no pipeline has been registered.
-    pub fn default_mesh_layout(&self) -> Option<&wgpu::BindGroupLayout> {
-        self.pipelines[DEFAULT_PIPELINE_INDEX as usize]
-            .mesh_layout
-            .as_ref()
-    }
-
-    /// Register `desc` and return a handle to the pipeline.
+    /// Register a pipeline family for the key type `K`.
     ///
     /// This is the only way a pipeline enters the renderer, for the built-in
-    /// unlit shader and for a caller's own alike. Its global bind group — if
-    /// it has one — is inserted into the resource graph keyed on the
-    /// renderer's own buffers, so a buffer rebuild marks it dirty and the
-    /// renderer refreshes it before the next frame.
+    /// unlit shader and a caller's own alike. The key type is the family's
+    /// identity: entities draw with it when they carry a [GpuPipeline] of that
+    /// type, and registering a second family for the same key type is a
+    /// programming error.
     ///
-    /// Entities that carry the returned [`GpuPipeline`] component draw with
-    /// this pipeline; the returned index is the pipeline's position in the
-    /// registration order [`Renderer::render`] sorts by, so pipelines
-    /// register in the order you want them drawn.
-    pub fn register_pipeline(&mut self, desc: PipelineDesc) -> GpuPipeline {
-        let PipelineDesc {
-            pipeline,
-            global,
-            material_layout,
-            mesh_layout,
-        } = desc;
-
-        // A globally bound pipeline reads the renderer's own camera, globals
-        // and metadata buffers, so it depends on all three: a rebuild of any
-        // of them marks the group dirty. The group is rebuilt through the
-        // pipeline's own closure, so a custom pipeline keeps control of what
-        // its layout binds.
-        let global = global.map(|binding| {
-            let GlobalBinding {
-                bind_group,
-                rebuild,
-            } = binding;
-            let id = self
-                .graph
-                .insert(
-                    Resource::BindGroup(bind_group),
-                    &[self.camera_buf, self.globals_buf, self.metadata_buf],
-                )
-                .expect("the renderer's buffers exist");
-            RegisteredGlobal { id, rebuild }
-        });
-
-        self.pipelines.push(RegisteredPipeline {
-            pipeline,
-            global,
-            material_layout,
-            mesh_layout,
-        });
-        // The length before the push is the index the pipeline landed on.
-        GpuPipeline {
-            index: (self.pipelines.len() - 1) as u32,
-        }
+    /// A family compiles nothing on registration: its concrete pipelines are
+    /// built lazily, the first time a draw resolves a variant key, and are
+    /// appended to [`Renderer::pipelines`] in resolution order.
+    ///
+    /// [`Renderer::register_unlit_family`] is the built-in unlit family; a
+    /// pipeline with nothing to specialize on is registered with the
+    /// [`TrivialSpecializer`](crate::TrivialSpecializer) and
+    /// [`RenderPipelineFactory`](crate::RenderPipelineFactory) helpers.
+    ///
+    /// # Panics
+    ///
+    /// If a family is already registered for `K`.
+    pub fn register_family<K, T, S, F>(&mut self, specializer: S, factory: F)
+    where
+        K: PipelineKey<Pipeline = T> + 'static,
+        T: Specializable + 'static,
+        S: Specializer<T> + 'static,
+        S::Key: From<(K, DrawKey)>,
+        F: PipelineFactory<T> + 'static,
+    {
+        let key = TypeId::of::<K>();
+        assert!(
+            !self.families.contains_key(&key),
+            "a pipeline family is already registered for this key type"
+        );
+        self.families.insert(
+            key,
+            Box::new(Family::<T, S, F, K>::new(
+                &self.device,
+                specializer,
+                factory,
+            )),
+        );
     }
 
-    /// Compile an unlit pipeline variant, register it and return a handle to
-    /// it.
+    /// Register the built-in unlit shader as a family.
     ///
-    /// A thin wrapper over [`Renderer::register_pipeline`]: it builds the
-    /// [`UnlitPipeline`] from `options`, binds the renderer's camera,
-    /// globals and — for variants that read a compressed channel — metadata
-    /// buffers, and hands the result over like any other pipeline.
-    pub fn create_unlit_pipeline(&mut self, options: UnlitOptions) -> GpuPipeline {
-        let pipeline = UnlitPipeline::new(&self.device, &options);
-        self.register_pipeline(self.unlit_desc(pipeline, &options))
-    }
-
-    /// Adapt a built [`UnlitPipeline`] into the renderer's pipeline
-    /// description, binding the renderer's own global buffers to it.
+    /// The family specializes each entity's options on the frame's render
+    /// target and the mesh's vertex layout: two draws that agree on both share
+    /// one compiled pipeline, and a draw whose mesh layout implies different
+    /// channels compiles its own. The options are the entity's: a mesh or
+    /// material is built against the [UnlitPipelineKey] it will be drawn with,
+    /// through [`Renderer::allocate_unlit_mesh`] and
+    /// [`Renderer::allocate_unlit_material`].
     ///
-    /// This is the adapter that makes the built-in pipeline an ordinary
-    /// client of [`Renderer::register_pipeline`]: it packages the shader's
-    /// layouts and a closure over the shader's global bindings — the camera,
-    /// globals and, for variants that read a compressed channel, the
-    /// metadata buffer — and registers the result like any other pipeline.
-    fn unlit_desc(&self, pipeline: UnlitPipeline, options: &UnlitOptions) -> PipelineDesc {
-        let layout = pipeline.global_layout.clone();
-        let needs_metadata = options.needs_metadata();
-        let device = self.device.clone();
-        let resources = self.render_resources();
-
-        let rebuild_layout = layout.clone();
-        let rebuild: GlobalGroupRebuild = Arc::new(move |resources| {
-            create_unlit_global_group(&device, &rebuild_layout, resources, needs_metadata)
-        });
-
-        let bind_group = rebuild(&resources);
-        PipelineDesc {
-            pipeline: pipeline.pipeline,
-            global: Some(GlobalBinding {
-                bind_group,
-                rebuild,
-            }),
-            material_layout: pipeline.material_layout,
-            mesh_layout: pipeline.mesh_layout,
-        }
+    /// This compiles nothing; like any family, its first concrete pipeline is
+    /// built when an entity that uses it is first drawn.
+    ///
+    /// # Panics
+    ///
+    /// If the unlit family is already registered.
+    pub fn register_unlit_family(&mut self) {
+        self.register_family::<UnlitPipelineKey, _, _, _>(UnlitDrawSpecializer, UnlitFactory);
     }
 
     /// The renderer's global buffers, cloned out of the resource graph.
@@ -1120,68 +1246,73 @@ impl Renderer {
         self.instance_capacity = new_cap;
     }
 
-    /// Collect entities that pass frustum culling and build their per-instance
-    /// data.
     /// Collect entities that pass frustum culling, then sort them for drawing.
     ///
     /// Results land in [`Renderer::visible_cache`], whose allocation is reused
-    /// between frames. The ordering is the whole point of this pass: opaque
-    /// entities first, grouped by pipeline and then by material so a draw
-    /// never re-binds state a neighbour already set; transparent entities
-    /// after them, sorted back-to-front by camera distance so blending is
-    /// order-independent.
-    fn collect_and_sort_visible(&mut self, world: &LocalWorld, camera: &Camera) {
+    /// between frames. Every registered family contributes the entities that
+    /// carry its key type, resolving each to a concrete pipeline on the way.
+    /// The ordering is the whole point of this pass: opaque entities first,
+    /// grouped by pipeline and then by material so a draw never re-binds state
+    /// a neighbour already set; transparent entities after them, sorted
+    /// back-to-front by camera distance so blending is order-independent.
+    ///
+    /// `surface` is the render target this frame draws into; it is threaded
+    /// into every entity's pipeline resolution, so each entry's `pipeline_id`
+    /// is a concrete pipeline valid for that target. It is decided here,
+    /// before the sort that reads it, and the sort never changes it.
+    fn collect_and_sort_visible(
+        &mut self,
+        world: &LocalWorld,
+        camera: &Camera,
+        surface: SurfaceKey,
+    ) {
         let frustum = FrustumPlanes::from_clip_from_world(camera.clip_from_world);
-        self.visible_cache.clear();
+        let resources = self.render_resources();
+        let device = self.device.clone();
 
-        // Query entities with (Transform, GpuMesh).
-        for (entity, (transform, _mesh)) in world.query::<(&Transform, &GpuMesh)>() {
-            let tf = copy_transform(&transform);
-            let instance = match world.get::<InstanceData>(entity) {
-                Some(data) => MeshInstance::new(data.matrix, data.base_color),
-                None => MeshInstance::new(
-                    glam::Affine3A::from_mat4(tf.compute_matrix()),
-                    glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
-                ),
+        // Split the borrows: the families mutate the pipeline list and the
+        // resource graph through the register closure, while `visible` is
+        // theirs to append to and `pipelines`/`graph` are disjoint fields.
+        let (families, pipelines, graph, visible) = (
+            &mut self.families,
+            &mut self.pipelines,
+            &mut self.graph,
+            &mut self.visible_cache,
+        );
+        let (camera_buf, globals_buf, metadata_buf) =
+            (self.camera_buf, self.globals_buf, self.metadata_buf);
+
+        visible.clear();
+        let frame = FamilyFrame {
+            world,
+            camera,
+            surface,
+            frustum,
+            device: &device,
+            resources: &resources,
+        };
+        for family in families.values_mut() {
+            let mut register = |desc| {
+                register_concrete(
+                    pipelines,
+                    graph,
+                    camera_buf,
+                    globals_buf,
+                    metadata_buf,
+                    desc,
+                )
             };
-
-            // Frustum culling.
-            if let Some(sphere) = world.get::<BoundingSphere>(entity) {
-                let mat = affine_from_instance(&instance.model);
-                let world_center = mat.transform_point3(sphere.center);
-                if !frustum.test_sphere(world_center, sphere.radius) {
-                    continue;
-                }
-            }
-
-            self.push_visible(world, camera, entity, instance);
-        }
-
-        // Entities with InstanceData but without Transform.
-        for (entity, (instance_data, _mesh)) in world.query::<(&InstanceData, &GpuMesh)>() {
-            if world.has::<Transform>(entity) {
-                continue;
-            }
-            let instance = MeshInstance::new(instance_data.matrix, instance_data.base_color);
-
-            if let Some(sphere) = world.get::<BoundingSphere>(entity) {
-                let world_center = instance_data.matrix.transform_point3(sphere.center);
-                if !frustum.test_sphere(world_center, sphere.radius) {
-                    continue;
-                }
-            }
-
-            self.push_visible(world, camera, entity, instance);
+            family.collect_and_resolve(&frame, visible, &mut register);
         }
 
         // Sort: opaque before transparent, then by pipeline, then by the key
         // that matters for that kind. Opaque draws are keyed by material so
         // neighbours share a bind group; transparent ones by camera distance
         // so they are composited back-to-front.
-        self.visible_cache.sort_unstable_by(|a, b| {
+        visible.sort_unstable_by(|a, b| {
             a.transparent
                 .cmp(&b.transparent)
-                .then_with(|| a.pipeline_index.cmp(&b.pipeline_index))
+                .then_with(|| a.pipeline_id.cmp(&b.pipeline_id))
                 .then_with(|| {
                     if a.transparent {
                         // Back-to-front: the farthest entity is drawn first.
@@ -1190,38 +1321,6 @@ impl Renderer {
                         a.sort_key.cmp(&b.sort_key)
                     }
                 })
-        });
-    }
-
-    /// Push one entity into [`Renderer::visible_cache`] with its sort key.
-    fn push_visible(
-        &mut self,
-        world: &LocalWorld,
-        camera: &Camera,
-        entity: Entity,
-        instance: MeshInstance,
-    ) {
-        let transparent = world.has::<Transparent>(entity);
-        let pipeline_index = world
-            .get::<GpuPipeline>(entity)
-            .map_or(DEFAULT_PIPELINE_INDEX, |pipeline| pipeline.index);
-        let centre = glam::Vec3A::new(
-            instance.model[0].w,
-            instance.model[1].w,
-            instance.model[2].w,
-        );
-        let depth = (centre - glam::Vec3A::from(camera.position)).length();
-        let sort_key = match world.get::<GpuMaterial>(entity) {
-            Some(material) => material.sort_key(),
-            None => 0,
-        };
-        self.visible_cache.push(VisibleEntry {
-            entity,
-            instance,
-            pipeline_index,
-            sort_key,
-            depth,
-            transparent,
         });
     }
 
@@ -1288,17 +1387,6 @@ impl Renderer {
     }
 }
 
-/// Reconstruct an [glam::Affine3A] from [MeshInstance::model]'s packed columns.
-fn affine_from_instance(model: &[glam::Vec4; 3]) -> glam::Affine3A {
-    let c0: glam::Vec3A = model[0].truncate().into();
-    let c1: glam::Vec3A = model[1].truncate().into();
-    let c2: glam::Vec3A = model[2].truncate().into();
-    glam::Affine3A {
-        matrix3: glam::Mat3A::from_cols(c0, c1, c2),
-        translation: glam::Vec3A::new(model[0].w, model[1].w, model[2].w),
-    }
-}
-
 /// Copy a camera out of its ECS cell so the borrow does not block world access.
 fn copy_camera(cam: &Camera) -> Camera {
     Camera {
@@ -1307,59 +1395,12 @@ fn copy_camera(cam: &Camera) -> Camera {
     }
 }
 
-/// Copy a transform out of its ECS cell.
-fn copy_transform(tf: &Transform) -> Transform {
-    Transform {
-        translation: tf.translation,
-        rotation: tf.rotation,
-        scale: tf.scale,
-    }
-}
-
-/// Six frustum planes derived from a clip-space matrix.
-struct FrustumPlanes {
-    planes: [glam::Vec4; 6],
-}
-
-impl FrustumPlanes {
-    /// Extract frustum planes from a clip-from-world matrix.
-    fn from_clip_from_world(clip_from_world: glam::Mat4) -> Self {
-        let m = clip_from_world;
-        let r0 = m.row(0);
-        let r1 = m.row(1);
-        let r2 = m.row(2);
-        let r3 = m.row(3);
-        Self {
-            planes: [
-                Self::normalize_plane(r3 + r0),
-                Self::normalize_plane(r3 - r0),
-                Self::normalize_plane(r3 - r1),
-                Self::normalize_plane(r3 + r1),
-                Self::normalize_plane(r3 + r2),
-                Self::normalize_plane(r3 - r2),
-            ],
-        }
-    }
-
-    fn normalize_plane(row: glam::Vec4) -> glam::Vec4 {
-        let len = glam::Vec3::new(row.x, row.y, row.z).length();
-        if len > 1e-10 { row / len } else { row }
-    }
-
-    /// Test sphere-frustum intersection. Returns true when partially visible.
-    fn test_sphere(&self, center: Vec3, radius: f32) -> bool {
-        for &plane in &self.planes {
-            if plane.x * center.x + plane.y * center.y + plane.z * center.z + plane.w < -radius {
-                return false;
-            }
-        }
-        true
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::{Transform, Transparent, UnlitPipeline};
+    use glam::Vec3;
+    use unlit_ecs::Entity;
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
@@ -1406,12 +1447,14 @@ mod tests {
 
     // -- pipeline registration ---------------------------------------------
 
-    /// A renderer on wgpu's noop backend, which stubs every GPU operation
-    /// out and so needs no adapter.
-    fn noop_renderer() -> Renderer {
+    /// A renderer on wgpu's noop backend with the built-in unlit family
+    /// registered, plus a standard key to draw with.
+    fn noop_renderer() -> (Renderer, UnlitPipelineKey) {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let options = UnlitOptions::standard(&device);
-        Renderer::with_unlit(device, queue, options, 64, 64)
+        let mut renderer = Renderer::new(device, queue, 64, 64);
+        renderer.register_unlit_family();
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(&renderer.device));
+        (renderer, key)
     }
 
     /// Register a 2D texture with `renderer` and return a view id and a
@@ -1446,14 +1489,16 @@ mod tests {
     }
 
     #[test]
-    fn the_builtin_pipeline_is_registered_at_the_default_index() {
-        let renderer = noop_renderer();
+    fn registering_a_family_compiles_nothing() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut renderer = Renderer::new(device, queue, 64, 64);
 
-        // It sits in the same list as the ones created later, with no field
-        // of its own on the renderer.
-        assert_eq!(renderer.pipelines.len(), 1);
-        assert!(renderer.pipelines[0].global.is_some());
-        assert!(renderer.default_material_layout().is_some());
+        renderer.register_unlit_family();
+
+        // Registration records the family; its first concrete pipeline is
+        // built only when a draw resolves a variant.
+        assert!(renderer.pipelines.is_empty());
+        assert_eq!(renderer.families.len(), 1);
     }
 
     #[test]
@@ -1466,23 +1511,54 @@ mod tests {
     }
 
     #[test]
-    fn created_pipelines_are_appended_in_registration_order() {
-        let mut renderer = noop_renderer();
+    fn a_unlit_mesh_is_built_from_its_keys_options() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut renderer = Renderer::new(device, queue, 64, 64);
+        renderer.register_unlit_family();
 
-        let first = renderer.create_unlit_pipeline(UnlitOptions::standard(&renderer.device));
-        let second = renderer.create_unlit_pipeline(UnlitOptions::standard(&renderer.device));
+        let standard = UnlitPipelineKey::new(UnlitOptions::standard(&renderer.device));
+        let uv_less = UnlitPipelineKey::new(uv_less_options(&renderer.device));
 
-        // The default pipeline keeps index 0 and is drawn first; later ones
-        // follow in the order they were created.
-        assert_eq!(first.index, DEFAULT_PIPELINE_INDEX + 1);
-        assert_eq!(second.index, DEFAULT_PIPELINE_INDEX + 2);
-        assert_eq!(renderer.pipelines.len(), 3);
+        // Each mesh packs the channels its own key reads, not the last
+        // registered family's.
+        let standard_mesh = tri_mesh(&mut renderer, &standard);
+        let uv_less_mesh = tri_mesh(&mut renderer, &uv_less);
+        assert!(
+            unlit_flags_for_layout(&standard_mesh.vertex_layout).contains(UnlitFlags::VERTEX_UV)
+        );
+        assert!(
+            !unlit_flags_for_layout(&uv_less_mesh.vertex_layout).contains(UnlitFlags::VERTEX_UV)
+        );
+
+        // A material is built against the key's layout: the standard variant
+        // samples a base-color texture, the UV-less one does not.
+        let (view, sampler) = test_material_resources(&mut renderer);
+        assert!(
+            renderer
+                .allocate_unlit_material(&standard, view, sampler)
+                .is_some()
+        );
+        assert!(
+            renderer
+                .allocate_unlit_material(&uv_less, view, sampler)
+                .is_none()
+        );
     }
 
     #[test]
     fn every_registered_pipeline_gets_its_own_global_group() {
-        let mut renderer = noop_renderer();
-        renderer.create_unlit_pipeline(UnlitOptions::standard(&renderer.device));
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
+        let a = renderer.attachments.surface_key();
+        // A second target, so the family resolves two variants.
+        let b = SurfaceKey {
+            color_format: wgpu::TextureFormat::Bgra8Unorm,
+            depth_stencil_format: a.depth_stencil_format,
+            sample_count: a.sample_count,
+        };
+        resolve_draw(&mut renderer, &key, a, &mesh);
+        resolve_draw(&mut renderer, &key, b, &mesh);
+        assert_eq!(renderer.pipelines.len(), 2);
 
         let ids: Vec<_> = renderer
             .pipelines
@@ -1500,27 +1576,24 @@ mod tests {
     }
 
     #[test]
-    fn pipelines_register_independently_of_the_meshes_already_uploaded() {
-        let mut renderer = noop_renderer();
-        let _ = tri_mesh(&mut renderer);
+    fn a_variant_is_compiled_when_a_draw_resolves_it() {
+        let (mut renderer, key) = noop_renderer();
 
-        // Nothing ties a pipeline to a vertex layout: a mesh carries whatever
-        // buffers it was uploaded with, and a pipeline that expects another
-        // layout draws only the meshes that match it.
-        let options = uv_less_options(&renderer.device);
-        let pipeline = renderer.create_unlit_pipeline(options);
+        // A family has no concrete pipeline until a draw asks for a variant.
+        let mesh = tri_mesh(&mut renderer, &key);
+        let surface = renderer.attachments.surface_key();
+        resolve_draw(&mut renderer, &key, surface, &mesh);
 
-        assert_eq!(pipeline.index, DEFAULT_PIPELINE_INDEX + 1);
-        assert_eq!(renderer.pipelines.len(), 2);
+        assert_eq!(renderer.pipelines.len(), 1);
     }
 
     #[test]
     fn a_material_is_allocated_from_caller_owned_resources() {
-        let mut renderer = noop_renderer();
+        let (mut renderer, key) = noop_renderer();
         let (view, sampler) = test_material_resources(&mut renderer);
 
         let material = renderer
-            .allocate_unlit_material(view, sampler)
+            .allocate_unlit_material(&key, view, sampler)
             .expect("the standard variant reads a base-color texture");
         assert!(
             renderer
@@ -1533,11 +1606,16 @@ mod tests {
     #[test]
     fn a_variant_without_a_base_color_texture_allocates_no_material() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let options = uv_less_options(&device);
-        let mut renderer = Renderer::with_unlit(device, queue, options, 64, 64);
+        let mut renderer = Renderer::new(device, queue, 64, 64);
+        renderer.register_unlit_family();
+        let key = UnlitPipelineKey::new(uv_less_options(&renderer.device));
         let (view, sampler) = test_material_resources(&mut renderer);
 
-        assert!(renderer.allocate_unlit_material(view, sampler).is_none());
+        assert!(
+            renderer
+                .allocate_unlit_material(&key, view, sampler)
+                .is_none()
+        );
     }
 
     // -- draw ordering ------------------------------------------------------
@@ -1561,14 +1639,13 @@ mod tests {
             .collect()
     }
 
-    /// A triangle mesh allocated on `renderer`.
+    /// A triangle mesh allocated on `renderer` for `key`.
     ///
-    /// The standard variant declares UV and vertex-colour channels, so the
-    /// three slices must be present and of equal length.
-    fn tri_mesh(renderer: &mut Renderer) -> GpuMesh {
-        let stream = UnlitOptions::standard(&renderer.device).uv_color_stream();
+    /// The standard key declares UV and vertex-colour channels, so the three
+    /// slices must be present and of equal length.
+    fn tri_mesh(renderer: &mut Renderer, key: &UnlitPipelineKey) -> GpuMesh {
         renderer.allocate_unlit_mesh(
-            stream,
+            key,
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
             Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
@@ -1578,8 +1655,8 @@ mod tests {
 
     #[test]
     fn opaque_entities_are_drawn_before_transparent_ones() {
-        let mut renderer = noop_renderer();
-        let mesh = tri_mesh(&mut renderer);
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
         let mut world = LocalWorld::new();
 
         // The transparent entity is the nearer of the two, so depth alone
@@ -1590,12 +1667,13 @@ mod tests {
                 ..Default::default()
             },
             mesh.clone(),
+            UnlitPipeline::new(key.clone()),
             Transparent,
         ));
-        let opaque = world.spawn((Transform::default(), mesh.clone()));
+        let opaque = world.spawn((Transform::default(), mesh.clone(), UnlitPipeline::new(key)));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera);
+        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
 
         assert_eq!(drawn(&renderer), vec![opaque, transparent]);
         assert!(renderer.visible_cache[0].depth > renderer.visible_cache[1].depth);
@@ -1603,8 +1681,8 @@ mod tests {
 
     #[test]
     fn transparent_entities_are_drawn_back_to_front() {
-        let mut renderer = noop_renderer();
-        let mesh = tri_mesh(&mut renderer);
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
         let mut world = LocalWorld::new();
 
         let near = world.spawn((
@@ -1613,6 +1691,7 @@ mod tests {
                 ..Default::default()
             },
             mesh.clone(),
+            UnlitPipeline::new(key.clone()),
             Transparent,
         ));
         let middle = world.spawn((
@@ -1621,6 +1700,7 @@ mod tests {
                 ..Default::default()
             },
             mesh.clone(),
+            UnlitPipeline::new(key.clone()),
             Transparent,
         ));
         let far = world.spawn((
@@ -1629,6 +1709,7 @@ mod tests {
                 ..Default::default()
             },
             mesh.clone(),
+            UnlitPipeline::new(key.clone()),
             Transparent,
         ));
         // Spawned out of order on purpose: registration order is not draw
@@ -1636,57 +1717,81 @@ mod tests {
         assert_ne!(drawn(&renderer), vec![far, middle, near]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera);
+        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
 
         assert_eq!(drawn(&renderer), vec![far, middle, near]);
     }
 
     #[test]
-    fn entities_are_drawn_in_pipeline_registration_order() {
-        let mut renderer = noop_renderer();
-        let late = renderer.create_unlit_pipeline(UnlitOptions::standard(&renderer.device));
-        let early = renderer.create_unlit_pipeline(UnlitOptions::standard(&renderer.device));
-        // `early` registered later, so it draws later — the order is the
-        // index order, not the order the handles happen to be used in.
-        assert!(early.index > late.index);
+    fn entities_are_drawn_in_pipeline_id_order() {
+        let (mut renderer, key) = noop_renderer();
+        // A second key whose specialized options differ, so it resolves to its
+        // own concrete pipeline.
+        let uv_less_key = UnlitPipelineKey::new(uv_less_options(&renderer.device));
 
-        let mesh = tri_mesh(&mut renderer);
+        // Warm both variants, first key first, so their pipeline ids follow
+        // the order they were resolved in.
+        let standard_mesh = tri_mesh(&mut renderer, &key);
+        let uv_less_mesh = tri_mesh(&mut renderer, &uv_less_key);
+        let surface = renderer.attachments.surface_key();
+        let first_id = resolve_draw(&mut renderer, &key, surface, &standard_mesh);
+        let second_id = resolve_draw(&mut renderer, &uv_less_key, surface, &uv_less_mesh);
+        assert!(first_id < second_id);
+
         let mut world = LocalWorld::new();
-        let second = world.spawn((Transform::default(), mesh.clone(), early));
-        let first = world.spawn((Transform::default(), mesh.clone(), late));
-        let unassigned = world.spawn((Transform::default(), mesh.clone()));
+        // Spawn the later-drawn entity first: draw order is the pipeline id,
+        // not the spawn order.
+        let second = world.spawn((
+            Transform::default(),
+            uv_less_mesh,
+            UnlitPipeline::new(uv_less_key),
+        ));
+        let first = world.spawn((Transform::default(), standard_mesh, UnlitPipeline::new(key)));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera);
+        renderer.collect_and_sort_visible(&world, &camera, surface);
 
-        // The default pipeline is at DEFAULT_PIPELINE_INDEX, so it draws
-        // before both of the others.
-        assert_eq!(drawn(&renderer), vec![unassigned, first, second]);
+        assert_eq!(drawn(&renderer), vec![first, second]);
     }
 
     #[test]
     fn opaque_draws_sharing_a_material_stay_adjacent() {
-        let mut renderer = noop_renderer();
-        let mesh = tri_mesh(&mut renderer);
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
         let (view, sampler) = test_material_resources(&mut renderer);
         let shared = renderer
-            .allocate_unlit_material(view, sampler)
+            .allocate_unlit_material(&key, view, sampler)
             .expect("the standard variant reads a base-color texture");
         let (view, sampler) = test_material_resources(&mut renderer);
         let other = renderer
-            .allocate_unlit_material(view, sampler)
+            .allocate_unlit_material(&key, view, sampler)
             .expect("the standard variant reads a base-color texture");
         assert_ne!(shared.sort_key(), other.sort_key());
 
         let mut world = LocalWorld::new();
-        let a = world.spawn((Transform::default(), mesh.clone(), shared.clone()));
+        let a = world.spawn((
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(key.clone()),
+            shared.clone(),
+        ));
         // The odd one out: sharing no material with the other two, so it is
         // the draw that has to sit on the other side of the pair.
-        let _other_material = world.spawn((Transform::default(), mesh.clone(), other.clone()));
-        let c = world.spawn((Transform::default(), mesh.clone(), shared.clone()));
+        let _other_material = world.spawn((
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(key.clone()),
+            other.clone(),
+        ));
+        let c = world.spawn((
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(key.clone()),
+            shared.clone(),
+        ));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera);
+        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
 
         // The two draws sharing a material are neighbours, so the renderer
         // binds its bind group once for the pair.
@@ -1701,20 +1806,175 @@ mod tests {
 
     #[test]
     fn sorting_survives_a_second_frame_on_the_reused_cache() {
-        let mut renderer = noop_renderer();
-        let mesh = tri_mesh(&mut renderer);
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
         let mut world = LocalWorld::new();
-        let opaque = world.spawn((Transform::default(), mesh.clone()));
-        let transparent = world.spawn((Transform::default(), mesh.clone(), Transparent));
+        let opaque = world.spawn((
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(key.clone()),
+        ));
+        let transparent = world.spawn((
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(key),
+            Transparent,
+        ));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera);
+        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
         assert_eq!(drawn(&renderer), vec![opaque, transparent]);
 
         // The cache is cleared and refilled, not reallocated.
         let capacity = renderer.visible_cache.capacity();
-        renderer.collect_and_sort_visible(&world, &camera);
+        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
         assert_eq!(drawn(&renderer), vec![opaque, transparent]);
         assert_eq!(renderer.visible_cache.capacity(), capacity);
+    }
+
+    // -- specialization cache ------------------------------------------------
+
+    /// A raw-layout key for `mesh` on `surface`.
+    fn draw_key(surface: SurfaceKey, mesh: &GpuMesh) -> DrawKey {
+        DrawKey::for_mesh(surface, mesh)
+    }
+
+    /// Resolve one entity carrying `key` on `surface` and return the
+    /// concrete pipeline it was drawn with.
+    fn resolve_draw(
+        renderer: &mut Renderer,
+        key: &UnlitPipelineKey,
+        surface: SurfaceKey,
+        mesh: &GpuMesh,
+    ) -> PipelineId {
+        let mut world = LocalWorld::new();
+        world.spawn((
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(key.clone()),
+        ));
+        let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
+        renderer.collect_and_sort_visible(&world, &camera, surface);
+        renderer
+            .visible_cache
+            .last()
+            .expect("the entity is visible")
+            .pipeline_id
+    }
+
+    /// Force a variant for `mesh` on `surface` and return its pipeline id.
+    fn resolve(
+        renderer: &mut Renderer,
+        key: &UnlitPipelineKey,
+        surface: SurfaceKey,
+        mesh: &GpuMesh,
+    ) -> PipelineId {
+        resolve_draw(renderer, key, surface, mesh)
+    }
+
+    #[test]
+    fn a_render_target_change_respecializes_the_family() {
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
+
+        let internal = renderer.attachments.surface_key();
+        let first = resolve(&mut renderer, &key, internal, &mesh);
+        // The same key twice reuses one compiled pipeline.
+        assert_eq!(resolve(&mut renderer, &key, internal, &mesh), first);
+
+        // A different color format is a different surface, so the family
+        // compiles a second variant for it.
+        let other = SurfaceKey {
+            color_format: wgpu::TextureFormat::Bgra8Unorm,
+            ..internal
+        };
+        let second = resolve(&mut renderer, &key, other, &mesh);
+        assert_ne!(second, first);
+        assert_eq!(renderer.pipelines.len(), 2);
+    }
+
+    #[test]
+    fn a_mesh_layout_change_respecializes_the_family() {
+        let (mut renderer, key) = noop_renderer();
+        let surface = renderer.attachments.surface_key();
+        let standard = tri_mesh(&mut renderer, &key);
+        let first = resolve(&mut renderer, &key, surface, &standard);
+
+        // A second mesh whose layout declares fewer channels implies a
+        // different variant. Dropping only the color attribute keeps the UV
+        // the base-color flag needs, so the variant differs without
+        // invalidating the base options.
+        const COLOR: u32 = 2;
+        let mut other = standard.clone();
+        other.vertex_layout = other
+            .vertex_layout
+            .into_iter()
+            .map(|(slot, mut layout)| {
+                layout
+                    .attributes
+                    .retain(|attribute| attribute.shader_location != COLOR);
+                (slot, layout)
+            })
+            .collect();
+        assert_ne!(draw_key(surface, &other), draw_key(surface, &standard));
+        let second = resolve(&mut renderer, &key, surface, &other);
+
+        assert_ne!(second, first);
+        assert_eq!(renderer.pipelines.len(), 2);
+    }
+
+    #[test]
+    fn meshes_that_share_flags_share_one_variant() {
+        let (mut renderer, key) = noop_renderer();
+        let surface = renderer.attachments.surface_key();
+        let base = tri_mesh(&mut renderer, &key);
+        let first = resolve(&mut renderer, &key, surface, &base);
+
+        // A layout the flags cannot tell from `base`: the attribute is at the
+        // same location, so the derived flags are identical even though the
+        // raw attribute list differs. The raw keys differ, so a canonical key
+        // is what makes both resolve to one compiled pipeline.
+        let mut twin = base.clone();
+        twin.vertex_layout = twin
+            .vertex_layout
+            .into_iter()
+            .map(|(slot, mut layout)| {
+                for attribute in &mut layout.attributes {
+                    attribute.offset += 4;
+                }
+                layout.array_stride += 4;
+                (slot, layout)
+            })
+            .collect();
+        assert_ne!(draw_key(surface, &twin), draw_key(surface, &base));
+
+        let second = resolve(&mut renderer, &key, surface, &twin);
+        assert_eq!(second, first);
+        assert_eq!(renderer.pipelines.len(), 1);
+    }
+
+    #[test]
+    fn an_entity_without_a_pipeline_is_not_drawn() {
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
+        let mut world = LocalWorld::new();
+        // No GpuPipeline: the query filters it out.
+        let _unpipelined = world.spawn((Transform::default(), mesh.clone()));
+        let drawn_entity = world.spawn((Transform::default(), mesh, UnlitPipeline::new(key)));
+
+        let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
+        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
+
+        assert_eq!(drawn(&renderer), vec![drawn_entity]);
+    }
+
+    #[test]
+    fn registering_compiles_no_pipeline() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut renderer = Renderer::new(device, queue, 64, 64);
+        renderer.register_unlit_family();
+
+        assert!(renderer.pipelines.is_empty());
+        assert_eq!(renderer.families.len(), 1);
     }
 }

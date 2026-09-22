@@ -17,7 +17,7 @@ use unlit3d::prelude::*;
 #[test]
 fn ecs_cube_covers_the_frame() {
     let ctx = Ctx::headless();
-    let (renderer, mut world) = test_world(&ctx);
+    let (renderer, mut world, key) = test_world(&ctx);
 
     // Spawn the renderer as a resource entity.
     let mut renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
@@ -25,7 +25,7 @@ fn ecs_cube_covers_the_frame() {
 
     // Upload a cube mesh through the renderer.
     let mesh = world
-        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
+        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
         .unwrap();
 
     // Dedicated camera entity, then the renderable entity.
@@ -37,6 +37,7 @@ fn ecs_cube_covers_the_frame() {
             scale: glam::Vec3::splat(0.7),
         },
         mesh,
+        UnlitPipeline::new(key),
         BoundingSphere {
             center: glam::Vec3::ZERO,
             radius: 1.8,
@@ -70,7 +71,7 @@ fn ecs_cube_covers_the_frame() {
 #[test]
 fn ecs_depth_ordering_hides_the_far_instance() {
     let ctx = Ctx::headless();
-    let (renderer, mut world) = test_world(&ctx);
+    let (renderer, mut world, key) = test_world(&ctx);
 
     let mut renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
     let renderer = &mut renderer_entity;
@@ -79,10 +80,10 @@ fn ecs_depth_ordering_hides_the_far_instance() {
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     let mesh_far = world
-        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
+        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
         .unwrap();
     let mesh_near = world
-        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
+        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
         .unwrap();
 
     // Far cube, red — Transform with InstanceData color override.
@@ -101,6 +102,7 @@ fn ecs_depth_ordering_hides_the_far_instance() {
             base_color: glam::Vec4::new(1.0, 0.0, 0.0, 1.0),
         },
         mesh_far,
+        UnlitPipeline::new(key.clone()),
         BoundingSphere {
             center: glam::Vec3::ZERO,
             radius: 1.8,
@@ -123,6 +125,7 @@ fn ecs_depth_ordering_hides_the_far_instance() {
             base_color: glam::Vec4::new(0.0, 1.0, 0.0, 1.0),
         },
         mesh_near,
+        UnlitPipeline::new(key.clone()),
         BoundingSphere {
             center: glam::Vec3::ZERO,
             radius: 1.8,
@@ -155,13 +158,13 @@ fn ecs_depth_ordering_hides_the_far_instance() {
 #[test]
 fn ecs_unlit_cube_matches_snapshot() {
     let ctx = Ctx::headless();
-    let (renderer, mut world) = test_world(&ctx);
+    let (renderer, mut world, key) = test_world(&ctx);
 
     let mut renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
     let renderer = &mut renderer_entity;
 
     let mesh = world
-        .with_mut::<Renderer, _>(*renderer, allocate_cube_mesh)
+        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
         .unwrap();
 
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
@@ -173,6 +176,7 @@ fn ecs_unlit_cube_matches_snapshot() {
             scale: glam::Vec3::splat(0.7),
         },
         mesh,
+        UnlitPipeline::new(key),
         BoundingSphere {
             center: glam::Vec3::ZERO,
             radius: 1.8,

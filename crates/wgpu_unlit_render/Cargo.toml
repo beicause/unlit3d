@@ -19,7 +19,7 @@ unlit = ["dep:wesl"]
 ## An [egui](https://egui.rs) backend that draws tessellated egui output as
 ## ordinary screen-space draws. It draws with a built-in unlit pipeline, so
 ## it implies `unlit`.
-egui = ["dep:egui", "dep:hashbrown", "unlit"]
+egui = ["dep:egui", "unlit"]
 
 [dependencies]
 arrayvec.workspace = true
@@ -27,7 +27,7 @@ bitflags.workspace = true
 const_shader_layout.workspace = true
 egui = { workspace = true, optional = true }
 glam.workspace = true
-hashbrown = { workspace = true, optional = true }
+hashbrown.workspace = true
 petgraph.workspace = true
 smallvec.workspace = true
 wesl = { workspace = true, optional = true }

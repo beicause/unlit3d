@@ -6,13 +6,20 @@
 //! so a mesh can carry any combination of attributes and one pipeline,
 //! several, or none may specialize on it.
 
-/// A vertex buffer bound at `slot` for every draw of a mesh.
+/// A vertex buffer bound at `slot` for every draw of a mesh, with the
+/// layout the pipeline's vertex state must match.
 #[derive(Clone, Debug)]
 pub struct VertexBufferDesc {
     /// The vertex-buffer slot the pipeline's vertex state declares.
     pub slot: u32,
     /// The buffer itself.
     pub buffer: wgpu::Buffer,
+    /// Stride between elements.
+    pub array_stride: u64,
+    /// How the buffer advances: per vertex or per instance.
+    pub step_mode: wgpu::VertexStepMode,
+    /// The attributes this buffer provides.
+    pub attributes: Vec<wgpu::VertexAttribute>,
 }
 
 /// Geometry to upload, described the way wgpu describes it.

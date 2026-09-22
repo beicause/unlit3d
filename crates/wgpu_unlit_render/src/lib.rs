@@ -27,6 +27,8 @@
 //!   bindings, materials, meshes and vertex buffers.
 //! - [`render_attachments`]: the attachments a pass renders into and the
 //!   pass-opening entry point.
+//! - [`specialize`]: variant caching — a [`Specializable`](specialize::Specializable)
+//!   value is compiled once per key and reused.
 //! - [`pipeline`]: the binding slots, bind-group indices and vertex-buffer
 //!   slots this crate draws with — plus, with the `unlit` feature, the
 //!   built-in unlit pipeline and the WESL composition behind it.
@@ -77,6 +79,7 @@ pub mod pipeline;
 pub mod render_attachments;
 pub mod resources;
 pub mod scene;
+pub mod specialize;
 #[cfg(feature = "egui")]
 pub mod ui;
 pub mod util;

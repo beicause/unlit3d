@@ -17,22 +17,24 @@ pub const HEIGHT: u32 = 192;
 pub const CLEAR: [f64; 3] = [0.05, 0.05, 0.08];
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// Create a `(Ctx, Renderer, LocalWorld)` triplet ready for testing.
-pub fn test_world(ctx: &Ctx) -> (Renderer, LocalWorld) {
-    let renderer = create_renderer(ctx);
+/// Create a `(Renderer, LocalWorld, UnlitPipelineKey)` triplet ready for
+/// testing.
+///
+/// The returned [UnlitPipelineKey] is the built-in unlit family's key; every
+/// renderable entity must carry an [UnlitPipeline] built from it.
+pub fn test_world(ctx: &Ctx) -> (Renderer, LocalWorld, UnlitPipelineKey) {
+    let (renderer, key) = create_renderer(ctx);
     let world = LocalWorld::new();
-    (renderer, world)
+    (renderer, world, key)
 }
 
-/// Build a `Renderer` on `ctx`'s device with standard unlit options.
-pub fn create_renderer(ctx: &Ctx) -> Renderer {
-    Renderer::with_unlit(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        unlit_options(&ctx.device),
-        WIDTH,
-        HEIGHT,
-    )
+/// Build a `Renderer` on `ctx`'s device with the built-in unlit family
+/// registered, plus a standard key to draw with.
+pub fn create_renderer(ctx: &Ctx) -> (Renderer, UnlitPipelineKey) {
+    let mut renderer = Renderer::new(ctx.device.clone(), ctx.queue.clone(), WIDTH, HEIGHT);
+    renderer.register_unlit_family();
+    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+    (renderer, key)
 }
 
 /// Unlit options for the ECS tests: vertex colour + instance, no texture,
@@ -63,15 +65,6 @@ fn unlit_options(device: &wgpu::Device) -> wgpu_unlit_render::pipeline::UnlitOpt
             ..Default::default()
         },
     }
-}
-
-/// The UV-and-color stream the ECS tests pack meshes into.
-///
-/// It is the one [`unlit_options`] declares, taken from the options
-/// themselves so the packed bytes and the pipeline's vertex layout can
-/// never disagree.
-pub fn uv_color_stream(device: &wgpu::Device) -> wgpu_unlit_render::mesh::MeshUvColorStream {
-    unlit_options(device).uv_color_stream()
 }
 
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
@@ -134,17 +127,11 @@ pub fn camera_view(aspect: f32) -> Camera {
     }
 }
 
-/// Allocate the cube mesh through the renderer and return a `GpuMesh` handle.
-pub fn allocate_cube_mesh(r: &mut Renderer) -> GpuMesh {
+/// Allocate the cube mesh through the renderer for `key` and return a
+/// `GpuMesh` handle.
+pub fn allocate_cube_mesh(r: &mut Renderer, key: &UnlitPipelineKey) -> GpuMesh {
     let (positions, uvs, colors, indices) = cube();
-    let stream = uv_color_stream(&r.device);
-    r.allocate_unlit_mesh(
-        stream,
-        &positions,
-        Some(&uvs),
-        Some(&colors),
-        Some(&indices),
-    )
+    r.allocate_unlit_mesh(key, &positions, Some(&uvs), Some(&colors), Some(&indices))
 }
 
 /// A simple offscreen colour target on which to render, returning

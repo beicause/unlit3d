@@ -7,7 +7,7 @@
 //! produce them together with the packed attribute streams.
 //!
 //! The Rust side and the WGSL side (`mesh_metadata.wesl`) are kept in sync by
-//! the crate. [`MeshUvColorStream`] packs the optional per-vertex UV and color
+//! the crate. [`MeshVertexStreamWriter`] packs the optional per-vertex UV and color
 //! channels a vertex stream declares, whichever pipeline then draws it.
 
 use wgpu::WriteOnly;
@@ -431,12 +431,12 @@ bitflags::bitflags! {
 /// locations for any combination. [`Self::write`] compresses the raw
 /// attributes and interleaves them straight into the target buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MeshUvColorStream {
+pub struct MeshVertexStreamWriter {
     /// The channels this stream writes.
     pub flags: UvColorFlags,
 }
 
-impl MeshUvColorStream {
+impl MeshVertexStreamWriter {
     /// Whether the UV attribute is written.
     pub fn uv(&self) -> bool {
         self.flags.contains(UvColorFlags::UV)
@@ -665,7 +665,7 @@ mod tests {
     /// Write raw UVs and compressed colors through the mapped-buffer path
     /// and return the bytes.
     fn write_stream(
-        stream: MeshUvColorStream,
+        stream: MeshVertexStreamWriter,
         uvs: &[[f32; 2]],
         colors: &[CompressedColor],
         vertex_count: usize,
@@ -695,13 +695,13 @@ mod tests {
         .collect();
 
         for stream in [
-            MeshUvColorStream {
+            MeshVertexStreamWriter {
                 flags: UvColorFlags::UV | UvColorFlags::COLOR,
             },
-            MeshUvColorStream {
+            MeshVertexStreamWriter {
                 flags: UvColorFlags::UV,
             },
-            MeshUvColorStream {
+            MeshVertexStreamWriter {
                 flags: UvColorFlags::COLOR,
             },
         ] {
@@ -740,7 +740,7 @@ mod tests {
         let mut metadata = MeshMetadata::default();
 
         let out = write_stream(
-            MeshUvColorStream {
+            MeshVertexStreamWriter {
                 flags: UvColorFlags::UV | UvColorFlags::COLOR,
             },
             &uvs,
@@ -769,7 +769,7 @@ mod tests {
 
         // UV only: four bytes per vertex.
         let out = write_stream(
-            MeshUvColorStream {
+            MeshVertexStreamWriter {
                 flags: UvColorFlags::UV,
             },
             &uvs,
@@ -781,7 +781,7 @@ mod tests {
 
         // Color only: four bytes per vertex, no UV bytes.
         let out = write_stream(
-            MeshUvColorStream {
+            MeshVertexStreamWriter {
                 flags: UvColorFlags::COLOR,
             },
             &[],
@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn uncompressed_uv_is_written_at_full_precision() {
         let uvs = [[0.0f32, 0.0], [0.5, 0.75]];
-        let stream = MeshUvColorStream {
+        let stream = MeshVertexStreamWriter {
             flags: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV,
         };
         let mut metadata = MeshMetadata::default();

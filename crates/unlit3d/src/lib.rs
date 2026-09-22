@@ -8,10 +8,15 @@
 //!
 //! # Quick start
 //!
-//! The renderer draws with whatever pipelines you register, in registration
-//! order. The built-in unlit shader is one of them:
-//! [`Renderer::with_unlit`] registers it for you, and
-//! [`Renderer::register_pipeline`] takes a [`PipelineDesc`] for a custom one.
+//! The renderer draws with whatever pipeline families you register. The
+//! built-in unlit shader is one of them: [`Renderer::register_unlit_family`]
+//! registers it, and [`Renderer::register_family`] registers a caller's own.
+//! A family is identified by its key type, the type its entities' [`GpuPipeline`]
+//! components carry.
+//!
+//! A [`GpuPipeline`] carries a key, not a compiled pipeline: a concrete
+//! pipeline is resolved per key against the frame's render target and the
+//! entity's vertex layout. Every renderable entity must carry one.
 //!
 //! ```
 //! use unlit3d::prelude::*;
@@ -22,24 +27,28 @@
 //!     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 //! let mut world = LocalWorld::new();
 //!
-//! // 1. Spawn the renderer (a resource entity) with the unlit pipeline.
-//! let options = UnlitOptions::standard(&device);
+//! // 1. Spawn the renderer (a resource entity) and register the built-in
+//! //    unlit family with it.
 //! let renderer = world.spawn((
 //!     unlit_ecs::Resource,
-//!     Renderer::with_unlit(device, queue, options, 1280, 720),
+//!     Renderer::new(device, queue, 1280, 720),
 //! ));
+//! world
+//!     .with_mut::<Renderer, _>(renderer, |r| r.register_unlit_family())
+//!     .unwrap();
 //!
 //! // 2. Allocate geometry and a material through the renderer.
+//! let key = world
+//!     .with_mut::<Renderer, _>(renderer, |r| {
+//!         UnlitPipelineKey::new(UnlitOptions::standard(&r.device))
+//!     })
+//!     .unwrap();
 //! let mesh = world.with_mut::<Renderer, _>(renderer, |r| {
 //!     let positions = [[0.0; 3]; 3];
 //!     let uvs = [[0.0; 2]; 3];
 //!     let colors = [[255u8; 4]; 3];
 //!     let indices = [0u32, 1, 2];
-//!     let stream = wgpu_unlit_render::mesh::MeshUvColorStream {
-//!         flags: wgpu_unlit_render::mesh::UvColorFlags::UV
-//!             | wgpu_unlit_render::mesh::UvColorFlags::COLOR,
-//!     };
-//!     r.allocate_unlit_mesh(stream, &positions, Some(&uvs), Some(&colors), Some(&indices))
+//!     r.allocate_unlit_mesh(&key, &positions, Some(&uvs), Some(&colors), Some(&indices))
 //! });
 //! let material = world.with_mut::<Renderer, _>(renderer, |r| {
 //!     let texture = r.device.create_texture(&wgpu::TextureDescriptor {
@@ -56,14 +65,15 @@
 //!     // which the renderer keeps for it: only ids cross the boundary.
 //!     let view = r.register_texture(texture);
 //!     let sampler = r.register_sampler(None);
-//!     r.allocate_unlit_material(view, sampler)
+//!     r.allocate_unlit_material(&key, view, sampler)
 //! });
 //!
-//! // 3. Spawn a renderable entity.
+//! // 3. Spawn a renderable entity, carrying the unlit key.
 //! world.spawn((
 //!     Transform::default(),
 //!     mesh,
 //!     material.unwrap(),
+//!     UnlitPipeline::new(key),
 //!     BoundingSphere { center: glam::Vec3::ZERO, radius: 1.0 },
 //! ));
 //!
@@ -84,18 +94,21 @@ pub mod renderer;
 pub use components::*;
 pub use mesh::{MeshDesc, VertexBufferDesc};
 pub use pipeline::{
-    GlobalBinding, GlobalGroupRebuild, PipelineBinding, PipelineDesc, RenderResources,
+    DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineBinding,
+    PipelineDesc, PipelineFactory, PipelineKey, RenderPipelineFactory, RenderResources,
+    TrivialSpecializer,
 };
-pub use renderer::Renderer;
+pub use renderer::{Renderer, UnlitPipelineKey};
 
 /// Convenience re-exports for typical usage.
 pub mod prelude {
     pub use crate::{
-        GlobalBinding, GlobalGroupRebuild, MeshDesc, PipelineDesc, RenderResources, Renderer,
+        FamilyKey, GlobalBinding, GlobalGroupRebuild, MeshDesc, PipelineDesc, PipelineKey,
+        RenderPipelineFactory, RenderResources, Renderer, TrivialSpecializer, UnlitPipelineKey,
         VertexBufferDesc,
         components::{
             BoundingSphere, Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceData, Transform,
-            Transparent,
+            Transparent, UnlitPipeline,
         },
     };
 }

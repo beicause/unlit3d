@@ -22,7 +22,8 @@
 //                        without it every vertex is modeled at the origin
 //                        and the base color is white
 //   BASE_COLOR_TEXTURE   sample the material base-color texture
-//   SRGB_TO_LINEAR_OUTPUT  the color target encodes sRGB, so convert the
+//   SRGB_TO_LINEAR_OUTPUT  the fragment's color values are sRGB-encoded and
+//                        the target expects linear values, so convert the
 //                        fragment's RGB from sRGB to linear before writing;
 //                        alpha is coverage and never converts
 //

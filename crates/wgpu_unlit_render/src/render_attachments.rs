@@ -300,6 +300,16 @@ impl RenderAttachments {
         }
     }
 
+    /// The [SurfaceKey](crate::specialize::SurfaceKey) of the attachments this
+    /// set owns: their color format, depth format and sample count.
+    ///
+    /// The color format and sample count come from
+    /// [`Self::color_format`] and [`Self::sample_count`], so they always
+    /// describe the same attachment.
+    pub fn surface_key(&self) -> crate::specialize::SurfaceKey {
+        crate::specialize::SurfaceKey::from_attachments(self)
+    }
+
     /// The width of the attachments, in pixels.
     ///
     /// Taken from whichever attachment is present; they must agree.

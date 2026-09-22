@@ -57,7 +57,7 @@ struct GpuMesh {
     /// position stream.
     positions: Option<wgpu::Buffer>,
     /// Slot 1: `Snorm16x2` UVs and/or `Unorm8x4` colors, interleaved by the
-    /// variant's [`wgpu_unlit_render::mesh::MeshUvColorStream`]; `None` when the
+    /// variant's [`wgpu_unlit_render::mesh::MeshVertexStreamWriter`]; `None` when the
     /// variant declares no channel.
     uv_color: Option<wgpu::Buffer>,
     /// Index buffer and its index count, when the mesh is drawn indexed.

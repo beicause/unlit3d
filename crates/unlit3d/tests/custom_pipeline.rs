@@ -3,12 +3,14 @@
 //!
 //! The scene is drawn by a hand-written `wgpu::RenderPipeline` — no WESL, no
 //! unlit pipeline, no renderer-provided bindings — to show that registering a
-//! pipeline and drawing with it needs nothing from the built-in shader.
+//! pipeline family and drawing with it needs nothing from the built-in shader.
 
 pub mod common;
 
 use common::*;
+use unlit3d::pipeline::{FamilyContext, PipelineFactory};
 use unlit3d::prelude::*;
+use wgpu_unlit_render::specialize::{CachedRenderPipeline, RenderPipelineDesc};
 
 /// An interleaved `position + colour` vertex, matching `VERTEX` in the WGSL
 /// below.
@@ -63,8 +65,8 @@ const TRIANGLE: [Vertex; 3] = [
     },
 ];
 
-/// The vertex layout of [`Vertex`], declared once so both the pipeline and
-/// the uploaded bytes agree on it.
+/// The vertex layout of `Vertex`, declared once so both the pipeline and the
+/// uploaded bytes agree on it.
 const ATTRIBUTES: [wgpu::VertexAttribute; 2] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
 
@@ -76,8 +78,67 @@ fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// Build the custom pipeline: no bind groups, one interleaved vertex buffer.
-fn custom_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
+/// A [VertexBufferDesc] for one interleaved vertex buffer in slot 0, carrying
+/// the layout [vertex_layout] declares.
+fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
+    let layout = vertex_layout();
+    VertexBufferDesc {
+        slot: 0,
+        buffer,
+        array_stride: layout.array_stride,
+        step_mode: layout.step_mode,
+        attributes: layout.attributes.to_vec(),
+    }
+}
+
+/// The pipeline key a custom family draws with: one shared
+/// [RenderPipelineDesc], identified by that shared descriptor.
+///
+/// [PipelineKey] requires [Hash] and [Eq], neither of which a
+/// [RenderPipelineDesc] can offer -- it carries a shader module and a pipeline
+/// layout -- so two keys are the same exactly when they share one descriptor.
+#[derive(Clone)]
+struct CustomPipelineKey {
+    descriptor: std::sync::Arc<RenderPipelineDesc>,
+}
+
+impl CustomPipelineKey {
+    fn new(descriptor: RenderPipelineDesc) -> Self {
+        Self {
+            descriptor: std::sync::Arc::new(descriptor),
+        }
+    }
+}
+
+impl PartialEq for CustomPipelineKey {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.descriptor, &other.descriptor)
+    }
+}
+
+impl Eq for CustomPipelineKey {}
+
+impl core::hash::Hash for CustomPipelineKey {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&std::sync::Arc::as_ptr(&self.descriptor), state);
+    }
+}
+
+impl PipelineKey for CustomPipelineKey {
+    type Pipeline = CachedRenderPipeline;
+
+    fn base_descriptor(&self) -> RenderPipelineDesc {
+        self.descriptor.as_ref().clone()
+    }
+}
+
+/// Build the custom pipeline descriptor: no bind groups, one interleaved
+/// vertex buffer.
+///
+/// Returning the owned [RenderPipelineDesc] rather than the compiled pipeline
+/// is what lets it be registered as a family: the family compiles it lazily
+/// through [RenderPipelineFactory].
+fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
     // The renderer's attachments are multisampled and carry a stencil aspect,
     // so a pipeline that draws into them has to declare both.
     let format = COLOR_FORMAT;
@@ -92,7 +153,7 @@ fn custom_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
         immediate_size: 0,
     });
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("test::custom::pipeline"),
         layout: Some(&layout),
         vertex: wgpu::VertexState {
@@ -124,16 +185,17 @@ fn custom_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
-    })
+    };
+    RenderPipelineDesc::from_wgpu(&descriptor)
 }
 
-/// The binding the per-mesh tint uniform is declared at, inside the mesh
-/// bind group.
+/// The binding the per-mesh tint uniform is declared at, inside the mesh bind
+/// group.
 const MESH_TINT_BINDING: u32 = 0;
 
-/// The shader [`tinted_pipeline`] compiles: the same passthrough vertex
-/// stage, but the fragment stage adds a per-mesh tint bound at group
-/// [`MESH_GROUP`] rather than using the vertex colour alone.
+/// The shader [tinted_pipeline] compiles: the same passthrough vertex stage,
+/// but the fragment stage adds a per-mesh tint bound at group [MESH_GROUP]
+/// rather than using the vertex colour alone.
 const TINTED_SHADER: &str = r#"
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -160,8 +222,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     return input.color + tint;
 }"#;
 
-/// Build a pipeline whose fragment stage reads a per-mesh tint from `layout`.
-fn tinted_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::RenderPipeline {
+/// Build a pipeline descriptor whose fragment stage reads a per-mesh tint
+/// from `layout`.
+fn tinted_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> RenderPipelineDesc {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("test::custom::tinted::shader"),
         source: wgpu::ShaderSource::Wgsl(TINTED_SHADER.into()),
@@ -181,7 +244,7 @@ fn tinted_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgp
         immediate_size: 0,
     });
 
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    let descriptor = wgpu::RenderPipelineDescriptor {
         label: Some("test::custom::tinted::pipeline"),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
@@ -211,32 +274,56 @@ fn tinted_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgp
         multisample: wgpu::MultisampleState::default(),
         multiview_mask: None,
         cache: None,
-    })
+    };
+    RenderPipelineDesc::from_wgpu(&descriptor)
 }
 
-/// A caller-registered pipeline draws, with no built-in shader involved.
+/// A factory that attaches a mesh bind-group layout to the pipelines it
+/// describes, for a family whose specializer changes nothing else.
+struct MeshLayoutFactory {
+    mesh_layout: wgpu::BindGroupLayout,
+}
+
+impl PipelineFactory<wgpu_unlit_render::specialize::CachedRenderPipeline> for MeshLayoutFactory {
+    fn descriptor(
+        &self,
+        _context: &FamilyContext<'_>,
+        value: &wgpu_unlit_render::specialize::CachedRenderPipeline,
+    ) -> PipelineDesc {
+        PipelineDesc {
+            pipeline: value.pipeline.clone(),
+            global: None,
+            material_layout: None,
+            mesh_layout: Some(self.mesh_layout.clone()),
+        }
+    }
+}
+
+/// A caller-registered pipeline family draws, with no built-in shader
+/// involved.
 #[test]
 fn a_custom_pipeline_draws_through_the_ecs() {
     use zerocopy::IntoBytes;
 
     let ctx = Ctx::headless();
 
-    // A renderer with no unlit pipeline at all: the only pipeline is ours.
+    // A renderer with no unlit family at all: the only family is ours.
     let mut world = unlit_ecs::LocalWorld::new();
     let renderer = world.spawn((
         unlit_ecs::Resource,
         Renderer::new(ctx.device.clone(), ctx.queue.clone(), WIDTH, HEIGHT),
     ));
 
-    // Register the hand-written pipeline like any other.
+    // Register the hand-written pipeline as a family that specializes on
+    // nothing, so exactly one concrete pipeline is compiled. The entity's key
+    // carries the one shared descriptor the family compiles.
     let pipeline = world.with_mut::<Renderer, _>(renderer, |r| {
-        let pipeline = custom_pipeline(&r.device);
-        r.register_pipeline(PipelineDesc {
-            pipeline,
-            global: None,
-            material_layout: None,
-            mesh_layout: None,
-        })
+        let key = CustomPipelineKey::new(custom_pipeline(&r.device));
+        r.register_family::<CustomPipelineKey, _, _, _>(
+            TrivialSpecializer::default(),
+            RenderPipelineFactory,
+        );
+        GpuPipeline::new(key)
     });
 
     // Upload the triangle as one interleaved vertex buffer in slot 0.
@@ -249,7 +336,7 @@ fn a_custom_pipeline_draws_through_the_ecs() {
         });
         r.queue.write_buffer(&buffer, 0, TRIANGLE.as_bytes());
         r.allocate_mesh(MeshDesc {
-            vertex_buffers: vec![VertexBufferDesc { slot: 0, buffer }],
+            vertex_buffers: vec![vertex_buffer(buffer)],
             count: TRIANGLE.len() as u32,
             ..Default::default()
         })
@@ -257,11 +344,6 @@ fn a_custom_pipeline_draws_through_the_ecs() {
 
     let mesh = mesh.expect("renderer entity exists");
     let pipeline = pipeline.expect("renderer entity exists");
-    assert_eq!(
-        pipeline.index(),
-        0,
-        "the custom pipeline is the first registered"
-    );
 
     // The renderer still wants a camera to derive its uniforms from; nothing
     // in the custom pipeline reads them, but the frame is only drawn when one
@@ -306,9 +388,9 @@ fn a_custom_pipeline_draws_through_the_ecs() {
     );
 }
 
-/// One pipeline draws several meshes, each through its own mesh bind group:
-/// the pipeline handle is a plain shareable component, and the bind group
-/// that differs per draw is the mesh's, not the pipeline's.
+/// One family draws several meshes, each through its own mesh bind group: the
+/// pipeline handle is a plain shareable component, and the bind group that
+/// differs per draw is the mesh's, not the pipeline's.
 #[test]
 fn one_pipeline_draws_many_meshes() {
     let ctx = Ctx::headless();
@@ -319,8 +401,8 @@ fn one_pipeline_draws_many_meshes() {
     ));
 
     // A per-mesh tint the fragment stage adds to the interpolated vertex
-    // colour. It is what makes two draws of one pipeline differ, and it
-    // lives in the mesh-level bind group (`MESH_GROUP`).
+    // colour. It is what makes two draws of one pipeline differ, and it lives
+    // in the mesh-level bind group (MESH_GROUP).
     let layout = ctx
         .device
         .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -339,16 +421,18 @@ fn one_pipeline_draws_many_meshes() {
 
     let (pipeline, red, green) = world
         .with_mut::<Renderer, _>(renderer, |r| {
-            let pipeline = tinted_pipeline(&r.device, &layout);
-            let pipeline = r.register_pipeline(PipelineDesc {
-                pipeline,
-                global: None,
-                material_layout: None,
-                mesh_layout: Some(layout.clone()),
-            });
+            // The family's factory attaches the mesh layout; the specializer
+            // adds nothing, so one pipeline serves both meshes.
+            let desc = tinted_pipeline(&r.device, &layout);
+            let factory = MeshLayoutFactory {
+                mesh_layout: layout.clone(),
+            };
+            let key = CustomPipelineKey::new(desc);
+            r.register_family::<CustomPipelineKey, _, _, _>(TrivialSpecializer::default(), factory);
+            let pipeline = GpuPipeline::new(key);
 
-            // The two meshes upload identical geometry and differ only in
-            // the tint their mesh bind group carries.
+            // The two meshes upload identical geometry and differ only in the
+            // tint their mesh bind group carries.
             let mut mesh = |tint: [f32; 4]| {
                 let buffer = upload(&r.device, &r.queue, &TRIANGLE);
                 let tint_buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
@@ -368,7 +452,7 @@ fn one_pipeline_draws_many_meshes() {
                     }],
                 });
                 r.allocate_mesh(MeshDesc {
-                    vertex_buffers: vec![VertexBufferDesc { slot: 0, buffer }],
+                    vertex_buffers: vec![vertex_buffer(buffer)],
                     count: TRIANGLE.len() as u32,
                     bind_group: Some(bind_group),
                     ..Default::default()
@@ -382,12 +466,12 @@ fn one_pipeline_draws_many_meshes() {
         })
         .expect("renderer entity exists");
 
-    // The same handle is spawned twice: it is `Copy`, not owned by a mesh.
+    // The same handle is spawned twice: it is cloned, not owned by a mesh.
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
     // The mesh is uploaded in clip space and the vertex stage ignores the
     // instance matrix, so the two draws land on top of each other; only the
     // tint they were bound with distinguishes them.
-    world.spawn((Transform::default(), red, pipeline));
+    world.spawn((Transform::default(), red, pipeline.clone()));
     world.spawn((Transform::default(), green, pipeline));
 
     let (target, target_view) = offscreen_target(&ctx.device, "test::custom::shared");
@@ -401,9 +485,8 @@ fn one_pipeline_draws_many_meshes() {
         height: HEIGHT,
     };
     // The nearer draw wins the depth test, so the centre reads the vertex
-    // colour of one triangle plus that mesh's tint: the red tint lifts the
-    // red and green channels above the plain blue vertex colour the
-    // untinted pipeline produced.
+    // colour of one triangle plus that mesh's tint: the tint lifts the red and
+    // green channels above the plain blue vertex colour.
     let centre = frame.pixel_u8(WIDTH / 2, (HEIGHT as f32 * 0.62) as u32);
     assert!(
         centre[0] > 0 && centre[1] > 0,

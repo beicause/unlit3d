@@ -4,6 +4,9 @@
 //! [`Renderer`](crate::Renderer) each frame to build the draw commands.
 
 use wgpu_unlit_render::resources::ResourceId;
+use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
+
+use crate::renderer::UnlitPipelineKey;
 
 /// World-space transform (translation, rotation, scale).
 ///
@@ -64,6 +67,16 @@ pub struct GpuMesh {
     /// Vertex buffers, each tagged with its slot index, in slot order.
     pub vertex_buffers: Vec<(u32, ResourceId)>,
 
+    /// The vertex layout of the draw, slot by slot.
+    ///
+    /// A pipeline family specializes on this: two meshes whose layouts imply
+    /// different pipeline descriptors resolve to different compiled pipelines.
+    /// It is owned here so a key can name it without going back to the
+    /// [`MeshDesc`](crate::MeshDesc) it was uploaded from. It may name a slot
+    /// whose buffer the draw binds from the renderer rather than the mesh —
+    /// the per-instance buffer, for one.
+    pub vertex_layout: Vec<(u32, VertexBufferLayoutDesc)>,
+
     /// Index buffer, if the mesh is indexed.
     pub index_buffer: Option<(ResourceId, wgpu::IndexFormat)>,
 
@@ -80,33 +93,41 @@ pub struct GpuMesh {
     pub bind_group_id: Option<ResourceId>,
 }
 
-/// A handle to a pipeline registered with the renderer.
+/// The per-entity request for one family's variant.
 ///
-/// Created by
-/// [`Renderer::register_pipeline`](crate::Renderer::register_pipeline) or
-/// [`Renderer::create_unlit_pipeline`](crate::Renderer::create_unlit_pipeline).
-/// Entities without this component draw with the pipeline at
-/// [`DEFAULT_PIPELINE_INDEX`](crate::renderer::DEFAULT_PIPELINE_INDEX), the
-/// first one registered.
+/// It carries a [PipelineKey] rather than a compiled pipeline: which concrete
+/// pipeline an entity needs depends on the frame's render target and on the
+/// entity's vertex layout, neither of which is known when the component is
+/// created. The family the key belongs to is found from the key's type, and
+/// the concrete pipeline is resolved against the frame and the mesh when the
+/// entity is drawn.
 ///
-/// The handle is opaque and self-contained: it can be copied onto any number
-/// of entities, and it stays meaningful as long as the renderer that issued
-/// it. Draws are ordered by registration, so an earlier registration is
-/// drawn first.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct GpuPipeline {
-    /// Position in the renderer's registration order.
-    pub(crate) index: u32,
+/// Every renderable entity carries one: an entity without this component is
+/// not drawn at all. The key selects the family, so an entity whose key type
+/// no registered family uses is silently skipped.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct GpuPipeline<Key> {
+    /// The entity's pipeline key.
+    pub(crate) key: Key,
 }
 
-impl GpuPipeline {
-    /// Position in the renderer's registration order; a lower value draws
-    /// first.
-    #[must_use]
-    pub fn index(&self) -> u32 {
-        self.index
+impl<Key> GpuPipeline<Key> {
+    /// A pipeline component carrying `key`.
+    pub fn new(key: Key) -> Self {
+        Self { key }
+    }
+
+    /// The entity's pipeline key.
+    pub(crate) fn key(&self) -> &Key {
+        &self.key
     }
 }
+
+/// The built-in unlit pipeline component.
+///
+/// It carries an [UnlitPipelineKey], which names the built-in unlit family and
+/// supplies the options the entity's variants are specialized from.
+pub type UnlitPipeline = GpuPipeline<UnlitPipelineKey>;
 
 /// A handle to a material bind group in the renderer's GPU resource graph.
 ///
