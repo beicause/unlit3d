@@ -52,7 +52,7 @@
 //! });
 //! let material = world.with_mut::<Renderer, _>(renderer, |r| {
 //!     let texture = r.device.create_texture(&wgpu::TextureDescriptor {
-//!         label: None,
+//!         label: Some("example::texture"),
 //!         size: wgpu::Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
 //!         mip_level_count: 1,
 //!         sample_count: 1,

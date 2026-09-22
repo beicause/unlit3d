@@ -1032,7 +1032,9 @@ impl Renderer {
         // Record and submit the pass.
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("unlit3d::encoder"),
+            });
 
         let attachments = self.prep_attachments(target);
         {
@@ -1328,7 +1330,9 @@ impl Renderer {
     fn clear_frame(&mut self, target: Option<&wgpu::TextureView>) {
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("unlit3d::encoder"),
+            });
         let attachments = self.prep_attachments(target);
         {
             let mut _pass = attachments.begin_pass(

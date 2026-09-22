@@ -532,7 +532,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     /// a handle to name.
     fn noop_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
+            label: Some("test::shader"),
             source: wgpu::ShaderSource::Wgsl(MINIMAL_WGSL.into()),
         });
         let targets = [Some(wgpu::ColorTargetState {

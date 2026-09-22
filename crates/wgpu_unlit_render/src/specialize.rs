@@ -809,7 +809,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     fn render_pipeline_desc_survives_its_source() {
         let (device, _queue) = crate::util::test::noop_device();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
+            label: Some("test::shader"),
             source: wgpu::ShaderSource::Wgsl(MINIMAL_WGSL.into()),
         });
 
@@ -871,7 +871,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     fn a_render_pipeline_variant_is_cached() {
         let (device, _queue) = crate::util::test::noop_device();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
+            label: Some("test::shader"),
             source: wgpu::ShaderSource::Wgsl(MINIMAL_WGSL.into()),
         });
         let targets = [Some(wgpu::ColorTargetState {

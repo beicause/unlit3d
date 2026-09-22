@@ -217,7 +217,7 @@ fn draw(&self, width: u32, height: u32) {
 
     let mut encoder = self
         .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("encoder") });
     // Everything the scene draws happens in this one pass.
     {
         let mut pass = attachments.begin_pass(
@@ -280,7 +280,7 @@ fn draw(&self, width: u32, height: u32) {
 #         }
 #     }
 #     let texture = device.create_texture(&wgpu::TextureDescriptor {
-#         label: None,
+#         label: Some("checker"),
 #         size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
 #         mip_level_count: 1,
 #         sample_count: 1,
