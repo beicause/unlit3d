@@ -16,7 +16,7 @@ use wgpu_unlit_render::pipeline::{
     UnlitPipeline,
 };
 use wgpu_unlit_render::render_attachments::{RenderAttachments, AttachmentsInfo};
-use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
+use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
 use wgpu_unlit_render::util::busy_wait_block_on;
 use zerocopy::IntoBytes;
 
@@ -198,27 +198,22 @@ fn draw(&self, width: u32, height: u32) {
         AttachmentsInfo::new(&self.device, width, height),
     );
 
-    // One draw: the mesh's bind groups and vertex buffers, and what to
-    // draw. Slots are bound by index, so a variant only binds the buffers
-    // its shader declares.
-    let draw = MeshDraw::new(DrawRange::indexed(0..self.index_count).with_instances(
-        0..self.instance_count,
-    ))
+    // One draw: the pipeline, every bind group and vertex buffer it needs,
+    // and what to draw. Slots are bound by index, so a variant only binds
+    // the buffers its shader declares.
+    let draw = DrawEntry::new(
+        &self.pipeline.pipeline,
+        DrawRange::indexed(0..self.index_count).with_instances(0..self.instance_count),
+    )
+    .with_bind_group(GLOBAL_GROUP, &self.globals)
+    .with_bind_group(MATERIAL_GROUP, &self.material)
     .with_bind_group(MESH_GROUP, &self.mesh)
     .with_vertex_buffer(POSITION_SLOT, self.positions.slice(..))
     .with_vertex_buffer(UV_COLOR_SLOT, self.uv_color.slice(..))
     .with_vertex_buffer(INSTANCE_SLOT, self.instances.slice(..))
     .with_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
 
-    let scene = Scene::new().with_pipeline(
-        PipelineGroup::new(&self.pipeline.pipeline)
-            .with_bind_group(GLOBAL_GROUP, &self.globals)
-            .with_material(
-                MaterialGroup::new()
-                    .with_bind_group(MATERIAL_GROUP, &self.material)
-                    .with_mesh(draw),
-            ),
-    );
+    let scene = Scene::new().with_draw(draw);
 
     let mut encoder = self
         .device

@@ -6,18 +6,14 @@
 //! description once and reuse, inspect or modify it — and custom draw
 //! commands are expressed with the same shapes as the built-in ones.
 //!
-//! The recording loop mirrors the resource hierarchy:
+//! The recording loop is flat: each draw names its own pipeline and every
+//! resource it binds.
 //!
 //! ```text
-//! for pipeline in scene.pipelines {
-//!     set pipeline, then the pipeline's global bind groups
-//!     for material in pipeline.materials {
-//!         set the material's bind groups
-//!         for mesh in material.meshes {
-//!             set the mesh's bind groups and vertex buffers
-//!             draw (indexed or not)
-//!         }
-//!     }
+//! for draw in scene.draws {
+//!     set the pipeline, then the draw's bind groups
+//!     set the draw's vertex and index buffers
+//!     draw (indexed or not)
 //! }
 //! ```
 //!
@@ -27,9 +23,9 @@
 //! Scissor rectangles are the exception to "a draw is independent": wgpu has
 //! no reset call, so a rectangle set by one draw stays set for every draw
 //! after it in the pass. A scene therefore orders its clipped draws last —
-//! or sets [`MeshDraw::scissor`] on every draw. The stencil reference is the
+//! or sets [`DrawEntry::scissor`] on every draw. The stencil reference is the
 //! same kind of pass state, but it is set on every draw (from
-//! [`MeshDraw::stencil_reference`]), so it never leaks from one draw to the
+//! [`DrawEntry::stencil_reference`]), so it never leaks from one draw to the
 //! next.
 
 use arrayvec::ArrayVec;
@@ -149,18 +145,28 @@ impl DrawRange {
     }
 }
 
-/// One mesh draw: its bind groups, its vertex buffers, and what to draw.
+/// One draw: the pipeline and every resource it binds, followed by what to
+/// draw.
 ///
-/// The built-in pipeline expects three or four vertex buffers — position,
-/// optional joints and weights, UV and vertex color, and the per-instance
-/// model matrix and base color — but the shape is generic, so custom
-/// pipelines can bind whatever they declare.
+/// A draw carries the union of the bind groups the pipeline, its material and
+/// the mesh need, at the slots they name. The renderer's built-in pipeline
+/// expects three or four vertex buffers — position, optional joints and
+/// weights, UV and vertex color, and the per-instance model matrix and base
+/// color — but the shape is generic, so custom pipelines can bind whatever
+/// they declare.
+///
+/// All slots are inline: a draw never allocates, so a whole scene can be
+/// rebuilt each frame without touching the allocator.
 #[derive(Clone, Debug)]
-pub struct MeshDraw<'a> {
-    /// Mesh-level bind groups, bound at the slots they name.
-    pub bind_groups: Vec<BindGroupBinding<'a>>,
+pub struct DrawEntry<'a> {
+    /// The render pipeline to bind.
+    pub pipeline: &'a wgpu::RenderPipeline,
+    /// Bind groups, bound at the slots they name. The built-in pipeline uses
+    /// index 0 for the camera, frame globals and mesh metadata, index 1 for
+    /// the material, and any remaining slots for mesh-level groups.
+    pub bind_groups: ArrayVec<BindGroupBinding<'a>, MAX_BIND_GROUPS>,
     /// Vertex buffers, bound at the slots they name.
-    pub vertex_buffers: Vec<VertexBufferBinding<'a>>,
+    pub vertex_buffers: ArrayVec<VertexBufferBinding<'a>, MAX_VERTEX_BUFFERS>,
     /// Index buffer and its format, when the draw is indexed.
     pub index_buffer: Option<(wgpu::BufferSlice<'a>, wgpu::IndexFormat)>,
     /// Pixels outside this rectangle are discarded.
@@ -180,14 +186,15 @@ pub struct MeshDraw<'a> {
     pub range: DrawRange,
 }
 
-impl<'a> MeshDraw<'a> {
-    /// A mesh draw with no bind groups, no vertex buffers, no index buffer,
-    /// no scissor and a zero stencil reference; fill in the fields the
-    /// pipeline needs.
-    pub fn new(range: DrawRange) -> Self {
+impl<'a> DrawEntry<'a> {
+    /// A draw of `range` with the given pipeline, no bind groups, no vertex
+    /// buffers, no index buffer, no scissor and a zero stencil reference; fill
+    /// in the fields the pipeline needs.
+    pub fn new(pipeline: &'a wgpu::RenderPipeline, range: DrawRange) -> Self {
         Self {
-            bind_groups: Vec::new(),
-            vertex_buffers: Vec::new(),
+            pipeline,
+            bind_groups: ArrayVec::new(),
+            vertex_buffers: ArrayVec::new(),
             index_buffer: None,
             scissor: None,
             stencil_reference: 0,
@@ -208,7 +215,7 @@ impl<'a> MeshDraw<'a> {
     }
 
     /// Discard fragments outside `scissor`. It stays set for every draw after
-    /// this one in the pass, so see [`MeshDraw::scissor`].
+    /// this one in the pass, so see [`DrawEntry::scissor`].
     pub fn with_scissor(mut self, scissor: ScissorRect) -> Self {
         self.scissor = Some(scissor);
         self
@@ -231,83 +238,20 @@ impl<'a> MeshDraw<'a> {
     }
 }
 
-/// A material: its bind groups and the meshes drawn with them.
+/// A frame's worth of draws.
 ///
-/// The built-in pipeline uses at most one material bind group (index 1) — the
-/// base-color texture and sampler — and no material at all when the mesh is
-/// untextured.
-#[derive(Clone, Debug, Default)]
-pub struct MaterialGroup<'a> {
-    /// Material-level bind groups, bound at the slots they name.
-    pub bind_groups: Vec<BindGroupBinding<'a>>,
-    /// Meshes drawn with this material.
-    pub meshes: Vec<MeshDraw<'a>>,
-}
-
-impl<'a> MaterialGroup<'a> {
-    /// An empty material group.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Bind `bind_group` at `index`.
-    pub fn with_bind_group(mut self, index: u32, bind_group: &'a wgpu::BindGroup) -> Self {
-        self.bind_groups.push((index, bind_group));
-        self
-    }
-
-    /// Draw `mesh` with this material.
-    pub fn with_mesh(mut self, mesh: MeshDraw<'a>) -> Self {
-        self.meshes.push(mesh);
-        self
-    }
-}
-
-/// A pipeline: the pipeline object, its global bind groups, and its
-/// materials.
-#[derive(Clone, Debug)]
-pub struct PipelineGroup<'a> {
-    /// The render pipeline to bind.
-    pub pipeline: &'a wgpu::RenderPipeline,
-    /// Global bind groups, bound at the slots they name. The built-in
-    /// pipeline uses index 0 for the camera, frame globals and mesh metadata.
-    pub bind_groups: Vec<BindGroupBinding<'a>>,
-    /// Materials drawn with this pipeline.
-    pub materials: Vec<MaterialGroup<'a>>,
-}
-
-impl<'a> PipelineGroup<'a> {
-    /// A pipeline group with no bind groups and no materials.
-    pub fn new(pipeline: &'a wgpu::RenderPipeline) -> Self {
-        Self {
-            pipeline,
-            bind_groups: Vec::new(),
-            materials: Vec::new(),
-        }
-    }
-
-    /// Bind `bind_group` at `index`.
-    pub fn with_bind_group(mut self, index: u32, bind_group: &'a wgpu::BindGroup) -> Self {
-        self.bind_groups.push((index, bind_group));
-        self
-    }
-
-    /// Draw `material` with this pipeline.
-    pub fn with_material(mut self, material: MaterialGroup<'a>) -> Self {
-        self.materials.push(material);
-        self
-    }
-}
-
-/// A frame's worth of draw commands.
-///
-/// The order of [`PipelineGroup`]s, and of materials and meshes within them,
-/// is the order they are recorded in — so a caller controls opaque-then-
-/// transparent ordering by ordering the groups.
+/// The order of [`DrawEntry`]s is the order they are recorded in. Recording
+/// compares every `set_*` against the state the previous draw left behind, so
+/// consecutive draws that share a pipeline or bind group skip the redundant
+/// call: ordering draws by pipeline, and then so that neighbours share their
+/// bind groups, minimizes state changes without changing what is drawn. A
+/// caller is also free to order the draws for opaque-then-transparent
+/// compositing, which is a correctness requirement rather than a performance
+/// one.
 #[derive(Clone, Debug, Default)]
 pub struct Scene<'a> {
-    /// The pipelines to run, in order.
-    pub pipelines: Vec<PipelineGroup<'a>>,
+    /// The draws to run, in order.
+    pub draws: Vec<DrawEntry<'a>>,
 }
 
 impl<'a> Scene<'a> {
@@ -316,72 +260,93 @@ impl<'a> Scene<'a> {
         Self::default()
     }
 
-    /// Run `pipeline` in this scene.
-    pub fn with_pipeline(mut self, pipeline: PipelineGroup<'a>) -> Self {
-        self.pipelines.push(pipeline);
-        self
+    /// Append `draw` to this scene.
+    pub fn push(&mut self, draw: DrawEntry<'a>) {
+        self.draws.push(draw);
     }
 
-    /// Append a pipeline to this scene.
-    pub fn push(&mut self, pipeline: PipelineGroup<'a>) {
-        self.pipelines.push(pipeline);
+    /// Append `draw` to this scene and return it.
+    pub fn with_draw(mut self, draw: DrawEntry<'a>) -> Self {
+        self.draws.push(draw);
+        self
     }
 
     /// Whether the scene draws nothing.
     pub fn is_empty(&self) -> bool {
-        self.pipelines
-            .iter()
-            .all(|pipeline| pipeline.materials.is_empty())
+        self.draws.is_empty()
     }
 
     /// Record the scene into `pass`, skipping any `set_*` call whose target is
     /// already bound from the previous draw.
     pub fn record(&self, pass: &mut wgpu::RenderPass<'_>) {
         let mut state = PassState::default();
-        for pipeline in &self.pipelines {
-            if state.pipeline != Some(pipeline.pipeline) {
-                pass.set_pipeline(pipeline.pipeline);
-                state.pipeline = Some(pipeline.pipeline);
+        for draw in &self.draws {
+            if state.pipeline != Some(draw.pipeline) {
+                pass.set_pipeline(draw.pipeline);
+                state.pipeline = Some(draw.pipeline);
             }
-            for &(index, bind_group) in &pipeline.bind_groups {
+            for &(index, bind_group) in &draw.bind_groups {
                 state.set_bind_group(pass, index, bind_group);
             }
+            for (slot, buffer) in &draw.vertex_buffers {
+                state.set_vertex_buffer(pass, *slot, *buffer);
+            }
+            if let Some((buffer, format)) = &draw.index_buffer {
+                state.set_index_buffer(pass, *buffer, *format);
+            }
+            if let Some(scissor) = &draw.scissor {
+                state.set_scissor(pass, *scissor);
+            }
+            state.set_stencil_reference(pass, draw.stencil_reference);
 
-            for material in &pipeline.materials {
-                for &(index, bind_group) in &material.bind_groups {
-                    state.set_bind_group(pass, index, bind_group);
-                }
-
-                for mesh in &material.meshes {
-                    for &(index, bind_group) in &mesh.bind_groups {
-                        state.set_bind_group(pass, index, bind_group);
-                    }
-                    for (slot, buffer) in &mesh.vertex_buffers {
-                        state.set_vertex_buffer(pass, *slot, *buffer);
-                    }
-                    if let Some((buffer, format)) = &mesh.index_buffer {
-                        state.set_index_buffer(pass, *buffer, *format);
-                    }
-                    if let Some(scissor) = &mesh.scissor {
-                        state.set_scissor(pass, *scissor);
-                    }
-                    state.set_stencil_reference(pass, mesh.stencil_reference);
-
-                    match &mesh.range {
-                        DrawRange::Vertices {
-                            vertices,
-                            instances,
-                        } => pass.draw(vertices.clone(), instances.clone()),
-                        DrawRange::Indexed {
-                            indices,
-                            base_vertex,
-                            instances,
-                        } => pass.draw_indexed(indices.clone(), *base_vertex, instances.clone()),
-                    }
-                }
+            match &draw.range {
+                DrawRange::Vertices {
+                    vertices,
+                    instances,
+                } => pass.draw(vertices.clone(), instances.clone()),
+                DrawRange::Indexed {
+                    indices,
+                    base_vertex,
+                    instances,
+                } => pass.draw_indexed(indices.clone(), *base_vertex, instances.clone()),
             }
         }
     }
+    /// Empty this scene and hand back its allocation with an unconstrained
+    /// lifetime, ready to be reused by a later frame.
+    ///
+    /// Reusing the allocation is what keeps a steady scene from allocating;
+    /// see [`Scene::reborrow`] for the other half.
+    pub fn recycle(mut self) -> Scene<'static> {
+        self.draws.clear();
+        Scene {
+            draws: launder(self.draws),
+        }
+    }
+}
+
+impl Scene<'static> {
+    /// Reuse this empty scene's allocation for a scene that borrows
+    /// shorter-lived resources, such as one frame's pipelines and buffers.
+    ///
+    /// Paired with [`Scene::recycle`], this lets a caller keep a
+    /// `Scene<'static>` between frames and lend it the frame's lifetime while
+    /// the frame is recorded.
+    pub fn reborrow<'a>(self) -> Scene<'a> {
+        Scene {
+            draws: launder(self.draws),
+        }
+    }
+}
+
+/// Move a `Vec`'s allocation to a different element lifetime.
+///
+/// The vector must be empty: no element is moved, so no value of the old
+/// lifetime is ever observed as the new one. It is how a [`Scene`] survives
+/// between frames while each frame's draws borrow resources that do not.
+fn launder<A, B>(vec: Vec<A>) -> Vec<B> {
+    debug_assert!(vec.is_empty(), "only an empty Vec can change lifetime");
+    vec.into_iter().map(|_| unreachable!()).collect()
 }
 
 /// Maximum number of bind-group slots a pass is tracked for.
@@ -549,6 +514,55 @@ impl<'a> PassState<'a> {
 mod tests {
     use super::*;
 
+    /// The smallest shader that compiles: a vertex stage returning the origin
+    /// and a fragment stage returning opaque white.
+    const MINIMAL_WGSL: &str = r#"
+@vertex
+fn vs_main() -> @builtin(position) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0);
+}
+"#;
+
+    /// A render pipeline on the noop device, for builder tests that only need
+    /// a handle to name.
+    fn noop_pipeline(device: &wgpu::Device) -> wgpu::RenderPipeline {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: None,
+            source: wgpu::ShaderSource::Wgsl(MINIMAL_WGSL.into()),
+        });
+        let targets = [Some(wgpu::ColorTargetState {
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("test::pipeline"),
+            layout: None,
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &targets,
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
+    }
+
     #[test]
     fn draw_range_builders_compose() {
         let range = DrawRange::vertices(0..36).with_instances(2..5);
@@ -605,7 +619,10 @@ mod tests {
     /// bound resource while adding the scissor.
     #[test]
     fn draw_builders_keep_the_scissor() {
-        let draw = MeshDraw::new(DrawRange::indexed(0..6)).with_scissor(ScissorRect::new(8, 8));
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
+        let draw = DrawEntry::new(&pipeline, DrawRange::indexed(0..6))
+            .with_scissor(ScissorRect::new(8, 8));
         assert_eq!(draw.scissor, Some(ScissorRect::new(8, 8)));
         assert!(matches!(
             draw.range,
@@ -613,7 +630,7 @@ mod tests {
         ));
 
         // A draw that never sets one leaves the pass's rectangle alone.
-        let plain = MeshDraw::new(DrawRange::vertices(0..3));
+        let plain = DrawEntry::new(&pipeline, DrawRange::vertices(0..3));
         assert_eq!(plain.scissor, None);
     }
 
@@ -621,13 +638,15 @@ mod tests {
     /// disturbing the rest of the draw.
     #[test]
     fn stencil_reference_builder_composes() {
-        let draw = MeshDraw::new(DrawRange::indexed(0..6))
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
+        let draw = DrawEntry::new(&pipeline, DrawRange::indexed(0..6))
             .with_stencil_reference(3)
             .with_scissor(ScissorRect::new(8, 8));
         assert_eq!(draw.stencil_reference, 3);
         assert_eq!(draw.scissor, Some(ScissorRect::new(8, 8)));
 
-        let plain = MeshDraw::new(DrawRange::vertices(0..3));
+        let plain = DrawEntry::new(&pipeline, DrawRange::vertices(0..3));
         assert_eq!(plain.stencil_reference, 0);
     }
 
@@ -764,6 +783,35 @@ mod tests {
     fn empty_scene_reports_empty() {
         let scene = Scene::new();
         assert!(scene.is_empty());
+    }
+
+    /// Recycling an empty scene and borrowing it back must hand the same
+    /// allocation to the next frame, so a steady scene never allocates.
+    #[test]
+    fn recycle_and_reborrow_keep_the_allocation() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
+
+        let mut scene = Scene::new();
+        scene.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..3)));
+        scene.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..6)));
+        let ptr = scene.draws.as_ptr();
+        let cap = scene.draws.capacity();
+
+        let scene = scene.recycle();
+        assert!(scene.is_empty());
+        assert_eq!(scene.draws.as_ptr(), ptr);
+        assert_eq!(scene.draws.capacity(), cap);
+
+        let mut next = scene.reborrow();
+        assert!(next.is_empty());
+        assert_eq!(next.draws.as_ptr(), ptr);
+        assert_eq!(next.draws.capacity(), cap);
+
+        next.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..9)));
+        let recycled = next.recycle();
+        assert_eq!(recycled.draws.as_ptr(), ptr);
+        assert_eq!(recycled.draws.capacity(), cap);
     }
 
     #[test]

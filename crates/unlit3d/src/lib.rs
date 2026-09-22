@@ -74,11 +74,12 @@
 //!     mesh,
 //!     material.unwrap(),
 //!     UnlitPipeline::new(key),
-//!     BoundingSphere { center: glam::Vec3::ZERO, radius: 1.0 },
 //! ));
 //!
-//! // 4. Render one frame (uses noop device, produces a valid command buffer).
+//! // 4. Upload the mesh metadata and render one frame (uses noop device,
+//! //    produces a valid command buffer).
 //! world.with_mut::<Renderer, _>(renderer, |r| {
+//!     r.update_metadata_buffer();
 //!     r.render(&world, None);
 //! });
 //! ```
@@ -86,12 +87,17 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
+pub mod bounds;
 pub mod components;
+pub mod culling;
 pub mod mesh;
 pub mod pipeline;
 pub mod renderer;
+pub mod scene;
 
+pub use bounds::{Aabb, FrustumPlanes, Obb};
 pub use components::*;
+pub use culling::is_culled;
 pub use mesh::{MeshDesc, VertexBufferDesc};
 pub use pipeline::{
     DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineBinding,
@@ -103,12 +109,13 @@ pub use renderer::{Renderer, UnlitPipelineKey};
 /// Convenience re-exports for typical usage.
 pub mod prelude {
     pub use crate::{
-        FamilyKey, GlobalBinding, GlobalGroupRebuild, MeshDesc, PipelineDesc, PipelineKey,
-        RenderPipelineFactory, RenderResources, Renderer, TrivialSpecializer, UnlitPipelineKey,
-        VertexBufferDesc,
+        Aabb, FamilyKey, FrustumPlanes, GlobalBinding, GlobalGroupRebuild, MeshDesc, Obb,
+        PipelineDesc, PipelineKey, RenderPipelineFactory, RenderResources, Renderer,
+        TrivialSpecializer, UnlitPipelineKey, VertexBufferDesc,
         components::{
-            BoundingSphere, Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceData, Transform,
-            Transparent, UnlitPipeline,
+            Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, Transform, Transparent,
+            UnlitPipeline,
         },
+        is_culled,
     };
 }

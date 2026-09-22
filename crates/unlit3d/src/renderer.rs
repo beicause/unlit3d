@@ -6,7 +6,6 @@
 //! entity) and call [Renderer::render] every frame.
 
 use core::any::TypeId;
-use core::cmp::Ordering;
 use std::sync::Arc;
 
 use unlit_ecs::{LocalWorld, TypeIdHashMap};
@@ -16,26 +15,30 @@ use wgpu_unlit_render::mesh::{
 };
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
-    apply_surface,
+    INSTANCE_SLOT, MESH_INFO_BINDING, MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT,
+    UnlitFlags, UnlitOptions, UnlitPipeline, apply_surface,
 };
 use wgpu_unlit_render::render_attachments::{
     AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
 };
 use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
-use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
+use wgpu_unlit_render::scene::Scene;
 use wgpu_unlit_render::specialize::{
     Specializable, Specializer, SpecializerKey, SurfaceKey, VertexBufferLayoutDesc,
 };
 use zerocopy::IntoBytes;
 
+use crate::bounds::Aabb;
 use crate::components::{Camera, GpuMaterial, GpuMesh};
+use crate::culling::VisibleMesh;
 use crate::mesh::{MeshDesc, VertexBufferDesc};
 use crate::pipeline::{
-    AnyFamily, DrawKey, Family, FamilyContext, FamilyFrame, FrustumPlanes, GlobalBinding,
-    GlobalGroupRebuild, PipelineDesc, PipelineFactory, PipelineId, PipelineKey, RegisteredGlobal,
-    RenderResources, VisibleEntry,
+    DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, PipelineDesc, PipelineFactory,
+    PipelineId, PipelineKey, RegisteredGlobal, RenderResources,
+};
+use crate::scene::{
+    AnyFamily, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry, assemble_scene,
+    collect_and_sort_visible,
 };
 
 /// The renderer: ECS resource component that holds GPU state and orchestrates
@@ -43,8 +46,9 @@ use crate::pipeline::{
 ///
 /// Spawn this as a component on a resource entity in a [LocalWorld]. Call
 /// [Renderer::render] each frame to draw every entity that carries a
-/// [GpuMesh], a [GpuPipeline] and a [Transform] (or [InstanceData]). An entity
-/// missing any of them is not drawn.
+/// [GpuMesh] and a [GpuPipeline]. A [Transform] places it and an
+/// [InstanceColor] tints it; both are optional, defaulting to the identity
+/// transform and white. An entity missing a mesh or pipeline is not drawn.
 pub struct Renderer {
     /// WGPU device.
     pub device: wgpu::Device,
@@ -67,6 +71,8 @@ pub struct Renderer {
     globals: Globals,
     /// Metadata entries, one per uploaded mesh.
     metadata: Vec<MeshMetadata>,
+    /// How many metadata entries the current storage buffer can hold.
+    metadata_capacity: u32,
 
     /// A reused instance-data buffer, grown as needed.
     instance_buffer: Option<wgpu::Buffer>,
@@ -91,6 +97,8 @@ pub struct Renderer {
     families: TypeIdHashMap<Box<dyn AnyFamily>>,
 
     // -- cached per-frame allocations ------------------------------------------
+    /// Reused Vec of the meshes that passed this frame's frustum culling.
+    visible_meshes_cache: Vec<VisibleMesh>,
     /// Reused Vec for visible-entity collection and per-frame sorting.
     visible_cache: Vec<VisibleEntry>,
     /// Reused Vec for packed instance data.
@@ -99,6 +107,12 @@ pub struct Renderer {
     bind_group_cache: Vec<wgpu::BindGroup>,
     /// Reused Vec for cloned buffers while the scene is built.
     buffer_cache: Vec<wgpu::Buffer>,
+    /// Reused Vec for cloned pipeline handles while the scene is built.
+    pipeline_handle_cache: Vec<PipelineHandles>,
+    /// Reused Vec of per-entry handle indices while the scene is built.
+    entry_handle_cache: Vec<EntryHandles>,
+    /// Reused draw list, whose allocation survives between frames.
+    scene_cache: Scene<'static>,
 }
 
 /// Build the unlit shader's global bind group from the renderer's buffers.
@@ -391,15 +405,20 @@ impl Renderer {
             metadata_buf,
             globals,
             metadata: Vec::new(),
+            metadata_capacity: 1,
             instance_buffer: None,
             instance_capacity: 0,
             external_attachments: None,
             pipelines: Vec::new(),
             families: TypeIdHashMap::default(),
+            visible_meshes_cache: Vec::new(),
             visible_cache: Vec::new(),
             packed_instances_cache: Vec::new(),
             bind_group_cache: Vec::new(),
             buffer_cache: Vec::new(),
+            pipeline_handle_cache: Vec::new(),
+            entry_handle_cache: Vec::new(),
+            scene_cache: Scene::new(),
         }
     }
 
@@ -418,6 +437,10 @@ impl Renderer {
     /// vertex state declares, so a mesh may carry any combination of
     /// attributes in any format. The pipeline specializes on the layout.
     ///
+    /// The mesh's [`Aabb`](crate::Aabb) is recorded in the renderer's
+    /// mesh-metadata array; call [`Renderer::update_metadata_buffer`] once the
+    /// meshes for the frame are allocated to upload the array.
+    ///
     /// [`Renderer::allocate_unlit_mesh`] is the helper that builds the
     /// compressed layout the built-in unlit shader expects.
     ///
@@ -426,11 +449,26 @@ impl Renderer {
     /// If `count` is zero for a non-empty draw, or if the index format does
     /// not match the packed data.
     pub fn allocate_mesh(&mut self, desc: MeshDesc) -> GpuMesh {
+        let metadata = MeshMetadata {
+            aabb_center: desc.aabb.center,
+            aabb_half_extents: desc.aabb.half_extents,
+            ..Default::default()
+        };
+        self.allocate_mesh_with_metadata(desc, metadata)
+    }
+
+    /// Upload a mesh together with the full metadata entry it owns.
+    ///
+    /// The entry is appended to the CPU-side array and reaches the GPU only
+    /// when [`Renderer::update_metadata_buffer`] is called; the returned
+    /// handle names its index.
+    fn allocate_mesh_with_metadata(&mut self, desc: MeshDesc, metadata: MeshMetadata) -> GpuMesh {
         let MeshDesc {
             vertex_buffers,
             index_buffer,
             count,
             indexed,
+            aabb,
             bind_group,
         } = desc;
 
@@ -470,12 +508,19 @@ impl Renderer {
                 .expect("a mesh bind group depends on its vertex buffers")
         });
 
+        // The entry is owned whether or not the pipeline reads it: a draw that
+        // binds no metadata group simply leaves the index unused.
+        let metadata_index = self.metadata.len() as u32;
+        self.metadata.push(metadata);
+
         GpuMesh {
             vertex_buffers: vertex_slots,
             vertex_layout,
             index_buffer,
             count,
             indexed,
+            aabb,
+            metadata_index,
             bind_group_id,
         }
     }
@@ -561,22 +606,15 @@ impl Renderer {
             self.queue.write_buffer(&uv_color_buf, 0, &staging);
         }
 
-        // Append metadata entry and rebuild the storage buffer it lives in.
-        let metadata_index = self.metadata.len() as u32;
-        self.metadata.push(meta);
-        self.rebuild_metadata_buffer();
-
         // MeshInfo uniform buffer (just the metadata index) and the bind
-        // group the shader reads it through.
-        let mesh_info = MeshInfo::new(metadata_index);
+        // group the shader reads it through. The index is unknown until the
+        // mesh is allocated below, and the buffer is written then.
         let mesh_info_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("unlit3d::mesh::info"),
             size: size_of::<MeshInfo>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        self.queue
-            .write_buffer(&mesh_info_buf, 0, mesh_info.as_bytes());
         let mesh_info_id = self
             .graph
             .insert(Resource::Buffer(mesh_info_buf), &[])
@@ -649,28 +687,44 @@ impl Renderer {
         let uv_color_layout = layout_of(UV_COLOR_SLOT);
         let instance_layout = layout_of(INSTANCE_SLOT);
 
-        let mut mesh = self.allocate_mesh(MeshDesc {
-            vertex_buffers: vec![
-                VertexBufferDesc {
-                    slot: POSITION_SLOT,
-                    buffer: position_buf,
-                    array_stride: position_layout.array_stride,
-                    step_mode: position_layout.step_mode,
-                    attributes: position_layout.attributes,
-                },
-                VertexBufferDesc {
-                    slot: UV_COLOR_SLOT,
-                    buffer: uv_color_buf,
-                    array_stride: uv_color_layout.array_stride,
-                    step_mode: uv_color_layout.step_mode,
-                    attributes: uv_color_layout.attributes,
-                },
-            ],
-            index_buffer,
-            count,
-            indexed,
-            bind_group: Some(mesh_bind_group),
-        });
+        // The mesh owns the metadata entry `meta` — the same AABB and UV
+        // decode parameters the compression just derived.
+        let aabb = Aabb::new(meta.aabb_center, meta.aabb_half_extents);
+        let mut mesh = self.allocate_mesh_with_metadata(
+            MeshDesc {
+                vertex_buffers: vec![
+                    VertexBufferDesc {
+                        slot: POSITION_SLOT,
+                        buffer: position_buf,
+                        array_stride: position_layout.array_stride,
+                        step_mode: position_layout.step_mode,
+                        attributes: position_layout.attributes,
+                    },
+                    VertexBufferDesc {
+                        slot: UV_COLOR_SLOT,
+                        buffer: uv_color_buf,
+                        array_stride: uv_color_layout.array_stride,
+                        step_mode: uv_color_layout.step_mode,
+                        attributes: uv_color_layout.attributes,
+                    },
+                ],
+                index_buffer,
+                count,
+                indexed,
+                aabb,
+                bind_group: Some(mesh_bind_group),
+            },
+            meta,
+        );
+
+        // The MeshInfo uniform names the entry the mesh just took.
+        self.queue.write_buffer(
+            self.graph
+                .get_buffer(mesh_info_id)
+                .expect("mesh_info buffer exists"),
+            0,
+            MeshInfo::new(mesh.metadata_index).as_bytes(),
+        );
 
         // The renderer binds the per-instance buffer at [INSTANCE_SLOT] for
         // every draw, so the mesh's layout declares that slot even though the
@@ -858,7 +912,7 @@ impl Renderer {
         self.ensure_instance_buffer(instance_count);
         self.packed_instances_cache.clear();
         self.packed_instances_cache
-            .extend(self.visible_cache.iter().map(|entry| entry.instance));
+            .extend(self.visible_cache.iter().map(|entry| entry.mesh.instance));
         self.queue.write_buffer(
             self.instance_buffer
                 .as_ref()
@@ -867,65 +921,21 @@ impl Renderer {
             self.packed_instances_cache.as_bytes(),
         );
 
-        // Collect wgpu handles from the graph before building the scene,
-        // so prep_attachments can take &mut self later.
-        let instance_buf = self
-            .instance_buffer
-            .as_ref()
-            .expect("instance buffer exists")
-            .clone();
-
-        // Every registered pipeline's render handle and global bind group,
-        // indexed the same way [`Renderer::pipelines`] is. A pipeline that
-        // binds no global group carries `None` and the scene records no bind
-        // for it.
-        struct PipelineRes {
-            handle: wgpu::RenderPipeline,
-            global_bg: Option<wgpu::BindGroup>,
-        }
-        let pipeline_res: Vec<PipelineRes> = self
-            .pipelines
-            .iter()
-            .map(|registered| PipelineRes {
-                handle: registered.pipeline.clone(),
-                global_bg: registered.global.as_ref().map(|global| {
-                    self.graph
-                        .get_bind_group(global.id)
-                        .expect("global group exists")
-                        .clone()
-                }),
-            })
-            .collect();
-
-        // Build the scene in two passes over the sorted entries. The first
-        // fills the scratch caches with the handles the draws need, the second
-        // borrows those handles to emit the draw commands; splitting them is
-        // what lets the borrow checker see that nothing mutates the caches
-        // while the scene still borrows them.
-        //
-        // The caches are taken out of self instead of freshly allocated, so a
-        // steady scene allocates nothing per frame.
+        // The per-entry bind groups and buffers are cloned out of the graph
+        // into the reused caches first. The scene then borrows those caches,
+        // so nothing mutates them while it is alive.
         let mut bind_group_cache = std::mem::take(&mut self.bind_group_cache);
         let mut buffer_cache = std::mem::take(&mut self.buffer_cache);
         bind_group_cache.clear();
         buffer_cache.clear();
 
-        // Per entry: the index into bind_group_cache of its mesh and material
-        // bind groups, and the range in buffer_cache holding its vertex
-        // buffers followed by its optional index buffer.
-        struct EntryHandles {
-            mesh_bg: Option<usize>,
-            material_bg: Option<usize>,
-            vertex_start: usize,
-            index_buffer: Option<(usize, wgpu::IndexFormat)>,
-        }
-        let mut handles: Vec<EntryHandles> = Vec::with_capacity(self.visible_cache.len());
-
+        let mut handles = std::mem::take(&mut self.entry_handle_cache);
+        handles.clear();
         {
             let graph_ref = &self.graph;
             for entry in &self.visible_cache {
                 let mesh = world
-                    .get::<GpuMesh>(entry.entity)
+                    .get::<GpuMesh>(entry.mesh.entity)
                     .expect("visible entity has GpuMesh");
 
                 let mesh_bg = mesh.bind_group_id.map(|id| {
@@ -938,7 +948,7 @@ impl Renderer {
                     bind_group_cache.len() - 1
                 });
 
-                let material_bg = match world.get::<GpuMaterial>(entry.entity) {
+                let material_bg = match world.get::<GpuMaterial>(entry.mesh.entity) {
                     Some(material) => {
                         bind_group_cache.push(
                             graph_ref
@@ -983,94 +993,41 @@ impl Renderer {
             }
         }
 
-        let mut scene = Scene::new();
+        // Every registered pipeline's handle and global bind group, indexed
+        // the same way [`Renderer::pipelines`] is. A pipeline that binds no
+        // global group carries `None`. The list is reused between frames, so
+        // a steady scene allocates nothing.
+        let mut pipeline_handles = std::mem::take(&mut self.pipeline_handle_cache);
+        pipeline_handles.clear();
+        pipeline_handles.extend(self.pipelines.iter().map(|registered| PipelineHandles {
+            pipeline: registered.pipeline.clone(),
+            global: registered.global.as_ref().map(|global| {
+                self.graph
+                    .get_bind_group(global.id)
+                    .expect("global group exists")
+                    .clone()
+            }),
+        }));
 
-        // The pipeline group being filled, and which pipeline opened it.
-        let mut open_pipeline: Option<PipelineId> = None;
-        let mut open_pg: Option<PipelineGroup> = None;
-        // The material group being filled, and which material opened it.
-        let mut open_material: Option<ResourceId> = None;
-        let mut material_open = false;
-        let mut open_mg: Option<MaterialGroup> = None;
+        let instance_buf = self
+            .instance_buffer
+            .as_ref()
+            .expect("instance buffer exists")
+            .clone();
 
-        for (draw_idx, entry) in self.visible_cache.iter().enumerate() {
-            let mesh = world
-                .get::<GpuMesh>(entry.entity)
-                .expect("visible entity has GpuMesh");
-            let material = world
-                .get::<GpuMaterial>(entry.entity)
-                .map(|material| material.bind_group_id);
-            let handle = &handles[draw_idx];
-
-            // -- pipeline change: close the open groups, open a new one -----
-            if Some(entry.pipeline_id) != open_pipeline {
-                if let Some(mg) = open_mg.take() {
-                    let pg = open_pg.take().expect("a pipeline group is open");
-                    open_pg = Some(pg.with_material(mg));
-                }
-                if let Some(pg) = open_pg.take() {
-                    scene.push(pg);
-                }
-                open_material = None;
-                material_open = false;
-                let res = &pipeline_res[entry.pipeline_id.as_usize()];
-                let mut pg = PipelineGroup::new(&res.handle);
-                if let Some(global_bg) = &res.global_bg {
-                    pg = pg.with_bind_group(GLOBAL_GROUP, global_bg);
-                }
-                open_pg = Some(pg);
-                open_pipeline = Some(entry.pipeline_id);
-            }
-
-            // -- material change: close the material group, open a new one --
-            if !material_open || material != open_material {
-                if let Some(mg) = open_mg.take() {
-                    let pg = open_pg.take().expect("a pipeline group is open");
-                    open_pg = Some(pg.with_material(mg));
-                }
-                let mut mg = MaterialGroup::new();
-                if let Some(index) = handle.material_bg {
-                    let bind_group = &bind_group_cache[index];
-                    mg = mg.with_bind_group(MATERIAL_GROUP, bind_group);
-                }
-                open_mg = Some(mg);
-                open_material = material;
-                material_open = true;
-            }
-
-            // -- the draw itself --------------------------------------------
-            let instance_range = (draw_idx as u32)..(draw_idx as u32 + 1);
-            let range = if mesh.indexed {
-                DrawRange::indexed(0..mesh.count).with_instances(instance_range)
-            } else {
-                DrawRange::vertices(0..mesh.count).with_instances(instance_range)
-            };
-            let mut draw = MeshDraw::new(range);
-            if let Some(index) = handle.mesh_bg {
-                draw = draw.with_bind_group(MESH_GROUP, &bind_group_cache[index]);
-            }
-            for (offset, &(slot, _)) in mesh.vertex_buffers.iter().enumerate() {
-                let buffer = &buffer_cache[handle.vertex_start + offset];
-                draw = draw.with_vertex_buffer(slot, buffer.slice(..));
-            }
-            if let Some((index, format)) = handle.index_buffer {
-                let buffer = &buffer_cache[index];
-                draw = draw.with_index_buffer(buffer.slice(..), format);
-            }
-            draw = draw.with_vertex_buffer(INSTANCE_SLOT, instance_buf.slice(..));
-
-            let mg = open_mg.take().expect("a material group is open");
-            open_mg = Some(mg.with_mesh(draw));
-        }
-
-        // Close the groups left open by the last entry.
-        if let Some(mg) = open_mg.take() {
-            let pg = open_pg.take().expect("a pipeline group is open");
-            open_pg = Some(pg.with_material(mg));
-        }
-        if let Some(pg) = open_pg.take() {
-            scene.push(pg);
-        }
+        // Reuse the draw list's allocation across frames: take it back, lend it
+        // this frame's lifetime, and return it once recorded.
+        let mut scene = std::mem::take(&mut self.scene_cache).reborrow();
+        assemble_scene(
+            &mut scene,
+            &self.visible_cache,
+            world,
+            &pipeline_handles,
+            &bind_group_cache,
+            &buffer_cache,
+            &handles,
+            &instance_buf,
+        );
 
         // Record and submit the pass.
         let mut encoder = self
@@ -1088,10 +1045,14 @@ impl Renderer {
             scene.record(&mut pass);
         }
 
-        // The scene is recorded, so nothing borrows the caches any more: put
-        // them back, allocations and all, ready for the next frame.
+        // The scene is recorded, so recycle its allocation first: doing so
+        // consumes the scene and ends the borrow of the caches, which can then
+        // go back into self.
+        self.scene_cache = scene.recycle();
         self.bind_group_cache = bind_group_cache;
         self.buffer_cache = buffer_cache;
+        self.pipeline_handle_cache = pipeline_handles;
+        self.entry_handle_cache = handles;
 
         self.queue.submit([encoder.finish()]);
     }
@@ -1209,25 +1170,42 @@ impl Renderer {
         }
     }
 
-    /// Resize and rewrite the metadata storage buffer.
-    fn rebuild_metadata_buffer(&mut self) {
+    /// Upload the mesh-metadata array to the GPU.
+    ///
+    /// `allocate_mesh` appends an entry for every mesh but leaves uploading
+    /// to the caller: call this once after allocating or changing the meshes
+    /// for a frame, before rendering it. The storage buffer is recreated only
+    /// when the array outgrows it, so a steady scene rewrites in place and
+    /// rebuilds no bind group.
+    pub fn update_metadata_buffer(&mut self) {
+        let needed = self.metadata.len().max(1) as u32;
+        if needed > self.metadata_capacity {
+            // Grow geometrically so repeated allocations amortize, and
+            // recreate rather than resize: a buffer has a fixed size.
+            let capacity = needed.max(self.metadata_capacity * 2);
+            let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("unlit3d::mesh_metadata"),
+                size: capacity as u64 * size_of::<MeshMetadata>() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.graph
+                .replace(self.metadata_buf, Resource::Buffer(buf))
+                .expect("metadata buffer exists");
+            self.metadata_capacity = capacity;
+            // A replaced buffer invalidates every global group bound to it.
+            self.rebuild_dirty_global_groups();
+        }
         if self.metadata.is_empty() {
             return;
         }
-        let size = (self.metadata.len() * size_of::<MeshMetadata>()) as u64;
-        let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::mesh_metadata"),
-            size: size.max(size_of::<MeshMetadata>() as u64),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue.write_buffer(&buf, 0, self.metadata.as_bytes());
-
-        self.graph
-            .replace(self.metadata_buf, Resource::Buffer(buf))
-            .expect("metadata buffer exists");
-
-        self.rebuild_dirty_global_groups();
+        self.queue.write_buffer(
+            self.graph
+                .get_buffer(self.metadata_buf)
+                .expect("metadata buffer exists"),
+            0,
+            self.metadata.as_bytes(),
+        );
     }
 
     /// Grow the per-instance buffer geometrically when needed.
@@ -1248,80 +1226,57 @@ impl Renderer {
 
     /// Collect entities that pass frustum culling, then sort them for drawing.
     ///
-    /// Results land in [`Renderer::visible_cache`], whose allocation is reused
-    /// between frames. Every registered family contributes the entities that
-    /// carry its key type, resolving each to a concrete pipeline on the way.
-    /// The ordering is the whole point of this pass: opaque entities first,
-    /// grouped by pipeline and then by material so a draw never re-binds state
-    /// a neighbour already set; transparent entities after them, sorted
-    /// back-to-front by camera distance so blending is order-independent.
+    /// The pass itself lives in [crate::scene]; this only unpacks the
+    /// renderer's caches and the closure that registers a newly resolved
+    /// pipeline, so a family never borrows the whole renderer.
     ///
     /// `surface` is the render target this frame draws into; it is threaded
     /// into every entity's pipeline resolution, so each entry's `pipeline_id`
-    /// is a concrete pipeline valid for that target. It is decided here,
-    /// before the sort that reads it, and the sort never changes it.
+    /// is a concrete pipeline valid for that target.
     fn collect_and_sort_visible(
         &mut self,
         world: &LocalWorld,
         camera: &Camera,
         surface: SurfaceKey,
     ) {
-        let frustum = FrustumPlanes::from_clip_from_world(camera.clip_from_world);
         let resources = self.render_resources();
         let device = self.device.clone();
 
         // Split the borrows: the families mutate the pipeline list and the
-        // resource graph through the register closure, while `visible` is
-        // theirs to append to and `pipelines`/`graph` are disjoint fields.
-        let (families, pipelines, graph, visible) = (
+        // resource graph through the register closure, while the caches are
+        // disjoint fields.
+        let (families, meshes, visible) = (
             &mut self.families,
-            &mut self.pipelines,
-            &mut self.graph,
+            &mut self.visible_meshes_cache,
             &mut self.visible_cache,
         );
+        let (pipelines, graph) = (&mut self.pipelines, &mut self.graph);
         let (camera_buf, globals_buf, metadata_buf) =
             (self.camera_buf, self.globals_buf, self.metadata_buf);
+        let mut register = |desc| {
+            register_concrete(
+                pipelines,
+                graph,
+                camera_buf,
+                globals_buf,
+                metadata_buf,
+                desc,
+            )
+        };
 
-        visible.clear();
-        let frame = FamilyFrame {
+        collect_and_sort_visible(
+            SceneFrame {
+                families,
+                meshes,
+                visible,
+                register: &mut register,
+            },
             world,
             camera,
             surface,
-            frustum,
-            device: &device,
-            resources: &resources,
-        };
-        for family in families.values_mut() {
-            let mut register = |desc| {
-                register_concrete(
-                    pipelines,
-                    graph,
-                    camera_buf,
-                    globals_buf,
-                    metadata_buf,
-                    desc,
-                )
-            };
-            family.collect_and_resolve(&frame, visible, &mut register);
-        }
-
-        // Sort: opaque before transparent, then by pipeline, then by the key
-        // that matters for that kind. Opaque draws are keyed by material so
-        // neighbours share a bind group; transparent ones by camera distance
-        // so they are composited back-to-front.
-        visible.sort_unstable_by(|a, b| {
-            a.transparent
-                .cmp(&b.transparent)
-                .then_with(|| a.pipeline_id.cmp(&b.pipeline_id))
-                .then_with(|| {
-                    if a.transparent {
-                        // Back-to-front: the farthest entity is drawn first.
-                        b.depth.partial_cmp(&a.depth).unwrap_or(Ordering::Equal)
-                    } else {
-                        a.sort_key.cmp(&b.sort_key)
-                    }
-                })
-        });
+            &device,
+            &resources,
+        );
     }
 
     /// Prepare attachments for returning a reference to the attachment set.
@@ -1399,36 +1354,10 @@ fn copy_camera(cam: &Camera) -> Camera {
 mod tests {
     use super::*;
     use crate::components::{Transform, Transparent, UnlitPipeline};
-    use glam::Vec3;
     use unlit_ecs::Entity;
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
-    }
-
-    #[test]
-    fn frustum_planes_from_identity_accepts_origin() {
-        let planes = FrustumPlanes::from_clip_from_world(glam::Mat4::IDENTITY);
-        assert!(planes.test_sphere(Vec3::ZERO, 0.1));
-    }
-
-    #[test]
-    fn frustum_culls_outside_sphere() {
-        let view =
-            glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
-        let clip_from_world = test_perspective() * view;
-        let planes = FrustumPlanes::from_clip_from_world(clip_from_world);
-        assert!(planes.test_sphere(Vec3::new(0.0, 0.0, 0.0), 0.5));
-        assert!(!planes.test_sphere(Vec3::new(0.0, 0.0, 20.0), 0.5));
-    }
-
-    #[test]
-    fn frustum_culls_sphere_outside_left_plane() {
-        let view =
-            glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
-        let clip_from_world = test_perspective() * view;
-        let planes = FrustumPlanes::from_clip_from_world(clip_from_world);
-        assert!(!planes.test_sphere(Vec3::new(-10.0, 0.0, 0.0), 0.1));
     }
 
     #[test]
@@ -1438,8 +1367,7 @@ mod tests {
             rotation: glam::Quat::IDENTITY,
             scale: glam::Vec3::ONE,
         };
-        let matrix = glam::Affine3A::from_mat4(t.compute_matrix());
-        let instance = MeshInstance::new(matrix, glam::Vec4::new(1.0, 1.0, 1.0, 1.0));
+        let instance = MeshInstance::new(t.compute_matrix(), glam::Vec4::new(1.0, 1.0, 1.0, 1.0));
         assert_eq!(instance.model[0].w, 1.0);
         assert_eq!(instance.model[1].w, 2.0);
         assert_eq!(instance.model[2].w, 3.0);
@@ -1635,7 +1563,7 @@ mod tests {
         renderer
             .visible_cache
             .iter()
-            .map(|entry| entry.entity)
+            .map(|entry| entry.mesh.entity)
             .collect()
     }
 

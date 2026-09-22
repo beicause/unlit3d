@@ -25,7 +25,7 @@ use wgpu_unlit_render::pipeline::{
 use wgpu_unlit_render::render_attachments::{
     AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
 };
-use wgpu_unlit_render::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene};
+use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
 use zerocopy::IntoBytes;
 
 const WIDTH: u32 = 256;
@@ -460,34 +460,29 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         },
     };
 
-    let mut mesh_draw = MeshDraw::new(range);
+    let mut draw = DrawEntry::new(&fixture.pipeline.pipeline, range)
+        .with_bind_group(GLOBAL_GROUP, &global_group);
+    if let Some(bind_group) = &fixture.material {
+        draw = draw.with_bind_group(MATERIAL_GROUP, bind_group);
+    }
     if let Some(mesh_group) = &mesh_group {
-        mesh_draw = mesh_draw.with_bind_group(MESH_GROUP, mesh_group);
+        draw = draw.with_bind_group(MESH_GROUP, mesh_group);
     }
     // Per-instance data places the geometry, so the slot is bound only when
     // the variant reads it. A variant without it draws one instance.
     if instanced {
-        mesh_draw = mesh_draw.with_vertex_buffer(INSTANCE_SLOT, instance_data.slice(..));
+        draw = draw.with_vertex_buffer(INSTANCE_SLOT, instance_data.slice(..));
     }
     if let Some(positions) = &fixture.mesh.positions {
-        mesh_draw = mesh_draw.with_vertex_buffer(POSITION_SLOT, positions.slice(..));
+        draw = draw.with_vertex_buffer(POSITION_SLOT, positions.slice(..));
     }
     if let Some(uv_color) = &fixture.mesh.uv_color {
-        mesh_draw = mesh_draw.with_vertex_buffer(UV_COLOR_SLOT, uv_color.slice(..));
+        draw = draw.with_vertex_buffer(UV_COLOR_SLOT, uv_color.slice(..));
     }
     if let Some((buffer, _)) = &fixture.mesh.indices {
-        mesh_draw = mesh_draw.with_index_buffer(buffer.slice(..), wgpu::IndexFormat::Uint16);
+        draw = draw.with_index_buffer(buffer.slice(..), wgpu::IndexFormat::Uint16);
     }
-
-    let mut material = MaterialGroup::new();
-    if let Some(bind_group) = &fixture.material {
-        material = material.with_bind_group(MATERIAL_GROUP, bind_group);
-    }
-    let scene = Scene::new().with_pipeline(
-        PipelineGroup::new(&fixture.pipeline.pipeline)
-            .with_bind_group(GLOBAL_GROUP, &global_group)
-            .with_material(material.with_mesh(mesh_draw)),
-    );
+    let scene = Scene::new().with_draw(draw);
 
     let mut encoder = ctx
         .device

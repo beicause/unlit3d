@@ -28,7 +28,8 @@ fn ecs_cube_covers_the_frame() {
         .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
         .unwrap();
 
-    // Dedicated camera entity, then the renderable entity.
+    // Dedicated camera entity, then the renderable entity. The mesh carries
+    // its own AABB now, so no bounding component is needed.
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
     world.spawn((
         Transform {
@@ -38,15 +39,12 @@ fn ecs_cube_covers_the_frame() {
         },
         mesh,
         UnlitPipeline::new(key),
-        BoundingSphere {
-            center: glam::Vec3::ZERO,
-            radius: 1.8,
-        },
     ));
 
     // Render offscreen.
     let (target, target_view) = offscreen_target(&ctx.device, "test::ecs_cube");
     let _ = world.with_mut::<Renderer, _>(*renderer, |r| {
+        r.update_metadata_buffer();
         r.render(&world, Some(&target_view));
     });
 
@@ -65,8 +63,8 @@ fn ecs_cube_covers_the_frame() {
     );
 }
 
-/// Two cubes at different z-positions, each carrying `Transform` and
-/// `InstanceData` (the latter overrides the model matrix).
+/// Two cubes at different z-positions, each with its own Transform and an
+/// InstanceColor tint.
 /// The nearer (green) cube must win the depth test at centre.
 #[test]
 fn ecs_depth_ordering_hides_the_far_instance() {
@@ -86,27 +84,16 @@ fn ecs_depth_ordering_hides_the_far_instance() {
         .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
         .unwrap();
 
-    // Far cube, red — Transform with InstanceData color override.
+    // Far cube, red.
     world.spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, -0.6),
             rotation: glam::Quat::from_rotation_y(0.6),
             scale: glam::Vec3::splat(0.7),
         },
-        InstanceData {
-            matrix: glam::Affine3A::from_scale_rotation_translation(
-                glam::Vec3::splat(0.7),
-                glam::Quat::from_rotation_y(0.6),
-                glam::Vec3::new(0.0, 0.2, -0.6),
-            ),
-            base_color: glam::Vec4::new(1.0, 0.0, 0.0, 1.0),
-        },
+        InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
         mesh_far,
         UnlitPipeline::new(key.clone()),
-        BoundingSphere {
-            center: glam::Vec3::ZERO,
-            radius: 1.8,
-        },
     ));
 
     // Near cube, green.
@@ -116,24 +103,14 @@ fn ecs_depth_ordering_hides_the_far_instance() {
             rotation: glam::Quat::from_rotation_y(0.6),
             scale: glam::Vec3::splat(0.7),
         },
-        InstanceData {
-            matrix: glam::Affine3A::from_scale_rotation_translation(
-                glam::Vec3::splat(0.7),
-                glam::Quat::from_rotation_y(0.6),
-                glam::Vec3::new(0.0, 0.2, 0.6),
-            ),
-            base_color: glam::Vec4::new(0.0, 1.0, 0.0, 1.0),
-        },
+        InstanceColor::new(glam::Vec4::new(0.0, 1.0, 0.0, 1.0)),
         mesh_near,
         UnlitPipeline::new(key.clone()),
-        BoundingSphere {
-            center: glam::Vec3::ZERO,
-            radius: 1.8,
-        },
     ));
 
     let (target, target_view) = offscreen_target(&ctx.device, "test::depth");
     let _ = world.with_mut::<Renderer, _>(*renderer, |r| {
+        r.update_metadata_buffer();
         r.render(&world, Some(&target_view));
     });
 
@@ -177,14 +154,11 @@ fn ecs_unlit_cube_matches_snapshot() {
         },
         mesh,
         UnlitPipeline::new(key),
-        BoundingSphere {
-            center: glam::Vec3::ZERO,
-            radius: 1.8,
-        },
     ));
 
     let (target, target_view) = offscreen_target(&ctx.device, "test::snapshot");
     let _ = world.with_mut::<Renderer, _>(*renderer, |r| {
+        r.update_metadata_buffer();
         r.render(&world, Some(&target_view));
     });
 

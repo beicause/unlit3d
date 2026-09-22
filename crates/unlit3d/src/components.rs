@@ -6,13 +6,14 @@
 use wgpu_unlit_render::resources::ResourceId;
 use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
 
+use crate::bounds::Aabb;
 use crate::renderer::UnlitPipelineKey;
 
 /// World-space transform (translation, rotation, scale).
 ///
 /// The renderer reads this component to position each entity in world space.
-/// When present alongside an [`InstanceData`] component, the renderer uses
-/// the [`InstanceData`] matrix instead — the two are independent.
+/// A renderable entity without one is placed at the origin with an identity
+/// transform, so it is still drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Transform {
     /// Translation in world space.
@@ -34,11 +35,11 @@ impl Default for Transform {
 }
 
 impl Transform {
-    /// The 4x4 affine matrix this transform represents, suitable for use as a
-    /// model matrix.
+    /// The affine matrix this transform represents, used as the model
+    /// matrix.
     #[must_use]
-    pub fn compute_matrix(&self) -> glam::Mat4 {
-        glam::Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
+    pub fn compute_matrix(&self) -> glam::Affine3A {
+        glam::Affine3A::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
     }
 }
 
@@ -85,6 +86,15 @@ pub struct GpuMesh {
 
     /// Whether to issue an indexed draw.
     pub indexed: bool,
+
+    /// The mesh's local-space bounding box, used for CPU frustum culling.
+    pub aabb: Aabb,
+
+    /// Index of the mesh's entry in the renderer's mesh-metadata array.
+    ///
+    /// Every mesh owns an entry, whether or not the pipeline that draws it
+    /// reads one.
+    pub metadata_index: u32,
 
     /// Resource id of the mesh bind group, bound at
     /// [`MESH_GROUP`](wgpu_unlit_render::pipeline::MESH_GROUP).
@@ -163,38 +173,29 @@ impl GpuMaterial {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Transparent;
 
-/// Bounding sphere used for frustum culling.
+/// Per-instance color, multiplying the base color.
 ///
-/// The user provides this per-entity. Entities without this component are
-/// always drawn (no culling).
-#[derive(Clone, Debug, PartialEq)]
-pub struct BoundingSphere {
-    /// Center of the bounding sphere, in local (pre-transform) space.
-    pub center: glam::Vec3,
-
-    /// Radius of the bounding sphere.
-    pub radius: f32,
+/// The renderer packs it into the per-instance vertex stream next to the model
+/// matrix, so two entities sharing a mesh can still be tinted differently.
+/// Entities without this component are drawn white.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InstanceColor {
+    /// Base color (RGBA, unpremultiplied).
+    pub color: glam::Vec4,
 }
 
-/// Per-instance transform override and base colour.
-///
-/// When this component is present, the renderer uses its matrix and colour
-/// instead of deriving them from [`Transform`]. The matrix is the full affine
-/// model matrix (scale, rotation, translation).
-#[derive(Clone, Debug, PartialEq)]
-pub struct InstanceData {
-    /// Affine model matrix.
-    pub matrix: glam::Affine3A,
-    /// Base colour (RGBA, unpremultiplied).
-    pub base_color: glam::Vec4,
-}
-
-impl Default for InstanceData {
+impl Default for InstanceColor {
     fn default() -> Self {
         Self {
-            matrix: glam::Affine3A::IDENTITY,
-            base_color: glam::Vec4::new(1.0, 1.0, 1.0, 1.0),
+            color: glam::Vec4::ONE,
         }
+    }
+}
+
+impl InstanceColor {
+    /// A color component carrying `color`.
+    pub const fn new(color: glam::Vec4) -> Self {
+        Self { color }
     }
 }
 
@@ -205,7 +206,7 @@ mod tests {
     #[test]
     fn default_transform_is_identity() {
         let t = Transform::default();
-        assert_eq!(t.compute_matrix(), glam::Mat4::IDENTITY);
+        assert_eq!(t.compute_matrix(), glam::Affine3A::IDENTITY);
     }
 
     #[test]
@@ -215,7 +216,7 @@ mod tests {
             rotation: glam::Quat::from_rotation_y(1.5),
             scale: glam::Vec3::splat(2.0),
         };
-        let expected = glam::Mat4::from_scale_rotation_translation(
+        let expected = glam::Affine3A::from_scale_rotation_translation(
             glam::Vec3::splat(2.0),
             glam::Quat::from_rotation_y(1.5),
             glam::Vec3::new(1.0, 2.0, 3.0),
@@ -224,10 +225,8 @@ mod tests {
     }
 
     #[test]
-    fn default_instance_data_is_identity_and_white() {
-        let d = InstanceData::default();
-        assert_eq!(d.matrix, glam::Affine3A::IDENTITY);
-        assert_eq!(d.base_color, glam::Vec4::new(1.0, 1.0, 1.0, 1.0));
+    fn default_instance_color_is_white() {
+        assert_eq!(InstanceColor::default().color, glam::Vec4::ONE);
     }
 
     #[test]

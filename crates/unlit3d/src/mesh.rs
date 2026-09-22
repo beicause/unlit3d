@@ -1,10 +1,12 @@
 //! The renderer's mesh description.
 //!
 //! A [`MeshDesc`] says what a mesh is in wgpu's own terms: vertex buffers
-//! tagged with the slot a pipeline's vertex state expects them in, plus an
-//! optional index buffer. The renderer assumes no particular vertex layout,
-//! so a mesh can carry any combination of attributes and one pipeline,
-//! several, or none may specialize on it.
+//! tagged with the slot a pipeline's vertex state expects them in, an optional
+//! index buffer, and the mesh's local-space [`Aabb`]. The renderer assumes no
+//! particular vertex layout, so a mesh can carry any combination of attributes
+//! and one pipeline, several, or none may specialize on it.
+
+use crate::bounds::Aabb;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -37,6 +39,11 @@ pub struct MeshDesc {
     pub count: u32,
     /// Whether draws of this mesh are indexed.
     pub indexed: bool,
+    /// The mesh's local-space bounding box, recorded in the mesh-metadata
+    /// array and used for CPU frustum culling.
+    ///
+    /// Defaults to [`Aabb::ZERO`]: a zero-extent box at the origin.
+    pub aabb: Aabb,
     /// A bind group bound at
     /// [`MESH_GROUP`](wgpu_unlit_render::pipeline::MESH_GROUP), for a
     /// pipeline that reads per-mesh data such as the metadata index.

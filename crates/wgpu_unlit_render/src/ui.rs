@@ -75,7 +75,7 @@ use crate::pipeline::{
     POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
 use crate::resources::{Resource, ResourceGraph, ResourceId};
-use crate::scene::{DrawRange, MaterialGroup, MeshDraw, PipelineGroup, Scene, ScissorRect};
+use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
 use core::ops::Range;
 use hashbrown::HashMap;
 
@@ -351,12 +351,11 @@ impl EguiIntegration {
         // The position stream is the first half of the buffer, the interleaved
         // UVs and colors the second; each holds `vertex_capacity` vertices.
         let positions_size = (self.vertex_capacity * POSITION_STRIDE) as u64;
-        let mut group = PipelineGroup::new(&self.pipeline.pipeline)
-            .with_bind_group(GLOBAL_GROUP, self.bind_group(graph, self.global_group));
+        let pipeline = &self.pipeline.pipeline;
+        let global = self.bind_group(graph, self.global_group);
         for draw in &self.draws {
-            // Its own material group per draw: each carries its own scissor
-            // rectangle, so consecutive draws sharing one are what the
-            // recorder's deduplication is for.
+            // Each draw carries its own scissor rectangle, so consecutive
+            // draws sharing one are what the recorder's deduplication is for.
             let Some(material) = self.material(graph, draw.texture, draw.options) else {
                 // A primitive whose texture was freed this frame has nothing
                 // to sample, so it is skipped rather than bound to a stale view.
@@ -366,17 +365,18 @@ impl EguiIntegration {
             // sits at the same ordinal in each, so one base vertex addresses
             // the position, the UV and the color together. Offsetting the
             // slices instead would double the base vertex.
-            let mesh = MeshDraw::new(
+            let entry = DrawEntry::new(
+                pipeline,
                 DrawRange::indexed(draw.indices.clone()).with_base_vertex(draw.first_vertex as i32),
             )
+            .with_bind_group(GLOBAL_GROUP, global)
             .with_bind_group(MATERIAL_GROUP, material)
             .with_vertex_buffer(POSITION_SLOT, vertices.slice(..positions_size))
             .with_vertex_buffer(UV_COLOR_SLOT, vertices.slice(positions_size..))
             .with_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32)
             .with_scissor(draw.scissor);
-            group = group.with_material(MaterialGroup::new().with_mesh(mesh));
+            scene.push(entry);
         }
-        scene.push(group);
         scene
     }
 
