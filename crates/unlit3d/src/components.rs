@@ -115,9 +115,8 @@ impl Default for RenderLoadOps {
 ///
 /// Created by [`Renderer::allocate_mesh`](crate::Renderer::allocate_mesh) or
 /// [`Renderer::allocate_unlit_mesh`](crate::Renderer::allocate_unlit_mesh).
-/// The mesh is ready to draw immediately; the handle stays valid for the
-/// lifetime of the renderer (or until the mesh is explicitly removed from
-/// the graph).
+/// The mesh is ready to draw immediately and the handle stays valid until
+/// [`Renderer::remove_mesh`](crate::Renderer::remove_mesh) is called with it.
 #[derive(Clone, Debug)]
 pub struct GpuMesh {
     /// Vertex buffers, each tagged with its slot index, in slot order.
@@ -156,6 +155,15 @@ pub struct GpuMesh {
     ///
     /// `None` when the mesh was uploaded without one.
     pub bind_group_id: Option<ResourceId>,
+
+    /// Graph nodes freed with the mesh that nothing depends on.
+    ///
+    /// [`Renderer::remove_mesh`](crate::Renderer::remove_mesh) frees a mesh by
+    /// walking from its vertex buffers to everything built from them. A node
+    /// that points *into* the mesh rather than out of it — the uniform naming
+    /// the mesh's metadata entry, which feeds the mesh bind group — is reached
+    /// by no such walk, so it is listed here and removed alongside the rest.
+    pub roots: Vec<ResourceId>,
 }
 
 /// The per-entity request for one family's variant.
@@ -200,7 +208,9 @@ pub type UnlitPipeline = GpuPipeline<UnlitPipelineKey>;
 /// [`Renderer::allocate_material`](crate::Renderer::allocate_material) for a
 /// caller's own layout, or by
 /// [`Renderer::allocate_unlit_material`](crate::Renderer::allocate_unlit_material)
-/// for the built-in shader's base-color texture and sampler.
+/// for the built-in shader's base-color texture and sampler. The handle stays
+/// valid until [`Renderer::remove_material`](crate::Renderer::remove_material)
+/// is called with it.
 #[derive(Clone, Debug)]
 pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).

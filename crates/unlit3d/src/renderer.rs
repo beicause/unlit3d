@@ -69,8 +69,11 @@ pub struct Renderer {
     metadata_buf: ResourceId,
     /// Per-frame globals (advanced every call to [Renderer::render]).
     globals: Globals,
-    /// Metadata entries, one per uploaded mesh.
+    /// Metadata entries, one per live uploaded mesh.
     metadata: Vec<MeshMetadata>,
+    /// Metadata slots whose mesh was removed and whose index is free to hand
+    /// out again.
+    free_metadata: Vec<u32>,
     /// How many metadata entries the current storage buffer can hold.
     metadata_capacity: u32,
 
@@ -405,6 +408,7 @@ impl Renderer {
             metadata_buf,
             globals,
             metadata: Vec::new(),
+            free_metadata: Vec::new(),
             metadata_capacity: 1,
             instance_buffer: None,
             instance_capacity: 0,
@@ -509,9 +513,20 @@ impl Renderer {
         });
 
         // The entry is owned whether or not the pipeline reads it: a draw that
-        // binds no metadata group simply leaves the index unused.
-        let metadata_index = self.metadata.len() as u32;
-        self.metadata.push(metadata);
+        // binds no metadata group simply leaves the index unused. A slot a
+        // removed mesh held is reused, so the array stays as dense as the
+        // meshes that are still alive.
+        let metadata_index = match self.free_metadata.pop() {
+            Some(index) => {
+                self.metadata[index as usize] = metadata;
+                index
+            }
+            None => {
+                let index = self.metadata.len() as u32;
+                self.metadata.push(metadata);
+                index
+            }
+        };
 
         GpuMesh {
             vertex_buffers: vertex_slots,
@@ -522,6 +537,7 @@ impl Renderer {
             aabb,
             metadata_index,
             bind_group_id,
+            roots: Vec::new(),
         }
     }
 
@@ -726,6 +742,11 @@ impl Renderer {
             MeshInfo::new(mesh.metadata_index).as_bytes(),
         );
 
+        // Nothing depends on the uniform — it feeds the bind group rather than
+        // being built from it — so no removal walk reaches it from the mesh's
+        // buffers. List it as a root so it is freed with the mesh.
+        mesh.roots.push(mesh_info_id);
+
         // The renderer binds the per-instance buffer at [INSTANCE_SLOT] for
         // every draw, so the mesh's layout declares that slot even though the
         // buffer itself is not uploaded here. Without it the draw's key would
@@ -851,6 +872,52 @@ impl Renderer {
             .expect("a material bind group depends on graph resources");
 
         GpuMaterial { bind_group_id }
+    }
+
+    /// Free `mesh` and every resource built from it, and drop its
+    /// mesh-metadata entry.
+    ///
+    /// The mesh's vertex and index buffers leave the resource graph together
+    /// with the bind group built from them and the nodes it lists as
+    /// [`roots`](GpuMesh::roots). The [`GpuMesh`] handle must not be used
+    /// afterwards: drawing with it names buffers that are gone.
+    ///
+    /// Its metadata slot is freed and reused by a mesh allocated later, so
+    /// removing meshes does not grow the array a long-lived renderer uploads.
+    /// Call [`Renderer::update_metadata_buffer`] before the next frame so the
+    /// array the shader reads matches. Removing a mesh does not shrink the
+    /// metadata buffer: it grows to the largest array it has ever held and
+    /// stays there.
+    ///
+    /// Removing a mesh while the world still holds its handle is a programming
+    /// error the caller has to avoid: nothing detects the stale handle.
+    pub fn remove_mesh(&mut self, mesh: GpuMesh) {
+        for id in &mesh.roots {
+            self.graph.remove(*id);
+        }
+        for (_slot, id) in &mesh.vertex_buffers {
+            self.graph.remove(*id);
+        }
+        if let Some((id, _format)) = mesh.index_buffer {
+            self.graph.remove(id);
+        }
+
+        let emptied = self.metadata.get_mut(mesh.metadata_index as usize);
+        if let Some(entry) = emptied {
+            *entry = MeshMetadata::default();
+            self.free_metadata.push(mesh.metadata_index);
+        }
+    }
+
+    /// Free the bind group `material` names, together with everything built
+    /// from it.
+    ///
+    /// The material's own resources — the texture view and sampler it was
+    /// built from — are the caller's and stay in the graph: remove them
+    /// separately if nothing else reads them. The [`GpuMaterial`] handle must
+    /// not be used afterwards.
+    pub fn remove_material(&mut self, material: GpuMaterial) {
+        self.graph.remove(material.bind_group_id);
     }
 
     /// Render one frame from the ECS `world`.
@@ -1599,6 +1666,76 @@ mod tests {
                 .allocate_unlit_material(&key, view, sampler)
                 .is_none()
         );
+    }
+
+    // -- removal -----------------------------------------------------------
+
+    #[test]
+    fn removing_a_mesh_frees_every_resource_built_from_it() {
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
+
+        // The buffers, the bind group built from them and the mesh-info
+        // uniform that feeds it: every one of them leaves the graph.
+        let before = renderer.graph.len();
+        let buffers: Vec<_> = mesh.vertex_buffers.iter().map(|(_, id)| *id).collect();
+        let index = mesh.index_buffer.expect("the mesh is indexed").0;
+        let bind_group = mesh.bind_group_id.expect("the mesh has a group");
+
+        renderer.remove_mesh(mesh);
+
+        for id in buffers {
+            assert!(renderer.graph.get(id).is_none(), "vertex buffer removed");
+        }
+        assert!(renderer.graph.get(index).is_none(), "index buffer removed");
+        assert!(
+            renderer.graph.get(bind_group).is_none(),
+            "the bind group built from them removed"
+        );
+        assert!(
+            renderer.graph.len() < before,
+            "the graph shrank: {} -> {}",
+            before,
+            renderer.graph.len()
+        );
+    }
+
+    #[test]
+    fn a_removed_mesh_frees_its_metadata_slot() {
+        let (mut renderer, key) = noop_renderer();
+        let first = tri_mesh(&mut renderer, &key);
+        let second = tri_mesh(&mut renderer, &key);
+        let first_index = first.metadata_index;
+        assert_ne!(first_index, second.metadata_index);
+
+        renderer.remove_mesh(first);
+        let reused = tri_mesh(&mut renderer, &key);
+
+        assert_eq!(
+            reused.metadata_index, first_index,
+            "the slot the removed mesh held is handed out again"
+        );
+        assert_ne!(reused.metadata_index, second.metadata_index);
+    }
+
+    #[test]
+    fn removing_a_material_keeps_the_resources_it_reads() {
+        let (mut renderer, key) = noop_renderer();
+        let (view, sampler) = test_material_resources(&mut renderer);
+        let material = renderer
+            .allocate_unlit_material(&key, view, sampler)
+            .expect("the standard variant reads a base-color texture");
+
+        renderer.remove_material(material.clone());
+
+        assert!(
+            renderer.graph.get(material.bind_group_id).is_none(),
+            "the bind group is gone"
+        );
+        // The view and sampler are the caller's, so removing the material
+        // that reads them leaves them alone.
+        assert!(renderer.graph.get(view).is_some(), "the view stays");
+        assert!(renderer.graph.get(sampler).is_some(), "the sampler stays");
     }
 
     // -- draw ordering ------------------------------------------------------
