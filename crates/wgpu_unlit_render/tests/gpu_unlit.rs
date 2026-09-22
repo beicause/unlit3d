@@ -23,7 +23,7 @@ use wgpu_unlit_render::pipeline::{
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
 use wgpu_unlit_render::render_attachments::{
-    AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
+    AttachmentsInfo, RenderAttachments, default_depth_stencil_format, depth_clear, stencil_clear,
 };
 use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
 use zerocopy::IntoBytes;
@@ -493,8 +493,8 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         let mut pass = context.begin_pass(
             &mut encoder,
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
-            wgpu::LoadOp::Clear(context.depth_clear()),
-            wgpu::LoadOp::Clear(0),
+            depth_clear(),
+            stencil_clear(),
         );
         scene.record(&mut pass);
     }
@@ -809,8 +809,8 @@ fn a_loaded_color_attachment_keeps_its_contents() {
         let mut pass = context.begin_pass(
             &mut encoder,
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
-            wgpu::LoadOp::Clear(context.depth_clear()),
-            wgpu::LoadOp::Clear(0),
+            depth_clear(),
+            stencil_clear(),
         );
         Scene::new().record(&mut pass);
     }
@@ -821,8 +821,8 @@ fn a_loaded_color_attachment_keeps_its_contents() {
         let mut pass = context.begin_pass(
             &mut encoder,
             wgpu::LoadOp::Load,
-            wgpu::LoadOp::Clear(context.depth_clear()),
-            wgpu::LoadOp::Clear(0),
+            depth_clear(),
+            stencil_clear(),
         );
         Scene::new().record(&mut pass);
     }

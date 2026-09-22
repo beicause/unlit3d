@@ -14,7 +14,7 @@ use common::*;
 use wgpu_unlit_render::globals::Globals;
 use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
 use wgpu_unlit_render::render_attachments::{
-    AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
+    AttachmentsInfo, RenderAttachments, default_depth_stencil_format, depth_clear, stencil_clear,
 };
 use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
@@ -151,8 +151,8 @@ fn render_ui_with(
         let mut pass = context.begin_pass(
             &mut encoder,
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
-            wgpu::LoadOp::Clear(context.depth_clear()),
-            wgpu::LoadOp::Clear(0),
+            depth_clear(),
+            stencil_clear(),
         );
         scene.record(&mut pass);
     }

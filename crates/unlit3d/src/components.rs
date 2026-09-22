@@ -3,6 +3,7 @@
 //! These components live in an [`unlit_ecs`] world and are read by the
 //! [`Renderer`](crate::Renderer) each frame to build the draw commands.
 
+use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
 use wgpu_unlit_render::resources::ResourceId;
 use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
 
@@ -54,6 +55,60 @@ pub struct Camera {
     pub clip_from_world: glam::Mat4,
     /// World-space eye position.
     pub position: glam::Vec3,
+}
+
+/// The load ops a frame's pass is opened with.
+///
+/// The renderer opens one pass per frame over its attachments; this component
+/// decides what that pass loads and clears. It may sit on any entity — the
+/// renderer draws with the first one it finds — and a frame whose world has
+/// none is opened with [`RenderLoadOps::default`].
+///
+/// A load op only applies to an attachment the pass actually has. A frame
+/// that draws into the caller's own target gets both a color and a depth
+/// attachment; the renderer's internal attachment set may be depth-only.
+/// Clearing an attachment the pass does not have is therefore not an error —
+/// the op is simply unused — so one component fits either target.
+///
+/// ```
+/// use unlit3d::components::RenderLoadOps;
+/// use unlit3d::depth_clear;
+///
+/// let ops = RenderLoadOps {
+///     color: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+///     ..Default::default()
+/// };
+/// assert_eq!(ops.depth, depth_clear());
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderLoadOps {
+    /// The color attachment's load op.
+    ///
+    /// Defaults to [color_clear]; [wgpu::LoadOp::Load] draws on top of
+    /// what the target already holds.
+    pub color: wgpu::LoadOp<wgpu::Color>,
+    /// The depth attachment's load op.
+    ///
+    /// Defaults to [depth_clear], a clear to the renderer's reverse-z
+    /// far plane rather than an arbitrary zero: a depth attachment means the
+    /// same thing however the frame is configured.
+    pub depth: wgpu::LoadOp<f32>,
+    /// The stencil attachment's load op.
+    ///
+    /// The built-in pipelines write no stencil, so the pass discards it
+    /// either way; this only says what a pass that reads stencil beforehand
+    /// starts from.
+    pub stencil: wgpu::LoadOp<u32>,
+}
+
+impl Default for RenderLoadOps {
+    fn default() -> Self {
+        Self {
+            color: color_clear(),
+            depth: depth_clear(),
+            stencil: stencil_clear(),
+        }
+    }
 }
 
 /// A handle to a mesh stored in the renderer's GPU resource graph.

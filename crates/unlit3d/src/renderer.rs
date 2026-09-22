@@ -29,7 +29,7 @@ use wgpu_unlit_render::specialize::{
 use zerocopy::IntoBytes;
 
 use crate::bounds::Aabb;
-use crate::components::{Camera, GpuMaterial, GpuMesh};
+use crate::components::{Camera, GpuMaterial, GpuMesh, RenderLoadOps};
 use crate::culling::VisibleMesh;
 use crate::mesh::{MeshDesc, VertexBufferDesc};
 use crate::pipeline::{
@@ -857,14 +857,21 @@ impl Renderer {
     ///
     /// When `target` is `Some`, the frame is rendered into that texture
     /// view; otherwise the renderer's internal colour target is used.
+    ///
+    /// The frame is drawn with the first [Camera] in `world` and opened with
+    /// the first [RenderLoadOps] there, or the defaults when none carries
+    /// one. A world with no camera draws nothing, but still opens and closes
+    /// its pass, so the frame's clears are applied.
     pub fn render(&mut self, world: &LocalWorld, target: Option<&wgpu::TextureView>) {
-        // Find the camera.
-        let camera = world
-            .query::<&Camera>()
-            .next()
-            .map(|(_, c)| copy_camera(&c));
+        // Find the frame's load ops and its camera, copying the camera out of
+        // its cell so the borrow does not block the world accesses below.
+        let load_ops = frame_load_ops(world);
+        let camera = world.query::<&Camera>().next().map(|(_, c)| Camera {
+            clip_from_world: c.clip_from_world,
+            position: c.position,
+        });
         let Some(camera) = camera else {
-            self.clear_frame(target);
+            self.clear_frame(target, load_ops);
             return;
         };
 
@@ -903,7 +910,7 @@ impl Renderer {
         // its allocation between frames, so a steady scene allocates nothing.
         self.collect_and_sort_visible(world, &camera, surface);
         if self.visible_cache.is_empty() {
-            self.clear_frame(target);
+            self.clear_frame(target, load_ops);
             return;
         }
         let instance_count = self.visible_cache.len() as u32;
@@ -1040,9 +1047,9 @@ impl Renderer {
         {
             let mut pass = attachments.begin_pass(
                 &mut encoder,
-                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                wgpu::LoadOp::Clear(attachments.depth_clear()),
-                wgpu::LoadOp::Clear(0),
+                load_ops.color,
+                load_ops.depth,
+                load_ops.stencil,
             );
             scene.record(&mut pass);
         }
@@ -1326,8 +1333,10 @@ impl Renderer {
         self.external_attachments.as_ref().expect("just set")
     }
 
-    /// Clear the frame without drawing anything.
-    fn clear_frame(&mut self, target: Option<&wgpu::TextureView>) {
+    /// Open and close a pass over the attachments without drawing anything,
+    /// with `load_ops`, so a frame with nothing to draw still applies the
+    /// caller's clears.
+    fn clear_frame(&mut self, target: Option<&wgpu::TextureView>, load_ops: RenderLoadOps) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1337,21 +1346,25 @@ impl Renderer {
         {
             let mut _pass = attachments.begin_pass(
                 &mut encoder,
-                wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                wgpu::LoadOp::Clear(attachments.depth_clear()),
-                wgpu::LoadOp::Clear(0),
+                load_ops.color,
+                load_ops.depth,
+                load_ops.stencil,
             );
         }
         self.queue.submit([encoder.finish()]);
     }
 }
 
-/// Copy a camera out of its ECS cell so the borrow does not block world access.
-fn copy_camera(cam: &Camera) -> Camera {
-    Camera {
-        clip_from_world: cam.clip_from_world,
-        position: cam.position,
-    }
+/// The load ops a frame is opened with: the first [RenderLoadOps] in `world`,
+/// or the defaults when no entity carries one.
+///
+/// Load ops are their own component, so they need no particular entity: any
+/// one may carry them, and the renderer reads only the first.
+fn frame_load_ops(world: &LocalWorld) -> RenderLoadOps {
+    world
+        .query::<&RenderLoadOps>()
+        .next()
+        .map_or_else(RenderLoadOps::default, |(_, ops)| *ops)
 }
 
 #[cfg(test)]
@@ -1431,6 +1444,44 @@ mod tests {
         // built only when a draw resolves a variant.
         assert!(renderer.pipelines.is_empty());
         assert_eq!(renderer.families.len(), 1);
+    }
+
+    // -- frame load ops ------------------------------------------------------
+
+    #[test]
+    fn a_world_without_load_ops_clears_with_the_defaults() {
+        let world = LocalWorld::new();
+
+        assert_eq!(frame_load_ops(&world), RenderLoadOps::default());
+    }
+
+    #[test]
+    fn load_ops_are_read_from_any_entity() {
+        let mut world = LocalWorld::new();
+        // The entity carries load ops and nothing else: the component needs
+        // no camera, no transform and no mesh to take effect.
+        world.spawn((RenderLoadOps {
+            color: wgpu::LoadOp::Load,
+            ..Default::default()
+        },));
+
+        assert_eq!(frame_load_ops(&world).color, wgpu::LoadOp::Load);
+    }
+
+    #[test]
+    fn the_first_load_ops_entity_wins() {
+        let mut world = LocalWorld::new();
+        let first = world.spawn((RenderLoadOps {
+            depth: wgpu::LoadOp::Load,
+            ..Default::default()
+        },));
+        world.spawn((RenderLoadOps {
+            depth: wgpu::LoadOp::Clear(1.0),
+            ..Default::default()
+        },));
+
+        assert_eq!(frame_load_ops(&world).depth, wgpu::LoadOp::Load);
+        assert!(world.get::<RenderLoadOps>(first).is_some());
     }
 
     #[test]

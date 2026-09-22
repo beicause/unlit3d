@@ -105,17 +105,18 @@ pub use pipeline::{
     TrivialSpecializer,
 };
 pub use renderer::{Renderer, UnlitPipelineKey};
+pub use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
 
 /// Convenience re-exports for typical usage.
 pub mod prelude {
     pub use crate::{
         Aabb, FamilyKey, FrustumPlanes, GlobalBinding, GlobalGroupRebuild, MeshDesc, Obb,
         PipelineDesc, PipelineKey, RenderPipelineFactory, RenderResources, Renderer,
-        TrivialSpecializer, UnlitPipelineKey, VertexBufferDesc,
+        TrivialSpecializer, UnlitPipelineKey, VertexBufferDesc, color_clear,
         components::{
-            Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, Transform, Transparent,
-            UnlitPipeline,
+            Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, RenderLoadOps, Transform,
+            Transparent, UnlitPipeline,
         },
-        is_culled,
+        depth_clear, is_culled, stencil_clear,
     };
 }

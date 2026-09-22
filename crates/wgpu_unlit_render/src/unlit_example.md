@@ -15,7 +15,9 @@ use wgpu_unlit_render::pipeline::{
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
     UnlitPipeline,
 };
-use wgpu_unlit_render::render_attachments::{RenderAttachments, AttachmentsInfo};
+use wgpu_unlit_render::render_attachments::{
+    AttachmentsInfo, RenderAttachments, color_clear, depth_clear, stencil_clear,
+};
 use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
 use wgpu_unlit_render::util::busy_wait_block_on;
 use zerocopy::IntoBytes;
@@ -222,9 +224,9 @@ fn draw(&self, width: u32, height: u32) {
     {
         let mut pass = attachments.begin_pass(
             &mut encoder,
-            wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-            wgpu::LoadOp::Clear(attachments.depth_clear()),
-            wgpu::LoadOp::Clear(0),
+            color_clear(),
+            depth_clear(),
+            stencil_clear(),
         );
         scene.record(&mut pass);
     }

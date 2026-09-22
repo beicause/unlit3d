@@ -194,9 +194,8 @@ pub struct UnlitOptions {
     /// Its format is the device's default depth-stencil format
     /// ([`crate::render_attachments::default_depth_stencil_format`]) when built with
     /// [`Self::standard`]. [`Self::standard`] is the renderer's reverse-z
-    /// convention: depth is cleared to the far plane (see
-    /// [`crate::render_attachments::RenderAttachments::depth_clear`]), so
-    /// nearer geometry carries the greater value.
+    /// convention: depth is cleared to the far plane, so nearer geometry
+    /// carries the greater value.
     pub depth_stencil: wgpu::DepthStencilState,
     /// The color target the pipeline writes: its format, blend state and
     /// write mask.

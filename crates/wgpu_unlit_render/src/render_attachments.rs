@@ -17,7 +17,9 @@
 //! handles they hand out.
 //!
 //! ```
-//! # use wgpu_unlit_render::render_attachments::{RenderAttachments, AttachmentsInfo};
+//! # use wgpu_unlit_render::render_attachments::{
+//! #     AttachmentsInfo, RenderAttachments, color_clear, depth_clear, stencil_clear,
+//! # };
 //! # use wgpu_unlit_render::scene::Scene;
 //! # fn frame(device: &wgpu::Device, scene: &Scene<'_>) {
 //! let attachments = RenderAttachments::new(device, AttachmentsInfo::new(device, 1280, 720));
@@ -25,9 +27,9 @@
 //! let mut encoder = device.create_command_encoder(&Default::default());
 //! let mut pass = attachments.begin_pass(
 //!     &mut encoder,
-//!     wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-//!     wgpu::LoadOp::Clear(attachments.depth_clear()),
-//!     wgpu::LoadOp::Clear(0),
+//!     color_clear(),
+//!     depth_clear(), // the reverse-z far plane
+//!     stencil_clear(),
 //! );
 //! scene.record(&mut pass);
 //! # }
@@ -77,6 +79,36 @@ impl AttachmentsInfo {
             transient_depth: true,
         }
     }
+}
+
+/// The color load op a frame starts from by default: a clear to black.
+#[must_use]
+pub const fn color_clear() -> wgpu::LoadOp<wgpu::Color> {
+    wgpu::LoadOp::Clear(wgpu::Color::BLACK)
+}
+
+/// The depth load op of the renderer's reverse-z convention: a clear to the
+/// far plane.
+///
+/// Pipelines built by [`UnlitOptions::standard`] compare with
+/// `CompareFunction::Greater`, so depth starts at the far plane and nearer
+/// geometry carries the greater value. Clearing a depth attachment with any
+/// other value would put the convention out of joint.
+///
+/// [`UnlitOptions::standard`]: crate::pipeline::UnlitOptions::standard
+#[must_use]
+pub const fn depth_clear() -> wgpu::LoadOp<f32> {
+    wgpu::LoadOp::Clear(0.0)
+}
+
+/// The stencil load op of a frame whose pipelines write no stencil: a clear
+/// to zero.
+///
+/// The built-in pipelines never write stencil, so the pass discards it either
+/// way; this only says what a pass that reads stencil beforehand starts from.
+#[must_use]
+pub const fn stencil_clear() -> wgpu::LoadOp<u32> {
+    wgpu::LoadOp::Clear(0)
 }
 
 /// The depth-stencil format a render target should use on `device`:
@@ -335,12 +367,6 @@ impl RenderAttachments {
             .as_ref()
             .or(self.color_view.as_ref())
             .or(self.depth_stencil_view.as_ref())
-    }
-
-    /// The depth value this renderer's reverse-z convention clears to: the
-    /// far plane.
-    pub fn depth_clear(&self) -> f32 {
-        0.0
     }
 
     /// Begin a render pass over the attachments.
