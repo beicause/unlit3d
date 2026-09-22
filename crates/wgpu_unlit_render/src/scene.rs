@@ -29,6 +29,7 @@
 //! next.
 
 use arrayvec::ArrayVec;
+use core::mem::{align_of, size_of};
 use core::ops::Range;
 
 /// One bind-group slot: the group index and the group to bind there.
@@ -344,7 +345,20 @@ impl Scene<'static> {
 /// The vector must be empty: no element is moved, so no value of the old
 /// lifetime is ever observed as the new one. It is how a [`Scene`] survives
 /// between frames while each frame's draws borrow resources that do not.
+///
+/// The two element types must agree in size and alignment. Reallocating the
+/// elements through [`Iterator::collect`] keeps the source allocation only
+/// while the iterator's lower size bound asks for at least as much capacity
+/// as the source had, which holds exactly when `B` is no larger than `A`. The
+/// const assert pins the "'static" -> "shorter" and back round trip this is
+/// used for to the one case where the reuse is guaranteed.
 fn launder<A, B>(vec: Vec<A>) -> Vec<B> {
+    const {
+        assert!(
+            size_of::<A>() == size_of::<B>() && align_of::<A>() == align_of::<B>(),
+            "a Vec can only change element lifetime between types of equal size and alignment",
+        );
+    }
     debug_assert!(vec.is_empty(), "only an empty Vec can change lifetime");
     vec.into_iter().map(|_| unreachable!()).collect()
 }
