@@ -1356,6 +1356,11 @@ impl Renderer {
     }
 
     /// Prepare attachments for returning a reference to the attachment set.
+    ///
+    /// A set built for an external target is kept and rebuilt only when the
+    /// target itself changes: the depth texture it allocates is sized to the
+    /// target, so reusing it across frames keeps a render loop from creating
+    /// and destroying a texture every frame.
     fn prep_attachments(&mut self, target: Option<&wgpu::TextureView>) -> &RenderAttachments {
         let Some(view) = target else {
             return &self.attachments;
@@ -1372,6 +1377,20 @@ impl Renderer {
             sample_count: 1,
             transient_depth: true,
         };
+
+        // The cached set is only usable while it describes this very target.
+        // wgpu resources compare by identity, so comparing the views is the
+        // "is this the same attachment" test; matching size and format is not
+        // enough, since a different texture of equal size is a different
+        // attachment to render into.
+        let reusable = self.external_attachments.as_ref().is_some_and(|cached| {
+            cached.color_view() == Some(view)
+                && cached.depth_stencil_format() == Some(depth_fmt)
+                && cached.sample_count() == info.sample_count
+        });
+        if reusable {
+            return self.external_attachments.as_ref().expect("just checked");
+        }
 
         let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("unlit3d::external_depth"),
@@ -1459,11 +1478,14 @@ mod tests {
 
     // -- pipeline registration ---------------------------------------------
 
+    /// The width and height every test renderer is built with.
+    const TEST_SIZE: u32 = 64;
+
     /// A renderer on wgpu's noop backend with the built-in unlit family
     /// registered, plus a standard key to draw with.
     fn noop_renderer() -> (Renderer, UnlitPipelineKey) {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut renderer = Renderer::new(device, queue, 64, 64);
+        let mut renderer = Renderer::new(device, queue, TEST_SIZE, TEST_SIZE);
         renderer.register_unlit_family();
         let key = UnlitPipelineKey::new(UnlitOptions::standard(&renderer.device));
         (renderer, key)
@@ -1511,6 +1533,83 @@ mod tests {
         // built only when a draw resolves a variant.
         assert!(renderer.pipelines.is_empty());
         assert_eq!(renderer.families.len(), 1);
+    }
+
+    // -- external render targets -------------------------------------------
+
+    /// A render target with the same size and format as the test frame.
+    fn target_texture(renderer: &Renderer, label: &str) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: TEST_SIZE,
+                height: TEST_SIZE,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    #[test]
+    fn rendering_twice_into_one_target_reuses_its_attachment_set() {
+        let (mut renderer, _key) = noop_renderer();
+        let (_texture, view) = target_texture(&renderer, "test::target");
+
+        // The first frame allocates the depth texture the target needs.
+        renderer.clear_frame(Some(&view), RenderLoadOps::default());
+        let first = renderer
+            .external_attachments
+            .as_ref()
+            .expect("an external target allocates attachments");
+
+        // Comparing the depth view across frames is only meaningful while the
+        // set is the one built above, so remember it before the second frame.
+        let first_depth = first.depth_stencil_view().cloned();
+
+        renderer.clear_frame(Some(&view), RenderLoadOps::default());
+        let second = renderer
+            .external_attachments
+            .as_ref()
+            .expect("still allocated");
+
+        assert_eq!(
+            second.depth_stencil_view().cloned(),
+            first_depth,
+            "the depth texture survives the second frame"
+        );
+    }
+
+    #[test]
+    fn a_different_target_gets_its_own_attachment_set() {
+        let (mut renderer, _key) = noop_renderer();
+        let (_first, first_view) = target_texture(&renderer, "test::first");
+        let (_second, second_view) = target_texture(&renderer, "test::second");
+
+        renderer.clear_frame(Some(&first_view), RenderLoadOps::default());
+        let first_depth = renderer
+            .external_attachments
+            .as_ref()
+            .and_then(|cached| cached.depth_stencil_view().cloned());
+
+        // The second target has the same size and format, so only comparing
+        // the views tells the two apart.
+        renderer.clear_frame(Some(&second_view), RenderLoadOps::default());
+        let second_depth = renderer
+            .external_attachments
+            .as_ref()
+            .and_then(|cached| cached.depth_stencil_view().cloned());
+
+        assert_ne!(
+            second_depth, first_depth,
+            "a new target must not render through the old one's depth texture"
+        );
     }
 
     // -- frame load ops ------------------------------------------------------
