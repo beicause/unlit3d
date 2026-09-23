@@ -116,6 +116,15 @@ fn align_up(size: u32, alignment: u32) -> Option<u32> {
 ///
 /// Allocations never move, and every offset it returns is a multiple of the
 /// alignment it was constructed with.
+///
+/// # Alignment invariant
+///
+/// Every node — allocated or free — starts at a multiple of the alignment. The
+/// initial node starts at zero, and [`Allocator::allocate`] rounds the size it
+/// charges up to the alignment, so the remainder it splits off also starts at
+/// a multiple of it; [`Allocator::free`] merges neighbours without moving any
+/// start. An allocation's offset is the start of its node, so it is aligned by
+/// construction rather than by aligning an offset up and padding in front.
 pub struct Allocator {
     /// The total size of the managed chunk, in units.
     size: u32,
@@ -306,8 +315,10 @@ impl Allocator {
             return None;
         }
 
-        // Every range starts at a multiple of the alignment, so an allocation
-        // may need up to `alignment - 1` units of padding in front of it.
+        // Round the size up to the alignment. Every node starts at a multiple
+        // of the alignment (see the invariant on `Allocator`), so rounding the
+        // size up leaves the remainder starting at a multiple of it too, and
+        // the offset handed out is aligned without any padding in front.
         let size = align_up(size, self.alignment)?;
 
         // Round up to the bin index that is guaranteed to fit the allocation:
@@ -1060,6 +1071,70 @@ mod tests {
         let allocation = allocator.allocate(1).unwrap();
         assert_eq!(allocation.offset, 0);
         assert!(allocator.allocate(1).is_none());
+    }
+
+    #[test]
+    fn every_offset_stays_aligned_under_churn() {
+        // A small deterministic PRNG, so a failure reproduces exactly.
+        let mut seed = 0x9e37_79b9u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+
+        let alignment = COPY_ALIGNMENT;
+        let mut allocator = Allocator::with_max_nodes_and_alignment(1 << 16, 4096, alignment);
+
+        // Live allocations, paired with the size charged for them, so overlap
+        // and alignment can be checked against each other.
+        let mut live: Vec<(Allocation, u32)> = Vec::new();
+
+        for _ in 0..10_000 {
+            // Free roughly a third of the time, so the allocator churns.
+            if !live.is_empty() && next() % 3 == 0 {
+                let index = (next() as usize) % live.len();
+                let (allocation, _) = live.swap_remove(index);
+                allocator.free(allocation);
+                continue;
+            }
+
+            let size = next() % 2000;
+            let Some(allocation) = allocator.allocate(size) else {
+                continue;
+            };
+            let charged = allocator.allocation_size(allocation);
+
+            // The offset is aligned, and the charge covers the request.
+            assert_eq!(allocation.offset % alignment.get(), 0);
+            assert!(charged >= size);
+            assert_eq!(charged % alignment.get(), 0);
+
+            // The new range overlaps no live one.
+            let end = allocation.offset + charged;
+            for &(other, other_charged) in &live {
+                let other_end = other.offset + other_charged;
+                assert!(
+                    end <= other.offset || other_end <= allocation.offset,
+                    "range {}..{} overlaps {}..{}",
+                    allocation.offset,
+                    end,
+                    other.offset,
+                    other_end
+                );
+            }
+
+            live.push((allocation, charged));
+        }
+
+        // Freeing everything must return the allocator to one whole region.
+        for (allocation, _) in live {
+            allocator.free(allocation);
+        }
+        let report = allocator.storage_report();
+        assert_eq!(report.total_free_space, 1 << 16);
+        assert_eq!(report.largest_free_region, 1 << 16);
     }
 
     #[test]
