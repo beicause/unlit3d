@@ -137,46 +137,22 @@ pub fn allocate_cube_mesh(r: &mut Renderer, key: &UnlitPipelineKey) -> GpuMesh {
 /// Allocate an offscreen colour target and a matching depth-stencil target,
 /// register their views in `renderer`'s resource graph, and bind them as the
 /// renderer's render target. Returns the colour texture (for readback).
-pub fn bind_offscreen_target(renderer: &mut Renderer, label: &str) -> wgpu::Texture {
-    use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
-    let color = renderer.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: COLOR_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let color_view = renderer.register_texture_and_default_view(color.clone()).1;
-    let depth = renderer.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(&format!("{label}::depth")),
-        size: wgpu::Extent3d {
-            width: WIDTH,
-            height: HEIGHT,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: default_depth_stencil_format(&renderer.device),
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
+pub fn bind_offscreen_target(renderer: &mut Renderer, _label: &str) -> wgpu::Texture {
+    use wgpu_unlit_render::render_attachments::create_render_target;
+    let ft = create_render_target(&renderer.device, COLOR_FORMAT, WIDTH, HEIGHT, 1);
+    let color_view = renderer
+        .register_texture_and_default_view(ft.color.clone())
+        .1;
     let depth_view = renderer
         .graph
         .insert_strong(
             wgpu_unlit_render::resources::Resource::TextureView(
-                depth.create_view(&wgpu::TextureViewDescriptor::default()),
+                ft.depth
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
             ),
             &[],
         )
         .expect("depth view has no dependencies");
     renderer.set_render_target(Some(color_view), Some(depth_view), None);
-    color
+    ft.color
 }

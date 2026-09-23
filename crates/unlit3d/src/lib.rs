@@ -80,29 +80,16 @@
 //! //    upload the mesh metadata and render one frame (uses noop device,
 //! //    produces a valid command buffer).
 //! world.with_mut::<Renderer, _>(renderer, |r| {
-//!     use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
+//!     use wgpu_unlit_render::render_attachments::create_render_target;
 //!     use wgpu_unlit_render::resources::Resource;
-//!     let color = r.device.create_texture(&wgpu::TextureDescriptor {
-//!         label: Some("example::color"),
-//!         size: wgpu::Extent3d { width: 1280, height: 720, depth_or_array_layers: 1 },
-//!         mip_level_count: 1, sample_count: 1,
-//!         dimension: wgpu::TextureDimension::D2,
-//!         format: wgpu::TextureFormat::Rgba8UnormSrgb,
-//!         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-//!         view_formats: &[],
-//!     });
-//!     let color_view = r.register_texture_and_default_view(color).1;
-//!     let depth = r.device.create_texture(&wgpu::TextureDescriptor {
-//!         label: Some("example::depth"),
-//!         size: wgpu::Extent3d { width: 1280, height: 720, depth_or_array_layers: 1 },
-//!         mip_level_count: 1, sample_count: 1,
-//!         dimension: wgpu::TextureDimension::D2,
-//!         format: default_depth_stencil_format(&r.device),
-//!         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-//!         view_formats: &[],
-//!     });
+//!     let ft = create_render_target(
+//!         &r.device,
+//!         wgpu::TextureFormat::Rgba8UnormSrgb,
+//!         1280, 720, 1,
+//!     );
+//!     let color_view = r.register_texture_and_default_view(ft.color).1;
 //!     let depth_view = r.graph.insert_strong(
-//!         Resource::TextureView(depth.create_view(&wgpu::TextureViewDescriptor::default())),
+//!         Resource::TextureView(ft.depth.create_view(&wgpu::TextureViewDescriptor::default())),
 //!         &[],
 //!     ).unwrap();
 //!     r.set_render_target(Some(color_view), Some(depth_view), None);

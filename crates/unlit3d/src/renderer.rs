@@ -1506,7 +1506,6 @@ mod tests {
     use super::*;
     use crate::components::{Transform, UnlitPipeline, ZSortedDrawing};
     use unlit_ecs::Entity;
-    use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
@@ -1545,43 +1544,25 @@ mod tests {
     /// Register a `width` x `height` color texture and a matching depth texture
     /// in `renderer`'s graph and bind them as its render target.
     ///
-    /// Returns the color and depth texture ids for callers that need to read
-    /// them (the depth id is dropped here; the color id is returned so a test
-    /// can copy the result back).
+    /// Returns the view id of the color texture, so the test can copy the
+    /// result back through the graph's texture resource.
     fn bind_test_target(renderer: &mut Renderer, width: u32, height: u32) -> ResourceId {
-        let color = renderer.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test::color"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let color_view = renderer.register_texture_and_default_view(color).1;
-        let depth = renderer.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("test::depth"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: default_depth_stencil_format(&renderer.device),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
+        use wgpu_unlit_render::render_attachments::create_render_target;
+        let ft = create_render_target(
+            &renderer.device,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            width,
+            height,
+            1,
+        );
+        let color_view = renderer.register_texture_and_default_view(ft.color).1;
         let depth_view = renderer
             .graph
             .insert_strong(
-                Resource::TextureView(depth.create_view(&wgpu::TextureViewDescriptor::default())),
+                Resource::TextureView(
+                    ft.depth
+                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                ),
                 &[],
             )
             .expect("depth view has no dependencies");

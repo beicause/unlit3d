@@ -16,7 +16,7 @@ use wgpu_unlit_render::pipeline::{
     UnlitPipeline,
 };
 use wgpu_unlit_render::render_attachments::{
-    AttachmentsInfo, RenderAttachments, color_clear, depth_clear, stencil_clear,
+    color_clear, create_render_target, depth_clear, stencil_clear,
 };
 use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
 use wgpu_unlit_render::util::busy_wait_block_on;
@@ -192,13 +192,10 @@ fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Example {
 /// Record one frame and submit it.
 fn draw(&self, width: u32, height: u32) {
     // The attachment set owns every attachment — the color target, the
-    // multisample and depth textures — and recreates them when the target
+    // multisample and depth textures — and is recreated when the target
     // changes. Recording the pass is the caller's: load ops are chosen
     // per pass.
-    let attachments = RenderAttachments::new(
-        &self.device,
-        AttachmentsInfo::new(&self.device, width, height),
-    );
+    let attachments = create_render_target(&self.device, wgpu::TextureFormat::Rgba8UnormSrgb, width, height, 4).attachments;
 
     // One draw: the pipeline, every bind group and vertex buffer it needs,
     // and what to draw. Slots are bound by index, so a variant only binds
