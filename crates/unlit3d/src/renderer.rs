@@ -478,7 +478,7 @@ impl Renderer {
             indexed,
             aabb,
             bind_group,
-            bind_group_dependencies,
+            mesh_info_buffer,
         } = desc;
 
         let mut buffers = Vec::with_capacity(vertex_buffers.len());
@@ -512,11 +512,10 @@ impl Renderer {
         });
 
         let bind_group_id = bind_group.map(|bind_group| {
-            // The mesh's own buffers plus whatever the caller built the group
-            // from beyond them, so replacing or removing any of them reaches
-            // the group.
+            // The mesh's own buffers plus the uniform the group reads, so
+            // replacing or removing any of them reaches the group.
             let mut dependencies = buffers.clone();
-            dependencies.extend_from_slice(&bind_group_dependencies);
+            dependencies.extend(mesh_info_buffer);
             self.graph
                 .insert_strong(Resource::BindGroup(bind_group), &dependencies)
                 .expect("a mesh bind group's dependencies are in the graph")
@@ -742,7 +741,7 @@ impl Renderer {
                 // the mesh depends on it: removing the mesh frees the uniform
                 // along with the group, and `cleanup` collects it if the mesh
                 // is dropped from the graph rather than removed as a handle.
-                bind_group_dependencies: vec![mesh_info_id],
+                mesh_info_buffer: Some(mesh_info_id),
             },
             meta,
         );

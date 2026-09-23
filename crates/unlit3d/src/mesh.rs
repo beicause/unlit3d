@@ -48,13 +48,17 @@ pub struct MeshDesc {
     /// A bind group bound at
     /// [`MESH_GROUP`](wgpu_unlit_render::pipeline::MESH_GROUP), for a
     /// pipeline that reads per-mesh data such as the metadata index.
-    pub bind_group: Option<wgpu::BindGroup>,
-    /// Resources the `bind_group` was built from beyond the mesh's own vertex
-    /// buffers, which the renderer adds on its own.
     ///
-    /// Replacing one of them marks the bind group dirty; removing it frees the
-    /// bind group with it. A mesh whose group reads a per-mesh uniform names
-    /// that uniform here, so the uniform is freed with the mesh instead of
-    /// outliving it.
-    pub bind_group_dependencies: Vec<ResourceId>,
+    /// `None` for a pipeline that binds nothing at that index.
+    pub bind_group: Option<wgpu::BindGroup>,
+    /// The per-mesh `MeshInfo` uniform the `bind_group` reads, if it reads
+    /// one.
+    ///
+    /// The bind group is recorded as depending on it, so replacing the uniform
+    /// marks the group dirty and removing the group orphans the uniform. The
+    /// built-in path inserts the uniform as a weak node, so
+    /// [`ResourceGraph::cleanup`](wgpu_unlit_render::resources::ResourceGraph::cleanup)
+    /// then collects it; the caller names a uniform it registered here for the
+    /// same effect.
+    pub mesh_info_buffer: Option<ResourceId>,
 }
