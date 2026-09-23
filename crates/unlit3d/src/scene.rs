@@ -354,6 +354,10 @@ pub(crate) struct EntryHandles {
     pub(crate) material_bg: Option<usize>,
     /// Index into the frame's buffer cache of the first vertex buffer.
     pub(crate) vertex_start: usize,
+    /// Index into the frame's vertex-slot cache of the first vertex buffer's
+    /// slot. The slot cache holds only vertex buffers, so it is indexed
+    /// separately from the buffer cache, which also holds index buffers.
+    pub(crate) slot_start: usize,
     /// Index into the frame's buffer cache of the index buffer, with its
     /// format, when the mesh is indexed.
     pub(crate) index_buffer: Option<(usize, wgpu::IndexFormat)>,
@@ -411,7 +415,7 @@ pub(crate) fn assemble_scene<'a>(
         }
         for offset in 0..handle.shape.vertex_count {
             draw = draw.with_vertex_buffer(
-                vertex_slots[handle.vertex_start + offset],
+                vertex_slots[handle.slot_start + offset],
                 buffers[handle.vertex_start + offset].slice(..),
             );
         }

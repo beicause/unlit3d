@@ -828,6 +828,26 @@ fn fs_main() -> @location(0) vec4<f32> {
         assert_eq!(recycled.draws.capacity(), cap);
     }
 
+    /// [`launder`] keeps the source allocation, but only because the types it
+    /// is used with have the same size and alignment. `collect` on an empty
+    /// iterator keeps whatever its lower size bound asks for, so an equal-size
+    /// element type is exactly the case where the capacity survives.
+    #[test]
+    fn laundering_an_empty_vec_keeps_its_allocation() {
+        // Two distinct types of equal size: the assert accepts them, and the
+        // allocation must survive the change of element type.
+        let mut vec: Vec<u64> = Vec::with_capacity(4);
+        vec.push(1);
+        vec.clear();
+        let ptr = vec.as_ptr();
+        let cap = vec.capacity();
+
+        let laundered: Vec<i64> = launder(vec);
+        assert_eq!(laundered.as_ptr().cast::<u64>(), ptr);
+        assert_eq!(laundered.capacity(), cap);
+        assert!(laundered.is_empty());
+    }
+
     #[test]
     fn pass_state_capacity_covers_the_wgpu_defaults() {
         // The fixed arrays must have room for everything a default device

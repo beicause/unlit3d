@@ -1042,6 +1042,7 @@ impl Renderer {
                 };
 
                 let vertex_start = buffer_cache.len();
+                let slot_start = vertex_slot_cache.len();
                 let mut vertex_count = 0;
                 for &(slot, buffer) in &mesh.vertex_buffers {
                     vertex_slot_cache.push(slot);
@@ -1074,6 +1075,7 @@ impl Renderer {
                     mesh_bg,
                     material_bg,
                     vertex_start,
+                    slot_start,
                     index_buffer,
                     shape: DrawShape {
                         indexed: mesh.indexed,
@@ -2208,10 +2210,144 @@ mod tests {
     #[test]
     fn registering_compiles_no_pipeline() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut renderer = Renderer::new(device, queue, 64, 64);
+        let mut renderer = Renderer::new(device, queue, TEST_SIZE, TEST_SIZE);
         renderer.register_unlit_family();
 
         assert!(renderer.pipelines.is_empty());
         assert_eq!(renderer.families.len(), 1);
+    }
+
+    // -- metadata buffer -----------------------------------------------------
+
+    #[test]
+    fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
+        let (mut renderer, key) = noop_renderer();
+        // The renderer starts with room for one entry and grows by doubling,
+        // so only the entries past the capacity it holds recreate the buffer.
+        assert_eq!(renderer.metadata_capacity, 1);
+
+        tri_mesh(&mut renderer, &key);
+        renderer.update_metadata_buffer();
+        assert_eq!(renderer.metadata_capacity, 1, "one entry fills the room");
+
+        tri_mesh(&mut renderer, &key);
+        renderer.update_metadata_buffer();
+        assert_eq!(
+            renderer.metadata_capacity, 2,
+            "a second entry outgrows room for one"
+        );
+
+        // A third entry does not fit in two, so the buffer doubles again.
+        tri_mesh(&mut renderer, &key);
+        renderer.update_metadata_buffer();
+        assert_eq!(renderer.metadata_capacity, 4);
+
+        // A fourth entry does fit in four, so the buffer is left alone.
+        let before = renderer.graph.get_buffer(renderer.metadata_buf).cloned();
+        tri_mesh(&mut renderer, &key);
+        renderer.update_metadata_buffer();
+        assert_eq!(renderer.metadata_capacity, 4, "four entries fit");
+        assert_eq!(
+            renderer.graph.get_buffer(renderer.metadata_buf),
+            before.as_ref(),
+            "no growth means the same buffer, so no global group is rebuilt"
+        );
+    }
+
+    #[test]
+    fn an_empty_metadata_array_uploads_nothing() {
+        let (mut renderer, key) = noop_renderer();
+        // A mesh is allocated and removed again, so the array is empty while
+        // the capacity it once needed is still there.
+        let mesh = tri_mesh(&mut renderer, &key);
+        renderer.remove_mesh(mesh);
+
+        // Uploading an empty array must not panic on the zero-length write.
+        renderer.update_metadata_buffer();
+    }
+
+    // -- a whole frame -------------------------------------------------------
+
+    #[test]
+    fn a_frame_without_a_camera_only_clears() {
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
+        let mut world = LocalWorld::new();
+        // A drawable entity, but nothing the renderer can view it from.
+        world.spawn((Transform::default(), mesh, UnlitPipeline::new(key)));
+
+        // The frame takes the no-camera path and still submits a pass, which
+        // is what applies the caller's clears.
+        renderer.render(&world, None);
+        assert!(renderer.visible_cache.is_empty(), "nothing was drawn");
+    }
+
+    #[test]
+    fn rendering_a_world_twice_reuses_every_per_frame_cache() {
+        let (mut renderer, _key) = noop_renderer();
+        // A variant that binds no material group, so the frame needs no
+        // material to be a complete draw.
+        let key = UnlitPipelineKey::new(uv_less_options(&renderer.device));
+        let mesh = tri_mesh(&mut renderer, &key);
+        let mut world = LocalWorld::new();
+        world.spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+        world.spawn((
+            Transform::default(),
+            mesh,
+            UnlitPipeline::new(key),
+            ZSortedDrawing,
+        ));
+
+        renderer.render(&world, None);
+        let drawn_first = drawn(&renderer);
+        assert_eq!(drawn_first.len(), 1, "the entity was drawn");
+        let capacities = (
+            renderer.visible_cache.capacity(),
+            renderer.bind_group_cache.capacity(),
+            renderer.buffer_cache.capacity(),
+            renderer.vertex_slot_cache.capacity(),
+            renderer.entry_handle_cache.capacity(),
+            renderer.scene_cache.draws.capacity(),
+        );
+
+        renderer.render(&world, None);
+        assert_eq!(drawn(&renderer), drawn_first, "the same draws, in order");
+        assert_eq!(
+            (
+                renderer.visible_cache.capacity(),
+                renderer.bind_group_cache.capacity(),
+                renderer.buffer_cache.capacity(),
+                renderer.vertex_slot_cache.capacity(),
+                renderer.entry_handle_cache.capacity(),
+                renderer.scene_cache.draws.capacity(),
+            ),
+            capacities,
+            "a second frame allocates nothing"
+        );
+    }
+
+    /// The vertex-slot cache holds only vertex buffers, while the buffer cache
+    /// also holds each mesh's index buffer. A second entry therefore starts at
+    /// a different offset in each, and a slot list indexed by the buffer
+    /// cache's offset reads past its end once an index buffer is between them.
+    #[test]
+    fn an_indexed_mesh_followed_by_another_keeps_the_slot_cache_aligned() {
+        let (mut renderer, _key) = noop_renderer();
+        let key = UnlitPipelineKey::new(uv_less_options(&renderer.device));
+        // Both meshes are indexed: each contributes one vertex buffer to the
+        // slot cache but two buffers to the buffer cache.
+        let first = tri_mesh(&mut renderer, &key);
+        let second = tri_mesh(&mut renderer, &key);
+        assert!(first.indexed && second.indexed, "both meshes are indexed");
+
+        let mut world = LocalWorld::new();
+        world.spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+        world.spawn((Transform::default(), first, UnlitPipeline::new(key.clone())));
+        world.spawn((Transform::default(), second, UnlitPipeline::new(key)));
+
+        // Recording the draws reads the slot of each vertex buffer, so a
+        // misaligned cache panics here rather than drawing the wrong buffers.
+        renderer.render(&world, None);
+        assert_eq!(drawn(&renderer).len(), 2, "both entities were drawn");
     }
 }
