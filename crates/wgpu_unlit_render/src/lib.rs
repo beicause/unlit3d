@@ -76,6 +76,7 @@ wesl_core::wesl_pkg!(
     "wgpu_unlit_render.rs"
 );
 
+pub mod buffer_pool;
 pub mod globals;
 pub mod mesh;
 pub mod offset_allocator;

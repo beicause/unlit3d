@@ -515,9 +515,6 @@ impl Allocator {
     /// The added size is rounded up to the alignment, so the appended range
     /// starts aligned like every other node.
     pub fn extend(&mut self, additional: u32) -> bool {
-        if self.num_free_nodes == 0 {
-            return false;
-        }
         let Some(additional) = align_up(additional, self.alignment) else {
             return false;
         };
@@ -527,17 +524,74 @@ impl Allocator {
 
         // The chunk used to end at `self.size`, which is aligned because every
         // node's size is rounded up to the alignment.
-        let new_node_index = self.insert_node_into_bin(additional, self.size);
-
-        // Append the new range after the node that used to end the chunk.
-        if let Some(tail) = self.tail {
-            self.nodes[tail.get()].neighbor_next = Some(new_node_index);
+        match self.tail {
+            // The chunk ends in free space, which the appended space is
+            // contiguous with: grow that node instead of adding a neighbour, so
+            // the two never end up as separate ranges that can only be merged
+            // by a later `free`.
+            Some(tail) if !self.nodes[tail.get()].used => {
+                let tail_size = self.nodes[tail.get()].data_size;
+                let Some(grown) = tail_size.checked_add(additional) else {
+                    return false;
+                };
+                self.rebin_node(tail, grown);
+            }
+            // The chunk ends in an allocation (or is empty): append a new free
+            // range after it.
+            _ => {
+                if self.num_free_nodes == 0 {
+                    return false;
+                }
+                let new_node_index = self.insert_node_into_bin(additional, self.size);
+                if let Some(tail) = self.tail {
+                    self.nodes[tail.get()].neighbor_next = Some(new_node_index);
+                }
+                self.nodes[new_node_index.get()].neighbor_prev = self.tail;
+                self.tail = Some(new_node_index);
+            }
         }
-        self.nodes[new_node_index.get()].neighbor_prev = self.tail;
-        self.tail = Some(new_node_index);
 
         self.size = size;
         true
+    }
+
+    /// Moves a free node to the bin for its new `size`, keeping its place in
+    /// the neighbor list.
+    ///
+    /// Used to grow a free range in place when the space behind it is added to
+    /// the chunk.
+    fn rebin_node(&mut self, node_index: NodeIndex, size: u32) {
+        self.remove_node_from_bin(node_index);
+
+        // `remove_node_from_bin` put the node into the free list and took its
+        // old size out of `free_storage`; take it back out of the free list and
+        // re-insert it under its new size. Its neighbor links survive
+        // `insert_node_into_bin`, which only resets the bin links.
+        let node = self.nodes[node_index.get()];
+        self.num_free_nodes -= 1;
+
+        let bin_index = small_float::uint_to_float_round_down(size);
+        let top_bin_index = bin_index >> TOP_BINS_INDEX_SHIFT;
+        let leaf_bin_index = bin_index & LEAF_BINS_INDEX_MASK;
+        if self.bin_indices[bin_index as usize].is_none() {
+            self.used_bins[top_bin_index as usize] |= 1 << leaf_bin_index;
+            self.used_bins_top |= 1 << top_bin_index;
+        }
+
+        let top_node_index = self.bin_indices[bin_index as usize];
+        self.nodes[node_index.get()] = Node {
+            data_size: size,
+            // The node goes in at the head of its new bin's list, so it has no
+            // predecessor there; `node.bin_list_prev` is stale at this point.
+            bin_list_prev: None,
+            bin_list_next: top_node_index,
+            ..node
+        };
+        if let Some(top_node_index) = top_node_index {
+            self.nodes[top_node_index.get()].bin_list_prev = Some(node_index);
+        }
+        self.bin_indices[bin_index as usize] = Some(node_index);
+        self.free_storage += size;
     }
 
     /// Creates a free node and inserts it at the head of the bin for its size.
@@ -1245,24 +1299,21 @@ mod tests {
     }
 
     #[test]
-    fn extend_appends_next_to_the_free_tail() {
+    fn extend_merges_into_a_free_tail() {
         let mut allocator = Allocator::with_alignment(1024, COPY_ALIGNMENT);
 
-        // Leave the end of the chunk free, then grow it.
+        // Leave the end of the chunk free, then grow it: the appended space is
+        // contiguous with that free tail, so the two must end up as one range
+        // rather than as neighbours only a later `free` could merge.
         let a = allocator.allocate(256).unwrap();
         assert!(allocator.extend(1024));
 
-        // The old free tail (256..1024) and the appended range (1024..2048)
-        // are adjacent, but `extend` does not merge them: the free space is
-        // the sum, while the largest single region is still the appended one.
         let report = allocator.storage_report();
         assert_eq!(report.total_free_space, 2048 - 256);
-        assert_eq!(report.largest_free_region, 1024);
+        assert_eq!(report.largest_free_region, 2048 - 256);
 
-        // Taking the appended range and freeing the first allocation merges
-        // the whole chunk back together, across the extension boundary.
-        let tail = allocator.allocate(1024).unwrap();
-        assert_eq!(tail.offset, 1024);
+        let tail = allocator.allocate(2048 - 256).unwrap();
+        assert_eq!(tail.offset, 256);
         allocator.free(a);
         allocator.free(tail);
 
@@ -1271,13 +1322,35 @@ mod tests {
     }
 
     #[test]
-    fn extend_fails_without_a_free_node() {
-        // One node is in use by the allocation and the free range needs the
-        // other, so there is none left to describe an appended range.
-        let mut allocator = Allocator::with_max_nodes(2, 2);
-        let allocation = allocator.allocate(1).unwrap();
-        assert!(!allocator.extend(64));
-        assert_eq!(allocator.size(), 2);
-        allocator.free(allocation);
+    fn extend_appends_after_an_allocated_tail() {
+        let mut allocator = Allocator::with_max_nodes(2, 3);
+
+        // The chunk ends in an allocation, so the appended space becomes a new
+        // free range.
+        let a = allocator.allocate(2).unwrap();
+        assert_eq!(a.offset, 0);
+        assert!(allocator.extend(64));
+        assert_eq!(allocator.size(), 66);
+
+        // The chunk now ends in free space, so a second extension grows that
+        // node in place rather than appending a neighbour to it.
+        assert!(allocator.extend(64));
+        assert_eq!(allocator.size(), 130);
+
+        // The whole appended space is one range: an allocation may take all of
+        // it, which a pair of adjacent ranges could not offer.
+        let b = allocator.allocate(128).unwrap();
+        assert_eq!(b.offset, 2);
+
+        allocator.free(a);
+        allocator.free(b);
+        assert_eq!(allocator.storage_report().total_free_space, 130);
+
+        // The two allocations merged back across the extension boundary. Had
+        // they stayed separate, the free space would be the same 2 + 128 units
+        // but the 128-unit range would sit at offset 2; taking it from offset 0
+        // is only possible because `free` merged across the boundary.
+        let whole = allocator.allocate(128).unwrap();
+        assert_eq!(whole.offset, 0);
     }
 }
