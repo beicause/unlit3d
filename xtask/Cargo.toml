@@ -1,0 +1,22 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+argh = "0.1.19"
+# The runtime and reactor the static file server runs on, and the HTTP
+# protocol implementation it serves with. hyper is async-only, but needs
+# neither tokio nor an executor of its own for HTTP/1.
+async-executor = "1.14.0"
+async-io = "2.6.0"
+futures-lite = "2.6.1"
+http-body-util = "0.1.5"
+hyper = { version = "1.11.1", features = ["http1", "server"] }
+# Bridges `async-io`'s futures-io types to hyper's runtime traits.
+smol-hyper = "0.1.1"
+
+[lints.rust]
+missing_docs = "deny"
