@@ -1,10 +1,14 @@
 //! `unlit3d` — the upper rendering API for `wgpu_unlit_render`.
 //!
-//! This crate bridges [`unlit_ecs`](https://docs.rs/unlit_ecs) and
-//! [`wgpu_unlit_render`](https://docs.rs/wgpu_unlit_render): it provides the
-//! component types needed to describe a renderable 3D scene in an ECS world
-//! and a [`Renderer`] component that turns that data into GPU draw commands
-//! every frame.
+//! This crate bridges [`unlit_ecs`] and [`wgpu_unlit_render`]: it provides the
+//! component types needed to describe a renderable 3D scene in an ECS world and
+//! a [`Renderer`] component that turns that data into GPU draw commands every
+//! frame.
+//!
+//! The two foundational crates are re-exported as modules — everything they
+//! expose is available under `unlit3d::wgpu_unlit_render::*` and
+//! `unlit3d::unlit_ecs::*`.  Commonly-used items are collected in
+//! [`prelude`] for convenience.
 //!
 //! # Quick start
 //!
@@ -20,8 +24,7 @@
 //!
 //! ```
 //! use unlit3d::prelude::*;
-//! use unlit_ecs::LocalWorld;
-//! use wgpu_unlit_render::pipeline::UnlitOptions;
+//! use unlit3d::wgpu_unlit_render::pipeline::UnlitOptions;
 //!
 //! let (device, queue) =
 //!     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -30,7 +33,7 @@
 //! // 1. Spawn the renderer (a resource entity) and register the built-in
 //! //    unlit family with it.
 //! let renderer = world.spawn((
-//!     unlit_ecs::Resource,
+//!     Resource,
 //!     Renderer::new(device, queue),
 //! ));
 //! world
@@ -80,8 +83,7 @@
 //! //    upload the mesh metadata and render one frame (uses noop device,
 //! //    produces a valid command buffer).
 //! world.with_mut::<Renderer, _>(renderer, |r| {
-//!     use wgpu_unlit_render::render_attachments::create_render_target;
-//!     use wgpu_unlit_render::resources::Resource;
+//!     use unlit3d::wgpu_unlit_render::resources::Resource;
 //!     let ft = create_render_target(
 //!         &r.device,
 //!         wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -97,9 +99,17 @@
 //!     r.render(&world);
 //! });
 //! ```
+//!
+//! [`unlit_ecs`]: unlit_ecs
+//! [`wgpu_unlit_render`]: wgpu_unlit_render
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
+
+// Re-export the two foundational crates as sub-modules so that users can reach
+// every public API through a single `unlit3d` root.
+pub use unlit_ecs;
+pub use wgpu_unlit_render;
 
 pub mod bounds;
 pub mod components;
@@ -109,27 +119,25 @@ pub mod pipeline;
 pub mod renderer;
 pub mod scene;
 
-pub use bounds::{Aabb, FrustumPlanes, Obb};
-pub use components::*;
-pub use culling::is_culled;
-pub use mesh::{MeshDesc, VertexBufferDesc};
-pub use pipeline::{
-    DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineDesc,
-    PipelineFactory, PipelineKey, RenderPipelineFactory, RenderResources, TrivialSpecializer,
-};
-pub use renderer::{Renderer, UnlitPipelineKey};
-pub use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
-
-/// Convenience re-exports for typical usage.
+/// The types most callers need for typical usage.
 pub mod prelude {
     pub use crate::{
-        Aabb, FamilyKey, FrustumPlanes, GlobalBinding, GlobalGroupRebuild, MeshDesc, Obb,
-        PipelineDesc, PipelineKey, RenderPipelineFactory, RenderResources, Renderer,
-        TrivialSpecializer, UnlitPipelineKey, VertexBufferDesc, color_clear,
+        bounds::{Aabb, FrustumPlanes, Obb},
         components::{
             Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, RenderLoadOps, Transform,
             UnlitPipeline, ZSortedDrawing,
         },
-        depth_clear, is_culled, stencil_clear,
+        culling::is_culled,
+        mesh::{MeshDesc, VertexBufferDesc},
+        pipeline::{
+            DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineDesc,
+            PipelineFactory, PipelineKey, RenderPipelineFactory, RenderResources,
+            TrivialSpecializer,
+        },
+        renderer::{Renderer, UnlitPipelineKey},
+    };
+    pub use unlit_ecs::prelude::*;
+    pub use wgpu_unlit_render::render_attachments::{
+        color_clear, create_render_target, depth_clear, stencil_clear,
     };
 }

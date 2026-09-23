@@ -72,7 +72,7 @@ pub struct Camera {
 ///
 /// ```
 /// use unlit3d::components::RenderLoadOps;
-/// use unlit3d::depth_clear;
+/// use unlit3d::prelude::depth_clear;
 ///
 /// let ops = RenderLoadOps {
 ///     color: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
