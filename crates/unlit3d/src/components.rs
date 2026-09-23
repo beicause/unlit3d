@@ -155,15 +155,6 @@ pub struct GpuMesh {
     ///
     /// `None` when the mesh was uploaded without one.
     pub bind_group_id: Option<ResourceId>,
-
-    /// Graph nodes freed with the mesh that nothing depends on.
-    ///
-    /// [`Renderer::remove_mesh`](crate::Renderer::remove_mesh) frees a mesh by
-    /// walking from its vertex buffers to everything built from them. A node
-    /// that points *into* the mesh rather than out of it — the uniform naming
-    /// the mesh's metadata entry, which feeds the mesh bind group — is reached
-    /// by no such walk, so it is listed here and removed alongside the rest.
-    pub roots: Vec<ResourceId>,
 }
 
 /// The per-entity request for one family's variant.

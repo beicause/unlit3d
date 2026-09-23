@@ -114,7 +114,6 @@ mod tests {
             aabb: Aabb::new(Vec3::ZERO, Vec3::splat(0.5)),
             metadata_index: 0,
             bind_group_id: None,
-            roots: Vec::new(),
         };
         let near = world.spawn((mesh.clone(), Transform::default()));
         let far = world.spawn((

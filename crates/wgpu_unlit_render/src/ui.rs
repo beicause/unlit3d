@@ -41,10 +41,14 @@
 //!
 //! // The UI's per-texture resources join the caller's ledger.
 //! let mut graph = ResourceGraph::new();
-//! let camera_id = graph.insert(Resource::Buffer(camera), &[]).unwrap();
-//! let globals_id = graph.insert(Resource::Buffer(globals), &[]).unwrap();
+//! let camera_id = graph
+//!     .insert_strong(Resource::Buffer(camera), &[])
+//!     .unwrap();
+//! let globals_id = graph
+//!     .insert_strong(Resource::Buffer(globals), &[])
+//!     .unwrap();
 //! let group_id = graph
-//!     .insert(Resource::BindGroup(global_group), &[camera_id, globals_id])
+//!     .insert_strong(Resource::BindGroup(global_group), &[camera_id, globals_id])
 //!     .unwrap();
 //!
 //! let mut ui = EguiIntegration::new(device, group_id, pipeline);
@@ -394,7 +398,7 @@ impl EguiIntegration {
                 mapped_at_creation: false,
             });
             graph
-                .insert(Resource::Buffer(buffer.clone()), &[])
+                .insert_strong(Resource::Buffer(buffer.clone()), &[])
                 .expect("an empty dependency list always resolves");
             self.vertices = Some(buffer);
         }
@@ -407,7 +411,7 @@ impl EguiIntegration {
                 mapped_at_creation: false,
             });
             graph
-                .insert(Resource::Buffer(buffer.clone()), &[])
+                .insert_strong(Resource::Buffer(buffer.clone()), &[])
                 .expect("an empty dependency list always resolves");
             self.indices = Some(buffer);
         }
@@ -472,7 +476,7 @@ impl EguiIntegration {
             ],
         });
         let id = graph
-            .insert(Resource::BindGroup(group), &[texture, sampler_id])
+            .insert_strong(Resource::BindGroup(group), &[texture, sampler_id])
             .expect("both dependencies were registered");
         self.materials.push((key, id));
     }
@@ -491,7 +495,7 @@ impl EguiIntegration {
             ..Default::default()
         });
         let id = graph
-            .insert(Resource::Sampler(sampler), &[])
+            .insert_strong(Resource::Sampler(sampler), &[])
             .expect("an empty dependency list always resolves");
         self.samplers.push((options, id));
         id
@@ -587,10 +591,10 @@ impl EguiIntegration {
                 queue.write_texture(texture.as_image_copy(), pixels.as_bytes(), layout, size);
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                 let texture_id = graph
-                    .insert(Resource::Texture(texture), &[])
+                    .insert_strong(Resource::Texture(texture), &[])
                     .expect("an empty dependency list always resolves");
                 let view_id = graph
-                    .insert(Resource::TextureView(view), &[texture_id])
+                    .insert_strong(Resource::TextureView(view), &[texture_id])
                     .expect("the texture was just registered");
                 self.textures.insert(id, view_id);
             }

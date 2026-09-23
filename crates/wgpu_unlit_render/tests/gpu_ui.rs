@@ -85,10 +85,10 @@ fn render_ui_with(
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
     let camera_id = graph
-        .insert(Resource::Buffer(camera.clone()), &[])
+        .insert_strong(Resource::Buffer(camera.clone()), &[])
         .expect("an empty dependency list always resolves");
     let globals_id = graph
-        .insert(Resource::Buffer(globals.clone()), &[])
+        .insert_strong(Resource::Buffer(globals.clone()), &[])
         .expect("an empty dependency list always resolves");
     // The test target is sRGB: the UI converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
@@ -101,7 +101,7 @@ fn render_ui_with(
     };
     let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
     let global_group_id = graph
-        .insert(
+        .insert_strong(
             Resource::BindGroup(global_group(&ctx.device, &pipeline, &camera, &globals)),
             &[camera_id, globals_id],
         )

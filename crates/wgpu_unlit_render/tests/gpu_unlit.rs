@@ -878,12 +878,12 @@ fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
     let mut graph = ResourceGraph::new();
 
     let base = graph
-        .insert(Resource::Buffer(uniform(&ctx.device, "test::base")), &[])
+        .insert_strong(Resource::Buffer(uniform(&ctx.device, "test::base")), &[])
         .expect("insert base");
 
     // A stand-in dependent: rebuilding is driven purely by the graph.
     let dependent = graph
-        .insert(
+        .insert_strong(
             Resource::Buffer(uniform(&ctx.device, "test::dependent")),
             &[base],
         )

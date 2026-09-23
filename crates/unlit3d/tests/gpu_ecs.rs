@@ -127,6 +127,46 @@ fn ecs_depth_ordering_hides_the_far_instance() {
     );
 }
 
+/// Removing a mesh frees everything the mesh own, including the per-mesh
+/// uniform that only feeds its bind group.
+///
+/// That uniform is a graph *orphan*: the mesh's buffers were built into the
+/// bind group, not out of it, so the removal walk from the buffers reaches the
+/// group but never the uniform. `remove_mesh` collects it through the graph's
+/// cleanup, leaving the graph exactly as it was before the mesh existed.
+#[test]
+fn removing_a_mesh_leaves_no_resource_behind() {
+    let ctx = Ctx::headless();
+    let (mut renderer, key) = create_renderer(&ctx);
+
+    // A first mesh warms up any lazily created global state, so the second
+    // mesh's resources are the only difference measured below.
+    let baseline_mesh = allocate_cube_mesh(&mut renderer, &key);
+    let baseline = renderer.graph.len();
+
+    let mesh = allocate_cube_mesh(&mut renderer, &key);
+    assert!(
+        renderer.graph.len() > baseline,
+        "allocating a mesh should add resources"
+    );
+
+    renderer.remove_mesh(mesh);
+
+    assert_eq!(
+        renderer.graph.len(),
+        baseline,
+        "remove_mesh should free the mesh's buffers, its bind group and the \
+         orphaned mesh-info uniform"
+    );
+    // The warmed-up mesh and the renderer's own resources are untouched.
+    assert!(
+        renderer
+            .graph
+            .get_buffer(baseline_mesh.vertex_buffers[0].1)
+            .is_some()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot tests
 // ---------------------------------------------------------------------------

@@ -186,7 +186,7 @@ fn register_concrete(
             rebuild,
         } = binding;
         let id = graph
-            .insert(
+            .insert_strong(
                 Resource::BindGroup(bind_group),
                 &[camera_buf, globals_buf, metadata_buf],
             )
@@ -348,7 +348,7 @@ impl Renderer {
 
         // Camera uniform buffer.
         let camera_buf = graph
-            .insert(
+            .insert_strong(
                 Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("unlit3d::camera"),
                     size: size_of::<View>() as u64,
@@ -362,7 +362,7 @@ impl Renderer {
         // Globals uniform buffer.
         let globals = Globals::default();
         let globals_buf = graph
-            .insert(
+            .insert_strong(
                 Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("unlit3d::globals"),
                     size: size_of::<Globals>() as u64,
@@ -375,7 +375,7 @@ impl Renderer {
 
         // Metadata storage buffer (initially 1 entry).
         let metadata_buf = graph
-            .insert(
+            .insert_strong(
                 Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("unlit3d::mesh_metadata"),
                     size: size_of::<MeshMetadata>() as u64,
@@ -478,6 +478,7 @@ impl Renderer {
             indexed,
             aabb,
             bind_group,
+            bind_group_dependencies,
         } = desc;
 
         let mut buffers = Vec::with_capacity(vertex_buffers.len());
@@ -486,7 +487,7 @@ impl Renderer {
         for desc in vertex_buffers {
             let id = self
                 .graph
-                .insert(Resource::Buffer(desc.buffer), &[])
+                .insert_strong(Resource::Buffer(desc.buffer), &[])
                 .expect("a vertex buffer has no dependencies");
             vertex_slots.push((desc.slot, id));
             // The layout is owned by the mesh so a family can key on it
@@ -505,15 +506,20 @@ impl Renderer {
         let index_buffer = index_buffer.map(|(buffer, format)| {
             let id = self
                 .graph
-                .insert(Resource::Buffer(buffer), &[])
+                .insert_strong(Resource::Buffer(buffer), &[])
                 .expect("an index buffer has no dependencies");
             (id, format)
         });
 
         let bind_group_id = bind_group.map(|bind_group| {
+            // The mesh's own buffers plus whatever the caller built the group
+            // from beyond them, so replacing or removing any of them reaches
+            // the group.
+            let mut dependencies = buffers.clone();
+            dependencies.extend_from_slice(&bind_group_dependencies);
             self.graph
-                .insert(Resource::BindGroup(bind_group), &buffers)
-                .expect("a mesh bind group depends on its vertex buffers")
+                .insert_strong(Resource::BindGroup(bind_group), &dependencies)
+                .expect("a mesh bind group's dependencies are in the graph")
         });
 
         // The entry is owned whether or not the pipeline reads it: a draw that
@@ -541,7 +547,6 @@ impl Renderer {
             aabb,
             metadata_index,
             bind_group_id,
-            roots: Vec::new(),
         }
     }
 
@@ -637,7 +642,7 @@ impl Renderer {
         });
         let mesh_info_id = self
             .graph
-            .insert(Resource::Buffer(mesh_info_buf), &[])
+            .insert_weak(Resource::Buffer(mesh_info_buf), &[])
             .expect("mesh_info buffer has no dependencies");
 
         let mesh_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -733,6 +738,11 @@ impl Renderer {
                 indexed,
                 aabb,
                 bind_group: Some(mesh_bind_group),
+                // The group reads the metadata index through this uniform, so
+                // the mesh depends on it: removing the mesh frees the uniform
+                // along with the group, and `cleanup` collects it if the mesh
+                // is dropped from the graph rather than removed as a handle.
+                bind_group_dependencies: vec![mesh_info_id],
             },
             meta,
         );
@@ -745,11 +755,6 @@ impl Renderer {
             0,
             MeshInfo::new(mesh.metadata_index).as_bytes(),
         );
-
-        // Nothing depends on the uniform — it feeds the bind group rather than
-        // being built from it — so no removal walk reaches it from the mesh's
-        // buffers. List it as a root so it is freed with the mesh.
-        mesh.roots.push(mesh_info_id);
 
         // The renderer binds the per-instance buffer at [INSTANCE_SLOT] for
         // every draw, so the mesh's layout declares that slot even though the
@@ -770,7 +775,7 @@ impl Renderer {
     pub fn register_texture(&mut self, texture: wgpu::Texture) -> ResourceId {
         let texture_id = self
             .graph
-            .insert(Resource::Texture(texture), &[])
+            .insert_strong(Resource::Texture(texture), &[])
             .expect("a texture has no dependencies");
         let view = self
             .graph
@@ -778,7 +783,7 @@ impl Renderer {
             .expect("texture exists")
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.graph
-            .insert(Resource::TextureView(view), &[texture_id])
+            .insert_strong(Resource::TextureView(view), &[texture_id])
             .expect("the view depends on its texture")
     }
 
@@ -790,7 +795,7 @@ impl Renderer {
     ) -> ResourceId {
         let sampler = self.device.create_sampler(&descriptor.unwrap_or_default());
         self.graph
-            .insert(Resource::Sampler(sampler), &[])
+            .insert_strong(Resource::Sampler(sampler), &[])
             .expect("a sampler has no dependencies")
     }
 
@@ -872,7 +877,7 @@ impl Renderer {
         });
         let bind_group_id = self
             .graph
-            .insert(Resource::BindGroup(bind_group), dependencies)
+            .insert_strong(Resource::BindGroup(bind_group), dependencies)
             .expect("a material bind group depends on graph resources");
 
         GpuMaterial { bind_group_id }
@@ -882,8 +887,10 @@ impl Renderer {
     /// mesh-metadata entry.
     ///
     /// The mesh's vertex and index buffers leave the resource graph together
-    /// with the bind group built from them and the nodes it lists as
-    /// [`roots`](GpuMesh::roots). The [`GpuMesh`] handle must not be used
+    /// with the bind group built from them. The resources that only fed that
+    /// bind group — the per-mesh uniform behind it — are collected by the
+    /// [cleanup](ResourceGraph::cleanup) this runs, so the mesh frees
+    /// everything it owned. The [`GpuMesh`] handle must not be used
     /// afterwards: drawing with it names buffers that are gone.
     ///
     /// Its metadata slot is freed and reused by a mesh allocated later, so
@@ -896,15 +903,15 @@ impl Renderer {
     /// Removing a mesh while the world still holds its handle is a programming
     /// error the caller has to avoid: nothing detects the stale handle.
     pub fn remove_mesh(&mut self, mesh: GpuMesh) {
-        for id in &mesh.roots {
-            self.graph.remove(*id);
-        }
         for (_slot, id) in &mesh.vertex_buffers {
             self.graph.remove(*id);
         }
         if let Some((id, _format)) = mesh.index_buffer {
             self.graph.remove(id);
         }
+        // The per-mesh uniform is not derived from anything the walks above
+        // reach — it feeds the bind group — so it is an orphan now.
+        self.graph.cleanup();
 
         let emptied = self.metadata.get_mut(mesh.metadata_index as usize);
         if let Some(entry) = emptied {
@@ -922,6 +929,8 @@ impl Renderer {
     /// not be used afterwards.
     pub fn remove_material(&mut self, material: GpuMaterial) {
         self.graph.remove(material.bind_group_id);
+        // A resource that only fed this material's bind group is an orphan now.
+        self.graph.cleanup();
     }
 
     /// Render one frame from the ECS `world`.

@@ -7,6 +7,7 @@
 //! and one pipeline, several, or none may specialize on it.
 
 use crate::bounds::Aabb;
+use wgpu_unlit_render::resources::ResourceId;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -48,4 +49,12 @@ pub struct MeshDesc {
     /// [`MESH_GROUP`](wgpu_unlit_render::pipeline::MESH_GROUP), for a
     /// pipeline that reads per-mesh data such as the metadata index.
     pub bind_group: Option<wgpu::BindGroup>,
+    /// Resources the `bind_group` was built from beyond the mesh's own vertex
+    /// buffers, which the renderer adds on its own.
+    ///
+    /// Replacing one of them marks the bind group dirty; removing it frees the
+    /// bind group with it. A mesh whose group reads a per-mesh uniform names
+    /// that uniform here, so the uniform is freed with the mesh instead of
+    /// outliving it.
+    pub bind_group_dependencies: Vec<ResourceId>,
 }
