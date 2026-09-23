@@ -475,6 +475,37 @@ mod tests {
         assert_eq!(found, [(without, None), (with, Some(5))]);
     }
 
+    /// An optional component is a query on its own: it matches every
+    /// archetype, so archetypes that lack it still yield a `None` item.
+    #[test]
+    fn an_optional_component_alone_matches_every_archetype() {
+        let mut world = crate::LocalWorld::new();
+        let with = world.spawn((7u32,));
+        let without = world.spawn((true,));
+        let mut found: Vec<(Entity, Option<u32>)> = world
+            .query::<Option<&u32>>()
+            .map(|(e, value)| (e, value.map(|v| *v)))
+            .collect();
+        found.sort_by_key(|(_, value)| *value);
+        assert_eq!(found, [(without, None), (with, Some(7))]);
+    }
+
+    /// An optional exclusive reference writes where the component is present
+    /// and leaves archetypes without it alone.
+    #[test]
+    fn an_optional_mutable_component_is_written_where_present() {
+        let mut world = crate::LocalWorld::new();
+        let with = world.spawn((Marker(1), 5u32));
+        let without = world.spawn((Marker(2),));
+        world.for_each::<(Option<&mut u32>,), _>(|(value,)| {
+            if let Some(mut value) = value {
+                *value += 1;
+            }
+        });
+        assert_eq!(world.get::<u32>(with).map(|value| *value), Some(6));
+        assert!(world.get::<u32>(without).is_none());
+    }
+
     #[test]
     fn with_and_without_filter_by_presence() {
         let mut world = crate::LocalWorld::new();

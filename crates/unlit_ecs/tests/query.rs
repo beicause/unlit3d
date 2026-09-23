@@ -115,6 +115,57 @@ fn optional_components_are_none_when_missing() {
 }
 
 #[test]
+fn an_optional_component_alone_yields_none_for_holders_without_it() {
+    let (world, mover, hidden, still) = scene();
+
+    // `Option<&Velocity>` matches every archetype, so all three entities are
+    // visited; the one without a velocity yields `None`.
+    let seen: Vec<(Entity, Option<f32>)> = world
+        .query::<Option<&Velocity>>()
+        .map(|(entity, velocity)| (entity, velocity.map(|v| v.dx)))
+        .collect();
+
+    assert_eq!(seen.len(), 3);
+    assert!(seen.contains(&(mover, Some(1.0))));
+    assert!(seen.contains(&(hidden, Some(2.0))));
+    assert!(seen.contains(&(still, None)));
+}
+
+#[test]
+fn an_optional_mutable_component_writes_only_where_present() {
+    let (world, mover, hidden, still) = scene();
+
+    world.for_each::<(Option<&mut Velocity>,), _>(|(velocity,)| {
+        if let Some(mut velocity) = velocity {
+            velocity.dx += 10.0;
+        }
+    });
+
+    assert_eq!(world.get::<Velocity>(mover).unwrap().dx, 11.0);
+    assert_eq!(world.get::<Velocity>(hidden).unwrap().dx, 12.0);
+    assert!(
+        world.get::<Velocity>(still).is_none(),
+        "the still entity has no velocity to write"
+    );
+}
+
+#[test]
+fn an_optional_component_composes_with_a_filter() {
+    let (world, mover, _, still) = scene();
+
+    // The filter visits only the visible entities; one of them has a velocity
+    // and the other does not.
+    let seen: Vec<(Entity, Option<f32>)> = world
+        .query_filtered::<Option<&Velocity>, With<Visible>>()
+        .map(|(entity, velocity)| (entity, velocity.map(|v| v.dx)))
+        .collect();
+
+    assert_eq!(seen.len(), 2);
+    assert!(seen.contains(&(mover, Some(1.0))));
+    assert!(seen.contains(&(still, None)));
+}
+
+#[test]
 fn with_requires_a_component_without_fetching_it() {
     let (world, mover, _, _) = scene();
 
