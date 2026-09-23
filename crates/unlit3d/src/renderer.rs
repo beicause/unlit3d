@@ -37,8 +37,8 @@ use crate::pipeline::{
     PipelineId, PipelineKey, RegisteredGlobal, RenderResources,
 };
 use crate::scene::{
-    AnyFamily, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry, assemble_scene,
-    collect_and_sort_visible,
+    AnyFamily, DrawShape, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry,
+    assemble_scene, collect_and_sort_visible,
 };
 
 /// The renderer: ECS resource component that holds GPU state and orchestrates
@@ -110,6 +110,9 @@ pub struct Renderer {
     bind_group_cache: Vec<wgpu::BindGroup>,
     /// Reused Vec for cloned buffers while the scene is built.
     buffer_cache: Vec<wgpu::Buffer>,
+    /// Reused Vec of the vertex slot each entry of [`Self::buffer_cache`] is
+    /// bound to, parallel to it.
+    vertex_slot_cache: Vec<u32>,
     /// Reused Vec for cloned pipeline handles while the scene is built.
     pipeline_handle_cache: Vec<PipelineHandles>,
     /// Reused Vec of per-entry handle indices while the scene is built.
@@ -420,6 +423,7 @@ impl Renderer {
             packed_instances_cache: Vec::new(),
             bind_group_cache: Vec::new(),
             buffer_cache: Vec::new(),
+            vertex_slot_cache: Vec::new(),
             pipeline_handle_cache: Vec::new(),
             entry_handle_cache: Vec::new(),
             scene_cache: Scene::new(),
@@ -1000,8 +1004,10 @@ impl Renderer {
         // so nothing mutates them while it is alive.
         let mut bind_group_cache = std::mem::take(&mut self.bind_group_cache);
         let mut buffer_cache = std::mem::take(&mut self.buffer_cache);
+        let mut vertex_slot_cache = std::mem::take(&mut self.vertex_slot_cache);
         bind_group_cache.clear();
         buffer_cache.clear();
+        vertex_slot_cache.clear();
 
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
@@ -1036,13 +1042,16 @@ impl Renderer {
                 };
 
                 let vertex_start = buffer_cache.len();
-                for &(_slot, buffer) in &mesh.vertex_buffers {
+                let mut vertex_count = 0;
+                for &(slot, buffer) in &mesh.vertex_buffers {
+                    vertex_slot_cache.push(slot);
                     buffer_cache.push(
                         graph_ref
                             .get_buffer(buffer)
                             .expect("mesh vertex buffer exists")
                             .clone(),
                     );
+                    vertex_count += 1;
                 }
 
                 let index_buffer = match mesh.index_buffer {
@@ -1058,11 +1067,19 @@ impl Renderer {
                     None => None,
                 };
 
+                // The mesh is named once here and nowhere else: what a draw
+                // reads is carried alongside its handles, so assembling the
+                // scene needs no lookup per draw.
                 handles.push(EntryHandles {
                     mesh_bg,
                     material_bg,
                     vertex_start,
                     index_buffer,
+                    shape: DrawShape {
+                        indexed: mesh.indexed,
+                        count: mesh.count,
+                        vertex_count,
+                    },
                 });
             }
         }
@@ -1095,10 +1112,10 @@ impl Renderer {
         assemble_scene(
             &mut scene,
             &self.visible_cache,
-            world,
             &pipeline_handles,
             &bind_group_cache,
             &buffer_cache,
+            &vertex_slot_cache,
             &handles,
             &instance_buf,
         );
@@ -1127,6 +1144,7 @@ impl Renderer {
         self.scene_cache = scene.recycle();
         self.bind_group_cache = bind_group_cache;
         self.buffer_cache = buffer_cache;
+        self.vertex_slot_cache = vertex_slot_cache;
         self.pipeline_handle_cache = pipeline_handles;
         self.entry_handle_cache = handles;
 

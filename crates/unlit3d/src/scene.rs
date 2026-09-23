@@ -326,6 +326,21 @@ pub(crate) struct PipelineHandles {
     pub(crate) global: Option<wgpu::BindGroup>,
 }
 
+/// The shape of one draw: what is drawn and from which source.
+///
+/// Resolved once per entry alongside its handles, so assembling the draws
+/// names no [`GpuMesh`] and therefore needs no access to the world.
+#[derive(Clone, Copy)]
+pub(crate) struct DrawShape {
+    /// Whether the draw is indexed; when it is not, `count` is a vertex count.
+    pub(crate) indexed: bool,
+    /// How many indices or vertices the draw reads.
+    pub(crate) count: u32,
+    /// How many vertex buffers the draw binds, starting at
+    /// [`EntryHandles::vertex_start`].
+    pub(crate) vertex_count: usize,
+}
+
 /// One visible entry's resource-graph handles, resolved before the scene is
 /// assembled.
 ///
@@ -342,15 +357,19 @@ pub(crate) struct EntryHandles {
     /// Index into the frame's buffer cache of the index buffer, with its
     /// format, when the mesh is indexed.
     pub(crate) index_buffer: Option<(usize, wgpu::IndexFormat)>,
+    /// What the draw reads: whether it is indexed and how many indices or
+    /// vertices.
+    pub(crate) shape: DrawShape,
 }
 
 /// Append one draw per visible entry to `scene`.
 ///
-/// The entries have already been culled, resolved and sorted, and their
-/// resource-graph handles already cloned into `bind_groups` and `buffers`
-/// (see [`EntryHandles`]). Assembling the draws is therefore a linear pass
-/// that only names handles, which keeps the resource graph out of the scene's
-/// lifetime.
+/// The entries have already been culled, resolved and sorted, their
+/// resource-graph handles already cloned into `bind_groups` and `buffers`, and
+/// each draw's shape already taken from its [`GpuMesh`] (see
+/// [`EntryHandles`]). Assembling the draws is therefore a linear pass over
+/// slices that names nothing the world owns, which keeps both the resource
+/// graph and the world out of the scene's lifetime.
 ///
 /// The draws are appended in `visible` order, so the sort that put neighbours
 /// on the same pipeline and bind groups is what keeps recording's state changes
@@ -362,25 +381,22 @@ pub(crate) struct EntryHandles {
 pub(crate) fn assemble_scene<'a>(
     scene: &mut Scene<'a>,
     visible: &[VisibleEntry],
-    world: &LocalWorld,
     pipelines: &'a [PipelineHandles],
     bind_groups: &'a [wgpu::BindGroup],
     buffers: &'a [wgpu::Buffer],
+    vertex_slots: &[u32],
     handles: &[EntryHandles],
     instance_buffer: &'a wgpu::Buffer,
 ) {
     for (draw_idx, entry) in visible.iter().enumerate() {
-        let mesh = world
-            .get::<GpuMesh>(entry.mesh.entity)
-            .expect("visible entity has GpuMesh");
         let handle = &handles[draw_idx];
         let pipeline = &pipelines[entry.pipeline_id.as_usize()];
 
         let instance_range = (draw_idx as u32)..(draw_idx as u32 + 1);
-        let range = if mesh.indexed {
-            DrawRange::indexed(0..mesh.count).with_instances(instance_range)
+        let range = if handle.shape.indexed {
+            DrawRange::indexed(0..handle.shape.count).with_instances(instance_range)
         } else {
-            DrawRange::vertices(0..mesh.count).with_instances(instance_range)
+            DrawRange::vertices(0..handle.shape.count).with_instances(instance_range)
         };
 
         let mut draw = DrawEntry::new(&pipeline.pipeline, range);
@@ -393,8 +409,11 @@ pub(crate) fn assemble_scene<'a>(
         if let Some(index) = handle.mesh_bg {
             draw = draw.with_bind_group(MESH_GROUP, &bind_groups[index]);
         }
-        for (offset, &(slot, _)) in mesh.vertex_buffers.iter().enumerate() {
-            draw = draw.with_vertex_buffer(slot, buffers[handle.vertex_start + offset].slice(..));
+        for offset in 0..handle.shape.vertex_count {
+            draw = draw.with_vertex_buffer(
+                vertex_slots[handle.vertex_start + offset],
+                buffers[handle.vertex_start + offset].slice(..),
+            );
         }
         if let Some((index, format)) = handle.index_buffer {
             draw = draw.with_index_buffer(buffers[index].slice(..), format);
