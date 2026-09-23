@@ -42,11 +42,14 @@ fn ecs_cube_covers_the_frame() {
     ));
 
     // Render offscreen.
-    let (target, target_view) = offscreen_target(&ctx.device, "test::ecs_cube");
-    let _ = world.with_mut::<Renderer, _>(*renderer, |r| {
-        r.update_metadata_buffer();
-        r.render(&world, Some(&target_view));
-    });
+    let target = world
+        .with_mut::<Renderer, _>(*renderer, |r| {
+            let target = bind_offscreen_target(r, "test::ecs_cube");
+            r.update_metadata_buffer();
+            r.render(&world);
+            target
+        })
+        .expect("renderer is a resource entity");
 
     // Read back and check.
     let frame = Frame {
@@ -108,11 +111,14 @@ fn ecs_depth_ordering_hides_the_far_instance() {
         UnlitPipeline::new(key.clone()),
     ));
 
-    let (target, target_view) = offscreen_target(&ctx.device, "test::depth");
-    let _ = world.with_mut::<Renderer, _>(*renderer, |r| {
-        r.update_metadata_buffer();
-        r.render(&world, Some(&target_view));
-    });
+    let target = world
+        .with_mut::<Renderer, _>(*renderer, |r| {
+            let target = bind_offscreen_target(r, "test::depth");
+            r.update_metadata_buffer();
+            r.render(&world);
+            target
+        })
+        .expect("renderer is a resource entity");
 
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
@@ -196,11 +202,14 @@ fn ecs_unlit_cube_matches_snapshot() {
         UnlitPipeline::new(key),
     ));
 
-    let (target, target_view) = offscreen_target(&ctx.device, "test::snapshot");
-    let _ = world.with_mut::<Renderer, _>(*renderer, |r| {
-        r.update_metadata_buffer();
-        r.render(&world, Some(&target_view));
-    });
+    let target = world
+        .with_mut::<Renderer, _>(*renderer, |r| {
+            let target = bind_offscreen_target(r, "test::snapshot");
+            r.update_metadata_buffer();
+            r.render(&world);
+            target
+        })
+        .expect("renderer is a resource entity");
 
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),

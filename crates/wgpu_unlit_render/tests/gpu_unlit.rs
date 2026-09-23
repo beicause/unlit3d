@@ -23,7 +23,7 @@ use wgpu_unlit_render::pipeline::{
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
 use wgpu_unlit_render::render_attachments::{
-    AttachmentsInfo, RenderAttachments, default_depth_stencil_format, depth_clear, stencil_clear,
+    RenderAttachments, create_render_target, depth_clear, stencil_clear,
 };
 use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
 use zerocopy::IntoBytes;
@@ -358,24 +358,17 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
     }
 }
 
+/// Build a render target for the test: a persistent color texture, a transient
+/// depth texture, and — when `sample_count > 1` — a transient multisample
+/// texture. Returns the attachment set and the color texture (for readback).
+fn render_target(ctx: &Ctx, sample_count: u32) -> (RenderAttachments, wgpu::Texture) {
+    let ft = create_render_target(&ctx.device, COLOR_FORMAT, WIDTH, HEIGHT, sample_count);
+    (ft.attachments, ft.color)
+}
+
 /// Render `instances` of `fixture`'s mesh and read the frame back.
 fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Frame {
-    let context = RenderAttachments::new(
-        &ctx.device,
-        AttachmentsInfo {
-            color: Some(COLOR_FORMAT),
-            depth_stencil: Some(default_depth_stencil_format(&ctx.device)),
-            width: WIDTH,
-            height: HEIGHT,
-            sample_count: fixture.multisample.count,
-            transient_depth: true,
-        },
-    );
-    // Readback comes from the context's own color texture.
-    let target = context
-        .color_texture()
-        .expect("a color pass has a color texture")
-        .clone();
+    let (context, target) = render_target(ctx, fixture.multisample.count);
 
     // Global group: camera, frame globals and the mesh-metadata array.
     let view = camera(WIDTH as f32 / HEIGHT as f32);
@@ -785,19 +778,9 @@ fn textured_cube_matches_snapshot() {
 #[test]
 fn a_loaded_color_attachment_keeps_its_contents() {
     let ctx = Ctx::headless();
-    // No MSAA: the pass draws straight into the context's color texture, so
-    // a stored frame survives into a second pass that loads.
-    let context = RenderAttachments::new(
-        &ctx.device,
-        AttachmentsInfo {
-            color: Some(COLOR_FORMAT),
-            depth_stencil: Some(default_depth_stencil_format(&ctx.device)),
-            width: WIDTH,
-            height: HEIGHT,
-            sample_count: 1,
-            transient_depth: true,
-        },
-    );
+    // No MSAA: the pass draws straight into the color texture, so a stored
+    // frame survives into a second pass that loads.
+    let (context, target) = render_target(&ctx, 1);
 
     let mut encoder = ctx
         .device
@@ -831,9 +814,8 @@ fn a_loaded_color_attachment_keeps_its_contents() {
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll");
 
-    let texture = context.color_texture().expect("a color pass");
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, texture, WIDTH, HEIGHT, texel_bytes(texture)),
+        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
         width: WIDTH,
         height: HEIGHT,
     };

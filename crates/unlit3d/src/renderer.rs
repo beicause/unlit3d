@@ -18,9 +18,7 @@ use wgpu_unlit_render::pipeline::{
     INSTANCE_SLOT, MESH_INFO_BINDING, MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT,
     UnlitFlags, UnlitOptions, UnlitPipeline, apply_surface,
 };
-use wgpu_unlit_render::render_attachments::{
-    AttachmentsInfo, RenderAttachments, default_depth_stencil_format,
-};
+use wgpu_unlit_render::render_attachments::RenderAttachments;
 use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
 use wgpu_unlit_render::scene::Scene;
 use wgpu_unlit_render::specialize::{
@@ -58,8 +56,22 @@ pub struct Renderer {
     /// Dependency-tracked GPU resource graph.
     pub graph: ResourceGraph,
 
-    /// Frame attachments (colour, depth, MSAA).
-    pub attachments: RenderAttachments,
+    /// The color attachment the frame renders into, as a texture-view resource
+    /// in [`Self::graph`], or `None` until [`Self::set_render_target`] binds
+    /// one.
+    color_view: Option<ResourceId>,
+    /// The depth-stencil attachment the frame renders into, as a texture-view
+    /// resource in [`Self::graph`], or `None` until [`Self::set_render_target`]
+    /// binds one.
+    depth_view: Option<ResourceId>,
+    /// The multisample attachment, if any, as a texture-view resource in
+    /// [`Self::graph`]; `None` for a non-multisampled pass or before
+    /// [`Self::set_render_target`] binds one.
+    msaa_view: Option<ResourceId>,
+    /// The [SurfaceKey] of the currently bound attachments, cached so the
+    /// surface does not have to be re-derived every draw. `None` until
+    /// [`Self::set_render_target`] is called.
+    surface: Option<SurfaceKey>,
 
     /// Resource id of the camera uniform buffer.
     camera_buf: ResourceId,
@@ -80,9 +92,6 @@ pub struct Renderer {
     /// A reused instance-data buffer, grown as needed.
     instance_buffer: Option<wgpu::Buffer>,
     instance_capacity: u32,
-
-    /// Temporary attachments set for external-target rendering.
-    external_attachments: Option<RenderAttachments>,
 
     /// Every concrete pipeline registered with this renderer, in
     /// registration order.
@@ -341,9 +350,9 @@ impl Renderer {
     /// compiles nothing; a family's first concrete pipeline is built the first
     /// time an entity that uses it is drawn.
     ///
-    /// `width` and `height` are the initial viewport size in physical
-    /// pixels.
-    pub fn new(device: wgpu::Device, queue: wgpu::Queue, width: u32, height: u32) -> Self {
+    /// The renderer starts with no render target: bind one with
+    /// [`Self::set_render_target`] before the first [`Self::render`].
+    pub fn new(device: wgpu::Device, queue: wgpu::Queue) -> Self {
         let mut graph = ResourceGraph::new();
 
         // Camera uniform buffer.
@@ -398,14 +407,14 @@ impl Renderer {
             globals.as_bytes(),
         );
 
-        let attachments =
-            RenderAttachments::new(&device, AttachmentsInfo::new(&device, width, height));
-
         Self {
             device,
             queue,
             graph,
-            attachments,
+            color_view: None,
+            depth_view: None,
+            msaa_view: None,
+            surface: None,
             camera_buf,
             globals_buf,
             metadata_buf,
@@ -415,7 +424,6 @@ impl Renderer {
             metadata_capacity: 1,
             instance_buffer: None,
             instance_capacity: 0,
-            external_attachments: None,
             pipelines: Vec::new(),
             families: TypeIdHashMap::default(),
             visible_meshes_cache: Vec::new(),
@@ -430,12 +438,57 @@ impl Renderer {
         }
     }
 
-    /// Resize the render target.
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.attachments = RenderAttachments::new(
-            &self.device,
-            AttachmentsInfo::new(&self.device, width, height),
-        );
+    /// Bind the render target the next frames draw into.
+    ///
+    /// `color_view`, `depth_view` and `msaa_view` are texture-view resources
+    /// already registered in [`Self::graph`]. Any may be `None`: a depth-only
+    /// pass omits the color view, a color-only pass omits the depth view, and
+    /// a non-multisampled pass omits the MSAA view. At least one of the color
+    /// and depth views must be present — a pass with neither cannot exist —
+    /// and the MSAA view is only valid alongside a color view it resolves
+    /// into.
+    ///
+    /// The renderer reads the views from the graph each frame, so replacing a
+    /// view's texture (and re-binding it here, or relying on the graph's dirty
+    /// propagation) is how a swapchain resize reaches the renderer.
+    ///
+    /// # Panics
+    ///
+    /// If a given id is not a texture view in the graph, if neither the color
+    /// nor the depth view is present, or if an MSAA view is given without a
+    /// color view.
+    pub fn set_render_target(
+        &mut self,
+        color_view: Option<ResourceId>,
+        depth_view: Option<ResourceId>,
+        msaa_view: Option<ResourceId>,
+    ) {
+        // Resolve every view up front so a bad id panics before any field
+        // is touched. The handles are cloned out only to derive the surface
+        // key; the ids are what the frame path keeps.
+        let color = color_view.map(|id| {
+            self.graph
+                .get_texture_view(id)
+                .expect("color_view is a texture view in the graph")
+                .clone()
+        });
+        let depth = depth_view.map(|id| {
+            self.graph
+                .get_texture_view(id)
+                .expect("depth_view is a texture view in the graph")
+                .clone()
+        });
+        let msaa = msaa_view.map(|id| {
+            self.graph
+                .get_texture_view(id)
+                .expect("msaa_view is a texture view in the graph")
+                .clone()
+        });
+        let attachments = RenderAttachments::from_views(color, depth, msaa);
+        self.surface = Some(attachments.surface_key());
+        self.color_view = color_view;
+        self.depth_view = depth_view;
+        self.msaa_view = msaa_view;
     }
 
     /// Upload vertex and index data and return a [GpuMesh] handle.
@@ -766,14 +819,17 @@ impl Renderer {
         mesh
     }
 
-    /// Insert `texture` into the resource graph and return the id of a view
-    /// of it.
+    /// Insert `texture` into the resource graph and return a pair of ids: the
+    /// texture itself and a default view of it.
     ///
     /// The view is recorded as depending on the texture, so replacing the
     /// texture marks every material built from the view dirty. The caller
     /// keeps ownership of the texture only until this call; afterwards the
     /// graph holds it.
-    pub fn register_texture(&mut self, texture: wgpu::Texture) -> ResourceId {
+    pub fn register_texture_and_default_view(
+        &mut self,
+        texture: wgpu::Texture,
+    ) -> (ResourceId, ResourceId) {
         let texture_id = self
             .graph
             .insert_strong(Resource::Texture(texture), &[])
@@ -783,9 +839,11 @@ impl Renderer {
             .get_texture(texture_id)
             .expect("texture exists")
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.graph
+        let view_id = self
+            .graph
             .insert_strong(Resource::TextureView(view), &[texture_id])
-            .expect("the view depends on its texture")
+            .expect("the view depends on its texture");
+        (texture_id, view_id)
     }
 
     /// Create a sampler with `descriptor` — or the default one when `None` —
@@ -890,7 +948,7 @@ impl Renderer {
     /// The mesh's vertex and index buffers leave the resource graph together
     /// with the bind group built from them. The resources that only fed that
     /// bind group — the per-mesh uniform behind it — are collected by the
-    /// [cleanup](ResourceGraph::cleanup) this runs, so the mesh frees
+    /// [cleanup](ResourceGraph::cleanup_drop) this runs, so the mesh frees
     /// everything it owned. The [`GpuMesh`] handle must not be used
     /// afterwards: drawing with it names buffers that are gone.
     ///
@@ -905,14 +963,14 @@ impl Renderer {
     /// error the caller has to avoid: nothing detects the stale handle.
     pub fn remove_mesh(&mut self, mesh: GpuMesh) {
         for (_slot, id) in &mesh.vertex_buffers {
-            self.graph.remove(*id);
+            self.graph.remove_drop(*id);
         }
         if let Some((id, _format)) = mesh.index_buffer {
-            self.graph.remove(id);
+            self.graph.remove_drop(id);
         }
         // The per-mesh uniform is not derived from anything the walks above
         // reach — it feeds the bind group — so it is an orphan now.
-        self.graph.cleanup();
+        self.graph.cleanup_drop();
 
         let emptied = self.metadata.get_mut(mesh.metadata_index as usize);
         if let Some(entry) = emptied {
@@ -929,21 +987,22 @@ impl Renderer {
     /// separately if nothing else reads them. The [`GpuMaterial`] handle must
     /// not be used afterwards.
     pub fn remove_material(&mut self, material: GpuMaterial) {
-        self.graph.remove(material.bind_group_id);
+        self.graph.remove_drop(material.bind_group_id);
         // A resource that only fed this material's bind group is an orphan now.
-        self.graph.cleanup();
+        self.graph.cleanup_drop();
     }
 
     /// Render one frame from the ECS `world`.
     ///
-    /// When `target` is `Some`, the frame is rendered into that texture
-    /// view; otherwise the renderer's internal colour target is used.
+    /// The frame renders into the target bound with [`Self::set_render_target`];
+    /// there is no implicit target, so a renderer that has not been bound one
+    /// panics here.
     ///
     /// The frame is drawn with the first [Camera] in `world` and opened with
     /// the first [RenderLoadOps] there, or the defaults when none carries
     /// one. A world with no camera draws nothing, but still opens and closes
     /// its pass, so the frame's clears are applied.
-    pub fn render(&mut self, world: &LocalWorld, target: Option<&wgpu::TextureView>) {
+    pub fn render(&mut self, world: &LocalWorld) {
         // Find the frame's load ops and its camera, copying the camera out of
         // its cell so the borrow does not block the world accesses below.
         let load_ops = frame_load_ops(world);
@@ -952,7 +1011,7 @@ impl Renderer {
             position: c.position,
         });
         let Some(camera) = camera else {
-            self.clear_frame(target, load_ops);
+            self.clear_frame(load_ops);
             return;
         };
 
@@ -976,22 +1035,17 @@ impl Renderer {
             view.as_bytes(),
         );
 
-        // Resolve the one render target this frame draws into, and key every
-        // pipeline against it. The target is the caller's when given, the
-        // renderer's own otherwise.
-        let surface = target
-            .map(|view| SurfaceKey {
-                color_format: view.texture().format(),
-                depth_stencil_format: Some(default_depth_stencil_format(&self.device)),
-                sample_count: 1,
-            })
-            .unwrap_or_else(|| self.attachments.surface_key());
+        // Resolve the surface the bound attachments describe, and key every
+        // pipeline against it. The surface is cached by `set_render_target`.
+        let surface = self
+            .surface
+            .expect("set_render_target binds the target before rendering");
 
         // Collect, cull and sort the visible set in one pass. The cache keeps
         // its allocation between frames, so a steady scene allocates nothing.
         self.collect_and_sort_visible(world, &camera, surface);
         if self.visible_cache.is_empty() {
-            self.clear_frame(target, load_ops);
+            self.clear_frame(load_ops);
             return;
         }
         let instance_count = self.visible_cache.len() as u32;
@@ -1139,7 +1193,7 @@ impl Renderer {
                 label: Some("unlit3d::encoder"),
             });
 
-        let attachments = self.prep_attachments(target);
+        let attachments = self.attachments();
         {
             let mut pass = attachments.begin_pass(
                 &mut encoder,
@@ -1385,80 +1439,44 @@ impl Renderer {
         );
     }
 
-    /// Prepare attachments for returning a reference to the attachment set.
+    /// Build the one-frame attachment set from the views bound with
+    /// [`Self::set_render_target`].
     ///
-    /// A set built for an external target is kept and rebuilt only when the
-    /// target itself changes: the depth texture it allocates is sized to the
-    /// target, so reusing it across frames keeps a render loop from creating
-    /// and destroying a texture every frame.
-    fn prep_attachments(&mut self, target: Option<&wgpu::TextureView>) -> &RenderAttachments {
-        let Some(view) = target else {
-            return &self.attachments;
-        };
-
-        let target_width = view.texture().width().max(1);
-        let target_height = view.texture().height().max(1);
-        let depth_fmt = default_depth_stencil_format(&self.device);
-        let info = AttachmentsInfo {
-            color: Some(view.texture().format()),
-            depth_stencil: Some(depth_fmt),
-            width: target_width,
-            height: target_height,
-            sample_count: 1,
-            transient_depth: true,
-        };
-
-        // The cached set is only usable while it describes this very target.
-        // wgpu resources compare by identity, so comparing the views is the
-        // "is this the same attachment" test; matching size and format is not
-        // enough, since a different texture of equal size is a different
-        // attachment to render into.
-        let reusable = self.external_attachments.as_ref().is_some_and(|cached| {
-            cached.color_view() == Some(view)
-                && cached.depth_stencil_format() == Some(depth_fmt)
-                && cached.sample_count() == info.sample_count
+    /// The views are cloned out of the graph, so the returned set borrows
+    /// nothing from the renderer. No texture is allocated here: the caller
+    /// owns every attachment through the graph.
+    fn attachments(&self) -> RenderAttachments {
+        let color = self.color_view.map(|id| {
+            self.graph
+                .get_texture_view(id)
+                .expect("bound color view")
+                .clone()
         });
-        if reusable {
-            return self.external_attachments.as_ref().expect("just checked");
-        }
-
-        let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("unlit3d::external_depth"),
-            size: wgpu::Extent3d {
-                width: target_width,
-                height: target_height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: depth_fmt,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
-            view_formats: &[],
+        let depth = self.depth_view.map(|id| {
+            self.graph
+                .get_texture_view(id)
+                .expect("bound depth view")
+                .clone()
         });
-        let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let ext = RenderAttachments::new_with_targets(
-            &self.device,
-            info,
-            Some(view.clone()),
-            Some(depth_view),
-        );
-        self.external_attachments = Some(ext);
-        self.external_attachments.as_ref().expect("just set")
+        let msaa = self.msaa_view.map(|id| {
+            self.graph
+                .get_texture_view(id)
+                .expect("bound msaa view")
+                .clone()
+        });
+        RenderAttachments::from_views(color, depth, msaa)
     }
 
     /// Open and close a pass over the attachments without drawing anything,
     /// with `load_ops`, so a frame with nothing to draw still applies the
     /// caller's clears.
-    fn clear_frame(&mut self, target: Option<&wgpu::TextureView>, load_ops: RenderLoadOps) {
+    fn clear_frame(&mut self, load_ops: RenderLoadOps) {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("unlit3d::encoder"),
             });
-        let attachments = self.prep_attachments(target);
+        let attachments = self.attachments();
         {
             let mut _pass = attachments.begin_pass(
                 &mut encoder,
@@ -1488,6 +1506,7 @@ mod tests {
     use super::*;
     use crate::components::{Transform, UnlitPipeline, ZSortedDrawing};
     use unlit_ecs::Entity;
+    use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
@@ -1515,10 +1534,59 @@ mod tests {
     /// registered, plus a standard key to draw with.
     fn noop_renderer() -> (Renderer, UnlitPipelineKey) {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut renderer = Renderer::new(device, queue, TEST_SIZE, TEST_SIZE);
+        let mut renderer = Renderer::new(device, queue);
         renderer.register_unlit_family();
         let key = UnlitPipelineKey::new(UnlitOptions::standard(&renderer.device));
+        // Bind a default color + depth target so the renderer is ready to draw.
+        bind_test_target(&mut renderer, TEST_SIZE, TEST_SIZE);
         (renderer, key)
+    }
+
+    /// Register a `width` x `height` color texture and a matching depth texture
+    /// in `renderer`'s graph and bind them as its render target.
+    ///
+    /// Returns the color and depth texture ids for callers that need to read
+    /// them (the depth id is dropped here; the color id is returned so a test
+    /// can copy the result back).
+    fn bind_test_target(renderer: &mut Renderer, width: u32, height: u32) -> ResourceId {
+        let color = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test::color"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let color_view = renderer.register_texture_and_default_view(color).1;
+        let depth = renderer.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test::depth"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: default_depth_stencil_format(&renderer.device),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_view = renderer
+            .graph
+            .insert_strong(
+                Resource::TextureView(depth.create_view(&wgpu::TextureViewDescriptor::default())),
+                &[],
+            )
+            .expect("depth view has no dependencies");
+        renderer.set_render_target(Some(color_view), Some(depth_view), None);
+        color_view
     }
 
     /// Register a 2D texture with `renderer` and return a view id and a
@@ -1538,7 +1606,7 @@ mod tests {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let view = renderer.register_texture(texture);
+        let view = renderer.register_texture_and_default_view(texture).1;
         let sampler = renderer.register_sampler(None);
         (view, sampler)
     }
@@ -1555,7 +1623,7 @@ mod tests {
     #[test]
     fn registering_a_family_compiles_nothing() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut renderer = Renderer::new(device, queue, 64, 64);
+        let mut renderer = Renderer::new(device, queue);
 
         renderer.register_unlit_family();
 
@@ -1563,83 +1631,6 @@ mod tests {
         // built only when a draw resolves a variant.
         assert!(renderer.pipelines.is_empty());
         assert_eq!(renderer.families.len(), 1);
-    }
-
-    // -- external render targets -------------------------------------------
-
-    /// A render target with the same size and format as the test frame.
-    fn target_texture(renderer: &Renderer, label: &str) -> (wgpu::Texture, wgpu::TextureView) {
-        let texture = renderer.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: TEST_SIZE,
-                height: TEST_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
-    }
-
-    #[test]
-    fn rendering_twice_into_one_target_reuses_its_attachment_set() {
-        let (mut renderer, _key) = noop_renderer();
-        let (_texture, view) = target_texture(&renderer, "test::target");
-
-        // The first frame allocates the depth texture the target needs.
-        renderer.clear_frame(Some(&view), RenderLoadOps::default());
-        let first = renderer
-            .external_attachments
-            .as_ref()
-            .expect("an external target allocates attachments");
-
-        // Comparing the depth view across frames is only meaningful while the
-        // set is the one built above, so remember it before the second frame.
-        let first_depth = first.depth_stencil_view().cloned();
-
-        renderer.clear_frame(Some(&view), RenderLoadOps::default());
-        let second = renderer
-            .external_attachments
-            .as_ref()
-            .expect("still allocated");
-
-        assert_eq!(
-            second.depth_stencil_view().cloned(),
-            first_depth,
-            "the depth texture survives the second frame"
-        );
-    }
-
-    #[test]
-    fn a_different_target_gets_its_own_attachment_set() {
-        let (mut renderer, _key) = noop_renderer();
-        let (_first, first_view) = target_texture(&renderer, "test::first");
-        let (_second, second_view) = target_texture(&renderer, "test::second");
-
-        renderer.clear_frame(Some(&first_view), RenderLoadOps::default());
-        let first_depth = renderer
-            .external_attachments
-            .as_ref()
-            .and_then(|cached| cached.depth_stencil_view().cloned());
-
-        // The second target has the same size and format, so only comparing
-        // the views tells the two apart.
-        renderer.clear_frame(Some(&second_view), RenderLoadOps::default());
-        let second_depth = renderer
-            .external_attachments
-            .as_ref()
-            .and_then(|cached| cached.depth_stencil_view().cloned());
-
-        assert_ne!(
-            second_depth, first_depth,
-            "a new target must not render through the old one's depth texture"
-        );
     }
 
     // -- frame load ops ------------------------------------------------------
@@ -1683,7 +1674,7 @@ mod tests {
     #[test]
     fn a_renderer_starts_with_no_pipelines() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let renderer = Renderer::new(device, queue, 64, 64);
+        let renderer = Renderer::new(device, queue);
 
         // Nothing is privileged: pipelines arrive only through registration.
         assert!(renderer.pipelines.is_empty());
@@ -1692,7 +1683,7 @@ mod tests {
     #[test]
     fn a_unlit_mesh_is_built_from_its_keys_options() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut renderer = Renderer::new(device, queue, 64, 64);
+        let mut renderer = Renderer::new(device, queue);
         renderer.register_unlit_family();
 
         let standard = UnlitPipelineKey::new(UnlitOptions::standard(&renderer.device));
@@ -1728,7 +1719,7 @@ mod tests {
     fn every_registered_pipeline_gets_its_own_global_group() {
         let (mut renderer, key) = noop_renderer();
         let mesh = tri_mesh(&mut renderer, &key);
-        let a = renderer.attachments.surface_key();
+        let a = renderer.surface.expect("target bound");
         // A second target, so the family resolves two variants.
         let b = SurfaceKey {
             color_format: wgpu::TextureFormat::Bgra8Unorm,
@@ -1760,7 +1751,7 @@ mod tests {
 
         // A family has no concrete pipeline until a draw asks for a variant.
         let mesh = tri_mesh(&mut renderer, &key);
-        let surface = renderer.attachments.surface_key();
+        let surface = renderer.surface.expect("target bound");
         resolve_draw(&mut renderer, &key, surface, &mesh);
 
         assert_eq!(renderer.pipelines.len(), 1);
@@ -1785,7 +1776,7 @@ mod tests {
     #[test]
     fn a_variant_without_a_base_color_texture_allocates_no_material() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut renderer = Renderer::new(device, queue, 64, 64);
+        let mut renderer = Renderer::new(device, queue);
         renderer.register_unlit_family();
         let key = UnlitPipelineKey::new(uv_less_options(&renderer.device));
         let (view, sampler) = test_material_resources(&mut renderer);
@@ -1922,7 +1913,7 @@ mod tests {
         let opaque = world.spawn((Transform::default(), mesh.clone(), UnlitPipeline::new(key)));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
+        renderer.collect_and_sort_visible(&world, &camera, renderer.surface.expect("target bound"));
 
         assert_eq!(drawn(&renderer), vec![opaque, z_sorted]);
         assert!(renderer.visible_cache[0].depth > renderer.visible_cache[1].depth);
@@ -1966,7 +1957,7 @@ mod tests {
         assert_ne!(drawn(&renderer), vec![far, middle, near]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
+        renderer.collect_and_sort_visible(&world, &camera, renderer.surface.expect("target bound"));
 
         assert_eq!(drawn(&renderer), vec![far, middle, near]);
     }
@@ -1982,7 +1973,7 @@ mod tests {
         // the order they were resolved in.
         let standard_mesh = tri_mesh(&mut renderer, &key);
         let uv_less_mesh = tri_mesh(&mut renderer, &uv_less_key);
-        let surface = renderer.attachments.surface_key();
+        let surface = renderer.surface.expect("target bound");
         let first_id = resolve_draw(&mut renderer, &key, surface, &standard_mesh);
         let second_id = resolve_draw(&mut renderer, &uv_less_key, surface, &uv_less_mesh);
         assert!(first_id < second_id);
@@ -2040,7 +2031,7 @@ mod tests {
         ));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
+        renderer.collect_and_sort_visible(&world, &camera, renderer.surface.expect("target bound"));
 
         // The two draws sharing a material are neighbours, so the renderer
         // binds its bind group once for the pair.
@@ -2071,12 +2062,12 @@ mod tests {
         ));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
+        renderer.collect_and_sort_visible(&world, &camera, renderer.surface.expect("target bound"));
         assert_eq!(drawn(&renderer), vec![opaque, z_sorted]);
 
         // The cache is cleared and refilled, not reallocated.
         let capacity = renderer.visible_cache.capacity();
-        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
+        renderer.collect_and_sort_visible(&world, &camera, renderer.surface.expect("target bound"));
         assert_eq!(drawn(&renderer), vec![opaque, z_sorted]);
         assert_eq!(renderer.visible_cache.capacity(), capacity);
     }
@@ -2126,7 +2117,7 @@ mod tests {
         let (mut renderer, key) = noop_renderer();
         let mesh = tri_mesh(&mut renderer, &key);
 
-        let internal = renderer.attachments.surface_key();
+        let internal = renderer.surface.expect("target bound");
         let first = resolve(&mut renderer, &key, internal, &mesh);
         // The same key twice reuses one compiled pipeline.
         assert_eq!(resolve(&mut renderer, &key, internal, &mesh), first);
@@ -2145,7 +2136,7 @@ mod tests {
     #[test]
     fn a_mesh_layout_change_respecializes_the_family() {
         let (mut renderer, key) = noop_renderer();
-        let surface = renderer.attachments.surface_key();
+        let surface = renderer.surface.expect("target bound");
         let standard = tri_mesh(&mut renderer, &key);
         let first = resolve(&mut renderer, &key, surface, &standard);
 
@@ -2175,7 +2166,7 @@ mod tests {
     #[test]
     fn meshes_that_share_flags_share_one_variant() {
         let (mut renderer, key) = noop_renderer();
-        let surface = renderer.attachments.surface_key();
+        let surface = renderer.surface.expect("target bound");
         let base = tri_mesh(&mut renderer, &key);
         let first = resolve(&mut renderer, &key, surface, &base);
 
@@ -2212,7 +2203,7 @@ mod tests {
         let drawn_entity = world.spawn((Transform::default(), mesh, UnlitPipeline::new(key)));
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        renderer.collect_and_sort_visible(&world, &camera, renderer.attachments.surface_key());
+        renderer.collect_and_sort_visible(&world, &camera, renderer.surface.expect("target bound"));
 
         assert_eq!(drawn(&renderer), vec![drawn_entity]);
     }
@@ -2220,7 +2211,7 @@ mod tests {
     #[test]
     fn registering_compiles_no_pipeline() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut renderer = Renderer::new(device, queue, TEST_SIZE, TEST_SIZE);
+        let mut renderer = Renderer::new(device, queue);
         renderer.register_unlit_family();
 
         assert!(renderer.pipelines.is_empty());
@@ -2288,7 +2279,7 @@ mod tests {
 
         // The frame takes the no-camera path and still submits a pass, which
         // is what applies the caller's clears.
-        renderer.render(&world, None);
+        renderer.render(&world);
         assert!(renderer.visible_cache.is_empty(), "nothing was drawn");
     }
 
@@ -2308,7 +2299,7 @@ mod tests {
             ZSortedDrawing,
         ));
 
-        renderer.render(&world, None);
+        renderer.render(&world);
         let drawn_first = drawn(&renderer);
         assert_eq!(drawn_first.len(), 1, "the entity was drawn");
         let capacities = (
@@ -2320,7 +2311,7 @@ mod tests {
             renderer.scene_cache.draws.capacity(),
         );
 
-        renderer.render(&world, None);
+        renderer.render(&world);
         assert_eq!(drawn(&renderer), drawn_first, "the same draws, in order");
         assert_eq!(
             (
@@ -2357,7 +2348,7 @@ mod tests {
 
         // Recording the draws reads the slot of each vertex buffer, so a
         // misaligned cache panics here rather than drawing the wrong buffers.
-        renderer.render(&world, None);
+        renderer.render(&world);
         assert_eq!(drawn(&renderer).len(), 2, "both entities were drawn");
     }
 }

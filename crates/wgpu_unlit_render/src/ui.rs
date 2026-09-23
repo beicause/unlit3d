@@ -517,7 +517,7 @@ impl EguiIntegration {
             // material that samples it — the graph propagates the removal
             // along the dependency edges.
             if let Some(view) = self.textures.remove(&id) {
-                graph.remove(view);
+                graph.remove_drop(view);
             }
             // A material whose nodes were removed no longer resolves; drop
             // its bookkeeping entry so it can be rebuilt if egui reuses the

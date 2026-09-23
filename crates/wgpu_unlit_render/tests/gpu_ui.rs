@@ -14,7 +14,7 @@ use common::*;
 use wgpu_unlit_render::globals::Globals;
 use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
 use wgpu_unlit_render::render_attachments::{
-    AttachmentsInfo, RenderAttachments, default_depth_stencil_format, depth_clear, stencil_clear,
+    RenderAttachments, create_render_target, depth_clear, stencil_clear,
 };
 use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
@@ -125,22 +125,9 @@ fn render_ui_with(
     ui.update(&mut graph, &ctx.queue, &egui_ctx, output, pixels_per_point);
 
     let (width, height) = (WIDTH, HEIGHT);
-    let context = RenderAttachments::new(
-        &ctx.device,
-        AttachmentsInfo {
-            color: Some(COLOR_FORMAT),
-            depth_stencil: Some(default_depth_stencil_format(&ctx.device)),
-            width,
-            height,
-            sample_count: SAMPLES,
-            transient_depth: true,
-        },
-    );
-    // Readback comes from the context's own color texture.
-    let target = context
-        .color_texture()
-        .expect("a color pass has a color texture")
-        .clone();
+    let ft = create_render_target(&ctx.device, COLOR_FORMAT, width, height, SAMPLES);
+    let context = ft.attachments;
+    let target = ft.color;
     let mut encoder = ctx
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {

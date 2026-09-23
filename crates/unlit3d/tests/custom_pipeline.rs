@@ -311,7 +311,7 @@ fn a_custom_pipeline_draws_through_the_ecs() {
     let mut world = unlit_ecs::LocalWorld::new();
     let renderer = world.spawn((
         unlit_ecs::Resource,
-        Renderer::new(ctx.device.clone(), ctx.queue.clone(), WIDTH, HEIGHT),
+        Renderer::new(ctx.device.clone(), ctx.queue.clone()),
     ));
 
     // Register the hand-written pipeline as a family that specializes on
@@ -352,10 +352,13 @@ fn a_custom_pipeline_draws_through_the_ecs() {
     world.spawn((Transform::default(), mesh, pipeline));
 
     let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let (target, target_view) = offscreen_target(&ctx.device, "test::custom");
-    let _ = world.with_mut::<Renderer, _>(renderer, |r| {
-        r.render(&world, Some(&target_view));
-    });
+    let target = world
+        .with_mut::<Renderer, _>(renderer, |r| {
+            let target = bind_offscreen_target(r, "test::custom");
+            r.render(&world);
+            target
+        })
+        .expect("renderer is a resource entity");
 
     if let Some(err) = wgpu_unlit_test_util::busy_wait_block_on(scope.pop()) {
         panic!("validation error during custom draw: {err}");
@@ -397,7 +400,7 @@ fn one_pipeline_draws_many_meshes() {
     let mut world = unlit_ecs::LocalWorld::new();
     let renderer = world.spawn((
         unlit_ecs::Resource,
-        Renderer::new(ctx.device.clone(), ctx.queue.clone(), WIDTH, HEIGHT),
+        Renderer::new(ctx.device.clone(), ctx.queue.clone()),
     ));
 
     // A per-mesh tint the fragment stage adds to the interpolated vertex
@@ -474,10 +477,13 @@ fn one_pipeline_draws_many_meshes() {
     world.spawn((Transform::default(), red, pipeline.clone()));
     world.spawn((Transform::default(), green, pipeline));
 
-    let (target, target_view) = offscreen_target(&ctx.device, "test::custom::shared");
-    let _ = world.with_mut::<Renderer, _>(renderer, |r| {
-        r.render(&world, Some(&target_view));
-    });
+    let target = world
+        .with_mut::<Renderer, _>(renderer, |r| {
+            let target = bind_offscreen_target(r, "test::custom::shared");
+            r.render(&world);
+            target
+        })
+        .expect("renderer is a resource entity");
 
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),

@@ -31,7 +31,7 @@ pub fn test_world(ctx: &Ctx) -> (Renderer, LocalWorld, UnlitPipelineKey) {
 /// Build a `Renderer` on `ctx`'s device with the built-in unlit family
 /// registered, plus a standard key to draw with.
 pub fn create_renderer(ctx: &Ctx) -> (Renderer, UnlitPipelineKey) {
-    let mut renderer = Renderer::new(ctx.device.clone(), ctx.queue.clone(), WIDTH, HEIGHT);
+    let mut renderer = Renderer::new(ctx.device.clone(), ctx.queue.clone());
     renderer.register_unlit_family();
     let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
     (renderer, key)
@@ -134,10 +134,12 @@ pub fn allocate_cube_mesh(r: &mut Renderer, key: &UnlitPipelineKey) -> GpuMesh {
     r.allocate_unlit_mesh(key, &positions, Some(&uvs), Some(&colors), Some(&indices))
 }
 
-/// A simple offscreen colour target on which to render, returning
-/// `(texture, view)`.
-pub fn offscreen_target(device: &wgpu::Device, label: &str) -> (wgpu::Texture, wgpu::TextureView) {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
+/// Allocate an offscreen colour target and a matching depth-stencil target,
+/// register their views in `renderer`'s resource graph, and bind them as the
+/// renderer's render target. Returns the colour texture (for readback).
+pub fn bind_offscreen_target(renderer: &mut Renderer, label: &str) -> wgpu::Texture {
+    use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
+    let color = renderer.device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
         size: wgpu::Extent3d {
             width: WIDTH,
@@ -151,6 +153,30 @@ pub fn offscreen_target(device: &wgpu::Device, label: &str) -> (wgpu::Texture, w
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
+    let color_view = renderer.register_texture_and_default_view(color.clone()).1;
+    let depth = renderer.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(&format!("{label}::depth")),
+        size: wgpu::Extent3d {
+            width: WIDTH,
+            height: HEIGHT,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: default_depth_stencil_format(&renderer.device),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let depth_view = renderer
+        .graph
+        .insert_strong(
+            wgpu_unlit_render::resources::Resource::TextureView(
+                depth.create_view(&wgpu::TextureViewDescriptor::default()),
+            ),
+            &[],
+        )
+        .expect("depth view has no dependencies");
+    renderer.set_render_target(Some(color_view), Some(depth_view), None);
+    color
 }

@@ -12,11 +12,13 @@
 //! * [`ResourceGraph::replace`] swaps a resource and marks every resource
 //!   transitively built from it as *dirty*.
 //! * [`ResourceGraph::remove`] drops a resource together with everything
-//!   transitively built from it.
+//!   transitively built from it and returns what was dropped;
+//!   [`ResourceGraph::remove_drop`] does the same without returning it.
 //! * [`ResourceGraph::rebuild_dirty`] walks the dirty resources in dependency
 //!   order and lets the caller rebuild each one.
 //! * [`ResourceGraph::cleanup`] collects the resources nothing alive reads any
-//!   more.
+//!   more and returns them; [`ResourceGraph::cleanup_drop`] drops them without
+//!   returning them.
 //!
 //! Updates are therefore lazy and precise: uploading new bytes into an
 //! existing buffer does not dirty anything, reallocating it does, and only the
@@ -324,6 +326,9 @@ impl ResourceGraph {
     ///
     /// The removed resources are returned in dependency order (dependencies
     /// first), so the last entries are the roots of the removed subtree.
+    ///
+    /// When the dropped resources are not needed, prefer [`Self::remove_drop`],
+    /// which skips building the return vector.
     pub fn remove(&mut self, id: ResourceId) -> Vec<Resource> {
         // A post-order DFS yields a node before the nodes it was built from —
         // dependents first, `id` last. Reversing puts the returned list in
@@ -341,6 +346,20 @@ impl ResourceGraph {
         removed
     }
 
+    /// Remove `id` together with every resource transitively built from it,
+    /// dropping everything without returning it.
+    ///
+    /// This is [`Self::remove`] for callers that do not need the dropped
+    /// resources: it avoids allocating the return vector.
+    pub fn remove_drop(&mut self, id: ResourceId) {
+        // Same post-order walk as [`Self::remove`], but the nodes are dropped
+        // in place instead of collected.
+        let mut dfs = DfsPostOrder::new(&self.graph, id.0);
+        while let Some(node) = dfs.next(&self.graph) {
+            self.graph.remove_node(node);
+        }
+    }
+
     /// Collect and return every resource nothing alive is built from.
     ///
     /// A resource is alive when it was inserted [strong](Self::insert_strong),
@@ -356,14 +375,61 @@ impl ResourceGraph {
     /// The returned resources are in unspecified order. Nothing that was
     /// removed is referenced by a surviving node: a strongly held resource is
     /// always kept, and a resource a live node was built from is kept too.
+    ///
+    /// When the dropped resources are not needed, prefer
+    /// [`Self::cleanup_drop`], which skips building the return vector.
     pub fn cleanup(&mut self) -> Vec<Resource> {
-        // Aliveness propagates from a dependent to what it was built from, so
-        // walk against the edges — from each strong node to its dependencies.
-        // Liveness lives in a per-node flag rather than a set, so the walk
-        // allocates nothing beyond the returned vector. Indices are visited
-        // by number instead of through an iterator because the body mutates
-        // the graph; stable indices never shift, so a single bound covers
-        // every node.
+        // See [`Self::mark_alive`] for the liveness walk.
+        self.mark_alive();
+
+        // Indices are visited by number instead of through an iterator because
+        // the body mutates the graph; stable indices never shift, so a single
+        // bound covers every node.
+        let bound = self.graph.node_bound();
+        let mut removed = Vec::new();
+        for i in 0..bound {
+            let index = NodeIndex::new(i);
+            if self
+                .graph
+                .node_weight(index)
+                .is_some_and(|node| !node.alive)
+                && let Some(node) = self.graph.remove_node(index)
+            {
+                removed.push(node.resource);
+            }
+        }
+        removed
+    }
+
+    /// Drop every resource nothing alive is built from, without returning it.
+    ///
+    /// This is [`Self::cleanup`] for callers that do not need the dropped
+    /// resources: it avoids allocating the return vector.
+    pub fn cleanup_drop(&mut self) {
+        // See [`Self::mark_alive`] for the liveness walk.
+        self.mark_alive();
+
+        let bound = self.graph.node_bound();
+        for i in 0..bound {
+            let index = NodeIndex::new(i);
+            if self
+                .graph
+                .node_weight(index)
+                .is_some_and(|node| !node.alive)
+            {
+                self.graph.remove_node(index);
+            }
+        }
+    }
+
+    /// Recompute the per-node liveness flag: a node is alive when it is strong
+    /// or when something alive was built from it.
+    ///
+    /// Aliveness propagates from a dependent to what it was built from, so the
+    /// walk goes against the edges — from each strong node to its dependencies.
+    /// Liveness lives in a per-node flag rather than a set, so the walk
+    /// allocates nothing.
+    fn mark_alive(&mut self) {
         for node in self.graph.node_weights_mut() {
             node.alive = false;
         }
@@ -381,20 +447,6 @@ impl ResourceGraph {
                 }
             }
         }
-
-        let mut removed = Vec::new();
-        for i in 0..bound {
-            let index = NodeIndex::new(i);
-            if self
-                .graph
-                .node_weight(index)
-                .is_some_and(|node| !node.alive)
-                && let Some(node) = self.graph.remove_node(index)
-            {
-                removed.push(node.resource);
-            }
-        }
-        removed
     }
 
     /// Whether `id` needs to be rebuilt before it can be used again.
@@ -624,7 +676,7 @@ mod tests {
         let device = device();
         let mut graph = ResourceGraph::new();
         let id = graph.insert_strong(buffer(&device, "a"), &[]).unwrap();
-        graph.remove(id);
+        graph.remove_drop(id);
 
         assert_eq!(
             graph.insert_strong(buffer(&device, "b"), &[id]),
@@ -680,13 +732,13 @@ mod tests {
             .insert_strong(buffer(&device, "group"), &[input, weak])
             .unwrap();
 
-        graph.remove(group);
+        graph.remove_drop(group);
         assert!(
             graph.get(weak).is_some(),
             "the removal walk does not reach it"
         );
 
-        graph.cleanup();
+        graph.cleanup_drop();
         assert!(graph.get(weak).is_none());
         assert!(
             graph.get(input).is_some(),
@@ -718,8 +770,8 @@ mod tests {
             .insert_strong(buffer(&device, "gone_root"), &[gone_middle])
             .unwrap();
 
-        graph.remove(gone_root);
-        graph.cleanup();
+        graph.remove_drop(gone_root);
+        graph.cleanup_drop();
 
         assert!(graph.get(root).is_some());
         assert!(graph.get(middle).is_some());
@@ -765,6 +817,40 @@ mod tests {
         // The resource the subtree was built from outlives the removal.
         assert!(graph.get(base).is_some());
         assert!(graph.get(root).is_none());
+    }
+
+    /// [`ResourceGraph::remove_drop`] removes the same subtree as
+    /// [`ResourceGraph::remove`] without returning it.
+    #[test]
+    fn remove_drop_removes_the_same_subtree() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let base = graph.insert_strong(sized_buffer(&device, 64), &[]).unwrap();
+        let middle = graph
+            .insert_strong(sized_buffer(&device, 128), &[base])
+            .unwrap();
+        let root = graph
+            .insert_strong(sized_buffer(&device, 256), &[middle])
+            .unwrap();
+
+        graph.remove_drop(middle);
+        assert!(graph.get(base).is_some());
+        assert!(graph.get(middle).is_none());
+        assert!(graph.get(root).is_none());
+        assert_eq!(graph.len(), 1);
+    }
+
+    /// [`ResourceGraph::cleanup_drop`] collects the same orphans as
+    /// [`ResourceGraph::cleanup`] without returning them.
+    #[test]
+    fn cleanup_drop_collects_orphans() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let weak = graph.insert_weak(buffer(&device, "weak"), &[]).unwrap();
+
+        graph.cleanup_drop();
+        assert!(graph.get(weak).is_none());
+        assert!(graph.is_empty());
     }
 
     #[test]
