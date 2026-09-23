@@ -511,11 +511,20 @@ impl Renderer {
             (id, format)
         });
 
+        // The uniform the mesh's group reads is a weak node that nothing is
+        // built from: the group depends on it, not the other way round. The
+        // group's dependency edge is what ties its lifetime to the mesh.
+        let mesh_info_id = mesh_info_buffer.map(|buffer| {
+            self.graph
+                .insert_weak(Resource::Buffer(buffer), &[])
+                .expect("a mesh-info buffer has no dependencies")
+        });
+
         let bind_group_id = bind_group.map(|bind_group| {
             // The mesh's own buffers plus the uniform the group reads, so
             // replacing or removing any of them reaches the group.
             let mut dependencies = buffers.clone();
-            dependencies.extend(mesh_info_buffer);
+            dependencies.extend(mesh_info_id);
             self.graph
                 .insert_strong(Resource::BindGroup(bind_group), &dependencies)
                 .expect("a mesh bind group's dependencies are in the graph")
@@ -536,6 +545,16 @@ impl Renderer {
                 index
             }
         };
+
+        // The uniform names the entry the mesh just took, so it is written
+        // once the index above is known.
+        if let Some(id) = mesh_info_id {
+            self.queue.write_buffer(
+                self.graph.get_buffer(id).expect("mesh-info buffer exists"),
+                0,
+                MeshInfo::new(metadata_index).as_bytes(),
+            );
+        }
 
         GpuMesh {
             vertex_buffers: vertex_slots,
@@ -639,21 +658,13 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mesh_info_id = self
-            .graph
-            .insert_weak(Resource::Buffer(mesh_info_buf), &[])
-            .expect("mesh_info buffer has no dependencies");
 
         let mesh_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::mesh::bind_group"),
             layout: &mesh_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: MESH_INFO_BINDING,
-                resource: self
-                    .graph
-                    .get_buffer(mesh_info_id)
-                    .expect("mesh_info buffer exists")
-                    .as_entire_binding(),
+                resource: mesh_info_buf.as_entire_binding(),
             }],
         });
 
@@ -738,21 +749,12 @@ impl Renderer {
                 aabb,
                 bind_group: Some(mesh_bind_group),
                 // The group reads the metadata index through this uniform, so
-                // the mesh depends on it: removing the mesh frees the uniform
-                // along with the group, and `cleanup` collects it if the mesh
-                // is dropped from the graph rather than removed as a handle.
-                mesh_info_buffer: Some(mesh_info_id),
+                // the group depends on it: the uniform is inserted weak, and
+                // removing the mesh frees the group and then collects the
+                // orphaned uniform.
+                mesh_info_buffer: Some(mesh_info_buf),
             },
             meta,
-        );
-
-        // The MeshInfo uniform names the entry the mesh just took.
-        self.queue.write_buffer(
-            self.graph
-                .get_buffer(mesh_info_id)
-                .expect("mesh_info buffer exists"),
-            0,
-            MeshInfo::new(mesh.metadata_index).as_bytes(),
         );
 
         // The renderer binds the per-instance buffer at [INSTANCE_SLOT] for

@@ -7,7 +7,6 @@
 //! and one pipeline, several, or none may specialize on it.
 
 use crate::bounds::Aabb;
-use wgpu_unlit_render::resources::ResourceId;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -54,11 +53,11 @@ pub struct MeshDesc {
     /// The per-mesh `MeshInfo` uniform the `bind_group` reads, if it reads
     /// one.
     ///
-    /// The bind group is recorded as depending on it, so replacing the uniform
-    /// marks the group dirty and removing the group orphans the uniform. The
-    /// built-in path inserts the uniform as a weak node, so
+    /// The buffer is moved into the resource graph, so the caller hands over
+    /// ownership. It is recorded as a *weak* node the bind group depends on:
+    /// replacing it marks the group dirty, and removing the group orphans it
+    /// for
     /// [`ResourceGraph::cleanup`](wgpu_unlit_render::resources::ResourceGraph::cleanup)
-    /// then collects it; the caller names a uniform it registered here for the
-    /// same effect.
-    pub mesh_info_buffer: Option<ResourceId>,
+    /// to collect.
+    pub mesh_info_buffer: Option<wgpu::Buffer>,
 }
