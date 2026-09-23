@@ -24,6 +24,8 @@
 //!   that own no GPU resource, for grouping or standing in for others.
 //! - [`mesh`]: vertex compression and the per-mesh decode metadata that makes
 //!   the compact vertex formats usable in a shader.
+//! - [`offset_allocator`]: a sub-allocator over one contiguous range, for
+//!   packing many small ranges into a single GPU buffer.
 //! - [`scene`]: the declarative description of a frame — pipelines, their
 //!   bindings, materials, meshes and vertex buffers.
 //! - [`render_attachments`]: the attachments a pass renders into and the
@@ -76,6 +78,7 @@ wesl_core::wesl_pkg!(
 
 pub mod globals;
 pub mod mesh;
+pub mod offset_allocator;
 pub mod pipeline;
 pub mod render_attachments;
 pub mod resources;
