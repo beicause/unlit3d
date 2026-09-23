@@ -331,7 +331,16 @@ impl Scene {
             .with_mut::<Renderer, _>(renderer, |r| {
                 let texture = checkerboard(&r.device, &r.queue, 64);
                 let view = r.register_texture_and_default_view(texture).1;
-                let sampler = r.register_sampler(None);
+                // Linear filtering: the checkerboard is a high-frequency
+                // pattern, and point sampling it under minification aliases
+                // into moire on the faces the camera sees at a glancing angle.
+                let sampler = r.register_sampler(Some(wgpu::SamplerDescriptor {
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                    anisotropy_clamp: 4,
+                    ..Default::default()
+                }));
                 r.allocate_unlit_material(&key, view, sampler)
             })
             .expect("the renderer is a resource entity")
