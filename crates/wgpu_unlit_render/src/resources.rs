@@ -2,12 +2,14 @@
 //!
 //! The graph is the renderer's single source of truth for the wgpu resources a
 //! frame draws with — textures and their views, samplers, buffers and bind
-//! groups. Pipeline objects (shader modules, layouts, pipelines) are not
-//! tracked: they are immutable once built, and the render pipelines this
-//! crate builds are cached by their variant rather than rebuilt from
-//! dependencies. Resources are plain wgpu handles — the graph does not wrap
-//! them — but it remembers which resource was built from which, so that
-//! derived resources can be rebuilt when their inputs change:
+//! groups — and for the *virtual* nodes that hold no handle at all, which
+//! group or stand in for the resources around them. Pipeline objects (shader
+//! modules, layouts, pipelines) are not tracked: they are immutable once
+//! built, and the render pipelines this crate builds are cached by their
+//! variant rather than rebuilt from dependencies. Resources are plain wgpu
+//! handles — the graph does not wrap them — but it remembers which resource
+//! was built from which, so that derived resources can be rebuilt when their
+//! inputs change:
 //!
 //! * [`ResourceGraph::replace`] swaps a resource and marks every resource
 //!   transitively built from it as *dirty*.
@@ -39,6 +41,16 @@
 //! feed a consumer. Cleanup keeps a strong node, and keeps every resource a
 //! live node was built from; a weak node whose dependents are all gone is
 //! collected.
+//!
+//! A [`Resource::Virtual`] node commonly serves as an *aggregation root* for a
+//! group of resources: its parts are inserted weak and with no dependencies,
+//! and the root is inserted strong with every part as a dependency, so the
+//! root is the group's single lifetime entry point. Liveness runs from the
+//! strong root to the parts, so the parts survive while the root does; removing
+//! the root drops only what was built *from* it — nothing, for a virtual root —
+//! and leaves the parts for [`ResourceGraph::cleanup`], which collects them
+//! unless another live node is still built from them. A part shared by two
+//! roots therefore outlives either one alone.
 
 use smallvec::SmallVec;
 
@@ -70,10 +82,11 @@ impl ResourceId {
     }
 }
 
-/// A wgpu resource owned by the graph.
+/// A wgpu resource owned by the graph, or a virtual node standing in for one.
 ///
-/// Variants are thin: each holds the wgpu handle itself, so callers can keep
-/// working with raw wgpu and use the graph purely for bookkeeping.
+/// Variants are thin: each holds the wgpu handle itself — except
+/// [`Resource::Virtual`], which holds none — so callers can keep working with
+/// raw wgpu and use the graph purely for bookkeeping.
 #[derive(Clone, Debug)]
 pub enum Resource {
     /// A buffer (vertex, index, uniform or storage).
@@ -97,6 +110,22 @@ pub enum Resource {
     Sampler(wgpu::Sampler),
     /// A bind group.
     BindGroup(wgpu::BindGroup),
+    /// A virtual node: no wgpu handle, purely a graph citizen.
+    ///
+    /// It carries no GPU resource of its own, so every accessor returns
+    /// `None` for it. It exists to group or stand in for other nodes: the
+    /// edges leaving it express ownership or derivation rather than handle
+    /// derivation, which makes it a natural aggregation root for a set of
+    /// resources that live and die together (see [Retention](self)).
+    ///
+    /// It is an ordinary node otherwise: [`ResourceGraph::insert_strong`] and
+    /// [`ResourceGraph::insert_weak`] accept it like any resource, and
+    /// [`ResourceGraph::replace`] swaps it for a real resource — or a real
+    /// resource for it — keeping the node and its edges while marking the
+    /// nodes built from it dirty. A
+    /// [`rebuild_dirty`](ResourceGraph::rebuild_dirty) closure that meets one
+    /// should skip it or return it unchanged.
+    Virtual,
 }
 
 impl Resource {
@@ -953,5 +982,130 @@ mod tests {
         assert_eq!(visited.len(), 4);
         assert_eq!(visited[0], base);
         assert_eq!(visited[3], join);
+    }
+
+    // -- virtual nodes -----------------------------------------------------
+
+    /// The aggregation-root pattern: parts are weak and dependency-free, the
+    /// root is strong and built from them, so liveness runs from the root to
+    /// the parts and cleanup collects nothing.
+    #[test]
+    fn a_virtual_root_keeps_its_weak_parts_alive() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let part = graph.insert_weak(buffer(&device, "part"), &[]).unwrap();
+        let root = graph.insert_strong(Resource::Virtual, &[part]).unwrap();
+
+        assert!(graph.cleanup().is_empty());
+        assert!(graph.get(root).is_some());
+        assert!(graph.get(part).is_some());
+    }
+
+    /// Removing a virtual root drops only what was built from it — nothing —
+    /// so its parts are left as orphans for the next cleanup to collect.
+    #[test]
+    fn removing_a_virtual_root_orphans_its_parts_for_cleanup() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let part = graph.insert_weak(buffer(&device, "part"), &[]).unwrap();
+        let root = graph.insert_strong(Resource::Virtual, &[part]).unwrap();
+
+        graph.remove_drop(root);
+        assert!(
+            graph.get(part).is_some(),
+            "the removal walk does not reach the parts"
+        );
+
+        graph.cleanup_drop();
+        assert!(graph.get(part).is_none());
+        assert!(graph.is_empty());
+    }
+
+    /// A part two roots are built from outlives either root alone: cleanup
+    /// keeps it while the other root is still alive.
+    #[test]
+    fn a_shared_part_survives_while_another_root_is_alive() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let part = graph.insert_weak(buffer(&device, "part"), &[]).unwrap();
+        let first = graph.insert_strong(Resource::Virtual, &[part]).unwrap();
+        let second = graph.insert_strong(Resource::Virtual, &[part]).unwrap();
+
+        graph.remove_drop(first);
+        graph.cleanup_drop();
+        assert!(
+            graph.get(part).is_some(),
+            "the surviving root still owns the shared part"
+        );
+        assert!(graph.get(second).is_some());
+
+        graph.remove_drop(second);
+        graph.cleanup_drop();
+        assert!(graph.get(part).is_none());
+        assert!(graph.is_empty());
+    }
+
+    /// Replacing a part marks the virtual root built from it dirty, and the
+    /// root follows its part in dependency order.
+    #[test]
+    fn replacing_a_part_marks_the_virtual_root_dirty() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let part = graph.insert_weak(buffer(&device, "part"), &[]).unwrap();
+        let root = graph.insert_strong(Resource::Virtual, &[part]).unwrap();
+
+        graph.replace(part, buffer(&device, "part2"));
+        assert!(graph.is_dirty(root));
+        assert_eq!(graph.dirty().collect::<Vec<_>>(), vec![part, root]);
+    }
+
+    /// A virtual node is a graph citizen with no handle: every handle accessor
+    /// reports `None` for it.
+    #[test]
+    fn a_virtual_node_has_no_handle_of_its_own() {
+        let mut graph = ResourceGraph::new();
+        let root = graph.insert_strong(Resource::Virtual, &[]).unwrap();
+
+        assert!(matches!(graph.get(root), Some(Resource::Virtual)));
+        assert!(graph.get_buffer(root).is_none());
+        assert!(graph.get_texture(root).is_none());
+        assert!(graph.get_texture_view(root).is_none());
+        assert!(graph.get_sampler(root).is_none());
+        assert!(graph.get_bind_group(root).is_none());
+    }
+
+    /// A weak virtual node is collected like any other weak node once nothing
+    /// alive is built from it.
+    #[test]
+    fn cleanup_collects_a_weak_virtual_node_with_no_dependents() {
+        let mut graph = ResourceGraph::new();
+        let root = graph.insert_weak(Resource::Virtual, &[]).unwrap();
+
+        assert_eq!(graph.cleanup().len(), 1);
+        assert!(graph.get(root).is_none());
+        assert!(graph.is_empty());
+    }
+
+    /// `replace` swaps a placeholder for a real resource in place: the node
+    /// and its edges stay, and the nodes built from it are marked dirty.
+    #[test]
+    fn a_virtual_node_can_be_replaced() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let root = graph.insert_weak(Resource::Virtual, &[]).unwrap();
+        let dependent = graph
+            .insert_strong(buffer(&device, "dependent"), &[root])
+            .unwrap();
+
+        let previous = graph
+            .replace(root, buffer(&device, "real"))
+            .expect("the placeholder is in the graph");
+        assert!(matches!(previous, Resource::Virtual));
+        assert!(graph.get_buffer(root).is_some());
+        assert!(graph.is_dirty(dependent));
+        assert_eq!(
+            graph.dependencies(dependent).collect::<Vec<_>>(),
+            vec![root]
+        );
     }
 }

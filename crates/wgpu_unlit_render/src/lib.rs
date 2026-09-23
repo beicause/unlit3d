@@ -20,7 +20,8 @@
 //! - [`resources`]: a dependency-tracked graph of the GPU resources a frame
 //!   uses. Resources are created, replaced and removed through it, and the
 //!   graph propagates "dirty" state to dependents so that derived resources
-//!   (bind groups, pipelines) are rebuilt lazily.
+//!   (bind groups, pipelines) are rebuilt lazily. It also holds virtual nodes
+//!   that own no GPU resource, for grouping or standing in for others.
 //! - [`mesh`]: vertex compression and the per-mesh decode metadata that makes
 //!   the compact vertex formats usable in a shader.
 //! - [`scene`]: the declarative description of a frame — pipelines, their
