@@ -13,9 +13,7 @@ mod common;
 use common::*;
 use wgpu_unlit_render::globals::Globals;
 use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
-use wgpu_unlit_render::render_attachments::{
-    RenderAttachments, create_render_target, depth_clear, stencil_clear,
-};
+use wgpu_unlit_render::render_attachments::{create_render_target, depth_clear, stencil_clear};
 use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
 

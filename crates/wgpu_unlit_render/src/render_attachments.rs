@@ -96,6 +96,9 @@ pub struct RenderAttachments {
     /// [`Self::color_view`]; `None` when multisampling is disabled or the
     /// pass is depth-only.
     msaa_view: Option<wgpu::TextureView>,
+    /// The format the color attachment is viewed as, when it differs from the
+    /// format of the texture it views.
+    color_format: Option<wgpu::TextureFormat>,
 }
 
 impl RenderAttachments {
@@ -103,7 +106,10 @@ impl RenderAttachments {
     /// view, the depth-stencil view and an optional multisample view.
     ///
     /// The formats, size and sample count are read from the views themselves,
-    /// so they must agree across views (the caller's responsibility). The
+    /// so they must agree across views (the caller's responsibility) — except
+    /// for the color format, which only a view's texture reports; use
+    /// [`Self::with_color_format`] when the color view was created in another
+    /// format. The
     /// depth attachment's transience is read from its texture's usage: a depth
     /// texture created with
     /// [`TextureUsages::TRANSIENT_ATTACHMENT`](wgpu::TextureUsages::TRANSIENT_ATTACHMENT)
@@ -136,7 +142,22 @@ impl RenderAttachments {
             color_view,
             depth_stencil_view,
             msaa_view,
+            color_format: None,
         }
+    }
+
+    /// State the format the color attachment's view was created with.
+    ///
+    /// [`Self::from_views`] reads the color format from the attachment's
+    /// texture, which is what a default view uses. A view may be created in
+    /// another format instead — an sRGB view over a non-sRGB swap-chain image,
+    /// the only way to get correct gamma on the web — and a pipeline's color
+    /// target must match the *view*, so the caller that created it states it
+    /// here.
+    #[must_use]
+    pub fn with_color_format(mut self, format: wgpu::TextureFormat) -> Self {
+        self.color_format = Some(format);
+        self
     }
 
     /// The color texture the frame is rendered into, for copying or reading
@@ -163,9 +184,13 @@ impl RenderAttachments {
     /// The color format the pass renders into, or `None` for a depth-only
     /// pass.
     ///
-    /// Taken from the attachment itself: the MSAA view when one is set, the
-    /// color view otherwise.
+    /// [`Self::with_color_format`]'s when one was given; the attachment's
+    /// texture format otherwise — the MSAA view's when one is set, the color
+    /// view's otherwise.
     pub fn color_format(&self) -> Option<wgpu::TextureFormat> {
+        if let Some(format) = self.color_format {
+            return Some(format);
+        }
         let view = self.msaa_view.as_ref().or(self.color_view.as_ref())?;
         Some(view.texture().format())
     }

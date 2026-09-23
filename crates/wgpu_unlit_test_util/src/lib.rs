@@ -2,7 +2,8 @@
 //!
 //! Every test drives wgpu through a real `wgpu::Device` and reads
 //! buffer/texture data back for assertions.  The harness is deliberately
-//! self-contained: besides `wgpu`, `glam`, plus `fast-ssim2` and `image`
+//! self-contained: besides `wgpu`, `glam`, `pollster` (driving wgpu's
+//! async adapter/device requests), plus `fast-ssim2` and `image`
 //! (both behind the `snapshot` feature) it depends on nothing else.
 //!
 //! # Features
@@ -12,29 +13,6 @@
 //! | `snapshot` | Enables perceptual snapshot assertions via SSIMULACRA2. |
 
 #![forbid(unsafe_code)]
-
-use core::task::{Context, Poll};
-use std::future::Future;
-
-// ---------------------------------------------------------------------------
-// Busy-wait future driver (no async runtime needed)
-// ---------------------------------------------------------------------------
-
-/// Blocks on `future` by busy-waiting with a noop waker.
-///
-/// Drives wgpu's one-shot startup futures (`request_adapter`,
-/// `request_device`) in synchronous code — examples, headless tools and
-/// tests that have no async runtime of their own.
-pub fn busy_wait_block_on<T>(future: impl Future<Output = T>) -> T {
-    let mut future = core::pin::pin!(future);
-    let cx = &mut Context::from_waker(core::task::Waker::noop());
-    loop {
-        match future.as_mut().poll(cx) {
-            Poll::Ready(output) => return output,
-            Poll::Pending => core::hint::spin_loop(),
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // GPU context
@@ -51,9 +29,9 @@ impl Ctx {
     pub fn headless() -> Ctx {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
-            busy_wait_block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .expect("no graphics adapter available");
-        let (device, queue) = busy_wait_block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("wgpu_unlit_test_util"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),

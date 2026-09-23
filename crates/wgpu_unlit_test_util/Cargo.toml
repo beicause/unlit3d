@@ -6,10 +6,9 @@ license.workspace = true
 
 [dependencies]
 glam.workspace = true
+# Drives wgpu's async adapter/device requests from the synchronous harness.
+pollster.workspace = true
 wgpu = { workspace = true, default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
-
-[features]
-snapshot = ["dep:fast-ssim2", "dep:image"]
 
 [dependencies.fast-ssim2]
 version = "0.8"
@@ -21,6 +20,9 @@ version = "0.25"
 default-features = false
 features = ["webp"]
 optional = true
+
+[features]
+snapshot = ["dep:fast-ssim2", "dep:image"]
 
 [lints]
 workspace = true

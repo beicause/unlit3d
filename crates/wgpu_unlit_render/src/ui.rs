@@ -455,7 +455,7 @@ impl EguiIntegration {
         let Some(layout) = self.pipeline.material_layout.as_ref() else {
             return;
         };
-        let Some(Resource::TextureView(view)) = graph.get(texture) else {
+        let Some(Resource::TextureView { view, .. }) = graph.get(texture) else {
             return;
         };
         let Some(Resource::Sampler(sampler)) = graph.get(sampler_id) else {
@@ -594,7 +594,7 @@ impl EguiIntegration {
                     .insert_strong(Resource::Texture(texture), &[])
                     .expect("an empty dependency list always resolves");
                 let view_id = graph
-                    .insert_strong(Resource::TextureView(view), &[texture_id])
+                    .insert_strong(view, &[texture_id])
                     .expect("the texture was just registered");
                 self.textures.insert(id, view_id);
             }

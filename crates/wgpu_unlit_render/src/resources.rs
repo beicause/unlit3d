@@ -80,8 +80,19 @@ pub enum Resource {
     Buffer(wgpu::Buffer),
     /// A texture.
     Texture(wgpu::Texture),
-    /// A texture view.
-    TextureView(wgpu::TextureView),
+    /// A texture view, with the format it views its texture as.
+    ///
+    /// wgpu exposes no view format, and a view may be created with one
+    /// besides its texture's — an sRGB view over a non-sRGB swap-chain image,
+    /// for example — so it is recorded here. [`From`] for
+    /// [`wgpu::TextureView`] fills in the texture's, which is what a default
+    /// view uses.
+    TextureView {
+        /// The view.
+        view: wgpu::TextureView,
+        /// The format the view was created with.
+        format: wgpu::TextureFormat,
+    },
     /// A sampler.
     Sampler(wgpu::Sampler),
     /// A bind group.
@@ -108,7 +119,16 @@ impl Resource {
     /// The texture view handle, if this resource is a texture view.
     pub fn as_texture_view(&self) -> Option<&wgpu::TextureView> {
         match self {
-            Self::TextureView(view) => Some(view),
+            Self::TextureView { view, .. } => Some(view),
+            _ => None,
+        }
+    }
+
+    /// The format the texture view was created with, if this resource is a
+    /// texture view.
+    pub fn as_texture_view_format(&self) -> Option<wgpu::TextureFormat> {
+        match self {
+            Self::TextureView { format, .. } => Some(*format),
             _ => None,
         }
     }
@@ -143,8 +163,17 @@ impl From<wgpu::Texture> for Resource {
 }
 
 impl From<wgpu::TextureView> for Resource {
+    /// A view in its texture's format — the format a default view uses.
+    ///
+    /// A view created with a [`wgpu::TextureViewDescriptor::format`] other
+    /// than its texture's must record that format itself: build the
+    /// [`Resource::TextureView`] variant directly with it.
     fn from(value: wgpu::TextureView) -> Self {
-        Self::TextureView(value)
+        let format = value.texture().format();
+        Self::TextureView {
+            view: value,
+            format,
+        }
     }
 }
 
@@ -301,6 +330,16 @@ impl ResourceGraph {
     /// resource is not a texture view.
     pub fn get_texture_view(&self, id: ResourceId) -> Option<&wgpu::TextureView> {
         self.get(id)?.as_texture_view()
+    }
+
+    /// The format the texture view behind `id` was created with, or `None`
+    /// when the id is unknown or the resource is not a texture view.
+    ///
+    /// wgpu exposes a view's format nowhere, so this reports what was recorded
+    /// at insertion: the texture's format for a view built by [`From`], and
+    /// whatever the [`Resource::TextureView`] variant carries otherwise.
+    pub fn get_texture_view_format(&self, id: ResourceId) -> Option<wgpu::TextureFormat> {
+        self.get(id)?.as_texture_view_format()
     }
 
     /// The sampler behind `id`, or `None` when the id is unknown or the
