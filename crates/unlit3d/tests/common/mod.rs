@@ -4,8 +4,7 @@
 //! helpers tailored to the `unlit3d` ECS-based rendering API.
 
 pub use wgpu_unlit_test_util::{
-    Ctx, Frame, assert_image_snapshot, busy_wait_block_on, count_pixels_off_background,
-    read_texture_bytes, texel_bytes,
+    Ctx, Frame, assert_image_snapshot, count_pixels_off_background, read_texture_bytes, texel_bytes,
 };
 
 use unlit_ecs::LocalWorld;
@@ -146,10 +145,8 @@ pub fn bind_offscreen_target(renderer: &mut Renderer, _label: &str) -> wgpu::Tex
     let depth_view = renderer
         .graph
         .insert_strong(
-            wgpu_unlit_render::resources::Resource::TextureView(
-                ft.depth
-                    .create_view(&wgpu::TextureViewDescriptor::default()),
-            ),
+            ft.depth
+                .create_view(&wgpu::TextureViewDescriptor::default()),
             &[],
         )
         .expect("depth view has no dependencies");

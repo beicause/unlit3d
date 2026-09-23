@@ -3,12 +3,9 @@
 //! This crate bridges [`unlit_ecs`] and [`wgpu_unlit_render`]: it provides the
 //! component types needed to describe a renderable 3D scene in an ECS world and
 //! a [`Renderer`] component that turns that data into GPU draw commands every
-//! frame.
-//!
-//! The two foundational crates are re-exported as modules — everything they
-//! expose is available under `unlit3d::wgpu_unlit_render::*` and
-//! `unlit3d::unlit_ecs::*`.  Commonly-used items are collected in
-//! [`prelude`] for convenience.
+//! frame. The two foundational crates stay direct dependencies — their items
+//! are reached through their own paths, and the ones most callers need are
+//! re-exported by [`prelude`].
 //!
 //! # Quick start
 //!
@@ -24,7 +21,7 @@
 //!
 //! ```
 //! use unlit3d::prelude::*;
-//! use unlit3d::wgpu_unlit_render::pipeline::UnlitOptions;
+//! use wgpu_unlit_render::pipeline::UnlitOptions;
 //!
 //! let (device, queue) =
 //!     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -83,7 +80,6 @@
 //! //    upload the mesh metadata and render one frame (uses noop device,
 //! //    produces a valid command buffer).
 //! world.with_mut::<Renderer, _>(renderer, |r| {
-//!     use unlit3d::wgpu_unlit_render::resources::Resource;
 //!     let ft = create_render_target(
 //!         &r.device,
 //!         wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -91,7 +87,7 @@
 //!     );
 //!     let color_view = r.register_texture_and_default_view(ft.color).1;
 //!     let depth_view = r.graph.insert_strong(
-//!         Resource::TextureView(ft.depth.create_view(&wgpu::TextureViewDescriptor::default())),
+//!         ft.depth.create_view(&wgpu::TextureViewDescriptor::default()),
 //!         &[],
 //!     ).unwrap();
 //!     r.set_render_target(Some(color_view), Some(depth_view), None);
@@ -106,11 +102,6 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-// Re-export the two foundational crates as sub-modules so that users can reach
-// every public API through a single `unlit3d` root.
-pub use unlit_ecs;
-pub use wgpu_unlit_render;
-
 pub mod bounds;
 pub mod components;
 pub mod culling;
@@ -118,6 +109,8 @@ pub mod mesh;
 pub mod pipeline;
 pub mod renderer;
 pub mod scene;
+#[cfg(feature = "winit")]
+pub mod winit;
 
 /// The types most callers need for typical usage.
 pub mod prelude {

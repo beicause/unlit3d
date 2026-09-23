@@ -52,7 +52,11 @@ use crate::components::GpuMesh;
 /// The renderer calls it whenever a buffer the group was built from is
 /// replaced -- the camera, globals or metadata buffer, say. A pipeline that
 /// binds no global group passes None instead and is never visited.
-pub type GlobalGroupRebuild = Arc<dyn Fn(&RenderResources) -> wgpu::BindGroup + Send + Sync>;
+///
+/// Not `Send`: the closure captures the wgpu device it builds groups with,
+/// and wgpu's web device is not `Send`. The renderer drives it on the thread
+/// the world lives on, so no cross-thread bound is needed.
+pub type GlobalGroupRebuild = Arc<dyn Fn(&RenderResources) -> wgpu::BindGroup>;
 
 /// The renderer's global buffers, as a rebuild closure sees them.
 ///

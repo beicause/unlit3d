@@ -360,7 +360,7 @@ fn a_custom_pipeline_draws_through_the_ecs() {
         })
         .expect("renderer is a resource entity");
 
-    if let Some(err) = wgpu_unlit_test_util::busy_wait_block_on(scope.pop()) {
+    if let Some(err) = pollster::block_on(scope.pop()) {
         panic!("validation error during custom draw: {err}");
     }
 

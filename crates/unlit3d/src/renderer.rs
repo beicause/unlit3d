@@ -484,7 +484,15 @@ impl Renderer {
                 .expect("msaa_view is a texture view in the graph")
                 .clone()
         });
+        // The graph records the format each view was created with, which wgpu
+        // itself cannot report. A view that reinterprets its texture — an sRGB
+        // view over a non-sRGB swap-chain image — is what a pipeline has to
+        // match, so it wins over the texture's own format.
         let attachments = RenderAttachments::from_views(color, depth, msaa);
+        let attachments = match color_view.and_then(|id| self.graph.get_texture_view_format(id)) {
+            Some(format) => attachments.with_color_format(format),
+            None => attachments,
+        };
         self.surface = Some(attachments.surface_key());
         self.color_view = color_view;
         self.depth_view = depth_view;
@@ -841,7 +849,7 @@ impl Renderer {
             .create_view(&wgpu::TextureViewDescriptor::default());
         let view_id = self
             .graph
-            .insert_strong(Resource::TextureView(view), &[texture_id])
+            .insert_strong(view, &[texture_id])
             .expect("the view depends on its texture");
         (texture_id, view_id)
     }
@@ -1559,10 +1567,8 @@ mod tests {
         let depth_view = renderer
             .graph
             .insert_strong(
-                Resource::TextureView(
-                    ft.depth
-                        .create_view(&wgpu::TextureViewDescriptor::default()),
-                ),
+                ft.depth
+                    .create_view(&wgpu::TextureViewDescriptor::default()),
                 &[],
             )
             .expect("depth view has no dependencies");

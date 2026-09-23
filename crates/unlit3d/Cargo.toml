@@ -13,17 +13,27 @@ glam.workspace = true
 hashbrown.workspace = true
 petgraph.workspace = true
 smallvec.workspace = true
+unlit_ecs = { path = "../unlit_ecs", version = "0.1.0" }
 wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true
-wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0", features = ["unlit"] }
-unlit_ecs = { path = "../unlit_ecs", version = "0.1.0" }
+wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0", default-features = false, features = ["egui", "unlit"] }
+winit = { workspace = true, optional = true }
 zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
 [dev-dependencies]
+# Drives the validation error scope's async pop.
+pollster.workspace = true
 wgpu = { workspace = true, features = ["noop"] }
 wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
+
+[features]
+default = ["winit"]
+## Integration with [winit](https://docs.rs/winit): the [`winit`](crate::winit)
+## module, which presents a [`Renderer`](crate::Renderer) into a window's swap
+## chain.
+winit = ["dep:winit"]
 
 [lints]
 workspace = true
