@@ -119,6 +119,17 @@ impl Default for RenderLoadOps {
 /// [`Renderer::remove_mesh`](crate::Renderer::remove_mesh) is called with it.
 #[derive(Clone, Debug)]
 pub struct GpuMesh {
+    /// The mesh's virtual root node in the resource graph.
+    ///
+    /// It holds no GPU resource of its own and is the mesh's only lifetime
+    /// entry point: the vertex and index buffers, the mesh bind group and the
+    /// mesh-info uniform are all weak nodes registered under it, so
+    /// [`Renderer::remove_mesh`](crate::Renderer::remove_mesh) frees the whole
+    /// mesh by removing this one node and collecting the parts it leaves
+    /// behind. The other ids below are for the draw path, which reads the
+    /// parts directly.
+    pub root: ResourceId,
+
     /// Vertex buffers, each tagged with its slot index, in slot order.
     pub vertex_buffers: Vec<(u32, ResourceId)>,
 

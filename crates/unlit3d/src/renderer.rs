@@ -546,9 +546,11 @@ impl Renderer {
         let mut vertex_slots = Vec::with_capacity(vertex_buffers.len());
         let mut vertex_layout = Vec::with_capacity(vertex_buffers.len());
         for desc in vertex_buffers {
+            // A weak node: the mesh's virtual root is built from it, so the
+            // buffer lives exactly as long as the root does.
             let id = self
                 .graph
-                .insert_strong(Resource::Buffer(desc.buffer), &[])
+                .insert_weak(Resource::Buffer(desc.buffer), &[])
                 .expect("a vertex buffer has no dependencies");
             vertex_slots.push((desc.slot, id));
             // The layout is owned by the mesh so a family can key on it
@@ -565,16 +567,17 @@ impl Renderer {
         }
 
         let index_buffer = index_buffer.map(|(buffer, format)| {
+            // Weak for the same reason as the vertex buffers.
             let id = self
                 .graph
-                .insert_strong(Resource::Buffer(buffer), &[])
+                .insert_weak(Resource::Buffer(buffer), &[])
                 .expect("an index buffer has no dependencies");
             (id, format)
         });
 
         // The uniform the mesh's group reads is a weak node that nothing is
-        // built from: the group depends on it, not the other way round. The
-        // group's dependency edge is what ties its lifetime to the mesh.
+        // built from: the group depends on it, not the other way round. It is
+        // the mesh's virtual root that keeps it alive, like every other part.
         let mesh_info_id = mesh_info_buffer.map(|buffer| {
             self.graph
                 .insert_weak(Resource::Buffer(buffer), &[])
@@ -587,7 +590,7 @@ impl Renderer {
             let mut dependencies = buffers.clone();
             dependencies.extend(mesh_info_id);
             self.graph
-                .insert_strong(Resource::BindGroup(bind_group), &dependencies)
+                .insert_weak(Resource::BindGroup(bind_group), &dependencies)
                 .expect("a mesh bind group's dependencies are in the graph")
         });
 
@@ -617,7 +620,22 @@ impl Renderer {
             );
         }
 
+        // Every part of the mesh is registered weak and dependency-free, so
+        // the strong virtual root below is the one node that keeps them all
+        // alive: removing it orphans them for the cleanup in `remove_mesh`
+        // to collect. The root is built from the parts, which is also what
+        // makes a replaced part mark it dirty.
+        let mut parts = buffers.clone();
+        parts.extend(index_buffer.map(|(id, _format)| id));
+        parts.extend(bind_group_id);
+        parts.extend(mesh_info_id);
+        let root = self
+            .graph
+            .insert_strong(Resource::Virtual, &parts)
+            .expect("a mesh's parts are in the graph");
+
         GpuMesh {
+            root,
             vertex_buffers: vertex_slots,
             vertex_layout,
             index_buffer,
@@ -950,15 +968,15 @@ impl Renderer {
         GpuMaterial { bind_group_id }
     }
 
-    /// Free `mesh` and every resource built from it, and drop its
-    /// mesh-metadata entry.
+    /// Free `mesh` and every resource it owns, and drop its mesh-metadata
+    /// entry.
     ///
-    /// The mesh's vertex and index buffers leave the resource graph together
-    /// with the bind group built from them. The resources that only fed that
-    /// bind group — the per-mesh uniform behind it — are collected by the
-    /// [cleanup](ResourceGraph::cleanup_drop) this runs, so the mesh frees
-    /// everything it owned. The [`GpuMesh`] handle must not be used
-    /// afterwards: drawing with it names buffers that are gone.
+    /// Every resource of the mesh is registered under its virtual root, so
+    /// removing that one node and collecting the parts it orphans frees the
+    /// whole mesh: its vertex and index buffers, the bind group built from
+    /// them and the per-mesh uniform that only fed that bind group. The
+    /// [`GpuMesh`] handle must not be used afterwards: drawing with it names
+    /// buffers that are gone.
     ///
     /// Its metadata slot is freed and reused by a mesh allocated later, so
     /// removing meshes does not grow the array a long-lived renderer uploads.
@@ -970,14 +988,9 @@ impl Renderer {
     /// Removing a mesh while the world still holds its handle is a programming
     /// error the caller has to avoid: nothing detects the stale handle.
     pub fn remove_mesh(&mut self, mesh: GpuMesh) {
-        for (_slot, id) in &mesh.vertex_buffers {
-            self.graph.remove_drop(*id);
-        }
-        if let Some((id, _format)) = mesh.index_buffer {
-            self.graph.remove_drop(id);
-        }
-        // The per-mesh uniform is not derived from anything the walks above
-        // reach — it feeds the bind group — so it is an orphan now.
+        self.graph.remove_drop(mesh.root);
+        // The root was the only node built from the parts, so with it gone
+        // every part is an orphan.
         self.graph.cleanup_drop();
 
         let emptied = self.metadata.get_mut(mesh.metadata_index as usize);
@@ -1782,15 +1795,22 @@ mod tests {
         let (mut renderer, key) = noop_renderer();
         let mesh = tri_mesh(&mut renderer, &key);
 
-        // The buffers, the bind group built from them and the mesh-info
-        // uniform that feeds it: every one of them leaves the graph.
+        // The root is the mesh's lifetime entry point; its parts are the
+        // buffers, the bind group built from them and the mesh-info uniform
+        // that feeds it.
         let before = renderer.graph.len();
+        assert!(matches!(
+            renderer.graph.get(mesh.root),
+            Some(Resource::Virtual)
+        ));
         let buffers: Vec<_> = mesh.vertex_buffers.iter().map(|(_, id)| *id).collect();
         let index = mesh.index_buffer.expect("the mesh is indexed").0;
         let bind_group = mesh.bind_group_id.expect("the mesh has a group");
+        let root = mesh.root;
 
         renderer.remove_mesh(mesh);
 
+        assert!(renderer.graph.get(root).is_none(), "root removed");
         for id in buffers {
             assert!(renderer.graph.get(id).is_none(), "vertex buffer removed");
         }
@@ -1805,6 +1825,42 @@ mod tests {
             before,
             renderer.graph.len()
         );
+    }
+
+    #[test]
+    fn a_mesh_registers_every_part_under_its_virtual_root() {
+        let (mut renderer, key) = noop_renderer();
+        let mesh = tri_mesh(&mut renderer, &key);
+
+        let dependencies: Vec<_> = renderer.graph.dependencies(mesh.root).collect();
+        for (_, id) in &mesh.vertex_buffers {
+            assert!(
+                dependencies.contains(id),
+                "a vertex buffer is under the root"
+            );
+        }
+        let index = mesh.index_buffer.expect("the mesh is indexed").0;
+        assert!(
+            dependencies.contains(&index),
+            "the index buffer is under the root"
+        );
+        let bind_group = mesh.bind_group_id.expect("the mesh has a group");
+        assert!(
+            dependencies.contains(&bind_group),
+            "the bind group is under the root"
+        );
+
+        // A part is the root's dependency, so replacing it dirties the root.
+        let replacement = renderer.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unlit3d::test::replacement"),
+            size: 4,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        renderer
+            .graph
+            .replace(mesh.vertex_buffers[0].1, Resource::Buffer(replacement));
+        assert!(renderer.graph.is_dirty(mesh.root));
     }
 
     #[test]

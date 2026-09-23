@@ -70,6 +70,7 @@ pub(crate) fn collect_visible(
 mod tests {
     use super::*;
     use glam::Vec3;
+    use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
@@ -105,7 +106,14 @@ mod tests {
     #[test]
     fn collect_visible_keeps_only_the_visible_meshes() {
         let mut world = LocalWorld::new();
+        // The root is a lifetime entry point this test never removes through,
+        // so a bare placeholder node is enough.
+        let mut graph = ResourceGraph::new();
+        let root = graph
+            .insert_strong(Resource::Virtual, &[])
+            .expect("a virtual node has no dependencies");
         let mesh = GpuMesh {
+            root,
             vertex_buffers: Vec::new(),
             vertex_layout: Vec::new(),
             index_buffer: None,

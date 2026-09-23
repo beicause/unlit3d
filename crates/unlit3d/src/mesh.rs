@@ -54,10 +54,9 @@ pub struct MeshDesc {
     /// one.
     ///
     /// The buffer is moved into the resource graph, so the caller hands over
-    /// ownership. It is recorded as a *weak* node the bind group depends on:
-    /// replacing it marks the group dirty, and removing the group orphans it
-    /// for
-    /// [`ResourceGraph::cleanup`](wgpu_unlit_render::resources::ResourceGraph::cleanup)
-    /// to collect.
+    /// ownership. It is recorded as a *weak* node under the mesh's virtual
+    /// root, so it lives exactly as long as the mesh: replacing it marks the
+    /// bind group dirty, and removing the mesh releases it with the rest of
+    /// the mesh's resources.
     pub mesh_info_buffer: Option<wgpu::Buffer>,
 }
