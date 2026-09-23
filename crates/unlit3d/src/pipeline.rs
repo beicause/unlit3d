@@ -34,11 +34,13 @@
 //! buffer has. The renderer assumes no vertex layout, so a mesh can carry any
 //! combination of attributes and a family can specialize on it at draw time.
 
+use arrayvec::ArrayVec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 use std::sync::Arc;
 
 use wgpu_unlit_render::resources::ResourceId;
+use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 use wgpu_unlit_render::specialize::{
     CachedRenderPipeline, Specializable, Specializer, SpecializerKey, SurfaceKey,
     VertexBufferLayoutDesc,
@@ -177,7 +179,7 @@ pub struct DrawKey {
     /// The frame's render target.
     pub surface: SurfaceKey,
     /// The mesh's vertex layout, slot by slot.
-    pub vertex_buffers: Vec<(u32, VertexBufferLayoutDesc)>,
+    pub vertex_buffers: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
 }
 
 impl DrawKey {

@@ -3,8 +3,10 @@
 //! These components live in an [`unlit_ecs`] world and are read by the
 //! [`Renderer`](crate::Renderer) each frame to build the draw commands.
 
+use arrayvec::ArrayVec;
 use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
 use wgpu_unlit_render::resources::ResourceId;
+use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
 
 use crate::bounds::Aabb;
@@ -131,7 +133,7 @@ pub struct GpuMesh {
     pub root: ResourceId,
 
     /// Vertex buffers, each tagged with its slot index, in slot order.
-    pub vertex_buffers: Vec<(u32, ResourceId)>,
+    pub vertex_buffers: ArrayVec<(u32, ResourceId), MAX_VERTEX_BUFFERS>,
 
     /// The vertex layout of the draw, slot by slot.
     ///
@@ -141,7 +143,7 @@ pub struct GpuMesh {
     /// [`MeshDesc`](crate::MeshDesc) it was uploaded from. It may name a slot
     /// whose buffer the draw binds from the renderer rather than the mesh —
     /// the per-instance buffer, for one.
-    pub vertex_layout: Vec<(u32, VertexBufferLayoutDesc)>,
+    pub vertex_layout: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
 
     /// Index buffer, if the mesh is indexed.
     pub index_buffer: Option<(ResourceId, wgpu::IndexFormat)>,

@@ -7,6 +7,7 @@
 
 pub mod common;
 
+use arrayvec::ArrayVec;
 use common::*;
 use unlit3d::pipeline::{FamilyContext, PipelineFactory};
 use unlit3d::prelude::*;
@@ -336,7 +337,8 @@ fn a_custom_pipeline_draws_through_the_ecs() {
         });
         r.queue.write_buffer(&buffer, 0, TRIANGLE.as_bytes());
         r.allocate_mesh(MeshDesc {
-            vertex_buffers: vec![vertex_buffer(buffer)],
+            vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
+                .expect("one buffer fits"),
             count: TRIANGLE.len() as u32,
             ..Default::default()
         })
@@ -455,7 +457,8 @@ fn one_pipeline_draws_many_meshes() {
                     }],
                 });
                 r.allocate_mesh(MeshDesc {
-                    vertex_buffers: vec![vertex_buffer(buffer)],
+                    vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
+                        .expect("one buffer fits"),
                     count: TRIANGLE.len() as u32,
                     bind_group: Some(bind_group),
                     ..Default::default()

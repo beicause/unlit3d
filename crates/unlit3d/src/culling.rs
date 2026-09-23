@@ -69,6 +69,7 @@ pub(crate) fn collect_visible(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrayvec::ArrayVec;
     use glam::Vec3;
     use wgpu_unlit_render::resources::{Resource, ResourceGraph};
 
@@ -114,8 +115,8 @@ mod tests {
             .expect("a virtual node has no dependencies");
         let mesh = GpuMesh {
             root,
-            vertex_buffers: Vec::new(),
-            vertex_layout: Vec::new(),
+            vertex_buffers: ArrayVec::new(),
+            vertex_layout: ArrayVec::new(),
             index_buffer: None,
             count: 0,
             indexed: false,

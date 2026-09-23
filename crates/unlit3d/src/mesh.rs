@@ -6,7 +6,10 @@
 //! particular vertex layout, so a mesh can carry any combination of attributes
 //! and one pipeline, several, or none may specialize on it.
 
+use arrayvec::ArrayVec;
+
 use crate::bounds::Aabb;
+use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -32,7 +35,10 @@ pub struct VertexBufferDesc {
 #[derive(Clone, Debug, Default)]
 pub struct MeshDesc {
     /// Vertex buffers, each tagged with its slot.
-    pub vertex_buffers: Vec<VertexBufferDesc>,
+    ///
+    /// At most [`MAX_VERTEX_BUFFERS`], the number of vertex-buffer slots a
+    /// pass can bind: a mesh needing more cannot be drawn.
+    pub vertex_buffers: ArrayVec<VertexBufferDesc, MAX_VERTEX_BUFFERS>,
     /// Index buffer and its format, for an indexed draw.
     pub index_buffer: Option<(wgpu::Buffer, wgpu::IndexFormat)>,
     /// Index count for an indexed draw, vertex count otherwise.

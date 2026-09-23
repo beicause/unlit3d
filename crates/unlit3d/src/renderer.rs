@@ -5,6 +5,7 @@
 //! [wgpu_unlit_render] GPU pipeline. Spawn it once (typically as a resource
 //! entity) and call [Renderer::render] every frame.
 
+use arrayvec::ArrayVec;
 use core::any::TypeId;
 use std::sync::Arc;
 
@@ -20,7 +21,7 @@ use wgpu_unlit_render::pipeline::{
 };
 use wgpu_unlit_render::render_attachments::RenderAttachments;
 use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
-use wgpu_unlit_render::scene::Scene;
+use wgpu_unlit_render::scene::{MAX_VERTEX_BUFFERS, Scene};
 use wgpu_unlit_render::specialize::{
     Specializable, Specializer, SpecializerKey, SurfaceKey, VertexBufferLayoutDesc,
 };
@@ -38,6 +39,11 @@ use crate::scene::{
     AnyFamily, DrawShape, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry,
     assemble_scene, collect_and_sort_visible,
 };
+
+/// The most resources one mesh can be built from: every vertex buffer a pass
+/// can bind, plus the index buffer, the mesh bind group and the mesh-info
+/// uniform.
+const MAX_MESH_PARTS: usize = MAX_VERTEX_BUFFERS + 3;
 
 /// The renderer: ECS resource component that holds GPU state and orchestrates
 /// frame rendering.
@@ -245,7 +251,7 @@ impl PipelineKey for UnlitPipelineKey {
 pub(crate) struct UnlitDrawKey {
     options: UnlitOptions,
     surface: SurfaceKey,
-    vertex_buffers: Vec<(u32, VertexBufferLayoutDesc)>,
+    vertex_buffers: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
 }
 
 impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
@@ -542,9 +548,12 @@ impl Renderer {
             mesh_info_buffer,
         } = desc;
 
-        let mut buffers = Vec::with_capacity(vertex_buffers.len());
-        let mut vertex_slots = Vec::with_capacity(vertex_buffers.len());
-        let mut vertex_layout = Vec::with_capacity(vertex_buffers.len());
+        // The parts, capped like the description they come from: a mesh cannot
+        // have more vertex buffers than a pass can bind.
+        let mut buffers = ArrayVec::<ResourceId, MAX_VERTEX_BUFFERS>::new();
+        let mut vertex_slots = ArrayVec::<(u32, ResourceId), MAX_VERTEX_BUFFERS>::new();
+        let mut vertex_layout =
+            ArrayVec::<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>::new();
         for desc in vertex_buffers {
             // A weak node: the mesh's virtual root is built from it, so the
             // buffer lives exactly as long as the root does.
@@ -587,7 +596,8 @@ impl Renderer {
         let bind_group_id = bind_group.map(|bind_group| {
             // The mesh's own buffers plus the uniform the group reads, so
             // replacing or removing any of them reaches the group.
-            let mut dependencies = buffers.clone();
+            let mut dependencies = ArrayVec::<ResourceId, MAX_MESH_PARTS>::new();
+            dependencies.extend(buffers.iter().copied());
             dependencies.extend(mesh_info_id);
             self.graph
                 .insert_weak(Resource::BindGroup(bind_group), &dependencies)
@@ -625,7 +635,8 @@ impl Renderer {
         // alive: removing it orphans them for the cleanup in `remove_mesh`
         // to collect. The root is built from the parts, which is also what
         // makes a replaced part mark it dirty.
-        let mut parts = buffers.clone();
+        let mut parts = ArrayVec::<ResourceId, MAX_MESH_PARTS>::new();
+        parts.extend(buffers.iter().copied());
         parts.extend(index_buffer.map(|(id, _format)| id));
         parts.extend(bind_group_id);
         parts.extend(mesh_info_id);
@@ -806,22 +817,26 @@ impl Renderer {
         let aabb = Aabb::new(meta.aabb_center, meta.aabb_half_extents);
         let mut mesh = self.allocate_mesh_with_metadata(
             MeshDesc {
-                vertex_buffers: vec![
-                    VertexBufferDesc {
-                        slot: POSITION_SLOT,
-                        buffer: position_buf,
-                        array_stride: position_layout.array_stride,
-                        step_mode: position_layout.step_mode,
-                        attributes: position_layout.attributes,
-                    },
-                    VertexBufferDesc {
-                        slot: UV_COLOR_SLOT,
-                        buffer: uv_color_buf,
-                        array_stride: uv_color_layout.array_stride,
-                        step_mode: uv_color_layout.step_mode,
-                        attributes: uv_color_layout.attributes,
-                    },
-                ],
+                vertex_buffers: ArrayVec::try_from(
+                    [
+                        VertexBufferDesc {
+                            slot: POSITION_SLOT,
+                            buffer: position_buf,
+                            array_stride: position_layout.array_stride,
+                            step_mode: position_layout.step_mode,
+                            attributes: position_layout.attributes,
+                        },
+                        VertexBufferDesc {
+                            slot: UV_COLOR_SLOT,
+                            buffer: uv_color_buf,
+                            array_stride: uv_color_layout.array_stride,
+                            step_mode: uv_color_layout.step_mode,
+                            attributes: uv_color_layout.attributes,
+                        },
+                    ]
+                    .as_slice(),
+                )
+                .expect("a mesh has at most MAX_VERTEX_BUFFERS vertex buffers"),
                 index_buffer,
                 count,
                 indexed,
@@ -2189,16 +2204,18 @@ mod tests {
         // invalidating the base options.
         const COLOR: u32 = 2;
         let mut other = standard.clone();
-        other.vertex_layout = other
+        let layout: Vec<_> = other
             .vertex_layout
-            .into_iter()
-            .map(|(slot, mut layout)| {
+            .iter()
+            .map(|(slot, layout)| {
+                let mut layout = layout.clone();
                 layout
                     .attributes
                     .retain(|attribute| attribute.shader_location != COLOR);
-                (slot, layout)
+                (*slot, layout)
             })
             .collect();
+        other.vertex_layout = ArrayVec::try_from(layout.as_slice()).expect("the layout still fits");
         assert_ne!(draw_key(surface, &other), draw_key(surface, &standard));
         let second = resolve(&mut renderer, &key, surface, &other);
 
@@ -2218,17 +2235,19 @@ mod tests {
         // raw attribute list differs. The raw keys differ, so a canonical key
         // is what makes both resolve to one compiled pipeline.
         let mut twin = base.clone();
-        twin.vertex_layout = twin
+        let layout: Vec<_> = twin
             .vertex_layout
-            .into_iter()
-            .map(|(slot, mut layout)| {
+            .iter()
+            .map(|(slot, layout)| {
+                let mut layout = layout.clone();
                 for attribute in &mut layout.attributes {
                     attribute.offset += 4;
                 }
                 layout.array_stride += 4;
-                (slot, layout)
+                (*slot, layout)
             })
             .collect();
+        twin.vertex_layout = ArrayVec::try_from(layout.as_slice()).expect("the layout still fits");
         assert_ne!(draw_key(surface, &twin), draw_key(surface, &base));
 
         let second = resolve(&mut renderer, &key, surface, &twin);
