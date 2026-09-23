@@ -38,27 +38,31 @@
 //! live node was built from; a weak node whose dependents are all gone is
 //! collected.
 
-use hashbrown::HashSet;
 use smallvec::SmallVec;
 
 use petgraph::graph::NodeIndex;
 use petgraph::stable_graph::StableDiGraph;
-use petgraph::visit::{Dfs, DfsPostOrder, Reversed, Topo};
+use petgraph::visit::{Dfs, DfsPostOrder, NodeIndexable, Reversed, Topo};
 
 /// Handle to a resource stored in a [`ResourceGraph`].
 ///
-/// Ids stay valid while the resource lives; they are never reused, so a stale
-/// id reports [`ResourceGraph::get`] as `None` rather than aliasing a newer
-/// resource.
+/// While the resource lives, its id resolves through every accessor.
+/// Removing the resource invalidates every id to it, but the graph recycles
+/// the freed slots: a resource inserted later may answer an id that
+/// previously referred to a removed one. Callers that hold ids across
+/// removals must drop them themselves — an id can be confirmed dead with
+/// [`ResourceGraph::get`] at one point in time, but never assumed to stay
+/// dead afterwards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceId(NodeIndex);
 
 impl ResourceId {
     /// The graph index this id refers to.
     ///
-    /// Ids are never reused, so this is a stable key for resources that are
-    /// alive: callers can group or sort by it (ordering draws so consecutive
-    /// ones share a bind group, for example) without holding a borrow.
+    /// Only meaningful while the resource lives, but stable across the
+    /// resource's lifetime: callers can group or sort by it (ordering draws
+    /// so consecutive ones share a bind group, for example) without holding
+    /// a borrow.
     pub fn index(&self) -> usize {
         self.0.index()
     }
@@ -174,6 +178,9 @@ struct Node {
     /// Whether the resource survives cleanup on its own rather than only
     /// through the resources built from it. See [Retention](self).
     strong: bool,
+    /// Scratch liveness mark [`ResourceGraph::cleanup`] recomputes on every
+    /// run, so the pass needs no per-run set allocation.
+    alive: bool,
 }
 
 /// Direct dependencies `rebuild_dirty` collects on the stack; beyond this,
@@ -256,6 +263,7 @@ impl ResourceGraph {
             resource: resource.into(),
             dirty: false,
             strong,
+            alive: false,
         }));
         for dependency in dependencies {
             // dependency -> dependent
@@ -317,20 +325,19 @@ impl ResourceGraph {
     /// The removed resources are returned in dependency order (dependencies
     /// first), so the last entries are the roots of the removed subtree.
     pub fn remove(&mut self, id: ResourceId) -> Vec<Resource> {
-        // The doomed set: the resource and everything built from it. Collect
-        // the ids first, since the removal mutates the graph the DFS walks.
-        let mut doomed: Vec<_> = self.dependents(id).collect();
-        doomed.push(id);
-        // A post-order DFS from the root yields each doomed node after the
-        // nodes it was built from, so removing as we go never leaves a
-        // dangling edge mid-removal.
+        // A post-order DFS yields a node before the nodes it was built from —
+        // dependents first, `id` last. Reversing puts the returned list in
+        // dependency order, matching [`Self::rebuild_dirty`]. The order the
+        // nodes are dropped in is itself irrelevant: a stable graph removes
+        // edges together with their node.
         let mut dfs = DfsPostOrder::new(&self.graph, id.0);
-        let mut removed = Vec::with_capacity(doomed.len());
+        let mut removed = Vec::new();
         while let Some(node) = dfs.next(&self.graph) {
             if let Some(node_weight) = self.graph.remove_node(node) {
                 removed.push(node_weight.resource);
             }
         }
+        removed.reverse();
         removed
     }
 
@@ -352,28 +359,39 @@ impl ResourceGraph {
     pub fn cleanup(&mut self) -> Vec<Resource> {
         // Aliveness propagates from a dependent to what it was built from, so
         // walk against the edges — from each strong node to its dependencies.
-        let mut alive = HashSet::new();
-        let strong: Vec<NodeIndex> = self
-            .graph
-            .node_indices()
-            .filter(|index| self.graph[*index].strong)
-            .collect();
-        for start in strong {
-            let mut dfs = Dfs::new(Reversed(&self.graph), start);
-            while let Some(node) = dfs.next(Reversed(&self.graph)) {
-                alive.insert(node);
+        // Liveness lives in a per-node flag rather than a set, so the walk
+        // allocates nothing beyond the returned vector. Indices are visited
+        // by number instead of through an iterator because the body mutates
+        // the graph; stable indices never shift, so a single bound covers
+        // every node.
+        for node in self.graph.node_weights_mut() {
+            node.alive = false;
+        }
+        let bound = self.graph.node_bound();
+        for i in 0..bound {
+            let index = NodeIndex::new(i);
+            if self
+                .graph
+                .node_weight(index)
+                .is_some_and(|node| node.strong)
+            {
+                let mut dfs = Dfs::new(Reversed(&self.graph), index);
+                while let Some(node) = dfs.next(Reversed(&self.graph)) {
+                    self.graph[node].alive = true;
+                }
             }
         }
 
-        let doomed: Vec<_> = self
-            .graph
-            .node_indices()
-            .filter(|index| !alive.contains(index))
-            .collect();
-        let mut removed = Vec::with_capacity(doomed.len());
-        for node in doomed {
-            if let Some(node_weight) = self.graph.remove_node(node) {
-                removed.push(node_weight.resource);
+        let mut removed = Vec::new();
+        for i in 0..bound {
+            let index = NodeIndex::new(i);
+            if self
+                .graph
+                .node_weight(index)
+                .is_some_and(|node| !node.alive)
+                && let Some(node) = self.graph.remove_node(index)
+            {
+                removed.push(node.resource);
             }
         }
         removed
@@ -395,22 +413,6 @@ impl ResourceGraph {
         if let Some(node) = self.graph.node_weight_mut(id.0) {
             node.dirty = false;
         }
-    }
-
-    /// Every resource transitively built from `id`, excluding `id` itself.
-    ///
-    /// The iteration order is unspecified; nothing allocates.
-    pub fn dependents(&self, id: ResourceId) -> impl Iterator<Item = ResourceId> + '_ {
-        let graph = &self.graph;
-        let mut dfs = Dfs::new(graph, id.0);
-        core::iter::from_fn(move || {
-            loop {
-                let node = dfs.next(graph)?;
-                if node != id.0 {
-                    return Some(ResourceId(node));
-                }
-            }
-        })
     }
 
     /// The immediate dependencies recorded for `id`.
@@ -450,12 +452,18 @@ impl ResourceGraph {
     where
         F: FnMut(ResourceId, &Resource, &[Resource]) -> Option<Resource>,
     {
-        // Iterate over a materialized dirty list: `rebuild` mutates the
-        // graph, which would corrupt a lazy traversal over it.
-        let dirty: Vec<_> = self.dirty().collect();
-        for id in dirty {
+        // Drive the topological traversal by hand: `Topo` borrows the graph
+        // per step, so node weights can be updated between steps without
+        // materializing the dirty list. `rebuild` cannot touch the graph —
+        // it receives only ids and handles — so the traversal stays valid.
+        let mut topo = Topo::new(&self.graph);
+        while let Some(node) = topo.next(&self.graph) {
+            if !self.graph.node_weight(node).is_some_and(|node| node.dirty) {
+                continue;
+            }
             // Dependency handles are cheap reference-counted clones, so the
             // common case — a handful of dependencies — stays on the stack.
+            let id = ResourceId(node);
             let dependencies: SmallVec<[Resource; MAX_DIRECT_DEPENDENCIES]> = self
                 .dependencies(id)
                 .filter_map(|dependency| self.get(dependency).cloned())
@@ -466,9 +474,9 @@ impl ResourceGraph {
             let Some(rebuilt) = rebuild(id, current, &dependencies) else {
                 continue;
             };
-            if let Some(node) = self.graph.node_weight_mut(id.0) {
-                node.resource = rebuilt;
-                node.dirty = false;
+            if let Some(node_weight) = self.graph.node_weight_mut(node) {
+                node_weight.resource = rebuilt;
+                node_weight.dirty = false;
             }
         }
     }
@@ -495,6 +503,17 @@ mod tests {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: 64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
+
+    /// A buffer of a distinctive size, so tests can tell handles apart —
+    /// wgpu handles carry no comparable identity.
+    fn sized_buffer(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
@@ -709,5 +728,105 @@ mod tests {
         assert!(graph.get(gone_middle).is_none());
         assert!(graph.get(gone_leaf).is_none());
         assert_eq!(graph.len(), 3);
+    }
+
+    #[test]
+    fn remove_of_a_leaf_removes_only_that_resource() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let leaf = graph.insert_strong(buffer(&device, "leaf"), &[]).unwrap();
+        let other = graph.insert_strong(buffer(&device, "other"), &[]).unwrap();
+
+        let removed = graph.remove(leaf);
+        assert_eq!(removed.len(), 1);
+        assert!(graph.get(leaf).is_none());
+        assert!(graph.get(other).is_some());
+        assert_eq!(graph.len(), 1);
+    }
+
+    /// The doc promises the removed subtree in dependency order, so callers
+    /// can rely on the last entries being its roots.
+    #[test]
+    fn remove_returns_the_subtree_in_dependency_order() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let base = graph.insert_strong(sized_buffer(&device, 64), &[]).unwrap();
+        let middle = graph
+            .insert_strong(sized_buffer(&device, 128), &[base])
+            .unwrap();
+        let root = graph
+            .insert_strong(sized_buffer(&device, 256), &[middle])
+            .unwrap();
+
+        let removed = graph.remove(middle);
+        assert_eq!(removed.len(), 2);
+        assert_eq!(removed[0].as_buffer().unwrap().size(), 128);
+        assert_eq!(removed[1].as_buffer().unwrap().size(), 256);
+        // The resource the subtree was built from outlives the removal.
+        assert!(graph.get(base).is_some());
+        assert!(graph.get(root).is_none());
+    }
+
+    #[test]
+    fn rebuild_observes_the_updated_handles_of_its_dependencies() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let base = graph.insert_strong(buffer(&device, "base"), &[]).unwrap();
+        let dependent = graph
+            .insert_strong(buffer(&device, "dependent"), &[base])
+            .unwrap();
+
+        graph.replace(base, sized_buffer(&device, 128));
+
+        let mut observed = Vec::new();
+        graph.rebuild_dirty(|id, _, dependencies| {
+            if id == dependent {
+                observed.push(dependencies[0].as_buffer().unwrap().size());
+            }
+            // Defer the base itself so the dependent observes the replaced
+            // handle rather than a rebuild of it.
+            if id == base {
+                return None;
+            }
+            Some(buffer(&device, "rebuilt").into())
+        });
+
+        assert_eq!(observed, vec![128]);
+    }
+
+    #[test]
+    fn rebuild_visits_a_diamond_in_dependency_order() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        //     base
+        //    /    \
+        //  left   right
+        //    \    /
+        //     join
+        let base = graph.insert_strong(buffer(&device, "base"), &[]).unwrap();
+        let left = graph
+            .insert_strong(buffer(&device, "left"), &[base])
+            .unwrap();
+        let right = graph
+            .insert_strong(buffer(&device, "right"), &[base])
+            .unwrap();
+        let join = graph
+            .insert_strong(buffer(&device, "join"), &[left, right])
+            .unwrap();
+
+        graph.replace(base, buffer(&device, "base2"));
+
+        let mut visited = Vec::new();
+        graph.rebuild_dirty(|id, _, dependencies| {
+            if id == join {
+                assert_eq!(dependencies.len(), 2);
+            }
+            visited.push(id);
+            Some(buffer(&device, "rebuilt").into())
+        });
+
+        assert_eq!(visited.len(), 4);
+        assert_eq!(visited[0], base);
+        assert_eq!(visited[3], join);
     }
 }
