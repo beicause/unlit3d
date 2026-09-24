@@ -26,6 +26,8 @@
 //!   the compact vertex formats usable in a shader.
 //! - [`offset_allocator`]: a sub-allocator over one contiguous range, for
 //!   packing many small ranges into a single GPU buffer.
+//! - [`buffer_pool`] and [`vertex_pool`]: GPU buffers sub-allocated with it,
+//!   so many meshes share one buffer instead of each owning its own.
 //! - [`scene`]: the declarative description of a frame — pipelines, their
 //!   bindings, materials, meshes and vertex buffers.
 //! - [`render_attachments`]: the attachments a pass renders into and the
@@ -88,3 +90,4 @@ pub mod specialize;
 #[cfg(feature = "egui")]
 pub mod ui;
 pub mod util;
+pub mod vertex_pool;

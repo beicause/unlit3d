@@ -124,12 +124,6 @@ pub struct BufferPool {
     usage: wgpu::BufferUsages,
     /// Where the free space is.
     allocator: Allocator,
-    /// How many times the pool has grown.
-    ///
-    /// A caller that caches something derived from the buffer — a resource
-    /// graph handle, say — compares this against what it last saw to know when
-    /// to refresh it, instead of refreshing on every frame.
-    generation: u64,
 }
 
 impl BufferPool {
@@ -164,24 +158,16 @@ impl BufferPool {
                 DEFAULT_MAX_RANGES,
                 ALIGNMENT,
             ),
-            generation: 0,
         }
     }
 
     /// The buffer every range lives in.
     ///
-    /// This changes when the pool grows; see [`BufferRange`].
+    /// This changes when the pool grows, so read it again instead of holding
+    /// one: a range stays valid across a grow, but names no buffer of its own
+    /// to read it from.
     pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
-    }
-
-    /// How many times the pool has grown.
-    ///
-    /// A caller that caches something derived from the buffer — a resource
-    /// graph handle, say — compares this against what it last saw to know when
-    /// that cache is stale.
-    pub fn generation(&self) -> u64 {
-        self.generation
     }
 
     /// The pool's total size, in bytes.
@@ -290,7 +276,6 @@ impl BufferPool {
         queue.submit([encoder.finish()]);
 
         self.buffer = new_buffer;
-        self.generation += 1;
         Some(())
     }
 }
@@ -303,7 +288,6 @@ impl core::fmt::Debug for BufferPool {
             .field("size", &self.size())
             .field("free_space", &report.total_free_space)
             .field("largest_free_range", &report.largest_free_region)
-            .field("generation", &self.generation)
             .finish()
     }
 }
@@ -412,29 +396,22 @@ mod tests {
     }
 
     #[test]
-    fn growing_advances_the_generation() {
+    fn growing_replaces_the_buffer_and_keeps_the_ranges() {
+        // A caller syncing a pool into a resource graph detects a grow by
+        // comparing the buffer it holds against the pool's, so a grow has to
+        // hand out a buffer that compares unequal to the old one.
         let (device, queue) = noop_device();
         let mut pool = pool(&device, 64);
 
-        assert_eq!(pool.generation(), 0);
+        let before = pool.buffer().clone();
         let first = pool
             .allocate(&device, &queue, 32)
             .expect("the pool has room");
-        assert_eq!(
-            pool.generation(),
-            0,
-            "allocating without growing does not bump the generation"
-        );
+        assert_eq!(pool.buffer(), &before, "allocating replaces nothing");
 
         pool.allocate(&device, &queue, 200).expect("the pool grows");
-        assert_eq!(pool.generation(), 1);
-
-        pool.release(first.allocation());
-        assert_eq!(
-            pool.generation(),
-            1,
-            "releasing does not bump the generation"
-        );
+        assert_ne!(pool.buffer(), &before, "growing replaces the buffer");
+        assert_eq!(first.offset(), 0, "the first range did not move");
     }
 
     #[test]
