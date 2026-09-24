@@ -189,14 +189,21 @@ pub struct UnlitOptions {
     /// caller drawing strips must set it to the width of the index buffer the
     /// draw uses.
     pub primitive: wgpu::PrimitiveState,
-    /// The pipeline's depth-stencil state.
+    /// The pipeline's depth-stencil state, or `None` for a pass with no depth
+    /// attachment.
     ///
     /// Its format is the device's default depth-stencil format
     /// ([`crate::render_attachments::default_depth_stencil_format`]) when built with
     /// [`Self::standard`]. [`Self::standard`] is the renderer's reverse-z
     /// convention: depth is cleared to the far plane, so nearer geometry
     /// carries the greater value.
-    pub depth_stencil: wgpu::DepthStencilState,
+    ///
+    /// `wgpu` requires this to agree with the render pass: a pass with a depth
+    /// attachment needs a state naming that attachment's format, and a pass
+    /// without one needs `None`. [`apply_surface`] therefore follows the
+    /// target rather than leaving a stale format behind, so a pipeline always
+    /// matches the pass it is recorded into.
+    pub depth_stencil: Option<wgpu::DepthStencilState>,
     /// The color target the pipeline writes: its format, blend state and
     /// write mask.
     ///
@@ -228,7 +235,9 @@ impl UnlitOptions {
     /// valid WGSL.
     pub fn standard(device: &wgpu::Device) -> Self {
         let mut options = Self::standard_shape();
-        options.depth_stencil.format = default_depth_stencil_format(device);
+        if let Some(depth_stencil) = &mut options.depth_stencil {
+            depth_stencil.format = default_depth_stencil_format(device);
+        }
         options
     }
 
@@ -250,13 +259,13 @@ impl UnlitOptions {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth_stencil: wgpu::DepthStencilState {
+            depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth24PlusStencil8,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
-            },
+            }),
             color_target: wgpu::ColorTargetState {
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 blend: None,
@@ -461,8 +470,9 @@ impl UnlitPipeline {
             primitive: options.primitive,
             // A pass with a depth attachment requires every pipeline it uses
             // to declare a matching state; `standard` sets this to the
-            // device's default depth-stencil format.
-            depth_stencil: Some(options.depth_stencil.clone()),
+            // device's default depth-stencil format, and `apply_surface`
+            // follows the target so the two cannot disagree.
+            depth_stencil: options.depth_stencil.clone(),
             multisample: options.multisample,
             fragment: Some(wgpu::FragmentState {
                 module: &module,
@@ -710,16 +720,39 @@ impl Specializer<UnlitPipeline> for UnlitSurfaceSpecializer {
 ///
 /// The [`UnlitFlags::SRGB_TO_LINEAR_OUTPUT`] flag is deliberately left
 /// alone: it describes the fragment's input encoding, not the target format.
-/// An attachment set without a depth attachment leaves the base options'
-/// depth format in place, because the built-in unlit pipeline always declares
-/// a depth state; a target without depth needs the caller's own pipeline.
+///
+/// The depth-stencil state follows the target. `wgpu` compares it against the
+/// pass's attachment format when a pipeline is bound and rejects a mismatch, so
+/// a target without a depth attachment must yield a pipeline without a depth
+/// state rather than one still naming the base options' format. A surface that
+/// has one keeps the base state — the reverse-z comparison, the write mask —
+/// and only takes the attachment's format.
 #[cfg(feature = "unlit")]
 pub fn apply_surface(options: &mut UnlitOptions, surface: SurfaceKey) {
     options.color_target.format = surface.color_format;
-    if let Some(depth) = surface.depth_stencil_format {
-        options.depth_stencil.format = depth;
+    match surface.depth_stencil_format {
+        Some(format) => {
+            options
+                .depth_stencil
+                .get_or_insert_with(default_depth_stencil_state)
+                .format = format;
+        }
+        None => options.depth_stencil = None,
     }
     options.multisample.count = surface.sample_count;
+}
+
+/// The depth-stencil state a target with a depth attachment starts from: the
+/// reverse-z convention, with the format filled in from the attachment.
+#[cfg(feature = "unlit")]
+fn default_depth_stencil_state() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth24PlusStencil8,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(wgpu::CompareFunction::Greater),
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    }
 }
 
 /// Build a tightly-packed vertex-buffer layout, deriving the stride from the
@@ -957,7 +990,10 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
         assert_eq!(options.color_target.format, surface.color_format);
         assert_eq!(
-            options.depth_stencil.format,
+            options
+                .depth_stencil
+                .expect("a depth attachment keeps a state")
+                .format,
             surface.depth_stencil_format.unwrap()
         );
         assert_eq!(options.multisample.count, surface.sample_count);
@@ -967,10 +1003,17 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         assert_eq!(options.color_target.blend, blend);
     }
 
+    /// A target with no depth attachment yields a pipeline with no depth
+    /// state, so `wgpu`'s compatibility check against the pass cannot fail:
+    /// a pass with no depth attachment rejects any pipeline that declares one,
+    /// regardless of what that state compares or writes.
     #[test]
-    fn apply_surface_without_a_depth_attachment_keeps_the_base() {
-        let original = UnlitOptions::standard_shape().depth_stencil.format;
+    fn apply_surface_without_a_depth_attachment_clears_the_base() {
         let mut options = UnlitOptions::standard_shape();
+        assert!(
+            options.depth_stencil.is_some(),
+            "the base options start with a depth state"
+        );
 
         apply_surface(
             &mut options,
@@ -981,10 +1024,42 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             },
         );
 
-        assert_eq!(
-            options.depth_stencil.format, original,
-            "the base depth format survives a key without a depth attachment"
+        assert!(
+            options.depth_stencil.is_none(),
+            "a target without depth needs a pipeline without depth"
         );
+    }
+
+    /// A target that gains a depth attachment after the state was dropped
+    /// gets the reverse-z convention back, so specialization is not one-way.
+    #[test]
+    fn apply_surface_restores_a_depth_state_when_the_target_has_one() {
+        let mut options = UnlitOptions::standard_shape();
+        apply_surface(
+            &mut options,
+            SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: None,
+                sample_count: 1,
+            },
+        );
+        assert!(options.depth_stencil.is_none());
+
+        apply_surface(
+            &mut options,
+            SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: Some(wgpu::TextureFormat::Depth32Float),
+                sample_count: 1,
+            },
+        );
+
+        let state = options
+            .depth_stencil
+            .expect("the attachment brings one back");
+        assert_eq!(state.format, wgpu::TextureFormat::Depth32Float);
+        assert_eq!(state.depth_write_enabled, Some(true));
+        assert_eq!(state.depth_compare, Some(wgpu::CompareFunction::Greater));
     }
 
     #[test]

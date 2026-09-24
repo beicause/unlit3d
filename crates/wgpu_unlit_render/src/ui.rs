@@ -90,6 +90,7 @@ use crate::pipeline::{
 };
 use crate::resources::{Resource, ResourceGraph, ResourceId};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
+use crate::specialize::SurfaceKey;
 use crate::staging::StagingBuffer;
 use core::ops::Range;
 use hashbrown::HashMap;
@@ -178,6 +179,24 @@ pub fn ui_options(device: &wgpu::Device, srgb_to_linear_output: bool) -> UnlitOp
     options
 }
 
+/// The UI variant's options for a frame that draws into `surface`.
+///
+/// Equivalent to [`ui_options`] followed by
+/// [`apply_surface`](crate::pipeline::apply_surface), which is what makes the
+/// result usable as-is: the color format, the sample count and the depth state
+/// all match the target, so a caller never has to remember to specialize. The
+/// sRGB flag is still the caller's call, since it describes the fragment's own
+/// encoding rather than the attachment's format.
+pub fn ui_options_for_surface(
+    device: &wgpu::Device,
+    srgb_to_linear_output: bool,
+    surface: SurfaceKey,
+) -> UnlitOptions {
+    let mut options = ui_options(device, srgb_to_linear_output);
+    crate::pipeline::apply_surface(&mut options, surface);
+    options
+}
+
 /// Apply the UI variant's device-independent settings — flags, culling,
 /// blending and the overlaid depth behavior — to a standard options set.
 fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
@@ -213,9 +232,13 @@ fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
         },
     });
     // The UI overlays whatever the pass holds, so it neither tests nor writes
-    // depth.
-    options.depth_stencil.depth_write_enabled = Some(false);
-    options.depth_stencil.depth_compare = Some(wgpu::CompareFunction::Always);
+    // depth. `apply_surface` later decides whether the target has a depth
+    // attachment at all; a state left here is the overlaid one, and a target
+    // without depth drops it.
+    if let Some(depth_stencil) = &mut options.depth_stencil {
+        depth_stencil.depth_write_enabled = Some(false);
+        depth_stencil.depth_compare = Some(wgpu::CompareFunction::Always);
+    }
 }
 
 /// Vertex count and index count the buffers must hold for `primitives`.
@@ -828,10 +851,14 @@ mod tests {
         // space, and nothing is compressed, so nothing needs decoding.
         assert!(!flags.contains(UnlitFlags::VERTEX_INSTANCE));
         assert!(!options.needs_metadata());
-        // Overlaid rather than depth-tested.
-        assert_eq!(options.depth_stencil.depth_write_enabled, Some(false));
+        // Overlaid rather than depth-tested. The base options carry a depth
+        // state, so the UI's overlaid state is the one left behind.
+        let depth_stencil = options
+            .depth_stencil
+            .expect("the base options carry a depth state");
+        assert_eq!(depth_stencil.depth_write_enabled, Some(false));
         assert_eq!(
-            options.depth_stencil.depth_compare,
+            depth_stencil.depth_compare,
             Some(wgpu::CompareFunction::Always)
         );
         // egui's colors premultiply their own alpha.

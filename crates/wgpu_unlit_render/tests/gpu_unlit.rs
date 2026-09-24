@@ -21,11 +21,13 @@ use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
+    apply_surface,
 };
 use wgpu_unlit_render::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
 };
 use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
+use wgpu_unlit_render::specialize::SurfaceKey;
 use zerocopy::IntoBytes;
 
 const WIDTH: u32 = 256;
@@ -294,6 +296,9 @@ fn checkerboard_texture(ctx: &Ctx) -> BaseColorTexture {
 /// Everything one test frame needs: the pipeline variant and the meshes
 /// drawn with it.
 struct SceneFixture {
+    /// Whether the pipeline declares a depth-stencil state, which the render
+    /// pass must then match: `wgpu` rejects a mismatch when binding it.
+    has_depth: bool,
     pipeline: UnlitPipeline,
     mesh: GpuMesh,
     material: Option<wgpu::BindGroup>,
@@ -351,6 +356,7 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
         });
 
     SceneFixture {
+        has_depth: options.depth_stencil.is_some(),
         pipeline,
         mesh,
         material,
@@ -362,13 +368,34 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
 /// depth texture, and — when `sample_count > 1` — a transient multisample
 /// texture. Returns the attachment set and the color texture (for readback).
 fn render_target(ctx: &Ctx, sample_count: u32) -> (RenderAttachments, wgpu::Texture) {
+    render_target_with_depth(ctx, sample_count, true)
+}
+
+/// Like [`render_target`], but may omit the depth-stencil attachment — which a
+/// pipeline must then also omit.
+fn render_target_with_depth(
+    ctx: &Ctx,
+    sample_count: u32,
+    with_depth: bool,
+) -> (RenderAttachments, wgpu::Texture) {
     let ft = create_render_target(&ctx.device, COLOR_FORMAT, WIDTH, HEIGHT, sample_count);
-    (ft.attachments, ft.color)
+    if with_depth {
+        return (ft.attachments, ft.color);
+    }
+    let attachments = RenderAttachments::from_views(
+        ft.attachments.color_view().cloned(),
+        None,
+        ft.attachments.msaa_view().cloned(),
+    );
+    (attachments, ft.color)
 }
 
 /// Render `instances` of `fixture`'s mesh and read the frame back.
 fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Frame {
-    let (context, target) = render_target(ctx, fixture.multisample.count);
+    // The target follows the pipeline: a pass must declare a depth attachment
+    // exactly when the pipelines it binds declare a depth state.
+    let (context, target) =
+        render_target_with_depth(ctx, fixture.multisample.count, fixture.has_depth);
 
     // Global group: camera, frame globals and the mesh-metadata array.
     let view = camera(WIDTH as f32 / HEIGHT as f32);
@@ -483,6 +510,8 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
             label: Some("test::encoder"),
         });
     {
+        // A target without a depth attachment has no depth to clear; the load
+        // ops are ignored for the attachment the pass does not declare.
         let mut pass = context.begin_pass(
             &mut encoder,
             wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
@@ -886,4 +915,51 @@ fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
     });
     assert_eq!(rebuilt, vec![base, dependent]);
     assert!(!graph.any_dirty());
+}
+
+/// A target with no depth attachment must work.
+///
+/// The pass declares no depth attachment, so every pipeline bound into it must
+/// declare no depth state either — `wgpu` rejects the mismatch when the
+/// pipeline is bound. A pipeline that kept the base options' depth format
+/// therefore could not be drawn into a color-only target at all, which is what
+/// a UI-only or overlay-only pass needs.
+#[test]
+fn a_color_only_target_draws_a_cube() {
+    let ctx = Ctx::headless();
+    // Specialize for the depth-less target the same way a caller would, then
+    // build the pipeline from the result.
+    let mut options = vertex_color_options(&ctx.device);
+    apply_surface(
+        &mut options,
+        SurfaceKey {
+            color_format: COLOR_FORMAT,
+            depth_stencil_format: None,
+            sample_count: 4,
+        },
+    );
+    assert!(
+        options.depth_stencil.is_none(),
+        "a depth-less target yields a depth-less pipeline"
+    );
+    assert!(
+        !fixture(&ctx, &options, 4).has_depth,
+        "so the fixture's pass declares no depth attachment"
+    );
+
+    let fixture = fixture(&ctx, &options, 4);
+    let frame = render(&ctx, &fixture, &[placed_cube([1.0; 4])]);
+
+    // The cube reached the frame: some pixel is brighter than the clear color.
+    let clear_sum = ((CLEAR[0] + CLEAR[1] + CLEAR[2]) * 255.0) as u16;
+    let covered = frame
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[0] as u16 + p[1] as u16 + p[2] as u16 > clear_sum + 30)
+        .count();
+    assert!(
+        covered > 0,
+        "the cube should reach a target with no depth attachment"
+    );
 }

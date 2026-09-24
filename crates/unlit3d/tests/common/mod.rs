@@ -212,13 +212,13 @@ fn unlit_options(device: &wgpu::Device) -> wgpu_unlit_render::pipeline::UnlitOpt
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()
         },
-        depth_stencil: wgpu::DepthStencilState {
+        depth_stencil: Some(wgpu::DepthStencilState {
             format: default_depth_stencil_format(device),
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Greater),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
-        },
+        }),
         color_target: wgpu::ColorTargetState {
             format: COLOR_FORMAT,
             blend: None,
