@@ -1,6 +1,9 @@
-//! A windowed unlit cube, rendered through [`unlit3d::winit::WindowSurface`].
+//! A windowed unlit cube with an egui overlay, rendered through
+//! [`unlit3d::winit::WindowSurface`].
 //!
-//! Run with `cargo run -p unlit3d_examples`; `Esc` closes the window.
+//! Run with `cargo run -p unlit3d_examples`; `Esc` closes the window. Click the
+//! panel's button, or type into its text field, to see the UI take input while
+//! the cube keeps spinning.
 //!
 //! The example is the whole frame loop a windowed app needs. The renderer is
 //! spawned once as a resource entity, a cube mesh and its material are
@@ -19,7 +22,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
+use unlit3d::ui::{UiSource, egui};
 use unlit3d::winit::WindowSurface;
 use wgpu_unlit_render::pipeline::UnlitOptions;
 use wgpu_unlit_render::resources::ResourceGraph;
@@ -169,9 +174,14 @@ struct Scene {
     /// The camera entity, whose projection follows the window's aspect.
     camera: Entity,
     window_surface: WindowSurface,
+    /// Translates the window's events into the world's input events.
+    input: WinitInput,
     /// The time the previous frame was drawn at, for the frame delta.
     last_frame: Instant,
 }
+
+/// Set by the panel's button, read once by the frame loop.
+struct SpinReset(bool);
 
 /// A behaviour component: the cube turns by `radians_per_second`.
 struct Spin {
@@ -265,6 +275,10 @@ impl ApplicationHandler<UserEvent> for App {
         let Some(scene) = self.scene.as_mut() else {
             return;
         };
+        // Every window event goes to the input adapter first, so the frame
+        // that follows sees this event whichever branch handles it below. The
+        // adapter ignores the events that carry no input.
+        scene.input.on_window_event(&scene.world, &event);
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
@@ -388,6 +402,29 @@ impl Scene {
             UnlitPipeline::new(key),
         ));
 
+        // Input: the adapter spawns the `InputState` resource it fills, and
+        // the UI source reads that same resource, so one frame of events is
+        // seen by both the panels and the game's own behaviour components.
+        let input = WinitInput::new(&mut world);
+
+        // The UI is a frame source like the mesh path, so mounting it is an
+        // ordinary spawn. Its panels are entities too: a second panel is a
+        // second spawn, and removing one removes its interface.
+        spawn_source(&mut world, UiSource::new());
+        // A button's press is state, and a behaviour component cannot keep
+        // state in itself — it is borrowed while it runs — so the panel writes
+        // a sibling component and the frame loop reads it.
+        let reset = world.spawn((SpinReset(false),));
+        world.spawn((UiPanel::new(move |world, _entity, ui| {
+            egui::Window::new("unlit3d").show(ui.ctx(), |ui| {
+                ui.label("The cube spins behind this panel.");
+                ui.label("Drag or type here: the UI claims the input it uses.");
+                if ui.button("Reset the spin").clicked() {
+                    let _ = world.with_mut::<SpinReset, _>(reset, |reset| reset.0 = true);
+                }
+            });
+        }),));
+
         let window_surface = world
             .with_mut::<Renderer, _>(renderer, |r| {
                 WindowSurface::new(
@@ -407,6 +444,7 @@ impl Scene {
             renderer,
             camera,
             window_surface,
+            input,
             last_frame: Instant::now(),
         }
     }
@@ -416,6 +454,22 @@ impl Scene {
         let now = Instant::now();
         let delta_time = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
+
+        // The frame's input events run the world's behaviour components. The
+        // UI source and the dispatcher read the same list, and the caller
+        // clears it once both have: this is the whole input step, and doing it
+        // before the frame is drawn means the frame that follows reflects it.
+        dispatch_input(&self.world);
+        self.world.apply();
+
+        // The panel's button leaves its press as state; consume it here, once.
+        for (_, mut reset) in self.world.query::<&mut SpinReset>() {
+            if core::mem::take(&mut reset.0) {
+                for (_, mut spin) in self.world.query::<&mut Spin>() {
+                    spin.angle = 0.0;
+                }
+            }
+        }
 
         // The behaviour components run first: the world the renderer reads is
         // this frame's. A query pairs each entity's components, so the spin
@@ -442,6 +496,17 @@ impl Scene {
                 frame.present(&queue);
             })
             .expect("the renderer is a resource entity");
+
+        // Every consumer has now read this frame's events — the dispatcher and
+        // the UI source both — so they can be dropped, keeping the state they
+        // left behind.
+        if let Some(state) = world.query::<&InputState>().next().map(|(e, _)| e) {
+            let _ = world.with_mut::<InputState, _>(state, |state| state.clear_events());
+        }
+
+        // Apply whatever a behaviour component or panel queued, so the next
+        // frame sees the world it asked for.
+        self.world.apply();
     }
 }
 

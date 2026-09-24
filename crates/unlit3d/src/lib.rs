@@ -26,6 +26,21 @@
 //! A family is identified by its key type, the type its entities'
 //! [`GpuPipeline`] components carry.
 //!
+//! # Input and UI
+//!
+//! [`input`] is the portable half of input handling: the event types and the
+//! behaviour components that react to them, with no windowing library or UI
+//! toolkit involved. A caller feeds a frame's events into the [`InputState`]
+//! resource, runs [`dispatch_input`] to drive the behaviours, and clears the
+//! events once every consumer has read them.
+//!
+//! [`ui::UiSource`] is a frame source that draws the world's
+//! [`ui::UiPanel`] components as an overlay. A UI is a behaviour component, so
+//! a frame can hold as many panels as it has entities, and the source only
+//! drives the ones it finds. It reads the same [`InputState`] the caller's own
+//! behaviours do, and publishes what the UI claimed as an [`InputCapture`]
+//! resource for game logic to consult.
+//!
 //! A [`GpuPipeline`] carries a key, not a compiled pipeline: a concrete
 //! pipeline is resolved per key against the frame's render target and the
 //! entity's vertex layout. Every renderable entity must carry one.

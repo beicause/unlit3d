@@ -45,7 +45,15 @@ use zerocopy::IntoBytes;
 
 use crate::input::InputState;
 pub use crate::source::InputCapture;
+
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
+/// egui, re-exported because a [`UiPanel`] is written against its types.
+///
+/// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
+/// widgets, so a caller needs the crate that defines them. Re-exporting it
+/// here keeps the version a panel is written against the same one the source
+/// drives, instead of leaving the two to agree by hand.
+pub use egui;
 
 pub mod convert;
 
