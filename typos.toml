@@ -1,0 +1,13 @@
+# Spell-check configuration for `typos`.
+
+[default.extend-identifiers]
+# The plan notes cite commits by short hash. A seven-character hex string is
+# occasionally a word's shape -- `2aa5ba4` reads as `ba` -- and typos' built-in
+# SHA detection only covers hashes of 32 characters or more, so a short one is
+# checked as an ordinary identifier.
+#
+# Naming the hash as its own correction marks that exact identifier always
+# valid. A pattern for hex strings would be simpler, but it would also accept a
+# hash-shaped misspelling; an entry here keeps the check answering for
+# everything else. Add another entry when a newly cited hash is flagged.
+"2aa5ba4" = "2aa5ba4"

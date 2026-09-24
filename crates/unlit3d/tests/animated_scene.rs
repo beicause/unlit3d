@@ -3,7 +3,7 @@
 //! One scene is evolved over several frames: meshes are allocated, some are
 //! recycled, the moving ones translate and rotate, and the camera orbits the
 //! grid. Every frame is stored as its own snapshot, so the sequence shows what
-//! a wrong pooled range, a stale metadata entry or a mis-packed instance looks
+//! a wrong pooled range, a stale metadata entry or a mispacked instance looks
 //! like from frame to frame — a draw that reads another mesh's range paints a
 //! different cube exactly in the frames that reuse the range, which a single
 //! snapshot of a static scene cannot show.
