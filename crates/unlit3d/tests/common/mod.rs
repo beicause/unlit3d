@@ -29,10 +29,10 @@ pub struct TestGpu {
     pub context: RenderContext,
     /// The [`Renderer`] resource entity, driven by [`Self::render`].
     pub renderer: Entity,
-    /// The [`MeshSource`] entity the mesh helpers allocate through.
-    pub source: Entity,
+    /// The built-in mesh source, or `None` in a UI-only world.
+    source: Option<Entity>,
     /// The built-in unlit family's key; every renderable entity carries an
-    /// [`UnlitPipeline`] built from it.
+    /// [`UnlitPipeline`] built from it. Meaningless without a mesh source.
     pub key: UnlitPipelineKey,
 }
 
@@ -40,23 +40,41 @@ impl TestGpu {
     /// Spawn the frame's context, a mesh source with the built-in unlit family
     /// registered, and the frame driver into `world`.
     pub fn new(world: &mut LocalWorld, ctx: &Ctx) -> Self {
+        let mut test = Self::frame_only(world, ctx);
+        let mut source = MeshSource::new(world, test.context);
+        source.register_unlit_family(world);
+        test.source = Some(spawn_source(world, source));
+        test
+    }
+
+    /// Spawn only the frame's context and driver, with no mesh source.
+    ///
+    /// What a UI-only test needs: the frame must draw without the 3D path
+    /// being present at all.
+    pub fn frame_only(world: &mut LocalWorld, ctx: &Ctx) -> Self {
         let context = spawn_context(
             world,
             ctx.device.clone(),
             ctx.queue.clone(),
             ResourceGraph::new(),
         );
-        let mut source = MeshSource::new(world, context);
-        source.register_unlit_family(world);
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
-        let source = spawn_source(world, source);
         let renderer = world.spawn((Resource, Renderer::new(context)));
         Self {
             context,
             renderer,
-            source,
+            source: None,
             key,
         }
+    }
+
+    /// The built-in mesh source's entity.
+    ///
+    /// # Panics
+    ///
+    /// In a world built with [`Self::frame_only`], which has none.
+    pub fn mesh_source(&self) -> Entity {
+        self.source.expect("this test world has a mesh source")
     }
 
     /// Run `f` on the mesh source.
@@ -65,8 +83,9 @@ impl TestGpu {
         world: &LocalWorld,
         f: impl FnOnce(&mut MeshSource, &LocalWorld) -> R,
     ) -> R {
+        let entity = self.mesh_source();
         let mut source = world
-            .get_mut::<Source>(self.source)
+            .get_mut::<Source>(entity)
             .expect("the source entity exists");
         let mesh = source
             .as_mut::<MeshSource>()
@@ -90,6 +109,36 @@ impl TestGpu {
         world
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's graph exists")
+    }
+
+    /// Register `texture` in the frame's graph together with a default view of
+    /// it, returning both ids.
+    ///
+    /// Frame-level, so a test that has no mesh source can still build a render
+    /// target: nothing here belongs to the 3D path.
+    pub fn register_texture(
+        &self,
+        world: &LocalWorld,
+        texture: wgpu::Texture,
+    ) -> (ResourceId, ResourceId) {
+        let mut graph = self.graph(world);
+        let texture_id = graph
+            .insert_strong(GraphResource::Texture(texture), &[])
+            .expect("a texture has no dependencies");
+        let view = graph
+            .get_texture(texture_id)
+            .expect("the texture was just inserted")
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let view_id = graph
+            .insert_strong(
+                GraphResource::TextureView {
+                    view,
+                    format: COLOR_FORMAT,
+                },
+                &[texture_id],
+            )
+            .expect("the view depends on its texture");
+        (texture_id, view_id)
     }
 
     /// Allocate a cube mesh through the source.
@@ -155,33 +204,59 @@ impl TestGpu {
     /// register their views in the frame's resource graph, and bind them as the
     /// renderer's render target. Returns the colour texture (for readback).
     pub fn bind_offscreen_target(&self, world: &LocalWorld, _label: &str) -> wgpu::Texture {
+        self.bind_offscreen_target_with(world, 1, true)
+    }
+
+    /// Like [`Self::bind_offscreen_target`], but with a chosen sample count and
+    /// the depth-stencil attachment optional.
+    ///
+    /// A source that draws into a color-only target builds its pipelines with
+    /// no depth state, so a test of that path must be able to omit the
+    /// attachment — `wgpu` rejects the pass otherwise.
+    pub fn bind_offscreen_target_with(
+        &self,
+        world: &LocalWorld,
+        samples: u32,
+        with_depth: bool,
+    ) -> wgpu::Texture {
         use wgpu_unlit_render::render_attachments::create_render_target;
         let device = world
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
-        let ft = create_render_target(&device, COLOR_FORMAT, WIDTH, HEIGHT, 1);
-        let color_view = self.with_mesh_source(world, |source, world| {
-            source
-                .register_texture_and_default_view(world, ft.color.clone())
-                .1
+        let ft = create_render_target(&device, COLOR_FORMAT, WIDTH, HEIGHT, samples);
+        let (_, color_view) = self.register_texture(world, ft.color.clone());
+        let depth_view = with_depth.then(|| {
+            self.graph(world)
+                .insert_strong(
+                    GraphResource::TextureView {
+                        view: ft
+                            .depth
+                            .create_view(&wgpu::TextureViewDescriptor::default()),
+                        format: wgpu_unlit_render::render_attachments::default_depth_stencil_format(
+                            &device,
+                        ),
+                    },
+                    &[],
+                )
+                .expect("depth view has no dependencies")
         });
-        let depth_view: ResourceId = self
-            .graph(world)
-            .insert_strong(
-                GraphResource::TextureView {
-                    view: ft
-                        .depth
-                        .create_view(&wgpu::TextureViewDescriptor::default()),
-                    format: wgpu_unlit_render::render_attachments::default_depth_stencil_format(
-                        &device,
-                    ),
-                },
-                &[],
-            )
-            .expect("depth view has no dependencies");
+        // A multisampled target resolves through its MSAA view, so the pass
+        // needs it bound; without it the draws would go straight to the
+        // single-sampled color view.
+        let msaa_view = ft.msaa.as_ref().map(|msaa| {
+            self.graph(world)
+                .insert_strong(
+                    GraphResource::TextureView {
+                        view: msaa.create_view(&wgpu::TextureViewDescriptor::default()),
+                        format: COLOR_FORMAT,
+                    },
+                    &[],
+                )
+                .expect("msaa view has no dependencies")
+        });
         self.with_renderer(world, |renderer, world| {
-            renderer.set_render_target(world, Some(color_view), Some(depth_view), None);
+            renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);
         });
         ft.color
     }
@@ -198,6 +273,16 @@ impl TestGpu {
     /// Render one frame from the world.
     pub fn render(&self, world: &LocalWorld) {
         self.with_renderer(world, |renderer, world| renderer.render(world));
+    }
+
+    /// Render `count` frames.
+    ///
+    /// A UI test needs two: egui only learns its font metrics on the second,
+    /// so the first is drawn and discarded.
+    pub fn render_frames(&self, world: &LocalWorld, count: u32) {
+        for _ in 0..count {
+            self.render(world);
+        }
     }
 }
 
