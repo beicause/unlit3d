@@ -636,6 +636,138 @@ mod tests {
         assert_eq!(source.order(), FrameOrder::OVERLAY);
     }
 
+    /// A panel's queued spawn lands once the frame loop applies the queue.
+    ///
+    /// A panel gets only a shared world, so a structural change is queued —
+    /// the same rule every other behaviour component follows.
+    #[test]
+    fn a_panel_may_queue_a_spawn() {
+        /// The entity a panel asks for.
+        struct Spawned;
+
+        let world = LocalWorld::new();
+        let source = UiSource::new();
+        let world = Rc::new(RefCell::new(world));
+        {
+            let world = Rc::clone(&world);
+            world
+                .borrow_mut()
+                .spawn((UiPanel::new(move |world, _entity, ui| {
+                    if world.query::<&Spawned>().next().is_none() {
+                        world.queue().spawn((unlit_ecs::Resource, Spawned));
+                    }
+                    ui.label("once");
+                }),));
+        }
+
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(128.0, 96.0),
+            )),
+            ..Default::default()
+        };
+        // The panel only queues; nothing exists until the caller applies.
+        let mut output = {
+            let world = world.borrow();
+            source.run_panels(&world, input.clone())
+        };
+        output.textures_delta.clear();
+        assert_eq!(
+            world.borrow().query::<&Spawned>().count(),
+            0,
+            "a queued spawn has not happened yet"
+        );
+
+        world.borrow_mut().apply();
+        assert_eq!(
+            world.borrow().query::<&Spawned>().count(),
+            1,
+            "the queue landed on apply"
+        );
+
+        // A second frame sees the entity and does not queue another.
+        let mut output = source.run_panels(&world.borrow(), input);
+        output.textures_delta.clear();
+        world.borrow_mut().apply();
+        assert_eq!(
+            world.borrow().query::<&Spawned>().count(),
+            1,
+            "the panel re-ran and found what it asked for"
+        );
+    }
+
+    /// Every pass of a multi-pass layout drives every panel.
+    ///
+    /// egui calls the closure again when a pass asks for a discard, so the
+    /// query must be rebuilt per pass rather than iterated once: collecting
+    /// the entities up front would make the second pass see nothing.
+    #[test]
+    fn every_pass_drives_every_panel() {
+        let mut world = LocalWorld::new();
+        let runs = Rc::new(Cell::new(0u32));
+        for _ in 0..2 {
+            let runs = Rc::clone(&runs);
+            world.spawn((UiPanel::new(move |_world, _entity, _ui| {
+                runs.set(runs.get() + 1);
+            }),));
+        }
+
+        let source = UiSource::new();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(128.0, 96.0),
+            )),
+            ..Default::default()
+        };
+        // Run the driving closure twice by hand, as a discard does, and count
+        // what each pass saw.
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let mut output = source.run_panels(&world, input.clone());
+            output.textures_delta.clear();
+            seen.push(runs.get());
+        }
+
+        assert_eq!(
+            seen,
+            vec![2, 4],
+            "each pass drove both panels again, so the query was rebuilt"
+        );
+    }
+
+    /// A caller can select a subset of the panels by filtering.
+    ///
+    /// Panels are ordinary components, so a second kind of panel is a second
+    /// component and a caller can be selective without the source knowing
+    /// either type. A query filter fetches no column, so selecting costs no
+    /// borrow.
+    #[test]
+    fn a_filter_selects_which_panels_a_caller_collects() {
+        use unlit_ecs::With;
+
+        /// Marks a panel as belonging to one layer.
+        struct Foreground;
+
+        let mut world = LocalWorld::new();
+        world.spawn((Foreground, UiPanel::new(|_world, _entity, _ui| {})));
+        world.spawn((UiPanel::new(|_world, _entity, _ui| {}),));
+
+        let foreground: Vec<Entity> = world
+            .query_filtered::<Entity, With<Foreground>>()
+            .map(|(entity, _)| entity)
+            .collect();
+        assert_eq!(foreground.len(), 1, "the filter picked one of two panels");
+
+        let all: Vec<Entity> = world.query::<&UiPanel>().map(|(e, _)| e).collect();
+        assert_eq!(all.len(), 2, "the unfiltered query sees both");
+        assert!(
+            all.contains(&foreground[0]),
+            "the filtered panel is one of them"
+        );
+    }
+
     /// The frame's events reach the panels.
     ///
     /// A panel that records the events egui gave it proves the `InputState`
