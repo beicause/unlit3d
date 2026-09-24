@@ -176,6 +176,23 @@ pub trait FrameSource: 'static {
     /// A [`Source`] may override this per entity with [`Source::with_order`],
     /// which is how a caller reorders an existing source without rebuilding it.
     fn order(&self) -> FrameOrder;
+
+    /// Release whatever this source registered in the frame's resource graph.
+    ///
+    /// Most sources own no graph nodes and can leave this as it is. One that
+    /// does — the built-in mesh and UI sources register uniform buffers and
+    /// bind groups of their own — implements it, because removing a source is
+    /// not something the graph can notice: `despawn` has no hook, so nothing
+    /// would remove the nodes and they would outlive every reference to them.
+    ///
+    /// [`despawn_source`] calls this before despawning, which is the only
+    /// supported way to remove a source that owns nodes. Releasing a source
+    /// whose nodes a caller still holds handles for — a mesh not yet passed to
+    /// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh)
+    /// — leaves those handles dangling, so remove them first.
+    fn release(&mut self, world: &LocalWorld) {
+        let _ = world;
+    }
 }
 
 /// A frame source behind an erased handle, so one query sees every concrete
@@ -267,6 +284,11 @@ impl Source {
     pub fn scene(&self) -> &Scene {
         self.source.scene()
     }
+
+    /// Release the graph nodes the source registered.
+    pub fn release(&mut self, world: &LocalWorld) {
+        self.source.release(world);
+    }
 }
 
 impl core::fmt::Debug for Source {
@@ -332,10 +354,38 @@ pub fn spawn_source_at(
     world.spawn((bump_mount(source, index),))
 }
 
-/// Take the next mount index from the world's counter.
+/// Remove the source `entity`, releasing the graph nodes it owns.
 ///
-/// Falls back to zero for a world that never spawned a context: such a world
-/// has no render context either, so no frame can be built from it.
+/// Structural changes go through the command queue, and this is queued like
+/// any other: the call records the intent and the world changes when the
+/// caller next calls `apply`. It releases the source's own nodes before
+/// despawning it, which is why removing a source is not just `despawn` — the
+/// graph has no way to learn that an entity is gone.
+///
+/// A source that owns per-entity resources a caller still holds handles for is
+/// the caller's to clean up first; see [`FrameSource::release`].
+pub fn despawn_source(world: &LocalWorld, entity: Entity) {
+    world.queue().push(DespawnSource { entity });
+}
+
+/// The queued removal of a source: release its graph nodes, then despawn it.
+struct DespawnSource {
+    entity: Entity,
+}
+
+impl unlit_ecs::Command<unlit_ecs::LocalMode> for DespawnSource {
+    fn apply(self: Box<Self>, world: &mut LocalWorld) {
+        // Releasing first, so the source is still reachable and still knows
+        // its own nodes. It needs only a shared world, so the source borrow
+        // does not conflict with it.
+        if let Some(mut source) = world.get_mut::<Source>(self.entity) {
+            source.release(world);
+        }
+        world.despawn(self.entity);
+    }
+}
+
+/// Take the next mount index from the world's counter.
 fn next_mount_index(world: &LocalWorld) -> u64 {
     let Some(counter) = world.query::<&MountCounter>().next().map(|(e, _)| e) else {
         return 0;
@@ -799,5 +849,151 @@ mod tests {
             })
             .collect();
         assert_eq!(indices, vec![0, 1, 2]);
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+    use wgpu_unlit_render::resources::{Resource as GraphResource, ResourceId};
+
+    /// A source that registers a node, so releasing has something to remove.
+    ///
+    /// It keeps its context, as a real source does: `release` is handed the
+    /// world but no context, and the resource graph is the context's.
+    struct OwningSource {
+        context: RenderContext,
+        node: Option<ResourceId>,
+        scene: Scene,
+    }
+
+    impl FrameSource for OwningSource {
+        fn build_scene(
+            &mut self,
+            world: &LocalWorld,
+            ctx: RenderContext,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+            // Register once, on the first frame: a node the source owns and
+            // nothing else refers to.
+            self.context = ctx;
+            if self.node.is_none() {
+                self.node = world
+                    .get_mut::<ResourceGraph>(ctx.graph)
+                    .expect("the context's graph exists")
+                    .insert_strong(GraphResource::Virtual, &[])
+                    .ok();
+            }
+        }
+
+        fn scene(&self) -> &Scene {
+            &self.scene
+        }
+
+        fn order(&self) -> FrameOrder {
+            FrameOrder::OVERLAY
+        }
+
+        fn release(&mut self, world: &LocalWorld) {
+            let Some(node) = self.node.take() else {
+                return;
+            };
+            world
+                .get_mut::<ResourceGraph>(self.context.graph)
+                .expect("the context's graph exists")
+                .remove_drop(node);
+        }
+    }
+
+    fn noop_context(world: &mut LocalWorld) -> RenderContext {
+        spawn_context(
+            world,
+            wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0,
+            wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).1,
+            ResourceGraph::new(),
+        )
+    }
+
+    /// A source is removed by the queued command, and the graph nodes it owns
+    /// go with it.
+    ///
+    /// `despawn` alone would leave them: the graph has no hook that notices an
+    /// entity is gone, which is why the removal is a command rather than a
+    /// plain despawn.
+    #[test]
+    fn removing_a_source_releases_the_nodes_it_owns() {
+        let mut world = LocalWorld::new();
+        let ctx = noop_context(&mut world);
+        let entity = spawn_source(
+            &mut world,
+            OwningSource {
+                context: ctx,
+                node: None,
+                scene: Scene::new(),
+            },
+        );
+
+        // Build once, so the source registers its node.
+        let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
+            .0
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        world
+            .with_mut::<Source, _>(entity, |source| {
+                source.build_scene(&world, ctx, &mut encoder)
+            })
+            .expect("the source entity exists");
+
+        let node = world
+            .with_mut::<Source, _>(entity, |source| {
+                source.as_mut::<OwningSource>().unwrap().node
+            })
+            .flatten()
+            .expect("the source registered a node");
+        assert!(
+            world
+                .get_mut::<ResourceGraph>(ctx.graph)
+                .unwrap()
+                .get(node)
+                .is_some(),
+            "the node is in the graph while the source lives"
+        );
+        let before = world.get_mut::<ResourceGraph>(ctx.graph).unwrap().len();
+
+        despawn_source(&world, entity);
+        // Nothing has happened yet: the command is applied by the caller.
+        assert!(world.contains(entity), "removal is queued, not immediate");
+        world.apply();
+
+        assert!(!world.contains(entity), "the source is gone");
+        let graph = world.get_mut::<ResourceGraph>(ctx.graph).unwrap();
+        assert!(
+            graph.get(node).is_none(),
+            "the source's node was released with it"
+        );
+        assert!(
+            graph.len() < before,
+            "the graph shrank: {} was {before}",
+            graph.len()
+        );
+    }
+
+    /// A source that owns nothing still despawns, so the command is safe for
+    /// every source.
+    #[test]
+    fn removing_a_source_that_owns_nothing_still_removes_it() {
+        let mut world = LocalWorld::new();
+        let ctx = noop_context(&mut world);
+        let entity = spawn_source(
+            &mut world,
+            OwningSource {
+                context: ctx,
+                node: None,
+                scene: Scene::new(),
+            },
+        );
+
+        despawn_source(&world, entity);
+        world.apply();
+        assert!(!world.contains(entity));
     }
 }

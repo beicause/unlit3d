@@ -104,8 +104,12 @@ impl UiPanel {
 struct Gpu {
     /// The camera uniform `screen_view` is written into.
     camera: wgpu::Buffer,
+    /// The graph node of [`Gpu::camera`], so the source can release it.
+    camera_id: ResourceId,
     /// The frame-globals uniform.
     globals: wgpu::Buffer,
+    /// The graph node of [`Gpu::globals`], so the source can release it.
+    globals_id: ResourceId,
     /// Graph node of the bind group binding the two uniforms.
     global_group: ResourceId,
     /// Uploads egui's textures and geometry and records its draws.
@@ -144,6 +148,10 @@ pub struct UiSource {
     /// The [`InputState`] resource found on the last frame, if the world has
     /// one.
     input: Option<Entity>,
+    /// The frame's GPU context, learned on the first frame. Kept so
+    /// [`FrameSource::release`] can reach the resource graph: it is given the
+    /// world but no context, and the graph is the context's.
+    context: Option<RenderContext>,
 }
 
 impl UiSource {
@@ -160,6 +168,7 @@ impl UiSource {
             gpu: None,
             surface: None,
             input: None,
+            context: None,
         }
     }
 
@@ -252,7 +261,9 @@ impl UiSource {
                     .expect("both uniforms were registered");
                 self.gpu = Some(Gpu {
                     camera,
+                    camera_id,
                     globals,
+                    globals_id,
                     global_group: group_id,
                     integration: EguiIntegration::new(device, group_id, pipeline),
                 });
@@ -275,6 +286,9 @@ impl FrameSource for UiSource {
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        // Kept so `release` can reach the resource graph it registered in.
+        self.context = Some(ctx);
+
         // Cleared on every path: a frame that records this source must never
         // replay the previous frame's UI.
         self.scene.clear();
@@ -400,6 +414,28 @@ impl FrameSource for UiSource {
 
     fn order(&self) -> FrameOrder {
         FrameOrder::OVERLAY
+    }
+
+    /// Remove the UI's own graph nodes: its two uniforms and the bind group
+    /// binding them.
+    ///
+    /// The pipeline is a `wgpu` handle the graph reaches only through the bind
+    /// group, so dropping it with the source is enough. The bind group is
+    /// removed before the buffers it depends on, so it does not outlive them.
+    fn release(&mut self, world: &LocalWorld) {
+        let Some(gpu) = self.gpu.take() else {
+            return;
+        };
+        let Some(context) = self.context else {
+            return;
+        };
+        let mut graph = world
+            .get_mut::<ResourceGraph>(context.graph)
+            .expect("the context's resource graph exists");
+        graph.remove_drop(gpu.global_group);
+        graph.remove_drop(gpu.camera_id);
+        graph.remove_drop(gpu.globals_id);
+        graph.cleanup_drop();
     }
 }
 

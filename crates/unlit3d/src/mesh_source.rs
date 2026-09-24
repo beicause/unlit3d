@@ -1703,6 +1703,41 @@ impl FrameSource for MeshSource {
     fn order(&self) -> FrameOrder {
         FrameOrder::MESH
     }
+
+    /// Remove every node this source registered: its own uniform buffers, the
+    /// pools that hold the meshes, and the global bind group of every
+    /// registered pipeline.
+    ///
+    /// The nodes are the source's, not a caller's: a mesh or material a caller
+    /// still holds a handle for is released first by
+    /// [`MeshSource::remove_mesh`]/[`MeshSource::remove_material`], and the
+    /// handles must not be used after this.
+    fn release(&mut self, world: &LocalWorld) {
+        let mut graph = Self::graph(world, self.context);
+
+        // The pipelines' global groups are strong nodes in their own right, so
+        // removing the buffers they depend on would leave them behind.
+        for registered in &self.pipelines {
+            if let Some(global) = &registered.global {
+                graph.remove_drop(global.id);
+            }
+        }
+        // The pools and the three uniform buffers. Every mesh part hangs off a
+        // mesh's own virtual root, which the caller removed with its handle;
+        // anything left over is an orphan of those nodes and is collected
+        // below.
+        graph.remove_drop(self.camera_buf);
+        graph.remove_drop(self.globals_buf);
+        graph.remove_drop(self.metadata_buf);
+        graph.remove_drop(self.index_pool_id);
+        for id in self.vertex_pool_ids.values() {
+            graph.remove_drop(*id);
+        }
+        graph.cleanup_drop();
+
+        self.pipelines.clear();
+        self.vertex_pool_ids.clear();
+    }
 }
 
 #[cfg(test)]
@@ -2901,5 +2936,51 @@ mod tests {
             "each draw keeps its own slice of the pool"
         );
         assert_eq!(drawn(&h.source).len(), 2, "both entities were drawn");
+    }
+
+    /// Releasing the source removes the nodes it registered, so a program that
+    /// mounts and unmounts sources does not grow the graph forever.
+    #[test]
+    fn releasing_the_source_removes_the_nodes_it_registered() {
+        let mut h = harness();
+        let ctx = h.source.context();
+        // A drawn frame, so the pools, the mesh parts and the global bind
+        // groups all exist.
+        let mesh = h.tri_mesh();
+        h.world
+            .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+        h.world.spawn((
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(h.key.clone()),
+        ));
+        let mut encoder = h.encoder();
+        h.source.build_scene(&h.world, ctx, &mut encoder);
+
+        let before = MeshSource::graph(&h.world, ctx).len();
+        // The camera/globals/metadata buffers, the index pool and the global
+        // bind group are the source's own; the mesh's parts hang off its root.
+        h.source.remove_mesh(&h.world, mesh);
+        h.source.release(&h.world);
+        let after = MeshSource::graph(&h.world, ctx).len();
+
+        assert!(
+            after < before,
+            "releasing must shrink the graph: {after} was {before}"
+        );
+        // What the context itself spawned — the target's views — is all that
+        // should be left, plus nothing the source registered.
+        assert!(
+            MeshSource::graph(&h.world, ctx)
+                .get(h.source.camera_buf)
+                .is_none(),
+            "the source's camera buffer is gone"
+        );
+        assert!(
+            MeshSource::graph(&h.world, ctx)
+                .get(h.source.index_pool_id)
+                .is_none(),
+            "the index pool is gone"
+        );
     }
 }

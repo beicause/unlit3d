@@ -177,7 +177,8 @@ pub mod prelude {
         renderer::Renderer,
         source::{
             FrameOrder, FrameSource, FrameTarget, InputCapture, RenderContext, Source,
-            frame_target, set_frame_target, spawn_context, spawn_source, spawn_source_at,
+            despawn_source, frame_target, set_frame_target, spawn_context, spawn_source,
+            spawn_source_at,
         },
     };
     pub use unlit_ecs::prelude::*;
