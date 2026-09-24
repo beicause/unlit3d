@@ -49,7 +49,23 @@ fn spawn(future: impl core::future::Future<Output = ()> + 'static) {
     wasm_bindgen_futures::spawn_local(future);
 }
 
+/// Install the logger backend the example reports through.
+///
+/// `RUST_LOG` selects the level natively; the default is `info`, so the
+/// example's own startup messages are visible without a variable. On the web
+/// the browser console is the terminal.
+fn init_logging() {
+    #[cfg(not(target_arch = "wasm32"))]
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .try_init()
+        .ok();
+    #[cfg(target_arch = "wasm32")]
+    console_log::init_with_level(log::Level::Info).ok();
+}
+
 fn main() {
+    init_logging();
+
     // Panics on the web surface as an opaque `unreachable executed` otherwise;
     // the hook logs the message and its stack into the developer console.
     #[cfg(target_arch = "wasm32")]
@@ -190,7 +206,7 @@ impl ApplicationHandler<UserEvent> for App {
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {
-                eprintln!("failed to open a window: {error}");
+                log::error!("failed to open a window: {error}");
                 event_loop.exit();
                 return;
             }
@@ -233,7 +249,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.scene = Some(scene);
             }
             UserEvent::Failed(error) => {
-                eprintln!("failed to start the renderer: {error}");
+                log::error!("failed to start the renderer: {error}");
                 event_loop.exit();
             }
         }

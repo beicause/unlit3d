@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 glam.workspace = true
+log.workspace = true
 # Drives wgpu's async adapter/device requests from the synchronous harness.
 pollster.workspace = true
 wgpu = { workspace = true, default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
@@ -20,6 +21,14 @@ version = "0.25"
 default-features = false
 features = ["webp"]
 optional = true
+
+# The logger backend `init_logging` installs: `env_logger` reads `RUST_LOG`
+# natively, `console_log` forwards to the browser console on the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_log.workspace = true
 
 [features]
 snapshot = ["dep:fast-ssim2", "dep:image"]

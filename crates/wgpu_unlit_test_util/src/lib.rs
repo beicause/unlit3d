@@ -2,9 +2,17 @@
 //!
 //! Every test drives wgpu through a real `wgpu::Device` and reads
 //! buffer/texture data back for assertions.  The harness is deliberately
-//! self-contained: besides `wgpu`, `glam`, `pollster` (driving wgpu's
-//! async adapter/device requests), plus `fast-ssim2` and `image`
-//! (both behind the `snapshot` feature) it depends on nothing else.
+//! self-contained: besides `wgpu`, `glam`, `log`, `pollster` (driving wgpu's
+//! async adapter/device requests), the platform logger backend, plus
+//! `fast-ssim2` and `image` (both behind the `snapshot` feature) it depends on
+//! nothing else.
+//!
+//! # Logging
+//!
+//! The harness reports what it does through [`log`] rather than by printing:
+//! [`Ctx::headless`] installs a backend on first use, so a test's own
+//! `log` records — and wgpu's — reach the terminal.  `RUST_LOG` selects the
+//! level; the default is `warn`.
 //!
 //! # Features
 //!
@@ -13,6 +21,46 @@
 //! | `snapshot` | Enables perceptual snapshot assertions via SSIMULACRA2. |
 
 #![forbid(unsafe_code)]
+
+use std::sync::Once;
+
+/// The logging facade the tests record through, re-exported so a test crate
+/// needs no `log` dependency of its own.
+///
+/// Recording is what the harness's backend reports; see [`init_logging`].
+pub use log;
+
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+/// Install the harness's logger backend once, for the whole test process.
+///
+/// Called by [`Ctx::headless`], so a test that builds a context logs without
+/// asking.  Tests that never build a context — the ECS ones — call this
+/// directly if they log.
+///
+/// `RUST_LOG` picks the level natively; without it the default is `warn`.
+/// A process holds one logger, so repeated calls are no-ops — and a test that
+/// installed a backend of its own first keeps it.
+pub fn init_logging() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            // `try_init`, not `init`: installing over a backend that is already
+            // there would panic, and that backend is the one to keep.
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+                .try_init()
+                .ok();
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            // The browser console is the terminal here.
+            console_log::init_with_level(log::Level::Warn).ok();
+        }
+    });
+}
 
 // ---------------------------------------------------------------------------
 // GPU context
@@ -27,6 +75,7 @@ pub struct Ctx {
 impl Ctx {
     /// Create a headless GPU context with the default adapter.
     pub fn headless() -> Ctx {
+        init_logging();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
@@ -315,7 +364,7 @@ mod snapshot_impl {
             }
             std::fs::write(&path, encode_frame_webp(rgba, width, height))
                 .unwrap_or_else(|e| panic!("write snapshot {name}: {e}"));
-            eprintln!(
+            log::info!(
                 "snapshot `{name}` {}",
                 if update { "updated" } else { "stored" }
             );
