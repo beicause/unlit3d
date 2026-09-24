@@ -184,11 +184,42 @@ struct Scene {
 struct SpinReset(bool);
 
 /// A behaviour component: the cube turns by `radians_per_second`.
+///
+/// `spinning` is a sibling the panel's checkbox writes, so the panel and the
+/// spin never borrow the same component.
 struct Spin {
     radians_per_second: f32,
+    /// Whether the cube is currently turning.
+    spinning: bool,
     /// The angle turned so far, advanced once per frame.
     angle: f32,
 }
+
+/// How far the camera has been dragged around the cube, in radians.
+///
+/// Set by the panel's slider and by dragging with the left button; read by the
+/// frame loop when it rebuilds the camera. It is state, so it lives in a
+/// component rather than in a behaviour's closure.
+struct CameraOrbit {
+    /// The azimuth the camera looks from.
+    azimuth: f32,
+    /// How far above the horizon it sits.
+    elevation: f32,
+}
+
+/// The pointer position at the previous move, so a drag can measure itself.
+///
+/// A behaviour cannot keep this in its own closure across runs and still be
+/// re-entrant, and egui may also run a panel more than once per frame, so the
+/// state lives in a component like every other.
+struct DragFrom(Option<[f32; 2]>);
+
+/// Counts the frames drawn, for the panel's readout.
+///
+/// The panel cannot accumulate this in its own closure — egui may run a panel
+/// more than once per frame — so the frame loop advances it once and the panel
+/// only reads it.
+struct FrameCount(u64);
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -390,13 +421,25 @@ impl Scene {
         // The camera the frame is viewed from, and the cube itself. A frame
         // with no RenderLoadOps component is opened with the defaults, so the
         // pass clears color and depth on its own.
-        let camera = world.spawn((camera_view(SIZE.0 as f32 / SIZE.1 as f32),));
-        world.spawn((
+        let camera = world.spawn((
+            camera_view(SIZE.0 as f32 / SIZE.1 as f32),
+            CameraOrbit {
+                azimuth: 0.6,
+                elevation: 0.3,
+            },
+        ));
+        // The cube carries its spin and the orbit the panels drive, so one
+        // entity owns everything the frame loop and the panels share.
+        let cube = world.spawn((
             Transform::default(),
             Spin {
                 radians_per_second: SPIN,
+                spinning: true,
                 angle: 0.0,
             },
+            SpinReset(false),
+            DragFrom(None),
+            FrameCount(0),
             mesh,
             material,
             UnlitPipeline::new(key),
@@ -408,21 +451,109 @@ impl Scene {
         let input = WinitInput::new(&mut world);
 
         // The UI is a frame source like the mesh path, so mounting it is an
-        // ordinary spawn. Its panels are entities too: a second panel is a
-        // second spawn, and removing one removes its interface.
+        // ordinary spawn. It declares `FrameOrder::OVERLAY`, which is what
+        // puts it after the cube however the two were mounted.
         spawn_source(&mut world, UiSource::new());
-        // A button's press is state, and a behaviour component cannot keep
-        // state in itself — it is borrowed while it runs — so the panel writes
-        // a sibling component and the frame loop reads it.
-        let reset = world.spawn((SpinReset(false),));
+
+        // Two panels, because a panel is an entity: a second interface is a
+        // second spawn, with its own sibling state, and the source drives both
+        // without knowing either of them.
         world.spawn((UiPanel::new(move |world, _entity, ui| {
             egui::Window::new("unlit3d").show(ui.ctx(), |ui| {
+                let frames = world.get::<FrameCount>(cube).map_or(0, |frames| frames.0);
+                ui.label(format!("frame {frames}"));
                 ui.label("The cube spins behind this panel.");
-                ui.label("Drag or type here: the UI claims the input it uses.");
+
+                // A checkbox writes the `Spin` sibling, and the frame loop
+                // advances the angle; a behaviour component cannot hold the
+                // state it reads.
+                let spinning = world.get::<Spin>(cube).is_some_and(|spin| spin.spinning);
+                let mut spinning_now = spinning;
+                if ui.checkbox(&mut spinning_now, "Spin").changed() {
+                    let _ = world.with_mut::<Spin, _>(cube, |spin| spin.spinning = spinning_now);
+                }
+
+                let mut speed = world
+                    .get::<Spin>(cube)
+                    .map_or(SPIN, |spin| spin.radians_per_second);
+                if ui
+                    .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
+                    .changed()
+                {
+                    let _ = world.with_mut::<Spin, _>(cube, |spin| spin.radians_per_second = speed);
+                }
+
                 if ui.button("Reset the spin").clicked() {
-                    let _ = world.with_mut::<SpinReset, _>(reset, |reset| reset.0 = true);
+                    let _ = world.with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
                 }
             });
+        }),));
+        // The second panel shows the world's input state, which is what makes
+        // the events visible next to the UI they also drive.
+        // A key behaviour: space toggles the spin, and it reads the state the
+        // panel's checkbox also writes. Behaviours cannot re-borrow their own
+        // component, so the flag lives on the cube entity beside it.
+        world.spawn((OnKey::new(move |world, _entity, key| {
+            if key.pressed && !key.repeat && key.key == Key::Space {
+                let _ = world.with_mut::<Spin, _>(cube, |spin| spin.spinning = !spin.spinning);
+            }
+        }),));
+
+        // A pointer behaviour: dragging with the left button orbits the
+        // camera. The drag reads the cursor from the frame's state and writes
+        // the orbit, which the frame loop then turns into a camera.
+        world.spawn((OnPointer::new(move |world, _entity, event| {
+            let PointerEvent::Moved { position } = event else {
+                return;
+            };
+            // The drag is the difference from the previous move, so the
+            // previous position is swapped for this one in the same step.
+            let previous = world
+                .with_mut::<DragFrom, _>(cube, |drag| drag.0.replace(*position))
+                .flatten();
+            let Some(previous) = previous else {
+                // The first move only records where the drag started.
+                return;
+            };
+
+            let dragging = world
+                .query::<&InputState>()
+                .next()
+                .is_some_and(|(_, state)| state.buttons.contains(PointerButtons::PRIMARY));
+            if !dragging {
+                return;
+            }
+            // A pixel of pointer motion is a fixed turn, so a drag feels the
+            // same however large the window is.
+            const RADIANS_PER_PIXEL: f32 = 0.01;
+            let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
+            let _ = world.with_mut::<CameraOrbit, _>(camera, |orbit| {
+                orbit.azimuth -= dx * RADIANS_PER_PIXEL;
+                orbit.elevation = (orbit.elevation - dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+            });
+        }),));
+
+        world.spawn((UiPanel::new(move |world, _entity, ui| {
+            egui::Window::new("input")
+                .default_pos([16.0, 300.0])
+                .show(ui.ctx(), |ui| {
+                    let held = world
+                        .query::<&InputState>()
+                        .next()
+                        .is_some_and(|(_, state)| state.buttons.contains(PointerButtons::PRIMARY));
+                    ui.label(if held {
+                        "left button: down"
+                    } else {
+                        "left button: up"
+                    });
+                    match world.get::<CameraOrbit>(cube) {
+                        Some(orbit) => ui.label(format!(
+                            "azimuth {:.2}, elevation {:.2}",
+                            orbit.azimuth, orbit.elevation
+                        )),
+                        None => ui.label("no camera state"),
+                    };
+                });
         }),));
 
         let window_surface = world
@@ -472,11 +603,27 @@ impl Scene {
         }
 
         // The behaviour components run first: the world the renderer reads is
-        // this frame's. A query pairs each entity's components, so the spin
-        // drives the transform it belongs to.
+        // this frame's. The panel writes the flags and this advances them, so
+        // a panel running twice in a frame cannot double a step.
+        for (_, mut frames) in self.world.query::<&mut FrameCount>() {
+            frames.0 += 1;
+        }
         for (_, (mut spin, mut transform)) in self.world.query::<(&mut Spin, &mut Transform)>() {
-            spin.angle += spin.radians_per_second * delta_time;
+            if spin.spinning {
+                spin.angle += spin.radians_per_second * delta_time;
+            }
             transform.rotation = glam::Quat::from_rotation_y(spin.angle);
+        }
+
+        // The camera follows the orbit a slider or a drag set. Nothing advanced
+        // it per frame, so a still scene has a still camera and two frames are
+        // comparable.
+        for (_, (orbit, mut camera)) in self.world.query::<(&CameraOrbit, &mut Camera)>() {
+            *camera = orbit_camera(
+                aspect_of(&self.window_surface),
+                orbit.azimuth,
+                orbit.elevation,
+            );
         }
 
         // Acquire, render and present. `acquire` binds the swap chain's next
@@ -515,18 +662,42 @@ impl Scene {
 /// The built-in pipeline compares depth with `Greater` and clears to the far
 /// plane, so the projection is reverse-z infinite.
 fn camera_view(aspect: f32) -> Camera {
+    orbit_camera(aspect, 0.0, 0.0)
+}
+
+/// How far from the target the camera orbits, in world units.
+const ORBIT_RADIUS: f32 = 3.4;
+
+/// A camera orbiting the origin at `azimuth` and `elevation`, in radians.
+///
+/// The built-in pipeline compares depth with `Greater` and clears to the far
+/// plane, so the projection is reverse-z infinite.
+fn orbit_camera(aspect: f32, azimuth: f32, elevation: f32) -> Camera {
     let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
         60f32.to_radians(),
         aspect,
         0.1,
     );
-    let eye = glam::Vec3::new(0.0, 1.2, 3.2);
+    let eye = glam::Vec3::new(
+        ORBIT_RADIUS * elevation.cos() * azimuth.sin(),
+        ORBIT_RADIUS * elevation.sin(),
+        ORBIT_RADIUS * elevation.cos() * azimuth.cos(),
+    );
     let view =
         glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::new(0.0, 0.2, 0.0), glam::Vec3::Y);
     Camera {
         clip_from_world: projection * view,
         position: eye,
     }
+}
+
+/// The window's aspect ratio, for a projection that follows a resize.
+fn aspect_of(window_surface: &WindowSurface) -> f32 {
+    let size = window_surface.window().inner_size();
+    if size.height == 0 {
+        return SIZE.0 as f32 / SIZE.1 as f32;
+    }
+    size.width as f32 / size.height as f32
 }
 
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
