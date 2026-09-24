@@ -20,6 +20,7 @@ zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
 [dev-dependencies]
+pollster.workspace = true
 wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
 wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
 

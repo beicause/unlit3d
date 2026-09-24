@@ -19,7 +19,6 @@ use wgpu_unlit_render::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
 use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
-use wgpu_unlit_render::util::busy_wait_block_on;
 use zerocopy::IntoBytes;
 
 /// Everything one scene needs, built once and reused every frame.
@@ -305,10 +304,10 @@ fn draw(&self, width: u32, height: u32) {
 #
 # let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
 # let adapter =
-#     busy_wait_block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+#     pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
 #         .expect("an adapter");
 # let (device, queue) =
-#     busy_wait_block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
+#     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default()))
 #         .expect("a device");
 let example = Example::new(&device, &queue);
 
