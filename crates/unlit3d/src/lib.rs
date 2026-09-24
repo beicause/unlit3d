@@ -104,6 +104,7 @@
 pub mod bounds;
 pub mod components;
 pub mod culling;
+pub mod input;
 pub mod mesh;
 pub mod pipeline;
 pub mod renderer;
@@ -120,6 +121,11 @@ pub mod prelude {
             UnlitPipeline, ZSortedDrawing,
         },
         culling::is_culled,
+        input::{
+            ImeEvent, ImeKind, InputEvent, InputState, Key, KeyEvent, Modifiers, OnIme, OnInput,
+            OnKey, OnPointer, OnText, OnTouch, PointerButton, PointerButtons, PointerEvent,
+            TextEvent, TouchEvent, TouchPhase, WheelUnit, dispatch_input,
+        },
         mesh::{MeshDesc, VertexBufferDesc},
         pipeline::{
             DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineDesc,
