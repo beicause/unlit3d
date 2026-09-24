@@ -21,8 +21,7 @@ fn main() {
         .scan_root("shaders")
         .expect("failed to scan WESL files")
         .validate()
-        .inspect_err(|e| eprintln!("{e}"))
-        .expect("WESL validation failed");
+        .unwrap_or_else(|error| panic!("WESL validation failed: {error}"));
 
     if std::env::var_os("CARGO_FEATURE_UNLIT").is_none() {
         package
