@@ -14,7 +14,6 @@ license = "MIT OR Apache-2.0"
 arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
-# Logs panics into the web console; prints to stderr on native targets.
 console_error_panic_hook = { version = "0.1.7", default-features = false }
 const_shader_layout = { version = "0.4.2", default-features = false, features = ["derive", "glam", "std"] }
 egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
@@ -22,8 +21,7 @@ glam = { version = "0.33", default-features = false, features = ["std", "zerocop
 hashbrown = { version = "0.17.1", default-features = false, features = ["default"] }
 petgraph = { version = "0.8.3", default-features = false, features = ["graphmap", "matrix_graph", "stable_graph", "std"] }
 pollster = { version = "0.4.0", default-features = false }
-smallvec = { version = "1.16.1", default-features = false }
-# Matches the version the wasm bindings resolve to.
+smallvec = { version = "1.16.1", default-features = false, features = ["const_generics", "const_new", "union"] }
 wasm-bindgen-futures = "0.4.78"
 wesl = { version = "0.5.0", default-features = false }
 wesl-core = { version = "0.1.0", default-features = false }

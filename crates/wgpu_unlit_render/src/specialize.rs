@@ -47,6 +47,7 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 
 use hashbrown::HashMap;
+use smallvec::SmallVec;
 
 use crate::render_attachments::RenderAttachments;
 
@@ -241,6 +242,12 @@ impl<T: Specializable, S: Specializer<T>> Variants<T, S> {
     }
 }
 
+/// The attributes of one vertex-buffer layout.
+///
+/// A vertex buffer carries a handful of attributes in practice, so the inline
+/// capacity keeps the ordinary layout free of a heap allocation.
+pub type VertexAttributes = SmallVec<[wgpu::VertexAttribute; 8]>;
+
 /// An owned vertex-buffer layout. The attributes are owned rather than
 /// borrowed, so the layout outlives the descriptor it was read from.
 ///
@@ -254,7 +261,7 @@ pub struct VertexBufferLayoutDesc {
     /// How often this vertex buffer is stepped forward.
     pub step_mode: wgpu::VertexStepMode,
     /// The attributes that make up one element of this buffer.
-    pub attributes: Vec<wgpu::VertexAttribute>,
+    pub attributes: VertexAttributes,
 }
 
 impl VertexBufferLayoutDesc {
@@ -263,7 +270,7 @@ impl VertexBufferLayoutDesc {
         Self {
             array_stride: layout.array_stride,
             step_mode: layout.step_mode,
-            attributes: layout.attributes.to_vec(),
+            attributes: layout.attributes.into(),
         }
     }
 

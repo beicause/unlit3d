@@ -25,7 +25,8 @@ use wgpu_unlit_render::render_attachments::RenderAttachments;
 use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
 use wgpu_unlit_render::scene::{MAX_VERTEX_BUFFERS, Scene};
 use wgpu_unlit_render::specialize::{
-    Specializable, Specializer, SpecializerKey, SurfaceKey, VertexBufferLayoutDesc,
+    Specializable, Specializer, SpecializerKey, SurfaceKey, VertexAttributes,
+    VertexBufferLayoutDesc,
 };
 use zerocopy::IntoBytes;
 
@@ -869,7 +870,7 @@ impl Renderer {
                 .unwrap_or(VertexBufferLayoutDesc {
                     array_stride: 0,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: Vec::new(),
+                    attributes: VertexAttributes::new(),
                 })
         };
         let position_layout = layout_of(POSITION_SLOT);

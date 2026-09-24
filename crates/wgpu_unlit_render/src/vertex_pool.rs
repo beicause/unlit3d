@@ -32,14 +32,14 @@
 //! # Example
 //!
 //! ```
-//! use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
+//! use wgpu_unlit_render::specialize::{VertexAttributes, VertexBufferLayoutDesc};
 //! use wgpu_unlit_render::vertex_pool::VertexStreamPool;
 //!
 //! let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 //! let layout = VertexBufferLayoutDesc {
 //!     array_stride: 8,
 //!     step_mode: wgpu::VertexStepMode::Vertex,
-//!     attributes: Vec::new(),
+//!     attributes: VertexAttributes::new(),
 //! };
 //!
 //! let mut pool = VertexStreamPool::new(
@@ -355,6 +355,7 @@ fn create_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::specialize::VertexAttributes;
 
     fn noop_device() -> (wgpu::Device, wgpu::Queue) {
         wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
@@ -364,7 +365,7 @@ mod tests {
         VertexBufferLayoutDesc {
             array_stride: stride,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: Vec::new(),
+            attributes: VertexAttributes::new(),
         }
     }
 

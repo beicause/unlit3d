@@ -10,6 +10,7 @@ use arrayvec::ArrayVec;
 
 use crate::bounds::Aabb;
 use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
+use wgpu_unlit_render::specialize::VertexAttributes;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -24,7 +25,7 @@ pub struct VertexBufferDesc {
     /// How the buffer advances: per vertex or per instance.
     pub step_mode: wgpu::VertexStepMode,
     /// The attributes this buffer provides.
-    pub attributes: Vec<wgpu::VertexAttribute>,
+    pub attributes: VertexAttributes,
 }
 
 /// Geometry to upload, described the way wgpu describes it.

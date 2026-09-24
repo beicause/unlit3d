@@ -996,16 +996,16 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             offset: 0,
             shader_location,
         };
-        let layout = |step_mode, attributes: Vec<wgpu::VertexAttribute>| VertexBufferLayoutDesc {
+        let layout = |step_mode, attributes: &[wgpu::VertexAttribute]| VertexBufferLayoutDesc {
             array_stride: 8,
             step_mode,
-            attributes,
+            attributes: attributes.into(),
         };
 
         // The position slot: presence, and the compressed/uncompressed split.
         let compressed = layout(
             wgpu::VertexStepMode::Vertex,
-            vec![attribute(wgpu::VertexFormat::Snorm16x4, location::POSITION)],
+            &[attribute(wgpu::VertexFormat::Snorm16x4, location::POSITION)],
         );
         assert_eq!(
             UnlitFlags::for_vertex_buffer(POSITION_SLOT, &compressed),
@@ -1013,7 +1013,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
         let uncompressed = layout(
             wgpu::VertexStepMode::Vertex,
-            vec![attribute(wgpu::VertexFormat::Float32x3, location::POSITION)],
+            &[attribute(wgpu::VertexFormat::Float32x3, location::POSITION)],
         );
         assert_eq!(
             UnlitFlags::for_vertex_buffer(POSITION_SLOT, &uncompressed),
@@ -1023,7 +1023,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         // The UV-and-color slot: each channel is independent.
         let uv_color = layout(
             wgpu::VertexStepMode::Vertex,
-            vec![
+            &[
                 attribute(wgpu::VertexFormat::Snorm16x2, location::UV),
                 attribute(wgpu::VertexFormat::Unorm8x4, location::COLOR),
             ],
@@ -1034,7 +1034,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
         let uncompressed_uv = layout(
             wgpu::VertexStepMode::Vertex,
-            vec![attribute(wgpu::VertexFormat::Float32x2, location::UV)],
+            &[attribute(wgpu::VertexFormat::Float32x2, location::UV)],
         );
         assert_eq!(
             UnlitFlags::for_vertex_buffer(UV_COLOR_SLOT, &uncompressed_uv),
@@ -1044,7 +1044,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         // An instance-stepped slot, whatever it carries.
         let instance = layout(
             wgpu::VertexStepMode::Instance,
-            vec![attribute(wgpu::VertexFormat::Float32x4, location::MODEL_0)],
+            &[attribute(wgpu::VertexFormat::Float32x4, location::MODEL_0)],
         );
         assert!(
             UnlitFlags::for_vertex_buffer(UV_COLOR_SLOT, &instance)

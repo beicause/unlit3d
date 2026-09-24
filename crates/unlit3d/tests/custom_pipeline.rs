@@ -88,7 +88,7 @@ fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
         buffer,
         array_stride: layout.array_stride,
         step_mode: layout.step_mode,
-        attributes: layout.attributes.to_vec(),
+        attributes: layout.attributes.into(),
     }
 }
 
