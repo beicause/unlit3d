@@ -353,7 +353,8 @@ fn a_custom_pipeline_draws_through_the_ecs() {
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
     world.spawn((Transform::default(), mesh, pipeline));
 
-    let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+    // A draw the pipeline is built for must be valid, so the draw is left to
+    // wgpu's default error handling: anything it reports panics the test.
     let target = world
         .with_mut::<Renderer, _>(renderer, |r| {
             let target = bind_offscreen_target(r, "test::custom");
@@ -361,10 +362,6 @@ fn a_custom_pipeline_draws_through_the_ecs() {
             target
         })
         .expect("renderer is a resource entity");
-
-    if let Some(err) = pollster::block_on(scope.pop()) {
-        panic!("validation error during custom draw: {err}");
-    }
 
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),

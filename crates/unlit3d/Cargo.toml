@@ -23,8 +23,6 @@ zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
 [dev-dependencies]
-# Drives the validation error scope's async pop.
-pollster.workspace = true
 wgpu = { workspace = true, features = ["noop"] }
 wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
 
