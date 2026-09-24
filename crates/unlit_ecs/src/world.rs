@@ -548,6 +548,14 @@ mod send_tests {
         assert_send_sync::<SendWorld>();
     }
 
+    /// Several threads may write the same world at once, each on its own
+    /// entities.
+    ///
+    /// Partitioning is the rule the `Send` world documents: a cell's lock is
+    /// tried rather than waited on, so two threads that reach the *same*
+    /// component together get a borrow conflict instead of one of them
+    /// stalling. Sharing the world is what makes that possible at all; it does
+    /// not make the same component writable from both threads.
     #[test]
     fn several_threads_may_write_the_same_world() {
         let mut world = SendWorld::new();
@@ -557,9 +565,11 @@ mod send_tests {
         let world_ref = &world;
         let handles_ref = &handles;
         std::thread::scope(|scope| {
-            for _ in 0..2 {
+            for chunk in handles_ref.chunks(2) {
+                // Each thread owns its entities, so no cell is written by two
+                // threads at once.
                 scope.spawn(move || {
-                    for handle in handles_ref {
+                    for handle in chunk {
                         world_ref
                             .with_mut::<u32, _>(*handle, |count| *count += 1)
                             .unwrap();
@@ -568,8 +578,31 @@ mod send_tests {
             }
         });
         for handle in &handles {
-            assert_eq!(*world.get::<u32>(*handle).unwrap(), 2);
+            assert_eq!(
+                *world.get::<u32>(*handle).unwrap(),
+                1,
+                "each entity was written once, by the thread that owned it"
+            );
         }
+    }
+
+    /// Two threads may read the same component at the same time: reads take a
+    /// shared lock, so they do not exclude each other.
+    #[test]
+    fn several_threads_may_read_the_same_component() {
+        let world = SendWorld::new();
+        let mut spawn = world;
+        let handle = spawn.spawn((Marker(7), 5u32));
+        let world_ref = &spawn;
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(move || {
+                    for _ in 0..64 {
+                        assert_eq!(*world_ref.get::<u32>(handle).unwrap(), 5);
+                    }
+                });
+            }
+        });
     }
 
     #[test]
