@@ -335,3 +335,69 @@ cargo fmt --check
 | `crates/unlit3d/src/mesh.rs` | 预计不改（`MeshDesc` 保持调用方自带缓冲的形状） |
 | `crates/wgpu_unlit_render/src/offset_allocator.rs` | 预计不改（`extend` 已具备） |
 | `docs/DESIGN.md` | **需用户同意后**再补池化说明 |
+
+## 12. 骨骼属性（joints / weights）对设计的影响
+
+代码现状：`wgpu_unlit_render/src/mesh.rs` 已经定义了 `CompressedJoints = [u16; 4]`
+（`Uint16x4`）与 `CompressedWeights = [u16; 4]`（`Unorm16x4`），并有
+`compress_weights` / `joints_as_bytes` / `weights_as_bytes`；`wgpu_unlit_render/src/scene.rs`
+里 `DrawEntry` 的注释也已写明 "position, optional joints and weights, UV and vertex
+color, and the per-instance …"，即设计上预留了第四、第五条顶点流。但
+`pipeline.rs` 目前只有 `POSITION_SLOT = 0`、`UV_COLOR_SLOT = 1`、`INSTANCE_SLOT = 2`，
+骨骼还没有接进内置管线。
+
+两种落地方式本计划都已覆盖，**不需要改结构**：
+
+1. **并入 position 流**（用户倾向）：position 的 `array_stride` 从 8 变为
+   `8 + 8 + 8 = 24`。这只是产生**一个新的 `VertexBufferLayoutDesc`**；池的键就是完整
+   layout，所以"带骨骼的 position 池"与"不带骨骼的 position 池"并存。每个 mesh 只绑定
+   自己 layout 对应的那条大缓冲，`vertexIndex` 是跨流共享的单一值，多流依然成立
+   （`MAX_VERTEX_BUFFERS = 16`，即使四流也远够）。
+2. **作为独立流**（`scene.rs` 注释描述的形态）：skinned mesh 有 position / joints /
+   weights / uv_color 四条流，每条流各一个池。共享元素分配器正是为这种情况设计的
+   ——模拟已验证：字节单位、按各自 stride 对齐的独立分配器在 9 组 stride 组合中有 5 组
+   发散（例如 8/12 在第 64 步、n=232 时元素数 4021 vs 3037），而元素单位共享分配器
+   10/10 不发散。
+
+需要注意的两点：
+
+- 带骨骼的 stride（8、24）仍是 4 的倍数，因此 `arrayStride` 的 4 字节约束与
+  `COPY_BUFFER_ALIGNMENT` 自动满足，不需要额外对齐处理。
+- **建议纳入实现的改进**：共享元素分配器让所有 layout 共享同一个"元素容量 N"，但
+  **某个 pool 的缓冲只需要覆盖它自己用到过的最大元素末端**，不必总是 `N × stride`。
+  否则场景里只有一个 skinned mesh 时，也会被迫为 joints / weights / 大 stride 的
+  position 各开一条 `N × stride` 的缓冲。做法：每个 pool 维护自己的高水位
+  `wanted_elements = max(offset + len)`（再按增长步长向上取），缓冲大小 =
+  `wanted_elements × stride`；分配器 `extend` 只抬升全局容量，各 pool 的缓冲按自己的
+  高水位独立增长、独立拷贝。
+- 骨骼动画若每帧更新：pool 只提供字节区间，原地 `write_buffer` 重传即可，size 不变，
+  不影响分配。
+
+## 13. INSTANCE_SLOT 不纳入 offset allocator
+
+现状（代码证据）：
+
+- `crates/unlit3d/src/renderer.rs:1090-1100`：每帧先 `ensure_instance_buffer(instance_count)`，
+  再由可见集重建 `packed_instances_cache`，然后
+  `queue.write_buffer(&instance_buffer, 0, packed_instances_cache.as_bytes())`
+  —— **每帧从 offset 0 全量写入**（只写可见的那 N 个，不是整个容量，但不管变换有没有变）。
+- `ensure_instance_buffer`（renderer.rs:1408）只按 2 倍扩容，从不缩容、没有 free。
+- `crates/unlit3d/src/scene.rs:399`：`instance_range = draw_idx..draw_idx + 1`，即
+  **一个可见实体占一个实例槽，`firstInstance = draw_idx`**，可见集本身就是稠密的 `0..N`。
+
+结论：**现在不该用 offset allocator**，理由是生命周期不匹配：
+
+- 实例数据是每帧瞬态的（变换可能每帧变），每帧整体重建；
+- 槽位天然稠密（就是 draw 序号），offset allocator 能带来的"更紧凑"收益为零；
+- 它反而要**逐帧 N 次 allocate + N 次 free**，给每帧加上 TLSF 抖动，而这里没有任何
+  跨帧存活、需要逐个释放的分配；
+- 它是 `VERTEX | COPY_DST` 的每帧暂存缓冲；若与 mesh 的长期驻留数据共享大缓冲，池增长
+  时要把实例数据也一起拷贝，互相拖累。
+- 这里要的是 bump / ring，或者"可增长的暂存缓冲"——现在 `ensure_instance_buffer` 已经是
+  这个形态。
+
+**什么时候才该用**：如果以后做"持久实例槽"——静态实体的变换不变，就不必每帧重传，只在
+dirty 时更新槽位内容——槽位就变成长期存活、逐个释放的对象，那时正是 offset allocator
+（或等价 free-list 池）的用武之地。到那时它是**独立于 mesh 元素分配器的另一个分配器**
+（单位 = 1 个 `MeshInstance`，对齐 = 1 个实例），且 `firstInstance` 可以直接用分配到的
+槽号，`DrawRange` 不需要改。即便如此，实例缓冲仍建议保持独立缓冲，因为它每帧被整体重写。

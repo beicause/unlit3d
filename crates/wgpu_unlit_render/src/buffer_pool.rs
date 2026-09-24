@@ -6,12 +6,15 @@
 //! inside it with an [`Allocator`](crate::offset_allocator::Allocator), so
 //! every mesh of a kind shares the same buffer.
 //!
-//! A range is described by a [`BufferRange`]: the buffer to bind, the byte
-//! offset the data starts at, and the allocation that keeps the range alive
-//! until it is released. Ranges never move while they live — growing the pool
-//! copies the buffer and appends free space rather than re-packing — so a
-//! caller can hold a range across a grow and only has to re-read the buffer
-//! handle from it.
+//! A range is a [`BufferRange`]: a byte offset and a size, plus the
+//! [`Allocation`] that keeps the range reserved until it is handed back with
+//! [`BufferPool::release`]. A range names no buffer of its own, so it stays
+//! cheap to store and copy; read the buffer from [`BufferPool::buffer`]
+//! whenever you need to bind or write into it.
+//!
+//! Ranges never move while they live — growing the pool copies the buffer and
+//! appends free space rather than re-packing — so an offset stays valid across
+//! a grow and only the buffer handle changes.
 //!
 //! Every range starts at a multiple of [`COPY_BUFFER_ALIGNMENT`], which is
 //! what a GPU buffer sub-allocation needs. The pool grows by doubling when a
@@ -38,8 +41,8 @@
 //! );
 //!
 //! let range = pool.allocate(&device, &queue, 64).expect("the pool has room");
-//! queue.write_buffer(range.buffer(), range.offset() as u64, &[0u8; 64]);
-//! pool.release(range);
+//! queue.write_buffer(pool.buffer(), range.offset() as u64, &[0u8; 64]);
+//! pool.release(range.allocation());
 //! ```
 
 use crate::offset_allocator::{Allocation, Allocator, min_allocator_size};
@@ -67,14 +70,13 @@ const MIN_SIZE: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
 
 /// A byte range inside a [`BufferPool`]'s buffer.
 ///
-/// The range stays valid — and its data stays put — until it is handed back
-/// with [`BufferPool::release`]. Growing the pool replaces the buffer but
-/// keeps every offset, so re-read [`BufferRange::buffer`] after a grow instead
-/// of caching it.
-#[derive(Clone, Debug)]
+/// The range stays valid — and its data stays put — until its
+/// [`allocation`](Self::allocation) is handed back with
+/// [`BufferPool::release`]. Growing the pool replaces the buffer but keeps
+/// every offset, so read the buffer from [`BufferPool::buffer`] instead of
+/// holding one.
+#[derive(Clone, Copy, Debug)]
 pub struct BufferRange {
-    /// The buffer the range lives in, as of the last grow.
-    buffer: wgpu::Buffer,
     /// The allocation that keeps the range reserved.
     allocation: Allocation,
     /// The size reserved for the range, in bytes.
@@ -85,11 +87,6 @@ pub struct BufferRange {
 }
 
 impl BufferRange {
-    /// The buffer to bind or write into.
-    pub fn buffer(&self) -> &wgpu::Buffer {
-        &self.buffer
-    }
-
     /// The byte offset the range starts at.
     ///
     /// This is always a multiple of [`COPY_BUFFER_ALIGNMENT`].
@@ -108,10 +105,10 @@ impl BufferRange {
         self.allocation_size
     }
 
-    /// The wgpu buffer slice covering exactly this range.
-    pub fn slice(&self) -> wgpu::BufferSlice<'_> {
-        self.buffer
-            .slice(self.offset() as u64..(self.offset() + self.size()) as u64)
+    /// The allocation backing the range, to hand back to
+    /// [`BufferPool::release`].
+    pub fn allocation(&self) -> Allocation {
+        self.allocation
     }
 }
 
@@ -127,6 +124,12 @@ pub struct BufferPool {
     usage: wgpu::BufferUsages,
     /// Where the free space is.
     allocator: Allocator,
+    /// How many times the pool has grown.
+    ///
+    /// A caller that caches something derived from the buffer — a resource
+    /// graph handle, say — compares this against what it last saw to know when
+    /// to refresh it, instead of refreshing on every frame.
+    generation: u64,
 }
 
 impl BufferPool {
@@ -161,14 +164,24 @@ impl BufferPool {
                 DEFAULT_MAX_RANGES,
                 ALIGNMENT,
             ),
+            generation: 0,
         }
     }
 
     /// The buffer every range lives in.
     ///
-    /// This changes when the pool grows; see [`BufferRange::buffer`].
+    /// This changes when the pool grows; see [`BufferRange`].
     pub fn buffer(&self) -> &wgpu::Buffer {
         &self.buffer
+    }
+
+    /// How many times the pool has grown.
+    ///
+    /// A caller that caches something derived from the buffer — a resource
+    /// graph handle, say — compares this against what it last saw to know when
+    /// that cache is stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The pool's total size, in bytes.
@@ -222,15 +235,14 @@ impl BufferPool {
     ///
     /// # Panics
     ///
-    /// Panics if the range was already released.
-    pub fn release(&mut self, range: BufferRange) {
-        self.allocator.free(range.allocation);
+    /// Panics if the allocation was already released.
+    pub fn release(&mut self, allocation: Allocation) {
+        self.allocator.free(allocation);
     }
 
     /// Builds the handle for a fresh allocation.
     fn range(&self, allocation: Allocation) -> BufferRange {
         BufferRange {
-            buffer: self.buffer.clone(),
             allocation,
             allocation_size: self.allocator.allocation_size(allocation),
         }
@@ -278,6 +290,7 @@ impl BufferPool {
         queue.submit([encoder.finish()]);
 
         self.buffer = new_buffer;
+        self.generation += 1;
         Some(())
     }
 }
@@ -290,6 +303,7 @@ impl core::fmt::Debug for BufferPool {
             .field("size", &self.size())
             .field("free_space", &report.total_free_space)
             .field("largest_free_range", &report.largest_free_region)
+            .field("generation", &self.generation)
             .finish()
     }
 }
@@ -392,9 +406,35 @@ mod tests {
 
         // Both ranges are still reserved: releasing them returns the whole
         // pool to free space.
-        pool.release(first);
-        pool.release(second);
+        pool.release(first.allocation());
+        pool.release(second.allocation());
         assert_eq!(pool.free_space(), pool.size() as u32);
+    }
+
+    #[test]
+    fn growing_advances_the_generation() {
+        let (device, queue) = noop_device();
+        let mut pool = pool(&device, 64);
+
+        assert_eq!(pool.generation(), 0);
+        let first = pool
+            .allocate(&device, &queue, 32)
+            .expect("the pool has room");
+        assert_eq!(
+            pool.generation(),
+            0,
+            "allocating without growing does not bump the generation"
+        );
+
+        pool.allocate(&device, &queue, 200).expect("the pool grows");
+        assert_eq!(pool.generation(), 1);
+
+        pool.release(first.allocation());
+        assert_eq!(
+            pool.generation(),
+            1,
+            "releasing does not bump the generation"
+        );
     }
 
     #[test]
@@ -406,7 +446,7 @@ mod tests {
             .allocate(&device, &queue, 512)
             .expect("the pool has room");
         assert_eq!(first.offset(), 0);
-        pool.release(first);
+        pool.release(first.allocation());
 
         let second = pool
             .allocate(&device, &queue, 512)
@@ -437,9 +477,9 @@ mod tests {
         let range = pool
             .allocate(&device, &queue, 16)
             .expect("the pool has room");
-        pool.release(range.clone());
+        pool.release(range.allocation());
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pool.release(range);
+            pool.release(range.allocation());
         }));
         assert!(result.is_err());
     }
