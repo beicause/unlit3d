@@ -307,11 +307,11 @@ mod snapshot_impl {
         let update = std::env::var_os("SNAPSHOT_UPDATE").is_some();
 
         if !path.exists() || update {
-            let dir = std::path::Path::new(SNAPSHOT_DIR);
-            // The symlink target is always a real directory; there is
-            // nothing to create.
-            if !dir.is_symlink() && !dir.is_dir() {
-                std::fs::create_dir_all(dir).expect("create snapshots dir");
+            // A snapshot name may carry subdirectories. `create_dir_all` is a
+            // no-op for the directories that already exist, including the
+            // `tests/snapshots` symlink into the asset repository.
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create snapshots dir");
             }
             std::fs::write(&path, encode_frame_webp(rgba, width, height))
                 .unwrap_or_else(|e| panic!("write snapshot {name}: {e}"));

@@ -112,14 +112,22 @@ pub fn cube() -> RawMesh {
 /// Uses reverse-z infinite perspective matching the built-in pipeline's
 /// `CompareFunction::Greater` and `depth_clear = 0.0`.
 pub fn camera_view(aspect: f32) -> Camera {
+    camera_looking_at(
+        glam::Vec3::new(0.0, 1.2, 3.2),
+        glam::Vec3::new(0.0, 0.2, 0.0),
+        aspect,
+    )
+}
+
+/// A camera at `eye` looking at `target`, with the same reverse-z infinite
+/// perspective as [`camera_view`].
+pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, aspect: f32) -> Camera {
     let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
         60f32.to_radians(),
         aspect,
         0.1,
     );
-    let eye = glam::Vec3::new(0.0, 1.2, 3.2);
-    let view =
-        glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::new(0.0, 0.2, 0.0), glam::Vec3::Y);
+    let view = glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y);
     Camera {
         clip_from_world: projection * view,
         position: eye,
