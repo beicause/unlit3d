@@ -3,6 +3,8 @@
 > 状态：**计划，未实施**。本文只描述设计、步骤与取舍，代码未改动。
 > 目标 crate：`unlit3d`（主体）、`wgpu_unlit_render`（UI 模块与 `Scene` 基础设施的小幅改进）。
 > 前置阅读：`docs/DESIGN.md`（§上层API、§功能）、`crates/unlit_ecs/tests/behavior.rs`（行为组件范式）。
+>
+> **修订（一）**：§4 的「帧源与 GPU 上下文归 `Renderer` 所有」已被 **§4.8 取代**——改为把 `wgpu::Device`/`wgpu::Queue`/`ResourceGraph` 与帧源都放进 ECS，`GpuContext`/`FrameContext`/`SourceContext`/`with_source_mut` 随之**全部删除**。D2 已同步改写。§4.1/§4.3/§4.5/§4.7 中与本修订冲突的段落保留原文但已标注，以 §4.8 为准。
 
 ---
 
@@ -144,197 +146,42 @@ pub struct Scene { draws: Vec<DrawEntry> }   // no lifetime parameter
 
 ### 4.1 决定（采纳用户方案，取代原先的 FrameLayer）
 
-**原方案（已弃用）**：把「图层」做成一种行为组件（`register_layer::<C>()` + `FrameLayer` trait，两阶段 `prepare`/`draw`），egui 只是它的一个实现。这个方案引入了「图层」这一新概念、一层泛型样板（`LayerOf<C>`/`AnyLayer`），并且真正需要的**顺序保证**仍然要靠 `Vec` 手动维护——概念成本大于收益。
+**原方案（已弃用）**：把「图层」做成一种行为组件（`register_layer::<C>()` + `FrameLayer` trait，两阶段 `prepare`/`draw`）。它引入了「图层」这一新概念、一层泛型样板（`LayerOf<C>`/`AnyLayer`），而真正需要的**顺序保证**仍要靠 `Vec` 手工维护——概念成本大于收益。
 
-**新方案（采纳）**：`Renderer` 退化为**纯粹的帧级装置**（encoder、pass、附件、资源图、源列表），只持有**多个 `Scene`**——每个帧源自带一个。`Renderer::render` **顺序迭代多个 `Scene`** 依次录制。**因此不再需要 FrameLayer 概念。**
+**新方案（采纳）**：一帧由**多个帧源各自产出一个 `Scene`** 拼成，`render` 按顺序录制它们；**FrameLayer 概念取消**。`Renderer` 退化为纯帧级装置，不持有任何绘制逻辑。
 
-**并且（用户补充，关键）**：**内置的 mesh 渲染本身就是一个帧源**，与 UI 完全对称。`Renderer` 里不再有任何 mesh 专用的绘制路径或特权字段；「3D 主场景」只是**第一个被挂载的源**产出的场景，而不是渲染器的特例。这正是 `AGENTS.md`「内置实现不应拥有特权和内部专用实现」在帧结构上的落实。
+**并且（用户补充，关键）**：**内置的 mesh 渲染本身就是一个帧源**（`MeshSource`），与 UI 完全对称。`Renderer` 里不再有任何 mesh 专用的绘制路径或特权字段；「3D 主场景」只是**第一个被录制的源**产出的场景，而不是渲染器的特例。这正是 `AGENTS.md`「内置实现不应拥有特权和内部专用实现」在帧结构上的落实。
 
-分工：
+分工（**归属见 §4.8**：帧源与共享上下文都是世界的成员，而不是渲染器的私有字段）：
 
-| | 归属 |
+| | 内容 |
 |---|---|
-| 帧级：`device`/`queue`/`graph`/附件（`color_view`/`depth_view`/`msaa_view`/`surface`）/源列表/encoder/pass/submit | `Renderer` |
-| 3D：`families`/`pipelines`/mesh 与 index/vertex 池/metadata/instance 缓冲/剔除与排序/`Scene` | `MeshSource`（一个普通 `FrameSource`） |
-| 2D UI：egui `Context`/`EguiIntegration`/其 UBO/其 `Scene` | `UiSource`（一个普通 `FrameSource`） |
+| 帧级 | 附件与 `surface`、encoder/pass/submit、render target 的绑定状态 |
+| 共享上下文 | `device`/`queue`/资源图（作为资源，供所有源与第三方取用） |
+| 3D | `families`/`pipelines`/mesh 与 index/vertex 池/metadata/instance 缓冲/剔除与排序/其 `Scene` → `MeshSource` |
+| 2D UI | egui `Context`/其 UBO/其 `Scene` → `UiSource` |
 
-顺序由每个源的 `order()` **显式声明**（§4.6）：`MeshSource` 是 `FrameOrder::MESH`、`UiSource` 是 `FrameOrder::OVERLAY`，于是得到「3D 之后叠 UI」。挂载顺序只在两个源声明了**相同** `order` 时作 tie-break，并在此时 `log::warn!`。
+顺序由每个源的 `order()` **显式声明**（§4.6）：`MeshSource` 是 `FrameOrder::MESH`、`UiSource` 是 `FrameOrder::OVERLAY`，于是得到「3D 之后叠 UI」。顺序相同时按源显式携带的创建序号作 tie-break，并在此时 `log::warn!`。
 
 ### 4.2 这一方案要求 `Scene` 自持句柄（与 D1 强耦合）
 
 这不是偏好问题，是**编译期约束**：
 
-- 若 `Scene<'a>` 仍然借用资源图（现状），则第 i 个源的 `Scene` 一旦构建完成就一直借用 `&'a graph`；而第 i+1 个源的构建需要 `&mut graph`（注册纹理/缓冲）。两者不能同时存在 → 只能「构建一个、立刻录一个」，无法做到「全部构建完再统一进入一个 pass」。
-- 更糟的是 3D 主 Scene 也在借用图，它会把后续所有源的构建全部堵死。
-- 改成 `Scene` 自持 Arc 句柄后（D1=A），**录制阶段完全不接触资源图**，于是「先全部构建（各自 `&mut graph`），再开一个 pass 顺序录制（只需 `&self.sources`）」成立。
+- 若 `Scene<'a>` 仍借用资源图（现状），则第 i 个源产出的 `Scene` 会一直借着 `&'a graph`；而第 i+1 个源的构建需要 `&mut graph`（注册纹理/缓冲）。两者不能同时存在 → 只能「产出一个、立刻录一个」，「全部产出完再统一录制」不成立。
+- 3D 主 `Scene` 也在借用图，它会把后续所有源的构建全部堵死。
+- 改成 `Scene` 自持句柄后（D1=A），**录制阶段完全不接触资源图**，于是「先全部产出，再统一录制」成立。
 
-已用探针实测这一结构可编译可运行（`.tmp/src_probe`，真实 `wgpu` noop 设备 + 真实 encoder/pass，两个源 + 一个主 Scene）：构建阶段 `&mut graph`/`&mut encoder` 由 `FrameContext` 独占，pass 阶段只读各源的 `Scene`。
+已用探针实测这一结构可编译可运行（`.tmp/src_probe`，真实 `wgpu` 设备 + 真实 encoder/pass，两个源 + 一个主 `Scene`）。
 
-### 4.3 API 草案
+### 4.3 仍然成立的结论（类型草案见 §4.8）
 
-`crates/unlit3d/src/source.rs`：
+完整的类型草案见 §4.8。这里只保留**仍然成立**的结论（原先那套 `GpuContext`/`FrameContext`/`FrameTarget`/`SourceContext` 借用句柄结构，以及 `Renderer::mount`/`SourceId`/`source_as`/`source_id_of`/`with_source_mut` 的方法形态，均已废弃）：
 
-```rust
-/// The shared handles a source may use — at mount, at unmount, and at build.
-///
-/// Exactly the frame-level state a source can legitimately need: `device` and
-/// `queue` to create GPU work, `graph` to register what it creates. Nothing
-/// else on the renderer is a source's business.
-pub struct GpuContext<'a> {
-    pub device: &'a wgpu::Device,
-    pub queue: &'a wgpu::Queue,
-    pub graph: &'a mut ResourceGraph,
-}
-
-/// What a source sees while building this frame's scene.
-pub struct FrameContext<'a> {
-    /// The same shared handles as [`SourceContext`].
-    pub gpu: GpuContext<'a>,
-    pub world: &'a LocalWorld,
-    pub encoder: &'a mut wgpu::CommandEncoder,
-    pub target: FrameTarget,
-}
-
-/// The frame's render target, as a source sees it.
-#[derive(Clone, Copy, Debug)]
-pub struct FrameTarget {
-    pub surface: SurfaceKey,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// Mount and unmount see the shared handles only: the render target may not be
-/// bound yet, so it cannot be part of a mount-time signature.
-pub type SourceContext<'a> = GpuContext<'a>;
-
-/// A source of draws. Owns its state and its reusable [`Scene`].
-///
-/// The renderer holds each source directly, builds them all, then records them
-/// in [`FrameSource::order`] order (mount order breaking ties, with a warning
-/// when two sources declare the same order), so a source's draws land where its
-/// order says.
-///
-/// Implementors write no downcast boilerplate: see [`Renderer::source_as`].
-pub trait FrameSource: 'static {
-    /// Build this frame's [`Scene`]: create and upload through `ctx`, then
-    /// assemble the draws.
-    fn build_scene(&mut self, ctx: &mut FrameContext<'_>);
-
-    /// The scene built by the last [`FrameSource::build_scene`].
-    fn scene(&self) -> &Scene;
-
-    /// Create this source's long-lived resources. Runs once, at mount.
-    fn on_mount(&mut self, _ctx: &mut SourceContext<'_>) {}
-
-    /// Release what [`FrameSource::on_mount`] created. Runs at unmount, before
-    /// the source is dropped, so it can still reach the graph.
-    fn on_unmount(&mut self, _ctx: &mut SourceContext<'_>) {}
-
-    /// Where this source records, relative to every other source.
-    ///
-    /// Required, not defaulted: a source that stayed silent would be ordered
-    /// by mount position alone, which is the implicit behaviour an explicit
-    /// order exists to replace. See §4.6.
-    fn order(&self) -> FrameOrder;
-}
-
-/// Where a source draws, relative to every other source.
-///
-/// Lower values record first. Deliberately has no `Default`, so every source
-/// states its ordering intent. Two sources may declare the same order; they
-/// then record in mount order, and the renderer logs a warning. See §4.6.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FrameOrder(pub i32);
-
-impl FrameOrder {
-    /// The built-in mesh source's order.
-    pub const MESH: Self = Self(0);
-    /// A source that composes over the meshes, such as a UI overlay.
-    pub const OVERLAY: Self = Self(100);
-}
-```
-
-`Renderer` 侧：
-
-```rust
-impl Renderer {
-    /// Mount a frame source at its own [`FrameSource::order`].
-    pub fn mount(&mut self, source: impl FrameSource) -> SourceId;
-
-    /// Mount a frame source at `order`, overriding [`FrameSource::order`].
-    pub fn mount_at(&mut self, order: FrameOrder, source: impl FrameSource) -> SourceId;
-
-    /// Change a mounted source's order. Takes effect on the next frame.
-    pub fn set_order(&mut self, id: SourceId, order: FrameOrder) -> bool;
-
-    /// Unmount the source behind `id`, running its `on_unmount` hook first.
-    /// Returns whether a source was mounted under `id`.
-    pub fn unmount(&mut self, id: SourceId) -> bool;
-
-    /// The source behind `id`, as the trait object: its trait methods work
-    /// directly, no downcast needed.
-    pub fn source(&self, id: SourceId) -> Option<&dyn FrameSource>;
-    pub fn source_mut(&mut self, id: SourceId) -> Option<&mut dyn FrameSource>;
-
-    /// The source behind `id`, downcast to its own type.
-    ///
-    /// Separate from [`Self::source`] because `&dyn FrameSource` cannot be cast
-    /// to `&dyn Any` (its lifetime is not `'static`), so typed access needs its
-    /// own accessor. See D3.
-    pub fn source_as<T: FrameSource>(&self, id: SourceId) -> Option<&T>;
-    pub fn source_as_mut<T: FrameSource>(&mut self, id: SourceId) -> Option<&mut T>;
-
-    /// The first source of type `T`.
-    pub fn source_id_of<T: FrameSource>(&self) -> Option<SourceId>;
-
-    /// The order sources will record in, as indices into `sources`.
-    ///
-    /// Recomputed only when a mount, unmount or [`Self::set_order`] changed it;
-    /// re-checks and warns about sources that declared the same order.
-    pub fn record_order(&mut self) -> &[usize];
-
-    /// A source *plus* the shared GPU context, for its setup-time API.
-    ///
-    /// This is the generic escape hatch every setup-time method is written in
-    /// terms of (see §4.5).
-    pub fn with_source_mut<T: FrameSource, R>(
-        &mut self,
-        id: SourceId,
-        f: impl FnOnce(&mut T, &mut GpuContext<'_>) -> R,
-    ) -> Option<R>;
-}
-
-// 内部：
-// sources: Vec<MountedSource>
-// MountedSource { id: SourceId, source: Box<dyn AnySource> }
-//
-// trait AnySource: Any {
-//     fn as_frame_source(&self) -> &dyn FrameSource;
-//     fn as_frame_source_mut(&mut self) -> &mut dyn FrameSource;
-// }
-// impl<T: FrameSource> AnySource for T { .. }   // 空实现，用户的 impl 不写任何转型样板
-```
-
-三个 API 要点（均已实测，见 D3）：
-
-1. **`build_scene` 而不是 `build`**：名字要说出它产出什么。它做两件事——按需分配/上传 GPU 资源、组装本帧绘制列表——两者都汇入 `self` 的 `Scene`，与只读的 `scene()` 构成一对「写—读」。
-2. **`source()`/`source_mut()` 返回 `&dyn FrameSource` 而不是 `&dyn Any`**：`dyn Any` 只有 `downcast_ref`，拿到后**连 `scene()` 都调不了**，把最常用操作挡在门外。返回 `&dyn FrameSource` 则 trait API 直接可用。**实测发现**：`&dyn FrameSource` **不能**转成 `&dyn Any`（生命周期不是 `'static`），所以类型化访问必须另给 `source_as::<T>()`，不能指望调用方自己转。转型由 `Box<dyn AnySource>`（它本身即 `Any`）承载，用户的 impl 一行样板都不用写。
-3. **挂载/卸载钩子必须有**：源要在图里注册 UBO、纹理、绑定组，需要 `&mut ResourceGraph`。`Drop` 拿不到图，所以释放只能靠显式钩子。`on_mount` 注册、`on_unmount` 释放（`graph.remove_drop(root)`，`resources.rs:422`），两者都有默认空实现。
-
-**为什么上下文里是 `device` + `queue` + `graph` 三个而不是只有 `graph`**（回答「是否还有其他字段需要暴露」）：
-- 源在 setup 期要**创建** GPU 资源（`device.create_buffer`/`create_texture`/`create_sampler`；`queue.write_buffer`），所以两个句柄都必须给。实测 `MeshSource` 的现有方法用到的字段正是 `device`/`queue`/`graph` 加它**自己**的池与 metadata（见 §4.5 的表）。
-- **只有 `graph` 需要 `&mut`**；`device`/`queue` 是 `Clone`（Arc）的共享句柄，只需要 `&`。所以 `GpuContext` 是「两个共享引用 + 一个独占引用」，而不是三个独占。
-- 因此**源不需要自己存 `device`/`queue` 的克隆，也不需要 `MeshSource::new(device, queue)`**：`on_mount` 与 `build_scene` 都会递进来。构造只描述「这个源要什么」，不搬运句柄。
-- **其余帧级字段一律不外露**：`color_view`/`depth_view`/`msaa_view`/`surface` 是 pass 的状态，build 期通过 `FrameTarget` 以只读方式给出，mount 期**故意不给**（那时目标可能还没 bind）；`load_ops` 每帧从世界读，不是渲染器字段；`sources` 自身不外露（源若要挂载别的源，应走延后命令队列，不能在遍历中改 `Vec`）。
-
-**`on_mount` 让「构造源」不再需要渲染器**：建 UBO/纹理/管线所需的一切都在 `SourceContext` 里，所以 `UiSource::new(|world, ui| ...)` 这样的构造是干净的——它在自己的 `on_mount` 里建资源，而不是像原计划那样得先拿到 `&mut Renderer`（§5.2 随之简化）。
-
-要点：
-- **顺序由 `order()` 声明**（§4.6），挂载顺序只在 `order` 相同时作 tie-break；不再需要 `TypeIdHashMap`。
-- **`SourceId`** 是给用户的稳定句柄（`unmount` 后不复用，内部单调计数），使「挂载后再取回 egui 状态」成为普通操作。
-- **多实例天然支持**：`mount(UiSource::new(...))` 两次就是两个 UI；`source_id_of::<T>()` 只取第一个，多实例场景用 `mount` 返回的 id。
-- 若 `Renderer` 被 drop 而源没 `unmount`，源与图一起 drop，不泄漏；钩子只在显式 `unmount` 时跑。
-
+- **源的 setup 期只需要 `device`/`queue`/`graph` 三个帧级字段**（逐方法核对见 §4.5 的表），其余全是源自己的状态。所以共享上下文就是这三者，不多不少。
+- **只有 `graph` 需要独占借用**；`device`/`queue` 是 `Clone`（Arc）共享句柄，只需 `&`。
+- **源不必自己存 `device`/`queue` 的克隆**，构造只描述「这个源要什么」，不搬运句柄。
+- **其余帧级字段不外露**：颜色/深度/MSAA 视图与 surface 是 pass 的状态；`load_ops` 每帧从世界读，不是渲染器字段；源集合自身不外露（源若要挂载别的源，应走延后命令队列，不能在遍历中改集合）。
+- **`AnySource` 保留**，但退化为无方法 supertrait（`Any + FrameSource`），见 §4.8。
 
 ### 4.4 内置 mesh 渲染：`MeshSource`
 
@@ -359,83 +206,23 @@ impl Renderer {
 
 `Renderer` 的 `set_render_target`/`attachments`/`clear_pass` 留在帧级：它们描述的是**pass**，不是任何一个源的绘制。
 
-### 4.5 setup-time API：用拓展 trait 包装 `with_source_mut`
+### 4.5 源的字段归属（拓展 trait 与 `with_source_mut` 已废弃）
 
-**问题**。图留在 `Renderer`（帧级），而源在 setup 期需要 `&mut graph`（`MeshSource::allocate_unlit_mesh` 要建缓冲节点）。用户手里只有 `&mut Renderer`，而
+图既然是世界里的资源组件，setup 期就是普通的 ECS 访问（§4.8），因此原先设计的 `MeshSourceExt` 拓展 trait 与 `with_source_mut` 通用入口都没有存在理由。
 
-```rust
-renderer.source_as_mut::<MeshSource>(mesh).unwrap().allocate_unlit_mesh(?, desc)  // ? 处拿不到 graph
-```
+仍然有用的是下面这张表：它逐方法核对了源在 setup 期**实际用到哪些帧级字段**，既确认共享上下文只需 `device`/`queue`/`graph`，也界定了「哪些字段搬进 `MeshSource`、哪些从上下文取」。
 
-拿不到图——`source_as_mut` 借走了整个 `Renderer`。
-
-**机制：`with_source_mut` 是唯一的通用入口**（§4.3）。它内部 `let Self { sources, device, queue, graph, .. } = self` 拆分字段借用，因此既不需要 `RefCell`，也不需要「`&mut self` 上加一个通用方法」。
-
-**`Renderer` 上的一层便利方法用拓展 trait 实现，不放在 `renderer.rs` 里**（用户要求）：
-
-`crates/unlit3d/src/mesh_source.rs`：
-
-```rust
-/// Setup-time helpers for the built-in [`MeshSource`].
-///
-/// An extension trait rather than inherent methods: `Renderer` must not grow a
-/// mesh-specific surface, so its mesh API lives next to the source that
-/// implements it.
-pub trait MeshSourceExt {
-    /// Allocate into the mounted [`MeshSource`].
-    fn allocate_unlit_mesh(
-        &mut self, key: &UnlitPipelineKey, positions: &[[f32; 3]],
-        uvs: Option<&[[f32; 2]]>, colors: Option<&[[u8; 4]]>, indices: Option<&[u32]>,
-    ) -> GpuMesh;
-
-    fn register_texture_and_default_view(&mut self, texture: wgpu::Texture) -> (ResourceId, ResourceId);
-    fn register_sampler(&mut self, descriptor: Option<wgpu::SamplerDescriptor<'_>>) -> ResourceId;
-    fn allocate_unlit_material(&mut self, key: &UnlitPipelineKey, view: ResourceId, sampler: ResourceId) -> Option<GpuMaterial>;
-    fn remove_unlit_mesh(&mut self, mesh: GpuMesh);
-    // ...
-}
-
-impl MeshSourceExt for Renderer {
-    fn allocate_unlit_mesh(&mut self, key: &UnlitPipelineKey, /* .. */) -> GpuMesh {
-        // Written purely in terms of the public generic accessor.
-        let id = self.source_id_of::<MeshSource>().expect("a MeshSource is mounted");
-        self.with_source_mut::<MeshSource, _>(id, |mesh, ctx| {
-            mesh.allocate_unlit_mesh(ctx, key, /* .. */)
-        })
-        .expect("the id names a MeshSource")
-    }
-    // ...
-}
-```
-
-要点（均已实测，探针 `.tmp/ext_probe`）：
-- 拓展 trait 在**同一个 crate 的另一个模块**里 `impl ... for Renderer` 完全可行，**不需要碰任何私有字段**——它只调用公开的 `with_source_mut`/`source_id_of`。所以 `renderer.rs` 里一行 mesh 代码都不留。
-- 调用方需要 `use unlit3d::mesh_source::MeshSourceExt;`，之后 `renderer.allocate_unlit_mesh(..)` 与今天写法一致：**现有测试（4 处）与示例零改动**（只多一行 `use`）。若把 trait 放进 `prelude`，那一行也省了。
-- 未挂载 `MeshSource` 时 panic（与现有「家族未注册」时的处理一致）。
-- `source_id_of::<T>()` 只取第一个 `T`；多实例时用 `mount` 返回的 `SourceId` 调 `with_source_mut`，拓展 trait 里就取第一个（`MeshSource` 通常只有一个）。**实测**：构造 `MeshSource` 时**不需要** `device`/`queue` 参数——`on_mount`/`build_scene` 都会递进来。
-
-**选项 B 一直存在，作为通用逃生口**：第三方源不需要写拓展 trait，直接
-
-```rust
-renderer.with_source_mut::<MySource, _>(id, |s, gpu| s.setup(gpu, ..));
-```
-
-**决定：A（拓展 trait）+ B（`with_source_mut` 通用入口）**。A 内部即 B 的特例。
-
-**这一节顺带解决了 `MeshSource` 的字段归属**（`Renderer` 现有 setup 方法实际用到的字段，逐方法核对）：
-
-| 方法 | 用到的 `Renderer` 字段 | 搬进 `MeshSource` 后 |
+| 方法 | 用到的帧级字段 | 搬进 `MeshSource` 后 |
 |---|---|---|
-| `allocate_mesh`/`allocate_mesh_with_metadata` | `graph`、`queue`、`metadata`、`free_metadata`、`metadata_dirty` | 前两个来自 `ctx`；其余是 `MeshSource` 自己的字段 |
-| `allocate_unlit_mesh` | `device`、`graph`、`queue`、`index_pool`、`index_pool_id`、`vertex_node`、`sync_vertex_node` | 前三个来自 `ctx`；池是 `MeshSource` 自己的 |
-| `register_texture_and_default_view` | `graph` | 纯 `ctx`（**无自身状态**） |
-| `register_sampler` | `device`、`graph` | 纯 `ctx` |
-| `allocate_material`/`allocate_unlit_material` | `device`、`graph` | 纯 `ctx` |
-| `remove_mesh` | `graph`、`metadata`、`free_metadata`、`metadata_dirty`、`index_pool`、`vertex_pool` | `graph` 来自 `ctx`；其余自身 |
-| `remove_material` | `graph` | 纯 `ctx` |
+| `allocate_mesh`/`allocate_mesh_with_metadata` | `graph`、`queue` | 其余（`metadata`/`free_metadata`/`metadata_dirty`）是 `MeshSource` 自己的字段 |
+| `allocate_unlit_mesh` | `device`、`graph`、`queue` | `index_pool`/`index_pool_id`/`vertex_node`/`sync_vertex_node` 是自己的 |
+| `register_texture_and_default_view` | `graph` | **无自身状态** |
+| `register_sampler` | `device`、`graph` | 无自身状态 |
+| `allocate_material`/`allocate_unlit_material` | `device`、`graph` | 无自身状态 |
+| `remove_mesh` | `graph` | `metadata`/`free_metadata`/`metadata_dirty`/`index_pool`/`vertex_pool` 是自己的 |
+| `remove_material` | `graph` | 无自身状态 |
 
-结论：**setup 期确实只需要 `device`/`queue`/`graph` 三个**，其余全是源自己的状态。这也确认了 `GpuContext` 的字段选择是完备的（D7）。
-
+结论：**setup 期确实只需要 `device`/`queue`/`graph`**，其余全是源自己的状态。
 
 ### 4.6 源的绘制顺序：每个源必须显式声明，歧义时警告
 
@@ -487,51 +274,41 @@ pub trait FrameSource: 'static {
 - `FrameOrder` **不实现 `Default`**，`FrameSource::order` **必需**，两处一起确保每个源都表态。已实测：去掉默认实现后，不写 `order` 的源**编译不过**，不会静默退化。
 - 代价：每个源多写一行。对一个「排序有正确性含义」的机制，这是合理的显式成本。（自定义源若真的只想要挂载顺序，可以 `fn order(&self) -> FrameOrder { FrameOrder::MESH }` 之类显式表态，但那是**写明**的意图。）
 
-`Renderer` 侧（两处都能设）：
+`Renderer` 侧（**§4.8 修订后：挂载即 `spawn`，没有 `mount`/`SourceId` API**）：
 ```rust
-impl Renderer {
-    /// Mount a source at its own [`FrameSource::order`].
-    pub fn mount(&mut self, source: impl FrameSource) -> SourceId;
+// 挂载就是生成一个源组件实体。
+let entity = world.spawn((Source(Box::new(MeshSource::default())),));
+// 覆盖声明的 order（等价于原来的 mount_at）：spawn 时把字段设成给定值。
+// 运行期改 order（等价于原来的 set_order）：改源自己的字段，下一帧生效。
+```
 
-    /// Mount a source at `order`, overriding [`FrameSource::order`].
-    pub fn mount_at(&mut self, order: FrameOrder, source: impl FrameSource) -> SourceId;
+**排序与歧义警告**。`order` 是 `Source` 组件的字段（默认取自源自己的 `order()`，可被覆盖）。**注意 §4.8 代价 2**：ECS 行序会因 `despawn` 的 `swap_remove` 而重排，所以**不能拿查询顺序当挂载顺序**；排序键是 `(order, mount_index)`，`mount_index` 是 spawn 时赋的单调递增 `u64`：
 
-    /// Change a mounted source's order. Takes effect next frame.
-    pub fn set_order(&mut self, id: SourceId, order: FrameOrder) -> bool;
+```rust
+fn record_order(world: &LocalWorld) -> Vec<Entity> {
+    let mut sources: Vec<(FrameOrder, u64, Entity)> = world
+        .query::<&Source>()                       // 列里带 order 与 mount_index
+        .map(|(entity, s)| (s.order(), s.mount_index, entity))
+        .collect();
+    sources.sort_by_key(|(order, mount_index, _)| (*order, *mount_index));
+    warn_ambiguous_order(&sources);               // 见下
+    sources.into_iter().map(|(_, _, e)| e).collect()
 }
 ```
 
-**排序与歧义警告**。`order` 存在 `MountedSource` 里（挂载时取 `source.order()`，被 `mount_at`/`set_order` 覆盖）；顺序表**只在变化时重算**（`order_dirty`），不每帧重排：
-
-```rust
-// MountedSource { id: SourceId, source: Box<dyn AnySource>, order: FrameOrder }
-fn refresh_order(&mut self) {
-    if !self.order_dirty { return; }
-    self.order_cache.clear();
-    self.order_cache.extend(0..self.sources.len());
-    self.order_cache.sort_by_key(|&i| self.sources[i].order);  // 稳定排序
-    self.warn_ambiguous_order();                               // 见下
-    self.order_dirty = false;
-}
-
-/// Warn about every group of sources that declared the same order.
-fn warn_ambiguous_order(&self) {
-    // 顺序表已排好，所以同 order 的源是相邻的一段；逐段检查长度 > 1。
-    // 每段一条 log::warn!，列出该组的 SourceId 与那个 order 值。
-}
-```
+**每帧重算即可，不再需要 `order_dirty`/缓存**（§4.8 的连带简化）：源是组件，增删是普通的结构变更，渲染器无法在挂载时被通知；但源的数量是个位数量级，`sort_by_key` 每帧跑一次的开销可忽略，而缓存需要一套失效登记（原设计的 `order_dirty` 正是这种登记）。**取舍**：若源数量将来变大，可按「世界里源的数量是否变化」跳过重排。
 
 歧义的定义与处理（**用户确认**）：
-- **歧义 = 两个及以上源声明了相同的 `FrameOrder`**。此时先后仍由**挂载顺序**静默决定（`sort_by_key` 稳定），但这些源的相对次序其实是**声称出来的巧合**，不是设计意图。
+- **歧义 = 两个及以上源声明了相同的 `FrameOrder`**。此时先后仍由 **`mount_index`** 静默决定（`sort_by_key` 稳定），但这些源的相对次序其实是**声称出来的巧合**，不是设计意图。
 - **只警告，不 panic**：相同 `order` 有时是合法的（例如两个确实等价的叠加层），强制唯一会把用户逼到编造无意义的数字。用它来**提示**而不是**禁止**。
-- **警告内容**要能直接定位问题：同一组的**源数量**、那个 **`FrameOrder` 值**、以及该组各源的 **`SourceId`**（按挂载顺序）。形如：
+- **警告内容**要能直接定位问题：同一组的**源数量**、那个 **`FrameOrder` 值**、以及该组各源的 **`Entity`**（按 `mount_index`）。形如：
   ```
-  2 sources declared the same FrameOrder(0): ids [0, 1]; recording them in
-  mount order — give them distinct orders to choose explicitly
+  2 sources declared the same FrameOrder(0): entities [4v1, 5v1]; recording them
+  in mount order — give them distinct orders to choose explicitly
   ```
-- **只在顺序变化时警告，不每帧刷屏**：`refresh_order` 只在 `order_dirty` 时跑，而 `mount`/`unmount`/`set_order`（值真的变了）才置脏。所以稳态帧不产生任何日志（已实测：连续 100 帧零日志）。
-- **歧义解决后再引入会重新警告一次**（`set_order` 置脏 → 重算 → 重新检查），`set_order` 设成**相同值**是 no-op、不置脏、不重复警告（已实测）。
-- `unmount` 也要置脏，因为它可能消解一个歧义组（已实测）。
+- **不要在稳态帧刷屏**：`warn_ambiguous_order` 自身按「上次警告的歧义签名」去重（记住上次各歧义组的 `(order, Vec<Entity>)`，相同就不重复输出）。源集合变化（spawn/despawn/改 order）会让签名变化——那正是**该**重新警告的时刻。
+- **歧义解决后再引入会重新警告一次**；把 `order` 设成**相同值**是 no-op、不改签名、不重复警告（`.tmp/ord2_probe` 已实测）。
+- `despawn` 一个源也会改变源集合，因此同样触发重算与警告检查（`ord2_probe` 对 `unmount` 的实测结论等价适用）。
 
 **通过 `log` facade 输出**（用户选择）：
 - 用 `log::warn!`，不用 `eprintln!`。理由：库的标准做法，可被应用侧的 logger 过滤/收集；`log 0.4.34` **已在依赖图中**（wgpu/egui/epaint/naga 都依赖它），所以这是**零新增编译成本**的既有依赖，只需在 `crates/unlit3d/Cargo.toml` 加一行显式依赖。
@@ -552,28 +329,173 @@ fn warn_ambiguous_order(&self) {
 
 ### 4.7 `Renderer::render` 的重构
 
+**§4.8 修订后**：`ctx` 不再是装着借用句柄的 `FrameContext`，而是一个只装 `Entity` id 的 `Copy` 句柄；源自己从世界取图与 device。
+
 ```
 render(world):
-  1. 读帧级 load_ops；建 encoder
-  2. 组装 FrameTarget（surface + attachments 的 width/height）
-  3. 【构建阶段】{
-         let mut ctx = FrameContext { gpu: GpuContext { device, queue, graph: &mut self.graph },
-                                       world, encoder: &mut encoder, target };
-         for src in &mut self.sources { src.build_scene(&mut ctx) }
-     }
-     ← ctx 结束，graph 与 encoder 的可变借用归还
-  4. 【录制阶段】按 (order, 挂载顺序) 排序后录制：
-         self.refresh_order_if_dirty();   // 重排 + 歧义警告（仅变化时）
-         for i in self.sources[i].scene().record(&mut pass)
+  1. 读帧级 load_ops；建 encoder（本帧唯一一个）
+  2. 组装本帧 target（surface + attachments 的 width/height）
+  3. 【构建阶段】for src in query::<&mut Source>() { src.build_scene(world, ctx) }
+       源在自己的 build_scene 里 get_mut::<ResourceGraph>(ctx.graph) 取图
+     ← 无任何借用残留：ctx 只是 id，encoder 是局部变量
+  4. 【录制阶段】按 (order, mount_index) 排序后录制：
+         for e in record_order(world) { with Source(e).scene() -> record(&mut pass) }
   5. submit
 ```
 
 关键修正：
-- **两处 early-return 消失**（原 `renderer.rs:1206`、`renderer.rs:1229`）。帧**总是**开一个 pass 并按 `load_ops` clear，有没有相机、有没有可见网格、有没有源都一样；「无相机只 clear」这个既有行为由「所有源都产出空场景」自然得到（测试 `a_frame_without_a_camera_only_clears`（`renderer.rs:2727`）应继续通过）。这同时修掉了「纯 UI 应用画不出东西」。
-- **录制顺序由 `order` 决定**（§4.6）：`MeshSource` 用 `FrameOrder::MESH`、`UiSource` 用 `FrameOrder::OVERLAY`，所以「3D 之后叠 UI」是**声明**出来的，不靠挂载语句的先后。相同 `order` 时退回挂载顺序，并 `log::warn!` 提示。
-- **顺序表只在变化时重排**：`mount`/`unmount`/`set_order`（值真的变了）置 `order_dirty`；稳态帧不重排、不产生日志。
-- 借用安全：第 3 步 `FrameContext` 独占 `graph`/`encoder`（`device`/`queue` 只借 `&`）；第 4 步只需 `&self.sources` 与那张索引表，与图无关（D1=A 后 `Scene` 自持句柄）。排序表与 `sources` 是不同字段，可在第 3 步之前或之后单独计算。
+- **两处 early-return 消失**（原 `renderer.rs:1206`、`renderer.rs:1229`）。帧**总是**录制并按 `load_ops` clear，有没有相机、有没有可见网格、有没有源都一样；「无相机只 clear」这个既有行为由「所有源都产出空场景」自然得到（测试 `a_frame_without_a_camera_only_clears`（`renderer.rs:2727`）应继续通过）。这同时修掉了「纯 UI 应用画不出东西」。
+  - 注意措辞：这里要去掉的是「无内容就提前返回」，**不是**要规定「一帧永远只能有一个 pass」。本期把内置 mesh 与 UI 录进同一个 pass，是因为二者本就该在同一 pass 合成；将来某个源要自己的 pass（如阴影、后处理）不应被这条挡住。
+- **录制顺序由 `order` 决定**（§4.6）：`MeshSource` 用 `FrameOrder::MESH`、`UiSource` 用 `FrameOrder::OVERLAY`，所以「3D 之后叠 UI」是**声明**出来的，不靠 spawn 语句的先后。相同 `order` 时退回 `mount_index`，并 `log::warn!` 提示。
+- **顺序每帧重算**（§4.6）：源是组件，增删不会被渲染器在挂载时感知；源数量是个位数量级，排序开销可忽略。
+- 借用安全：第 3 步每个源各自短命借用图（`build_scene` 返回即归还），来源之间不共享借用；第 4 步只读各源的 `Scene`，完全不碰图（D1=A 后 `Scene` 自持句柄）。
 - **`rebuild_dirty_global_groups`（`renderer.rs:1482`）随 `pipelines` 一起进 `MeshSource`**；它在 `build_scene` 内、在使用全局组之前完成即可，不必再提到帧首。
+
+
+
+### 4.8 帧源与 GPU 上下文放进 ECS（本节为归属设计的权威说明）
+
+**问题（用户提出）**。为什么不把帧源、以及 `wgpu::Device`/`wgpu::Queue`/`ResourceGraph` 这些 GPU 上下文直接放进 ECS？那样源就是普通实体/组件，图与 device 就是资源组件，源在自己的 `build_scene` 里 `world.get_mut::<ResourceGraph>(graph_entity)` 自己取——于是 `GpuContext`/`FrameContext`/`SourceContext`、`with_source_mut`、以及 `MeshSourceExt` 拓宽 trait **全都不需要存在**。它们存在的唯一理由是「图私有在 `Renderer` 里，而源也在 `Renderer` 里，取图就得拆自己的借用」。
+
+**原先否决它的理由（已作废）**。§4.1 里写「把源的状态放进世界，会导致『源每帧要 `&mut ResourceGraph`，又要从世界查询自己』的双重借用纠结」。这条**经实测不成立**：
+
+- 图与源是**不同的 cell**，一个 `get_mut::<ResourceGraph>(graph_entity)` 与一个 `query::<&mut Source>()` 可以同时存在；
+- 更彻底地说，**源根本不必被递进图**——它自己在 `build_scene` 里取即可。此时驱动器只持 `&world`，连「拆借用」这个动作都不存在，也就没有 `with_source_mut` 的必要。
+
+**实测证据**（`.tmp/borrowprobe`、`.tmp/selfprobe`、`.tmp/cmdprobe`、`.tmp/ordprobe`，均用真实 `unlit_ecs`）：
+
+| 探针 | 验证内容 | 结果 |
+|---|---|---|
+| `borrowprobe` A | `Renderer` 拆字段借用（现行 `with_source_mut` 形状），`&mut T` + `&mut Graph` 同时给出；类型不符返回 `None` 不 panic | OK（可作对照基线） |
+| `borrowprobe` B | 图是资源组件、源是组件，驱动器**持有** `&mut graph` 的同时 `query::<&mut Source>()` | OK（不同 cell） |
+| `borrowprobe` C | 驱动器**持有** `&mut graph` 时再嵌套取一次图 | PANIC（`already borrowed while it is being write`）——**故 B 可行的前提是源各自取图，而不是驱动器握着图发下去** |
+| `selfprobe` | 图/device 都是资源，**源自己**在 `build_scene` 里取；驱动器只持 `&world`，另有一个源在同一函数内驱动 `UiPanel` 行为组件 | **完全可行，无任何借用冲突** |
+| `cmdprobe` | 排队一条命令：先按 `root` 释放源在图里的节点，再 `despawn` 源 | OK（`queue()` + `apply()`） |
+| `ordprobe` | `despawn` 后行序是否稳定 | **不稳定**：`[a,b,c]` 删 `a` → `[c,b]`（`swap_remove` 把末行填进洞） |
+
+**决定：采纳用户方案——`device`/`queue`/`graph` 作为资源进 ECS；帧源也作为组件进 ECS。**
+
+**但要把两件事分开说清**，因为实测表明它们的收益不同：
+
+- **把 GPU 上下文放进 ECS**：**这才是消掉 `with_source_mut` 的那一步**，且与源放在哪**无关**。理由见下（`hybrid` 选项 B 已实测）。
+- **把帧源也放进 ECS**：这是**另一个独立选择**，不是消掉 `with_source_mut` 的必要条件。它有自己的收益（生命周期、扩展性）与代价（见「代价」一节）。用户方案里两者都提了，本计划两者都采纳，但**不要把后者的收益记在前者的账上**。
+
+**为什么「上下文进 ECS」就足以消掉 `with_source_mut`**（这是本轮最关键的修正）：
+
+`with_source_mut` 之所以必须存在，唯一原因是 **`graph` 是 `Renderer` 的私有字段且要 `&mut`**：想让调用方同时拿到 `&mut source` 和 `&mut graph`，就只能把 `&mut self` 拆成两个字段借用（`let Self { sources, graph, .. } = self`）。一旦 `graph` 不再住在 `Renderer` 里、而是通过 `&LocalWorld` 取（`world.get_mut::<ResourceGraph>(ctx.graph)`），这个冲突**根本不存在**，于是：
+
+```rust
+// 实测可行的写法（.tmp/hybrid 选项 B）：没有任何借用拆分
+struct Renderer { context: RenderContext, sources: Vec<Box<dyn AnySource>> }
+
+impl Renderer {
+    fn source_as_mut<T: FrameSource>(&mut self, i: usize) -> Option<&mut T> {
+        let any: &mut dyn Any = &mut *self.sources[i];
+        any.downcast_mut::<T>()
+    }
+
+    /// setup 期：源来自渲染器，图来自世界，两者可同时持有。
+    fn allocate_mesh(&mut self, world: &LocalWorld) {
+        let ctx = self.context;              // RenderContext 是 Copy（只装 Entity id）
+        let mesh = self.source_as_mut::<MeshSource>(0).unwrap();
+        mesh.allocate_unlit_mesh(world, ctx);
+    }
+}
+```
+
+关键点是 **`RenderContext` 只装 `Entity` id（`Copy`）**，不是装着 `&mut graph` 的借用句柄。所以「先把它拷出来」是零成本的，之后 `&mut self.sources` 与 `&world` 互不相干。**这也顺带说明：`GpuContext` 那个「`&`+`&mut` 混合的借用句柄」本身就是问题来源；换成 id 就不需要拆借用了。**
+
+**（诚实说明）`with_source_mut` 并不是「绕过借用检查」**。它是普通的字段解构，恰恰是**恢复**编译器借用检查的手段，没有 `unsafe`、没有 `RefCell`、没有内部可变性。所以本节的正确表述是：**它不是被「绕过」了，而是变得不再必要**——一个不再需要的公开 API 按 AGENTS.md「没用的 API 要及时删掉」应当删除，仅此而已。
+
+**为什么仍然采纳「帧源也进 ECS」**（独立于上面的收益）：
+
+1. **符合 AGENTS.md 的「不给内置功能特权」**。源若由 `Renderer` 私有持有，则「挂载/卸载/替换源」只有渲染器能做，第三方要插自己的源必须经 `mount`；源作为组件后，第三方加源就是 `world.spawn`，与内置 `MeshSource` 完全同权。
+2. **符合 `unlit_ecs` 的行为组件范式**。`InputState` 已是资源实体、`UiPanel` 已是行为组件；帧源作为组件是同一套约定。
+3. **setup 期 API 直接简化**：类型化访问退化为 `world.get_mut::<Source>(e)` + downcast（见下），不再需要 `mount`/`SourceId`/`source_as`/`source_id_of` 这一整套簿记。
+
+**落在 ECS 里的形状**：
+
+```rust
+// 帧级 GPU 上下文：资源实体，外加一个只装 id 的发现入口
+world.spawn((Resource, device));    // wgpu::Device：Clone 的 Arc 句柄
+world.spawn((Resource, queue));     // wgpu::Queue
+world.spawn((Resource, graph));     // ResourceGraph（!Send，正好落在 !Send 世界）
+world.spawn((Resource, RenderContext { device, queue, graph }));  // 全是 Entity，Copy
+
+// 帧源：组件。dyn 装在包装结构里，这样一个查询就能驱动所有具体类型。
+world.spawn((Source(Box::new(MeshSource::default())),));
+world.spawn((Source(Box::new(UiSource::new())),));
+```
+
+```rust
+/// A frame source, behind an erased handle so one query sees every concrete
+/// source type.
+///
+/// Method-free on purpose: `Any` supplies downcasting, the `FrameSource`
+/// supertrait supplies the trait API, and the blanket impl means implementors
+/// write no boilerplate at all.
+pub trait AnySource: Any + FrameSource {}
+impl<T: FrameSource> AnySource for T {}
+
+/// The ECS component.
+///
+/// The trait API is reachable directly (`source.0.order()`); typed access
+/// upcasts to `dyn Any` — `&mut *source.0 as &mut dyn Any` — and downcasts.
+pub struct Source(pub Box<dyn AnySource>);
+
+pub trait FrameSource: 'static {
+    /// Assemble this frame's [`Scene`], fetching what it needs from `world`.
+    ///
+    /// `ctx` carries only entity ids, so it never conflicts with the source's
+    /// own borrow of `world`.
+    fn build_scene(&mut self, world: &LocalWorld, ctx: RenderContext);
+
+    /// The scene built by the last [`FrameSource::build_scene`].
+    fn scene(&self) -> &Scene;
+
+    /// Where this source records, relative to the others. Required. (§4.6)
+    fn order(&self) -> FrameOrder;
+}
+```
+
+**已实测**（`.tmp/hybrid`，真实 `unlit_ecs`）：① `Source(Box<dyn AnySource>)` 组件能被**单个** `query::<&mut Source>()` 驱动，两个**不同具体类型**的源（`MeshSource`/`UiSource`）都正确构建（`graph: ["mesh_buffer", "ui_texture"]`）；② 排序经 `s.0.order()` 读到 `0`/`100` 并正确分派——**trait 方法在 `dyn AnySource` 上直接可用**；③ 类型化访问经 `&mut *source.0 as &mut dyn Any` 上转再 `downcast_mut::<MeshSource>()` 成功（追加 `"wireframe"` 后读回），**类型不符返回 `None` 不 panic**。
+
+两点实现细节（都已在探针里踩到并确认）：
+- **`AnySource` 必须是 `Any + FrameSource` 的无方法 supertrait**。若只写 `Any` 并加 `as_frame_source()` 之类的方法，调用方就得先 `as_frame_source().order()`，白白绕一层；若 `AnySource` 有方法却不是 `FrameSource` 的 subtrait，则 `Box<dyn AnySource>` 上**连 `order()` 都调不了**（探针实测的编译错误）。
+- **依赖 trait upcasting**（`dyn AnySource → dyn Any`），Rust 1.86 起稳定，本仓用 1.98.1，可用。
+
+**`Renderer` 还剩什么**：只剩「帧的装配」——建 encoder、按 `(order, mount_index)` 取各源的 `Scene` 按序录制、submit，以及 render target 的绑定状态（内置 mesh 与 UI 同属一个 pass，但这是它们的合成需求，不是对源的普遍限制）。它不再持有 device/queue/graph/sources 中的任何一个，退化为**几乎无状态**的帧驱动器。
+
+**`mount`/`unmount`/`SourceId` 全部删除**：
+- **挂载 = `world.spawn((Source(..),))`**；卸载 = `world.despawn(entity)`；稳定句柄 = `Entity` 本身（已是「索引 + generation」，比自造计数器更严谨）。
+- **顺序调整**（原 `set_order`）= 直接改源自己携带的 `order` 字段；`order()` 仍提供默认来源。
+- **`mount_at(order, source)`** = spawn 时把 `order` 字段设为给定值。
+
+**必须处理的三个代价**（不能回避）：
+
+1. **卸载要显式清理图节点**。`despawn` 没有钩子，所以「释放源在图里注册的节点」不能靠 `Drop`。对策：卸载走**一条排队命令**（`cmdprobe` 已验证：命令里先 `graph.remove_drop(root)` 再 `despawn`，`queue()` + `apply()` 落地）。这是「调用方即系统」的显式代价，与 `InputState::clear_events` 同类。
+2. **ECS 行序不稳定，不能当挂载顺序**（`ordprobe`：`[a,b,c]` 删 `a` 得 `[c,b]`，`swap_remove` 把末行填进洞）。所以 `Source` 组件要带一个单调递增的 `mount_index: u64`，排序键取 `(order, mount_index)`；`Vec` 下标那种隐式顺序表达在 ECS 里不存在。
+3. **类型化访问多一步 downcast**。源在 `Box<dyn AnySource>` 里，所以 `world.get_mut::<MeshSource>(e)` 取不到它，必须 `get_mut::<Source>(e)` 再上转为 `&mut dyn Any` 后 downcast。代价是一行 `(&mut *source.0 as &mut dyn Any).downcast_mut::<MeshSource>()`；换来的是一个查询能驱动异构源。
+
+**与 §4.7 的关系**：`render` 的两阶段结构**保留**（构建全部源 → 按序录制）。「构建阶段」变为「对每个源调 `build_scene(&world, ctx)`，源自己取图」；「录制阶段」按 `(order, mount_index)` 逐源取 `scene()` 按序录制。**两阶段之间不残留任何 `&mut graph`/`&mut encoder` 借用**——`ctx` 只是 id，encoder 是局部变量。
+
+**这一修订同时删掉 §4.5 的旧设计**：`MeshSourceExt` 的动机是「用户手里只有 `&mut Renderer`，`source_as_mut` 借走整个渲染器后拿不到图」。上下文进世界后，setup 期就是普通的 ECS 访问，两个借用分属不同 cell：
+
+```rust
+let ctx = *world.get::<RenderContext>(ctx_entity).unwrap();   // Copy
+let mut graph = world.get_mut::<ResourceGraph>(ctx.graph).unwrap();
+let mut source = world.get_mut::<Source>(mesh_entity).unwrap();
+let mesh = (&mut *source.0 as &mut dyn Any).downcast_mut::<MeshSource>().unwrap();
+mesh.allocate_unlit_mesh(&device, &mut graph, &queue, /* .. */);
+```
+
+`MeshSourceExt`、`with_source_mut`、`source_id_of` **全部删除**；「`renderer.rs` 里不出现 mesh 代码」这一目标，由「mesh 代码本来就在 `MeshSource` 组件里」自然达成。
+
+**未决（D13）**：`RenderContext` 是否要带「本帧的 render target」（`SurfaceKey` + 物理尺寸）。倾向用**单独的每帧资源**由帧循环写入（D13 倾向 C），因为 `RenderContext` 应保持 `Copy` 且常驻，而 target 每帧可变。**实施到 §9 阶段 1 第 2 步时定。**
+
+**验证状态**：本轮新增并实跑通过的探针：`.tmp/borrowprobe`、`.tmp/selfprobe`、`.tmp/cmdprobe`、`.tmp/ordprobe`、`.tmp/hybrid`（含选项 B：上下文进 ECS、源留在渲染器，仍不需要 `with_source_mut`）。
+
+**本节取代的旧设计**：`GpuContext`/`FrameContext`/`FrameTarget`/`SourceContext`、`Renderer::mount`/`mount_at`/`set_order`/`unmount`/`source`/`source_as`/`source_id_of`/`with_source_mut`、`SourceId`、`on_mount`/`on_unmount`、`order_dirty` 缓存。它们的原文已从 §4.1/§4.3/§4.5/D2/D3/D7 中删除，理由记在本节，以免读者以为这些 API 仍需实现。
 
 
 
@@ -591,6 +513,9 @@ render(world):
    ```
    内部 = `ui_options` + `apply_surface`。
 4. **深度状态可选化（见 D5）**：把 `UnlitOptions.depth_stencil` 改成 `Option<wgpu::DepthStencilState>`，使无深度附件的目标能拿到无深度状态的管线。这会波及内置 unlit 的默认值、`apply_surface`、以及 `unlit3d` 的测试基建；本期至少修 UI 路径。
+   - **关键约束（已实测，勿弄反）**：同一个 pass 内**所有**管线的深度声明必须与 pass 的附件**格式一致**，wgpu 只比 `Option<TextureFormat>`，**不看** `depth_write_enabled`/`depth_compare`。因此共用 pass（UI + mesh，且目标带深度）时，UI 管线**仍须声明相同的深度格式**，只靠 `write=false`+`compare=Always` 来不干扰 mesh 的深度；`None` 只用于**目标本身没有深度附件**的 pass，那时 mesh 管线也必须是 `None`。
+   - 现有 `apply_ui_settings`（`ui.rs:180-181`）设的 `depth_write_enabled=false` + `CompareFunction::Always` **仍然正确**，不要改成 `None`；要补的是「它只在目标带深度（或只有 color）时分别给出对应设置」这一分支。
+   - 与官方 `egui-wgpu` 一致（`crates/egui-wgpu/src/renderer.rs`）：其 `depth_stencil_format` 默认为 `None`，但一旦给出格式，就建出**同格式** + `depth_write_enabled: Some(false)` + `depth_compare: Some(Always)` 的状态——即官方同样把「UI 不测不写深度」与「管线不声明深度」分开处理。
 
 ### 5.2 `unlit3d::ui::UiSource`
 
@@ -651,11 +576,11 @@ pub struct UiSource {
 
 **注意没有 `ui` 闭包字段**——界面在世界的 `UiPanel` 组件里。这样 `UiSource::new()` **不需要参数**。
 
-挂载（不再有「注册图层类型」这一步——源是值，不是组件；也**不需要** `&mut Renderer` 来构造）：
+挂载（**§4.8 修订后：源是组件，`mount`/`SourceId` 已删除**；构造不需要 `&mut Renderer`）：
 
 ```rust
-// 源本身：构造只描述「用哪个 egui 上下文」；UBO/管线在 on_mount 里建。
-let ui = world.with_mut::<Renderer, _>(renderer, |r| r.mount(UiSource::new())).unwrap();
+// 源本身：构造只描述「用哪个 egui 上下文」；UBO/管线在 setup 期经世界建（§4.8）。
+world.spawn((Source(Box::new(UiSource::new())),));
 
 // 界面：普通实体 + 行为组件。多面板就是多个实体。
 world.spawn((UiPanel::new(|world, entity, ui| {
@@ -675,29 +600,29 @@ let ids: Vec<Entity> = world.query_filtered::<Entity, With<UiPanel>>()
 - 每次 pass 都从零重建查询迭代器是**正确**的（两版驱动形式都已实测，见 D12）；
 - 但面板闭包会**跑多次**，因此它必须是**幂等**的，或把「本趟才该做的事」放在 `ctx.memory` / 兄弟组件里按趟数判断。这是 egui 的既有语义（`egui-wgpu` 等所有后端都如此），不是本设计引入的。
 
-`build_scene` 流程（签名 `fn build_scene(&mut self, ctx: &mut FrameContext<'_>)`）：
+`build_scene` 流程（**§4.8 修订后签名**：`fn build_scene(&mut self, world: &LocalWorld, ctx: RenderContext)`——`ctx` 只装 `Entity` id，是 `Copy` 的）：
 1. 从世界读输入资源（见 §6）拿到本帧事件、窗口尺寸（物理像素）、缩放因子、焦点；
-2. 若 `ctx.target.surface != self.surface`：重建 UI 管线（`ui_options_for_surface` → `UnlitPipeline::new`）和全局绑定组，用 `ctx.graph.replace` 换掉节点（沿用 `WindowSurface::resize` 的幂等替换写法）；
+2. 若本帧 target 的 surface != `self.surface`：重建 UI 管线（`ui_options_for_surface` → `UnlitPipeline::new`）和全局绑定组，用 `graph.replace` 换掉节点（沿用 `WindowSurface::resize` 的幂等替换写法）；
 3. 组装 `egui::RawInput`：
    - `screen_rect = Some(Rect(min=0, size = 物理尺寸 / ppp))`
    - `viewports[ROOT].native_pixels_per_point = Some(ppp)`
    - `events = 本帧事件转换（§6.6）`
    - `time / focused / max_texture_side = device.limits().max_texture_dimension_2d`
 4. `self.ctx.run_ui(input, |ui| { for (entity, mut panel) in ctx.world.query::<&mut UiPanel>() { panel.run(ctx.world, entity, ui) } })` → `FullOutput`——**逐一驱动世界里的 `UiPanel`**（§5.2.1）；
-5. `integration.update(&mut ctx.graph, ctx.queue, ctx.encoder, &egui_ctx, output, ppp)`（上传纹理 + 顶点/索引，走帧 encoder）；
+5. `integration.update(&mut graph, queue, encoder, &egui_ctx, output, ppp)`（上传纹理 + 顶点/索引，走帧 encoder；`graph`/`queue`/`encoder` 由 `ctx` 的 id 从世界取，见 §4.8）；
 6. 写 `camera`（`ui::screen_view(viewport_points)`，viewport 用**点**）与 `globals`；
-7. 把 UI 绘制取到自己的 `Scene`：`self.scene.clear(); self.scene.extend(self.integration.scene(&ctx.graph));`（`scene()` 在 §5.1 改成 `&self, &ResourceGraph`；D1=A 后 `Scene` 无生命周期，`extend` 可用，且 `self.scene` 的 `draws` 分配跨帧复用）；
-8. `self.surface = Some(ctx.target.surface);`
+7. 把 UI 绘制取到自己的 `Scene`：`self.scene.clear(); self.scene.extend(self.integration.scene(&graph));`（`scene()` 在 §5.1 改成 `&self, &ResourceGraph`；D1=A 后 `Scene` 无生命周期，`extend` 可用，且 `self.scene` 的 `draws` 分配跨帧复用）；
+8. `self.surface = Some(target.surface);`
 
 `scene()` 只需 `&self.scene`（无参数、无借用）——这正是它成为 `FrameSource` 的直接收益。
 
-`on_mount` 注册 UBO 与全局绑定组节点；`on_unmount` 用 `ctx.graph.remove_drop(root)` 释放它们。**因此 `UiSource::new` 不接收渲染器**，与 `MeshSource::new` 一样是纯构造。
+**注册/释放**（§4.8 修订）：setup 期经世界注册 UBO 与全局绑定组节点；释放不靠钩子（`despawn` 没有钩子），而是一条排队卸载命令，先 `graph.remove_drop(root)` 再 `despawn`（`cmdprobe` 已验证）。**因此 `UiSource::new` 不接收渲染器**，与 `MeshSource::new` 一样是纯构造。
 
-运行时改 egui 配置（`Context` 的 style/字体/zoom）走 `source_as_mut::<UiSource>(id)`（§4.3），不必重建源——这正是「源自持状态」的用处。**改界面**则是增删 `UiPanel` 实体。
+运行时改 egui 配置（`Context` 的 style/字体/zoom）：取到 `Source` 组件后 downcast 成 `UiSource`（§4.8 代价 3），不必重建源——这正是「源自持状态」的用处。**改界面**则是增删 `UiPanel` 实体。
 
 ### 5.3 与渲染器的交互点
 
-- UI 需要「帧目标的物理尺寸」：来自 `Renderer::attachments().width()/height()`（`render_attachments.rs`），放进 `FrameTarget`。
+- UI 需要「帧目标的物理尺寸」：来自 `Renderer::attachments().width()/height()`（`render_attachments.rs`）。**放哪见 D13**（倾向：单独的每帧资源，由帧循环在 `render` 前写入，而不是塞进 `Copy` 的 `RenderContext`）。
 - UI 需要「sRGB」判定：`SurfaceKey.color_format.is_srgb()`（与 `WindowSurface::color_format` 的语义一致，`winit.rs:374`）。
 - UI 的 `screen_view` 用**逻辑点**（已核对，不是猜测）：`epaint::ClippedPrimitive` 的文档明确写着 “Everything is using logical points”（epaint-0.36.2 `lib.rs:140`），且 `Tessellator` 里 `pixels_per_point` 只用于抗锯齿羽化（`feathering = options.feathering_size_in_pixels / pixels_per_point`，`tessellator.rs:1330`）与像素对齐取整（`round_to_pixels` = `(v * ppp).round() / ppp`，emath `gui_rounding.rs:68`），**从不缩放顶点坐标本身**。egui-wgpu 同样按点投影：其 WGSL `position_from_screen` 除以 `r_locals.screen_size`，而该 uniform 写的是 `screen_size_in_points = size_in_pixels / pixels_per_point`（`egui-wgpu-0.36.2/src/renderer.rs:134、925`）。
   因此：
@@ -982,7 +907,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 在现有立方体示例上增加：
 
 1. `WinitInput` 资源 + `input::dispatch_input` 调用。
-2. `mount(MeshSource::new(...))` 与 `mount(UiSource::new())`——各自用 `FrameOrder::MESH` / `FrameOrder::OVERLAY` 声明顺序（不靠挂载先后）。界面本身是**实体**：`world.spawn((UiPanel::new(|world, entity, ui| { ... }),))`，面板显示 FPS / 帧计数（状态放兄弟组件）、一个复选框控制立方体自转、一个滑块控制转速。**再 spawn 第二个 `UiPanel`** 演示多面板是多个实体。
+2. `world.spawn((Source(Box::new(MeshSource::new(...))),))` 与 `world.spawn((Source(Box::new(UiSource::new())),))`——各自用 `FrameOrder::MESH` / `FrameOrder::OVERLAY` 声明顺序（不靠挂载先后）。界面本身是**实体**：`world.spawn((UiPanel::new(|world, entity, ui| { ... }),))`，面板显示 FPS / 帧计数（状态放兄弟组件）、一个复选框控制立方体自转、一个滑块控制转速。**再 spawn 第二个 `UiPanel`** 演示多面板是多个实体。
 3. 两个行为组件演示事件回调：`OnKey`（空格切换自转）、`OnPointer`（按住左键拖动改变相机方位角，读 `InputState.cursor`）。
 4. 保持 `Esc` 退出（可继续由示例自己处理，或改成一个 `OnKey` 行为组件并 `event_loop.exit()`——后者需要行为组件能拿到 event loop，故示例里仍由 winit 分支处理）。
 
@@ -1002,19 +927,18 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 
 `crates/unlit3d/src/` 内的 `#[cfg(test)]`，与现有 `renderer.rs`/`scene.rs` 的测试同风格。
 
-1. **`FrameSource` 机制**（§4.3、D2/D3/D6/D7）
-   - 挂载顺序 vs `order()`：显式 `order` 决定顺序；**同 `order` 内保持挂载顺序**。
-   - `set_order` 生效；设**相同值**是 no-op；未知 `SourceId` 返回 `false`（不 panic）。
-   - `mount` 返回的 `SourceId` 稳定且唯一；`unmount` 返回 `false` 表示没有该源。
-   - `on_mount`/`on_unmount` 的**默认空实现**可用；自定义实现各跑一次，且 `on_unmount` 在源 drop **之前**跑（用一个 `Rc<Cell<bool>>` 在 `Drop` 里断言顺序）。
-   - `source()`/`source_mut()` 能调用 trait 方法（不需要 downcast）；`source_as::<T>()` 命中返回 `Some`、**类型不符返回 `None`**（不 panic）。
-   - `with_source_mut` 能拿到「源 + 图」；未挂载类型返回 `None`。
+1. **`FrameSource` 机制**（§4.8、D2/D3/D6）
+   - `mount_index` vs `order()`：显式 `order` 决定顺序；**同 `order` 内按 `mount_index`**（不是查询顺序——`despawn` 会重排行序，见代价 2）。
+   - 改源的 `order` 字段下一帧生效；设**相同值**是 no-op。
+   - 挂载 = `spawn`、卸载 = `despawn`：断言卸载后不再被录制，且卸载命令已把图节点 `remove_drop` 掉（图 `len()` 回落）。
+   - 类型化访问：`get_mut::<Source>(e)` + `downcast_mut::<MeshSource>()` 命中返回 `Some`、**类型不符返回 `None`**（不 panic）。
+   - 异构源：两个**不同具体类型**的源能被**同一个**查询驱动（`Source(Box<dyn AnySource>)` 的意义，`.tmp/hybrid` 已实测）。
    - 构建阶段「先全部 `build_scene`、再统一录制」这个两阶段顺序（用一个记录调用序列的假源断言）。
 2. **顺序歧义警告**（§4.6、D8）
    - 需要装捕获 logger（`log::set_boxed_logger` + 自定义 `Log` 收集到 `Vec<String>`；**要求 `log` 的 `std`/`alloc` feature**）。断言：
      - 不同 `order` → **零**警告；
-     - 相同 `order` → **恰好一条**，且含该组源数量、`FrameOrder` 值与各 `SourceId`；
-     - 连续多帧 → **不重复**警告（只在顺序变化时检查）；
+     - 相同 `order` → **恰好一条**，且含该组源数量、`FrameOrder` 值与各 `Entity`；
+     - 连续多帧 → **不重复**警告（只在源集合/顺序变化时检查）；
      - 歧义解决后不再警告；重新引入再警告一次；
      - 三元歧义一条警告列全三个 id。
 3. **`UiPanel` 驱动**（§5.2.1、D12）— 无需 GPU，用一个假的 UI 表面
@@ -1052,7 +976,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 6. `mesh_and_ui_in_one_frame`：挂 `MeshSource` + `UiSource`（`FrameOrder::MESH` / `OVERLAY`）。一个立方体 + 一个半透明 UI 面板**叠在立方体上方**。
    - 断言三件事：立方体区域仍是 3D 的样子（未被 UI 覆盖处）、UI 区域是 UI 的颜色、**半透明 UI 下方的立方体被混合**（该处像素既非纯立方体色也非纯 UI 色）。
    - **快照**：`mesh_and_ui.webp`。
-7. `mesh_and_ui_respects_source_order`：把 `UiSource` 的 `order` 改成排在 `MeshSource` **之前**（`set_order`），断言 UI 被 3D 盖住/顺序确实反转——**这是 `FrameOrder` 生效的端到端证据**，而非只有单元测试。
+7. `mesh_and_ui_respects_source_order`：把 `UiSource` 的 `order` 改成排在 `MeshSource` **之前**（改源组件的 `order` 字段），断言 UI 被 3D 盖住/顺序确实反转——**这是 `FrameOrder` 生效的端到端证据**，而非只有单元测试。
 8. `ui_does_not_clip_the_mesh`：UI 有 scissor 矩形，但 3D 绘制**在 UI 之前**、且 `PassState` 是每个 `Scene::record` 的局部量（§4.6），所以 3D 不应被 UI 的 scissor 裁掉。断言立方体的完整轮廓都在。
    - 这条钉住我先前判断错误的那处语义，防止将来有人把 `PassState` 提到 pass 级。
 9. `mesh_and_ui_survive_a_second_frame`：连渲染两帧（含 `world.apply()`），断言第二帧与第一帧**逐像素一致**（相机的 `globals` 会推进，所以相机静止、不用 `time` 的 UI 才可比——若不一致，说明某处跨帧状态泄漏）。这条复用现有「跨帧缓存复用」的测试思路（`renderer.rs:2741`）。
@@ -1094,19 +1018,22 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 - **验收**：§8.2 第 10 条——`cargo test -p wgpu_unlit_render` 全绿（`gpu_ui.rs` 跟着旧 API 改造后仍通过）；`unlit3d` 的 GPU 测试（`gpu_ecs`/`animated_scene`/`custom_pipeline`）仍通过。
 - 提交点：**只动 `Scene`、不改 `Renderer` 对外行为**，可单独验证「句子柄化没改变画面」。
 
-**2. `unlit3d::source`：帧源机制 + 顺序（§4.3、§4.6、D2/D3/D6/D7/D8）**
-- 新增 `source.rs`：`GpuContext`/`FrameContext`/`FrameTarget`/`SourceContext`（别名）、`FrameSource` trait（`build_scene`/`scene`/`on_mount`/`on_unmount`/**必需的 `order`**）、`FrameOrder`（**无 `Default`**）、`SourceId`、object-safe 的 `AnySource` blanket impl。
-- `Renderer` 增加 `sources: Vec<MountedSource>`（元素含 `order` 字段）与 `mount`/`mount_at`/`unmount`/`set_order`/`source`/`source_mut`/`source_as`/`source_as_mut`/`source_id_of`/`with_source_mut`（内部字段拆分借用），以及 `order_cache` + `order_dirty`（只在变化时重排）。
+**2. `unlit3d::source`：帧源机制 + 顺序（§4.6、§4.8、D2/D3/D6/D8/D13）**
+- 新增 `source.rs`：`FrameSource` trait（`build_scene(&World)`/`scene`/**必需的 `order`**）、`FrameOrder`（**无 `Default`**）、`mount_index: u64`、以及 GPU 上下文的资源组件。
+- **按 §4.8**：`GpuContext`/`FrameContext`/`SourceContext`/`FrameTarget`、`with_source_mut`、`source_as`/`source_id_of`、`SourceId`、`mount`/`unmount`/`set_order`、`on_mount`/`on_unmount` 的**钩子形态**一律不写。`Source(Box<dyn AnySource>)` 组件、`RenderContext`（只装 `Entity`）、`mount_index` 要写。
+- **保留**：`AnySource: Any + FrameSource` 的无方法 blanket impl（异构源要被同一查询驱动，`.tmp/hybrid` 已实测）；类型化访问用 trait upcasting，不在 `FrameSource` 上加 `as_any_mut()`。
+- GPU 上下文落为资源组件：`device`/`queue`/`graph` 各一个资源实体，并有一个把三者 id 收在一起的常驻资源（`RenderContext`）；本步顺带定下 D13（target 走「每帧资源」，见该节倾向 C）。
+- 卸载：提供一条排队命令（先 `graph.remove_drop(root)` 再 `despawn`），`queue()` + `apply()` 落地；`next_source_id`/`order_dirty` 都不再存在（§4.6 改为每帧重算顺序）。
 - `crates/unlit3d/Cargo.toml` 加 `log = "0.4"`（已在依赖图中，零新增编译成本）；测试装捕获 logger 时需 `features = ["std"]`。
-- `render` 改为「构建所有源 → 按 `order`（挂载顺序 tie-break）录制」（§4.6、§4.7），去掉两处 early-return；帧总是开一个 pass 并按 `load_ops` clear。
+- `render` 改为「构建所有源 → 按 `(order, mount_index)` 录制」（§4.6、§4.7），去掉两处 early-return；帧总是录制并按 `load_ops` clear（**去掉的是「无内容就提前返回」，不是「限制一帧只能有一个 pass」**）。
 - **本步结束时 `Renderer` 仍保留原有 3D 路径**（尚未搬走），把「3D 主场景」当成一个内部源或第 0 个 `Scene`——先让机制本身通过测试，搬家留给下一步。
 - **验收**：§8.1 第 1–2 组（帧源机制 + 顺序歧义警告）全过；**现有全部测试仍须全绿**（对外 API 未变）。
 
-**3. `unlit3d::mesh_source`：把 3D 整体搬进 `MeshSource`（§4.4、§4.5、D7）**
-- 新建 `mesh_source.rs`：`MeshSource` 持有原 `Renderer` 的 3D 字段（`families`/`pipelines`/mesh 与 index/vertex 池/metadata/instance/剔除缓存/自身 `Scene`）与其全部方法（§4.4 的表）；`build_scene` = 原 `render` 的 3D 段。
-- `MeshSourceExt` 拓展 trait（`renderer.rs` 里不留任何 mesh 代码），内部只调 `with_source_mut`/`source_id_of`；并加进 `prelude`。
-- `Renderer` 收缩为纯帧级（§4.1 的表）：`device`/`queue`/`graph`/附件/`sources`/`next_source_id`；`set_render_target`/`attachments`/`clear_pass` 留下。
-- **迁移点**：`Renderer::new(device, queue)` 保留（仍是帧级构造），但 `register_unlit_family` 与 mesh/material 分配移到源上——`tests/common/mod.rs:33` 的 `create_renderer` 与示例需改成「先 `mount(MeshSource...)` 再注册家族」，这是本步唯一需要改动调用方写法的地方。
+**3. `unlit3d::mesh_source`：把 3D 整体搬进 `MeshSource`（§4.4、§4.8）**
+- 新建 `mesh_source.rs`：`MeshSource` 持有原 `Renderer` 的 3D 字段（`families`/`pipelines`/mesh 与 index/vertex 池/metadata/instance/剔除缓存/自身 `Scene`）与其全部方法（§4.4 的表）；`build_scene` = 原 `render` 的 3D 段，上下文自己从世界取。
+- **不写 `MeshSourceExt` 拓展 trait**（§4.8）：setup 期取 `world.get_mut::<Source>(entity)` 后 downcast 成 `&mut MeshSource`，与 `world.get_mut::<ResourceGraph>(ctx.graph)` 分属不同 cell，可同时持有。`renderer.rs` 里不出现 mesh 代码这一目标由「mesh 代码本就在 `MeshSource` 里」自然达成。
+- `Renderer` 收缩为纯帧级：只剩下 target 绑定与「按序构建 + 录制 + submit」；`device`/`queue`/`graph`/源都不再是它的字段。`set_render_target`/`attachments`/`clear_pass` 留下。
+- **迁移点**：`register_unlit_family` 与 mesh/material 分配移到源上——`tests/common/mod.rs:33` 的 `create_renderer` 与示例需改成「先 `world.spawn` 上下文资源与源，再注册家族」，这是本步需要改动调用方写法的地方。
 - **验收**：`cargo test -p unlit3d` 全绿（含 `a_frame_without_a_camera_only_clears`、`rendering_a_world_twice_reuses_every_per_frame_cache`、排序/池/家族特化等既有断言）；示例能编译运行且画面与重构前一致。
 - 提交点：**这一步之后渲染侧重构结束**，架构目标（内置 mesh 与其他源对称、无特权路径）已达成。
 
@@ -1118,7 +1045,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 - **验收**：§8.2 第 11 条——`cargo test -p wgpu_unlit_render --features egui`；两个 bug 各需**新断言**（`TextureOptions` 用 Nearest+Repeat 纹理；scissor 断言**裁剪边界附近**的像素，现有测试只断言中心点所以覆盖不到）。
 
 **5. `unlit3d::ui`：`UiPanel` + `UiSource`（§5.2、D12）**
-- `UiPanel` 行为组件（§5.2.1）与 `UiSource`（`on_mount` 建 UBO/管线；`build_scene` 组装 `RawInput` → `ctx.run_ui` **逐一驱动所有 `UiPanel`** → `integration.update` → 取 `Scene`）。
+- `UiPanel` 行为组件（§5.2.1）与 `UiSource`（setup 期经世界建 UBO/管线；`build_scene` 组装 `RawInput` → `ctx.run_ui` **逐一驱动所有 `UiPanel`** → `integration.update` → 取 `Scene`）。
 - `ui = ["dep:egui", "wgpu_unlit_render/egui"]` feature（D11）。
 - `FrameOrder::OVERLAY` 声明顺序。
 - **验收**：§8.1 第 3 组（`UiPanel` 驱动，无需 GPU）+ **§8.2 的 A 组（只渲染 UI 的快照集成测试）全部通过**，特别是 `ui_only_draws_without_a_camera`（纯 UI、无相机）与 `ui_only_at_high_pixel_density`（ppp 边界）。
@@ -1153,8 +1080,8 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 
 每条都给出：**问题**（在哪一行、为什么是问题）、**选项**、**改动面**、**决定/倾向**。编号连续，不用 `′` 之类派生编号。
 
-**已定**（用户决定）：D1（`Scene` 自持句柄）、D2（`Renderer` 持有多个帧源与多个 `Scene`，内置 mesh 也是源）、D3（`build_scene` 命名 + 挂钩子 + `dyn FrameSource` + 独立 `source_as`）、D4（输入分发由调用方显式调用）、D5（`depth_stencil` 改 `Option`）、D6（`build_scene`/`scene` 两方法）、D7（拓展 trait + `with_source_mut`，上下文只有 `device`/`queue`/`graph`）、D8（`FrameSource::order` + `mount_at`/`set_order`，挂载顺序作 tie-break）、D12（界面是 `UiPanel` 行为组件，`UiSource` 逐一驱动）。
-**待定**：D9（事件列表所有权）、D10（UI 源拿输入的方式）、D11（feature 划分）——都可在实施到对应步骤时再定，不阻塞起步。
+**已定**（用户决定）：D1（`Scene` 自持句柄）、D2（**帧源与 GPU 上下文都放进 ECS**，内置 mesh 也是源——§4.8 修订）、D3（`build_scene` 命名；`source_as`/`on_mount` 部分作废）、D4（输入分发由调用方显式调用）、D5（`depth_stencil` 改 `Option`）、D6（`build_scene`/`scene` 两方法）、D7（**不再需要——源进 ECS 后直接取图**，§4.8 修订）、D8（`FrameSource::order` + `mount_index` tie-break，§4.8 代价 2）、D12（界面是 `UiPanel` 行为组件，`UiSource` 逐一驱动）。
+**待定**：D9（事件列表所有权）、D10（UI 源拿输入的方式）、D11（feature 划分）、D13（`RenderContext` 是否带每帧 target）——都可在实施到对应步骤时再定，不阻塞起步。
 
 ### D1 `Scene` 是否改为自持句柄 — `[已定：选 A]`
 
@@ -1168,37 +1095,33 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 - 代价：`Scene::record` 里 `BufferSlice` 要在录制时重建（`buffer.slice(range)`）；`DrawEntry` 从「几个指针」变成「几个 Arc 句柄 + 2 个 `Range<u64>`」，内存略增，但每帧 clone 次数不变（现在也在 clone）。
 - **额外收益（因 §4 而变关键）**：`recycle`/`reborrow`/`launder` 全部删除；`Renderer` 的 `scene_cache: Scene<'static>`（`renderer.rs:175`）变成普通 `Scene` 字段，每个源也各自持有一个 `Scene` 并可跨帧复用其 `draws` 分配。
 
-### D2 帧源的归属与注册方式 — `[已定：Renderer 持有多个 Scene，且内置 mesh 渲染也是源]`
+### D2 帧源的归属与注册方式 — `[已定：帧源与 GPU 上下文都放进 ECS（§4.8）]`
 
 **问题**。UI 的状态与它的绘制应该放在哪里、如何与渲染器关联、如何保证顺序；以及**内置的 mesh 渲染是否也走同一条路**。
 
-**决定（用户提出，已采纳）**：`Renderer` **额外挂载状态、持有多个 `Scene`**；每个帧源自带状态与其 `Scene`（`Vec`，顺序 = 绘制顺序）；`render()` 顺序迭代多个 `Scene` 录制。**FrameLayer 概念取消。** 并且——**内置的 mesh 渲染本身就是一个帧源（`MeshSource`）**，与 UI 完全对称，不在渲染器里留任何 mesh 专用绘制路径。详见 §4、§4.4。
-
-原先的两个选项，以及为什么新方案更好：
-- **选项 A（原计划，已弃用）**：图层是组件、按类型注册（`register_layer::<C>()` + `LayerOf<C>`/`AnyLayer`）。问题是引入了「图层」这个只服务 UI 的新概念、多一层泛型样板，而顺序**仍然**靠 `Vec` 手工维护；同时它把源的状态放进世界，导致「源每帧要 `&mut ResourceGraph`，又要从世界查询自己」的双重借用纠结。
-- **选项 B（原计划的备选，现被采纳并扩展）**：源归 `Renderer` 所有。原计划把它当备选是因为「不能按实体配置」；但用户指出的关键点是——**源本来就该自带状态**（egui 的 `Context`、字体图集、它的 `Scene` 都是它自己的），不需要「按实体配置」这个能力。升级为「挂载 + `SourceId` 取回」后同时得到简洁与可访问性。
+**决定（用户提出，已采纳）**：**帧源是组件，共享 GPU 上下文是资源**（§4.8）；每个源自带状态与其 `Scene`；`render` 按顺序录制多个 `Scene`。**FrameLayer 概念取消。** 并且——**内置的 mesh 渲染本身就是一个帧源（`MeshSource`）**，与 UI 完全对称，不在渲染器里留任何 mesh 专用绘制路径。详见 §4、§4.4、§4.8。
 
 **为什么内置 mesh 也要变成源**：`Renderer` 现有的 3D 字段（`families`/`pipelines`/mesh 池/metadata/instance/剔除缓存/`scene_cache`）在「多源」世界里是**特权字段**——只有渲染器自己能用，第三方复制不了。把它们整体搬进 `MeshSource` 之后：
-- 3D 与 UI 走**完全相同**的路径（挂载 → `build_scene` → `scene()` → 按序录制），没有「主场景 vs 附加场景」之分；
+- 3D 与 UI 走**完全相同**的路径（spawn 源 → `build_scene` → `scene()` → 按序录制），没有「主场景 vs 附加场景」之分；
 - 用户想自定义 3D 路径（换剔除策略、加自己的批处理、画阴影）时，可以**不挂 `MeshSource`**，挂自己的实现；
-- `Renderer` 缩小为纯帧级装置（device/queue/graph/附件/源列表/pass），职责单一。
+- `Renderer` 缩小为纯帧级装置（附件/target/encoder/pass/submit），职责单一。
 
-**已实测**：`.tmp/src_probe`（真实 wgpu noop 设备、真实 encoder/pass、2 个源 + 主 Scene）验证「构建阶段 `&mut graph`/`&mut encoder` → 录制阶段只读各源 `Scene`」可编译可运行。
+**关于「把源放进世界」的既有疑虑（已作废）**：早期方案曾以「源放进世界会导致『源每帧既要 `&mut` 资源图、又要从世界查询自己』的双重借用纠结」为由否决它。**该说法经实测不成立**——图与源是不同的 cell，二者可同时借用；更彻底地说，源根本不必被递进图，它自己取即可。详见 §4.8 的探针表格。
 
-### D3 `FrameSource` 的 API 形状 — `[已定：采纳用户的四点修正]`
+**已实测**：`.tmp/src_probe`（真实 wgpu 设备、真实 encoder/pass，2 个源 + 主 Scene）验证「构建阶段用图 → 录制阶段只读各源 `Scene`」可编译可运行。
 
-**问题**。初版 `FrameSource` 有三个真实缺陷（用户指出，均已确认）：
+### D3 `FrameSource` 的 API 形状 — `[已定：build_scene 命名 + 必需的 order；其余见 §4.8]`
 
-1. **`build` 这个名字看不出功能**。它做两件事——按需分配/上传 GPU 资源、组装本帧绘制列表——名字应体现「产出本帧的 `Scene`」。
-2. **`source()`/`source_mut()` 返回 `&dyn Any` 是错的**。`dyn Any` 只有 `downcast_ref`，拿到后**连 trait 自己的方法都调不了**（`scene()` 都拿不到），把最常用操作挡在门外。
-3. **缺少挂载/卸载钩子**。源要在图里注册 UBO/纹理/绑定组，需要 `&mut ResourceGraph`；`Drop` 拿不到图，释放只能靠显式钩子。
+**问题**。初版 `FrameSource` 有一个真实的命名缺陷：**`build` 看不出功能**。它做两件事——按需分配/上传 GPU 资源、组装本帧绘制列表——名字应体现「产出本帧的 `Scene`」。
 
-**决定**：
-- 方法名 `build` → **`build_scene`**（与只读的 `scene()` 构成「写—读」一对）。
-- 访问器返回 **`&dyn FrameSource`**（trait API 直接可用）；需要源自身状态时另给 `source_as::<T>()`/`source_as_mut::<T>()` 做类型化 downcast。内部用**包装 trait** `AnySource: Any` 的 blanket impl 承载转型，因此**用户的 `FrameSource` impl 一行转型样板都不用写**。
-- 新增 **`on_mount`/`on_unmount`**（签名 `fn(&mut self, &mut SourceContext)`），**均有默认空实现**；`on_unmount` 在源被 drop **之前**运行，所以它仍能访问图。不碰图的源（纯调试叠加）不用写。
+**决定**：方法名 `build` → **`build_scene`**（与只读的 `scene()` 构成「写—读」一对）。完整签名见 §4.8。
 
-**已实测**（`.tmp/api_probe` + `.tmp/any_probe`）：默认空实现不破坏 object safety；`&dyn FrameSource` 上能直接调 `scene()`/`prepare()`；`source_as::<T>()` 命中返回 `Some`、类型不符返回 `None`（不 panic）；`AnySource` 的 blanket impl 让 `Box<dyn AnySource>` 本身即 `Any`，无需任何 `as_any` 方法；`on_mount`/`on_unmount` 在挂载/卸载时各跑一次。
+**已废弃的部分**（原设计，随源进 ECS 而不再需要，见 §4.8）：
+- 访问器形态 `source()`/`source_mut()`/`source_as::<T>()`/`source_id_of()`：源是组件，遍历只需 `query::<&Source>()`，类型化访问改为「取组件后 downcast」。
+- `on_mount`/`on_unmount` 钩子：`despawn` 没有钩子，注册/释放改为「setup 期直接访问 + 一条排队卸载命令」（§4.8 代价 1）。
+- `AnySource` **保留**，但退化为无方法 supertrait（`Any + FrameSource`）。
+
+**仍然成立的**：注册/释放 GPU 资源必须**显式**进行（`Drop` 拿不到图），只是载体变了。
 
 ### D4 输入分发的调用方 — `[已定：选 A]`
 
@@ -1235,7 +1158,18 @@ wgpu error: Validation Error
       with format None but the RenderPipeline with 'wgpu_unlit_render::unlit' label
       uses an attachment with format Some(Depth24PlusStencil8)
 ```
-即：**今天无法在只有 color 附件的 target 上使用 unlit 管线**（不限于 UI——任何 unlit 变体都不行）。机制上见 wgpu-core 30.0.1 的 `check_compatible`（`device/mod.rs:126-155`）与管线 `pass_context` 的构造（`device/resource.rs:5009-5022`）。
+即：**今天无法在只有 color 附件的 target 上使用 unlit 管线**（不限于 UI——任何 unlit 变体都不行）。机制上见 wgpu-core 30.0.1 的 `check_compatible`（`device/mod.rs:126-155`）与管线 `pass_context` 的构造（`device/resource.rs:5009-5022`）：判定**只比 `Option<TextureFormat>`**，与 `depth_write_enabled`/`depth_compare` 无关。
+
+**双向实测**（`.tmp/depthprobe`，Vulkan/llvmpipe，含「故意不匹配 color 格式」的**对照组**以证明探针确实能捕获校验错误；注意必须在 `submit` 之后才能收到校验错误，仅录制不报）：
+
+| pass | 管线 `depth_stencil` | 结果 |
+|---|---|---|
+| 有 `Depth24PlusStencil8` | `None` | ❌ `the RenderPass uses a texture with format Some(Depth24PlusStencil8) but the RenderPipeline uses an attachment with format None` |
+| 无深度 | `Some(Depth24PlusStencil8)` | ❌ 反向同一条错误 |
+| 有 `Depth24PlusStencil8` | `Some(同格式)`, write=false, Always | ✅ |
+| 有 `Depth24PlusStencil8` | `Some(同格式)`, write=true, Greater | ✅ |
+
+**推论（本期的正确做法）**：UI 与 mesh 共用带深度的 pass 时，UI 管线声明**同一个**深度格式 + 不写不测即可，**不需要** `Option` 来表达「UI 不要深度」。`Option` 的用武之地是**目标本身没有深度附件**，那时 pass 内**所有**管线（含 mesh）都必须不声明深度。所以 D5 的理由是「让管线能表达『这个 pass 没有深度附件』」，而不是「UI 想要特殊待遇」——后者是一个容易写错的方向。
 
 **今天谁受影响**：`WindowSurface` 总是建深度附件（`winit.rs:409`），所以示例与现有测试都撞不到。撞到的是「自定义 target 只有 color，想叠 UI/2D」——恰是 UI 最常见的用法之一（`Renderer::set_render_target` 的文档 `renderer.rs:527` 只要求「color 与 depth 至少有一个」，但实际实现做不到 color-only）。
 
@@ -1243,7 +1177,7 @@ wgpu error: Validation Error
 - 改动面：`pipeline.rs` 的字段（`:199`）、`standard_shape`（`:253`）、`UnlitPipeline::new`（`:465`）、`apply_surface`（`:717-723`，改为 `options.depth_stencil = surface.depth_stencil_format.map(...)`）、测试（`:948-985`）；
 - 字面量构造点：`crates/unlit3d/tests/common/mod.rs:44-67`、`crates/wgpu_unlit_render/tests/gpu_unlit.rs:513/710`、`crates/unlit3d/src/renderer.rs:1852`、`crates/wgpu_unlit_render/src/ui.rs`（`apply_ui_settings` 写三个 depth 字段，`:186-187`）。
 - 语义变更：`apply_surface` 从「保留基础」变成「跟随目标」，`pipeline.rs:971` 那个测试要改成断言 `None`。**这是行为变更**，但方向更正确（管线必须与 pass 匹配）。
-- 需要 `apply_ui_settings` 改成「目标有深度时设 `Always`+不写入，无深度时置 `None`」，所以 UI 的 options 必须在知道 surface 之后才能定——本来 §5.1 的 `ui_options_for_surface` 就是这个时机。
+- `apply_ui_settings` 的语义要按目标分支：**目标有深度**时，声明的深度格式必须与 pass **一致**（`apply_surface` 已把 `format` 对齐到 `surface.depth_stencil_format`），再设 `write=false`+`Always`；**目标无深度**时才置 `None`。两种情况都由 `apply_surface` 之后的 `ui_options_for_surface` 定，这正是 §5.1 那个入口存在的时机。
 
 **选项 B：不动，UI 要求必须有深度附件**（已否决）。
 - 改动面 0。
@@ -1265,24 +1199,17 @@ wgpu error: Validation Error
 **决定：保留两个方法**。已实测（`.tmp/src_probe`）这个结构可编译、可运行，无需 `RefCell`、无运行期借用风险。
 - 若用户偏好更短的 trait，可改成单方法 + `RefCell<ResourceGraph>`，但那会把编译期保证换成运行期 panic，**不推荐**。
 
-### D7 源的 setup-time API 如何拿到 `&mut ResourceGraph` — `[已定：A + B，A 用拓展 trait]`
+### D7 源的 setup-time API 如何拿到 `&mut ResourceGraph` — `[已定：不再需要（§4.8）]`
 
-**问题**。图留在 `Renderer`（帧级），而源在 setup 期需要 `&mut graph`（`MeshSource::allocate_unlit_mesh` 要建缓冲节点）。用户手里只有 `&mut Renderer`，`renderer.source_as_mut::<MeshSource>()` 借走整个 `Renderer` 后拿不到图。
+**问题（已消失）**。原设计里图私有在 `Renderer`，而源在 setup 期需要 `&mut graph`；用户手里只有 `&mut Renderer`，借走源就借走了整个渲染器，于是拿不到图。当时为此设计了 `with_source_mut` 通用入口 + `MeshSourceExt` 拓展 trait。
 
-**决定：A + B。A 的一层便利方法用拓展 trait 实现，不放在 `renderer.rs` 内部。** 详见 §4.5。
+**决定**：图既然是**世界里的资源组件**（§4.8），源在 setup 期直接 `world.get_mut::<ResourceGraph>(ctx.graph)` 即可，上述前提不再成立。因此 **`with_source_mut`、`MeshSourceExt`、`source_id_of`、`GpuContext` 全部删除**；「`renderer.rs` 里不出现 mesh 代码」这一目标，由「mesh 代码本来就在 `MeshSource` 组件里」自然达成。
 
-- **A（拓展 trait）**：`pub trait MeshSourceExt` 定义在 `crates/unlit3d/src/mesh_source.rs`，`impl MeshSourceExt for Renderer` 只调用公开的 `with_source_mut`/`source_id_of`，**不碰任何私有字段**。因此 `renderer.rs` 里没有任何 mesh 代码；调用方多一行 `use`（或由 `prelude` 代劳），现有测试与示例的调用写法不变。
-- **B（通用入口）**：`with_source_mut::<T, R>(id, |source, gpu| ..) -> Option<R>` 作为所有 setup-time API 的底层机制，第三方源直接用它，无需写拓展 trait。A 即 B 的特例。
+**共享上下文仍只需 `device`/`queue`/`graph`**：逐方法核对的表见 §4.5，其余全是源自己的状态。只有图需要独占借用，`device`/`queue` 是 `Clone` 共享句柄。
 
-**为什么不能省掉 `with_source_mut` 直接做继承式方法**：`Renderer` 与源是两个不同的东西，源可以被 `unmount`、可以多实例，把它们的方法混在同一个命名空间里会重新引入「渲染器知道 mesh」的问题——这正是本期要消除的。
-
-**上下文里为什么是 `device` + `queue` + `graph`**（回答「是否还有其他字段需要可变借用」）：
-- 逐方法核对（表见 §4.5）：setup 期只用到这三个**帧级**字段，其余全是源自己的状态。所以 `GpuContext` 是完备的。
-- **只有 `graph` 需要 `&mut`**；`device`/`queue` 是 `Clone`（Arc）共享句柄，只需 `&`。故 `GpuContext` = 两个共享引用 + 一个独占引用。
-- 因此源**不必**存 `device`/`queue` 的克隆，`MeshSource::new`/`UiSource::new` 也**不再需要** `device`/`queue` 参数——`on_mount`（§4.3）与 `build_scene` 都会递进来。
-- **其余帧级字段一律不外露**：`color_view`/`depth_view`/`msaa_view`/`surface` 是 pass 状态，build 期经 `FrameTarget` 只读给出、mount 期故意不给（目标可能未 bind）；`load_ops` 每帧从世界读，不是渲染器字段；`sources` 自身不外露（源要挂载别的源须走延后命令队列，不能在遍历中改 `Vec`）。
-
-**实测**（`.tmp/ext_probe`，`edition = "2024"`）：拓展 trait 在另一模块 `impl ... for Renderer` 可编译可用；`with_source_mut` 经字段拆分借用、无 `RefCell`；`&dyn FrameSource` **不能**转 `&dyn Any`（生命周期非 `'static`）→ 故 `source_as::<T>()` 是必需的独立访问器，不能指望调用方自己转；`Box<dyn AnySource>` 本身即 `Any`，转型无需用户写样板。
+**两个实测结论仍然有效**（`.tmp/ext_probe`、`.tmp/hybrid`）：
+- `&dyn FrameSource` **不能**转 `&dyn Any`（生命周期非 `'static`），所以类型化访问不能指望调用方自己转——ECS 方案里改为在包装结构上做 trait upcasting（`&mut *source.0 as &mut dyn Any`），见 §4.8。
+- `AnySource` 的 blanket impl 让 `Box<dyn AnySource>` 本身即 `Any`，用户无需写任何转型样板。
 
 ### D8 源的绘制顺序如何指定 — `[已定：必需的 FrameSource::order + 歧义警告]`
 
@@ -1291,16 +1218,16 @@ wgpu error: Validation Error
 **决定（用户要求，见 §4.6）**：
 - `FrameOrder(pub i32)` 是值的全序，提供 `MESH`(0)/`OVERLAY`(100) 常量；**不实现 `Default`**。
 - **`FrameSource::order()` 是必需方法，不给默认实现**。理由：默认值会让「忘记写 order」与「确实想用挂载顺序」无法区分，顺序意图又变回隐式——正是要消除的问题。已实测：去掉默认实现后不写 `order` 的源**编译不过**。
-- `Renderer` 侧：`mount(source)` 用源自己的 `order()`；`mount_at(order, source)` 覆盖；`set_order(id, order) -> bool` 运行期可调。
-- 排序 = 按 `order` **稳定排序**，挂载顺序作 tie-break；顺序表**只在变化时重排**（`order_dirty`），稳态帧零成本、零日志。
-- **歧义 = 两个及以上源声明相同 `FrameOrder`** → `log::warn!` 一条，含**该组源数量、那个 order 值、各源 `SourceId`**（按挂载顺序）。**只警告不 panic**（相同 order 有时合法，强制唯一会逼用户编造无意义数字）。
+- **§4.8 修订**：`mount`/`mount_at`/`set_order`/`SourceId` 已删除——挂载是 spawn 源组件，顺序取源自己的 `order` 字段，运行期改该字段即可（§4.6）。
+- 排序 = 按 `(order, mount_index)` 排序，`mount_index` 是源显式携带的挂载序号作 tie-break（**不能**用实体行序，见 §4.8 代价 2）。每帧重算即可，源数量是个位数量级（§4.6）。
+- **歧义 = 两个及以上源声明相同 `FrameOrder`** → `log::warn!` 一条，含**该组源数量、那个 order 值、各源 `Entity`**（按 `mount_index`）。**只警告不 panic**（相同 order 有时合法，强制唯一会逼用户编造无意义数字）。
 - **用 `log` facade**（用户选择）：`log 0.4.34` 已在依赖图（wgpu/egui 均依赖），只需在 `crates/unlit3d/Cargo.toml` 加显式依赖，零新增编译成本；可被应用 logger 过滤。既有 4 处 `eprintln!` 不改造。
 
 **为什么不排序（只按挂载顺序）**：能工作，但顺序意图不可见、运行期不可调，「UI 必须在 3D 之后」只能靠隐式约定维持。
 
-**为什么不做源间依赖图**：对「一层 UI 叠在 3D 上」过重；`set_order` 已能表达任意全序。
+**为什么不做源间依赖图**：对「一层 UI 叠在 3D 上」过重；改源的 `order` 字段已能表达任意全序。
 
-**已实测**（`.tmp/ord2_probe`，7 条断言）：无默认实现时源必须表态；不同 order 零警告；相同 order 恰好一条警告且含数量/值/ids；连续 100 帧零日志；歧义解决后不再警告、重新引入则再警告一次；三元歧义一条警告列全三个 id；`set_order` 设相同值是 no-op 且不警告。
+**已实测**（`.tmp/ord2_probe`，7 条断言）：无默认实现时源必须表态；不同 order 零警告；相同 order 恰好一条警告且含数量/值/ids；连续 100 帧零日志；歧义解决后不再警告、重新引入则再警告一次；三元歧义一条警告列全三个 id；把 order 设成相同值是 no-op 且不警告。
 
 **顺带纠正一条我先前的错误判断**：`PassState` 是 `Scene::record` 的**局部变量**（`scene.rs:282`），所以 scissor/stencil **不会从一个 `Scene` 泄漏到下一个**——「被裁剪的绘制放最后」只约束**一个 Scene 内部**。因此源之间的顺序**不是**被 scissor 逼出来的硬约束，而是「UI 要合成在 3D 之上」的语义要求，正适合用 `order` 表达。
 
@@ -1366,25 +1293,45 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 - 每次 pass 重建查询迭代器是**正确**的（两种驱动形式都实测通过多趟）；
 - 但面板闭包会**跑多次**，因此必须**幂等**，或按 `num_completed_passes` 判断。这适用于所有 egui 后端（`egui-wgpu` 亦然），不是本设计引入的，但**必须在 `UiPanel` 的文档里写明**。
 
+### D13 `RenderContext` 是否携带每帧的 render target —（可在实施 §9 阶段 1 第 2 步时定）
+
+**问题**（§4.8 提出）。源进 ECS 后，`device`/`queue`/`graph` 三个 `Entity` 收在一个常驻资源 `RenderContext` 里。但源在 `build_scene` 里往往还需要**本帧的 render target**（`SurfaceKey` 与物理尺寸），用来特化管线（`ui_options_for_surface` 那类入口）与算投影。这个值每帧可能变（resize、换 target），而 `RenderContext` 只 spawn 一次。
+
+**选项 A：`RenderContext` 不带 target，源自己从附件资源查**。
+- 附件（color/depth/msaa 视图 id 与 `SurfaceKey`）本就在渲染器实体上，源可自行读取。
+- 代价：每个源都要重复「查附件 → 拼 `SurfaceKey`」的代码；而 `SurfaceKey` 的构造依赖渲染器内部约定，重复实现容易漂移。
+
+**选项 B：每帧把 target 写回 `RenderContext`**。
+- 源只读它，最省事。
+- 代价：写回需要 `&mut world`，而 `render(&LocalWorld)` 只有 `&`；要么把 `render` 改成 `&mut LocalWorld`（会波及所有调用点与测试），要么用别的每帧载体。
+
+**选项 C：target 走一个单独的「每帧资源」**，由帧循环在 `render` 之前写入（帧循环本来就持有 `&mut world`，因为它要 `apply()`）。
+- 与 D4 的帧循环形态一致：`dispatch_input` → `apply` → 写 target → `render`。
+- 代价：多一个资源实体；且「忘记写」时源读到过期 target（可让字段为 `Option` 并断言，或在 `render` 入口兜底写入）。
+
+**倾向 C**：它不改变 `render` 的签名，也不需要源各自复制 `SurfaceKey` 的构造逻辑；「每帧写入」与已有的 `InputState.clear_events` 是同一类显式帧循环职责。**实施到阶段 1 第 2 步时确认**（那里才第一次需要决定 `build_scene` 的参数形状）。
+
 ## 11. 风险与注意
 
-- **借用冲突是 panic**：`FrameSource::build_scene` 内不要同时持有 `world` 的可变借用；UI 的界面闭包签名 `FnMut(&LocalWorld, &mut Ui)` 只读世界，写入须走 `queue()` 或借用式 API（`with_mut`）。
-- **`FrameContext` 的借用只能短命**：它持有 `&mut graph` 与 `&mut encoder`，所以**开 pass 必须在所有源 `build_scene` 完之后**。这正是 §4.6 的两阶段结构；不要在 `build_scene` 里尝试开 pass。
+- **借用冲突是 panic**：`FrameSource::build_scene` 内不要同时持有 `world` 的可变借用；UI 的界面闭包签名 `FnMut(&LocalWorld, &mut Ui)` 只读世界，写入须走 `queue()` 或借用式 API（`with_mut`）。**特别注意**（`.tmp/borrowprobe` 实测）：驱动器**不能**自己握着 `&mut graph` 再把它递给每个源——嵌套取同一个图会 panic；源各自 `get_mut` 才安全。
+- **源的卸载要显式清理**（§4.8 代价 1）：`despawn` 没有钩子，源在图里注册的节点须由一条排队命令先行 `remove_drop`。忘记清理会留下孤儿节点（`cleanup_drop` 可兜底，但依赖释放时机）。
+- **不要用查询顺序当挂载顺序**（§4.8 代价 2）：`despawn` 走 `swap_remove`，行序会重排（`[a,b,c]` 删 `a` 得 `[c,b]`）。tie-break 必须用显式的 `mount_index`。
+- **开 pass 必须在所有源 `build_scene` 完之后**：源在 build 期要 `&mut encoder` 做 staging 上传，而 pass 借用 encoder。这正是两阶段结构；不要在 `build_scene` 里尝试开 pass。
 - **scissor 是 pass 级状态，但 `PassState` 是每个 `Scene::record` 的局部变量**（`scene.rs:282`）：所以 scissor/stencil **不会跨 `Scene`（跨源）泄漏**，「被裁剪的绘制放最后」只约束**一个 `Scene` 内部**。UI 每个 draw 都自带 scissor（现有实现如此），故 UI 的裁剪不会波及 3D。
 - **源之间顺序由 `order` 显式声明**（§4.6、D8）：`MeshSource` 用 `FrameOrder::MESH`、`UiSource` 用 `FrameOrder::OVERLAY`。别把「UI 必须在 3D 之后」只寄托在挂载语句的先后上——那是隐式约定，也正是 `order` 要消除的。
-- **相同 `order` 会 `log::warn!`**：这是提示不是错误，录制仍按挂载顺序进行。若日志里出现这条警告，说明有几个源的相对次序是巧合而非意图——用 `set_order`/`mount_at` 给它们不同值。稳态帧不产生日志（只在 `mount`/`unmount`/`set_order` 真正改变顺序时检查）。
+- **相同 `order` 会 `log::warn!`**：这是提示不是错误，录制仍按 `mount_index` 进行。若日志里出现这条警告，说明有几个源的相对次序是巧合而非意图——改它们 `order` 字段给不同值。稳态帧不产生日志（只在源集合/顺序真正改变时检查）。
 - **测试要装捕获 logger 才能断言警告**：`log` 是 facade，需 `log::set_boxed_logger` + 自定义 `Log`；这要求 `log` 的 `std`（或 `alloc`）feature。库本身只用 `log::warn!`，默认 feature 即可。
 - **`print_stderr`/`print_stdout` lint 已生效**：工作区 lint 含这两条，5 个 crate 全 opt-in。所以库内**不要**用 `eprintln!`（会被 clippy 报），顺序警告走 `log::warn!`。现有 3 处 `eprintln!`（示例 2 处 + 测试工具 1 处）会被报出，属既存问题、本期不改造。
 - **同一 pass 内的相机 UBO**：UI 的 `screen_view` 与 3D 相机不同，必须用各自的 UBO，或者 UI 在绘制前重写 3D 用的相机缓冲——**选各自的 UBO**。
 - **`egui::Context` 是 `Clone`（内部 Arc）**，但 `UiSource` 持有它即可，不要跨帧重建（会丢字体图集缓存）。
 - **每个源复用它的 `Scene` 分配**：`Scene::clear()` 保留 `draws` 的 capacity（现有 `scene_cache` 正是这么用的，`renderer.rs:1353`）；`MeshSource` 与 `UiSource` 各自每帧复用 `self.scene`，避免每帧分配。
-- **`unmount` 的资源回收已由钩子解决**：`on_unmount(&mut SourceContext)` 在源被 drop **之前**运行，此时它仍能拿到 `&mut graph`（`Drop` 拿不到），所以源可以自己 `graph.remove_drop(root)`（`resources.rs:422`）释放全部节点。这是 `on_mount`/`on_unmount` 必须存在的原因（D3）。没有外部根节点的源（如纯调试叠加）不必实现钩子。
+- **卸载的资源回收要显式做**（§4.8 代价 1）：`despawn` 没有钩子，所以源在图里注册的节点须由一条排队卸载命令先行 `graph.remove_drop(root)`（`resources.rs:422`）。没有外部根节点的源（如纯调试叠加）无需清理。
 - **`UiPanel` 闭包必须幂等**：egui 在 `request_discard` 的多趟布局中会**多次调用** `run_ui` 的闭包（`context.rs:770-771`、`:868`），所以面板跑多次。别在面板里做「只该发生一次」的副作用（累加计数器、发事件、`spawn` 实体）；要记状态就放兄弟组件并在每趟写同一结果，或按 `num_completed_passes` 判断。所有 egui 后端都如此，不是本设计引入的。
 - **面板状态放兄弟组件**：`UiPanel` 在运行期间被借用，不能重入借用自己（`behavior.rs:12-14`）。展开状态、输入框内容等放它自己的兄弟组件。
 - **第一帧丢掉**：egui 首帧不知道字体尺寸，例行「热身一帧丢弃」（`tests/gpu_ui.rs` 亦如此）；示例应在初始化后立刻渲染一帧并丢弃，避免用户看到一帧空白。
 - **winit 的 `ScaleFactorChanged` 在部分平台先于 `Resized`**：两处都要更新 `InputState`，且 UI 只依赖 `InputState` 的值，不要在源里再读一次 window。
 - **wasm**：`Instant` 在 wasm 可用；`std::thread` 不可用（示例已有 `spawn` 分支）。IME 在 web 不支持。
-- **`Renderer::graph` 是 `pub` 字段**：源与 `Renderer` 的转发方法都需要 `&mut ResourceGraph`，用 `let Self { graph, sources, .. } = self` 拆分字段借用，避免整借 `&mut self`。
+- **`Renderer::graph` 曾是 `pub` 字段**：源进 ECS 后该字段不再存在，图经 `world.get_mut::<ResourceGraph>(ctx.graph)` 取；不再需要任何字段拆分借用（§4.8）。
 - **迁移面大**：把 3D 部分搬进 `MeshSource` 是本期最大的一次改动（约 800 行方法搬家，见 §4.4 的表）。收益是渲染器不再有特权路径；若想缩小首个提交，可先做 D1+D2 的源机制与 `build_scene` 骨架、把 `MeshSource` 的搬家放在紧接的第二个提交，但**不要**长期保留「渲染器内置 3D 路径 + 源机制」两套并存——那正是要消除的特权。
 
 ---
