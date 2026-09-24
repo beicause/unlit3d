@@ -43,6 +43,8 @@ use wgpu_unlit_render::ui::{
 };
 use zerocopy::IntoBytes;
 
+pub mod convert;
+
 use crate::input::InputState;
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
 
