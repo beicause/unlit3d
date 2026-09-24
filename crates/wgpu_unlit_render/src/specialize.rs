@@ -55,7 +55,12 @@ use crate::render_attachments::RenderAttachments;
 pub trait Specializable: Sized {
     /// The blueprint a specializer rewrites. Must be comparable so a cached
     /// variant can be checked against a freshly specialized one.
-    type Descriptor: Clone + PartialEq + Send + Sync;
+    ///
+    /// Deliberately not `Send`/`Sync`: a descriptor holds wgpu handles, which
+    /// are not thread-safe on the web. A cache and the device it creates
+    /// against live together and never cross threads, so requiring it would
+    /// only rule the web backend out.
+    type Descriptor: Clone + PartialEq;
 
     /// Compile the descriptor into a value.
     fn create(device: &wgpu::Device, descriptor: &Self::Descriptor) -> Self;
@@ -65,7 +70,7 @@ pub trait Specializable: Sized {
 }
 
 /// A pure function from a small key to a descriptor rewrite.
-pub trait Specializer<T: Specializable>: Send + Sync + 'static {
+pub trait Specializer<T: Specializable>: 'static {
     /// The key that names one configuration.
     type Key: SpecializerKey;
 
