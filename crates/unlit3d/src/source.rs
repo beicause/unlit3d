@@ -817,6 +817,122 @@ mod tests {
         assert!(!OrderWarnings::default().check(&ambiguous));
     }
 
+    /// A logger that keeps what was logged, so a test can assert on the
+    /// message rather than only on the boolean the check returns.
+    struct CaptureLogger;
+
+    static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    impl log::Log for CaptureLogger {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            if let Ok(mut captured) = CAPTURED.lock() {
+                captured.push(record.args().to_string());
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// Install the capture logger before anything logs, and read back what it
+    /// caught. `log` allows one logger per process, so every test that wants
+    /// the messages goes through here.
+    fn capture_logs(f: impl FnOnce()) -> Vec<String> {
+        // A test process has no logger yet, so this always succeeds; a second
+        // install in the same process would be ignored, which is why the
+        // captured list is cleared first.
+        static LOGGER: CaptureLogger = CaptureLogger;
+        let _ = log::set_logger(&LOGGER);
+        log::set_max_level(log::LevelFilter::Warn);
+        CAPTURED.lock().expect("the capture mutex").clear();
+
+        f();
+
+        let captured = CAPTURED.lock().expect("the capture mutex");
+        captured.clone()
+    }
+
+    /// The warning names the group's size, its order and its entities, so a
+    /// reader can tell which sources are ambiguous without guessing.
+    #[test]
+    fn the_ambiguity_warning_names_the_group_order_and_entities() {
+        let mut world = LocalWorld::new();
+        test_context(&mut world);
+        let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+        let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+
+        let messages = capture_logs(|| {
+            let (_, ambiguous) = record_order(&world);
+            let mut warnings = OrderWarnings::default();
+            assert!(warnings.check(&ambiguous), "the group is reported");
+        });
+
+        assert_eq!(messages.len(), 1, "exactly one warning: {messages:?}");
+        let message = &messages[0];
+        assert!(
+            message.contains('2'),
+            "the group's size is named: {message}"
+        );
+        assert!(
+            message.contains(&FrameOrder::OVERLAY.0.to_string()),
+            "the order's value is named: {message}"
+        );
+        assert!(
+            message.contains(&format!("{a:?}")) && message.contains(&format!("{b:?}")),
+            "both entities are named: {message}"
+        );
+    }
+
+    /// Distinct orders log nothing at all, so a correct frame is silent.
+    #[test]
+    fn distinct_orders_log_nothing() {
+        let mut world = LocalWorld::new();
+        test_context(&mut world);
+        spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+
+        let messages = capture_logs(|| {
+            let (_, ambiguous) = record_order(&world);
+            assert!(!OrderWarnings::default().check(&ambiguous));
+        });
+        assert!(messages.is_empty(), "nothing to warn about: {messages:?}");
+    }
+
+    /// A steady frame does not repeat the warning, and resolving the ambiguity
+    /// stops it: the log reports a change, not a condition that persists.
+    #[test]
+    fn a_steady_frame_repeats_nothing_in_the_log() {
+        let mut world = LocalWorld::new();
+        test_context(&mut world);
+        let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let _b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let mut warnings = OrderWarnings::default();
+
+        let messages = capture_logs(|| {
+            for _ in 0..5 {
+                let (_, ambiguous) = record_order(&world);
+                warnings.check(&ambiguous);
+            }
+        });
+        assert_eq!(
+            messages.len(),
+            1,
+            "five steady frames warn once: {messages:?}"
+        );
+
+        // Resolving it and reintroducing it warns once more, not twice.
+        let _ =
+            world.with_mut::<Source, _>(a, |source| source.set_order(Some(FrameOrder::OVERLAY)));
+        let messages = capture_logs(|| {
+            let (_, resolved) = record_order(&world);
+            assert!(!warnings.check(&resolved), "resolved: nothing to say");
+        });
+        assert!(messages.is_empty(), "resolving is silent: {messages:?}");
+    }
+
     /// Three sources sharing an order are one group, not three pairs, and the
     /// group lists every entity.
     #[test]
