@@ -131,11 +131,15 @@ pub mod pipeline;
 pub mod renderer;
 pub mod scene;
 pub mod source;
+#[cfg(feature = "ui")]
+pub mod ui;
 #[cfg(feature = "winit")]
 pub mod winit;
 
 /// The types most callers need for typical usage.
 pub mod prelude {
+    #[cfg(feature = "ui")]
+    pub use crate::ui::{UiPanel, UiSource};
     pub use crate::{
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{

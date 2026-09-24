@@ -8,7 +8,7 @@ license.workspace = true
 arrayvec.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
-egui.workspace = true
+egui = { workspace = true, optional = true }
 glam.workspace = true
 hashbrown.workspace = true
 log.workspace = true
@@ -18,7 +18,7 @@ unlit_ecs = { path = "../unlit_ecs", version = "0.1.0" }
 wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true
-wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0", default-features = false, features = ["egui", "unlit"] }
+wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0", default-features = false, features = ["unlit"] }
 winit = { workspace = true, optional = true }
 zerocopy.workspace = true
 zerocopy-derive.workspace = true
@@ -28,7 +28,10 @@ wgpu = { workspace = true, features = ["noop"] }
 wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
 
 [features]
-default = ["winit"]
+default = ["ui", "winit"]
+## The [`ui`](crate::ui) module: an egui overlay drawn as a frame source, and
+## the [`wgpu_unlit_render`] egui backend it draws with.
+ui = ["dep:egui", "wgpu_unlit_render/egui"]
 ## Integration with [winit](https://docs.rs/winit): the [`winit`](crate::winit)
 ## module, which presents a [`Renderer`](crate::Renderer) into a window's swap
 ## chain.
