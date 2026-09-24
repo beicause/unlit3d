@@ -15,8 +15,10 @@ use wgpu_unlit_render::globals::Globals;
 use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
 use wgpu_unlit_render::render_attachments::{create_render_target, depth_clear, stencil_clear};
 use wgpu_unlit_render::resources::{Resource, ResourceGraph};
-use wgpu_unlit_render::ui::{EguiIntegration, screen_view, ui_options};
+use wgpu_unlit_render::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 
+/// The UI's logical layout, in points. The physical target scales with the
+/// pixel density, so this stays fixed across densities.
 const WIDTH: u32 = 256;
 const HEIGHT: u32 = 192;
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -44,11 +46,16 @@ fn ui_contents(ui: &mut egui::Ui) {
     );
 }
 
-fn input(pixels_per_point: f32) -> egui::RawInput {
+/// The egui input for a frame of `points` logical size at `pixels_per_point`.
+///
+/// The logical size is fixed and the physical target scales with the density,
+/// so the same layout lands on more physical pixels at a higher density —
+/// rather than points and pixels coinciding.
+fn input(points: [f32; 2], pixels_per_point: f32) -> egui::RawInput {
     let mut input = egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             egui::Pos2::ZERO,
-            egui::Vec2::new(WIDTH as f32, HEIGHT as f32),
+            egui::Vec2::new(points[0], points[1]),
         )),
         ..Default::default()
     };
@@ -77,6 +84,17 @@ fn render_ui_with(
     pixels_per_point: f32,
     mut contents: impl FnMut(&mut egui::Ui),
 ) -> Frame {
+    // The logical layout stays `WIDTH` x `HEIGHT` points at every density and
+    // the target grows with it, which is what a HiDPI display does. Keeping
+    // the target a fixed pixel size while claiming a higher density would make
+    // points and pixels coincide, hiding any unit confusion between them.
+    let screen = ScreenDescriptor {
+        size_in_pixels: [
+            (WIDTH as f32 * pixels_per_point).round() as u32,
+            (HEIGHT as f32 * pixels_per_point).round() as u32,
+        ],
+        pixels_per_point,
+    };
     // The caller owns the globals: camera and frame buffers, registered in
     // the shared ledger, and the bind group binding them.
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
@@ -109,7 +127,7 @@ fn render_ui_with(
     // egui positions its vertices in points, and the projection maps points
     // onto clip space, so the viewport the projection needs is the point size
     // regardless of the pixel density.
-    let viewport = [WIDTH as f32, HEIGHT as f32];
+    let viewport = screen.size_in_points();
     // One encoder carries both frames' staged uploads and the pass that draws
     // the last of them, so everything reaches the GPU in one submission.
     let mut encoder = ctx
@@ -117,14 +135,14 @@ fn render_ui_with(
         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("test::encoder"),
         });
-    let warm = egui_ctx.run_ui(input(pixels_per_point), &mut contents);
+    let warm = egui_ctx.run_ui(input(viewport, pixels_per_point), &mut contents);
     ui.update(
         &mut graph,
         &ctx.queue,
         &mut encoder,
         &egui_ctx,
         warm,
-        pixels_per_point,
+        screen,
     );
     // egui's tessellated points map onto clip space through the caller's
     // camera uniform, written once: the viewport does not change.
@@ -133,21 +151,21 @@ fn render_ui_with(
         .write_buffer(&camera, 0, screen_view(viewport).as_bytes());
     ctx.queue
         .write_buffer(&globals, 0, Globals::default().as_bytes());
-    let output = egui_ctx.run_ui(input(pixels_per_point), &mut contents);
+    let output = egui_ctx.run_ui(input(viewport, pixels_per_point), &mut contents);
     ui.update(
         &mut graph,
         &ctx.queue,
         &mut encoder,
         &egui_ctx,
         output,
-        pixels_per_point,
+        screen,
     );
 
-    let (width, height) = (WIDTH, HEIGHT);
+    let (width, height) = (screen.size_in_pixels[0], screen.size_in_pixels[1]);
     let ft = create_render_target(&ctx.device, COLOR_FORMAT, width, height, SAMPLES);
     let context = ft.attachments;
     let target = ft.color;
-    let scene = ui.scene(&mut graph);
+    let scene = ui.scene(&graph);
     {
         let mut pass = context.begin_pass(
             &mut encoder,
@@ -264,25 +282,73 @@ fn translucent_rect_blends_over_the_clear() {
     );
 }
 
-/// The UI must land in the same place whatever the pixel density: egui
-/// tessellates in physical pixels, so a denser target scales the layout rather
-/// than moving it.
+/// The UI must land in the same place whatever the pixel density, and its
+/// clip rectangles must cover the same physical area.
+///
+/// At a density above one the target is larger, so the same logical layout
+/// covers proportionally more pixels. Sampling the red rectangle's **far
+/// corner** is what makes this catch a scissor rectangle stated in points
+/// instead of pixels: the projection would still place the geometry
+/// correctly, but an unscaled clip would cut the rectangle off partway.
 #[test]
 fn ui_lands_in_the_same_place_at_any_pixel_density() {
     let ctx = Ctx::headless();
     let low = render_ui(&ctx, 1.0);
     let high = render_ui(&ctx, 2.0);
 
-    // The layout is in points, so the red rect's centre in points is the same
-    // physical pixel at both densities. A projection that wrongly scaled by
-    // pixels_per_point would place it elsewhere.
+    // The opaque red rect is (16,120)-(112,168) in points, so its centre
+    // is at (64,144) points in both frames — (128,288) pixels at 2x.
     for (frame, ppp) in [(&low, 1.0), (&high, 2.0)] {
-        let centre = frame.pixel_u8(64, 144);
+        let scale = |points: f32| (points * ppp).round() as u32;
+
+        let centre = frame.pixel_u8(scale(64.0), scale(144.0));
         assert!(
             centre[0] > 150 && centre[1] < 100,
             "the red rect centre should be red at {ppp}x, got {centre:?}"
         );
+
+        // Just inside the rect's far corner. An unscaled clip rectangle
+        // ends at the point coordinate in pixels, so at 2x it would stop
+        // here and this pixel would still be the clear colour.
+        let corner = frame.pixel_u8(scale(110.0), scale(166.0));
+        assert!(
+            corner[0] > 150 && corner[1] < 100,
+            "the red rect's far corner should be red at {ppp}x, so its \
+                 scissor rectangle covers the whole rect; got {corner:?}"
+        );
     }
+}
+
+/// A texture egui asks to sample nearest really does sample nearest.
+///
+/// The test image is 2x1 and drawn stretched over 128x64 points, so
+/// filtering is visible: nearest keeps a hard edge between the magenta and
+/// white halves and repeats each texel, while the default linear filter
+/// blends across the whole stretch.
+#[test]
+fn nearest_sampling_options_reach_the_texture() {
+    let ctx = Ctx::headless();
+    let mut image: Option<egui::TextureHandle> = None;
+    let frame = render_ui_with(&ctx, 1.0, |ui| {
+        let handle = image.get_or_insert_with(|| load_test_image(ui));
+        draw_test_image(ui, handle);
+    });
+
+    // The image is drawn over (16,16)-(144,80) points from a 2x1 source.
+    // Nearest sampling holds the left texel across the left half, so a
+    // column well inside it is the same magenta as the very first column.
+    let near_edge = frame.pixel_u8(20, 48);
+    let mid_left = frame.pixel_u8(56, 48);
+    assert!(
+        near_edge[0] > 150 && near_edge[2] > 150 && near_edge[1] < 80,
+        "the left half should be magenta, got {near_edge:?}"
+    );
+    assert_eq!(
+        near_edge, mid_left,
+        "nearest sampling repeats one texel across the left half, so two \
+             columns inside it are identical; a linear filter would blend \
+             towards the white texel"
+    );
 }
 
 #[test]

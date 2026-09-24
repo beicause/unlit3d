@@ -12,7 +12,7 @@
 //! #     CAMERA_BINDING, FRAME_BINDING, UnlitOptions, UnlitPipeline,
 //! # };
 //! # use wgpu_unlit_render::resources::{Resource, ResourceGraph};
-//! # use wgpu_unlit_render::ui::{screen_view, ui_options, EguiIntegration};
+//! # use wgpu_unlit_render::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
 //! #          color_format: wgpu::TextureFormat, multisample: wgpu::MultisampleState) {
@@ -64,8 +64,14 @@
 //! // uploads and the pass that reads them; `scene` is recorded into it
 //! // after this call.
 //! let mut encoder = device.create_command_encoder(&Default::default());
-//! ui.update(&mut graph, queue, &mut encoder, ctx, output, 1.0);
-//! let scene = ui.scene(&mut graph);
+//! // The target's physical size and its density, which the clip rectangles
+//! // are scaled by.
+//! let screen = ScreenDescriptor {
+//!     size_in_pixels: [256, 192],
+//!     pixels_per_point: 1.0,
+//! };
+//! ui.update(&mut graph, queue, &mut encoder, ctx, output, screen);
+//! let scene = ui.scene(&graph);
 //! # }
 //! # fn uniform_buffer(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
 //! #     device.create_buffer(&wgpu::BufferDescriptor {
@@ -101,6 +107,31 @@ const POSITION_STRIDE: usize = wgpu::VertexFormat::Float32x3.size() as usize;
 /// Bytes one UV-and-color vertex occupies: `Float32x2` then `Unorm8x4`.
 const UV_COLOR_STRIDE: usize =
     wgpu::VertexFormat::Float32x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
+
+/// The target a UI frame is drawn into and the density it is drawn at.
+///
+/// The two are needed together and in opposite units, which is the easiest
+/// thing to get wrong here: egui tessellates in **logical points**, so the
+/// projection takes the point size, while a scissor rectangle is in **physical
+/// pixels**, so the clip rectangles are scaled by [`Self::pixels_per_point`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScreenDescriptor {
+    /// The target's size in physical pixels.
+    pub size_in_pixels: [u32; 2],
+    /// How many physical pixels one logical point covers.
+    pub pixels_per_point: f32,
+}
+
+impl ScreenDescriptor {
+    /// The target's size in logical points, which is what the UI's projection
+    /// and its `RawInput::screen_rect` are expressed in.
+    pub fn size_in_points(self) -> [f32; 2] {
+        [
+            self.size_in_pixels[0] as f32 / self.pixels_per_point,
+            self.size_in_pixels[1] as f32 / self.pixels_per_point,
+        ]
+    }
+}
 
 /// A world-to-clip matrix taking egui's tessellated points to clip space.
 ///
@@ -230,6 +261,16 @@ pub struct EguiIntegration {
     /// Graph node of the egui texture *view* of every allocated texture
     /// slot, keyed by egui's own id; the view depends on its texture node.
     textures: HashMap<egui::TextureId, ResourceId>,
+    /// The sampling options egui last stated for each texture.
+    ///
+    /// Kept separately from the texture itself because every [`ImageDelta`]
+    /// carries the options that apply to the whole texture, and the draw that
+    /// samples it has to name the matching sampler:
+    /// [`Self::sampler`] keys its cache on exactly these options, so a texture
+    /// uploaded as nearest samples nearest.
+    ///
+    /// [`ImageDelta`]: egui::epaint::ImageDelta
+    texture_options: HashMap<egui::TextureId, egui::TextureOptions>,
     /// One sampler per distinct set of egui sampling options seen, with its
     /// graph node.
     samplers: Vec<(egui::TextureOptions, ResourceId)>,
@@ -281,6 +322,7 @@ impl EguiIntegration {
             pipeline,
             global_group,
             textures: HashMap::new(),
+            texture_options: HashMap::new(),
             samplers: Vec::new(),
             materials: Vec::new(),
             vertices: None,
@@ -314,8 +356,8 @@ impl EguiIntegration {
     /// afterwards, and one submission carries the upload and the draw that
     /// reads it. Texture updates still go through `queue`.
     ///
-    /// `pixels_per_point` tells egui how to rasterise text and how to scale
-    /// the tessellated points.
+    /// `screen` tells egui how to rasterise text and scales the tessellated points
+    /// and their clip rectangles; see [`ScreenDescriptor`].
     pub fn update(
         &mut self,
         graph: &mut ResourceGraph,
@@ -323,20 +365,32 @@ impl EguiIntegration {
         encoder: &mut wgpu::CommandEncoder,
         ctx: &egui::Context,
         mut output: egui::FullOutput,
-        pixels_per_point: f32,
+        screen: ScreenDescriptor,
     ) {
         self.apply_textures(graph, queue, &output.textures_delta);
         // egui panics if a delta is dropped unapplied, so mark it handled.
         output.textures_delta.clear();
 
-        let primitives = ctx.tessellate(output.shapes, pixels_per_point);
+        let primitives = ctx.tessellate(output.shapes, screen.pixels_per_point);
         self.draws.clear();
         let (vertices, indices) = measure(&primitives);
         if vertices == 0 {
             return;
         }
         self.reserve(graph, vertices, indices);
-        self.draws = self.upload_geometry(encoder, &primitives);
+        self.draws = self.upload_geometry(encoder, &primitives, screen);
+
+        // Build every material the frame needs here, while the graph is still
+        // mutably available: `scene` only reads it, so a material that does
+        // not exist yet by then is one this frame cannot draw.
+        let wanted: Vec<_> = self
+            .draws
+            .iter()
+            .map(|draw| (draw.texture, draw.options))
+            .collect();
+        for (id, options) in wanted {
+            self.build_material(graph, id, options);
+        }
     }
 
     /// Pack `primitives` into the vertex and index buffers, staging the bytes
@@ -348,6 +402,7 @@ impl EguiIntegration {
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
         primitives: &[egui::ClippedPrimitive],
+        screen: ScreenDescriptor,
     ) -> Vec<UiDraw> {
         let (vertex_count, _) = measure(primitives);
         let uv_color_start = vertex_count * POSITION_STRIDE;
@@ -388,8 +443,16 @@ impl EguiIntegration {
                 first_vertex,
                 indices: indices_start as u32..(indices_start + mesh.indices.len()) as u32,
                 texture: mesh.texture_id,
-                options: egui::TextureOptions::default(),
-                scissor: scissor_rect(primitive.clip_rect),
+                // The texture's own sampling options, not a default: a texture
+                // egui asked to sample nearest or to tile would otherwise be
+                // sampled linearly and clamped, and the sampler that matches
+                // `options` is the one the material binds.
+                options: self
+                    .texture_options
+                    .get(&mesh.texture_id)
+                    .copied()
+                    .unwrap_or_default(),
+                scissor: scissor_rect(primitive.clip_rect, screen),
             });
         }
 
@@ -410,22 +473,15 @@ impl EguiIntegration {
     ///
     /// Every draw sets a scissor rectangle, and a scissor stays set for the
     /// rest of the pass, so record this after the draws it overlays.
-    pub fn scene(&mut self, graph: &mut ResourceGraph) -> Scene {
+    ///
+    /// The materials the frame needs were built by [`Self::update`], so this
+    /// only reads the graph — a scene can therefore be taken while the graph is
+    /// shared with whatever else the frame is drawing.
+    pub fn scene(&self, graph: &ResourceGraph) -> Scene {
         if self.vertices.is_none() || self.indices.is_none() || self.draws.is_empty() {
             return Scene::new();
         }
         let mut scene = Scene::new();
-
-        // Build every material the frame needs first: a material is inserted
-        // into the graph, which cannot happen while any is being read below.
-        let wanted: Vec<_> = self
-            .draws
-            .iter()
-            .map(|draw| (draw.texture, draw.options))
-            .collect();
-        for (id, options) in wanted {
-            self.build_material(graph, id, options);
-        }
 
         let (vertices, indices) = (
             self.vertices.as_ref().expect("checked"),
@@ -588,6 +644,10 @@ impl EguiIntegration {
     ) {
         for (&id, deltas) in &delta.set {
             for image in deltas {
+                // Every delta for a texture states its sampling options, and
+                // the last one wins: they describe the texture as a whole, not
+                // the patch being written.
+                self.texture_options.insert(id, image.options);
                 self.upload_texture(graph, queue, id, image);
             }
         }
@@ -598,6 +658,7 @@ impl EguiIntegration {
             if let Some(view) = self.textures.remove(&id) {
                 graph.remove_drop(view);
             }
+            self.texture_options.remove(&id);
             // A material whose nodes were removed no longer resolves; drop
             // its bookkeeping entry so it can be rebuilt if egui reuses the
             // (texture, options) pair.
@@ -712,13 +773,31 @@ fn mesh_of(primitive: &egui::ClippedPrimitive) -> Option<&egui::epaint::Mesh> {
 }
 
 /// egui's clip rectangle as a scissor rectangle, in whole pixels.
-fn scissor_rect(rect: egui::Rect) -> ScissorRect {
-    let min = rect.min.max(egui::Pos2::ZERO);
+///
+/// egui states a clip rectangle in logical points, while a scissor rectangle is
+/// in physical pixels, so the rectangle is scaled by the density and rounded to
+/// whole pixels — the same conversion `egui-wgpu` performs. Both edges are then
+/// clamped to the target: a clip rectangle may extend past it (a panel scrolled
+/// out of view, or a widget larger than the surface), and a scissor rectangle
+/// outside the attachment is a validation error rather than a no-op.
+fn scissor_rect(clip_rect: egui::Rect, screen: ScreenDescriptor) -> ScissorRect {
+    let ppp = screen.pixels_per_point;
+    let [width, height] = screen.size_in_pixels;
+
+    let min_x = (ppp * clip_rect.min.x).round().clamp(0.0, width as f32) as u32;
+    let min_y = (ppp * clip_rect.min.y).round().clamp(0.0, height as f32) as u32;
+    let max_x = (ppp * clip_rect.max.x)
+        .round()
+        .clamp(min_x as f32, width as f32) as u32;
+    let max_y = (ppp * clip_rect.max.y)
+        .round()
+        .clamp(min_y as f32, height as f32) as u32;
+
     ScissorRect {
-        x: min.x as u32,
-        y: min.y as u32,
-        width: (rect.max.x - min.x).max(0.0) as u32,
-        height: (rect.max.y - min.y).max(0.0) as u32,
+        x: min_x,
+        y: min_y,
+        width: max_x - min_x,
+        height: max_y - min_y,
     }
 }
 
@@ -792,18 +871,97 @@ mod tests {
         }
     }
 
-    /// A clip rectangle reaching off screen must not wrap into a huge `u32`.
+    /// A clip rectangle reaching off the target is clamped rather than wrapping
+    /// into a huge `u32`, and its far edge never falls below its near edge.
     #[test]
-    fn scissor_rect_clamps_to_the_viewport() {
-        let rect = scissor_rect(egui::Rect::from_two_pos(
-            egui::Pos2::new(-20.0, -8.0),
-            egui::Pos2::new(30.0, 20.0),
-        ));
+    fn scissor_rect_clamps_to_the_target() {
+        let screen = ScreenDescriptor {
+            size_in_pixels: [64, 48],
+            pixels_per_point: 1.0,
+        };
+        let rect = scissor_rect(
+            egui::Rect::from_two_pos(egui::Pos2::new(-20.0, -8.0), egui::Pos2::new(200.0, 200.0)),
+            screen,
+        );
         assert_eq!(rect.x, 0);
         assert_eq!(rect.y, 0);
-        // The far edge is not clamped: only the origin moves, so the
-        // rectangle keeps the width the clipped draw covers.
-        assert_eq!(rect.width, 30);
-        assert_eq!(rect.height, 20);
+        // Both edges are clamped to the target, so a clip rectangle larger
+        // than it covers exactly the target rather than overrunning it.
+        assert_eq!(rect.width, 64);
+        assert_eq!(rect.height, 48);
+
+        // A rectangle entirely off the target collapses to nothing instead of
+        // producing a negative width.
+        let off = scissor_rect(
+            egui::Rect::from_two_pos(egui::Pos2::new(-40.0, -40.0), egui::Pos2::new(-10.0, -10.0)),
+            screen,
+        );
+        assert_eq!((off.x, off.y, off.width, off.height), (0, 0, 0, 0));
+    }
+
+    /// A clip rectangle is stated in logical points, so at a density above one
+    /// it must cover that many physical pixels — the conversion egui-wgpu
+    /// performs. Getting it wrong clips the UI short of its own bounds.
+    #[test]
+    fn scissor_rect_scales_points_to_physical_pixels() {
+        let screen = ScreenDescriptor {
+            size_in_pixels: [256, 192],
+            pixels_per_point: 2.0,
+        };
+        // A 16x8-point clip at (8, 4) is 32x16 physical pixels at (16, 8).
+        let clip = egui::Rect::from_min_size(egui::Pos2::new(8.0, 4.0), egui::Vec2::new(16.0, 8.0));
+        let rect = scissor_rect(clip, screen);
+        assert_eq!(
+            rect,
+            ScissorRect {
+                x: 16,
+                y: 8,
+                width: 32,
+                height: 16
+            }
+        );
+
+        // Where an unscaled conversion would have ended, in pixels: egui's own
+        // point coordinates taken as pixels. The scaled rectangle extends
+        // beyond it, so an unscaled clip would have cut that strip away.
+        let unscaled_end = clip.max.x as u32;
+        assert!(
+            unscaled_end < rect.x + rect.width,
+            "the scaled rectangle must reach past where an unscaled one would \
+             have ended ({unscaled_end} px), but it ends at {} px",
+            rect.x + rect.width
+        );
+    }
+
+    /// Fractional points round to whole pixels rather than truncating, so a
+    /// clip edge does not drift by up to a pixel.
+    #[test]
+    fn scissor_rect_rounds_fractional_points() {
+        let screen = ScreenDescriptor {
+            size_in_pixels: [64, 64],
+            pixels_per_point: 1.0,
+        };
+        let rect = scissor_rect(
+            egui::Rect::from_min_size(egui::Pos2::new(1.4, 2.6), egui::Vec2::new(4.0, 4.0)),
+            screen,
+        );
+        assert_eq!((rect.x, rect.y), (1, 3));
+
+        let rounded_up = scissor_rect(
+            egui::Rect::from_min_size(egui::Pos2::new(1.6, 2.4), egui::Vec2::new(4.0, 4.0)),
+            screen,
+        );
+        assert_eq!((rounded_up.x, rounded_up.y), (2, 2));
+    }
+
+    /// The point size the projection takes is the physical size divided by the
+    /// density — the opposite conversion from the scissor rectangle's.
+    #[test]
+    fn size_in_points_divides_by_the_density() {
+        let screen = ScreenDescriptor {
+            size_in_pixels: [256, 192],
+            pixels_per_point: 2.0,
+        };
+        assert_eq!(screen.size_in_points(), [128.0, 96.0]);
     }
 }
