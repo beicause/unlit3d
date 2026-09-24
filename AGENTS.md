@@ -18,7 +18,10 @@
 - **`typos`** — 拼写检查，扫全仓库。
 - **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。改过任何 `Cargo.toml` 后务必跑。
 
-**若改动较小，测试时要按包或名称筛选**，对于较小的改动不要总是跑全量测试。
+由于`cargo`命令可能运行较慢，要注意：
+- **若改动较小，cargo测试时要按包或名称筛选**，对于较小的改动不要总是跑全量测试。
+- **如果改动不是平台特定的，不要跑特定平台检查（如wasm,android）**。
+- **不要过度跑cargo构建或检查**，若cargo检查通过后没有对rust文件做出显著改动，无需反复执行cargo构建或检查。
 
 测试日志走 `log` crate，不靠 `println!`/`eprintln!`：
 
