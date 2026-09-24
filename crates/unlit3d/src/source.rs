@@ -88,6 +88,30 @@ pub struct FrameTarget {
 #[derive(Clone, Copy, Debug, Default)]
 struct FrameTargetSlot(Option<FrameTarget>);
 
+/// What a source claimed of the frame's input.
+///
+/// A UI toolkit decides whether it wants the pointer or the keyboard while it
+/// lays a frame out, and the answer belongs to the frame just laid out: a game
+/// control reading it is asking whether the input it is about to handle has
+/// already been claimed by an interface. Sources write it; nothing is
+/// intercepted automatically, so a caller decides what the claim means.
+///
+/// The frame context spawns it, so a world that draws a frame has one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputCapture {
+    /// A source wants the pointer, so a click belongs to it.
+    pub pointer: bool,
+    /// A source wants the keyboard, so a key belongs to it.
+    pub keyboard: bool,
+}
+
+impl InputCapture {
+    /// Whether either kind of input was claimed.
+    pub fn any(self) -> bool {
+        self.pointer || self.keyboard
+    }
+}
+
 /// The frame's target, or `None` before any frame loop wrote one.
 ///
 /// A source calls this in
@@ -280,6 +304,9 @@ pub fn spawn_context(
     // The frame loop writes the target here every frame; until it does, no
     // source may draw.
     world.spawn((Resource, FrameTargetSlot::default()));
+    // What the frame's sources claimed of its input, written by whichever
+    // source consumes input and read by the caller's own logic.
+    world.spawn((Resource, InputCapture::default()));
     RenderContext {
         device,
         queue,

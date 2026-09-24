@@ -43,10 +43,11 @@ use wgpu_unlit_render::ui::{
 };
 use zerocopy::IntoBytes;
 
-pub mod convert;
-
 use crate::input::InputState;
+pub use crate::source::InputCapture;
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
+
+pub mod convert;
 
 /// A callback that may read and write the world, and receives the entity it
 /// runs for together with the UI surface its interface is built in.
@@ -291,19 +292,24 @@ impl FrameSource for UiSource {
             .expect("the context's queue resource exists")
             .clone();
 
-        // Input arrives as a world resource (D10): the source looks it up by
-        // type and remembers the entity, so a later step can read the frame's
-        // events from it. A world without one is not an error — the UI still
-        // lays out at the target's own size — but it is worth remembering that
-        // nothing feeds the UI.
-        let input_state = world
-            .query::<&InputState>()
-            .next()
-            .map(|(entity, state)| (entity, state.scale_factor, state.size_px, state.focused));
-        self.input = input_state.map(|(entity, ..)| entity);
-        let (scale_factor, size_px, focused) = match input_state {
-            Some((_, scale_factor, size_px, focused)) => (scale_factor, size_px, focused),
-            None => (1.0, (target.width, target.height), true),
+        // Input arrives as a world resource: the source looks it up by type
+        // and remembers the entity. A world without one is not an error — the
+        // UI still lays out at the target's own size — but nothing feeds it.
+        let input_state = world.query::<&InputState>().next().map(|(entity, state)| {
+            (
+                entity,
+                state.scale_factor,
+                state.size_px,
+                state.focused,
+                state.events().to_vec(),
+            )
+        });
+        self.input = input_state.as_ref().map(|(entity, ..)| *entity);
+        let (scale_factor, size_px, focused, events) = match input_state {
+            Some((_, scale_factor, size_px, focused, events)) => {
+                (scale_factor, size_px, focused, events)
+            }
+            None => (1.0, (target.width, target.height), true, Vec::new()),
         };
         // A caller that has not learned the window's size yet leaves `size_px`
         // at zero; the target's own pixel size lays the UI out correctly, where
@@ -333,6 +339,10 @@ impl FrameSource for UiSource {
         // projection both take the point size; the clip rectangles the
         // integration derives are scaled to pixels by `pixels_per_point`.
         let points = screen.size_in_points();
+        // The frame's events, in egui's own event types and point space. The
+        // events stay in the world afterwards: the UI reads them, it does not
+        // consume them, so a game behaviour sees the same frame.
+        let events = convert::to_egui_events(&events, pixels_per_point);
         let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -340,6 +350,7 @@ impl FrameSource for UiSource {
             )),
             time: Some(self.start.elapsed().as_secs_f64()),
             focused,
+            events,
             max_texture_side: Some(device.limits().max_texture_dimension_2d as usize),
             ..Default::default()
         };
@@ -349,8 +360,6 @@ impl FrameSource for UiSource {
             .expect("the root viewport is always present")
             .native_pixels_per_point = Some(pixels_per_point);
 
-        // The frame's events are wired into the UI in a later step; for now the
-        // panels see an idle frame.
         let output = self.run_panels(world, input);
 
         let gpu = self.gpu.as_mut().expect("built above");
@@ -370,6 +379,11 @@ impl FrameSource for UiSource {
         let mut ui_scene = gpu.integration.scene(&graph);
         self.scene.extend(&mut ui_scene);
         self.surface = Some(target.surface);
+
+        // What the UI claimed, read from the context after the frame is laid
+        // out, so a game control can decide whether to act on the same frame's
+        // input. Written every frame the UI draws.
+        publish_capture(world, &self.ctx);
     }
 
     fn scene(&self) -> &Scene {
@@ -379,6 +393,23 @@ impl FrameSource for UiSource {
     fn order(&self) -> FrameOrder {
         FrameOrder::OVERLAY
     }
+}
+
+/// Publish what the UI claimed this frame as an [`InputCapture`] resource.
+///
+/// The resource is looked up by type, so a world gets one from `spawn_context`
+/// — the frame's own setup — and a caller never has to create it. A world
+/// without one is not an error: the UI still draws, and there is simply
+/// nowhere to report what it claimed.
+fn publish_capture(world: &LocalWorld, ctx: &egui::Context) {
+    let capture = InputCapture {
+        pointer: ctx.egui_wants_pointer_input(),
+        keyboard: ctx.egui_wants_keyboard_input(),
+    };
+    let Some(entity) = world.query::<&InputCapture>().next().map(|(e, _)| e) else {
+        return;
+    };
+    let _ = world.with_mut::<InputCapture, _>(entity, |slot| *slot = capture);
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.
@@ -420,7 +451,7 @@ fn global_group(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::cell::Cell;
+    use core::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
@@ -559,5 +590,190 @@ mod tests {
     fn a_fresh_source_declares_the_overlay_order() {
         let source = UiSource::new();
         assert_eq!(source.order(), FrameOrder::OVERLAY);
+    }
+
+    /// The frame's events reach the panels.
+    ///
+    /// A panel that records the events egui gave it proves the `InputState`
+    /// resource was read and translated, not merely looked up.
+    #[test]
+    fn the_frame_events_reach_the_panels() {
+        let (mut world, ctx) = test_world();
+        assert!(set_frame_target(&world, test_target()));
+
+        let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
+        let recorded = Rc::clone(&seen);
+        world.spawn((UiPanel::new(move |_world, _entity, ui| {
+            // egui's own input state is what a widget reads; the raw events are
+            // not exposed to a panel, so this asserts on the effect instead: a
+            // typed character must land in the text a focused field sees.
+            ui.text_edit_singleline(&mut String::new());
+            let pressed = ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .filter_map(|event| match event {
+                        egui::Event::Text(text) => Some(text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            });
+            recorded.borrow_mut().extend(pressed);
+        }),));
+
+        // The pointer and a typed key arrive in the world's own event types.
+        let input = world.spawn((unlit_ecs::Resource, InputState::default()));
+        let _ = world.with_mut::<InputState, _>(input, |state| {
+            state.set_size_px(128, 96);
+            state.push(crate::input::InputEvent::Text(crate::input::TextEvent(
+                "hi".to_string(),
+            )));
+        });
+
+        let mut source = UiSource::new();
+        let mut encoder = encoder(&world, ctx);
+        // Two frames: egui only lays a text field out once it knows its fonts.
+        // The caller clears the events between frames, which is what keeps a
+        // frame's text from being delivered twice.
+        source.build_scene(&world, ctx, &mut encoder);
+        let _ = world.with_mut::<InputState, _>(input, |state| state.clear_events());
+        source.build_scene(&world, ctx, &mut encoder);
+
+        assert_eq!(
+            &*seen.borrow(),
+            &["hi".to_string()],
+            "the frame's text event reached the panel's egui input, once"
+        );
+    }
+
+    /// A pointer event becomes a click a panel can see.
+    ///
+    /// The whole chain is exercised: the world's event, its translation, and
+    /// egui's own hit testing on a widget the panel painted.
+    #[test]
+    fn a_pointer_click_reaches_a_widget() {
+        /// Where the button is, in points.
+        fn button() -> egui::Rect {
+            egui::Rect::from_min_size(egui::Pos2::new(8.0, 8.0), egui::Vec2::new(48.0, 24.0))
+        }
+        let clicked = Rc::new(Cell::new(false));
+
+        let (mut world, ctx) = test_world();
+        assert!(set_frame_target(&world, test_target()));
+        let flag = Rc::clone(&clicked);
+        world.spawn((UiPanel::new(move |_world, _entity, ui| {
+            // A real widget, so the click has to come through egui's own hit
+            // testing rather than a hand-rolled rectangle test.
+            let response = ui.allocate_rect(button(), egui::Sense::click());
+            if response.clicked() {
+                flag.set(true);
+            }
+        }),));
+
+        let input = world.spawn((unlit_ecs::Resource, InputState::default()));
+        let _ = world.with_mut::<InputState, _>(input, |state| state.set_size_px(128, 96));
+
+        let mut source = UiSource::new();
+        let mut encoder = encoder(&world, ctx);
+        // The first frame lays the widget out and knows its fonts; nothing is
+        // clicked yet because no input has arrived.
+        source.build_scene(&world, ctx, &mut encoder);
+        assert!(!clicked.get(), "nothing is clicked before any input");
+
+        // The pointer arrives over the button and presses and releases there,
+        // in *physical* pixels at a density of one, so points and pixels
+        // coincide. A click is complete within the frame egui sees it, which
+        // is how a fast click looks to a frame loop.
+        let _ = world.with_mut::<InputState, _>(input, |state| {
+            let centre = [button().center().x, button().center().y];
+            for event in [
+                crate::input::PointerEvent::Moved { position: centre },
+                crate::input::PointerEvent::Button {
+                    position: centre,
+                    button: crate::input::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: crate::input::Modifiers::default(),
+                },
+                crate::input::PointerEvent::Button {
+                    position: centre,
+                    button: crate::input::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: crate::input::Modifiers::default(),
+                },
+            ] {
+                state.push(crate::input::InputEvent::Pointer(event));
+            }
+        });
+        source.build_scene(&world, ctx, &mut encoder);
+
+        assert!(
+            clicked.get(),
+            "a press and release inside a widget must click it"
+        );
+    }
+
+    /// What the UI claims is published for the rest of the world to read.
+    #[test]
+    fn the_ui_publishes_what_it_claimed() {
+        let (mut world, ctx) = test_world();
+        assert!(set_frame_target(&world, test_target()));
+        // A widget the pointer is over wants the pointer, which is what makes
+        // the claim observable at all.
+        world.spawn((UiPanel::new(|_world, _entity, ui| {
+            let _ = ui.allocate_rect(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(64.0)),
+                egui::Sense::click(),
+            );
+        }),));
+
+        let input = world.spawn((unlit_ecs::Resource, InputState::default()));
+        let _ = world.with_mut::<InputState, _>(input, |state| {
+            state.set_size_px(128, 96);
+            state.push(crate::input::InputEvent::Pointer(
+                crate::input::PointerEvent::Moved {
+                    position: [16.0, 16.0],
+                },
+            ));
+        });
+
+        let mut source = UiSource::new();
+        let mut encoder = encoder(&world, ctx);
+        source.build_scene(&world, ctx, &mut encoder);
+        // The claim describes the frame just laid out, so a second frame makes
+        // the first one's answer readable.
+        source.build_scene(&world, ctx, &mut encoder);
+
+        let capture = world
+            .query::<&InputCapture>()
+            .next()
+            .map(|(_, capture)| *capture)
+            .expect("the frame context spawns a capture resource");
+        assert!(
+            capture.pointer,
+            "a widget under the pointer claims it: {capture:?}"
+        );
+        assert!(capture.any());
+    }
+
+    /// Without an event source the UI still draws, with an idle frame.
+    #[test]
+    fn a_world_without_input_state_draws_an_idle_frame() {
+        let (mut world, ctx) = test_world();
+        assert!(set_frame_target(&world, test_target()));
+        world.spawn((UiPanel::new(|_world, _entity, ui| {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
+                0.0,
+                egui::Color32::RED,
+            );
+        }),));
+
+        let mut source = UiSource::new();
+        let mut encoder = encoder(&world, ctx);
+        source.build_scene(&world, ctx, &mut encoder);
+        assert!(
+            !source.scene().is_empty(),
+            "a panel draws with no input in the world"
+        );
     }
 }
