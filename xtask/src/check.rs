@@ -1,5 +1,7 @@
 //! `cargo xtask check`: clippy over the workspace, then a formatting check.
 
+use crate::step;
+
 /// Run clippy over every workspace target, then check formatting.
 ///
 /// Clippy first: its warnings and the diagnostics it raises may leave the
@@ -10,25 +12,11 @@ pub fn run(release: bool) -> Result<(), String> {
     clippy
         .args(["clippy", "--workspace", "--all-targets", "--all-features"])
         .args(profile);
-    run_step(&mut clippy, "clippy")?;
+    step::run(&mut clippy, "clippy")?;
 
     let mut fmt = std::process::Command::new("cargo");
     fmt.args(["fmt", "--all", "--", "--check"]);
-    run_step(&mut fmt, "fmt")?;
+    step::run(&mut fmt, "fmt")?;
 
     Ok(())
-}
-
-/// Run `command`, reporting the step that failed.
-fn run_step(command: &mut std::process::Command, step: &str) -> Result<(), String> {
-    let status = command
-        .status()
-        .map_err(|error| format!("running {step}: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{step} failed; fix the diagnostics above and run again"
-        ))
-    }
 }

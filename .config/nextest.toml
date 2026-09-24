@@ -1,0 +1,11 @@
+# Test runner configuration for `cargo nextest`.
+#
+# `cargo xtask test` is how the workspace's tests are run; it calls nextest for
+# the unit and integration tests, then `cargo test --doc` for the doctests
+# nextest does not cover.
+
+[profile.default]
+# Keep going after the first failure instead of cancelling the run. Nextest's
+# default cancels the rest, and since every GPU test builds its own device, one
+# early failure would otherwise hide every failure behind it.
+fail-fast = false

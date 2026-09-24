@@ -4,6 +4,7 @@
 //! reaches for day to day:
 //!
 //! * `cargo xtask check` — clippy and fmt, the bar a commit is held to.
+//! * `cargo xtask test` — the test suite, through nextest.
 //! * `cargo xtask run-wasm` — build and serve the web example.
 //!
 //! The crate is not a workspace member; it is wired up through the `xtask`
@@ -13,6 +14,8 @@
 mod check;
 mod http;
 mod run_wasm;
+mod step;
+mod test;
 
 use argh::FromArgs;
 
@@ -27,6 +30,7 @@ fn run() -> Result<(), String> {
     let args: Args = argh::from_env();
     match args.task {
         Task::Check(task) => check::run(task.release),
+        Task::Test(task) => test::run(task.release),
         Task::RunWasm(task) => run_wasm::run(&task),
     }
 }
@@ -48,6 +52,8 @@ struct Args {
 enum Task {
     /// Run clippy over the whole workspace, then check formatting.
     Check(CheckArgs),
+    /// Run the workspace's tests.
+    Test(TestArgs),
     /// Build and serve the web example.
     RunWasm(RunWasmArgs),
 }
@@ -60,6 +66,19 @@ enum Task {
     description = "run clippy over the whole workspace, then check formatting"
 )]
 struct CheckArgs {
+    /// build in release mode.
+    #[argh(switch)]
+    release: bool,
+}
+
+/// Arguments of `cargo xtask test`.
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "test",
+    description = "run the workspace's tests through nextest, then the doctests"
+)]
+struct TestArgs {
     /// build in release mode.
     #[argh(switch)]
     release: bool,

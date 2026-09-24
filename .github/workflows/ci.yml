@@ -80,8 +80,17 @@ jobs:
       - name: Build ${{matrix.os}}
         run: cargo build --workspace --all-targets
 
+      # `cargo xtask test` runs nextest over the unit and integration tests,
+      # then `cargo test --doc` for the doctests nextest does not cover. The
+      # same command a contributor runs, so CI cannot drift from it.
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.23.0
+
+      - name: Install cargo-nextest
+        run: cargo binstall --no-confirm cargo-nextest
+
       - name: Test ${{matrix.os}}
-        run: cargo test --workspace --all-targets --all-features
+        run: cargo xtask test
 
       - name: Doc
         run: cargo doc --workspace --no-deps --document-private-items --keep-going
