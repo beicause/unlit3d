@@ -1,4 +1,4 @@
-//! The renderer's mesh description.
+//! The mesh description.
 //!
 //! A [`MeshDesc`] says what a mesh is in wgpu's own terms: vertex buffers
 //! tagged with the slot a pipeline's vertex state expects them in, an optional
@@ -30,8 +30,8 @@ pub struct VertexBufferDesc {
 
 /// Geometry to upload, described the way wgpu describes it.
 ///
-/// [`crate::Renderer::allocate_mesh`] takes one of these and returns a
-/// [`crate::GpuMesh`] handle. The buffers are moved into the renderer's
+/// [`crate::MeshSource::allocate_mesh`] takes one of these and returns a
+/// [`crate::GpuMesh`] handle. The buffers are moved into the source's
 /// resource graph, so the caller hands over ownership.
 #[derive(Clone, Debug, Default)]
 pub struct MeshDesc {

@@ -1,14 +1,16 @@
 //! Shared harness for unlit3d GPU integration tests.
 //!
-//! Re-exports general GPU test helpers and adds crate-specific
-//! helpers tailored to the `unlit3d` ECS-based rendering API.
+//! Re-exports general GPU test helpers and adds crate-specific helpers
+//! tailored to the `unlit3d` ECS-based rendering API.
 
 pub use wgpu_unlit_test_util::{
     Ctx, Frame, assert_image_snapshot, count_pixels_off_background, read_texture_bytes, texel_bytes,
 };
 
-use unlit_ecs::LocalWorld;
+use core::ops::DerefMut;
+use unlit_ecs::{Entity, LocalWorld, Resource};
 use unlit3d::prelude::*;
+use wgpu_unlit_render::resources::{Resource as GraphResource, ResourceGraph, ResourceId};
 
 /// Test constants matching what `wgpu_unlit_render`'s own tests use.
 pub const WIDTH: u32 = 256;
@@ -16,24 +18,187 @@ pub const HEIGHT: u32 = 192;
 pub const CLEAR: [f64; 3] = [0.05, 0.05, 0.08];
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// Create a `(Renderer, LocalWorld, UnlitPipelineKey)` triplet ready for
-/// testing.
+/// The frame's GPU context, its mesh source and its frame driver, spawned into
+/// a world the caller owns.
 ///
-/// The returned [UnlitPipelineKey] is the built-in unlit family's key; every
-/// renderable entity must carry an [UnlitPipeline] built from it.
-pub fn test_world(ctx: &Ctx) -> (Renderer, LocalWorld, UnlitPipelineKey) {
-    let (renderer, key) = create_renderer(ctx);
-    let world = LocalWorld::new();
-    (renderer, world, key)
+/// Keeping the handles apart from the [`LocalWorld`] is what lets a test spawn
+/// entities and allocate meshes in the same scope: the helpers borrow the world
+/// shared, so a `&mut world` stays free for structural changes.
+pub struct TestGpu {
+    /// The world addresses of the frame's device, queue and resource graph.
+    pub context: RenderContext,
+    /// The [`Renderer`] resource entity, driven by [`Self::render`].
+    pub renderer: Entity,
+    /// The [`MeshSource`] entity the mesh helpers allocate through.
+    pub source: Entity,
+    /// The built-in unlit family's key; every renderable entity carries an
+    /// [`UnlitPipeline`] built from it.
+    pub key: UnlitPipelineKey,
 }
 
-/// Build a `Renderer` on `ctx`'s device with the built-in unlit family
-/// registered, plus a standard key to draw with.
-pub fn create_renderer(ctx: &Ctx) -> (Renderer, UnlitPipelineKey) {
-    let mut renderer = Renderer::new(ctx.device.clone(), ctx.queue.clone());
-    renderer.register_unlit_family();
-    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
-    (renderer, key)
+impl TestGpu {
+    /// Spawn the frame's context, a mesh source with the built-in unlit family
+    /// registered, and the frame driver into `world`.
+    pub fn new(world: &mut LocalWorld, ctx: &Ctx) -> Self {
+        let context = spawn_context(
+            world,
+            ctx.device.clone(),
+            ctx.queue.clone(),
+            ResourceGraph::new(),
+        );
+        let mut source = MeshSource::new(world, context);
+        source.register_unlit_family(world);
+        let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+        let source = spawn_source(world, source);
+        let renderer = world.spawn((Resource, Renderer::new(context)));
+        Self {
+            context,
+            renderer,
+            source,
+            key,
+        }
+    }
+
+    /// Run `f` on the mesh source.
+    pub fn with_mesh_source<R>(
+        &self,
+        world: &LocalWorld,
+        f: impl FnOnce(&mut MeshSource, &LocalWorld) -> R,
+    ) -> R {
+        let mut source = world
+            .get_mut::<Source>(self.source)
+            .expect("the source entity exists");
+        let mesh = source
+            .as_mut::<MeshSource>()
+            .expect("the source is a MeshSource");
+        f(mesh, world)
+    }
+
+    /// Run `f` on the frame driver.
+    pub fn with_renderer<R>(
+        &self,
+        world: &LocalWorld,
+        f: impl FnOnce(&mut Renderer, &LocalWorld) -> R,
+    ) -> R {
+        world
+            .with_mut::<Renderer, _>(self.renderer, |renderer| f(renderer, world))
+            .expect("the renderer entity exists")
+    }
+
+    /// The frame's resource graph.
+    pub fn graph<'w>(&self, world: &'w LocalWorld) -> impl DerefMut<Target = ResourceGraph> + 'w {
+        world
+            .get_mut::<ResourceGraph>(self.context.graph)
+            .expect("the context's graph exists")
+    }
+
+    /// Allocate a cube mesh through the source.
+    pub fn allocate_cube_mesh(&self, world: &LocalWorld) -> GpuMesh {
+        self.allocate_offset_cube_mesh(world, glam::Vec3::ZERO)
+    }
+
+    /// Allocate a cube mesh whose vertices are offset by `offset` in mesh
+    /// space, returning the `GpuMesh` handle.
+    ///
+    /// The offset is baked into the vertices, so two cubes allocated from
+    /// different offsets draw differently even at the same transform — which is
+    /// what tells a mesh apart from the one whose pool range it sits next to.
+    pub fn allocate_offset_cube_mesh(&self, world: &LocalWorld, offset: glam::Vec3) -> GpuMesh {
+        let (positions, uvs, colors, indices) = cube();
+        let positions = positions
+            .into_iter()
+            .map(|position| {
+                [
+                    position[0] + offset.x,
+                    position[1] + offset.y,
+                    position[2] + offset.z,
+                ]
+            })
+            .collect::<Vec<_>>();
+        self.with_mesh_source(world, |source, world| {
+            source.allocate_unlit_mesh(
+                world,
+                &self.key,
+                &positions,
+                Some(&uvs),
+                Some(&colors),
+                Some(&indices),
+            )
+        })
+    }
+
+    /// Allocate a dense grid of cubes through the source, returning the
+    /// `GpuMesh` handle.
+    ///
+    /// `steps` cubes per axis means `steps³` cubes, which is what makes a pool
+    /// grow inside a test.
+    pub fn allocate_grid_cube_mesh(&self, world: &LocalWorld, steps: u32) -> GpuMesh {
+        let (positions, uvs, colors, indices) = grid_cube(steps);
+        self.with_mesh_source(world, |source, world| {
+            source.allocate_unlit_mesh(
+                world,
+                &self.key,
+                &positions,
+                Some(&uvs),
+                Some(&colors),
+                Some(&indices),
+            )
+        })
+    }
+
+    /// Free `mesh` through the source.
+    pub fn remove_mesh(&self, world: &LocalWorld, mesh: GpuMesh) {
+        self.with_mesh_source(world, |source, world| source.remove_mesh(world, mesh));
+    }
+
+    /// Allocate an offscreen colour target and a matching depth-stencil target,
+    /// register their views in the frame's resource graph, and bind them as the
+    /// renderer's render target. Returns the colour texture (for readback).
+    pub fn bind_offscreen_target(&self, world: &LocalWorld, _label: &str) -> wgpu::Texture {
+        use wgpu_unlit_render::render_attachments::create_render_target;
+        let device = world
+            .get::<wgpu::Device>(self.context.device)
+            .expect("the context's device")
+            .clone();
+        let ft = create_render_target(&device, COLOR_FORMAT, WIDTH, HEIGHT, 1);
+        let color_view = self.with_mesh_source(world, |source, world| {
+            source
+                .register_texture_and_default_view(world, ft.color.clone())
+                .1
+        });
+        let depth_view: ResourceId = self
+            .graph(world)
+            .insert_strong(
+                GraphResource::TextureView {
+                    view: ft
+                        .depth
+                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                    format: wgpu_unlit_render::render_attachments::default_depth_stencil_format(
+                        &device,
+                    ),
+                },
+                &[],
+            )
+            .expect("depth view has no dependencies");
+        self.with_renderer(world, |renderer, world| {
+            renderer.set_render_target(world, Some(color_view), Some(depth_view), None);
+        });
+        ft.color
+    }
+
+    /// Bind the offscreen target for `label` and render one frame.
+    ///
+    /// Returns the colour texture the frame was drawn into, ready to read back.
+    pub fn render_to_offscreen(&self, world: &LocalWorld, label: &str) -> wgpu::Texture {
+        let target = self.bind_offscreen_target(world, label);
+        self.render(world);
+        target
+    }
+
+    /// Render one frame from the world.
+    pub fn render(&self, world: &LocalWorld) {
+        self.with_renderer(world, |renderer, world| renderer.render(world));
+    }
 }
 
 /// Unlit options for the ECS tests: vertex colour + instance, no texture,
@@ -168,66 +333,4 @@ pub fn grid_cube(steps: u32) -> RawMesh {
     }
 
     (positions, uvs, colors, indices)
-}
-
-/// Allocate the cube mesh through the renderer for `key` and return a
-/// `GpuMesh` handle.
-pub fn allocate_cube_mesh(r: &mut Renderer, key: &UnlitPipelineKey) -> GpuMesh {
-    allocate_offset_cube_mesh(r, key, glam::Vec3::ZERO)
-}
-
-/// Allocate a cube mesh whose vertices are offset by `offset` in mesh space,
-/// returning the `GpuMesh` handle.
-///
-/// The offset is baked into the vertices, so two cubes allocated from
-/// different offsets draw differently even at the same transform — which is
-/// what tells a mesh apart from the one whose pool range it sits next to.
-pub fn allocate_offset_cube_mesh(
-    r: &mut Renderer,
-    key: &UnlitPipelineKey,
-    offset: glam::Vec3,
-) -> GpuMesh {
-    let (positions, uvs, colors, indices) = cube();
-    let positions = positions
-        .into_iter()
-        .map(|position| {
-            [
-                position[0] + offset.x,
-                position[1] + offset.y,
-                position[2] + offset.z,
-            ]
-        })
-        .collect::<Vec<_>>();
-    r.allocate_unlit_mesh(key, &positions, Some(&uvs), Some(&colors), Some(&indices))
-}
-
-/// Allocate a dense grid of cubes through the renderer for `key`, returning
-/// the `GpuMesh` handle.
-///
-/// `steps` cubes per axis means `steps³` cubes, which is what makes a pool
-/// grow inside a test.
-pub fn allocate_grid_cube_mesh(r: &mut Renderer, key: &UnlitPipelineKey, steps: u32) -> GpuMesh {
-    let (positions, uvs, colors, indices) = grid_cube(steps);
-    r.allocate_unlit_mesh(key, &positions, Some(&uvs), Some(&colors), Some(&indices))
-}
-
-/// Allocate an offscreen colour target and a matching depth-stencil target,
-/// register their views in `renderer`'s resource graph, and bind them as the
-/// renderer's render target. Returns the colour texture (for readback).
-pub fn bind_offscreen_target(renderer: &mut Renderer, _label: &str) -> wgpu::Texture {
-    use wgpu_unlit_render::render_attachments::create_render_target;
-    let ft = create_render_target(&renderer.device, COLOR_FORMAT, WIDTH, HEIGHT, 1);
-    let color_view = renderer
-        .register_texture_and_default_view(ft.color.clone())
-        .1;
-    let depth_view = renderer
-        .graph
-        .insert_strong(
-            ft.depth
-                .create_view(&wgpu::TextureViewDescriptor::default()),
-            &[],
-        )
-        .expect("depth view has no dependencies");
-    renderer.set_render_target(Some(color_view), Some(depth_view), None);
-    ft.color
 }

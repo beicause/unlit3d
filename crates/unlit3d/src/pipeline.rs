@@ -1,12 +1,12 @@
-//! The renderer's pipeline abstraction.
+//! The frame's pipeline abstraction.
 //!
 //! A [PipelineDesc] is everything the renderer needs to draw with a
 //! wgpu render pipeline: the pipeline itself, the bind-group layouts its
-//! draws agree with, and -- for a pipeline that reads the renderer's own
+//! draws agree with, and -- for a pipeline that reads the source's own
 //! camera, globals or metadata buffers -- a way to rebuild its global bind
 //! group when those buffers change. Nothing here is specific to the built-in
 //! unlit shader: the unlit family is registered through the same
-//! [Renderer::register_family](crate::Renderer::register_family) a caller's
+//! [MeshSource::register_family](crate::MeshSource::register_family) a caller's
 //! own family uses, and supplies its own factory like anyone else.
 //!
 //! # Pipeline keys and families
@@ -48,7 +48,7 @@ use wgpu_unlit_render::specialize::{
 
 use crate::components::GpuMesh;
 
-/// Rebuilds a pipeline's global bind group against the renderer's current
+/// Rebuilds a pipeline's global bind group against the source's current
 /// buffers.
 ///
 /// The renderer calls it whenever a buffer the group was built from is
@@ -60,7 +60,7 @@ use crate::components::GpuMesh;
 /// the world lives on, so no cross-thread bound is needed.
 pub type GlobalGroupRebuild = Arc<dyn Fn(&RenderResources) -> wgpu::BindGroup>;
 
-/// The renderer's global buffers, as a rebuild closure sees them.
+/// The source's global buffers, as a rebuild closure sees them.
 ///
 /// These are the buffers every pipeline can rely on the renderer keeping
 /// up to date: the camera uniform, the frame globals and the mesh-metadata
@@ -86,7 +86,7 @@ pub struct PipelineDesc {
 
     /// The bind group bound at
     /// [GLOBAL_GROUP](wgpu_unlit_render::pipeline::GLOBAL_GROUP), together
-    /// with how to rebuild it when the renderer's buffers change.
+    /// with how to rebuild it when the source's buffers change.
     ///
     /// None for a pipeline that binds nothing at that index -- a shader
     /// with no uniform or storage inputs, say.
@@ -121,7 +121,7 @@ impl core::fmt::Debug for PipelineDesc {
 pub struct GlobalBinding {
     /// The bind group bound for this pipeline's draws.
     pub bind_group: wgpu::BindGroup,
-    /// Rebuilds [GlobalBinding::bind_group] from the renderer's current
+    /// Rebuilds [GlobalBinding::bind_group] from the source's current
     /// buffers after one of them is replaced.
     pub rebuild: GlobalGroupRebuild,
 }
@@ -137,17 +137,17 @@ impl core::fmt::Debug for GlobalBinding {
 /// The resource id a registered pipeline's global group lives under.
 #[derive(Clone)]
 pub(crate) struct RegisteredGlobal {
-    /// The id in the renderer's resource graph.
+    /// The id in the source's resource graph.
     pub(crate) id: ResourceId,
     /// How to rebuild the group.
     pub(crate) rebuild: GlobalGroupRebuild,
 }
 
-/// What a [PipelineFactory] may read from the renderer.
+/// What a [PipelineFactory] may read from the source.
 pub struct FamilyContext<'a> {
     /// The device the pipeline is compiled on.
     pub device: &'a wgpu::Device,
-    /// The renderer's global buffers, for a pipeline that binds them.
+    /// The source's global buffers, for a pipeline that binds them.
     pub resources: &'a RenderResources,
 }
 
@@ -192,7 +192,7 @@ impl DrawKey {
     }
 }
 
-/// A concrete pipeline's position in a renderer's own pipeline list.
+/// A concrete pipeline's position in a source's own pipeline list.
 ///
 /// A lower value draws before a higher one. Opaque so the index is only ever
 /// compared with another [PipelineId], never a plain integer.
@@ -205,7 +205,7 @@ impl PipelineId {
         Self(index)
     }
 
-    /// The id as a `usize`, for indexing the renderer's pipeline list.
+    /// The id as a `usize`, for indexing the source's pipeline list.
     pub(crate) fn as_usize(self) -> usize {
         self.0 as usize
     }

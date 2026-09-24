@@ -17,16 +17,12 @@ use unlit3d::prelude::*;
 #[test]
 fn ecs_cube_covers_the_frame() {
     let ctx = Ctx::headless();
-    let (renderer, mut world, key) = test_world(&ctx);
+    let mut world = LocalWorld::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let key = gpu.key.clone();
 
-    // Spawn the renderer as a resource entity.
-    let mut renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
-    let renderer = &mut renderer_entity;
-
-    // Upload a cube mesh through the renderer.
-    let mesh = world
-        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
-        .unwrap();
+    // Upload a cube mesh through the source.
+    let mesh = gpu.allocate_cube_mesh(&world);
 
     // Dedicated camera entity, then the renderable entity. The mesh carries
     // its own AABB now, so no bounding component is needed.
@@ -42,13 +38,7 @@ fn ecs_cube_covers_the_frame() {
     ));
 
     // Render offscreen.
-    let target = world
-        .with_mut::<Renderer, _>(*renderer, |r| {
-            let target = bind_offscreen_target(r, "test::ecs_cube");
-            r.render(&world);
-            target
-        })
-        .expect("renderer is a resource entity");
+    let target = gpu.render_to_offscreen(&world, "test::ecs_cube");
 
     // Read back and check.
     let frame = Frame {
@@ -71,20 +61,15 @@ fn ecs_cube_covers_the_frame() {
 #[test]
 fn ecs_depth_ordering_hides_the_far_instance() {
     let ctx = Ctx::headless();
-    let (renderer, mut world, key) = test_world(&ctx);
-
-    let mut renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
-    let renderer = &mut renderer_entity;
+    let mut world = LocalWorld::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let key = gpu.key.clone();
 
     // Dedicated camera entity.
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
-    let mesh_far = world
-        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
-        .unwrap();
-    let mesh_near = world
-        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
-        .unwrap();
+    let mesh_far = gpu.allocate_cube_mesh(&world);
+    let mesh_near = gpu.allocate_cube_mesh(&world);
 
     // Far cube, red.
     world.spawn((
@@ -110,13 +95,7 @@ fn ecs_depth_ordering_hides_the_far_instance() {
         UnlitPipeline::new(key.clone()),
     ));
 
-    let target = world
-        .with_mut::<Renderer, _>(*renderer, |r| {
-            let target = bind_offscreen_target(r, "test::depth");
-            r.render(&world);
-            target
-        })
-        .expect("renderer is a resource entity");
+    let target = gpu.render_to_offscreen(&world, "test::depth");
 
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
@@ -141,31 +120,31 @@ fn ecs_depth_ordering_hides_the_far_instance() {
 #[test]
 fn removing_a_mesh_leaves_no_resource_behind() {
     let ctx = Ctx::headless();
-    let (mut renderer, key) = create_renderer(&ctx);
+    let mut world = LocalWorld::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
 
     // A first mesh warms up any lazily created global state, so the second
     // mesh's resources are the only difference measured below.
-    let baseline_mesh = allocate_cube_mesh(&mut renderer, &key);
-    let baseline = renderer.graph.len();
+    let baseline_mesh = gpu.allocate_cube_mesh(&world);
+    let baseline = gpu.graph(&world).len();
 
-    let mesh = allocate_cube_mesh(&mut renderer, &key);
+    let mesh = gpu.allocate_cube_mesh(&world);
     assert!(
-        renderer.graph.len() > baseline,
+        gpu.graph(&world).len() > baseline,
         "allocating a mesh should add resources"
     );
 
-    renderer.remove_mesh(mesh);
+    gpu.remove_mesh(&world, mesh);
 
     assert_eq!(
-        renderer.graph.len(),
+        gpu.graph(&world).len(),
         baseline,
         "remove_mesh should free the mesh's buffers, its bind group and the \
          orphaned mesh-info uniform"
     );
-    // The warmed-up mesh and the renderer's own resources are untouched.
+    // The warmed-up mesh and the source's own resources are untouched.
     assert!(
-        renderer
-            .graph
+        gpu.graph(&world)
             .get_buffer(baseline_mesh.vertex_buffers[0].1)
             .is_some()
     );
@@ -186,10 +165,9 @@ fn removing_a_mesh_leaves_no_resource_behind() {
 #[test]
 fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let ctx = Ctx::headless();
-    let (renderer, mut world, key) = test_world(&ctx);
-
-    let mut renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
-    let renderer = &mut renderer_entity;
+    let mut world = LocalWorld::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let key = gpu.key.clone();
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     // A cube fills a roughly square block of the frame, and the replacement
@@ -200,14 +178,8 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     // the replacement draw from ranges that do not start at zero. Its vertices
     // are offset, so a draw that read the placeholder's range would paint a
     // different shape at the probes below rather than the same one twice.
-    world
-        .with_mut::<Renderer, _>(*renderer, |r| {
-            allocate_offset_cube_mesh(r, &key, glam::Vec3::splat(10.0))
-        })
-        .unwrap();
-    let cube = world
-        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
-        .unwrap();
+    gpu.allocate_offset_cube_mesh(&world, glam::Vec3::splat(10.0));
+    let cube = gpu.allocate_cube_mesh(&world);
     let cube_entity = world.spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
@@ -218,13 +190,7 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         UnlitPipeline::new(key.clone()),
     ));
 
-    let target = world
-        .with_mut::<Renderer, _>(*renderer, |r| {
-            let target = bind_offscreen_target(r, "test::reused_range::before");
-            r.render(&world);
-            target
-        })
-        .expect("renderer is a resource entity");
+    let target = gpu.render_to_offscreen(&world, "test::reused_range::before");
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
         width: WIDTH,
@@ -239,17 +205,13 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         .expect("the cube carries a mesh")
         .clone();
     assert!(world.despawn(cube_entity));
-    world
-        .with_mut::<Renderer, _>(*renderer, move |r| r.remove_mesh(cube))
-        .expect("renderer is a resource entity");
+    gpu.remove_mesh(&world, cube);
 
     // The replacement takes the ranges the cube vacated — one allocation per
     // pool — and draws at the spot the cube drew at, tinted pure red through
     // its per-instance colour so the pixel the cube used to own can only come
     // from the replacement's own data.
-    let replacement = world
-        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
-        .unwrap();
+    let replacement = gpu.allocate_cube_mesh(&world);
     world.spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
@@ -261,13 +223,7 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         UnlitPipeline::new(key),
     ));
 
-    let target = world
-        .with_mut::<Renderer, _>(*renderer, |r| {
-            let target = bind_offscreen_target(r, "test::reused_range::after");
-            r.render(&world);
-            target
-        })
-        .expect("renderer is a resource entity");
+    let target = gpu.render_to_offscreen(&world, "test::reused_range::after");
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
         width: WIDTH,
@@ -311,17 +267,14 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 #[test]
 fn meshes_allocated_across_frames_survive_pool_growth() {
     let ctx = Ctx::headless();
-    let (renderer, mut world, key) = test_world(&ctx);
-
-    let mut renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
-    let renderer = &mut renderer_entity;
+    let mut world = LocalWorld::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let key = gpu.key.clone();
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     // The first mesh draws at the centre of the frame and never moves, so the
     // pixel there is its own as long as its data survives every grow.
-    let first = world
-        .with_mut::<Renderer, _>(*renderer, |r| allocate_cube_mesh(r, &key))
-        .unwrap();
+    let first = gpu.allocate_cube_mesh(&world);
     world.spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
@@ -334,11 +287,7 @@ fn meshes_allocated_across_frames_survive_pool_growth() {
 
     // A grid cube apiece: the first is small enough for the pools as created,
     // and every later one is large enough to force a grow.
-    let grids: [GpuMesh; 3] = std::array::from_fn(|_| {
-        world
-            .with_mut::<Renderer, _>(*renderer, |r| allocate_grid_cube_mesh(r, &key, 4))
-            .unwrap()
-    });
+    let grids: [GpuMesh; 3] = std::array::from_fn(|_| gpu.allocate_grid_cube_mesh(&world, 4));
     for (frame_index, mesh) in grids.into_iter().enumerate() {
         world.spawn((
             Transform {
@@ -350,13 +299,7 @@ fn meshes_allocated_across_frames_survive_pool_growth() {
             UnlitPipeline::new(key.clone()),
         ));
 
-        let target = world
-            .with_mut::<Renderer, _>(*renderer, |r| {
-                let target = bind_offscreen_target(r, "test::pool_growth");
-                r.render(&world);
-                target
-            })
-            .expect("renderer is a resource entity");
+        let target = gpu.render_to_offscreen(&world, "test::pool_growth");
         let frame = Frame {
             rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
             width: WIDTH,

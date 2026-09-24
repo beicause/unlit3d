@@ -22,6 +22,7 @@ use std::time::Instant;
 use unlit3d::prelude::*;
 use unlit3d::winit::WindowSurface;
 use wgpu_unlit_render::pipeline::UnlitOptions;
+use wgpu_unlit_render::resources::ResourceGraph;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -291,7 +292,7 @@ impl ApplicationHandler<UserEvent> for App {
                     (&scene.world, scene.renderer, &mut scene.window_surface);
                 world
                     .with_mut::<Renderer, _>(renderer, |r| {
-                        window_surface.resize(r, size.width, size.height);
+                        window_surface.resize(world, r, size.width, size.height);
                     })
                     .expect("the renderer is a resource entity");
             }
@@ -323,44 +324,54 @@ impl Scene {
             surface,
         } = gpu;
 
-        // The renderer, spawned as a resource entity with the built-in unlit
-        // family registered. Every renderable entity carries a key built from
-        // the same options.
+        // The frame's GPU context, the built-in mesh source and the frame
+        // driver, all as resource entities. Every renderable entity carries a
+        // key built from the source's options.
         let mut world = LocalWorld::new();
-        let renderer = world.spawn((Resource, Renderer::new(device, queue)));
-        let key = world
-            .with_mut::<Renderer, _>(renderer, |r| {
-                r.register_unlit_family();
-                UnlitPipelineKey::new(UnlitOptions::standard(&r.device))
-            })
-            .expect("the renderer is a resource entity");
+        let context = spawn_context(&mut world, device, queue, ResourceGraph::new());
+        let mut source = MeshSource::new(&world, context);
+        source.register_unlit_family(&world);
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world)));
+        let source_entity = spawn_source(&mut world, source);
+        let renderer = world.spawn((Resource, Renderer::new(context)));
 
         // Geometry, its base-color texture and its material, all allocated
-        // through the renderer so they live in its resource graph.
-        let mesh = world
-            .with_mut::<Renderer, _>(renderer, |r| {
+        // through the mesh source so they live in the frame's resource graph.
+        let (mesh, material) = world
+            .with_mut::<Source, _>(source_entity, |source| {
+                let source = source
+                    .as_mut::<MeshSource>()
+                    .expect("the source entity carries a MeshSource");
                 let (positions, uvs, colors, indices) = cube();
-                r.allocate_unlit_mesh(&key, &positions, Some(&uvs), Some(&colors), Some(&indices))
-            })
-            .expect("the renderer is a resource entity");
-        let material = world
-            .with_mut::<Renderer, _>(renderer, |r| {
-                let texture = checkerboard(&r.device, &r.queue, 64);
-                let view = r.register_texture_and_default_view(texture).1;
+                let mesh = source.allocate_unlit_mesh(
+                    &world,
+                    &key,
+                    &positions,
+                    Some(&uvs),
+                    Some(&colors),
+                    Some(&indices),
+                );
+                let texture = checkerboard(&source.device(&world), &source.queue(&world), 64);
+                let view = source.register_texture_and_default_view(&world, texture).1;
                 // Linear filtering: the checkerboard is a high-frequency
                 // pattern, and point sampling it under minification aliases
                 // into moire on the faces the camera sees at a glancing angle.
-                let sampler = r.register_sampler(Some(wgpu::SamplerDescriptor {
-                    mag_filter: wgpu::FilterMode::Linear,
-                    min_filter: wgpu::FilterMode::Linear,
-                    mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                    anisotropy_clamp: 4,
-                    ..Default::default()
-                }));
-                r.allocate_unlit_material(&key, view, sampler)
+                let sampler = source.register_sampler(
+                    &world,
+                    Some(wgpu::SamplerDescriptor {
+                        mag_filter: wgpu::FilterMode::Linear,
+                        min_filter: wgpu::FilterMode::Linear,
+                        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                        anisotropy_clamp: 4,
+                        ..Default::default()
+                    }),
+                );
+                let material = source
+                    .allocate_unlit_material(&world, &key, view, sampler)
+                    .expect("the standard options read a base-color texture");
+                (mesh, material)
             })
-            .expect("the renderer is a resource entity")
-            .expect("the standard options read a base-color texture");
+            .expect("the source entity exists");
 
         // The camera the frame is viewed from, and the cube itself. A frame
         // with no RenderLoadOps component is opened with the defaults, so the
@@ -379,7 +390,15 @@ impl Scene {
 
         let window_surface = world
             .with_mut::<Renderer, _>(renderer, |r| {
-                WindowSurface::new(r, &instance, &adapter, window, surface, SAMPLE_COUNT)
+                WindowSurface::new(
+                    &world,
+                    r,
+                    &instance,
+                    &adapter,
+                    window,
+                    surface,
+                    SAMPLE_COUNT,
+                )
             })
             .expect("the renderer is a resource entity");
 
@@ -413,11 +432,14 @@ impl Scene {
             (&self.world, self.renderer, &mut self.window_surface);
         world
             .with_mut::<Renderer, _>(renderer, |r| {
-                let Some(frame) = window_surface.acquire(r) else {
+                let Some(frame) = window_surface.acquire(world, r) else {
                     return;
                 };
                 r.render(world);
-                frame.present(&r.queue);
+                let queue = world
+                    .get::<wgpu::Queue>(r.context().queue)
+                    .expect("the queue resource");
+                frame.present(&queue);
             })
             .expect("the renderer is a resource entity");
     }

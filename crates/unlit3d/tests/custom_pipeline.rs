@@ -308,44 +308,43 @@ fn a_custom_pipeline_draws_through_the_ecs() {
 
     let ctx = Ctx::headless();
 
-    // A renderer with no unlit family at all: the only family is ours.
+    // A source with no unlit family at all: the only family is ours.
     let mut world = unlit_ecs::LocalWorld::new();
-    let renderer = world.spawn((
-        unlit_ecs::Resource,
-        Renderer::new(ctx.device.clone(), ctx.queue.clone()),
-    ));
+    let gpu = TestGpu::new(&mut world, &ctx);
 
     // Register the hand-written pipeline as a family that specializes on
     // nothing, so exactly one concrete pipeline is compiled. The entity's key
     // carries the one shared descriptor the family compiles.
-    let pipeline = world.with_mut::<Renderer, _>(renderer, |r| {
-        let key = CustomPipelineKey::new(custom_pipeline(&r.device));
-        r.register_family::<CustomPipelineKey, _, _, _>(
+    let (pipeline, mesh) = gpu.with_mesh_source(&world, |source, world| {
+        let device = source.device(world);
+        let queue = source.queue(world);
+        let key = CustomPipelineKey::new(custom_pipeline(&device));
+        source.register_family::<CustomPipelineKey, _, _, _>(
+            world,
             TrivialSpecializer::default(),
             RenderPipelineFactory,
         );
-        GpuPipeline::new(key)
-    });
+        let pipeline = GpuPipeline::new(key);
 
-    // Upload the triangle as one interleaved vertex buffer in slot 0.
-    let mesh = world.with_mut::<Renderer, _>(renderer, |r| {
-        let buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
+        // Upload the triangle as one interleaved vertex buffer in slot 0.
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("test::custom::vertices"),
             size: core::mem::size_of_val(&TRIANGLE) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        r.queue.write_buffer(&buffer, 0, TRIANGLE.as_bytes());
-        r.allocate_mesh(MeshDesc {
-            vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
-                .expect("one buffer fits"),
-            count: TRIANGLE.len() as u32,
-            ..Default::default()
-        })
+        queue.write_buffer(&buffer, 0, TRIANGLE.as_bytes());
+        let mesh = source.allocate_mesh(
+            world,
+            MeshDesc {
+                vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
+                    .expect("one buffer fits"),
+                count: TRIANGLE.len() as u32,
+                ..Default::default()
+            },
+        );
+        (pipeline, mesh)
     });
-
-    let mesh = mesh.expect("renderer entity exists");
-    let pipeline = pipeline.expect("renderer entity exists");
 
     // The renderer still wants a camera to derive its uniforms from; nothing
     // in the custom pipeline reads them, but the frame is only drawn when one
@@ -355,13 +354,7 @@ fn a_custom_pipeline_draws_through_the_ecs() {
 
     // A draw the pipeline is built for must be valid, so the draw is left to
     // wgpu's default error handling: anything it reports panics the test.
-    let target = world
-        .with_mut::<Renderer, _>(renderer, |r| {
-            let target = bind_offscreen_target(r, "test::custom");
-            r.render(&world);
-            target
-        })
-        .expect("renderer is a resource entity");
+    let target = gpu.render_to_offscreen(&world, "test::custom");
 
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
@@ -397,10 +390,7 @@ fn a_custom_pipeline_draws_through_the_ecs() {
 fn one_pipeline_draws_many_meshes() {
     let ctx = Ctx::headless();
     let mut world = unlit_ecs::LocalWorld::new();
-    let renderer = world.spawn((
-        unlit_ecs::Resource,
-        Renderer::new(ctx.device.clone(), ctx.queue.clone()),
-    ));
+    let gpu = TestGpu::new(&mut world, &ctx);
 
     // A per-mesh tint the fragment stage adds to the interpolated vertex
     // colour. It is what makes two draws of one pipeline differ, and it lives
@@ -421,53 +411,60 @@ fn one_pipeline_draws_many_meshes() {
             }],
         });
 
-    let (pipeline, red, green) = world
-        .with_mut::<Renderer, _>(renderer, |r| {
-            // The family's factory attaches the mesh layout; the specializer
-            // adds nothing, so one pipeline serves both meshes.
-            let desc = tinted_pipeline(&r.device, &layout);
-            let factory = MeshLayoutFactory {
-                mesh_layout: layout.clone(),
-            };
-            let key = CustomPipelineKey::new(desc);
-            r.register_family::<CustomPipelineKey, _, _, _>(TrivialSpecializer::default(), factory);
-            let pipeline = GpuPipeline::new(key);
+    let (pipeline, red, green) = gpu.with_mesh_source(&world, |source, world| {
+        let device = source.device(world);
+        let queue = source.queue(world);
+        // The family's factory attaches the mesh layout; the specializer
+        // adds nothing, so one pipeline serves both meshes.
+        let desc = tinted_pipeline(&device, &layout);
+        let factory = MeshLayoutFactory {
+            mesh_layout: layout.clone(),
+        };
+        let key = CustomPipelineKey::new(desc);
+        source.register_family::<CustomPipelineKey, _, _, _>(
+            world,
+            TrivialSpecializer::default(),
+            factory,
+        );
+        let pipeline = GpuPipeline::new(key);
 
-            // The two meshes upload identical geometry and differ only in the
-            // tint their mesh bind group carries.
-            let mut mesh = |tint: [f32; 4]| {
-                let buffer = upload(&r.device, &r.queue, &TRIANGLE);
-                let tint_buffer = r.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("test::custom::tint"),
-                    size: core::mem::size_of::<[f32; 4]>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                use zerocopy::IntoBytes;
-                r.queue.write_buffer(&tint_buffer, 0, tint.as_bytes());
-                let bind_group = r.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("test::custom::mesh::bind_group"),
-                    layout: &layout,
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: MESH_TINT_BINDING,
-                        resource: tint_buffer.as_entire_binding(),
-                    }],
-                });
-                r.allocate_mesh(MeshDesc {
+        // The two meshes upload identical geometry and differ only in the
+        // tint their mesh bind group carries.
+        let mut mesh = |tint: [f32; 4]| {
+            let buffer = upload(&device, &queue, &TRIANGLE);
+            let tint_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("test::custom::tint"),
+                size: core::mem::size_of::<[f32; 4]>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            use zerocopy::IntoBytes;
+            queue.write_buffer(&tint_buffer, 0, tint.as_bytes());
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("test::custom::mesh::bind_group"),
+                layout: &layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: MESH_TINT_BINDING,
+                    resource: tint_buffer.as_entire_binding(),
+                }],
+            });
+            source.allocate_mesh(
+                world,
+                MeshDesc {
                     vertex_buffers: ArrayVec::try_from(&[vertex_buffer(buffer)][..])
                         .expect("one buffer fits"),
                     count: TRIANGLE.len() as u32,
                     bind_group: Some(bind_group),
                     ..Default::default()
-                })
-            };
-            (
-                pipeline,
-                mesh([1.0, 0.0, 0.0, 0.0]),
-                mesh([0.0, 1.0, 0.0, 0.0]),
+                },
             )
-        })
-        .expect("renderer entity exists");
+        };
+        (
+            pipeline,
+            mesh([1.0, 0.0, 0.0, 0.0]),
+            mesh([0.0, 1.0, 0.0, 0.0]),
+        )
+    });
 
     // The same handle is spawned twice: it is cloned, not owned by a mesh.
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
@@ -477,13 +474,7 @@ fn one_pipeline_draws_many_meshes() {
     world.spawn((Transform::default(), red, pipeline.clone()));
     world.spawn((Transform::default(), green, pipeline));
 
-    let target = world
-        .with_mut::<Renderer, _>(renderer, |r| {
-            let target = bind_offscreen_target(r, "test::custom::shared");
-            r.render(&world);
-            target
-        })
-        .expect("renderer is a resource entity");
+    let target = gpu.render_to_offscreen(&world, "test::custom::shared");
 
     let frame = Frame {
         rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),

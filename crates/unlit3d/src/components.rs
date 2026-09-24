@@ -1,7 +1,8 @@
 //! Component types for the ECS-based scene description.
 //!
 //! These components live in an [`unlit_ecs`] world and are read by the
-//! [`Renderer`](crate::Renderer) each frame to build the draw commands.
+//! [`MeshSource`](crate::mesh_source::MeshSource) each frame to build the
+//! draw commands.
 
 use arrayvec::ArrayVec;
 use wgpu_unlit_render::offset_allocator::Allocation;
@@ -11,7 +12,7 @@ use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
 
 use crate::bounds::Aabb;
-use crate::renderer::UnlitPipelineKey;
+use crate::mesh_source::UnlitPipelineKey;
 
 /// World-space transform (translation, rotation, scale).
 ///
@@ -69,7 +70,7 @@ pub struct Camera {
 ///
 /// A load op only applies to an attachment the pass actually has. A frame
 /// that draws into the caller's own target gets both a color and a depth
-/// attachment; the renderer's internal attachment set may be depth-only.
+/// attachment; the frame's internal attachment set may be depth-only.
 /// Clearing an attachment the pass does not have is therefore not an error —
 /// the op is simply unused — so one component fits either target.
 ///
@@ -92,7 +93,7 @@ pub struct RenderLoadOps {
     pub color: wgpu::LoadOp<wgpu::Color>,
     /// The depth attachment's load op.
     ///
-    /// Defaults to [depth_clear], a clear to the renderer's reverse-z
+    /// Defaults to [depth_clear], a clear to the frame's reverse-z
     /// far plane rather than an arbitrary zero: a depth attachment means the
     /// same thing however the frame is configured.
     pub depth: wgpu::LoadOp<f32>,
@@ -114,12 +115,12 @@ impl Default for RenderLoadOps {
     }
 }
 
-/// A handle to a mesh stored in the renderer's GPU resource graph.
+/// A handle to a mesh stored in the source's GPU resource graph.
 ///
-/// Created by [`Renderer::allocate_mesh`](crate::Renderer::allocate_mesh) or
-/// [`Renderer::allocate_unlit_mesh`](crate::Renderer::allocate_unlit_mesh).
+/// Created by [`MeshSource::allocate_mesh`] or
+/// [`MeshSource::allocate_unlit_mesh`].
 /// The mesh is ready to draw immediately and the handle stays valid until
-/// [`Renderer::remove_mesh`](crate::Renderer::remove_mesh) is called with it.
+/// [`MeshSource::remove_mesh`] is called with it.
 #[derive(Clone, Debug)]
 pub struct GpuMesh {
     /// The mesh's virtual root node in the resource graph.
@@ -127,7 +128,7 @@ pub struct GpuMesh {
     /// It holds no GPU resource of its own and is the mesh's only lifetime
     /// entry point: the vertex and index buffers, the mesh bind group and the
     /// mesh-info uniform are all weak nodes registered under it, so
-    /// [`Renderer::remove_mesh`](crate::Renderer::remove_mesh) frees the whole
+    /// [`MeshSource::remove_mesh`] frees the whole
     /// mesh by removing this one node and collecting the parts it leaves
     /// behind. The other ids below are for the draw path, which reads the
     /// parts directly.
@@ -185,7 +186,7 @@ pub struct GpuMesh {
     /// `None` when the mesh owns its index buffer whole.
     pub(crate) index_allocation: Option<Allocation>,
 
-    /// Index of the mesh's entry in the renderer's mesh-metadata array.
+    /// Index of the mesh's entry in the source's mesh-metadata array.
     ///
     /// Every mesh owns an entry, whether or not the pipeline that draws it
     /// reads one.
@@ -234,14 +235,14 @@ impl<Key> GpuPipeline<Key> {
 /// supplies the options the entity's variants are specialized from.
 pub type UnlitPipeline = GpuPipeline<UnlitPipelineKey>;
 
-/// A handle to a material bind group in the renderer's GPU resource graph.
+/// A handle to a material bind group in the source's GPU resource graph.
 ///
 /// Created by
-/// [`Renderer::allocate_material`](crate::Renderer::allocate_material) for a
+/// [`MeshSource::allocate_material`] for a
 /// caller's own layout, or by
-/// [`Renderer::allocate_unlit_material`](crate::Renderer::allocate_unlit_material)
+/// [`MeshSource::allocate_unlit_material`]
 /// for the built-in shader's base-color texture and sampler. The handle stays
-/// valid until [`Renderer::remove_material`](crate::Renderer::remove_material)
+/// valid until [`MeshSource::remove_material`]
 /// is called with it.
 #[derive(Clone, Debug)]
 pub struct GpuMaterial {

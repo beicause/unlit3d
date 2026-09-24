@@ -41,9 +41,9 @@ where
 {
     /// The variant cache, which owns the specializer and the device.
     variants: Variants<T, S>,
-    /// The factory that turns a variant into a renderer pipeline.
+    /// The factory that turns a variant into a wgpu render pipeline.
     factory: F,
-    /// registered[v] is the renderer pipeline for core variant v.
+    /// registered[v] is the wgpu render pipeline for core variant v.
     registered: Vec<PipelineId>,
     /// Names the key type without owning one.
     _key: PhantomData<fn() -> K>,
@@ -78,7 +78,7 @@ pub(crate) struct VisibleEntry {
     /// The culled mesh this draw came from, with its entity and placement.
     pub(crate) mesh: VisibleMesh,
     /// The concrete pipeline this entity resolves to, an index into the
-    /// renderer's pipeline list. Resolved before the sort and never changed by
+    /// source's pipeline list. Resolved before the sort and never changed by
     /// it.
     pub(crate) pipeline_id: PipelineId,
     /// Groups opaque draws by material, so neighbours share a bind group.
@@ -94,7 +94,7 @@ pub(crate) struct VisibleEntry {
 /// The inputs a family needs to collect and resolve one frame.
 ///
 /// Holding the device and resources here lets a family build the
-/// [FamilyContext] its factory sees without borrowing the renderer again.
+/// [FamilyContext] its factory sees without borrowing the source again.
 pub(crate) struct FamilyFrame<'a> {
     /// The world the entities live in.
     pub(crate) world: &'a LocalWorld,
@@ -106,7 +106,7 @@ pub(crate) struct FamilyFrame<'a> {
     pub(crate) surface: SurfaceKey,
     /// The device a newly resolved variant is compiled on.
     pub(crate) device: &'a wgpu::Device,
-    /// The renderer's global buffers.
+    /// The source's global buffers.
     pub(crate) resources: &'a RenderResources,
 }
 
@@ -208,7 +208,7 @@ where
     }
 }
 
-/// A registered family, as the renderer stores it. Type-erased.
+/// A registered family, as the source stores it. Type-erased.
 pub(crate) trait AnyFamily {
     /// Resolve every entity this family's key names and append the visible
     /// ones to `visible`.

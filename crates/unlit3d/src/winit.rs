@@ -1,12 +1,12 @@
 //! Presenting a [`Renderer`] into a [winit](https://docs.rs/winit) window.
 //!
-//! A window presents through a swap chain, which the renderer's own
-//! attachment helpers do not cover: every frame hands out a new color image,
-//! and the depth and multisample attachments have to match the window's size.
+//! A window presents through a swap chain, which the frame's own attachment
+//! helpers do not cover: every frame hands out a new color image, and the
+//! depth and multisample attachments have to match the window's size.
 //! [`WindowSurface`] owns the surface, its configuration and those
-//! attachments, keeps them registered in the renderer's resource graph, and
-//! binds each frame's image as the renderer's render target — so a frame loop
-//! is acquire, render, present.
+//! attachments, keeps them registered in the frame's resource graph, and binds
+//! each frame's image as the renderer's render target — so a frame loop is
+//! acquire, render, present.
 //!
 //! The caller creates the `wgpu::Surface` itself, because the adapter has to
 //! be requested with it as the compatible surface. That request is async —
@@ -21,7 +21,7 @@
 //! use winit::window::Window;
 //!
 //! # fn setup(
-//! #     world: &mut LocalWorld,
+//! #     world: &LocalWorld,
 //! #     renderer: Entity,
 //! #     instance: &wgpu::Instance,
 //! #     adapter: &wgpu::Adapter,
@@ -31,7 +31,7 @@
 //! // The renderer the surface draws through, spawned once as a resource.
 //! world
 //!     .with_mut::<Renderer, _>(renderer, |r| {
-//!         WindowSurface::new(r, instance, adapter, window, surface, 4)
+//!         WindowSurface::new(world, r, instance, adapter, window, surface, 4)
 //!     })
 //!     .unwrap();
 //! # }
@@ -42,27 +42,64 @@
 //! ```no_run
 //! # use unlit3d::prelude::*;
 //! # use unlit3d::winit::WindowSurface;
-//! # fn frame(renderer: &mut Renderer, window_surface: &mut WindowSurface, world: &LocalWorld) {
-//! let Some(frame) = window_surface.acquire(renderer) else {
+//! # fn frame(
+//! #     world: &LocalWorld,
+//! #     queue: &wgpu::Queue,
+//! #     renderer_entity: Entity,
+//! #     window_surface: &mut WindowSurface,
+//! # ) {
+//! let Some(frame) = world
+//!     .with_mut::<Renderer, _>(renderer_entity, |r| window_surface.acquire(world, r))
+//!     .unwrap()
+//! else {
 //!     return;
 //! };
-//! renderer.render(world);
-//! frame.present(&renderer.queue);
+//! world
+//!     .with_mut::<Renderer, _>(renderer_entity, |r| r.render(world))
+//!     .unwrap();
+//! frame.present(queue);
 //! # }
 //! ```
 
 use std::sync::Arc;
 
+use unlit_ecs::LocalWorld;
 use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
 use wgpu_unlit_render::resources::{Resource, ResourceId};
 
 use crate::renderer::Renderer;
 
-/// A winit window's swap chain, bound to a [`Renderer`].
+/// The device the frame's context was created with, cloned out of `world`.
+///
+/// # Panics
+///
+/// If the context's device resource is gone.
+fn context_device(world: &LocalWorld, renderer: &Renderer) -> wgpu::Device {
+    world
+        .get::<wgpu::Device>(renderer.context().device)
+        .expect("the context's device resource exists")
+        .clone()
+}
+
+/// The frame's resource graph.
+///
+/// # Panics
+///
+/// If the context's graph resource is gone.
+fn context_graph<'w>(
+    world: &'w LocalWorld,
+    renderer: &Renderer,
+) -> impl core::ops::DerefMut<Target = wgpu_unlit_render::resources::ResourceGraph> + 'w {
+    world
+        .get_mut::<wgpu_unlit_render::resources::ResourceGraph>(renderer.context().graph)
+        .expect("the context's resource graph exists")
+}
+
+/// A winit window's swap chain, presented through a [`Renderer`].
 ///
 /// The surface is configured for the window's current size and the
 /// depth-stencil — and, when multisampling, the multisample — attachments are
-/// registered in the renderer's resource graph. [`Self::acquire`] binds the
+/// registered in the frame's resource graph. [`Self::acquire`] binds the
 /// frame's color image as the renderer's render target; [`Self::resize`] keeps
 /// everything in step with the window.
 ///
@@ -81,12 +118,12 @@ pub struct WindowSurface {
     /// Usually the swap chain's own format; an sRGB view of it when the
     /// surface offers no sRGB format of its own.
     color_format: wgpu::TextureFormat,
-    /// The depth-stencil view, in the renderer's graph.
+    /// The depth-stencil view, in the frame's graph.
     depth_view: ResourceId,
-    /// The multisample view, in the renderer's graph; `None` when the frames
+    /// The multisample view, in the frame's graph; `None` when the frames
     /// are not multisampled.
     msaa_view: Option<ResourceId>,
-    /// The color view of the most recently acquired frame, in the renderer's
+    /// The color view of the most recently acquired frame, in the frame's
     /// graph. One id is kept for the surface's whole life; `None` until the
     /// first frame is acquired.
     color_view: Option<ResourceId>,
@@ -112,6 +149,7 @@ impl WindowSurface {
     ///
     /// If `adapter` cannot present to `surface`.
     pub fn new(
+        world: &LocalWorld,
         renderer: &mut Renderer,
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
@@ -122,25 +160,26 @@ impl WindowSurface {
         let size = window.inner_size();
         let config = surface_config(&surface, adapter, size.width, size.height);
         let color_format = color_format(&config);
-        surface.configure(&renderer.device, &config);
+        let device = context_device(world, renderer);
+        surface.configure(&device, &config);
 
         let (depth, msaa) = create_attachments(
-            &renderer.device,
+            &device,
             color_format,
             config.width,
             config.height,
             sample_count,
         );
-        let depth_view = renderer
-            .graph
+        let mut graph = context_graph(world, renderer);
+        let depth_view = graph
             .insert_strong(view_resource(&depth), &[])
             .expect("a texture view has no dependencies");
         let msaa_view = msaa.map(|texture| {
-            renderer
-                .graph
+            graph
                 .insert_strong(view_resource(&texture), &[])
                 .expect("a texture view has no dependencies")
         });
+        drop(graph);
 
         Self {
             instance: instance.clone(),
@@ -188,7 +227,7 @@ impl WindowSurface {
     /// A zero width or height — a minimized window — is ignored: a surface
     /// cannot be configured with a zero dimension, and there is nothing to
     /// draw.
-    pub fn resize(&mut self, renderer: &mut Renderer, width: u32, height: u32) {
+    pub fn resize(&mut self, world: &LocalWorld, renderer: &mut Renderer, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
         }
@@ -197,22 +236,17 @@ impl WindowSurface {
         }
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(&renderer.device, &self.config);
+        let device = context_device(world, renderer);
+        self.surface.configure(&device, &self.config);
 
-        let (depth, msaa) = create_attachments(
-            &renderer.device,
-            self.color_format,
-            width,
-            height,
-            self.sample_count,
-        );
-        renderer
-            .graph
+        let (depth, msaa) =
+            create_attachments(&device, self.color_format, width, height, self.sample_count);
+        let mut graph = context_graph(world, renderer);
+        graph
             .replace(self.depth_view, view_resource(&depth))
             .expect("the depth view is in the graph");
         if let (Some(id), Some(texture)) = (self.msaa_view, msaa) {
-            renderer
-                .graph
+            graph
                 .replace(id, view_resource(&texture))
                 .expect("the multisample view is in the graph");
         }
@@ -227,16 +261,17 @@ impl WindowSurface {
     /// The frame's image replaces the previous one in the resource graph, so
     /// at most the frame just presented is still referenced — never a longer
     /// history of swap-chain images.
-    pub fn acquire(&mut self, renderer: &mut Renderer) -> Option<Frame> {
+    pub fn acquire(&mut self, world: &LocalWorld, renderer: &mut Renderer) -> Option<Frame> {
+        let device = context_device(world, renderer);
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&renderer.device, &self.config);
+                self.surface.configure(&device, &self.config);
                 return None;
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                self.recreate_surface(renderer);
+                self.recreate_surface(&device);
                 return None;
             }
             wgpu::CurrentSurfaceTexture::Timeout
@@ -251,19 +286,17 @@ impl WindowSurface {
         let view = color_view_resource(&surface_texture.texture, self.color_format);
         let color = match self.color_view {
             Some(id) => {
-                renderer
-                    .graph
+                context_graph(world, renderer)
                     .replace(id, view)
                     .expect("the color view is in the graph");
                 id
             }
-            None => renderer
-                .graph
+            None => context_graph(world, renderer)
                 .insert_strong(view, &[])
                 .expect("a texture view has no dependencies"),
         };
         self.color_view = Some(color);
-        renderer.set_render_target(Some(color), Some(self.depth_view), self.msaa_view);
+        renderer.set_render_target(world, Some(color), Some(self.depth_view), self.msaa_view);
         Some(Frame { surface_texture })
     }
 
@@ -271,10 +304,10 @@ impl WindowSurface {
     ///
     /// A surface that cannot be rebuilt — the window is gone — leaves the
     /// current one in place, and the next acquire retries.
-    fn recreate_surface(&mut self, renderer: &Renderer) {
+    fn recreate_surface(&mut self, device: &wgpu::Device) {
         if let Ok(surface) = self.instance.create_surface(self.window.clone()) {
             self.surface = surface;
-            self.surface.configure(&renderer.device, &self.config);
+            self.surface.configure(device, &self.config);
         }
     }
 }

@@ -146,15 +146,11 @@ fn orbit_camera(frame: usize) -> Camera {
 #[test]
 fn ecs_animated_scene_matches_snapshots() {
     let ctx = Ctx::headless();
-    let (renderer, mut world, key) = test_world(&ctx);
-
-    let renderer_entity = world.spawn((unlit_ecs::Resource, renderer));
+    let mut world = LocalWorld::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let key = gpu.key.clone();
     let camera_entity = world.spawn((orbit_camera(0),));
-    let target = world
-        .with_mut::<Renderer, _>(renderer_entity, |r| {
-            bind_offscreen_target(r, "test::ecs_animated")
-        })
-        .expect("the renderer is a resource entity");
+    let target = gpu.bind_offscreen_target(&world, "test::ecs_animated");
 
     // One entry per cell, holding the entity and the mesh while it is
     // occupied.
@@ -171,9 +167,7 @@ fn ecs_animated_scene_matches_snapshots() {
         for &cell in step.free {
             let (entity, mesh) = cells[cell].take().expect("a freed cell holds a mesh");
             assert!(world.despawn(entity));
-            world
-                .with_mut::<Renderer, _>(renderer_entity, move |r| r.remove_mesh(mesh))
-                .expect("the renderer is a resource entity");
+            gpu.remove_mesh(&world, mesh);
         }
 
         for &cell in step.allocate {
@@ -181,11 +175,7 @@ fn ecs_animated_scene_matches_snapshots() {
             // The allocation's offset is baked into the vertices, so every
             // mesh draws different geometry even at the same transform.
             let offset = glam::Vec3::splat(0.06 * allocated as f32);
-            let mesh = world
-                .with_mut::<Renderer, _>(renderer_entity, |r| {
-                    allocate_offset_cube_mesh(r, &key, offset)
-                })
-                .expect("the renderer is a resource entity");
+            let mesh = gpu.allocate_offset_cube_mesh(&world, offset);
             let entity = world.spawn((
                 cell_transform(cell, frame),
                 tint(allocated),
@@ -211,11 +201,7 @@ fn ecs_animated_scene_matches_snapshots() {
             .with_mut::<Camera, _>(camera_entity, |current| *current = camera)
             .expect("the camera entity carries a camera");
 
-        world
-            .with_mut::<Renderer, _>(renderer_entity, |r| {
-                r.render(&world);
-            })
-            .expect("the renderer is a resource entity");
+        gpu.render(&world);
 
         let pixels = Frame {
             rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
