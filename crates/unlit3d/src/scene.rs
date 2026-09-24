@@ -336,6 +336,12 @@ pub(crate) struct DrawShape {
     pub(crate) indexed: bool,
     /// How many indices or vertices the draw reads.
     pub(crate) count: u32,
+    /// Where the draw starts in the buffer it reads: the first index for an
+    /// indexed draw, the first vertex for a non-indexed one.
+    pub(crate) first: u32,
+    /// Where the mesh's vertices start, for an indexed draw to offset every
+    /// index by.
+    pub(crate) base_vertex: u32,
     /// How many vertex buffers the draw binds, starting at
     /// [`EntryHandles::vertex_start`].
     pub(crate) vertex_count: usize,
@@ -397,10 +403,13 @@ pub(crate) fn assemble_scene<'a>(
         let pipeline = &pipelines[entry.pipeline_id.as_usize()];
 
         let instance_range = (draw_idx as u32)..(draw_idx as u32 + 1);
+        let first = handle.shape.first;
         let range = if handle.shape.indexed {
-            DrawRange::indexed(0..handle.shape.count).with_instances(instance_range)
+            DrawRange::indexed(first..first + handle.shape.count)
+                .with_base_vertex(handle.shape.base_vertex as i32)
+                .with_instances(instance_range)
         } else {
-            DrawRange::vertices(0..handle.shape.count).with_instances(instance_range)
+            DrawRange::vertices(first..first + handle.shape.count).with_instances(instance_range)
         };
 
         let mut draw = DrawEntry::new(&pipeline.pipeline, range);

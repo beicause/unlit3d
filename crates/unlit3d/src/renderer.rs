@@ -7,12 +7,14 @@
 
 use arrayvec::ArrayVec;
 use core::any::TypeId;
+use hashbrown::HashMap;
 use std::sync::Arc;
 
 use unlit_ecs::{LocalWorld, TypeIdHashMap};
+use wgpu_unlit_render::buffer_pool::BufferPool;
 use wgpu_unlit_render::globals::{Globals, View};
 use wgpu_unlit_render::mesh::{
-    CompressedPosition, MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
+    MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
 };
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
@@ -30,7 +32,7 @@ use zerocopy::IntoBytes;
 use crate::bounds::Aabb;
 use crate::components::{Camera, GpuMaterial, GpuMesh, RenderLoadOps};
 use crate::culling::VisibleMesh;
-use crate::mesh::{MeshDesc, VertexBufferDesc};
+use crate::mesh::MeshDesc;
 use crate::pipeline::{
     DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, PipelineDesc, PipelineFactory,
     PipelineId, PipelineKey, RegisteredGlobal, RenderResources,
@@ -39,6 +41,7 @@ use crate::scene::{
     AnyFamily, DrawShape, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry,
     assemble_scene, collect_and_sort_visible,
 };
+use wgpu_unlit_render::vertex_pool::VertexStreamPool;
 
 /// The most resources one mesh can be built from: every vertex buffer a pass
 /// can bind, plus the index buffer, the mesh bind group and the mesh-info
@@ -99,6 +102,26 @@ pub struct Renderer {
     instance_buffer: Option<wgpu::Buffer>,
     instance_capacity: u32,
 
+    /// The pool every mesh uploaded through
+    /// [`Self::allocate_unlit_mesh`](Self::allocate_unlit_mesh) keeps its
+    /// indices in, as one large buffer shared by every indexed mesh.
+    ///
+    /// A mesh names it through [`GpuMesh::index_buffer`], which is why the
+    /// buffer is a node in [`Self::graph`] and has to be replaced there when
+    /// the pool grows; see [`Self::sync_pool`].
+    index_pool: BufferPool,
+    /// The graph node of [`Self::index_pool`]'s buffer.
+    index_pool_id: ResourceId,
+    /// The pool every mesh uploaded through
+    /// [`Self::allocate_unlit_mesh`](Self::allocate_unlit_mesh) keeps its
+    /// vertices in: one large buffer per vertex layout, so meshes that share
+    /// a layout share a buffer, and one element allocation covers every
+    /// stream of a mesh at the same element index.
+    vertex_pool: VertexStreamPool,
+    /// The graph node of each of [`Self::vertex_pool`]'s buffers, by the
+    /// layout the buffer is shaped for.
+    vertex_pool_ids: HashMap<VertexBufferLayoutDesc, ResourceId>,
+
     /// Every concrete pipeline registered with this renderer, in
     /// registration order.
     ///
@@ -134,6 +157,18 @@ pub struct Renderer {
     entry_handle_cache: Vec<EntryHandles>,
     /// Reused draw list, whose allocation survives between frames.
     scene_cache: Scene<'static>,
+}
+
+/// The byte size of one index of `format`.
+///
+/// A pooled index range starts at a multiple of [`wgpu::COPY_BUFFER_ALIGNMENT`],
+/// which is a multiple of either format's size, so dividing its byte offset by
+/// this yields a whole number of indices.
+fn index_format_size(format: wgpu::IndexFormat) -> u32 {
+    match format {
+        wgpu::IndexFormat::Uint16 => size_of::<u16>() as u32,
+        wgpu::IndexFormat::Uint32 => size_of::<u32>() as u32,
+    }
 }
 
 /// Build the unlit shader's global bind group from the renderer's buffers.
@@ -413,6 +448,26 @@ impl Renderer {
             globals.as_bytes(),
         );
 
+        // The pools the built-in meshes upload into. Each is one buffer in the
+        // graph that many meshes read through, so the node is strong — the
+        // renderer owns it, no mesh does — and starts out the size of the
+        // first mesh's worth of data.
+        let index_pool = BufferPool::new(
+            &device,
+            "unlit3d::mesh::indices",
+            wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            size_of::<u32>() as u64 * 1024,
+        );
+        let index_pool_id = graph
+            .insert_strong(Resource::Buffer(index_pool.buffer().clone()), &[])
+            .expect("an index pool has no dependencies");
+        let vertex_pool = VertexStreamPool::new(
+            &device,
+            "unlit3d::mesh::vertices",
+            wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            1024,
+        );
+
         Self {
             device,
             queue,
@@ -430,6 +485,10 @@ impl Renderer {
             metadata_capacity: 1,
             instance_buffer: None,
             instance_capacity: 0,
+            index_pool,
+            index_pool_id,
+            vertex_pool,
+            vertex_pool_ids: HashMap::new(),
             pipelines: Vec::new(),
             families: TypeIdHashMap::default(),
             visible_meshes_cache: Vec::new(),
@@ -594,10 +653,13 @@ impl Renderer {
         });
 
         let bind_group_id = bind_group.map(|bind_group| {
-            // The mesh's own buffers plus the uniform the group reads, so
-            // replacing or removing any of them reaches the group.
+            // Only the uniform the group reads, so replacing or removing it
+            // reaches the group. The mesh's vertex and index buffers are
+            // deliberately absent: a draw binds them directly, the group
+            // reads none of them, and a pooled buffer changes when the pool
+            // grows — a dependency would rebuild every group of every mesh
+            // that shares the pool for nothing.
             let mut dependencies = ArrayVec::<ResourceId, MAX_MESH_PARTS>::new();
-            dependencies.extend(buffers.iter().copied());
             dependencies.extend(mesh_info_id);
             self.graph
                 .insert_weak(Resource::BindGroup(bind_group), &dependencies)
@@ -651,10 +713,14 @@ impl Renderer {
             vertex_layout,
             index_buffer,
             count,
+            first: 0,
+            base_vertex: 0,
             indexed,
             aabb,
             metadata_index,
             bind_group_id,
+            vertex_allocation: None,
+            index_allocation: None,
         }
     }
 
@@ -709,39 +775,23 @@ impl Renderer {
         let packed_positions: Vec<_> = compress_positions(positions, &mut meta).collect();
         let vertex_count = packed_positions.len();
 
-        let position_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::mesh::position"),
-            size: (vertex_count * size_of::<CompressedPosition>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.queue
-            .write_buffer(&position_buf, 0, packed_positions.as_bytes());
-
-        // UV and colour vertex buffer, interleaved in the order the shader
+        // UV and colour vertex data, interleaved in the order the shader
         // declares: the channel a slice is given for is the channel packed.
         use wgpu::WriteOnly;
         let uv_color_len = uv_color_stream.byte_len(vertex_count);
-        let uv_color_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::mesh::uv_color"),
-            size: uv_color_len as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let mut uv_color_data = vec![0u8; uv_color_len];
         if uv_color_len > 0 {
-            let mut staging = vec![0u8; uv_color_len];
             uv_color_stream.write(
                 uvs.unwrap_or(&[]),
                 colors.unwrap_or(&[]),
                 &mut meta,
-                WriteOnly::from_mut(staging.as_mut_slice()),
+                WriteOnly::from_mut(uv_color_data.as_mut_slice()),
             );
-            self.queue.write_buffer(&uv_color_buf, 0, &staging);
         }
 
-        // MeshInfo uniform buffer (just the metadata index) and the bind
-        // group the shader reads it through. The index is unknown until the
-        // mesh is allocated below, and the buffer is written then.
+        // The mesh-info uniform and the bind group the shader reads it
+        // through. The index is unknown until the mesh is allocated below, and
+        // the buffer is written then.
         let mesh_info_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("unlit3d::mesh::info"),
             size: size_of::<MeshInfo>() as u64,
@@ -759,8 +809,10 @@ impl Renderer {
         });
 
         // Index buffer (optional): `Uint16` when every index fits, otherwise
-        // `Uint32` — the same choice the compressor makes.
-        let (index_buffer, count, indexed) = match indices {
+        // `Uint32` — the same choice the compressor makes. The indices go into
+        // the index pool, so every indexed mesh draws out of one shared buffer
+        // and names its own slice through `GpuMesh::first`.
+        let (index_buffer, count, indexed, index_allocation, first_index) = match indices {
             Some(indices) if !indices.is_empty() => {
                 let index_count = indices.len() as u32;
                 let format = if compress_indices(indices).is_ok() {
@@ -781,16 +833,28 @@ impl Renderer {
                     .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
                 let mut padded = data;
                 padded.resize(padded_len, 0);
-                let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("unlit3d::mesh::index"),
-                    size: padded_len as u64,
-                    usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                });
-                self.queue.write_buffer(&buf, 0, &padded);
-                (Some((buf, format)), index_count, true)
+                let range = self
+                    .index_pool
+                    .allocate(&self.device, &self.queue, padded_len as u32)
+                    .expect("the index pool grows with the mesh");
+                Self::sync_pool_node(&self.index_pool, self.index_pool_id, &mut self.graph);
+                self.queue.write_buffer(
+                    self.graph
+                        .get_buffer(self.index_pool_id)
+                        .expect("the index pool node exists"),
+                    u64::from(range.offset()),
+                    &padded,
+                );
+                let first = range.offset() / index_format_size(format);
+                (
+                    Some((self.index_pool_id, format)),
+                    index_count,
+                    true,
+                    Some(range.allocation()),
+                    first,
+                )
             }
-            _ => (None, vertex_count as u32, false),
+            _ => (None, vertex_count as u32, false, None, 0),
         };
 
         // The vertex layout the key's options declare, slot for slot. An empty
@@ -812,32 +876,59 @@ impl Renderer {
         let uv_color_layout = layout_of(UV_COLOR_SLOT);
         let instance_layout = layout_of(INSTANCE_SLOT);
 
+        // The mesh's streams are the vertex pool's: one element allocation
+        // covers every stream of the mesh at the same element index, which is
+        // what lets a draw address them all with one `firstVertex` or
+        // `baseVertex`. A stream the variant declares nothing for — an empty
+        // UV-and-colour stream, say — gets no buffer and no part in it.
+        let stream_layouts = [position_layout.clone(), uv_color_layout.clone()];
+        let vertices = self
+            .vertex_pool
+            .allocate(
+                &self.device,
+                &self.queue,
+                &stream_layouts,
+                vertex_count as u32,
+            )
+            .expect("the vertex pool grows with the mesh");
+        let vertex_offset = vertices.offset();
+        for (_slot, (layout, data)) in [
+            (
+                POSITION_SLOT,
+                (&position_layout, packed_positions.as_bytes()),
+            ),
+            (UV_COLOR_SLOT, (&uv_color_layout, uv_color_data.as_bytes())),
+        ] {
+            if layout.array_stride == 0 {
+                continue;
+            }
+            let id = self.vertex_node(layout);
+            self.sync_vertex_node(id, layout);
+            let buffer = self.graph.get_buffer(id).expect("the stream's node exists");
+            self.queue.write_buffer(
+                buffer,
+                VertexStreamPool::byte_offset(layout, vertex_offset),
+                data,
+            );
+        }
+        assert!(
+            vertex_offset <= i32::MAX as u32,
+            "a vertex offset has to fit the i32 a draw's base vertex is"
+        );
+
         // The mesh owns the metadata entry `meta` — the same AABB and UV
         // decode parameters the compression just derived.
         let aabb = Aabb::new(meta.aabb_center, meta.aabb_half_extents);
         let mut mesh = self.allocate_mesh_with_metadata(
             MeshDesc {
-                vertex_buffers: ArrayVec::try_from(
-                    [
-                        VertexBufferDesc {
-                            slot: POSITION_SLOT,
-                            buffer: position_buf,
-                            array_stride: position_layout.array_stride,
-                            step_mode: position_layout.step_mode,
-                            attributes: position_layout.attributes,
-                        },
-                        VertexBufferDesc {
-                            slot: UV_COLOR_SLOT,
-                            buffer: uv_color_buf,
-                            array_stride: uv_color_layout.array_stride,
-                            step_mode: uv_color_layout.step_mode,
-                            attributes: uv_color_layout.attributes,
-                        },
-                    ]
-                    .as_slice(),
-                )
-                .expect("a mesh has at most MAX_VERTEX_BUFFERS vertex buffers"),
-                index_buffer,
+                // The streams are the vertex pool's, not the mesh's own: the
+                // mesh names the pool's node for each slot and its own range,
+                // so no buffer is registered under the mesh for them.
+                vertex_buffers: ArrayVec::new(),
+                // The indices are the index pool's, not the mesh's own: the
+                // mesh names the pool's node and its own range, so no buffer
+                // is registered under the mesh for them.
+                index_buffer: None,
                 count,
                 indexed,
                 aabb,
@@ -857,6 +948,28 @@ impl Renderer {
         // imply no [UnlitFlags::VERTEX_INSTANCE] and the pipeline would ignore
         // the instance transform.
         mesh.vertex_layout.push((INSTANCE_SLOT, instance_layout));
+
+        // The mesh's slices of the pools it shares: the draw names its ranges
+        // by `first` and `base_vertex`, and the allocations are handed back on
+        // removal.
+        // The layout is the key's own, slot by slot: the family keys on it, so
+        // it is owned by the mesh even though the buffers behind it are the
+        // pool's. A stream the variant declares nothing for is left out, as it
+        // is for a mesh that owns its buffers.
+        for (slot, layout) in [
+            (POSITION_SLOT, &position_layout),
+            (UV_COLOR_SLOT, &uv_color_layout),
+        ] {
+            if layout.array_stride > 0 {
+                mesh.vertex_layout.push((slot, layout.clone()));
+                mesh.vertex_buffers.push((slot, self.vertex_node(layout)));
+            }
+        }
+        mesh.index_buffer = index_buffer;
+        mesh.first = first_index;
+        mesh.base_vertex = vertex_offset;
+        mesh.index_allocation = index_allocation;
+        mesh.vertex_allocation = Some(vertices.allocation());
         mesh
     }
 
@@ -988,10 +1101,13 @@ impl Renderer {
     ///
     /// Every resource of the mesh is registered under its virtual root, so
     /// removing that one node and collecting the parts it orphans frees the
-    /// whole mesh: its vertex and index buffers, the bind group built from
-    /// them and the per-mesh uniform that only fed that bind group. The
-    /// [`GpuMesh`] handle must not be used afterwards: drawing with it names
-    /// buffers that are gone.
+    /// whole mesh: its bind group and the per-mesh uniform that only fed that
+    /// bind group. A mesh uploaded through
+    /// [`allocate_unlit_mesh`](Self::allocate_unlit_mesh) keeps its vertices
+    /// and indices in pools the renderer shares between meshes; those
+    /// allocations are handed back here, and the pool buffers outlive the mesh.
+    /// A mesh uploaded with [`allocate_mesh`](Self::allocate_mesh) owns its
+    /// buffers, and they die with it.
     ///
     /// Its metadata slot is freed and reused by a mesh allocated later, so
     /// removing meshes does not grow the array a long-lived renderer uploads.
@@ -1007,6 +1123,13 @@ impl Renderer {
         // The root was the only node built from the parts, so with it gone
         // every part is an orphan.
         self.graph.cleanup_drop();
+
+        if let Some(vertex) = mesh.vertex_allocation {
+            self.vertex_pool.release(vertex);
+        }
+        if let Some(index) = mesh.index_allocation {
+            self.index_pool.release(index);
+        }
 
         let emptied = self.metadata.get_mut(mesh.metadata_index as usize);
         if let Some(entry) = emptied {
@@ -1180,6 +1303,8 @@ impl Renderer {
                     shape: DrawShape {
                         indexed: mesh.indexed,
                         count: mesh.count,
+                        first: mesh.first,
+                        base_vertex: mesh.base_vertex,
                         vertex_count,
                     },
                 });
@@ -1402,6 +1527,58 @@ impl Renderer {
             0,
             self.metadata.as_bytes(),
         );
+    }
+
+    /// The graph node of the vertex pool's buffer for `layout`, creating it if
+    /// the pool has never been asked for the layout before.
+    ///
+    /// The node is strong: the renderer owns the pool, no mesh does. See
+    /// [`Self::sync_pool_node`] for why nothing may depend on it.
+    fn vertex_node(&mut self, layout: &VertexBufferLayoutDesc) -> ResourceId {
+        if let Some(&id) = self.vertex_pool_ids.get(layout) {
+            return id;
+        }
+        let id = self
+            .graph
+            .insert_strong(Resource::Virtual, &[])
+            .expect("a new stream node has no dependencies");
+        self.vertex_pool_ids.insert(layout.clone(), id);
+        id
+    }
+
+    /// Point the stream node `id` at the vertex pool's buffer for `layout`.
+    ///
+    /// A stream node starts as a virtual stand-in, so its first sync swaps in
+    /// the real buffer; later syncs only happen when the pool grew.
+    fn sync_vertex_node(&mut self, id: ResourceId, layout: &VertexBufferLayoutDesc) {
+        let buffer = self
+            .vertex_pool
+            .buffer(layout)
+            .expect("the layout has a buffer");
+        if self.graph.get_buffer(id) != Some(buffer) {
+            self.graph
+                .replace(id, Resource::Buffer(buffer.clone()))
+                .expect("a stream node exists");
+        }
+    }
+
+    /// Point the graph node `id` at the buffer `pool` currently hands out.
+    ///
+    /// A pool grows by creating a new buffer, and a mesh keeps the pool's node
+    /// id rather than its buffer, so the node has to follow the buffer. The
+    /// check is the pool's own handle compared against what the node holds: no
+    /// counter to keep in step, and repeating the call is free.
+    ///
+    /// Nothing depends on a pool node — a mesh's bind group reads only its
+    /// mesh-info uniform — so replacing one marks nothing else dirty. A
+    /// dependency added onto a pool buffer makes every grow rebuild it, which
+    /// is why there must not be one.
+    fn sync_pool_node(pool: &BufferPool, id: ResourceId, graph: &mut ResourceGraph) {
+        if graph.get_buffer(id) != Some(pool.buffer()) {
+            graph
+                .replace(id, Resource::Buffer(pool.buffer().clone()))
+                .expect("a pool node exists");
+        }
     }
 
     /// Grow the per-instance buffer geometrically when needed.
@@ -1810,26 +1987,23 @@ mod tests {
         let (mut renderer, key) = noop_renderer();
         let mesh = tri_mesh(&mut renderer, &key);
 
-        // The root is the mesh's lifetime entry point; its parts are the
-        // buffers, the bind group built from them and the mesh-info uniform
-        // that feeds it.
+        // The root is the mesh's lifetime entry point; its parts are the bind
+        // group and the mesh-info uniform that feeds it. The mesh's vertices
+        // and indices live in pools, so they are strong nodes the renderer
+        // owns and survive the mesh — what the mesh loses is its share of
+        // them, which `remove_mesh` hands back.
         let before = renderer.graph.len();
+        let index_pool_free = renderer.index_pool.free_space();
         assert!(matches!(
             renderer.graph.get(mesh.root),
             Some(Resource::Virtual)
         ));
-        let buffers: Vec<_> = mesh.vertex_buffers.iter().map(|(_, id)| *id).collect();
-        let index = mesh.index_buffer.expect("the mesh is indexed").0;
         let bind_group = mesh.bind_group_id.expect("the mesh has a group");
         let root = mesh.root;
 
         renderer.remove_mesh(mesh);
 
         assert!(renderer.graph.get(root).is_none(), "root removed");
-        for id in buffers {
-            assert!(renderer.graph.get(id).is_none(), "vertex buffer removed");
-        }
-        assert!(renderer.graph.get(index).is_none(), "index buffer removed");
         assert!(
             renderer.graph.get(bind_group).is_none(),
             "the bind group built from them removed"
@@ -1840,42 +2014,34 @@ mod tests {
             before,
             renderer.graph.len()
         );
+        assert!(
+            renderer.index_pool.free_space() > index_pool_free,
+            "the mesh's index range is free again"
+        );
     }
 
     #[test]
-    fn a_mesh_registers_every_part_under_its_virtual_root() {
+    fn a_mesh_registers_its_pooled_parts_nowhere_under_its_root() {
         let (mut renderer, key) = noop_renderer();
         let mesh = tri_mesh(&mut renderer, &key);
 
+        // The pools are the renderer's, not the mesh's: a mesh that goes away
+        // must not take the shared buffers with it, so they sit outside the
+        // root and the root holds only what is the mesh's own.
         let dependencies: Vec<_> = renderer.graph.dependencies(mesh.root).collect();
-        for (_, id) in &mesh.vertex_buffers {
-            assert!(
-                dependencies.contains(id),
-                "a vertex buffer is under the root"
-            );
-        }
-        let index = mesh.index_buffer.expect("the mesh is indexed").0;
-        assert!(
-            dependencies.contains(&index),
-            "the index buffer is under the root"
-        );
         let bind_group = mesh.bind_group_id.expect("the mesh has a group");
         assert!(
             dependencies.contains(&bind_group),
             "the bind group is under the root"
         );
-
-        // A part is the root's dependency, so replacing it dirties the root.
-        let replacement = renderer.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::test::replacement"),
-            size: 4,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        renderer
-            .graph
-            .replace(mesh.vertex_buffers[0].1, Resource::Buffer(replacement));
-        assert!(renderer.graph.is_dirty(mesh.root));
+        assert!(
+            !dependencies.contains(&renderer.index_pool_id),
+            "the index pool is not under the root"
+        );
+        assert!(
+            renderer.graph.get(renderer.index_pool_id).is_some(),
+            "the index pool survives"
+        );
     }
 
     #[test]
@@ -1949,6 +2115,176 @@ mod tests {
             Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
             Some(&[0u32, 1, 2]),
         )
+    }
+
+    #[test]
+    fn indexed_meshes_share_one_index_buffer() {
+        let (mut renderer, key) = noop_renderer();
+        let first = tri_mesh(&mut renderer, &key);
+        let second = tri_mesh(&mut renderer, &key);
+
+        // Both name the pool's node, and each names its own slice of it.
+        let pool = renderer.index_pool_id;
+        assert_eq!(first.index_buffer.map(|(id, _)| id), Some(pool));
+        assert_eq!(second.index_buffer.map(|(id, _)| id), Some(pool));
+        assert_ne!(first.first, second.first, "the slices do not overlap");
+
+        // The ranges tile the pool in allocation order.
+        let first_range = renderer.index_pool.allocation_size(
+            first
+                .index_allocation
+                .expect("the mesh holds an allocation"),
+        );
+        assert_eq!(
+            first.first + first_range / index_format_size(wgpu::IndexFormat::Uint16),
+            second.first,
+            "the second mesh starts where the first ends"
+        );
+    }
+
+    #[test]
+    fn a_removed_mesh_frees_its_index_range_for_the_next_mesh() {
+        let (mut renderer, key) = noop_renderer();
+        let first = tri_mesh(&mut renderer, &key);
+        let first_offset = first.first;
+        renderer.remove_mesh(first);
+
+        let again = tri_mesh(&mut renderer, &key);
+        assert_eq!(
+            again.first, first_offset,
+            "the freed range is handed out again"
+        );
+    }
+
+    #[test]
+    fn an_index_pool_that_grows_keeps_every_meshes_slice() {
+        let (mut renderer, key) = noop_renderer();
+        let first = tri_mesh(&mut renderer, &key);
+        let first_node = first.index_buffer.expect("the mesh is indexed").0;
+        let first_offset = first.first;
+
+        // Enough meshes to push the pool past its starting size.
+        let mut last = None;
+        for _ in 0..40 {
+            last = Some(tri_mesh(&mut renderer, &key));
+        }
+        let last = last.expect("the loop runs");
+
+        // The node still names the pool, and the graph holds the buffer the
+        // pool currently does: a mesh needs no update after a grow.
+        assert_eq!(last.index_buffer.map(|(id, _)| id), Some(first_node));
+        assert_eq!(
+            renderer.graph.get_buffer(first_node),
+            Some(renderer.index_pool.buffer()),
+            "the node follows the pool's buffer"
+        );
+        assert_eq!(
+            first.first, first_offset,
+            "the first mesh's slice did not move"
+        );
+        assert!(
+            renderer.index_pool.size() > first_offset as u64,
+            "the pool grew"
+        );
+    }
+
+    #[test]
+    fn a_non_indexed_mesh_holds_no_index_allocation() {
+        let (mut renderer, key) = noop_renderer();
+        let mesh = renderer.allocate_unlit_mesh(
+            &key,
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+            None,
+        );
+
+        assert!(!mesh.indexed);
+        assert!(mesh.index_buffer.is_none());
+        assert!(mesh.index_allocation.is_none());
+        assert_eq!(mesh.first, 0);
+    }
+
+    #[test]
+    fn meshes_sharing_a_layout_share_one_buffer_per_stream() {
+        let (mut renderer, key) = noop_renderer();
+        let first = tri_mesh(&mut renderer, &key);
+        let second = tri_mesh(&mut renderer, &key);
+
+        // Every stream of a mesh names its pool's node, and both meshes name
+        // the same node per slot.
+        for ((_, first_id), (_, second_id)) in first
+            .vertex_buffers
+            .iter()
+            .zip(second.vertex_buffers.iter())
+        {
+            assert_eq!(first_id, second_id, "the streams share a buffer");
+            assert!(
+                renderer.graph.get_buffer(*first_id).is_some(),
+                "the stream's node holds a buffer"
+            );
+        }
+        // One element allocation covers both streams at the same index, which
+        // is what makes a single `base_vertex` address them all.
+        assert_eq!(first.base_vertex, 0);
+        assert_ne!(second.base_vertex, first.base_vertex);
+    }
+
+    #[test]
+    fn a_removed_mesh_frees_its_vertex_range_for_the_next_mesh() {
+        let (mut renderer, key) = noop_renderer();
+        let first = tri_mesh(&mut renderer, &key);
+        let vertex_offset = first.base_vertex;
+        renderer.remove_mesh(first);
+
+        let again = tri_mesh(&mut renderer, &key);
+        assert_eq!(
+            again.base_vertex, vertex_offset,
+            "the freed element range is handed out again"
+        );
+    }
+
+    #[test]
+    fn a_vertex_pool_that_grows_keeps_every_meshes_element_index() {
+        let (mut renderer, key) = noop_renderer();
+        let first = tri_mesh(&mut renderer, &key);
+        let nodes: Vec<_> = first.vertex_buffers.iter().map(|(_, id)| *id).collect();
+        let base_vertex = first.base_vertex;
+
+        // Enough meshes to push the pool past its starting capacity.
+        let mut last = None;
+        for _ in 0..80 {
+            last = Some(tri_mesh(&mut renderer, &key));
+        }
+        let last = last.expect("the loop runs");
+
+        // The nodes still name the streams, and each holds the buffer the pool
+        // currently does for its layout: a mesh needs no update after a grow.
+        // Only the pool-backed slots count: the per-instance slot is bound by
+        // the renderer from its own buffer, not the pool's.
+        let stream_slots = last
+            .vertex_layout
+            .iter()
+            .filter(|(slot, _)| *slot != INSTANCE_SLOT);
+        for (node, (_, layout)) in nodes.iter().zip(stream_slots) {
+            let pool_buffer = renderer
+                .vertex_pool
+                .buffer(layout)
+                .expect("the layout has a buffer");
+            assert_eq!(
+                renderer.graph.get_buffer(*node),
+                Some(pool_buffer),
+                "the node follows the pool's buffer"
+            );
+        }
+        assert_eq!(
+            first.base_vertex, base_vertex,
+            "the first mesh's element index did not move"
+        );
+        assert!(
+            renderer.vertex_pool.element_capacity() > base_vertex,
+            "the pool grew"
+        );
     }
 
     #[test]

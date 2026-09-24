@@ -4,6 +4,7 @@
 //! [`Renderer`](crate::Renderer) each frame to build the draw commands.
 
 use arrayvec::ArrayVec;
+use wgpu_unlit_render::offset_allocator::Allocation;
 use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
 use wgpu_unlit_render::resources::ResourceId;
 use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
@@ -151,11 +152,38 @@ pub struct GpuMesh {
     /// Number of indices (indexed draw) or vertices (non-indexed draw).
     pub count: u32,
 
+    /// Where the mesh's range starts inside the buffer it lives in.
+    ///
+    /// A draw binds the whole buffer, so what picks the mesh's slice out of it
+    /// is the draw's range: this is the first index for an indexed draw, and
+    /// the first vertex for a non-indexed one. A mesh that owns its buffer
+    /// whole starts at `0`, so both kinds of mesh draw the same way.
+    pub first: u32,
+
+    /// Where the mesh's vertices start, in elements, for an indexed draw.
+    ///
+    /// An indexed draw adds this to every index it reads, which is how the
+    /// indices find their vertices when the vertex stream does not start at the
+    /// beginning of its buffer. Zero for a mesh that owns its buffers whole.
+    pub base_vertex: u32,
+
     /// Whether to issue an indexed draw.
     pub indexed: bool,
 
     /// The mesh's local-space bounding box, used for CPU frustum culling.
     pub aabb: Aabb,
+
+    /// The mesh's vertex range in the pool it was allocated from, to hand back
+    /// when the mesh is removed.
+    ///
+    /// `None` when the mesh owns its vertex buffers whole.
+    pub(crate) vertex_allocation: Option<Allocation>,
+
+    /// The mesh's index range in the pool it was allocated from, to hand back
+    /// when the mesh is removed.
+    ///
+    /// `None` when the mesh owns its index buffer whole.
+    pub(crate) index_allocation: Option<Allocation>,
 
     /// Index of the mesh's entry in the renderer's mesh-metadata array.
     ///

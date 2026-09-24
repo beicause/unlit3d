@@ -119,10 +119,14 @@ mod tests {
             vertex_layout: ArrayVec::new(),
             index_buffer: None,
             count: 0,
+            first: 0,
+            base_vertex: 0,
             indexed: false,
             aabb: Aabb::new(Vec3::ZERO, Vec3::splat(0.5)),
             metadata_index: 0,
             bind_group_id: None,
+            vertex_allocation: None,
+            index_allocation: None,
         };
         let near = world.spawn((mesh.clone(), Transform::default()));
         let far = world.spawn((

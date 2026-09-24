@@ -185,6 +185,13 @@ impl BufferPool {
         self.allocator.storage_report().largest_free_region
     }
 
+    /// The size reserved for `allocation`, in bytes.
+    ///
+    /// This is the requested size rounded up to the alignment.
+    pub fn allocation_size(&self, allocation: Allocation) -> u32 {
+        self.allocator.allocation_size(allocation)
+    }
+
     /// Reserves a range of `size` bytes, growing the pool if it does not fit.
     ///
     /// Returns `None` only if the pool cannot grow any further (its size would
