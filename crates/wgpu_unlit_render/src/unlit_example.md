@@ -206,10 +206,10 @@ fn draw(&self, width: u32, height: u32) {
     .with_bind_group(GLOBAL_GROUP, &self.globals)
     .with_bind_group(MATERIAL_GROUP, &self.material)
     .with_bind_group(MESH_GROUP, &self.mesh)
-    .with_vertex_buffer(POSITION_SLOT, self.positions.slice(..))
-    .with_vertex_buffer(UV_COLOR_SLOT, self.uv_color.slice(..))
-    .with_vertex_buffer(INSTANCE_SLOT, self.instances.slice(..))
-    .with_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
+    .with_vertex_buffer(POSITION_SLOT, &self.positions)
+    .with_vertex_buffer(UV_COLOR_SLOT, &self.uv_color)
+    .with_vertex_buffer(INSTANCE_SLOT, &self.instances)
+    .with_index_buffer(&self.indices, wgpu::IndexFormat::Uint16);
 
     let scene = Scene::new().with_draw(draw);
 

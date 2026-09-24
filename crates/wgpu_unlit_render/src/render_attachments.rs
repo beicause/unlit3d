@@ -22,7 +22,7 @@
 //! #     RenderAttachments, color_clear, depth_clear, stencil_clear,
 //! # };
 //! # use wgpu_unlit_render::scene::Scene;
-//! # fn frame(device: &wgpu::Device, color: wgpu::TextureView, depth: wgpu::TextureView, scene: &Scene<'_>) {
+//! # fn frame(device: &wgpu::Device, color: wgpu::TextureView, depth: wgpu::TextureView, scene: &Scene) {
 //! let attachments = RenderAttachments::from_views(Some(color), Some(depth), None);
 //!
 //! let mut encoder = device.create_command_encoder(&Default::default());

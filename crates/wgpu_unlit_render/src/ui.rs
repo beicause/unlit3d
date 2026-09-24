@@ -410,14 +410,14 @@ impl EguiIntegration {
     ///
     /// Every draw sets a scissor rectangle, and a scissor stays set for the
     /// rest of the pass, so record this after the draws it overlays.
-    pub fn scene<'ui>(&'ui mut self, graph: &'ui mut ResourceGraph) -> Scene<'ui> {
+    pub fn scene(&mut self, graph: &mut ResourceGraph) -> Scene {
         if self.vertices.is_none() || self.indices.is_none() || self.draws.is_empty() {
             return Scene::new();
         }
         let mut scene = Scene::new();
 
-        // Build every material the frame needs first: the scene borrows them
-        // all, which it cannot do while any is still being inserted.
+        // Build every material the frame needs first: a material is inserted
+        // into the graph, which cannot happen while any is being read below.
         let wanted: Vec<_> = self
             .draws
             .iter()
@@ -447,16 +447,16 @@ impl EguiIntegration {
             // Both slots cover their whole stream: every vertex of the frame
             // sits at the same ordinal in each, so one base vertex addresses
             // the position, the UV and the color together. Offsetting the
-            // slices instead would double the base vertex.
+            // ranges instead would double the base vertex.
             let entry = DrawEntry::new(
                 pipeline,
                 DrawRange::indexed(draw.indices.clone()).with_base_vertex(draw.first_vertex as i32),
             )
             .with_bind_group(GLOBAL_GROUP, global)
             .with_bind_group(MATERIAL_GROUP, material)
-            .with_vertex_buffer(POSITION_SLOT, vertices.slice(..positions_size))
-            .with_vertex_buffer(UV_COLOR_SLOT, vertices.slice(positions_size..))
-            .with_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32)
+            .with_vertex_buffer_range(POSITION_SLOT, vertices, 0..positions_size)
+            .with_vertex_buffer_range(UV_COLOR_SLOT, vertices, positions_size..vertices.size())
+            .with_index_buffer(indices, wgpu::IndexFormat::Uint32)
             .with_scissor(draw.scissor);
             scene.push(entry);
         }

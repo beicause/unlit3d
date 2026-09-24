@@ -160,19 +160,12 @@ pub struct Renderer {
     visible_cache: Vec<VisibleEntry>,
     /// Reused Vec for packed instance data.
     packed_instances_cache: Vec<MeshInstance>,
-    /// Reused Vec for cloned bind groups while the scene is built.
-    bind_group_cache: Vec<wgpu::BindGroup>,
-    /// Reused Vec for cloned buffers while the scene is built.
-    buffer_cache: Vec<wgpu::Buffer>,
-    /// Reused Vec of the vertex slot each entry of [`Self::buffer_cache`] is
-    /// bound to, parallel to it.
-    vertex_slot_cache: Vec<u32>,
     /// Reused Vec for cloned pipeline handles while the scene is built.
     pipeline_handle_cache: Vec<PipelineHandles>,
-    /// Reused Vec of per-entry handle indices while the scene is built.
+    /// Reused Vec of per-entry handles while the scene is built.
     entry_handle_cache: Vec<EntryHandles>,
     /// Reused draw list, whose allocation survives between frames.
-    scene_cache: Scene<'static>,
+    scene_cache: Scene,
 }
 
 /// The byte size of one index of `format`.
@@ -515,9 +508,6 @@ impl Renderer {
             visible_meshes_cache: Vec::new(),
             visible_cache: Vec::new(),
             packed_instances_cache: Vec::new(),
-            bind_group_cache: Vec::new(),
-            buffer_cache: Vec::new(),
-            vertex_slot_cache: Vec::new(),
             pipeline_handle_cache: Vec::new(),
             entry_handle_cache: Vec::new(),
             scene_cache: Scene::new(),
@@ -1237,16 +1227,9 @@ impl Renderer {
         self.ensure_instance_buffer(instance_count);
         self.upload_instances(&mut encoder);
 
-        // The per-entry bind groups and buffers are cloned out of the graph
-        // into the reused caches first. The scene then borrows those caches,
-        // so nothing mutates them while it is alive.
-        let mut bind_group_cache = std::mem::take(&mut self.bind_group_cache);
-        let mut buffer_cache = std::mem::take(&mut self.buffer_cache);
-        let mut vertex_slot_cache = std::mem::take(&mut self.vertex_slot_cache);
-        bind_group_cache.clear();
-        buffer_cache.clear();
-        vertex_slot_cache.clear();
-
+        // The per-entry handles are cloned out of the graph into a reused list
+        // first, so assembling the draws does not touch the graph and the
+        // assembled scene owns everything it names.
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
         {
@@ -1257,54 +1240,39 @@ impl Renderer {
                     .expect("visible entity has GpuMesh");
 
                 let mesh_bg = mesh.bind_group_id.map(|id| {
-                    bind_group_cache.push(
-                        graph_ref
-                            .get_bind_group(id)
-                            .expect("mesh bind group exists")
-                            .clone(),
-                    );
-                    bind_group_cache.len() - 1
+                    graph_ref
+                        .get_bind_group(id)
+                        .expect("mesh bind group exists")
+                        .clone()
                 });
 
-                let material_bg = match world.get::<GpuMaterial>(entry.mesh.entity) {
-                    Some(material) => {
-                        bind_group_cache.push(
-                            graph_ref
-                                .get_bind_group(material.bind_group_id)
-                                .expect("material bind group exists")
-                                .clone(),
-                        );
-                        Some(bind_group_cache.len() - 1)
-                    }
-                    None => None,
-                };
+                let material_bg = world.get::<GpuMaterial>(entry.mesh.entity).map(|material| {
+                    graph_ref
+                        .get_bind_group(material.bind_group_id)
+                        .expect("material bind group exists")
+                        .clone()
+                });
 
-                let vertex_start = buffer_cache.len();
-                let slot_start = vertex_slot_cache.len();
-                let mut vertex_count = 0;
+                let mut vertex_buffers = ArrayVec::new();
                 for &(slot, buffer) in &mesh.vertex_buffers {
-                    vertex_slot_cache.push(slot);
-                    buffer_cache.push(
-                        graph_ref
-                            .get_buffer(buffer)
-                            .expect("mesh vertex buffer exists")
-                            .clone(),
-                    );
-                    vertex_count += 1;
+                    let buffer = graph_ref
+                        .get_buffer(buffer)
+                        .expect("mesh vertex buffer exists")
+                        .clone();
+                    // A mesh binds its vertex buffers whole; the draw's range
+                    // is what picks the mesh's slice out of the pool.
+                    vertex_buffers.push((slot, buffer.clone(), 0..buffer.size()));
                 }
 
-                let index_buffer = match mesh.index_buffer {
-                    Some((buffer, format)) => {
-                        buffer_cache.push(
-                            graph_ref
-                                .get_buffer(buffer)
-                                .expect("mesh index buffer exists")
-                                .clone(),
-                        );
-                        Some((buffer_cache.len() - 1, format))
-                    }
-                    None => None,
-                };
+                let index_buffer = mesh.index_buffer.map(|(buffer, format)| {
+                    (
+                        graph_ref
+                            .get_buffer(buffer)
+                            .expect("mesh index buffer exists")
+                            .clone(),
+                        format,
+                    )
+                });
 
                 // The mesh is named once here and nowhere else: what a draw
                 // reads is carried alongside its handles, so assembling the
@@ -1312,15 +1280,13 @@ impl Renderer {
                 handles.push(EntryHandles {
                     mesh_bg,
                     material_bg,
-                    vertex_start,
-                    slot_start,
+                    vertex_buffers,
                     index_buffer,
                     shape: DrawShape {
                         indexed: mesh.indexed,
                         count: mesh.count,
                         first: mesh.first,
                         base_vertex: mesh.base_vertex,
-                        vertex_count,
                     },
                 });
             }
@@ -1348,16 +1314,13 @@ impl Renderer {
             .expect("instance buffer exists")
             .clone();
 
-        // Reuse the draw list's allocation across frames: take it back, lend it
-        // this frame's lifetime, and return it once recorded.
-        let mut scene = std::mem::take(&mut self.scene_cache).reborrow();
+        // Reuse the draw list's allocation across frames.
+        let mut scene = std::mem::take(&mut self.scene_cache);
+        scene.clear();
         assemble_scene(
             &mut scene,
             &self.visible_cache,
             &pipeline_handles,
-            &bind_group_cache,
-            &buffer_cache,
-            &vertex_slot_cache,
             &handles,
             &instance_buf,
         );
@@ -1375,13 +1338,8 @@ impl Renderer {
             scene.record(&mut pass);
         }
 
-        // The scene is recorded, so recycle its allocation first: doing so
-        // consumes the scene and ends the borrow of the caches, which can then
-        // go back into self.
-        self.scene_cache = scene.recycle();
-        self.bind_group_cache = bind_group_cache;
-        self.buffer_cache = buffer_cache;
-        self.vertex_slot_cache = vertex_slot_cache;
+        // Keep the draw list's allocation for the next frame.
+        self.scene_cache = scene;
         self.pipeline_handle_cache = pipeline_handles;
         self.entry_handle_cache = handles;
 
@@ -2758,10 +2716,8 @@ mod tests {
         assert_eq!(drawn_first.len(), 1, "the entity was drawn");
         let capacities = (
             renderer.visible_cache.capacity(),
-            renderer.bind_group_cache.capacity(),
-            renderer.buffer_cache.capacity(),
-            renderer.vertex_slot_cache.capacity(),
             renderer.entry_handle_cache.capacity(),
+            renderer.pipeline_handle_cache.capacity(),
             renderer.scene_cache.draws.capacity(),
         );
 
@@ -2770,10 +2726,8 @@ mod tests {
         assert_eq!(
             (
                 renderer.visible_cache.capacity(),
-                renderer.bind_group_cache.capacity(),
-                renderer.buffer_cache.capacity(),
-                renderer.vertex_slot_cache.capacity(),
                 renderer.entry_handle_cache.capacity(),
+                renderer.pipeline_handle_cache.capacity(),
                 renderer.scene_cache.draws.capacity(),
             ),
             capacities,
@@ -2781,28 +2735,33 @@ mod tests {
         );
     }
 
-    /// The vertex-slot cache holds only vertex buffers, while the buffer cache
-    /// also holds each mesh's index buffer. A second entry therefore starts at
-    /// a different offset in each, and a slot list indexed by the buffer
-    /// cache's offset reads past its end once an index buffer is between them.
+    /// Each entry carries its own shape and vertex buffers, so an indexed mesh
+    /// followed by another one is addressed by its own slice of the shared pool
+    /// rather than reading across entries.
     #[test]
-    fn an_indexed_mesh_followed_by_another_keeps_the_slot_cache_aligned() {
+    fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         let (mut renderer, _key) = noop_renderer();
         let key = UnlitPipelineKey::new(uv_less_options(&renderer.device));
-        // Both meshes are indexed: each contributes one vertex buffer to the
-        // slot cache but two buffers to the buffer cache.
+        // Both meshes are indexed and share the pool's index buffer, so what
+        // tells their draws apart is the slice each one names.
         let first = tri_mesh(&mut renderer, &key);
         let second = tri_mesh(&mut renderer, &key);
         assert!(first.indexed && second.indexed, "both meshes are indexed");
+        assert_ne!(first.first, second.first, "the slices do not overlap");
 
         let mut world = LocalWorld::new();
         world.spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
         world.spawn((Transform::default(), first, UnlitPipeline::new(key.clone())));
         world.spawn((Transform::default(), second, UnlitPipeline::new(key)));
 
-        // Recording the draws reads the slot of each vertex buffer, so a
-        // misaligned cache panics here rather than drawing the wrong buffers.
         renderer.render(&world);
+        let handles = &renderer.entry_handle_cache;
+        assert_eq!(handles.len(), 2, "one handle set per drawn entity");
+        assert_eq!(handles[0].shape.first, 0, "the first mesh starts at zero");
+        assert_ne!(
+            handles[0].shape.first, handles[1].shape.first,
+            "each draw keeps its own slice of the pool"
+        );
         assert_eq!(drawn(&renderer).len(), 2, "both entities were drawn");
     }
 }

@@ -20,23 +20,29 @@
 //! Consecutive draws that bind the same resource skip the redundant
 //! `set_*` call.
 //!
+//! A draw owns the handles it names — `wgpu` handles are reference-counted, so
+//! holding one keeps the resource alive and cloning one is cheap. A scene
+//! therefore borrows nothing, which is what lets several scenes be built from
+//! one resource graph and then recorded in turn.
+//!
 //! Scissor rectangles are the exception to "a draw is independent": wgpu has
 //! no reset call, so a rectangle set by one draw stays set for every draw
 //! after it in the pass. A scene therefore orders its clipped draws last —
 //! or sets [`DrawEntry::scissor`] on every draw. The stencil reference is the
 //! same kind of pass state, but it is set on every draw (from
 //! [`DrawEntry::stencil_reference`]), so it never leaks from one draw to the
-//! next.
+//! next. Both are per-[`Scene`] state: [`Scene::record`] starts from the pass's
+//! own defaults, so nothing a scene leaves behind is seen by the next one.
 
 use arrayvec::ArrayVec;
-use core::mem::{align_of, size_of};
 use core::ops::Range;
 
 /// One bind-group slot: the group index and the group to bind there.
-pub type BindGroupBinding<'a> = (u32, &'a wgpu::BindGroup);
+pub type BindGroupBinding = (u32, wgpu::BindGroup);
 
-/// One vertex-buffer slot: the slot index and the buffer slice to bind there.
-pub type VertexBufferBinding<'a> = (u32, wgpu::BufferSlice<'a>);
+/// One vertex-buffer slot: the slot index, the buffer to bind and the byte
+/// range of it the draw reads.
+pub type VertexBufferBinding = (u32, wgpu::Buffer, Range<u64>);
 
 /// A scissor rectangle, in pixels.
 ///
@@ -159,17 +165,18 @@ impl DrawRange {
 /// All slots are inline: a draw never allocates, so a whole scene can be
 /// rebuilt each frame without touching the allocator.
 #[derive(Clone, Debug)]
-pub struct DrawEntry<'a> {
+pub struct DrawEntry {
     /// The render pipeline to bind.
-    pub pipeline: &'a wgpu::RenderPipeline,
+    pub pipeline: wgpu::RenderPipeline,
     /// Bind groups, bound at the slots they name. The built-in pipeline uses
     /// index 0 for the camera, frame globals and mesh metadata, index 1 for
     /// the material, and any remaining slots for mesh-level groups.
-    pub bind_groups: ArrayVec<BindGroupBinding<'a>, MAX_BIND_GROUPS>,
+    pub bind_groups: ArrayVec<BindGroupBinding, MAX_BIND_GROUPS>,
     /// Vertex buffers, bound at the slots they name.
-    pub vertex_buffers: ArrayVec<VertexBufferBinding<'a>, MAX_VERTEX_BUFFERS>,
-    /// Index buffer and its format, when the draw is indexed.
-    pub index_buffer: Option<(wgpu::BufferSlice<'a>, wgpu::IndexFormat)>,
+    pub vertex_buffers: ArrayVec<VertexBufferBinding, MAX_VERTEX_BUFFERS>,
+    /// Index buffer, the byte range read from it and its format, when the draw
+    /// is indexed.
+    pub index_buffer: Option<(wgpu::Buffer, Range<u64>, wgpu::IndexFormat)>,
     /// Pixels outside this rectangle are discarded.
     ///
     /// A draw that sets it clips in the rasterizer instead of in the geometry.
@@ -187,13 +194,13 @@ pub struct DrawEntry<'a> {
     pub range: DrawRange,
 }
 
-impl<'a> DrawEntry<'a> {
+impl DrawEntry {
     /// A draw of `range` with the given pipeline, no bind groups, no vertex
     /// buffers, no index buffer, no scissor and a zero stencil reference; fill
     /// in the fields the pipeline needs.
-    pub fn new(pipeline: &'a wgpu::RenderPipeline, range: DrawRange) -> Self {
+    pub fn new(pipeline: &wgpu::RenderPipeline, range: DrawRange) -> Self {
         Self {
-            pipeline,
+            pipeline: pipeline.clone(),
             bind_groups: ArrayVec::new(),
             vertex_buffers: ArrayVec::new(),
             index_buffer: None,
@@ -204,14 +211,26 @@ impl<'a> DrawEntry<'a> {
     }
 
     /// Bind `bind_group` at `index`.
-    pub fn with_bind_group(mut self, index: u32, bind_group: &'a wgpu::BindGroup) -> Self {
-        self.bind_groups.push((index, bind_group));
+    pub fn with_bind_group(mut self, index: u32, bind_group: &wgpu::BindGroup) -> Self {
+        self.bind_groups.push((index, bind_group.clone()));
         self
     }
 
-    /// Bind `buffer` at vertex-buffer `slot`.
-    pub fn with_vertex_buffer(mut self, slot: u32, buffer: wgpu::BufferSlice<'a>) -> Self {
-        self.vertex_buffers.push((slot, buffer));
+    /// Bind `buffer` whole at vertex-buffer `slot`.
+    pub fn with_vertex_buffer(mut self, slot: u32, buffer: &wgpu::Buffer) -> Self {
+        self.vertex_buffers
+            .push((slot, buffer.clone(), 0..buffer.size()));
+        self
+    }
+
+    /// Bind `range` of `buffer` at vertex-buffer `slot`.
+    pub fn with_vertex_buffer_range(
+        mut self,
+        slot: u32,
+        buffer: &wgpu::Buffer,
+        range: Range<u64>,
+    ) -> Self {
+        self.vertex_buffers.push((slot, buffer.clone(), range));
         self
     }
 
@@ -228,13 +247,20 @@ impl<'a> DrawEntry<'a> {
         self
     }
 
-    /// Bind `buffer` as the index buffer.
-    pub fn with_index_buffer(
+    /// Bind `buffer` as the index buffer, reading all of it.
+    pub fn with_index_buffer(mut self, buffer: &wgpu::Buffer, format: wgpu::IndexFormat) -> Self {
+        self.index_buffer = Some((buffer.clone(), 0..buffer.size(), format));
+        self
+    }
+
+    /// Bind `range` of `buffer` as the index buffer.
+    pub fn with_index_buffer_range(
         mut self,
-        buffer: wgpu::BufferSlice<'a>,
+        buffer: &wgpu::Buffer,
+        range: Range<u64>,
         format: wgpu::IndexFormat,
     ) -> Self {
-        self.index_buffer = Some((buffer, format));
+        self.index_buffer = Some((buffer.clone(), range, format));
         self
     }
 }
@@ -250,26 +276,38 @@ impl<'a> DrawEntry<'a> {
 /// compositing, which is a correctness requirement rather than a performance
 /// one.
 #[derive(Clone, Debug, Default)]
-pub struct Scene<'a> {
+pub struct Scene {
     /// The draws to run, in order.
-    pub draws: Vec<DrawEntry<'a>>,
+    pub draws: Vec<DrawEntry>,
 }
 
-impl<'a> Scene<'a> {
+impl Scene {
     /// An empty scene.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Append `draw` to this scene.
-    pub fn push(&mut self, draw: DrawEntry<'a>) {
+    pub fn push(&mut self, draw: DrawEntry) {
         self.draws.push(draw);
     }
 
     /// Append `draw` to this scene and return it.
-    pub fn with_draw(mut self, draw: DrawEntry<'a>) -> Self {
+    pub fn with_draw(mut self, draw: DrawEntry) -> Self {
         self.draws.push(draw);
         self
+    }
+
+    /// Drop every draw, keeping the allocation for the next frame.
+    pub fn clear(&mut self) {
+        self.draws.clear();
+    }
+
+    /// Move every draw of `other` onto the end of this scene.
+    ///
+    /// `other` is left empty but keeps its own allocation.
+    pub fn extend(&mut self, other: &mut Scene) {
+        self.draws.append(&mut other.draws);
     }
 
     /// Whether the scene draws nothing.
@@ -279,21 +317,26 @@ impl<'a> Scene<'a> {
 
     /// Record the scene into `pass`, skipping any `set_*` call whose target is
     /// already bound from the previous draw.
+    ///
+    /// The pass state the recording tracks — the scissor rectangle and the
+    /// stencil reference in particular — starts from the pass's own defaults
+    /// and ends with this scene, so recording a second scene into the same pass
+    /// does not inherit the first one's clips.
     pub fn record(&self, pass: &mut wgpu::RenderPass<'_>) {
         let mut state = PassState::default();
         for draw in &self.draws {
-            if state.pipeline != Some(draw.pipeline) {
-                pass.set_pipeline(draw.pipeline);
-                state.pipeline = Some(draw.pipeline);
+            if state.pipeline != Some(&draw.pipeline) {
+                pass.set_pipeline(&draw.pipeline);
+                state.pipeline = Some(&draw.pipeline);
             }
-            for &(index, bind_group) in &draw.bind_groups {
-                state.set_bind_group(pass, index, bind_group);
+            for (index, bind_group) in &draw.bind_groups {
+                state.set_bind_group(pass, *index, bind_group);
             }
-            for (slot, buffer) in &draw.vertex_buffers {
-                state.set_vertex_buffer(pass, *slot, *buffer);
+            for (slot, buffer, range) in &draw.vertex_buffers {
+                state.set_vertex_buffer(pass, *slot, buffer, range.clone());
             }
-            if let Some((buffer, format)) = &draw.index_buffer {
-                state.set_index_buffer(pass, *buffer, *format);
+            if let Some((buffer, range, format)) = &draw.index_buffer {
+                state.set_index_buffer(pass, buffer, range.clone(), *format);
             }
             if let Some(scissor) = &draw.scissor {
                 state.set_scissor(pass, *scissor);
@@ -313,54 +356,6 @@ impl<'a> Scene<'a> {
             }
         }
     }
-    /// Empty this scene and hand back its allocation with an unconstrained
-    /// lifetime, ready to be reused by a later frame.
-    ///
-    /// Reusing the allocation is what keeps a steady scene from allocating;
-    /// see [`Scene::reborrow`] for the other half.
-    pub fn recycle(mut self) -> Scene<'static> {
-        self.draws.clear();
-        Scene {
-            draws: launder(self.draws),
-        }
-    }
-}
-
-impl Scene<'static> {
-    /// Reuse this empty scene's allocation for a scene that borrows
-    /// shorter-lived resources, such as one frame's pipelines and buffers.
-    ///
-    /// Paired with [`Scene::recycle`], this lets a caller keep a
-    /// `Scene<'static>` between frames and lend it the frame's lifetime while
-    /// the frame is recorded.
-    pub fn reborrow<'a>(self) -> Scene<'a> {
-        Scene {
-            draws: launder(self.draws),
-        }
-    }
-}
-
-/// Move a `Vec`'s allocation to a different element lifetime.
-///
-/// The vector must be empty: no element is moved, so no value of the old
-/// lifetime is ever observed as the new one. It is how a [`Scene`] survives
-/// between frames while each frame's draws borrow resources that do not.
-///
-/// The two element types must agree in size and alignment. Reallocating the
-/// elements through [`Iterator::collect`] keeps the source allocation only
-/// while the iterator's lower size bound asks for at least as much capacity
-/// as the source had, which holds exactly when `B` is no larger than `A`. The
-/// const assert pins the "'static" -> "shorter" and back round trip this is
-/// used for to the one case where the reuse is guaranteed.
-fn launder<A, B>(vec: Vec<A>) -> Vec<B> {
-    const {
-        assert!(
-            size_of::<A>() == size_of::<B>() && align_of::<A>() == align_of::<B>(),
-            "a Vec can only change element lifetime between types of equal size and alignment",
-        );
-    }
-    debug_assert!(vec.is_empty(), "only an empty Vec can change lifetime");
-    vec.into_iter().map(|_| unreachable!()).collect()
 }
 
 /// Maximum number of bind-group slots a pass is tracked for.
@@ -381,10 +376,15 @@ pub const MAX_VERTEX_BUFFERS: usize = 16;
 trait RenderPassInterface<'a> {
     /// Bind `bind_group` at `index`.
     fn set_bind_group(&mut self, index: u32, bind_group: &'a wgpu::BindGroup);
-    /// Bind `buffer` at vertex-buffer `slot`.
-    fn set_vertex_buffer(&mut self, slot: u32, buffer: wgpu::BufferSlice<'a>);
-    /// Bind the index buffer.
-    fn set_index_buffer(&mut self, buffer: wgpu::BufferSlice<'a>, format: wgpu::IndexFormat);
+    /// Bind `range` of `buffer` at vertex-buffer `slot`.
+    fn set_vertex_buffer(&mut self, slot: u32, buffer: &'a wgpu::Buffer, range: Range<u64>);
+    /// Bind `range` of `buffer` as the index buffer.
+    fn set_index_buffer(
+        &mut self,
+        buffer: &'a wgpu::Buffer,
+        range: Range<u64>,
+        format: wgpu::IndexFormat,
+    );
     /// Set the scissor rectangle.
     fn set_scissor_rect(&mut self, scissor: ScissorRect);
     /// Set the stencil reference.
@@ -396,12 +396,17 @@ impl<'a, 'p> RenderPassInterface<'a> for wgpu::RenderPass<'p> {
         wgpu::RenderPass::set_bind_group(self, index, bind_group, &[]);
     }
 
-    fn set_vertex_buffer(&mut self, slot: u32, buffer: wgpu::BufferSlice<'a>) {
-        wgpu::RenderPass::set_vertex_buffer(self, slot, buffer);
+    fn set_vertex_buffer(&mut self, slot: u32, buffer: &'a wgpu::Buffer, range: Range<u64>) {
+        wgpu::RenderPass::set_vertex_buffer(self, slot, buffer.slice(range));
     }
 
-    fn set_index_buffer(&mut self, buffer: wgpu::BufferSlice<'a>, format: wgpu::IndexFormat) {
-        wgpu::RenderPass::set_index_buffer(self, buffer, format);
+    fn set_index_buffer(
+        &mut self,
+        buffer: &'a wgpu::Buffer,
+        range: Range<u64>,
+        format: wgpu::IndexFormat,
+    ) {
+        wgpu::RenderPass::set_index_buffer(self, buffer.slice(range), format);
     }
 
     fn set_scissor_rect(&mut self, scissor: ScissorRect) {
@@ -421,16 +426,18 @@ impl<'a, 'p> RenderPassInterface<'a> for wgpu::RenderPass<'p> {
 
 /// Which resources the previous draw left bound.
 ///
-/// `wgpu` resources compare by identity, so a plain `==` is the fast
-/// "is this the same resource as last time" test the recording loop needs.
-/// The slots are fixed-capacity ([`MAX_BIND_GROUPS`] / [`MAX_VERTEX_BUFFERS`])
-/// so recording a frame never allocates.
+/// The entries borrow from the draws being recorded, which outlive the
+/// recording, so tracking them costs no clones. `wgpu` resources compare by
+/// identity, so a plain `==` is the fast "is this the same resource as last
+/// time" test the recording loop needs. The slots are fixed-capacity
+/// ([`MAX_BIND_GROUPS`] / [`MAX_VERTEX_BUFFERS`]) so recording a frame never
+/// allocates.
 #[derive(Default)]
 struct PassState<'a> {
     pipeline: Option<&'a wgpu::RenderPipeline>,
     bind_groups: ArrayVec<(u32, &'a wgpu::BindGroup), MAX_BIND_GROUPS>,
-    vertex_buffers: ArrayVec<(u32, wgpu::BufferSlice<'a>), MAX_VERTEX_BUFFERS>,
-    index_buffer: Option<(wgpu::BufferSlice<'a>, wgpu::IndexFormat)>,
+    vertex_buffers: ArrayVec<(u32, &'a wgpu::Buffer, Range<u64>), MAX_VERTEX_BUFFERS>,
+    index_buffer: Option<(&'a wgpu::Buffer, Range<u64>, wgpu::IndexFormat)>,
     scissor: Option<ScissorRect>,
     stencil_reference: u32,
 }
@@ -461,45 +468,50 @@ impl<'a> PassState<'a> {
         pass.set_bind_group(index, bind_group);
     }
 
+    /// Vertex-buffer slots are keyed by slot, and their value is the buffer
+    /// and the byte range bound to it.
     fn set_vertex_buffer(
         &mut self,
         pass: &mut impl RenderPassInterface<'a>,
         slot: u32,
-        buffer: wgpu::BufferSlice<'a>,
+        buffer: &'a wgpu::Buffer,
+        range: Range<u64>,
     ) {
         if let Some(bound) = self
             .vertex_buffers
             .iter_mut()
-            .find(|(bound, _)| *bound == slot)
+            .find(|(bound, _, _)| *bound == slot)
         {
-            if bound.1 == buffer {
+            if core::ptr::eq(bound.1, buffer) && bound.2 == range {
                 return;
             }
-            bound.1 = buffer;
+            *bound = (slot, buffer, range.clone());
         } else {
             assert!(
                 slot < MAX_VERTEX_BUFFERS as u32,
                 "vertex buffer slot {slot} exceeds MAX_VERTEX_BUFFERS ({MAX_VERTEX_BUFFERS})"
             );
-            self.vertex_buffers.push((slot, buffer));
+            self.vertex_buffers.push((slot, buffer, range.clone()));
         }
-        pass.set_vertex_buffer(slot, buffer);
+        pass.set_vertex_buffer(slot, buffer, range);
     }
 
     fn set_index_buffer(
         &mut self,
         pass: &mut impl RenderPassInterface<'a>,
-        buffer: wgpu::BufferSlice<'a>,
+        buffer: &'a wgpu::Buffer,
+        range: Range<u64>,
         format: wgpu::IndexFormat,
     ) {
-        if let Some((bound, bound_format)) = &self.index_buffer
-            && *bound == buffer
+        if let Some((bound, bound_range, bound_format)) = &self.index_buffer
+            && core::ptr::eq(*bound, buffer)
+            && *bound_range == range
             && *bound_format == format
         {
             return;
         }
-        self.index_buffer = Some((buffer, format));
-        pass.set_index_buffer(buffer, format);
+        pass.set_index_buffer(buffer, range.clone(), format);
+        self.index_buffer = Some((buffer, range, format));
     }
 
     /// Narrow rasterization to `scissor`, skipping the call when the pass
@@ -681,11 +693,16 @@ fn fs_main() -> @location(0) vec4<f32> {
             self.bind_groups.push(index);
         }
 
-        fn set_vertex_buffer(&mut self, slot: u32, _buffer: wgpu::BufferSlice<'a>) {
+        fn set_vertex_buffer(&mut self, slot: u32, _buffer: &'a wgpu::Buffer, _range: Range<u64>) {
             self.vertex_buffers.push(slot);
         }
 
-        fn set_index_buffer(&mut self, _buffer: wgpu::BufferSlice<'a>, format: wgpu::IndexFormat) {
+        fn set_index_buffer(
+            &mut self,
+            _buffer: &'a wgpu::Buffer,
+            _range: Range<u64>,
+            format: wgpu::IndexFormat,
+        ) {
             self.index_buffers.push(format);
         }
 
@@ -771,25 +788,38 @@ fn fs_main() -> @location(0) vec4<f32> {
 
         let mut pass = MockPass::default();
         let mut state = PassState::default();
-        let slice = buffer.slice(..);
+        let whole = 0..buffer.size();
+        let head = 0..32;
+        let tail = 32..64;
 
         state.set_bind_group(&mut pass, 0, &bind_group);
         state.set_bind_group(&mut pass, 0, &bind_group);
         state.set_bind_group(&mut pass, 3, &bind_group);
 
-        state.set_vertex_buffer(&mut pass, 0, slice);
-        state.set_vertex_buffer(&mut pass, 0, slice);
-        state.set_vertex_buffer(&mut pass, 2, slice);
+        state.set_vertex_buffer(&mut pass, 0, &buffer, whole.clone());
+        state.set_vertex_buffer(&mut pass, 0, &buffer, whole.clone());
+        // The same buffer under a different range is a different binding, so
+        // the call is not skipped.
+        state.set_vertex_buffer(&mut pass, 0, &buffer, head.clone());
+        state.set_vertex_buffer(&mut pass, 2, &buffer, whole.clone());
 
-        state.set_index_buffer(&mut pass, slice, wgpu::IndexFormat::Uint16);
-        state.set_index_buffer(&mut pass, slice, wgpu::IndexFormat::Uint16);
-        state.set_index_buffer(&mut pass, slice, wgpu::IndexFormat::Uint32);
+        state.set_index_buffer(&mut pass, &buffer, head.clone(), wgpu::IndexFormat::Uint16);
+        state.set_index_buffer(&mut pass, &buffer, head.clone(), wgpu::IndexFormat::Uint16);
+        // A different range and a different format each re-bind.
+        state.set_index_buffer(&mut pass, &buffer, tail.clone(), wgpu::IndexFormat::Uint16);
+        state.set_index_buffer(&mut pass, &buffer, tail.clone(), wgpu::IndexFormat::Uint32);
 
         assert_eq!(pass.bind_groups, vec![0, 3]);
-        assert_eq!(pass.vertex_buffers, vec![0, 2]);
+        // Slot 0 is bound whole, skipped as a repeat, re-bound for the
+        // narrower range, then slot 2 is bound for the first time.
+        assert_eq!(pass.vertex_buffers, vec![0, 0, 2]);
         assert_eq!(
             pass.index_buffers,
-            vec![wgpu::IndexFormat::Uint16, wgpu::IndexFormat::Uint32]
+            vec![
+                wgpu::IndexFormat::Uint16,
+                wgpu::IndexFormat::Uint16,
+                wgpu::IndexFormat::Uint32
+            ]
         );
     }
 
@@ -799,10 +829,10 @@ fn fs_main() -> @location(0) vec4<f32> {
         assert!(scene.is_empty());
     }
 
-    /// Recycling an empty scene and borrowing it back must hand the same
-    /// allocation to the next frame, so a steady scene never allocates.
+    /// Clearing a scene keeps its allocation, so a steady scene rebuilt each
+    /// frame does not allocate.
     #[test]
-    fn recycle_and_reborrow_keep_the_allocation() {
+    fn clearing_a_scene_keeps_the_allocation() {
         let (device, _queue) = crate::util::test::noop_device();
         let pipeline = noop_pipeline(&device);
 
@@ -812,40 +842,46 @@ fn fs_main() -> @location(0) vec4<f32> {
         let ptr = scene.draws.as_ptr();
         let cap = scene.draws.capacity();
 
-        let scene = scene.recycle();
+        scene.clear();
         assert!(scene.is_empty());
         assert_eq!(scene.draws.as_ptr(), ptr);
         assert_eq!(scene.draws.capacity(), cap);
 
-        let mut next = scene.reborrow();
-        assert!(next.is_empty());
-        assert_eq!(next.draws.as_ptr(), ptr);
-        assert_eq!(next.draws.capacity(), cap);
-
-        next.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..9)));
-        let recycled = next.recycle();
-        assert_eq!(recycled.draws.as_ptr(), ptr);
-        assert_eq!(recycled.draws.capacity(), cap);
+        scene.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..9)));
+        assert_eq!(scene.draws.as_ptr(), ptr, "the allocation was reused");
     }
 
-    /// [`launder`] keeps the source allocation, but only because the types it
-    /// is used with have the same size and alignment. `collect` on an empty
-    /// iterator keeps whatever its lower size bound asks for, so an equal-size
-    /// element type is exactly the case where the capacity survives.
+    /// Extending one scene with another moves the draws across and leaves the
+    /// source empty but still holding its own allocation.
+    ///
+    /// The target reserves room up front so appending does not have to grow it;
+    /// what the test pins is that the draws move and that the source's
+    /// allocation survives to be refilled next frame.
     #[test]
-    fn laundering_an_empty_vec_keeps_its_allocation() {
-        // Two distinct types of equal size: the assert accepts them, and the
-        // allocation must survive the change of element type.
-        let mut vec: Vec<u64> = Vec::with_capacity(4);
-        vec.push(1);
-        vec.clear();
-        let ptr = vec.as_ptr();
-        let cap = vec.capacity();
+    fn extending_moves_the_draws_and_keeps_both_allocations() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let pipeline = noop_pipeline(&device);
 
-        let laundered: Vec<i64> = launder(vec);
-        assert_eq!(laundered.as_ptr().cast::<u64>(), ptr);
-        assert_eq!(laundered.capacity(), cap);
-        assert!(laundered.is_empty());
+        let mut into = Scene::new();
+        into.draws.reserve_exact(3);
+        into.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..3)));
+        let into_ptr = into.draws.as_ptr();
+
+        let mut from = Scene::new();
+        from.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..6)));
+        from.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..9)));
+        let from_cap = from.draws.capacity();
+
+        into.extend(&mut from);
+
+        assert_eq!(into.draws.len(), 3, "the source's draws moved across");
+        assert_eq!(into.draws.as_ptr(), into_ptr, "the target kept its own");
+        assert!(from.is_empty(), "the source was emptied");
+        assert_eq!(
+            from.draws.capacity(),
+            from_cap,
+            "the source kept its allocation for the next frame"
+        );
     }
 
     #[test]

@@ -10,11 +10,14 @@
 use core::cmp::Ordering;
 use core::marker::PhantomData;
 
+use arrayvec::ArrayVec;
 use unlit_ecs::{LocalWorld, TypeIdHashMap};
 use wgpu_unlit_render::specialize::{Specializable, Specializer, SurfaceKey, Variants};
 
 use wgpu_unlit_render::pipeline::{GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP};
-use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
+use wgpu_unlit_render::scene::{
+    DrawEntry, DrawRange, MAX_VERTEX_BUFFERS, Scene, VertexBufferBinding,
+};
 
 use crate::bounds::FrustumPlanes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, GpuPipeline, ZSortedDrawing};
@@ -342,31 +345,23 @@ pub(crate) struct DrawShape {
     /// Where the mesh's vertices start, for an indexed draw to offset every
     /// index by.
     pub(crate) base_vertex: u32,
-    /// How many vertex buffers the draw binds, starting at
-    /// [`EntryHandles::vertex_start`].
-    pub(crate) vertex_count: usize,
 }
 
 /// One visible entry's resource-graph handles, resolved before the scene is
 /// assembled.
 ///
-/// The groups and buffers themselves live in the renderer's caches, indexed by
-/// these fields, so the assembled [`Scene`] borrows the caches rather than the
-/// resource graph.
+/// The handles are cloned out of the graph once per entry and owned here, so
+/// assembling the draws touches neither the graph nor the world — and the
+/// assembled [`Scene`] borrows nothing.
 pub(crate) struct EntryHandles {
-    /// Index into the frame's bind-group cache of the mesh group, if any.
-    pub(crate) mesh_bg: Option<usize>,
-    /// Index into the frame's bind-group cache of the material group, if any.
-    pub(crate) material_bg: Option<usize>,
-    /// Index into the frame's buffer cache of the first vertex buffer.
-    pub(crate) vertex_start: usize,
-    /// Index into the frame's vertex-slot cache of the first vertex buffer's
-    /// slot. The slot cache holds only vertex buffers, so it is indexed
-    /// separately from the buffer cache, which also holds index buffers.
-    pub(crate) slot_start: usize,
-    /// Index into the frame's buffer cache of the index buffer, with its
-    /// format, when the mesh is indexed.
-    pub(crate) index_buffer: Option<(usize, wgpu::IndexFormat)>,
+    /// The mesh's bind group, if it has one.
+    pub(crate) mesh_bg: Option<wgpu::BindGroup>,
+    /// The material's bind group, if the entity carries a material.
+    pub(crate) material_bg: Option<wgpu::BindGroup>,
+    /// The mesh's vertex buffers, each with the slot it binds to.
+    pub(crate) vertex_buffers: ArrayVec<VertexBufferBinding, MAX_VERTEX_BUFFERS>,
+    /// The index buffer and its format, when the mesh is indexed.
+    pub(crate) index_buffer: Option<(wgpu::Buffer, wgpu::IndexFormat)>,
     /// What the draw reads: whether it is indexed and how many indices or
     /// vertices.
     pub(crate) shape: DrawShape,
@@ -374,29 +369,20 @@ pub(crate) struct EntryHandles {
 
 /// Append one draw per visible entry to `scene`.
 ///
-/// The entries have already been culled, resolved and sorted, their
-/// resource-graph handles already cloned into `bind_groups` and `buffers`, and
-/// each draw's shape already taken from its [`GpuMesh`] (see
-/// [`EntryHandles`]). Assembling the draws is therefore a linear pass over
-/// slices that names nothing the world owns, which keeps both the resource
-/// graph and the world out of the scene's lifetime.
+/// The entries have already been culled, resolved and sorted and their
+/// resource-graph handles already cloned into [`EntryHandles`], so assembling
+/// the draws is a linear pass over slices that names nothing the world or the
+/// graph owns.
 ///
 /// The draws are appended in `visible` order, so the sort that put neighbours
 /// on the same pipeline and bind groups is what keeps recording's state changes
 /// few.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the handles are disjoint borrows from different renderer fields"
-)]
-pub(crate) fn assemble_scene<'a>(
-    scene: &mut Scene<'a>,
+pub(crate) fn assemble_scene(
+    scene: &mut Scene,
     visible: &[VisibleEntry],
-    pipelines: &'a [PipelineHandles],
-    bind_groups: &'a [wgpu::BindGroup],
-    buffers: &'a [wgpu::Buffer],
-    vertex_slots: &[u32],
+    pipelines: &[PipelineHandles],
     handles: &[EntryHandles],
-    instance_buffer: &'a wgpu::Buffer,
+    instance_buffer: &wgpu::Buffer,
 ) {
     for (draw_idx, entry) in visible.iter().enumerate() {
         let handle = &handles[draw_idx];
@@ -416,22 +402,19 @@ pub(crate) fn assemble_scene<'a>(
         if let Some(global) = &pipeline.global {
             draw = draw.with_bind_group(GLOBAL_GROUP, global);
         }
-        if let Some(index) = handle.material_bg {
-            draw = draw.with_bind_group(MATERIAL_GROUP, &bind_groups[index]);
+        if let Some(material_bg) = &handle.material_bg {
+            draw = draw.with_bind_group(MATERIAL_GROUP, material_bg);
         }
-        if let Some(index) = handle.mesh_bg {
-            draw = draw.with_bind_group(MESH_GROUP, &bind_groups[index]);
+        if let Some(mesh_bg) = &handle.mesh_bg {
+            draw = draw.with_bind_group(MESH_GROUP, mesh_bg);
         }
-        for offset in 0..handle.shape.vertex_count {
-            draw = draw.with_vertex_buffer(
-                vertex_slots[handle.slot_start + offset],
-                buffers[handle.vertex_start + offset].slice(..),
-            );
+        for (slot, buffer, range) in &handle.vertex_buffers {
+            draw = draw.with_vertex_buffer_range(*slot, buffer, range.clone());
         }
-        if let Some((index, format)) = handle.index_buffer {
-            draw = draw.with_index_buffer(buffers[index].slice(..), format);
+        if let Some((buffer, format)) = &handle.index_buffer {
+            draw = draw.with_index_buffer(buffer, *format);
         }
-        draw = draw.with_vertex_buffer(INSTANCE_SLOT, instance_buffer.slice(..));
+        draw = draw.with_vertex_buffer(INSTANCE_SLOT, instance_buffer);
 
         scene.push(draw);
     }

@@ -464,16 +464,16 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     // Per-instance data places the geometry, so the slot is bound only when
     // the variant reads it. A variant without it draws one instance.
     if instanced {
-        draw = draw.with_vertex_buffer(INSTANCE_SLOT, instance_data.slice(..));
+        draw = draw.with_vertex_buffer(INSTANCE_SLOT, &instance_data);
     }
     if let Some(positions) = &fixture.mesh.positions {
-        draw = draw.with_vertex_buffer(POSITION_SLOT, positions.slice(..));
+        draw = draw.with_vertex_buffer(POSITION_SLOT, positions);
     }
     if let Some(uv_color) = &fixture.mesh.uv_color {
-        draw = draw.with_vertex_buffer(UV_COLOR_SLOT, uv_color.slice(..));
+        draw = draw.with_vertex_buffer(UV_COLOR_SLOT, uv_color);
     }
     if let Some((buffer, _)) = &fixture.mesh.indices {
-        draw = draw.with_index_buffer(buffer.slice(..), wgpu::IndexFormat::Uint16);
+        draw = draw.with_index_buffer(buffer, wgpu::IndexFormat::Uint16);
     }
     let scene = Scene::new().with_draw(draw);
 
