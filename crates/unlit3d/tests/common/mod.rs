@@ -126,10 +126,80 @@ pub fn camera_view(aspect: f32) -> Camera {
     }
 }
 
+/// A dense grid of cubes as one mesh, returned as
+/// `(positions, uvs, colors, indices)`.
+///
+/// One cube is a couple of hundred bytes, too small to push a pool past its
+/// starting capacity; a grid of many of them is what makes a pool grow inside
+/// a test.
+pub fn grid_cube(steps: u32) -> RawMesh {
+    let mut positions = Vec::new();
+    let mut uvs = Vec::new();
+    let mut colors = Vec::new();
+    let mut indices = Vec::new();
+
+    for i in 0..steps {
+        for j in 0..steps {
+            for k in 0..steps {
+                let offset = glam::Vec3::new(i as f32 * 3.0, j as f32 * 3.0, k as f32 * 3.0);
+                let (mut cube_positions, mut cube_uvs, mut cube_colors, cube_indices) = cube();
+                for position in &mut cube_positions {
+                    *position = [
+                        position[0] * 0.5 + offset.x,
+                        position[1] * 0.5 + offset.y,
+                        position[2] * 0.5 + offset.z,
+                    ];
+                }
+                let base = positions.len() as u32;
+                positions.append(&mut cube_positions);
+                uvs.append(&mut cube_uvs);
+                colors.append(&mut cube_colors);
+                indices.extend(cube_indices.into_iter().map(|index| index + base));
+            }
+        }
+    }
+
+    (positions, uvs, colors, indices)
+}
+
 /// Allocate the cube mesh through the renderer for `key` and return a
 /// `GpuMesh` handle.
 pub fn allocate_cube_mesh(r: &mut Renderer, key: &UnlitPipelineKey) -> GpuMesh {
+    allocate_offset_cube_mesh(r, key, glam::Vec3::ZERO)
+}
+
+/// Allocate a cube mesh whose vertices are offset by `offset` in mesh space,
+/// returning the `GpuMesh` handle.
+///
+/// The offset is baked into the vertices, so two cubes allocated from
+/// different offsets draw differently even at the same transform — which is
+/// what tells a mesh apart from the one whose pool range it sits next to.
+pub fn allocate_offset_cube_mesh(
+    r: &mut Renderer,
+    key: &UnlitPipelineKey,
+    offset: glam::Vec3,
+) -> GpuMesh {
     let (positions, uvs, colors, indices) = cube();
+    let positions = positions
+        .into_iter()
+        .map(|position| {
+            [
+                position[0] + offset.x,
+                position[1] + offset.y,
+                position[2] + offset.z,
+            ]
+        })
+        .collect::<Vec<_>>();
+    r.allocate_unlit_mesh(key, &positions, Some(&uvs), Some(&colors), Some(&indices))
+}
+
+/// Allocate a dense grid of cubes through the renderer for `key`, returning
+/// the `GpuMesh` handle.
+///
+/// `steps` cubes per axis means `steps³` cubes, which is what makes a pool
+/// grow inside a test.
+pub fn allocate_grid_cube_mesh(r: &mut Renderer, key: &UnlitPipelineKey, steps: u32) -> GpuMesh {
+    let (positions, uvs, colors, indices) = grid_cube(steps);
     r.allocate_unlit_mesh(key, &positions, Some(&uvs), Some(&colors), Some(&indices))
 }
 
