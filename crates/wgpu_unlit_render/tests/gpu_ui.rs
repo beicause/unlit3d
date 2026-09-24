@@ -110,8 +110,22 @@ fn render_ui_with(
     // onto clip space, so the viewport the projection needs is the point size
     // regardless of the pixel density.
     let viewport = [WIDTH as f32, HEIGHT as f32];
+    // One encoder carries both frames' staged uploads and the pass that draws
+    // the last of them, so everything reaches the GPU in one submission.
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test::encoder"),
+        });
     let warm = egui_ctx.run_ui(input(pixels_per_point), &mut contents);
-    ui.update(&mut graph, &ctx.queue, &egui_ctx, warm, pixels_per_point);
+    ui.update(
+        &mut graph,
+        &ctx.queue,
+        &mut encoder,
+        &egui_ctx,
+        warm,
+        pixels_per_point,
+    );
     // egui's tessellated points map onto clip space through the caller's
     // camera uniform, written once: the viewport does not change.
     use zerocopy::IntoBytes;
@@ -120,17 +134,19 @@ fn render_ui_with(
     ctx.queue
         .write_buffer(&globals, 0, Globals::default().as_bytes());
     let output = egui_ctx.run_ui(input(pixels_per_point), &mut contents);
-    ui.update(&mut graph, &ctx.queue, &egui_ctx, output, pixels_per_point);
+    ui.update(
+        &mut graph,
+        &ctx.queue,
+        &mut encoder,
+        &egui_ctx,
+        output,
+        pixels_per_point,
+    );
 
     let (width, height) = (WIDTH, HEIGHT);
     let ft = create_render_target(&ctx.device, COLOR_FORMAT, width, height, SAMPLES);
     let context = ft.attachments;
     let target = ft.color;
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("test::encoder"),
-        });
     let scene = ui.scene(&mut graph);
     {
         let mut pass = context.begin_pass(

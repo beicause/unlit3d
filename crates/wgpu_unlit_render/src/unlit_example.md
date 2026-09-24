@@ -59,8 +59,8 @@ fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Example {
     // Static geometry goes straight into mapped-at-creation buffers: the
     // bytes are written into the buffer's own memory, so there is no
     // staging copy and no `COPY_DST` usage to declare. Data that changes
-    // every frame is better off in a `COPY_DST` buffer written through
-    // `queue.write_buffer`, which needs no map/unmap cycle.
+    // every frame wants a `COPY_DST` buffer instead, uploaded through a
+    // `StagingBuffer`, which reuses one staging buffer across frames.
     let upload = |bytes: &[u8], usage: wgpu::BufferUsages, label: &str| {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),

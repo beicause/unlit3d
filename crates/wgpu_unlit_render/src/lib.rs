@@ -28,6 +28,8 @@
 //!   packing many small ranges into a single GPU buffer.
 //! - [`buffer_pool`] and [`vertex_pool`]: GPU buffers sub-allocated with it,
 //!   so many meshes share one buffer instead of each owning its own.
+//! - [`staging`]: host-visible staging buffers reused across frames, for the
+//!   data that changes every frame.
 //! - [`scene`]: the declarative description of a frame — pipelines, their
 //!   bindings, materials, meshes and vertex buffers.
 //! - [`render_attachments`]: the attachments a pass renders into and the
@@ -87,6 +89,7 @@ pub mod render_attachments;
 pub mod resources;
 pub mod scene;
 pub mod specialize;
+pub mod staging;
 #[cfg(feature = "egui")]
 pub mod ui;
 pub mod util;

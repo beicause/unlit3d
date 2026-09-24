@@ -28,6 +28,7 @@ use wgpu_unlit_render::specialize::{
     Specializable, Specializer, SpecializerKey, SurfaceKey, VertexAttributes,
     VertexBufferLayoutDesc,
 };
+use wgpu_unlit_render::staging::StagingBuffer;
 use zerocopy::IntoBytes;
 
 use crate::bounds::Aabb;
@@ -98,10 +99,24 @@ pub struct Renderer {
     free_metadata: Vec<u32>,
     /// How many metadata entries the current storage buffer can hold.
     metadata_capacity: u32,
+    /// Whether the metadata array changed since it was last uploaded.
+    ///
+    /// Allocating or removing a mesh marks it; the next
+    /// [frame](Self::render) uploads the array then, so an upload always lands
+    /// in the same encoder as the draws that read it.
+    metadata_dirty: bool,
 
     /// A reused instance-data buffer, grown as needed.
     instance_buffer: Option<wgpu::Buffer>,
     instance_capacity: u32,
+
+    /// Reused staging buffers, one per buffer uploaded to every frame, so a
+    /// steady frame reaches the GPU without a per-frame allocation or
+    /// submission.
+    camera_staging: StagingBuffer,
+    globals_staging: StagingBuffer,
+    metadata_staging: StagingBuffer,
+    instance_staging: StagingBuffer,
 
     /// The pool every mesh uploaded through
     /// [`Self::allocate_unlit_mesh`](Self::allocate_unlit_mesh) keeps its
@@ -484,8 +499,13 @@ impl Renderer {
             metadata: Vec::new(),
             free_metadata: Vec::new(),
             metadata_capacity: 1,
+            metadata_dirty: false,
             instance_buffer: None,
             instance_capacity: 0,
+            camera_staging: StagingBuffer::new(),
+            globals_staging: StagingBuffer::new(),
+            metadata_staging: StagingBuffer::new(),
+            instance_staging: StagingBuffer::new(),
             index_pool,
             index_pool_id,
             vertex_pool,
@@ -573,8 +593,7 @@ impl Renderer {
     /// attributes in any format. The pipeline specializes on the layout.
     ///
     /// The mesh's [`Aabb`](crate::Aabb) is recorded in the renderer's
-    /// mesh-metadata array; call [`Renderer::update_metadata_buffer`] once the
-    /// meshes for the frame are allocated to upload the array.
+    /// mesh-metadata array, which the next [frame](Renderer::render) uploads.
     ///
     /// [`Renderer::allocate_unlit_mesh`] is the helper that builds the
     /// compressed layout the built-in unlit shader expects.
@@ -594,9 +613,8 @@ impl Renderer {
 
     /// Upload a mesh together with the full metadata entry it owns.
     ///
-    /// The entry is appended to the CPU-side array and reaches the GPU only
-    /// when [`Renderer::update_metadata_buffer`] is called; the returned
-    /// handle names its index.
+    /// The entry is appended to the CPU-side array and reaches the GPU on the
+    /// next [frame](Renderer::render); the returned handle names its index.
     fn allocate_mesh_with_metadata(&mut self, desc: MeshDesc, metadata: MeshMetadata) -> GpuMesh {
         let MeshDesc {
             vertex_buffers,
@@ -682,6 +700,7 @@ impl Renderer {
                 index
             }
         };
+        self.metadata_dirty = true;
 
         // The uniform names the entry the mesh just took, so it is written
         // once the index above is known.
@@ -1112,10 +1131,9 @@ impl Renderer {
     ///
     /// Its metadata slot is freed and reused by a mesh allocated later, so
     /// removing meshes does not grow the array a long-lived renderer uploads.
-    /// Call [`Renderer::update_metadata_buffer`] before the next frame so the
-    /// array the shader reads matches. Removing a mesh does not shrink the
-    /// metadata buffer: it grows to the largest array it has ever held and
-    /// stays there.
+    /// The next [frame](Renderer::render) uploads the array the shader reads.
+    /// Removing a mesh does not shrink the metadata buffer: it grows to the
+    /// largest array it has ever held and stays there.
     ///
     /// Removing a mesh while the world still holds its handle is a programming
     /// error the caller has to avoid: nothing detects the stale handle.
@@ -1136,6 +1154,7 @@ impl Renderer {
         if let Some(entry) = emptied {
             *entry = MeshMetadata::default();
             self.free_metadata.push(mesh.metadata_index);
+            self.metadata_dirty = true;
         }
     }
 
@@ -1170,30 +1189,33 @@ impl Renderer {
             clip_from_world: c.clip_from_world,
             position: c.position,
         });
+
+        // The frame records into one encoder, the staged uploads included, so
+        // whatever a frame stages reaches the GPU in its own submission —
+        // including on the paths below that draw nothing.
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("unlit3d::encoder"),
+            });
+
+        // A frame that draws still has to publish a changed metadata array, but
+        // one that does not draw can leave it for the next frame.
+        self.upload_metadata(&mut encoder);
+
         let Some(camera) = camera else {
-            self.clear_frame(load_ops);
+            self.clear_pass(&mut encoder, load_ops);
+            self.queue.submit([encoder.finish()]);
             return;
         };
 
         // Update global uniforms.
         self.globals.time += self.globals.delta_time;
         self.globals.frame_count += 1;
-        self.queue.write_buffer(
-            self.graph
-                .get_buffer(self.globals_buf)
-                .expect("globals buffer exists"),
-            0,
-            self.globals.as_bytes(),
-        );
+        self.upload_globals(&mut encoder);
 
         let view = View::new(camera.clip_from_world, camera.position);
-        self.queue.write_buffer(
-            self.graph
-                .get_buffer(self.camera_buf)
-                .expect("camera buffer exists"),
-            0,
-            view.as_bytes(),
-        );
+        self.upload_camera(&mut encoder, &view);
 
         // Resolve the surface the bound attachments describe, and key every
         // pipeline against it. The surface is cached by `set_render_target`.
@@ -1205,23 +1227,15 @@ impl Renderer {
         // its allocation between frames, so a steady scene allocates nothing.
         self.collect_and_sort_visible(world, &camera, surface);
         if self.visible_cache.is_empty() {
-            self.clear_frame(load_ops);
+            self.clear_pass(&mut encoder, load_ops);
+            self.queue.submit([encoder.finish()]);
             return;
         }
         let instance_count = self.visible_cache.len() as u32;
 
         // Pack instance data into the reused scratch buffer and upload it.
         self.ensure_instance_buffer(instance_count);
-        self.packed_instances_cache.clear();
-        self.packed_instances_cache
-            .extend(self.visible_cache.iter().map(|entry| entry.mesh.instance));
-        self.queue.write_buffer(
-            self.instance_buffer
-                .as_ref()
-                .expect("instance buffer exists"),
-            0,
-            self.packed_instances_cache.as_bytes(),
-        );
+        self.upload_instances(&mut encoder);
 
         // The per-entry bind groups and buffers are cloned out of the graph
         // into the reused caches first. The scene then borrows those caches,
@@ -1348,13 +1362,8 @@ impl Renderer {
             &instance_buf,
         );
 
-        // Record and submit the pass.
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("unlit3d::encoder"),
-            });
-
+        // Record the pass into this frame's encoder: the staged uploads above
+        // are already in it, and one submission carries both.
         let attachments = self.attachments();
         {
             let mut pass = attachments.begin_pass(
@@ -1492,14 +1501,63 @@ impl Renderer {
         }
     }
 
-    /// Upload the mesh-metadata array to the GPU.
+    /// Upload the camera uniform, staging the bytes through the frame's
+    /// encoder.
+    fn upload_camera(&mut self, encoder: &mut wgpu::CommandEncoder, view: &View) {
+        let buffer = self
+            .graph
+            .get_buffer(self.camera_buf)
+            .expect("camera buffer exists")
+            .clone();
+        self.camera_staging
+            .write(&self.device, encoder, &buffer, 0, view.as_bytes());
+    }
+
+    /// Upload the frame-globals uniform, staging the bytes through the frame's
+    /// encoder.
+    fn upload_globals(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let buffer = self
+            .graph
+            .get_buffer(self.globals_buf)
+            .expect("globals buffer exists")
+            .clone();
+        self.globals_staging
+            .write(&self.device, encoder, &buffer, 0, self.globals.as_bytes());
+    }
+
+    /// Pack and upload the frame's instance data, staging the bytes through
+    /// the frame's encoder.
+    fn upload_instances(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        self.packed_instances_cache.clear();
+        self.packed_instances_cache
+            .extend(self.visible_cache.iter().map(|entry| entry.mesh.instance));
+        let buffer = self
+            .instance_buffer
+            .as_ref()
+            .expect("instance buffer exists")
+            .clone();
+        self.instance_staging.write(
+            &self.device,
+            encoder,
+            &buffer,
+            0,
+            self.packed_instances_cache.as_bytes(),
+        );
+    }
+
+    /// Grow the metadata buffer if the array outgrew it, and upload the array
+    /// through the frame's encoder if it changed.
     ///
-    /// `allocate_mesh` appends an entry for every mesh but leaves uploading
-    /// to the caller: call this once after allocating or changing the meshes
-    /// for a frame, before rendering it. The storage buffer is recreated only
-    /// when the array outgrows it, so a steady scene rewrites in place and
-    /// rebuilds no bind group.
-    pub fn update_metadata_buffer(&mut self) {
+    /// Allocating or removing a mesh marks the array dirty, so the upload lands
+    /// in the next frame together with the draws that read it. The storage
+    /// buffer is recreated only when the array outgrows it, so a steady scene
+    /// rewrites in place and rebuilds no bind group.
+    fn upload_metadata(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.metadata_dirty {
+            return;
+        }
+        self.metadata_dirty = false;
+
         let needed = self.metadata.len().max(1) as u32;
         if needed > self.metadata_capacity {
             // Grow geometrically so repeated allocations amortize, and
@@ -1518,16 +1576,13 @@ impl Renderer {
             // A replaced buffer invalidates every global group bound to it.
             self.rebuild_dirty_global_groups();
         }
-        if self.metadata.is_empty() {
-            return;
-        }
-        self.queue.write_buffer(
-            self.graph
-                .get_buffer(self.metadata_buf)
-                .expect("metadata buffer exists"),
-            0,
-            self.metadata.as_bytes(),
-        );
+        let buffer = self
+            .graph
+            .get_buffer(self.metadata_buf)
+            .expect("metadata buffer exists")
+            .clone();
+        self.metadata_staging
+            .write(&self.device, encoder, &buffer, 0, self.metadata.as_bytes());
     }
 
     /// The graph node of the vertex pool's buffer for `layout`, creating it if
@@ -1684,22 +1739,10 @@ impl Renderer {
     /// Open and close a pass over the attachments without drawing anything,
     /// with `load_ops`, so a frame with nothing to draw still applies the
     /// caller's clears.
-    fn clear_frame(&mut self, load_ops: RenderLoadOps) {
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("unlit3d::encoder"),
-            });
+    fn clear_pass(&self, encoder: &mut wgpu::CommandEncoder, load_ops: RenderLoadOps) {
         let attachments = self.attachments();
-        {
-            let mut _pass = attachments.begin_pass(
-                &mut encoder,
-                load_ops.color,
-                load_ops.depth,
-                load_ops.stencil,
-            );
-        }
-        self.queue.submit([encoder.finish()]);
+        let mut _pass =
+            attachments.begin_pass(encoder, load_ops.color, load_ops.depth, load_ops.stencil);
     }
 }
 
@@ -2619,6 +2662,15 @@ mod tests {
 
     // -- metadata buffer -----------------------------------------------------
 
+    /// A command encoder to record a test's uploads into.
+    fn test_encoder(renderer: &Renderer) -> wgpu::CommandEncoder {
+        renderer
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("test::encoder"),
+            })
+    }
+
     #[test]
     fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
         let (mut renderer, key) = noop_renderer();
@@ -2627,11 +2679,11 @@ mod tests {
         assert_eq!(renderer.metadata_capacity, 1);
 
         tri_mesh(&mut renderer, &key);
-        renderer.update_metadata_buffer();
+        renderer.upload_metadata(&mut test_encoder(&renderer));
         assert_eq!(renderer.metadata_capacity, 1, "one entry fills the room");
 
         tri_mesh(&mut renderer, &key);
-        renderer.update_metadata_buffer();
+        renderer.upload_metadata(&mut test_encoder(&renderer));
         assert_eq!(
             renderer.metadata_capacity, 2,
             "a second entry outgrows room for one"
@@ -2639,13 +2691,13 @@ mod tests {
 
         // A third entry does not fit in two, so the buffer doubles again.
         tri_mesh(&mut renderer, &key);
-        renderer.update_metadata_buffer();
+        renderer.upload_metadata(&mut test_encoder(&renderer));
         assert_eq!(renderer.metadata_capacity, 4);
 
         // A fourth entry does fit in four, so the buffer is left alone.
         let before = renderer.graph.get_buffer(renderer.metadata_buf).cloned();
         tri_mesh(&mut renderer, &key);
-        renderer.update_metadata_buffer();
+        renderer.upload_metadata(&mut test_encoder(&renderer));
         assert_eq!(renderer.metadata_capacity, 4, "four entries fit");
         assert_eq!(
             renderer.graph.get_buffer(renderer.metadata_buf),
@@ -2655,15 +2707,18 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_metadata_array_uploads_nothing() {
+    fn a_removed_mesh_marks_the_metadata_array_for_upload() {
         let (mut renderer, key) = noop_renderer();
-        // A mesh is allocated and removed again, so the array is empty while
-        // the capacity it once needed is still there.
         let mesh = tri_mesh(&mut renderer, &key);
-        renderer.remove_mesh(mesh);
+        renderer.upload_metadata(&mut test_encoder(&renderer));
+        assert!(!renderer.metadata_dirty, "the mesh's own upload cleared it");
 
-        // Uploading an empty array must not panic on the zero-length write.
-        renderer.update_metadata_buffer();
+        // Removing the mesh clears its entry in the array, so the array
+        // reaches the GPU again on the next frame.
+        renderer.remove_mesh(mesh);
+        assert!(renderer.metadata_dirty, "removing a mesh marks the array");
+        renderer.upload_metadata(&mut test_encoder(&renderer));
+        assert!(!renderer.metadata_dirty, "the upload cleared the mark");
     }
 
     // -- a whole frame -------------------------------------------------------

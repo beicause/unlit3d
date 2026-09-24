@@ -45,7 +45,6 @@ fn ecs_cube_covers_the_frame() {
     let target = world
         .with_mut::<Renderer, _>(*renderer, |r| {
             let target = bind_offscreen_target(r, "test::ecs_cube");
-            r.update_metadata_buffer();
             r.render(&world);
             target
         })
@@ -114,7 +113,6 @@ fn ecs_depth_ordering_hides_the_far_instance() {
     let target = world
         .with_mut::<Renderer, _>(*renderer, |r| {
             let target = bind_offscreen_target(r, "test::depth");
-            r.update_metadata_buffer();
             r.render(&world);
             target
         })
@@ -223,7 +221,6 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let target = world
         .with_mut::<Renderer, _>(*renderer, |r| {
             let target = bind_offscreen_target(r, "test::reused_range::before");
-            r.update_metadata_buffer();
             r.render(&world);
             target
         })
@@ -267,7 +264,6 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let target = world
         .with_mut::<Renderer, _>(*renderer, |r| {
             let target = bind_offscreen_target(r, "test::reused_range::after");
-            r.update_metadata_buffer();
             r.render(&world);
             target
         })
@@ -357,7 +353,6 @@ fn meshes_allocated_across_frames_survive_pool_growth() {
         let target = world
             .with_mut::<Renderer, _>(*renderer, |r| {
                 let target = bind_offscreen_target(r, "test::pool_growth");
-                r.update_metadata_buffer();
                 r.render(&world);
                 target
             })

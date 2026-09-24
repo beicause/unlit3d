@@ -91,7 +91,6 @@
 //!         &[],
 //!     ).unwrap();
 //!     r.set_render_target(Some(color_view), Some(depth_view), None);
-//!     r.update_metadata_buffer();
 //!     r.render(&world);
 //! });
 //! ```

@@ -213,7 +213,6 @@ fn ecs_animated_scene_matches_snapshots() {
 
         world
             .with_mut::<Renderer, _>(renderer_entity, |r| {
-                r.update_metadata_buffer();
                 r.render(&world);
             })
             .expect("the renderer is a resource entity");

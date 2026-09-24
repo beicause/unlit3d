@@ -400,7 +400,6 @@ impl Scene {
                 let Some(frame) = window_surface.acquire(r) else {
                     return;
                 };
-                r.update_metadata_buffer();
                 r.render(world);
                 frame.present(&r.queue);
             })

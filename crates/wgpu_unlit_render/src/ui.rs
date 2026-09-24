@@ -60,7 +60,11 @@
 //! let output = ctx.run_ui(input, |ui| {
 //!     ui.label("hello world");
 //! });
-//! ui.update(&mut graph, queue, ctx, output, 1.0);
+//! // The frame's encoder carries both the UI's staged vertex and index
+//! // uploads and the pass that reads them; `scene` is recorded into it
+//! // after this call.
+//! let mut encoder = device.create_command_encoder(&Default::default());
+//! ui.update(&mut graph, queue, &mut encoder, ctx, output, 1.0);
 //! let scene = ui.scene(&mut graph);
 //! # }
 //! # fn uniform_buffer(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
@@ -80,6 +84,7 @@ use crate::pipeline::{
 };
 use crate::resources::{Resource, ResourceGraph, ResourceId};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
+use crate::staging::StagingBuffer;
 use core::ops::Range;
 use hashbrown::HashMap;
 
@@ -239,6 +244,10 @@ pub struct EguiIntegration {
     vertex_capacity: usize,
     /// Indices the index buffer holds room for.
     index_capacity: usize,
+    /// Staging buffer for the per-frame vertex uploads, reused across frames.
+    vertex_staging: StagingBuffer,
+    /// Staging buffer for the per-frame index uploads, reused across frames.
+    index_staging: StagingBuffer,
     /// Layout of the frame most recently uploaded.
     draws: Vec<UiDraw>,
 }
@@ -278,6 +287,8 @@ impl EguiIntegration {
             indices: None,
             vertex_capacity: 0,
             index_capacity: 0,
+            vertex_staging: StagingBuffer::new(),
+            index_staging: StagingBuffer::new(),
             draws: Vec::new(),
         }
     }
@@ -298,12 +309,18 @@ impl EguiIntegration {
     /// Apply `output`'s texture updates and upload its tessellated shapes,
     /// ready for [`Self::scene`].
     ///
+    /// The vertex and index bytes change every frame, so they are staged
+    /// through `encoder`: `scene`'s pass is recorded into the same encoder
+    /// afterwards, and one submission carries the upload and the draw that
+    /// reads it. Texture updates still go through `queue`.
+    ///
     /// `pixels_per_point` tells egui how to rasterise text and how to scale
     /// the tessellated points.
     pub fn update(
         &mut self,
         graph: &mut ResourceGraph,
         queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
         ctx: &egui::Context,
         mut output: egui::FullOutput,
         pixels_per_point: f32,
@@ -319,12 +336,74 @@ impl EguiIntegration {
             return;
         }
         self.reserve(graph, vertices, indices);
-        self.draws = upload(
-            queue,
-            self.vertices.as_ref().expect("just reserved"),
-            self.indices.as_ref().expect("just reserved"),
-            &primitives,
-        );
+        self.draws = self.upload_geometry(encoder, &primitives);
+    }
+
+    /// Pack `primitives` into the vertex and index buffers, staging the bytes
+    /// through `encoder`, and return where each one landed.
+    ///
+    /// Positions and UV-and-colors go into two regions of the one buffer: wgpu
+    /// binds one stride per slot, and the two streams differ.
+    fn upload_geometry(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        primitives: &[egui::ClippedPrimitive],
+    ) -> Vec<UiDraw> {
+        let (vertex_count, _) = measure(primitives);
+        let uv_color_start = vertex_count * POSITION_STRIDE;
+
+        let mut positions = Vec::with_capacity(uv_color_start);
+        let mut uv_colors = Vec::with_capacity(vertex_count * UV_COLOR_STRIDE);
+        let mut index_bytes = Vec::new();
+        let mut draws = Vec::with_capacity(primitives.len());
+
+        for primitive in primitives {
+            // A paint callback draws its own way; this renderer handles
+            // tessellated meshes only.
+            let Some(mesh) = mesh_of(primitive) else {
+                continue;
+            };
+            if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+                continue;
+            }
+
+            let first_vertex = (positions.len() / POSITION_STRIDE) as u32;
+            let indices_start = index_bytes.len() / size_of::<u32>();
+
+            for vertex in &mesh.vertices {
+                positions.extend_from_slice(&vertex.pos.x.to_le_bytes());
+                positions.extend_from_slice(&vertex.pos.y.to_le_bytes());
+                // The third component is unused: the UI is flat.
+                positions.extend_from_slice(&0f32.to_le_bytes());
+                uv_colors.extend_from_slice(&vertex.uv.x.to_le_bytes());
+                uv_colors.extend_from_slice(&vertex.uv.y.to_le_bytes());
+                // egui's colors are premultiplied already, straight to Unorm8.
+                uv_colors.extend_from_slice(&vertex.color.to_array());
+            }
+            for &index in &mesh.indices {
+                index_bytes.extend_from_slice(&index.to_le_bytes());
+            }
+
+            draws.push(UiDraw {
+                first_vertex,
+                indices: indices_start as u32..(indices_start + mesh.indices.len()) as u32,
+                texture: mesh.texture_id,
+                options: egui::TextureOptions::default(),
+                scissor: scissor_rect(primitive.clip_rect),
+            });
+        }
+
+        let vertices = self.vertices.as_ref().expect("just reserved").clone();
+        let indices = self.indices.as_ref().expect("just reserved").clone();
+        let device = &self.device;
+        // The two streams are adjacent regions of the one buffer, so they go in
+        // as one upload: one staging buffer, one copy.
+        positions.extend_from_slice(&uv_colors);
+        self.vertex_staging
+            .write(device, encoder, &vertices, 0, &positions);
+        self.index_staging
+            .write(device, encoder, &indices, 0, &index_bytes);
+        draws
     }
 
     /// The frame most recently uploaded, as a scene.
@@ -641,71 +720,6 @@ fn scissor_rect(rect: egui::Rect) -> ScissorRect {
         width: (rect.max.x - min.x).max(0.0) as u32,
         height: (rect.max.y - min.y).max(0.0) as u32,
     }
-}
-
-/// Write `primitives` into `vertices` and `indices`, returning where each one
-/// landed.
-///
-/// Positions and UV-and-colors go into two regions of the one buffer: wgpu
-/// binds one stride per slot, and the two streams differ.
-fn upload(
-    queue: &wgpu::Queue,
-    vertices: &wgpu::Buffer,
-    indices: &wgpu::Buffer,
-    primitives: &[egui::ClippedPrimitive],
-) -> Vec<UiDraw> {
-    let (vertex_count, _) = measure(primitives);
-    let uv_color_start = vertex_count * POSITION_STRIDE;
-
-    let mut positions = Vec::with_capacity(uv_color_start);
-    let mut uv_colors = Vec::with_capacity(vertex_count * UV_COLOR_STRIDE);
-    let mut index_bytes = Vec::new();
-    let mut draws = Vec::with_capacity(primitives.len());
-
-    for primitive in primitives {
-        // A paint callback draws its own way; this renderer handles
-        // tessellated meshes only.
-        let Some(mesh) = mesh_of(primitive) else {
-            continue;
-        };
-        if mesh.vertices.is_empty() || mesh.indices.is_empty() {
-            continue;
-        }
-
-        let first_vertex = (positions.len() / POSITION_STRIDE) as u32;
-        let indices_start = index_bytes.len() / size_of::<u32>();
-
-        for vertex in &mesh.vertices {
-            positions.extend_from_slice(&vertex.pos.x.to_le_bytes());
-            positions.extend_from_slice(&vertex.pos.y.to_le_bytes());
-            // The third component is unused: the UI is flat.
-            positions.extend_from_slice(&0f32.to_le_bytes());
-            uv_colors.extend_from_slice(&vertex.uv.x.to_le_bytes());
-            uv_colors.extend_from_slice(&vertex.uv.y.to_le_bytes());
-            // egui's colors are premultiplied already, straight to Unorm8.
-            uv_colors.extend_from_slice(&vertex.color.to_array());
-        }
-        for &index in &mesh.indices {
-            index_bytes.extend_from_slice(&index.to_le_bytes());
-        }
-
-        draws.push(UiDraw {
-            first_vertex,
-            indices: indices_start as u32..(indices_start + mesh.indices.len()) as u32,
-            texture: mesh.texture_id,
-            options: egui::TextureOptions::default(),
-            scissor: scissor_rect(primitive.clip_rect),
-        });
-    }
-
-    if !positions.is_empty() {
-        queue.write_buffer(vertices, 0, &positions);
-        queue.write_buffer(vertices, uv_color_start as u64, &uv_colors);
-    }
-    if !index_bytes.is_empty() {
-        queue.write_buffer(indices, 0, &index_bytes);
-    }
-    draws
 }
 
 #[cfg(test)]
