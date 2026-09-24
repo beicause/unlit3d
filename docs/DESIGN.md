@@ -83,6 +83,18 @@ for pipeline in scene.pipelines {
 
 作为优化：在循环中，快速比较本次循环设置的资源和上次循环设置的资源是否相等，若相等可避免循环中频繁的状态切换。
 
+### 逐帧数据上传
+
+逐帧变化的数据，如相机和globals uniform、逐实例数据、mesh元数据，通过跨帧复用的staging buffer上传，而不是逐次调用`queue.write_buffer`：
+
+- `queue.write_buffer`每次调用都新分配一个临时staging buffer，并自行提交一次copy，因此既无法与帧内其他工作合批，又每帧都有分配。
+- `wgpu`的`StagingBelt`同样不合适：帧间尺寸增长会让它永久持有每种出现过的尺寸的块，且从不释放。
+- 因此每个目标buffer自持一个staging buffer池：host写入复用的映射，encoder记录copy，复制完成后映射交还host供后续帧再次使用。
+
+池的大小稳定在在飞帧数，不随帧数增长；帧变大时替换过小的buffer而不是并存；尺寸长期回落后可显式回收。逐帧上传对调用方透明：调用方只维护CPU侧数据，如分配或移除mesh，渲染帧时自动把变更同步到GPU，无需记住调用上传API。这不同于前面「资源」一节中依赖图的延迟更新，后者在buffer等资源被替换后仍由用户调用API触发。
+
+一帧的上传与消费它们的render pass记录进同一个encoder，因此一帧一次提交，这保持了渲染结束的确定性；没有内容的帧也提交，以带上该帧的上传。
+
 ### 上层API
 
 上层API在`unlit3d`包中实现，并且依赖于`wgpu_unlit_render`。
