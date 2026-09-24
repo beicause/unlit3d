@@ -933,6 +933,34 @@ mod tests {
         assert!(messages.is_empty(), "resolving is silent: {messages:?}");
     }
 
+    /// Re-applying the order a source already has does not disturb the
+    /// ambiguity bookkeeping, so a caller may set an order every frame.
+    #[test]
+    fn re_applying_the_same_order_keeps_the_log_quiet() {
+        let mut world = LocalWorld::new();
+        test_context(&mut world);
+        let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let mut warnings = OrderWarnings::default();
+
+        let messages = capture_logs(|| {
+            for _ in 0..3 {
+                // What a caller that pins its sources' order every frame does.
+                let _ = world
+                    .with_mut::<Source, _>(a, |source| source.set_order(Some(FrameOrder::MESH)));
+                let _ = world
+                    .with_mut::<Source, _>(b, |source| source.set_order(Some(FrameOrder::MESH)));
+                let (_, ambiguous) = record_order(&world);
+                warnings.check(&ambiguous);
+            }
+        });
+        assert_eq!(
+            messages.len(),
+            1,
+            "the second and third frames change nothing: {messages:?}"
+        );
+    }
+
     /// Three sources sharing an order are one group, not three pairs, and the
     /// group lists every entity.
     #[test]
