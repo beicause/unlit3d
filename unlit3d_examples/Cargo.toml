@@ -25,5 +25,13 @@ console_error_panic_hook.workspace = true
 console_log.workspace = true
 wasm-bindgen-futures.workspace = true
 
+# Winit needs one of its Android activity backends selected to build for
+# Android, and the choice belongs to whoever starts the event loop. Picking it
+# here rather than passing a feature means a plain Android build works; a
+# feature would have to be turned on by every caller. `GameActivity` supports
+# the wider range of Android versions.
+[target.'cfg(target_os = "android")'.dependencies]
+winit = { workspace = true, features = ["android-game-activity"] }
+
 [lints]
 workspace = true
