@@ -30,7 +30,7 @@
 //! proxy, where the scene is built on the thread that owns the ECS world.
 //!
 //! Android has no command line to start from: the activity loads the shared
-//! library and calls [`android::android_main`] on a thread of its own, handing
+//! library and calls an entry point of its own on a thread of its own, handing
 //! it the activity. The crate is therefore a library as well as the binary,
 //! and both entries end in the same windowed loop.
 
@@ -135,8 +135,9 @@ fn init_logging() {
 /// through it, so a CI run sees a mismatched snapshot as a failed command.
 ///
 /// Android never comes through here — its activity has no command line and
-/// enters at [`android::android_main`] instead — but the function stays part
-/// of the library so the two entry points differ in as little as possible.
+/// enters at the module that entry point lives in instead — but the function
+/// stays part of the library so the two entry points differ in as little as
+/// possible.
 pub fn run() -> ExitCode {
     init_logging();
 

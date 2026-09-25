@@ -3,8 +3,8 @@
 //! Android starts an `Activity` rather than a process. The activity loads the
 //! shared library and calls [`android_main`] on a thread of its own, handing it
 //! the activity; there is no command line to parse and no `main`, so this is
-//! the one entry point that is not [`crate::run`]. Everything after the event
-//! loop is built is [`crate::windowed`], the same loop the binary drives.
+//! the one entry point that is not [`crate::run`]. Once the event loop is
+//! built, the windowed loop it is handed to is the same one the binary drives.
 
 use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
