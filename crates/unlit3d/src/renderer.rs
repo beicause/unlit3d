@@ -22,6 +22,7 @@ use wgpu_unlit_render::specialize::SurfaceKey;
 use crate::components::RenderLoadOps;
 use crate::source::{
     FrameTarget, OrderWarnings, RenderContext, Source, SourceOrder, set_frame_target,
+    unset_frame_target,
 };
 
 /// The top-level frame driver.
@@ -176,6 +177,29 @@ impl Renderer {
         // Sources read the frame's target from the world, so binding one here
         // is also what states it for the frame; see [`FrameTarget`].
         set_frame_target(world, self.frame_target());
+    }
+
+    /// Unbind the render target, leaving the renderer with none.
+    ///
+    /// The inverse of [`Self::set_render_target`]: the renderer then has no
+    /// target and [`Self::render`] panics like any renderer that was never
+    /// bound one. A frame loop calls this when the target's attachments are
+    /// released — a swap chain dropped on suspension — and sets a new target
+    /// before rendering again.
+    ///
+    /// The attachments themselves are not touched: this only forgets them, so
+    /// the caller removes them from the graph. It is named for the setter it
+    /// inverts rather than for *releasing* anything, which the caller does.
+    pub fn unset_render_target(&mut self, world: &LocalWorld) {
+        self.color_view = None;
+        self.depth_view = None;
+        self.msaa_view = None;
+        self.surface = None;
+        self.bound_size = None;
+
+        // Sources read the frame's target from the world, so unbinding here is
+        // also what unsets it for the frame; see [`FrameTarget`].
+        unset_frame_target(world);
     }
 
     /// The frame's target, as the bound attachments describe it.

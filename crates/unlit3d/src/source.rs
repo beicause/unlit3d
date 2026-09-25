@@ -140,6 +140,24 @@ pub fn set_frame_target(world: &LocalWorld, target: FrameTarget) -> bool {
         .is_some()
 }
 
+/// Unset the target the frame draws into.
+///
+/// The inverse of [`set_frame_target`]: sources then read no target and refuse
+/// to draw instead of drawing into one that is gone. Returns whether a slot
+/// existed to write; a world only gets one from [`spawn_context`].
+///
+/// Internal: this is how [`Renderer::unset_render_target`](crate::renderer::Renderer::unset_render_target)
+/// stops the world claiming a target whose attachments it released, so a
+/// caller states a target again by setting one rather than by unsetting one.
+pub(crate) fn unset_frame_target(world: &LocalWorld) -> bool {
+    let Some(entity) = world.query::<&FrameTargetSlot>().next().map(|(e, _)| e) else {
+        return false;
+    };
+    world
+        .with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = None)
+        .is_some()
+}
+
 /// A source of one frame's draws.
 ///
 /// A source owns whatever state it draws from and the [`Scene`] it fills each

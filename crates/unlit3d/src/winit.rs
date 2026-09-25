@@ -103,6 +103,12 @@ fn context_graph<'w>(
 /// frame's color image as the renderer's render target; [`Self::resize`] keeps
 /// everything in step with the window.
 ///
+/// A platform can invalidate the render surface while the app is not in the
+/// foreground, and Android does for as long as it is suspended. [`Self::release`]
+/// is for that: it drops the swap chain and its attachments without touching the
+/// device, the pipelines or anything else the frame draws from, so a scene keeps
+/// its state and presents again through a surface built from the same window.
+///
 /// The sample count is fixed when the surface is created. The renderer
 /// specializes every pipeline on the sample count the bound attachments
 /// report, so the options a key starts from do not have to agree with it — but
@@ -249,6 +255,35 @@ impl WindowSurface {
             graph
                 .replace(id, view_resource(&texture))
                 .expect("the multisample view is in the graph");
+        }
+    }
+
+    /// Release the swap chain.
+    ///
+    /// Drops the surface and the attachments it registered in the frame's
+    /// graph, and unsets the renderer's render target, so nothing is left
+    /// naming a swap chain that is gone. The device, the pipelines and
+    /// everything else the scene draws from are untouched: the caller's own
+    /// window presents the same scene again through a surface built from it.
+    ///
+    /// This is what a suspension needs. Android invalidates the native surface
+    /// for as long as the app is not in the foreground, which outlives the swap
+    /// chain but not the window, the scene or the GPU context.
+    pub fn release(self, world: &LocalWorld, renderer: &mut Renderer) {
+        // The swap chain's image is the bound render target, so it is unset
+        // before its view goes: an id left naming a removed view is not merely
+        // dangling, because the graph recycles its slot — the renderer would
+        // then either panic on a missing view or, worse, draw into whatever
+        // unrelated texture took the slot.
+        renderer.unset_render_target(world);
+
+        let mut graph = context_graph(world, renderer);
+        if let Some(id) = self.color_view {
+            graph.remove_drop(id);
+        }
+        graph.remove_drop(self.depth_view);
+        if let Some(id) = self.msaa_view {
+            graph.remove_drop(id);
         }
     }
 

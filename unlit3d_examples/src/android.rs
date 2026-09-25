@@ -12,11 +12,15 @@ use winit::platform::android::activity::AndroidApp;
 
 /// Run the example in the activity that loaded the library.
 ///
-/// Called once per activity the process creates, so a loop torn down when one
-/// is destroyed is rebuilt for the next rather than resumed. The symbol is
-/// exported unmangled — a `"Rust"` ABI function — because that is the name the
-/// activity's glue looks up; a panic here is caught and logged by the glue
-/// instead of reaching the activity.
+/// Called once per activity the process creates. Recreating an activity — a
+/// configuration change the manifest did not absorb, or the process being
+/// rebuilt — starts a call of its own, which is why this builds a fresh loop
+/// rather than reusing one. Suspending and resuming the activity is *not* a
+/// second call: the loop stays alive and the app keeps its state across it.
+///
+/// The symbol is exported unmangled — a `"Rust"` ABI function — because that is
+/// the name the activity's glue looks up; a panic here is caught and logged by
+/// the glue instead of reaching the activity.
 #[unsafe(no_mangle)]
 pub extern "Rust" fn android_main(app: AndroidApp) {
     crate::init_logging();

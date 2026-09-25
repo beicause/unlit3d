@@ -24,10 +24,16 @@
 //!
 //! The GPU context is requested asynchronously, because the adapter and device
 //! requests are: on the web they resolve on the browser's task queue, so the
-//! frame loop must not block on them. The window and its surface are created
-//! on the main thread — winit hands out a window's raw handle only from the
-//! thread that owns it — and the context arrives back through the event loop's
-//! proxy, where the scene is built on the thread that owns the ECS world.
+//! frame loop must not block on them. The window is created on the main thread
+//! — winit hands out a window's raw handle only from the thread that owns it —
+//! and the context arrives back through the event loop's proxy, where the scene
+//! is built on the thread that owns the ECS world.
+//!
+//! A suspension does not reset any of that. The platform invalidates the render
+//! surface, and on Android destroys the native window under it, but the window
+//! handle, the GPU context and the whole ECS world stay: the swap chain alone
+//! is released and built again on the next resume, so the app comes back to the
+//! state it left — the same spin angle, camera orbit and panel values.
 //!
 //! Android has no command line to start from: the activity loads the shared
 //! library and calls an entry point of its own on a thread of its own, handing
@@ -327,7 +333,13 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     let app = App {
         proxy: event_loop.create_proxy(),
         window: None,
+        context: GpuState::Idle,
         scene: None,
+        surface: None,
+        foreground: false,
+        // Overwritten by the first frame, so its delta — the gap between
+        // startup and that frame — is not mistaken for a frame's own.
+        last_frame: Instant::now(),
         size: args.size,
     };
 
@@ -355,17 +367,36 @@ enum UserEvent {
     Failed(String),
 }
 
-/// The application, whose scene is built once the GPU context is ready.
+/// The application.
+///
+/// The state is split by how long it lives, because a suspension does not reset
+/// all of it. The window handle and the GPU context outlive a suspension; the
+/// ECS world outlives it too, and holds everything the example has — the spin
+/// angle, the camera orbit, the panel's values. Only the swap chain, which a
+/// suspension does invalidate, is dropped and built again.
 struct App {
-    /// Sends the async GPU setup's result back to the loop. Kept rather than
-    /// taken, because Android may start the whole setup again after a
-    /// suspension.
+    /// Sends the async GPU setup's result back to the loop.
     proxy: EventLoopProxy<UserEvent>,
-    /// The window, created in `resumed` and taken by the scene once it is
-    /// built.
+    /// The window, created at the first resume and kept for the app's life.
+    ///
+    /// The platform's native window comes and goes with a suspension — Android
+    /// destroys it and hands a new one back — but this handle outlives that,
+    /// and the surface the scene presents through is built from it again.
     window: Option<Arc<Window>>,
-    /// The windowed scene, live once the GPU context arrived.
-    scene: Option<Windowed>,
+    /// Where the one-time asynchronous GPU setup stands.
+    context: GpuState,
+    /// The scene, live once the GPU context arrived, and kept across a
+    /// suspension so the world's state survives it.
+    scene: Option<Scene>,
+    /// The swap chain the scene presents through, absent while suspended.
+    surface: Option<WindowSurface>,
+    /// Whether the platform currently has a native window to present into.
+    ///
+    /// False between a suspension and the resume that ends it, which is the
+    /// stretch in which no surface can be built.
+    foreground: bool,
+    /// The time the previous frame was drawn at, for the frame delta.
+    last_frame: Instant,
     /// The window's initial size, from the command line.
     size: (u32, u32),
 }
@@ -376,16 +407,27 @@ struct App {
 /// the event loop's thread and the context can cross back to it. The scene
 /// itself cannot cross: its ECS world is single-threaded, so it is built on
 /// the main thread once this arrives.
+///
+/// The context and its device outlive a suspension: rebuilding them would drop
+/// every pipeline, buffer and texture the scene holds, for a change the
+/// platform only makes to the native window.
 struct Gpu {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    surface: wgpu::Surface<'static>,
 }
 
 impl Gpu {
-    /// Request the adapter and device that present to `surface`.
+    /// Request the adapter and device that can present to `surface`.
+    ///
+    /// `surface` is a *probe*: it exists only so the adapter is required to be
+    /// able to present to the window, and is dropped again before the device
+    /// is requested. The context deliberately ends up owning no surface,
+    /// because a surface is tied to the native window it was created from —
+    /// Android replaces that window across a suspension — while the adapter
+    /// and device are not. Whoever presents builds one for the window it has
+    /// at that moment.
     ///
     /// Async because both requests resolve on the browser's task queue on the
     /// web; blocking on them there would hang the page.
@@ -400,6 +442,7 @@ impl Gpu {
                 ..Default::default()
             })
             .await?;
+        drop(surface);
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor::default())
             .await?;
@@ -408,8 +451,35 @@ impl Gpu {
             adapter,
             device,
             queue,
-            surface,
         })
+    }
+}
+
+/// Where the one-time GPU setup stands.
+///
+/// The request is asynchronous, so a resume that arrives before it lands must
+/// not start a second one — two devices and two adapters would be built, and
+/// only one of them could present. The `Requested` state is what remembers
+/// that the setup is already in flight.
+#[derive(Default)]
+enum GpuState {
+    /// No request has been made: the loop is before its first resume, or the
+    /// first one failed and the app is exiting.
+    #[default]
+    Idle,
+    /// The request is in flight; `user_event` carries its result.
+    Requested,
+    /// The context is here and the scene can draw with it.
+    Ready(Gpu),
+}
+
+impl GpuState {
+    /// The context, once the setup landed.
+    fn ready(&mut self) -> Option<&mut Gpu> {
+        match self {
+            Self::Ready(gpu) => Some(gpu),
+            Self::Idle | Self::Requested => None,
+        }
     }
 }
 
@@ -485,90 +555,106 @@ struct FrameCount(u64);
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // A resume that arrives while the scene is live — a redundant one,
-        // which the platform is allowed to send — starts nothing a second
-        // time. Android drops the render surface on suspension and builds it
-        // again here, which is why this is a check rather than a one-shot.
-        if self.scene.is_some() || self.window.is_some() {
+        // Already foreground: a redundant resume, which platforms are allowed
+        // to send, must not open a second window or build a second surface.
+        if self.foreground {
             return;
         }
 
-        #[cfg_attr(
-            not(target_arch = "wasm32"),
-            expect(unused_mut, reason = "wasm32 reassigns to append the canvas")
-        )]
-        let mut attributes = Window::default_attributes()
-            .with_title("unlit3d + winit")
-            .with_inner_size(winit::dpi::LogicalSize::new(self.size.0, self.size.1));
+        // The window outlives a suspension, so it is opened once and only the
+        // surface is rebuilt after one. Android destroys the native window and
+        // hands a new one back to the same `Window`, so there is nothing to
+        // reopen.
+        if self.window.is_none() {
+            #[cfg_attr(
+                not(target_arch = "wasm32"),
+                expect(unused_mut, reason = "wasm32 reassigns to append the canvas")
+            )]
+            let mut attributes = Window::default_attributes()
+                .with_title("unlit3d + winit")
+                .with_inner_size(winit::dpi::LogicalSize::new(self.size.0, self.size.1));
 
-        // winit creates the canvas but does not put it in the page; without
-        // this the web build would render to nothing visible.
-        #[cfg(target_arch = "wasm32")]
-        {
-            use winit::platform::web::WindowAttributesExtWebSys;
-            attributes = attributes.with_append(true);
+            // winit creates the canvas but does not put it in the page; without
+            // this the web build would render to nothing visible.
+            #[cfg(target_arch = "wasm32")]
+            {
+                use winit::platform::web::WindowAttributesExtWebSys;
+                attributes = attributes.with_append(true);
+            }
+
+            let window = match event_loop.create_window(attributes) {
+                Ok(window) => Arc::new(window),
+                Err(error) => {
+                    log::error!("failed to open a window: {error}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+            self.window = Some(window);
+        }
+        self.foreground = true;
+        // The frame clock restarts here rather than on the last frame, so the
+        // stretch the app spent suspended — which is arbitrarily long, and no
+        // frame's own — does not reach the scene as one frame's delta.
+        self.last_frame = Instant::now();
+
+        // The GPU context is requested once, against the first surface. Its
+        // adapter, device and everything built from them survive a suspension,
+        // so a later resume only needs a surface for the window it already
+        // has; see `Self::present`. `Requested` is what keeps a redundant
+        // resume from starting the request twice.
+        if matches!(self.context, GpuState::Idle) {
+            self.context = GpuState::Requested;
+            let window = self.window.clone().expect("the window was just opened");
+            // The surface comes first and here, on the thread that owns the
+            // window, so the adapter can be required to present to it.
+            let instance =
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+            let surface = instance
+                .create_surface(window)
+                .expect("the window presents to a surface");
+
+            // The async tail — the adapter and device requests — runs off the
+            // event loop's thread (native) or in the browser's task queue
+            // (web). The context it produces comes back through `user_event`,
+            // where the scene is built on the thread that owns it.
+            let proxy = self.proxy.clone();
+            spawn(async move {
+                match Gpu::request(instance, surface).await {
+                    Ok(gpu) => {
+                        let _ = proxy.send_event(UserEvent::Ready(gpu));
+                    }
+                    Err(error) => {
+                        let _ = proxy.send_event(UserEvent::Failed(error.to_string()));
+                    }
+                }
+            });
         }
 
-        let window = match event_loop.create_window(attributes) {
-            Ok(window) => Arc::new(window),
-            Err(error) => {
-                log::error!("failed to open a window: {error}");
-                event_loop.exit();
-                return;
-            }
-        };
-        self.window = Some(window.clone());
-
-        // The surface comes first and here, on the thread that owns the
-        // window, so the adapter can be required to present to it.
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let surface = instance
-            .create_surface(window.clone())
-            .expect("the window presents to a surface");
-
-        // The async tail — the adapter and device requests — runs off the
-        // event loop's thread (native) or in the browser's task queue (web).
-        // The context it produces comes back through `user_event`, where the
-        // scene is built on the thread that owns it.
-        let proxy = self.proxy.clone();
-        spawn(async move {
-            match Gpu::request(instance, surface).await {
-                Ok(gpu) => {
-                    let _ = proxy.send_event(UserEvent::Ready(gpu));
-                }
-                Err(error) => {
-                    let _ = proxy.send_event(UserEvent::Failed(error.to_string()));
-                }
-            }
-        });
+        self.present();
     }
 
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        // Android invalidates the render surface for as long as the app is
-        // suspended, so what presents into it is dropped rather than kept
-        // across the gap. The platforms without a suspend lifecycle never
-        // reach here, and dropping the scene on the web's page-hide would
-        // leave the page without a canvas to come back to.
+        self.foreground = false;
+        // Android destroys the app's `SurfaceView` when it is suspended, and
+        // wgpu requires every surface drawn from it to be dropped before this
+        // callback returns. iOS and the web only freeze the app — their canvas
+        // outlives the suspension — so theirs is kept.
+        //
+        // Only the swap chain goes, never the world it presented: the state
+        // the app is resumed into is the state it was suspended in.
         #[cfg(target_os = "android")]
-        {
-            self.scene = None;
-            self.window = None;
-        }
+        self.release();
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Ready(gpu) => {
-                // A suspend between the request and this event leaves nothing
-                // to present into, and the context is dropped instead of
-                // being kept until the next resume asks for one again.
-                let Some(window) = self.window.take() else {
-                    return;
-                };
-                let scene = Windowed::new(gpu, window);
-                // The first frame goes out through the loop's own redraw.
-                scene.window().request_redraw();
-                self.scene = Some(scene);
+                // Kept rather than dropped when this lands while suspended:
+                // the context is worth keeping, and only the surface is
+                // invalid then. `present` builds what it can with it.
+                self.context = GpuState::Ready(gpu);
+                self.present();
             }
             UserEvent::Failed(error) => {
                 log::error!("failed to start the renderer: {error}");
@@ -589,7 +675,7 @@ impl ApplicationHandler<UserEvent> for App {
         // Every window event goes to the input adapter first, so the frame
         // that follows sees this event whichever branch handles it below. The
         // adapter ignores the events that carry no input.
-        scene.input().on_window_event(scene.world(), &event);
+        scene.input.on_window_event(&scene.world, &event);
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
@@ -600,24 +686,187 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::Resized(size) => {
-                // The swap chain and the attachments that go with it are
-                // rebuilt for the new size, and the camera's projection
-                // follows the new aspect so nothing is stretched.
+                // The swap chain and its attachments are rebuilt for the new
+                // size below, and the camera's projection follows the new
+                // aspect on the next frame so nothing is stretched.
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
-                scene.resize(size.width, size.height);
+                scene.size = (size.width, size.height);
+                self.resize_surface(size.width, size.height);
             }
-            WindowEvent::RedrawRequested => scene.draw(),
+            WindowEvent::RedrawRequested => self.draw(),
             _ => {}
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         // Ask for another frame every turn of the loop, so the cube animates.
-        if let Some(scene) = &self.scene {
-            scene.window().request_redraw();
+        // Nothing is asked for while suspended: the app is not being looked at,
+        // and on Android its surface is gone until the next resume.
+        if self.foreground
+            && self.surface.is_some()
+            && let Some(window) = &self.window
+        {
+            window.request_redraw();
         }
+    }
+}
+
+impl App {
+    /// Build whatever the context, the window and the foreground allow.
+    ///
+    /// Every one of the three arrives on its own schedule — the context from
+    /// the async setup, the window and the foreground from the platform's
+    /// lifecycle — so this is called after each and does nothing until all
+    /// three are here. The scene is built once and outlives every suspension;
+    /// the swap chain is built, released and built again around them.
+    fn present(&mut self) {
+        let (Some(context), Some(window)) = (self.context.ready(), self.window.clone()) else {
+            return;
+        };
+        if !self.foreground {
+            return;
+        }
+
+        // A window that has not been laid out yet reports nothing, and the scene
+        // divides by its size for the camera's aspect — a zero there is a NaN
+        // projection. The real size arrives as a resize and corrects this.
+        let size = window.inner_size();
+        let size = (size.width.max(1), size.height.max(1));
+
+        let scene = match &mut self.scene {
+            // Kept across a suspension, so the world's state survives it.
+            Some(scene) => scene,
+            None => {
+                self.scene = Some(Scene::new(
+                    context.device.clone(),
+                    context.queue.clone(),
+                    size,
+                    SceneOptions {
+                        ui: true,
+                        reproducible: false,
+                    },
+                ));
+                self.scene.as_mut().expect("the scene was just built")
+            }
+        };
+        scene.size = size;
+
+        // A surface is built once per foreground stretch: the one kept from
+        // before a suspension has only to follow the window it was made from,
+        // which a resume may have replaced at another size.
+        if self.surface.is_some() {
+            self.resize_surface(size.0, size.1);
+            return;
+        }
+
+        // Built fresh for the window in hand, which is not necessarily the one
+        // the adapter was probed against: a suspension replaces the native
+        // window, and a surface belongs to the window it was made from.
+        let surface = match context.instance.create_surface(window.clone()) {
+            Ok(surface) => surface,
+            Err(error) => {
+                log::error!("failed to build the presentation surface: {error}");
+                return;
+            }
+        };
+        let (world, renderer) = (&scene.world, scene.renderer);
+        let window_surface = world
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                WindowSurface::new(
+                    world,
+                    renderer,
+                    &context.instance,
+                    &context.adapter,
+                    window,
+                    surface,
+                    SAMPLE_COUNT,
+                )
+            })
+            .expect("the renderer is a resource entity");
+        self.surface = Some(window_surface);
+        self.surface
+            .as_ref()
+            .expect("the surface was just built")
+            .window()
+            .request_redraw();
+    }
+
+    /// Reconfigure the swap chain and its attachments for a new size.
+    ///
+    /// A no-op when there is no surface to reconfigure — one has not been built
+    /// yet, or a suspension released it — and when the surface is already that
+    /// size.
+    fn resize_surface(&mut self, width: u32, height: u32) {
+        let (Some(surface), Some(scene)) = (self.surface.as_mut(), self.scene.as_ref()) else {
+            return;
+        };
+        let (world, renderer) = (&scene.world, scene.renderer);
+        world
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                surface.resize(world, renderer, width, height);
+            })
+            .expect("the renderer is a resource entity");
+    }
+
+    /// Release the swap chain, keeping everything it presented.
+    ///
+    /// The world, the device and the pipelines are untouched: only the surface
+    /// the platform invalidated goes, and [`Self::present`] builds one again
+    /// from the same window.
+    ///
+    /// Android is the only platform whose suspension destroys what the surface
+    /// draws from, so it is the only caller.
+    #[cfg(target_os = "android")]
+    fn release(&mut self) {
+        let (Some(surface), Some(scene)) = (self.surface.take(), self.scene.as_ref()) else {
+            return;
+        };
+        let (world, renderer) = (&scene.world, scene.renderer);
+        world
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                surface.release(world, renderer);
+            })
+            .expect("the renderer is a resource entity");
+    }
+
+    /// Advance the scene by the time since the previous frame and present it.
+    ///
+    /// Does nothing while suspended or while the swap chain is released: the
+    /// scene is frozen rather than advanced off-screen, so a resume continues
+    /// from where it left off instead of jumping.
+    fn draw(&mut self) {
+        if !self.foreground {
+            return;
+        }
+        let (Some(surface), Some(scene)) = (self.surface.as_mut(), self.scene.as_mut()) else {
+            return;
+        };
+        let now = Instant::now();
+        let delta_time = (now - self.last_frame).as_secs_f32();
+        self.last_frame = now;
+
+        scene.advance(delta_time);
+
+        // Acquire, render and present. `acquire` binds the swap chain's next
+        // image as the renderer's target; it returns `None` for a frame that
+        // should be skipped, such as an occluded window's.
+        let (world, renderer) = (&scene.world, scene.renderer);
+        world
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                let Some(frame) = surface.acquire(world, renderer) else {
+                    return;
+                };
+                renderer.render(world);
+                let queue = world
+                    .get::<wgpu::Queue>(renderer.context().queue)
+                    .expect("the queue resource");
+                frame.present(&queue);
+            })
+            .expect("the renderer is a resource entity");
+
+        scene.end_frame();
     }
 }
 
@@ -941,121 +1190,6 @@ impl Scene {
                 .with_mut::<InputState, _>(state, |state| state.clear_events());
         }
         self.world.apply();
-    }
-}
-
-/// The scene plus the window swap chain it presents through.
-struct Windowed {
-    scene: Scene,
-    window_surface: WindowSurface,
-    /// The time the previous frame was drawn at, for the frame delta.
-    last_frame: Instant,
-}
-
-impl Windowed {
-    /// Build the scene and the surface that presents it.
-    fn new(gpu: Gpu, window: Arc<Window>) -> Self {
-        let Gpu {
-            instance,
-            adapter,
-            device,
-            queue,
-            surface,
-        } = gpu;
-        let size = window.inner_size();
-        let scene = Scene::new(
-            device,
-            queue,
-            (size.width, size.height),
-            SceneOptions {
-                ui: true,
-                reproducible: false,
-            },
-        );
-
-        let window_surface = scene
-            .world
-            .with_mut::<Renderer, _>(scene.renderer, |renderer| {
-                WindowSurface::new(
-                    &scene.world,
-                    renderer,
-                    &instance,
-                    &adapter,
-                    window,
-                    surface,
-                    SAMPLE_COUNT,
-                )
-            })
-            .expect("the renderer is a resource entity");
-
-        Self {
-            scene,
-            window_surface,
-            last_frame: Instant::now(),
-        }
-    }
-
-    /// The window the surface presents into.
-    fn window(&self) -> &Arc<Window> {
-        self.window_surface.window()
-    }
-
-    /// The scene's world, for the input adapter.
-    fn world(&self) -> &LocalWorld {
-        &self.scene.world
-    }
-
-    /// The input adapter, for the window events.
-    fn input(&self) -> &WinitInput {
-        &self.scene.input
-    }
-
-    /// Rebuild the swap chain and the attachments for a new size, and follow
-    /// it with the camera's aspect.
-    fn resize(&mut self, width: u32, height: u32) {
-        self.scene.size = (width, height);
-        let (world, renderer, window_surface) = (
-            &self.scene.world,
-            self.scene.renderer,
-            &mut self.window_surface,
-        );
-        world
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                window_surface.resize(world, renderer, width, height);
-            })
-            .expect("the renderer is a resource entity");
-    }
-
-    /// Advance the scene by the time since the previous frame and present it.
-    fn draw(&mut self) {
-        let now = Instant::now();
-        let delta_time = (now - self.last_frame).as_secs_f32();
-        self.last_frame = now;
-
-        self.scene.advance(delta_time);
-
-        // Acquire, render and present. `acquire` binds the swap chain's next
-        // image as the renderer's target; it returns `None` for a frame that
-        // should be skipped, such as an occluded window's.
-        let (world, renderer, window_surface) = (
-            &self.scene.world,
-            self.scene.renderer,
-            &mut self.window_surface,
-        );
-        world
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                let Some(frame) = window_surface.acquire(world, renderer) else {
-                    return;
-                };
-                renderer.render(world);
-                let queue = world
-                    .get::<wgpu::Queue>(renderer.context().queue)
-                    .expect("the queue resource");
-                frame.present(&queue);
-            })
-            .expect("the renderer is a resource entity");
-
-        self.scene.end_frame();
     }
 }
 
