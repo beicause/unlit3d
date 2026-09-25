@@ -1,4 +1,4 @@
-//! `unlit3d` — the upper rendering API for `wgpu_unlit_render`.
+//! `unlit3d` — the high-level rendering API for `wgpu_unlit_render`.
 //!
 //! This crate bridges [`unlit_ecs`] and [`wgpu_unlit_render`]: it provides the
 //! component types needed to describe a renderable 3D scene in an ECS world and

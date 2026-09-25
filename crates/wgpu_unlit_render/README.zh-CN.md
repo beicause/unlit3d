@@ -16,7 +16,7 @@
 ## 在工作区中的位置
 
 `wgpu_unlit_render` 是工作区的基础，不依赖工作区中的任何其他 crate。与 ECS 集成的
-上层 API 是 [`unlit3d`](../unlit3d/README.zh-CN.md)，它在
+高层 API 是 [`unlit3d`](../unlit3d/README.zh-CN.md)，它在
 本 crate 之上提供组件、帧源与 winit 呈现。测试所用的 GPU 测试骨架是
 [`wgpu_unlit_test_util`](../wgpu_unlit_test_util/README.zh-CN.md)。
 

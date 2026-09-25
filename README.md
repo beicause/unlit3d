@@ -18,8 +18,8 @@ progress.
 | Crate | Role |
 |-------|------|
 | [`wgpu_unlit_render`](crates/wgpu_unlit_render/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit pipeline, and an egui backend. Knows nothing about ECS. |
-| [`unlit3d`](crates/unlit3d/README.md) | The upper rendering API: ECS components, frame sources, the mesh source with pipeline families, input, UI overlay, and winit presentation. |
-| [`unlit_ecs`](crates/unlit_ecs/README.md) | The archetype ECS the upper layer is written against. Deliberately small: no change detection, hooks, events, relations or scheduler. |
+| [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, the mesh source with pipeline families, input, UI overlay, and winit presentation. |
+| [`unlit_ecs`](crates/unlit_ecs/README.md) | The archetype ECS the high-level layer is written against. Deliberately small: no change detection, hooks, events, relations or scheduler. |
 | [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, and optional SSIMULACRA2 image snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed unlit cube with an egui overlay — and its own headless capture mode. Also the Android example, packaged as an APK. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. Not a workspace member. |

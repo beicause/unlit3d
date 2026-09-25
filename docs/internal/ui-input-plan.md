@@ -2,7 +2,7 @@
 
 > 状态：**已实施**。§9 的 12 个步骤全部实现、验证并提交（`main` 上 `0cb66c0..6ce33b7`，17 个提交；快照子模块 `wgpu_unlit_render_asset_files` 为 `a58efeb..70ae7a3`）。本文保留为设计记录，实施结果见 §13。
 > 目标 crate：`unlit3d`（主体）、`wgpu_unlit_render`（UI 模块与 `Scene` 基础设施的小幅改进）。
-> 前置阅读：`docs/DESIGN.md`（§上层API、§功能）、`crates/unlit_ecs/tests/behavior.rs`（行为组件范式）。
+> 前置阅读：`docs/DESIGN.md`（§高层API、§功能）、`crates/unlit_ecs/tests/behavior.rs`（行为组件范式）。
 >
 > **修订（一）**：§4 的「帧源与 GPU 上下文归 `Renderer` 所有」已被 **§4.8 取代**——改为把 `wgpu::Device`/`wgpu::Queue`/`ResourceGraph` 与帧源都放进 ECS，`GpuContext`/`FrameContext`/`SourceContext`/`with_source_mut` 随之**全部删除**。D2 已同步改写。§4.1/§4.3/§4.5/§4.7 中与本修订冲突的段落保留原文但已标注，以 §4.8 为准。
 >

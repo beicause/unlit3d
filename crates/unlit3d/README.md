@@ -2,7 +2,7 @@ English | [简体中文](README.zh-CN.md)
 
 # unlit3d
 
-The upper rendering API: the ECS-integrated layer that turns a world of
+The high-level rendering API: the ECS-integrated layer that turns a world of
 component-carrying entities into GPU draw commands every frame. It bridges
 [`unlit_ecs`](../unlit_ecs/README.md) and
 [`wgpu_unlit_render`](../wgpu_unlit_render/README.md), and it keeps both as

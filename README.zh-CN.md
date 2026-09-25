@@ -16,8 +16,8 @@ WebGL 与 GLES。它在一个 render pass 内把整个场景——不透明与�
 | Crate | 职责 |
 |-------|------|
 | [`wgpu_unlit_render`](crates/wgpu_unlit_render/README.zh-CN.md) | 底层渲染器：资源图、网格顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 管线，以及 egui 后端。它不认识 ECS。 |
-| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 上层渲染 API：ECS 组件、帧源、带有管线家族（family）的 mesh 源、输入、UI 叠加层，以及 winit 呈现。 |
-| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 上层所针对的 archetype ECS。刻意精简：没有变化检测、钩子、事件、实体关系或调度器。 |
+| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、带有管线家族（family）的 mesh 源、输入、UI 叠加层，以及 winit 呈现。 |
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所针对的 archetype ECS。刻意精简：没有变化检测、钩子、事件、实体关系或调度器。 |
 | [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读，以及可选的 SSIMULACRA2 图像快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 带 egui 叠加层的窗口化 unlit 立方体——以及它自己的无头捕获模式。同时也是 Android 示例，会打包成 APK。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的仓库任务执行器。不是工作区成员。 |

@@ -2,7 +2,7 @@
 
 # unlit3d
 
-上层渲染 API：与 ECS 集成的层，每帧把一个由携带组件的实体构成的世界转换为 GPU
+高层渲染 API：与 ECS 集成的层，每帧把一个由携带组件的实体构成的世界转换为 GPU
 绘制命令。它连接 [`unlit_ecs`](../unlit_ecs/README.zh-CN.md) 与
 [`wgpu_unlit_render`](../wgpu_unlit_render/README.zh-CN.md)，并把两者保留为直接
 依赖——它们的条目通过各自的路径访问，大多数调用者需要的那些则由 `prelude` 重导出。
@@ -12,7 +12,7 @@
 
 ## 在工作区中的位置
 
-`unlit3d` 是上层的那一半。`wgpu_unlit_render` 提供渲染器、资源图与内置 unlit 管线；
+`unlit3d` 是高层的那一半。`wgpu_unlit_render` 提供渲染器、资源图与内置 unlit 管线；
 `unlit_ecs` 提供 world；本 crate 提供描述可渲染场景的组件、驱动它的帧循环结构，以及
 平台胶水（winit、egui）。`wgpu_unlit_test_util` 是 dev-dependency。
 
