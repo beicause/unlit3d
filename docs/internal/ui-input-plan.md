@@ -1538,3 +1538,75 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --frames 30 \
 同时新增：`pages` / `deploy-pages` 两个 job（把 web 示例发布到 GitHub Pages），
 以及 7 个位置的中英文 README（根目录 + 6 个包，见各 `README.md` /
 `README.zh-CN.md`）。GitHub Pages 已在仓库设置中启用（`build_type=workflow`）。
+
+---
+
+## 16. 接入 CI：从「全红」到全绿
+
+§15 推送后 CI **七个 job 全部失败**。逐层排查下来，真正的原因都不在本次功能代码里，
+而是长期被掩盖的问题——本次改动只是第一次让 CI 跑到它们上面。
+
+### 为什么之前一直是绿的
+
+`crates/unlit3d` 这个 crate（现名）在 CI 上一次「成功」的提交 `6180390` 里**还不存在**
+（当时叫 `bevy_unlit`，且没有任何 GPU 测试）。`6180390..main` 之间有 **117 个提交**，
+`crates/*/tests` 全是这段时间加进来的。
+
+所以 **CI `Test` 步骤在这 117 个提交里从未真正跑过这些 GPU 测试**——它一直是红的，
+只是没人注意红在哪个步骤。本次修复后，ubuntu/macos/windows 三平台各自跑完 **407 个测试**。
+
+### 四处根因
+
+1. **默认 feature 下的 dead code**（代码问题，已修）。`FIXED_STEP` 与 `Scene::render`
+   只被无头路径使用；CI 的 `Build` 用默认 feature，`-D warnings` 判其死代码。
+   同时 `cargo xtask check` 当时只跑 `--all-features` 且**不拒绝 warning**，
+   所以本地是绿的。现在 `xtask check` 先默认后全 feature、两次都 `-D warnings`。
+
+2. **ubuntu 无图形驱动**（配置问题）。`active_backends: Backends(0x0)`——runner 没有
+   GPU 也没装软件驱动。给 `build` job 加了 `mesa-vulkan-drivers`（lavapipe）。
+
+3. **子模块没被检出**（配置问题）。`crates/*/tests/snapshots` 是指向
+   `wgpu_unlit_render_asset_files` 子模块的符号链接，而 checkout 没开 `submodules`。
+   macOS 上它变成**悬空符号链接**，`create_dir_all` 报 `File exists (os error 17)`
+   （已用最小 Rust 程序复现：dangling symlink → `EEXIST`）；Windows 上 git 把它检出为
+   普通文件，同样 `EEXIST`。现在 `build` job 开 `submodules: true`。
+   子模块仓库原为 **private**，托管 runner 匿名 clone 不到；用户已改为 public。
+
+4. **53 处失效的文档内链**（代码问题，已修）。`cargo doc -D warnings` 从未通过——
+   因为 `Doc` 步骤排在 `Test` 之后，而 `Test` 一直失败，该步骤**被跳过而非变绿**。
+   主因是 `bfa705a`（"reorganize crate exports"）删掉了 crate 根重导出，却漏改了
+   指向它们的文档链接（`[`Renderer`]`、`crate::MeshDesc` 等）。另有链接到私有项、
+   以及冗余显式目标两类。全部修正后 `cargo doc` 干净。
+
+### 网页版真的能跑
+
+新部署的 Pages 站点第一次打开就 panic：
+
+```
+panicked at library/std/src/sys/time/unsupported.rs:13:9:
+time not implemented on this platform
+```
+
+根因是 `UiSource::new()` 调用 `std::time::Instant::now()`，而 `wasm32-unknown-unknown`
+上 std **没有时钟实现**，必然 panic。`build-wasm` 只编译不运行，所以一直没暴露。
+
+改用 `web-time`（非 wasm 时它就是 `pub use std::time::*`，零开销；wasm 上用浏览器的
+`Performance.now()`）。它只被 `ui` feature 需要，故挂为可选依赖。
+验证方式不止「构建通过」：新的 wasm 二进制里确实出现
+`web_time::time::js::Performance::now` 与 `__wbg_now_*` 导入，说明走的是浏览器时钟。
+
+### 三平台比对与它的脆弱点
+
+删掉了独立的 `snapshot` job，改为在三个平台的 `build` 里各比一次。实测同一份基线
+（在 radeon 上生成、与 lavapipe 逐字节一致）在各驱动下的分数：
+
+| 平台 | 驱动 | SSIMULACRA2 |
+| --- | --- | --- |
+| ubuntu | lavapipe | 91.73 |
+| macos | Metal | 88.28 |
+| windows | DX12 | 88.61 |
+
+阈值是 85.0，**macOS 只剩 3.3 分余量**。这是跨驱动的正常差异而非缺陷，但余量偏小：
+若将来某次改动让画面变化接近阈值，三平台会**各自以不同余量**接近失败，可能造成
+「ubuntu 过了、macOS 挂了」这种难查的红。若以后觉得吵，可为每个平台存一份基线，
+或只在 ubuntu 上比对。
