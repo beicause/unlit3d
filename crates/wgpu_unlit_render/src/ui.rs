@@ -252,6 +252,89 @@ fn measure(primitives: &[egui::ClippedPrimitive]) -> (usize, usize) {
     (vertices, indices)
 }
 
+/// Pack `primitives` into `vertices` and `indices`, and fill `draws` with where
+/// each one landed.
+///
+/// Both byte buffers are cleared and resized rather than reallocated, so a
+/// caller that keeps them across frames reuses the allocation. The vertex
+/// buffer holds the position stream first and the interleaved UV-and-color
+/// stream second: wgpu binds one stride per slot and the two differ.
+fn pack_geometry(
+    primitives: &[egui::ClippedPrimitive],
+    screen: ScreenDescriptor,
+    texture_options: &HashMap<egui::TextureId, egui::TextureOptions>,
+    vertices: &mut Vec<u8>,
+    indices: &mut Vec<u8>,
+    draws: &mut Vec<UiDraw>,
+) {
+    use zerocopy::IntoBytes;
+
+    let (vertex_count, index_count) = measure(primitives);
+    let uv_color_start = vertex_count * POSITION_STRIDE;
+
+    vertices.clear();
+    vertices.resize(uv_color_start + vertex_count * UV_COLOR_STRIDE, 0);
+    indices.clear();
+    indices.resize(index_count * size_of::<u32>(), 0);
+    draws.clear();
+
+    let mut vertex_cursor = 0usize;
+    let mut index_cursor = 0usize;
+    for primitive in primitives {
+        // A paint callback draws its own way; this renderer handles tessellated
+        // meshes only.
+        let Some(mesh) = mesh_of(primitive) else {
+            continue;
+        };
+        if mesh.vertices.is_empty() || mesh.indices.is_empty() {
+            continue;
+        }
+
+        let first_vertex = vertex_cursor as u32;
+        let first_index = index_cursor as u32;
+
+        for vertex in &mesh.vertices {
+            let position = vertex_cursor * POSITION_STRIDE;
+            // The third component is unused: the UI is flat.
+            vertices[position..position + POSITION_STRIDE]
+                .copy_from_slice([vertex.pos.x, vertex.pos.y, 0.0].as_bytes());
+            let uv_color = uv_color_start + vertex_cursor * UV_COLOR_STRIDE;
+            vertices[uv_color..uv_color + size_of::<egui::Vec2>()]
+                .copy_from_slice([vertex.uv.x, vertex.uv.y].as_bytes());
+            // egui's colors are premultiplied already, straight to Unorm8.
+            vertices[uv_color + size_of::<egui::Vec2>()..uv_color + UV_COLOR_STRIDE]
+                .copy_from_slice(&vertex.color.to_array());
+            vertex_cursor += 1;
+        }
+
+        let index_start = index_cursor * size_of::<u32>();
+        for (slot, &index) in indices[index_start..]
+            .as_chunks_mut::<{ size_of::<u32>() }>()
+            .0
+            .iter_mut()
+            .zip(&mesh.indices)
+        {
+            slot.copy_from_slice(index.as_bytes());
+        }
+        index_cursor += mesh.indices.len();
+
+        draws.push(UiDraw {
+            first_vertex,
+            indices: first_index..index_cursor as u32,
+            texture: mesh.texture_id,
+            // The texture's own sampling options, not a default: a texture egui
+            // asked to sample nearest or to tile would otherwise be sampled
+            // linearly and clamped, and the sampler that matches `options` is
+            // the one the material binds.
+            options: texture_options
+                .get(&mesh.texture_id)
+                .copied()
+                .unwrap_or_default(),
+            scissor: scissor_rect(primitive.clip_rect, screen),
+        });
+    }
+}
+
 /// One uploaded primitive: where its vertices and indices sit, what it samples
 /// and how it is clipped.
 struct UiDraw {
@@ -314,6 +397,12 @@ pub struct EguiIntegration {
     index_staging: StagingBuffer,
     /// Layout of the frame most recently uploaded.
     draws: Vec<UiDraw>,
+    /// Packing scratch for the vertex stream — positions then interleaved UVs
+    /// and colors — kept so a steady UI reuses one allocation instead of taking
+    /// a fresh one every frame.
+    packed_vertices: Vec<u8>,
+    /// Packing scratch for the index stream, reused the same way.
+    packed_indices: Vec<u8>,
 }
 
 /// What one material bind group was built from.
@@ -355,6 +444,8 @@ impl EguiIntegration {
             vertex_staging: StagingBuffer::new(),
             index_staging: StagingBuffer::new(),
             draws: Vec::new(),
+            packed_vertices: Vec::new(),
+            packed_indices: Vec::new(),
         }
     }
 
@@ -395,29 +486,32 @@ impl EguiIntegration {
         output.textures_delta.clear();
 
         let primitives = ctx.tessellate(output.shapes, screen.pixels_per_point);
-        self.draws.clear();
         let (vertices, indices) = measure(&primitives);
         if vertices == 0 {
+            self.draws.clear();
             return;
         }
         self.reserve(graph, vertices, indices);
-        self.draws = self.upload_geometry(encoder, &primitives, screen);
+        self.upload_geometry(encoder, &primitives, screen);
 
         // Build every material the frame needs here, while the graph is still
         // mutably available: `scene` only reads it, so a material that does
         // not exist yet by then is one this frame cannot draw.
-        let wanted: Vec<_> = self
-            .draws
-            .iter()
-            .map(|draw| (draw.texture, draw.options))
-            .collect();
-        for (id, options) in wanted {
-            self.build_material(graph, id, options);
+        //
+        // The draws are walked by index because `build_material` needs `&mut
+        // self`: collecting the keys first would allocate a `Vec` every frame
+        // for a list that is already `self.draws`.
+        for index in 0..self.draws.len() {
+            let (texture, options) = {
+                let draw = &self.draws[index];
+                (draw.texture, draw.options)
+            };
+            self.build_material(graph, texture, options);
         }
     }
 
     /// Pack `primitives` into the vertex and index buffers, staging the bytes
-    /// through `encoder`, and return where each one landed.
+    /// through `encoder`, and fill [`Self::draws`] with where each one landed.
     ///
     /// Positions and UV-and-colors go into two regions of the one buffer: wgpu
     /// binds one stride per slot, and the two streams differ.
@@ -426,70 +520,31 @@ impl EguiIntegration {
         encoder: &mut wgpu::CommandEncoder,
         primitives: &[egui::ClippedPrimitive],
         screen: ScreenDescriptor,
-    ) -> Vec<UiDraw> {
-        let (vertex_count, _) = measure(primitives);
-        let uv_color_start = vertex_count * POSITION_STRIDE;
+    ) {
+        // The scratch buffers are taken out of `self` for the duration, so the
+        // draw list can be filled while they are written, then put back: a
+        // steady UI reuses one allocation per stream rather than taking fresh
+        // ones every frame.
+        let mut vertices = core::mem::take(&mut self.packed_vertices);
+        let mut indices = core::mem::take(&mut self.packed_indices);
+        pack_geometry(
+            primitives,
+            screen,
+            &self.texture_options,
+            &mut vertices,
+            &mut indices,
+            &mut self.draws,
+        );
 
-        let mut positions = Vec::with_capacity(uv_color_start);
-        let mut uv_colors = Vec::with_capacity(vertex_count * UV_COLOR_STRIDE);
-        let mut index_bytes = Vec::new();
-        let mut draws = Vec::with_capacity(primitives.len());
-
-        for primitive in primitives {
-            // A paint callback draws its own way; this renderer handles
-            // tessellated meshes only.
-            let Some(mesh) = mesh_of(primitive) else {
-                continue;
-            };
-            if mesh.vertices.is_empty() || mesh.indices.is_empty() {
-                continue;
-            }
-
-            let first_vertex = (positions.len() / POSITION_STRIDE) as u32;
-            let indices_start = index_bytes.len() / size_of::<u32>();
-
-            for vertex in &mesh.vertices {
-                positions.extend_from_slice(&vertex.pos.x.to_le_bytes());
-                positions.extend_from_slice(&vertex.pos.y.to_le_bytes());
-                // The third component is unused: the UI is flat.
-                positions.extend_from_slice(&0f32.to_le_bytes());
-                uv_colors.extend_from_slice(&vertex.uv.x.to_le_bytes());
-                uv_colors.extend_from_slice(&vertex.uv.y.to_le_bytes());
-                // egui's colors are premultiplied already, straight to Unorm8.
-                uv_colors.extend_from_slice(&vertex.color.to_array());
-            }
-            for &index in &mesh.indices {
-                index_bytes.extend_from_slice(&index.to_le_bytes());
-            }
-
-            draws.push(UiDraw {
-                first_vertex,
-                indices: indices_start as u32..(indices_start + mesh.indices.len()) as u32,
-                texture: mesh.texture_id,
-                // The texture's own sampling options, not a default: a texture
-                // egui asked to sample nearest or to tile would otherwise be
-                // sampled linearly and clamped, and the sampler that matches
-                // `options` is the one the material binds.
-                options: self
-                    .texture_options
-                    .get(&mesh.texture_id)
-                    .copied()
-                    .unwrap_or_default(),
-                scissor: scissor_rect(primitive.clip_rect, screen),
-            });
-        }
-
-        let vertices = self.vertices.as_ref().expect("just reserved").clone();
-        let indices = self.indices.as_ref().expect("just reserved").clone();
         let device = &self.device;
-        // The two streams are adjacent regions of the one buffer, so they go in
-        // as one upload: one staging buffer, one copy.
-        positions.extend_from_slice(&uv_colors);
+        let vertex_buffer = self.vertices.as_ref().expect("just reserved");
+        let index_buffer = self.indices.as_ref().expect("just reserved");
         self.vertex_staging
-            .write(device, encoder, &vertices, 0, &positions);
+            .write(device, encoder, vertex_buffer, 0, &vertices);
         self.index_staging
-            .write(device, encoder, &indices, 0, &index_bytes);
-        draws
+            .write(device, encoder, index_buffer, 0, &indices);
+        self.packed_vertices = vertices;
+        self.packed_indices = indices;
     }
 
     /// The frame most recently uploaded, as a scene.
@@ -696,13 +751,11 @@ impl EguiIntegration {
         id: egui::TextureId,
         delta: &egui::epaint::ImageDelta,
     ) {
-        use zerocopy::IntoBytes;
-
         let [width, height] = delta.image.size();
-        let pixels: Vec<[u8; 4]> = match &delta.image {
-            egui::ImageData::Color(image) => {
-                image.pixels.iter().map(egui::Color32::to_array).collect()
-            }
+        // The image's own bytes, borrowed rather than copied into a fresh
+        // `Vec`: a font atlas can be megabytes, and this is the whole of it.
+        let pixels: &[u8] = match &delta.image {
+            egui::ImageData::Color(image) => image.as_raw(),
         };
         let layout = wgpu::TexelCopyBufferLayout {
             offset: 0,
@@ -735,7 +788,7 @@ impl EguiIntegration {
                         },
                         aspect: wgpu::TextureAspect::All,
                     },
-                    pixels.as_bytes(),
+                    pixels,
                     layout,
                     size,
                 );
@@ -751,7 +804,7 @@ impl EguiIntegration {
                     usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
                 });
-                queue.write_texture(texture.as_image_copy(), pixels.as_bytes(), layout, size);
+                queue.write_texture(texture.as_image_copy(), pixels, layout, size);
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
                 let texture_id = graph
                     .insert_strong(Resource::Texture(texture), &[])
@@ -990,5 +1043,163 @@ mod tests {
             pixels_per_point: 2.0,
         };
         assert_eq!(screen.size_in_points(), [128.0, 96.0]);
+    }
+
+    /// A screen descriptor matching the default test target.
+    fn test_screen() -> ScreenDescriptor {
+        ScreenDescriptor {
+            size_in_pixels: [256, 192],
+            pixels_per_point: 1.0,
+        }
+    }
+
+    /// One tessellated primitive carrying `vertices` points, clipped to the
+    /// whole screen.
+    fn primitive(texture: egui::TextureId, vertices: usize) -> egui::ClippedPrimitive {
+        let mut mesh = egui::epaint::Mesh::with_texture(texture);
+        for index in 0..vertices {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: egui::pos2(index as f32, index as f32 * 2.0),
+                uv: egui::pos2(0.25, 0.75),
+                color: egui::Color32::from_rgba_premultiplied(1, 2, 3, 4),
+            });
+        }
+        // A degenerate triangle per vertex, enough to exercise the index path.
+        for index in 0..vertices.saturating_sub(2) {
+            mesh.indices
+                .extend([index as u32, index as u32 + 1, index as u32 + 2]);
+        }
+        egui::ClippedPrimitive {
+            clip_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(256.0, 192.0)),
+            primitive: egui::epaint::Primitive::Mesh(mesh),
+        }
+    }
+
+    /// The packing lands each primitive's bytes where its draw says, and the
+    /// two vertex streams hold the values egui put in.
+    #[test]
+    fn packing_places_each_primitive_where_its_draw_says() {
+        let primitives = [primitive(egui::TextureId::default(), 4)];
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut draws = Vec::new();
+        pack_geometry(
+            &primitives,
+            test_screen(),
+            &HashMap::new(),
+            &mut vertices,
+            &mut indices,
+            &mut draws,
+        );
+
+        assert_eq!(draws.len(), 1, "one mesh is one draw");
+        let draw = &draws[0];
+        assert_eq!(draw.first_vertex, 0);
+        assert_eq!(draw.indices, 0..6, "four vertices make two triangles");
+
+        // The vertex buffer holds the position stream then the interleaved
+        // UV-and-color stream, each entry one stride wide.
+        let uv_color_start = 4 * POSITION_STRIDE;
+        assert_eq!(vertices.len(), uv_color_start + 4 * UV_COLOR_STRIDE);
+        let positions: Vec<f32> = vertices[..uv_color_start]
+            .as_chunks::<{ size_of::<f32>() }>()
+            .0
+            .iter()
+            .map(|word| f32::from_le_bytes(*word))
+            .collect();
+        assert_eq!(
+            positions,
+            vec![0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 4.0, 0.0, 3.0, 6.0, 0.0],
+            "each position is x, y and a zero z"
+        );
+
+        // The colors are egui's premultiplied bytes, unchanged.
+        let first_color = uv_color_start + size_of::<egui::Vec2>();
+        assert_eq!(
+            &vertices[first_color..first_color + size_of::<egui::Color32>()],
+            &[1, 2, 3, 4]
+        );
+
+        // The indices are this primitive's, starting at zero for the first.
+        let indices: Vec<u32> = indices
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .map(|word| u32::from_le_bytes(*word))
+            .collect();
+        assert_eq!(indices, vec![0, 1, 2, 1, 2, 3]);
+    }
+
+    /// A second primitive's indices are offset by the first's vertex count, so
+    /// one base vertex addresses both streams.
+    #[test]
+    fn a_later_primitive_is_offset_by_the_earlier_one() {
+        let primitives = [
+            primitive(egui::TextureId::default(), 3),
+            primitive(egui::TextureId::default(), 3),
+        ];
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut draws = Vec::new();
+        pack_geometry(
+            &primitives,
+            test_screen(),
+            &HashMap::new(),
+            &mut vertices,
+            &mut indices,
+            &mut draws,
+        );
+
+        assert_eq!(draws.len(), 2);
+        assert_eq!(draws[0].indices, 0..3);
+        assert_eq!(
+            draws[1].first_vertex, 3,
+            "the second mesh starts after the first"
+        );
+        assert_eq!(draws[1].indices, 3..6);
+    }
+
+    /// The byte buffers are cleared and refilled, not reallocated, so a caller
+    /// that keeps them uploads without allocating.
+    #[test]
+    fn packing_reuses_the_vertex_and_index_buffers() {
+        let big = [primitive(egui::TextureId::default(), 8)];
+        let small = [primitive(egui::TextureId::default(), 3)];
+
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut draws = Vec::new();
+        pack_geometry(
+            &big,
+            test_screen(),
+            &HashMap::new(),
+            &mut vertices,
+            &mut indices,
+            &mut draws,
+        );
+        let vertex_capacity = vertices.capacity();
+        let index_capacity = indices.capacity();
+
+        // A later, smaller frame keeps both allocations rather than taking new
+        // ones; a fresh `Vec` per frame would have exactly its own length.
+        pack_geometry(
+            &small,
+            test_screen(),
+            &HashMap::new(),
+            &mut vertices,
+            &mut indices,
+            &mut draws,
+        );
+        assert_eq!(
+            vertices.capacity(),
+            vertex_capacity,
+            "the vertex scratch buffer is reused"
+        );
+        assert_eq!(
+            indices.capacity(),
+            index_capacity,
+            "the index scratch buffer is reused"
+        );
+        assert_eq!(draws.len(), 1, "and the stale second draw is gone");
     }
 }

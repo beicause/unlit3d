@@ -80,7 +80,11 @@ fn create_unlit_global_group(
     resources: &RenderResources,
     needs_metadata: bool,
 ) -> wgpu::BindGroup {
-    let mut entries = vec![
+    // A fixed array rather than a `Vec`: this runs on the frame path whenever
+    // a global buffer is replaced, and there are never more than three
+    // bindings. The metadata entry is built either way and the slice is
+    // truncated, so the two shapes cost no allocation and no branch.
+    let entries = [
         wgpu::BindGroupEntry {
             binding: CAMERA_BINDING,
             resource: resources.camera.as_entire_binding(),
@@ -89,17 +93,20 @@ fn create_unlit_global_group(
             binding: FRAME_BINDING,
             resource: resources.globals.as_entire_binding(),
         },
-    ];
-    if needs_metadata {
-        entries.push(wgpu::BindGroupEntry {
+        wgpu::BindGroupEntry {
             binding: MESH_METADATA_BINDING,
             resource: resources.metadata.as_entire_binding(),
-        });
-    }
+        },
+    ];
+    let used = if needs_metadata {
+        entries.len()
+    } else {
+        entries.len() - 1
+    };
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("unlit3d::global"),
         layout,
-        entries: &entries,
+        entries: &entries[..used],
     })
 }
 
@@ -1269,18 +1276,23 @@ impl MeshSource {
     /// pipeline and any custom one that binds those buffers alike.
     fn rebuild_dirty_global_groups(&mut self, world: &LocalWorld) {
         let resources = self.render_resources(world);
-        let rebuilt: Vec<_> = self
-            .pipelines
-            .iter()
-            .filter_map(|registered| {
-                let global = registered.global.as_ref()?;
-                Self::graph(world, self.context)
-                    .is_dirty(global.id)
-                    .then(|| (global.id, Arc::clone(&global.rebuild)))
-            })
-            .collect();
+        // Walked by index rather than collected into a `Vec` first: this runs
+        // on the frame path, and the replacement below needs the graph
+        // mutably, which a live borrow of `self.pipelines` rules out. Taking
+        // each entry's handle and dropping the borrow before rebuilding keeps
+        // the loop allocation-free.
+        for index in 0..self.pipelines.len() {
+            let dirty = {
+                let Some(global) = self.pipelines[index].global.as_ref() else {
+                    continue;
+                };
+                if !Self::graph(world, self.context).is_dirty(global.id) {
+                    continue;
+                }
+                (global.id, Arc::clone(&global.rebuild))
+            };
 
-        for (id, rebuild) in rebuilt {
+            let (id, rebuild) = dirty;
             let bind_group = rebuild(&resources);
             let mut graph = Self::graph(world, self.context);
             graph

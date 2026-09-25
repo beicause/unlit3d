@@ -14,14 +14,14 @@
 //! [`spawn_context`](crate::source::spawn_context); the renderer keeps the
 //! context's entity ids so it can reach the device and queue every frame.
 
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::LocalWorld;
 use wgpu_unlit_render::render_attachments::RenderAttachments;
 use wgpu_unlit_render::resources::{ResourceGraph, ResourceId};
 use wgpu_unlit_render::specialize::SurfaceKey;
 
 use crate::components::RenderLoadOps;
 use crate::source::{
-    FrameTarget, OrderWarnings, RenderContext, Source, record_order, set_frame_target,
+    FrameTarget, OrderWarnings, RenderContext, Source, SourceOrder, set_frame_target,
 };
 
 /// The top-level frame driver.
@@ -76,6 +76,9 @@ pub struct Renderer {
     /// [`FrameOrder`](crate::source::FrameOrder), without repeating itself
     /// every frame.
     warnings: OrderWarnings,
+    /// The frame's sources in record order, reused every frame so resolving the
+    /// order allocates nothing.
+    order: SourceOrder,
 }
 
 impl Renderer {
@@ -95,6 +98,7 @@ impl Renderer {
             surface: None,
             bound_size: None,
             warnings: OrderWarnings::default(),
+            order: SourceOrder::default(),
         }
     }
 
@@ -236,18 +240,18 @@ impl Renderer {
         // The sources are visited by row order, which is *not* draw order: the
         // order they record in is resolved below, from the `order` each one
         // declares.
-        let sources: Vec<Entity> = world.query::<&Source>().map(|(entity, _)| entity).collect();
-        for entity in sources {
-            world
-                .with_mut::<Source, _>(entity, |source| {
-                    source.build_scene(world, self.context, &mut encoder)
-                })
-                .expect("the source entity exists");
-        }
+        //
+        // Each source is fetched and dropped before the next one, so no list of
+        // entities is built: `build_scene` only needs a shared borrow of the
+        // world, which is what `for_each` gives alongside the `&mut Source`.
+        world.for_each::<&mut Source, _>(|mut source| {
+            source.build_scene(world, self.context, &mut encoder);
+        });
 
-        // Record phase: the scenes, in declared order.
-        let (order, ambiguous) = record_order(world);
-        self.warnings.check(&ambiguous);
+        // Record phase: the scenes, in declared order. The order is resolved
+        // into a buffer the renderer keeps, so a steady scene reorders nothing.
+        self.order.resolve(world);
+        self.warnings.check(self.order.ambiguous());
 
         let attachments = self.attachments(world);
         {
@@ -257,7 +261,7 @@ impl Renderer {
                 load_ops.depth,
                 load_ops.stencil,
             );
-            for entity in order {
+            for &entity in self.order.entities() {
                 world
                     .with_mut::<Source, _>(entity, |source| source.scene().record(&mut pass))
                     .expect("the source entity exists");

@@ -407,40 +407,77 @@ fn bump_mount(mut source: Source, index: u64) -> Source {
 /// One group of sources that declared the same [`FrameOrder`].
 pub type AmbiguousGroup = (FrameOrder, Vec<Entity>);
 
-/// The sources to record, in the order they record, and the ambiguous groups
-/// among them.
+/// The frame's sources in record order, and the ambiguous groups among them.
 ///
-/// Sorted by `(order, mount_index)`, so equal orders keep their mount order.
-pub fn record_order(world: &LocalWorld) -> (Vec<Entity>, Vec<AmbiguousGroup>) {
-    let mut sources: Vec<(FrameOrder, u64, Entity)> = world
-        .query::<&Source>()
-        .map(|(entity, source)| (source.order(), source.mount_index(), entity))
-        .collect();
-    sources.sort_by_key(|(order, mount_index, _)| (*order, *mount_index));
+/// Resolved once per frame, so it is kept as a reusable buffer rather than
+/// handed back as fresh `Vec`s: a steady scene then resolves its order without
+/// allocating. [`Self::resolve`] clears and refills every buffer in place, so
+/// the capacity survives from one frame to the next.
+#[derive(Debug, Default)]
+pub struct SourceOrder {
+    /// `(order, mount_index, entity)` for every source, sorted by the first
+    /// two. Scratch: the entities are copied into [`Self::order`] once the run
+    /// boundaries have been found.
+    keys: Vec<(FrameOrder, u64, Entity)>,
+    /// The sources to record, in the order they record.
+    order: Vec<Entity>,
+    /// The runs of equal orders among them, in order.
+    ambiguous: Vec<AmbiguousGroup>,
+}
 
-    // Collect each run of equal orders: a run is what an ambiguity is, and
-    // sorting has already put each run's entities in mount order.
-    let mut ambiguous = Vec::new();
-    let mut start = 0;
-    while start < sources.len() {
-        let order = sources[start].0;
-        let mut end = start + 1;
-        while end < sources.len() && sources[end].0 == order {
-            end += 1;
+impl SourceOrder {
+    /// Resolve `world`'s sources, reusing whatever this already holds.
+    ///
+    /// Sorted by `(order, mount_index)`, so equal orders keep their mount
+    /// order; every run of more than one equal order is an ambiguity.
+    pub fn resolve(&mut self, world: &LocalWorld) {
+        self.keys.clear();
+        self.keys.extend(
+            world
+                .query::<&Source>()
+                .map(|(entity, source)| (source.order(), source.mount_index(), entity)),
+        );
+        self.keys
+            .sort_unstable_by_key(|(order, mount_index, _)| (*order, *mount_index));
+
+        self.order.clear();
+        self.ambiguous.clear();
+        let mut start = 0;
+        while start < self.keys.len() {
+            let order = self.keys[start].0;
+            let mut end = start + 1;
+            while end < self.keys.len() && self.keys[end].0 == order {
+                end += 1;
+            }
+            if end - start > 1 {
+                // A run of equal orders: an ambiguity. Its entities are in
+                // mount order already, because that is what the sort used as
+                // the tie-break.
+                let group = self.keys[start..end]
+                    .iter()
+                    .map(|(_, _, entity)| *entity)
+                    .collect();
+                self.ambiguous.push((order, group));
+            }
+            start = end;
         }
-        if end - start > 1 {
-            ambiguous.push((
-                order,
-                sources[start..end].iter().map(|(_, _, e)| *e).collect(),
-            ));
-        }
-        start = end;
+        self.order
+            .extend(self.keys.iter().map(|(_, _, entity)| *entity));
     }
 
-    (
-        sources.into_iter().map(|(_, _, entity)| entity).collect(),
-        ambiguous,
-    )
+    /// The sources to record, in the order they record.
+    pub fn entities(&self) -> &[Entity] {
+        &self.order
+    }
+
+    /// The groups of sources that declared the same [`FrameOrder`], in order.
+    ///
+    /// Equal orders are not an error — two sources that really are
+    /// interchangeable may share one — but they are worth reporting; see
+    /// [`OrderWarnings`].
+    pub fn ambiguous(&self) -> &[AmbiguousGroup] {
+        &self.ambiguous
+    }
 }
 
 /// Reports sources that declared the same [`FrameOrder`], without repeating
@@ -531,6 +568,15 @@ mod tests {
 
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    /// Resolve `world`'s order in one shot, as the tests want it: the entities
+    /// and the ambiguous groups, both owned so an assertion can hold them while
+    /// the world changes.
+    fn record_order(world: &LocalWorld) -> (Vec<Entity>, Vec<AmbiguousGroup>) {
+        let mut resolved = SourceOrder::default();
+        resolved.resolve(world);
+        (resolved.entities().to_vec(), resolved.ambiguous().to_vec())
+    }
 
     /// Sources record in the order they declare, not the order they were
     /// mounted in — the whole point of an explicit order.
@@ -801,6 +847,45 @@ mod tests {
         let (_, again) = record_order(&world);
         assert!(warnings.check(&again), "the ambiguity is back");
         assert!(!warnings.check(&again), "and still reports only once");
+    }
+
+    /// Resolving the order reuses its buffers, so a steady scene stops
+    /// allocating.
+    ///
+    /// The capacity is what proves reuse: a fresh `Vec` per frame would leave
+    /// each one at its own length, while a cleared-and-refilled one keeps the
+    /// largest capacity it has ever needed.
+    #[test]
+    fn resolving_the_order_reuses_its_buffers() {
+        let mut world = LocalWorld::new();
+        test_context(&mut world);
+        for _ in 0..4 {
+            spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        }
+        spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+
+        let mut resolved = SourceOrder::default();
+        resolved.resolve(&world);
+        let order_capacity = resolved.order.capacity();
+        let ambiguous_capacity = resolved.ambiguous.capacity();
+        assert_eq!(resolved.entities().len(), 5);
+        assert_eq!(resolved.ambiguous().len(), 1, "four share one order");
+
+        // A later frame with fewer sources keeps both allocations.
+        let first = world.query::<&Source>().next().expect("a source").0;
+        world.despawn(first);
+        resolved.resolve(&world);
+        assert_eq!(resolved.entities().len(), 4);
+        assert_eq!(
+            resolved.order.capacity(),
+            order_capacity,
+            "the order buffer is reused rather than reallocated"
+        );
+        assert_eq!(
+            resolved.ambiguous.capacity(),
+            ambiguous_capacity,
+            "the ambiguity buffer is reused rather than reallocated"
+        );
     }
 
     /// Distinct orders produce no ambiguity at all.

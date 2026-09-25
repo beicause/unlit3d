@@ -1,10 +1,12 @@
 # 实施计划：unlit3d 集成 UI（egui）并接入 winit 输入事件
 
-> 状态：**计划，未实施**。本文只描述设计、步骤与取舍，代码未改动。
+> 状态：**已实施**。§9 的 12 个步骤全部实现、验证并提交（`main` 上 `0cb66c0..6ce33b7`，17 个提交；快照子模块 `wgpu_unlit_render_asset_files` 为 `a58efeb..70ae7a3`）。本文保留为设计记录，实施结果见 §13。
 > 目标 crate：`unlit3d`（主体）、`wgpu_unlit_render`（UI 模块与 `Scene` 基础设施的小幅改进）。
 > 前置阅读：`docs/DESIGN.md`（§上层API、§功能）、`crates/unlit_ecs/tests/behavior.rs`（行为组件范式）。
 >
 > **修订（一）**：§4 的「帧源与 GPU 上下文归 `Renderer` 所有」已被 **§4.8 取代**——改为把 `wgpu::Device`/`wgpu::Queue`/`ResourceGraph` 与帧源都放进 ECS，`GpuContext`/`FrameContext`/`SourceContext`/`with_source_mut` 随之**全部删除**。D2 已同步改写。§4.1/§4.3/§4.5/§4.7 中与本修订冲突的段落保留原文但已标注，以 §4.8 为准。
+>
+> **修订（二）**：下面的计划已全部实施完毕——§9 的 12 个步骤逐一标注「已完成」，D9/D10/D11/D13 均已定案。本文不再作为待办计划，而作为该设计的设计记录保留；实际结果、抉择落点与对本文的修正集中记在 **§13**。
 
 ---
 
@@ -314,6 +316,7 @@ fn record_order(world: &LocalWorld) -> Vec<Entity> {
 - 用 `log::warn!`，不用 `eprintln!`。理由：库的标准做法，可被应用侧的 logger 过滤/收集；`log 0.4.34` **已在依赖图中**（wgpu/egui/epaint/naga 都依赖它），所以这是**零新增编译成本**的既有依赖，只需在 `crates/unlit3d/Cargo.toml` 加一行显式依赖。
 - **这条选择还与一条新加的 workspace lint 一致**（已实测）：工作区根的 `[workspace.lints.clippy]` 现在含 **`print_stderr = "warn"`** 与 **`print_stdout = "warn"`**，而所有 5 个 crate 都 `[lints] workspace = true`。所以**在库代码里用 `eprintln!` 会直接产生 clippy 警告**——`log` facade 不只是风格偏好，而是唯一不违反该 lint 的库内日志方式。
   - 现有 3 处 `eprintln!` 已经会触发该 lint：`unlit3d_examples/src/main.rs:193/236`（示例二进制）与 `wgpu_unlit_test_util/src/lib.rs:318`（在非默认的 `snapshot` feature 之后，测得 `--features snapshot` 时触发）。它们属于「示例/测试工具」而非库 API，本计划**不改造**它们；实施时若要让工作区 `cargo clippy` 干净，需要单独决定（加 `#[allow(clippy::print_stderr, reason = "...")]` 或改用 `log`）。**这不是本期 UI/输入任务的必需项**，但会被 `cargo clippy` 报出来，先记在这里以免误以为是本次改动引起的。
+    - **修正**：实施时核对发现工作区成员里并没有 `eprintln!`，各处（含示例与测试工具）早已使用 `log`；见 §13。
 - 测试可见性：`log` 是 facade，需要测试里装一个捕获 logger 才能断言（`.tmp/ord2_probe` 就是这么做的，用 `log::set_boxed_logger` + 自定义 `Log` 实现收集到 `Vec<String>`）。**注意**：`log::set_boxed_logger` 需要 `log` 的 **`std`（或 `alloc`）feature**；库本身只用 `log::warn!`，用默认 feature 即可，但**测试/示例若要装捕获 logger，需要开 `features = ["std"]`**。
 
 **为什么不做「源之间显式依赖」**：`order` 是值的全序，简单、可预测、易调试；依赖图对「一层 UI 叠在 3D 上」这个需求过重。若将来需要，`Vec<SourceId>` 的顶层顺序也能用 `set_order` 表达。
@@ -504,6 +507,7 @@ mesh.allocate_unlit_mesh(&device, &mut graph, &queue, /* .. */);
 ### 5.1 先改进 `wgpu_unlit_render::ui`
 
 1. **接线 `TextureOptions`（修 bug）**：`apply_textures` 时把每个 `TextureId` 的 `ImageDelta.options` 记到 `HashMap<egui::TextureId, egui::TextureOptions>`，`upload_geometry` 用它填 `UiDraw.options`（`ui.rs:391`）。同时按 `TextureOptions` 建采样器（现有 `sampler()` 已经是按 options 去重的，保留）。
+   - **实施后记**：本条修好后，既有的 `egui_ui.webp` 快照被有意重拍（旧图记录的正是被修掉的 bug），见 §13。
 2. **`scene()` 放宽借用**：`pub fn scene(&self, graph: &ResourceGraph) -> Scene`；把「惰性建 material」从 `scene` 移到 `update`（`build_material` 需要 `&mut self` + `&mut graph`，正好在 update 阶段）。
 3. **按 `SurfaceKey` 特化的入口**（供 unlit3d 复用，同时不剥夺自定义能力）：
    ```rust
@@ -513,6 +517,7 @@ mesh.allocate_unlit_mesh(&device, &mut graph, &queue, /* .. */);
    ```
    内部 = `ui_options` + `apply_surface`。
 4. **深度状态可选化（见 D5）**：把 `UnlitOptions.depth_stencil` 改成 `Option<wgpu::DepthStencilState>`，使无深度附件的目标能拿到无深度状态的管线。这会波及内置 unlit 的默认值、`apply_surface`、以及 `unlit3d` 的测试基建；本期至少修 UI 路径。
+   - **修正**：本条已按 D5 实施。实施 §5.1 期间另发现本文有两处判断有误（egui 键映射、工作区 `eprintln!` 数量），见 §13「对计划本身的修正」。
    - **关键约束（已实测，勿弄反）**：同一个 pass 内**所有**管线的深度声明必须与 pass 的附件**格式一致**，wgpu 只比 `Option<TextureFormat>`，**不看** `depth_write_enabled`/`depth_compare`。因此共用 pass（UI + mesh，且目标带深度）时，UI 管线**仍须声明相同的深度格式**，只靠 `write=false`+`compare=Always` 来不干扰 mesh 的深度；`None` 只用于**目标本身没有深度附件**的 pass，那时 mesh 管线也必须是 `None`。
    - 现有 `apply_ui_settings`（`ui.rs:180-181`）设的 `depth_write_enabled=false` + `CompareFunction::Always` **仍然正确**，不要改成 `None`；要补的是「它只在目标带深度（或只有 color）时分别给出对应设置」这一分支。
    - 与官方 `egui-wgpu` 一致（`crates/egui-wgpu/src/renderer.rs`）：其 `depth_stencil_format` 默认为 `None`，但一旦给出格式，就建出**同格式** + `depth_write_enabled: Some(false)` + `depth_compare: Some(Always)` 的状态——即官方同样把「UI 不测不写深度」与「管线不声明深度」分开处理。
@@ -893,6 +898,8 @@ draw():               world.apply();                 // 落地上一帧排队的
 
 同时设置 `RawInput.screen_rect`（点）、`viewports[ROOT].native_pixels_per_point`、`time`、`max_texture_side`。
 
+> **修正**：计划曾以为 egui 的 `Key` 只有 6 个字母、其余字母只能靠 `Event::Text` 兜底；`egui-0.36.2/src/data/key.rs` 实际定义了全部 26 个字母 `A`–`Z`，映射覆盖全部字母（见 §13）。
+
 ### 6.7 与 UI 的「输入捕获」关系
 
 egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egui_wants_pointer_input()` / `egui_wants_keyboard_input()`（egui-0.36.2 `context.rs:2973/2986`）。
@@ -957,6 +964,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 5. **`ui/convert.rs`：`InputEvent → egui::Event`**（§6.6）
    - 纯函数断言。特别覆盖**触摸必须附带 pointer 事件**（`PointerMoved` + `PointerButton{Primary}` + `PointerGone`），否则 egui 收不到触摸点击。
    - `Key` → `egui::Key` 只映射 egui 有的键；字母靠 `Event::Text`（egui 的 `Key` 只有 B/L/M/N/Q/Y 六个字母，`key.rs:123-146`）。
+   - **修正**：括号里这条判断是错的——`egui-0.36.2/src/data/key.rs` 定义了全部 26 个字母 `A`–`Z`，映射覆盖全部字母（见 §13）。
 
 ### 8.2 GPU 快照集成测试（`crates/unlit3d/tests/`）
 
@@ -1000,6 +1008,8 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 
 ## 9. 实施顺序
 
+> **本节全部步骤均已实施完毕**（结果见 §13）。下面 12 个步骤逐一标注「已完成」；步骤描述保留为当时的实施意图记录。
+
 三个阶段，**渲染侧重构 → UI → 输入**（用户指定：先 UI 后输入）。理由：
 
 - 渲染侧重构是一切的前提：`Scene` 句子柄化、帧源机制、`MeshSource` 搬家。
@@ -1010,7 +1020,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 
 ### 阶段 1：渲染侧重构（无 UI、无输入）
 
-**1. `wgpu_unlit_render::scene`：`Scene` 自持句柄（§3、D1）**
+**1. `wgpu_unlit_render::scene`：`Scene` 自持句柄（§3、D1）** — **已完成**
 - `DrawEntry` 三个字段改为 owned（`wgpu::RenderPipeline`/`BindGroup`/`Buffer` + `Range<u64>`）；`Scene` 去掉生命周期参数。
 - 删 `recycle`/`reborrow`/`launder`；`record` 里重建 `BufferSlice`；`PassState` 去重键改为 `(Buffer, Range<u64>)`。
 - 新增 `Scene::extend`（供 UI 场景并入；`MeshSource` 自身直接 push）。
@@ -1018,7 +1028,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 - **验收**：§8.2 第 10 条——`cargo test -p wgpu_unlit_render` 全绿（`gpu_ui.rs` 跟着旧 API 改造后仍通过）；`unlit3d` 的 GPU 测试（`gpu_ecs`/`animated_scene`/`custom_pipeline`）仍通过。
 - 提交点：**只动 `Scene`、不改 `Renderer` 对外行为**，可单独验证「句子柄化没改变画面」。
 
-**2. `unlit3d::source`：帧源机制 + 顺序（§4.6、§4.8、D2/D3/D6/D8/D13）**
+**2. `unlit3d::source`：帧源机制 + 顺序（§4.6、§4.8、D2/D3/D6/D8/D13）** — **已完成**
 - 新增 `source.rs`：`FrameSource` trait（`build_scene(&World)`/`scene`/**必需的 `order`**）、`FrameOrder`（**无 `Default`**）、`mount_index: u64`、以及 GPU 上下文的资源组件。
 - **按 §4.8**：`GpuContext`/`FrameContext`/`SourceContext`/`FrameTarget`、`with_source_mut`、`source_as`/`source_id_of`、`SourceId`、`mount`/`unmount`/`set_order`、`on_mount`/`on_unmount` 的**钩子形态**一律不写。`Source(Box<dyn AnySource>)` 组件、`RenderContext`（只装 `Entity`）、`mount_index` 要写。
 - **保留**：`AnySource: Any + FrameSource` 的无方法 blanket impl（异构源要被同一查询驱动，`.tmp/hybrid` 已实测）；类型化访问用 trait upcasting，不在 `FrameSource` 上加 `as_any_mut()`。
@@ -1029,7 +1039,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 - **本步结束时 `Renderer` 仍保留原有 3D 路径**（尚未搬走），把「3D 主场景」当成一个内部源或第 0 个 `Scene`——先让机制本身通过测试，搬家留给下一步。
 - **验收**：§8.1 第 1–2 组（帧源机制 + 顺序歧义警告）全过；**现有全部测试仍须全绿**（对外 API 未变）。
 
-**3. `unlit3d::mesh_source`：把 3D 整体搬进 `MeshSource`（§4.4、§4.8）**
+**3. `unlit3d::mesh_source`：把 3D 整体搬进 `MeshSource`（§4.4、§4.8）** — **已完成**
 - 新建 `mesh_source.rs`：`MeshSource` 持有原 `Renderer` 的 3D 字段（`families`/`pipelines`/mesh 与 index/vertex 池/metadata/instance/剔除缓存/自身 `Scene`）与其全部方法（§4.4 的表）；`build_scene` = 原 `render` 的 3D 段，上下文自己从世界取。
 - **不写 `MeshSourceExt` 拓展 trait**（§4.8）：setup 期取 `world.get_mut::<Source>(entity)` 后 downcast 成 `&mut MeshSource`，与 `world.get_mut::<ResourceGraph>(ctx.graph)` 分属不同 cell，可同时持有。`renderer.rs` 里不出现 mesh 代码这一目标由「mesh 代码本就在 `MeshSource` 里」自然达成。
 - `Renderer` 收缩为纯帧级：只剩下 target 绑定与「按序构建 + 录制 + submit」；`device`/`queue`/`graph`/源都不再是它的字段。`set_render_target`/`attachments`/`clear_pass` 留下。
@@ -1039,41 +1049,41 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 
 ### 阶段 2：UI（先于输入）
 
-**4. `wgpu_unlit_render::ui`：修基础设施（§5.1、D5）**
+**4. `wgpu_unlit_render::ui`：修基础设施（§5.1、D5）** — **已完成**
 - `TextureOptions` 接线（`ui.rs:391` 的 bug）、`scissor_rect` 补乘 ppp（`ui.rs:715` 的 bug）、`scene(&self, &ResourceGraph)` 放宽借用、`ui_options_for_surface` 入口。
 - `UnlitOptions.depth_stencil` 改为 `Option`（唯一改变既有公开行为的一处，D5）。
 - **验收**：§8.2 第 11 条——`cargo test -p wgpu_unlit_render --features egui`；两个 bug 各需**新断言**（`TextureOptions` 用 Nearest+Repeat 纹理；scissor 断言**裁剪边界附近**的像素，现有测试只断言中心点所以覆盖不到）。
 
-**5. `unlit3d::ui`：`UiPanel` + `UiSource`（§5.2、D12）**
+**5. `unlit3d::ui`：`UiPanel` + `UiSource`（§5.2、D12）** — **已完成**
 - `UiPanel` 行为组件（§5.2.1）与 `UiSource`（setup 期经世界建 UBO/管线；`build_scene` 组装 `RawInput` → `ctx.run_ui` **逐一驱动所有 `UiPanel`** → `integration.update` → 取 `Scene`）。
 - `ui = ["dep:egui", "wgpu_unlit_render/egui"]` feature（D11）。
 - `FrameOrder::OVERLAY` 声明顺序。
 - **验收**：§8.1 第 3 组（`UiPanel` 驱动，无需 GPU）+ **§8.2 的 A 组（只渲染 UI 的快照集成测试）全部通过**，特别是 `ui_only_draws_without_a_camera`（纯 UI、无相机）与 `ui_only_at_high_pixel_density`（ppp 边界）。
 
-**6. `crates/unlit3d/tests/gpu_ui_source.rs`：mesh + UI 同帧（§8.2 B 组）**
+**6. `crates/unlit3d/tests/gpu_ui_source.rs`：mesh + UI 同帧（§8.2 B 组）** — **已完成**
 - 单独立一步，因为它验证的是**两个源在同一 pass 内协作**（顺序、混合、scissor 不越界、跨帧复用），与第 5 步的「UI 自己能不能画」是不同的失效面。
 - **验收**：§8.2 第 6–9 条全过；新增快照 `mesh_and_ui.webp`。
 
 ### 阶段 3：输入
 
-**7. `unlit3d::input`：事件类型、`InputState`、行为组件、`dispatch_input`（§6.1–6.4、D4/D8/D9）**
+**7. `unlit3d::input`：事件类型、`InputState`、行为组件、`dispatch_input`（§6.1–6.4、D4/D8/D9）** — **已完成**
 - 事件与状态类型、资源实体、行为组件（`OnInput`/`OnKey`/`OnPointer`/`OnTouch`/`OnText`/`OnIme`）、`dispatch_input`。
 - **验收**：§8.1 第 4 组（类别路由、无资源/无组件/空事件不 panic、`queue()` 后 `apply` 生效、`clear_events` 的边界）。
 
-**8. `unlit3d::input::winit` + `ui/convert.rs`（§6.5、§6.6）**
+**8. `unlit3d::input::winit` + `ui/convert.rs`（§6.5、§6.6）** — **已完成**
 - `WindowEvent → InputEvent` 翻译；`InputEvent → egui::Event` 转换（触摸附带 pointer 事件）。
 - **验收**：§8.1 第 4 组（winit 翻译）+ 第 5 组（egui 转换）。
 
-**9. 把输入接进 UI**：`UiSource` 的 `build_scene` 从 `InputState` 组装 `RawInput`（`screen_rect`/`native_pixels_per_point`/`events`/`focused`），并写回 egui 的捕获状态（§6.7）。
+**9. 把输入接进 UI** — **已完成**：`UiSource` 的 `build_scene` 从 `InputState` 组装 `RawInput`（`screen_rect`/`native_pixels_per_point`/`events`/`focused`），并写回 egui 的捕获状态（§6.7）。
 - **验收**：补一条 GPU 测试——喂一个 `PointerButton{Primary}` 事件到按钮所在坐标，断言按钮**真的被按下**（像素变化或面板里的状态组件变化）。这是「输入 → UI」的端到端闭环。
 
 ### 阶段 4：示例与文档
 
-**10. 示例改造（§7）**：挂 `MeshSource` → 挂 `UiSource` → spawn 两个 `UiPanel` → 接输入行为组件；`Esc` 仍由 winit 分支处理。
+**10. 示例改造（§7）** — **已完成**：挂 `MeshSource` → 挂 `UiSource` → spawn 两个 `UiPanel` → 接输入行为组件；`Esc` 仍由 winit 分支处理。
 
-**11. 文档**：`crate` 级文档与 `docs/DESIGN.md` 的「实施计划」勾选项。**注意：`DESIGN.md` 未经许可不修改**，只在最后提醒用户更新（本期新概念：帧源 `FrameSource`、内置 mesh 也是源、`UiPanel` 行为组件、输入行为组件、多 `Scene` 顺序绘制）。
+**11. 文档** — **已完成**：`crate` 级文档与 `docs/DESIGN.md` 的「实施计划」勾选项。**注意：`DESIGN.md` 未经许可不修改**，只在最后提醒用户更新（本期新概念：帧源 `FrameSource`、内置 mesh 也是源、`UiPanel` 行为组件、输入行为组件、多 `Scene` 顺序绘制）。
 
-**12. 收尾**：按项目约定先 `cargo clippy` 再 `cargo fmt`（§8.4）。
+**12. 收尾** — **已完成**：按项目约定先 `cargo clippy` 再 `cargo fmt`（§8.4）。
 
 
 ## 10. 需要抉择的点（具体到文件、行与后果）
@@ -1081,7 +1091,7 @@ egui 是否想独占指针/键盘，需要**上一帧**的结果：`Context::egu
 每条都给出：**问题**（在哪一行、为什么是问题）、**选项**、**改动面**、**决定/倾向**。编号连续，不用 `′` 之类派生编号。
 
 **已定**（用户决定）：D1（`Scene` 自持句柄）、D2（**帧源与 GPU 上下文都放进 ECS**，内置 mesh 也是源——§4.8 修订）、D3（`build_scene` 命名；`source_as`/`on_mount` 部分作废）、D4（输入分发由调用方显式调用）、D5（`depth_stencil` 改 `Option`）、D6（`build_scene`/`scene` 两方法）、D7（**不再需要——源进 ECS 后直接取图**，§4.8 修订）、D8（`FrameSource::order` + `mount_index` tie-break，§4.8 代价 2）、D12（界面是 `UiPanel` 行为组件，`UiSource` 逐一驱动）。
-**待定**：D9（事件列表所有权）、D10（UI 源拿输入的方式）、D11（feature 划分）、D13（`RenderContext` 是否带每帧 target）——都可在实施到对应步骤时再定，不阻塞起步。
+**已定**（实施时落定，见 §13）：D9（事件列表所有权 → A）、D10（UI 源拿输入的方式 → A）、D11（feature 划分 → A）、D13（`RenderContext` 是否带每帧 target → C）。
 
 ### D1 `Scene` 是否改为自持句柄 — `[已定：选 A]`
 
@@ -1231,7 +1241,7 @@ wgpu error: Validation Error
 
 **顺带纠正一条我先前的错误判断**：`PassState` 是 `Scene::record` 的**局部变量**（`scene.rs:282`），所以 scissor/stencil **不会从一个 `Scene` 泄漏到下一个**——「被裁剪的绘制放最后」只约束**一个 Scene 内部**。因此源之间的顺序**不是**被 scissor 逼出来的硬约束，而是「UI 要合成在 3D 之上」的语义要求，正适合用 `order` 表达。
 
-### D9 事件列表的所有权 —（可在实施 §6.4 时定）
+### D9 事件列表的所有权 — `[已定：选 A]`
 
 **问题**。`InputState` 的事件列表要被两个消费者读（分发器 + UI 源）。实测（§6.4.1 第 4 条）：若驱动器在遍历期间**持续持有** `Ref<InputState>`，回调里写 `InputState` 会 panic（`component InputState is already borrowed while it is being write`）。同时，回调里想读 `InputState`（比如读「当前按下的按钮」）又很常见。所以分发前必须先把事件「拿出来」，不能让 `Ref` 跨遍历存续。
 
@@ -1239,9 +1249,9 @@ wgpu error: Validation Error
 **选项 B**：`mem::take` 事件到调用方持有的 scratch，分发完再放回。零克隆，但调用方要保管 scratch，且「谁负责放回」容易出错（中途 panic 会丢事件）。
 **选项 C**：事件不放在 `InputState` 里，由调用方作为 `&[InputEvent]` 传给 `dispatch_input` 与 UI 源。最纯粹，但要求帧循环自己存事件，`InputState` 就不再是单一事实来源。
 
-**倾向 A**（简单、不易错；事件量级极小）。
+**决定：选 A**（简单、不易错；事件量级极小）。`dispatch_input` 在开头克隆本帧的 `Vec<InputEvent>`，`InputState` 的 cell 随即释放，回调可自由读写它。
 
-### D10 UI 源拿输入的方式 —（可在实施 §5.2 时定）
+### D10 UI 源拿输入的方式 — `[已定：选 A]`
 
 **问题**。UI 需要「本帧事件 + 窗口尺寸 + ppp + 焦点」，这些都在 `InputState` 资源里。源怎么拿到它？
 
@@ -1252,11 +1262,11 @@ wgpu error: Validation Error
 **选项 B**：`FrameContext` 直接带上输入（`pub input: Option<&'a InputState>`）。
 - 源不用自己找，但把「输入」硬编码进了通用 `FrameSource` API（未来只做后处理的源不需要输入）。
 
-**倾向 A**：保持 `FrameContext` 通用；`UiSource` 作为具体源自己知道要什么。
+**决定：选 A**：保持 `RenderContext` 通用；`UiSource` 作为具体源自己知道要什么——它在 `build_scene` 里用类型查询找到 `InputState` 并记住其 `Entity`（§5.2 的 `input` 字段），之后按实体读取。
 
 **实施时机**：UI 的渲染路径（§9 阶段 2 第 5 步）**先不依赖输入**——`build_scene` 读一个空的 `InputState`（或就地构造一个 `RawInput`），先把「只渲染 UI」的快照测试跑通。**输入接进 UI 是阶段 3 第 9 步**，那时才需要这个 `input` 字段。这样切分的理由：让「UI 画不出来」与「输入翻译错」两类失败不互相掩盖。
 
-### D11 feature 划分 —（可在实施 §5.4 时定）
+### D11 feature 划分 — `[已定：选 A]`
 
 **问题**。`egui` 现在是 `crates/unlit3d/Cargo.toml` 里的**非 optional** 依赖，意味着不用 UI 的用户也要编译 egui。
 
@@ -1268,7 +1278,7 @@ wgpu error: Validation Error
 **选项 B**：不做 feature，`egui` 常开。
 - 改动 0，但「不用 UI 也要编 egui」违背分层，且 egui 会进默认构建的依赖图。
 
-**倾向 A**。`input` 模块与 `source` 模块不依赖 egui，可常开。
+**决定：选 A**。已实施：新增 `ui` feature（**默认开启**），`egui` 改为 optional，`ui = ["dep:egui", "wgpu_unlit_render/egui"]`，`pub mod ui` 随之门控；`input` 模块与 `source` 模块不依赖 egui，常开。`cargo nextest run --no-default-features --features winit` 通过（110 条），即不开 `ui` 也能构建。
 
 ### D12 UI 界面如何被驱动 — `[已定：界面是 UiPanel 行为组件，UiSource 逐一驱动]`
 
@@ -1293,7 +1303,7 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 - 每次 pass 重建查询迭代器是**正确**的（两种驱动形式都实测通过多趟）；
 - 但面板闭包会**跑多次**，因此必须**幂等**，或按 `num_completed_passes` 判断。这适用于所有 egui 后端（`egui-wgpu` 亦然），不是本设计引入的，但**必须在 `UiPanel` 的文档里写明**。
 
-### D13 `RenderContext` 是否携带每帧的 render target —（可在实施 §9 阶段 1 第 2 步时定）
+### D13 `RenderContext` 是否携带每帧的 render target — `[已定：选 C]`
 
 **问题**（§4.8 提出）。源进 ECS 后，`device`/`queue`/`graph` 三个 `Entity` 收在一个常驻资源 `RenderContext` 里。但源在 `build_scene` 里往往还需要**本帧的 render target**（`SurfaceKey` 与物理尺寸），用来特化管线（`ui_options_for_surface` 那类入口）与算投影。这个值每帧可能变（resize、换 target），而 `RenderContext` 只 spawn 一次。
 
@@ -1309,7 +1319,7 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 - 与 D4 的帧循环形态一致：`dispatch_input` → `apply` → 写 target → `render`。
 - 代价：多一个资源实体；且「忘记写」时源读到过期 target（可让字段为 `Option` 并断言，或在 `render` 入口兜底写入）。
 
-**倾向 C**：它不改变 `render` 的签名，也不需要源各自复制 `SurfaceKey` 的构造逻辑；「每帧写入」与已有的 `InputState.clear_events` 是同一类显式帧循环职责。**实施到阶段 1 第 2 步时确认**（那里才第一次需要决定 `build_scene` 的参数形状）。
+**决定：选 C**：它不改变 `render` 的签名，也不需要源各自复制 `SurfaceKey` 的构造逻辑；「每帧写入」与已有的 `InputState.clear_events` 是同一类显式帧循环职责。已实施：target 落为单独的每帧资源 `FrameTarget`，由帧循环在渲染之前写入。
 
 ## 11. 风险与注意
 
@@ -1321,7 +1331,7 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 - **源之间顺序由 `order` 显式声明**（§4.6、D8）：`MeshSource` 用 `FrameOrder::MESH`、`UiSource` 用 `FrameOrder::OVERLAY`。别把「UI 必须在 3D 之后」只寄托在挂载语句的先后上——那是隐式约定，也正是 `order` 要消除的。
 - **相同 `order` 会 `log::warn!`**：这是提示不是错误，录制仍按 `mount_index` 进行。若日志里出现这条警告，说明有几个源的相对次序是巧合而非意图——改它们 `order` 字段给不同值。稳态帧不产生日志（只在源集合/顺序真正改变时检查）。
 - **测试要装捕获 logger 才能断言警告**：`log` 是 facade，需 `log::set_boxed_logger` + 自定义 `Log`；这要求 `log` 的 `std`（或 `alloc`）feature。库本身只用 `log::warn!`，默认 feature 即可。
-- **`print_stderr`/`print_stdout` lint 已生效**：工作区 lint 含这两条，5 个 crate 全 opt-in。所以库内**不要**用 `eprintln!`（会被 clippy 报），顺序警告走 `log::warn!`。现有 3 处 `eprintln!`（示例 2 处 + 测试工具 1 处）会被报出，属既存问题、本期不改造。
+- **`print_stderr`/`print_stdout` lint 已生效**：工作区 lint 含这两条，5 个 crate 全 opt-in。所以库内**不要**用 `eprintln!`（会被 clippy 报），顺序警告走 `log::warn!`。现有 3 处 `eprintln!`（示例 2 处 + 测试工具 1 处）会被报出，属既存问题、本期不改造。（**修正**：实际上并不存在这些 `eprintln!`——工作区早已全部使用 `log`；见 §13。）
 - **同一 pass 内的相机 UBO**：UI 的 `screen_view` 与 3D 相机不同，必须用各自的 UBO，或者 UI 在绘制前重写 3D 用的相机缓冲——**选各自的 UBO**。
 - **`egui::Context` 是 `Clone`（内部 Arc）**，但 `UiSource` 持有它即可，不要跨帧重建（会丢字体图集缓存）。
 - **每个源复用它的 `Scene` 分配**：`Scene::clear()` 保留 `draws` 的 capacity（现有 `scene_cache` 正是这么用的，`renderer.rs:1353`）；`MeshSource` 与 `UiSource` 各自每帧复用 `self.scene`，避免每帧分配。
@@ -1352,6 +1362,48 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 | pass 级状态的边界：`PassState` 是 `record` 的局部量 | `crates/wgpu_unlit_render/src/scene.rs:282`、`scene.rs:24-28` |
 | `log 0.4.34` 已在依赖图中（wgpu/egui/epaint/naga 均依赖） | `Cargo.lock:1215` |
 | 工作区 clippy lint 含 `print_stderr`/`print_stdout`，5 个 crate 全 opt-in | `Cargo.toml:33-37`、各 `crates/*/Cargo.toml` 的 `[lints]` |
-| 项目当前的日志用法只有 `eprintln!`（4 处，示例与测试工具） | `unlit3d_examples/src/main.rs:193/236` 等 |
+| 项目当前的日志用法只有 `eprintln!`（4 处，示例与测试工具）（**修正**：不成立，已全用 `log`；见 §13） | `unlit3d_examples/src/main.rs:193/236` 等 |
 | 交换链与附件 | `crates/unlit3d/src/winit.rs` |
 | 现有示例 | `unlit3d_examples/src/main.rs` |
+
+---
+
+## 13. 实施结果
+
+本节记录实施完成后的实际状态：提交范围、验证结论、各个待定抉择的最终落点，以及对本文若干判断的修正。§1–§12 保留为设计记录。
+
+### 提交与验证
+
+- **提交范围**：`main` 上 `0cb66c0..6ce33b7`，共 17 个提交；快照子模块 `wgpu_unlit_render_asset_files` 为 `a58efeb..70ae7a3`。两者均已推送。
+- **`cargo xtask check`**（全工作区 clippy `-D warnings` + `cargo fmt --check`）：干净。
+- **`cargo xtask test`**：392 个测试通过（本次工作前的基线是 185），doctest 同样通过。
+- **`cargo nextest run --no-default-features --features winit`**：110 个通过，证明关掉 `ui`（即不编 egui）后 crate 仍可构建。
+- **wasm 构建**成功；`typos` 与 `tombi lint --error-on-warnings` 干净。
+- **13 个既有快照逐字节不变**（唯一例外见「快照重拍」）。
+
+### 抉择的最终落点
+
+- **D9（事件列表所有权）→ 选项 A**：`dispatch_input` 在开头克隆本帧的 `Vec<InputEvent>`，`InputState` 的 cell 随即释放，回调可自由读写它。
+- **D10（UI 源拿输入的方式）→ 选项 A**：`UiSource` 在 `build_scene` 里用类型查询找到 `InputState`，并记住它的 `Entity`。
+- **D11（feature 划分）→ 选项 A**：新增 `ui` feature（**默认开启**），`egui` 改为 optional，`ui = ["dep:egui", "wgpu_unlit_render/egui"]`。
+- **D13（`RenderContext` 是否携带每帧 render target）→ 选项 C**：target 落为单独的每帧资源 `FrameTarget`，由帧循环在渲染之前写入。
+
+### 对计划本身的修正
+
+1. **§6.6 与键映射讨论中「egui 的 `Key` 只有 6 个字母」的说法是错的**。`egui-0.36.2/src/data/key.rs` 定义了全部 26 个字母 `A`–`Z`，因此映射覆盖全部字母，不存在「大多数字母无法映射、只能丢弃」的情况。
+2. **计划声称工作区成员里有 3 处 `eprintln!` 需要改为 `log`——实际一处也没有**。工作区各处（含示例与测试工具）早已使用 `log`。
+
+### 快照重拍
+
+- **`egui_ui.webp` 被有意重拍**（子模块提交 `b2d5d9b`）。原因：§5.1 的纹理选项修复让以 `TextureOptions::NEAREST` 注册的纹理**真的**按最近邻采样，而旧快照捕获的是线性过滤后的渐变——也就是那个 bug 本身。除此之外，所有既有快照逐字节不变。
+
+### 顺带修复的既有缺陷
+
+- **`unlit_ecs::world::send_tests::several_threads_may_write_the_same_world` 存在竞态**：两个线程写的是**同一批实体**，而 `SyncCell::try_write` 是「尝试」而非「等待」，因此在高负载下会 panic `component is already borrowed while it is being write`。
+- 修法是让测试在两个线程间**划分实体**（提交 `6ce33b7`），并以连续 30 次全量测试、0 次失败验证。
+- 该文件与本次工作前的基线逐字节一致，所以这是**既有的 flake，不是本次改动引入的回归**。
+
+### 仍未实施
+
+- **蒙皮（skinning）与形变目标（morph targets）**：仍是 `docs/DESIGN.md` 中的未决项。
+- **输入自动拦截**：按设计不做任何拦截——输入源只通过 `InputCapture` **发布**自己声明捕获了什么，由调用方决定这意味着什么。

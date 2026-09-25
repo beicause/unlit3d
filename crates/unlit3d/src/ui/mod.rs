@@ -317,13 +317,22 @@ impl FrameSource for UiSource {
         // Input arrives as a world resource: the source looks it up by type
         // and remembers the entity. A world without one is not an error — the
         // UI still lays out at the target's own size — but nothing feeds it.
+        //
+        // The events are translated to egui's own here, while the state is
+        // borrowed, rather than cloned out of the world first: the conversion
+        // only reads them, so egui's list is the one allocation this makes.
         let input_state = world.query::<&InputState>().next().map(|(entity, state)| {
+            let pixels_per_point = if state.scale_factor > 0.0 {
+                state.scale_factor
+            } else {
+                1.0
+            };
             (
                 entity,
                 state.scale_factor,
                 state.size_px,
                 state.focused,
-                state.events().to_vec(),
+                convert::to_egui_events(state.events(), pixels_per_point),
             )
         });
         self.input = input_state.as_ref().map(|(entity, ..)| *entity);
@@ -361,10 +370,9 @@ impl FrameSource for UiSource {
         // projection both take the point size; the clip rectangles the
         // integration derives are scaled to pixels by `pixels_per_point`.
         let points = screen.size_in_points();
-        // The frame's events, in egui's own event types and point space. The
-        // events stay in the world afterwards: the UI reads them, it does not
+        // The events reached egui's own types while `InputState` was borrowed,
+        // and they stay in the world afterwards: the UI reads them, it does not
         // consume them, so a game behaviour sees the same frame.
-        let events = convert::to_egui_events(&events, pixels_per_point);
         let mut input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
