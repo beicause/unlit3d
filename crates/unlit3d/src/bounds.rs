@@ -9,7 +9,7 @@ use glam::{Affine3A, Vec3};
 
 /// An axis-aligned bounding box in a mesh's local space.
 ///
-/// A mesh uploads one of these with its [`MeshDesc`](crate::MeshDesc); it is
+/// A mesh uploads one of these with its [`MeshDesc`](crate::mesh::MeshDesc); it is
 /// both the box the renderer culls against and the range the built-in
 /// pipeline's position compression decodes from.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

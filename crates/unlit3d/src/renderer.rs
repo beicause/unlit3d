@@ -1,8 +1,8 @@
 //! The frame driver: assembling one frame out of its sources.
 //!
 //! A [`Renderer`] draws nothing itself. It owns the frame's render target and
-//! drives the frame's [`FrameSource`]s: every source builds its own
-//! [`Scene`] from the world, then the driver records those scenes in
+//! drives the frame's [`FrameSource`](crate::source::FrameSource)s: every source builds its own
+//! [`Scene`](wgpu_unlit_render::scene::Scene) from the world, then the driver records those scenes in
 //! [`FrameOrder`](crate::source::FrameOrder) into one pass, opened over the target's attachments. That is
 //! the whole of it — the built-in mesh rendering is one source
 //! ([`MeshSource`](crate::mesh_source::MeshSource)) and has no more privilege

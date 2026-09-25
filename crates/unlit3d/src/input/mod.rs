@@ -322,7 +322,7 @@ impl PointerButtons {
         Self::FORWARD,
     ];
 
-    /// The buttons this set contains, in [`PointerButtons::TRACKED`] order.
+    /// The buttons this set contains, in the tracked order.
     pub fn held(self) -> impl Iterator<Item = Self> {
         Self::TRACKED
             .into_iter()

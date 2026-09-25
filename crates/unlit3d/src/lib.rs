@@ -2,46 +2,46 @@
 //!
 //! This crate bridges [`unlit_ecs`] and [`wgpu_unlit_render`]: it provides the
 //! component types needed to describe a renderable 3D scene in an ECS world and
-//! a [`Renderer`] component that turns that data into GPU draw commands every
+//! a [`Renderer`](crate::renderer::Renderer) component that turns that data into GPU draw commands every
 //! frame. The two foundational crates stay direct dependencies — their items
 //! are reached through their own paths, and the ones most callers need are
 //! re-exported by [`prelude`].
 //!
 //! # Quick start
 //!
-//! A frame is assembled out of frame sources. [`Renderer`] owns the frame's
+//! A frame is assembled out of frame sources. [`Renderer`](crate::renderer::Renderer) owns the frame's
 //! render target and records the sources it is given; the built-in mesh
-//! rendering is one source, [`MeshSource`], and a caller's own pass over the
+//! rendering is one source, [`MeshSource`](crate::mesh_source::MeshSource), and a caller's own pass over the
 //! frame is another, with no less privilege. Each source builds its own scene
-//! and declares where in the frame it belongs through [`FrameOrder`].
+//! and declares where in the frame it belongs through [`FrameOrder`](crate::source::FrameOrder).
 //!
 //! The GPU state a frame draws with — the device, the queue and the resource
 //! graph — lives in the ECS world as resource components, addressed by a
-//! [`RenderContext`]. [`spawn_context`] spawns them and returns their
+//! [`RenderContext`](crate::source::RenderContext). [`spawn_context`](crate::source::spawn_context) spawns them and returns their
 //! addresses.
 //!
 //! Each source draws with whatever pipeline families are registered on it. The
-//! built-in unlit shader is one: [`MeshSource::register_unlit_family`]
-//! registers it, and [`MeshSource::register_family`] registers a caller's own.
+//! built-in unlit shader is one: [`MeshSource::register_unlit_family`](crate::mesh_source::MeshSource::register_unlit_family)
+//! registers it, and [`MeshSource::register_family`](crate::mesh_source::MeshSource::register_family) registers a caller's own.
 //! A family is identified by its key type, the type its entities'
-//! [`GpuPipeline`] components carry.
+//! [`GpuPipeline`](crate::components::GpuPipeline) components carry.
 //!
 //! # Input and UI
 //!
 //! [`input`] is the portable half of input handling: the event types and the
 //! behaviour components that react to them, with no windowing library or UI
-//! toolkit involved. A caller feeds a frame's events into the [`InputState`]
-//! resource, runs [`dispatch_input`] to drive the behaviours, and clears the
+//! toolkit involved. A caller feeds a frame's events into the [`InputState`](crate::input::InputState)
+//! resource, runs [`dispatch_input`](crate::input::dispatch_input) to drive the behaviours, and clears the
 //! events once every consumer has read them.
 //!
 //! [`ui::UiSource`] is a frame source that draws the world's
 //! [`ui::UiPanel`] components as an overlay. A UI is a behaviour component, so
 //! a frame can hold as many panels as it has entities, and the source only
-//! drives the ones it finds. It reads the same [`InputState`] the caller's own
-//! behaviours do, and publishes what the UI claimed as an [`InputCapture`]
+//! drives the ones it finds. It reads the same [`InputState`](crate::input::InputState) the caller's own
+//! behaviours do, and publishes what the UI claimed as an [`InputCapture`](crate::source::InputCapture)
 //! resource for game logic to consult.
 //!
-//! A [`GpuPipeline`] carries a key, not a compiled pipeline: a concrete
+//! A [`GpuPipeline`](crate::components::GpuPipeline) carries a key, not a compiled pipeline: a concrete
 //! pipeline is resolved per key against the frame's render target and the
 //! entity's vertex layout. Every renderable entity must carry one.
 //!

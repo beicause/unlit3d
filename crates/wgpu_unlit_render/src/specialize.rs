@@ -37,7 +37,7 @@
 //! Keys that are injective implement [SpecializerKey] with
 //! [SpecializerKey::IS_CANONICAL] set to true. The simplest such keys -- plain
 //! hashable types -- are declared with the
-//! [impl_canonical_specializer_key!] macro, which routes
+//! [`impl_canonical_specializer_key!`](crate::impl_canonical_specializer_key) macro, which routes
 //! [canonical_specializer_key] through the same place as the hand-written
 //! implementations. A [SurfaceKey] is one of these. Multiple orthogonal
 //! specialization dimensions compose as a tuple of keys, for which
@@ -96,7 +96,7 @@ pub type Canonical<T> = <T as SpecializerKey>::Canonical;
 /// Declare a key whose distinct values always produce distinct descriptors, so
 /// the secondary cache can be skipped.
 ///
-/// Used by the [impl_canonical_specializer_key!] macro; prefer the macro for
+/// Used by the [`impl_canonical_specializer_key!`](crate::impl_canonical_specializer_key) macro; prefer the macro for
 /// readability.
 pub const fn canonical_specializer_key<T>() -> (bool, PhantomData<T>) {
     (true, PhantomData)

@@ -577,17 +577,17 @@ impl MeshSource {
     /// This is the only way a pipeline enters the source, for the built-in
     /// unlit shader and a caller's own alike. The key type is the family's
     /// identity: entities draw with it when they carry a
-    /// [GpuPipeline](crate::GpuPipeline) of that type, and registering a
+    /// [GpuPipeline](crate::components::GpuPipeline) of that type, and registering a
     /// second family for the same key type is a programming error.
     ///
     /// A family compiles nothing on registration: its concrete pipelines are
     /// built lazily, the first time a draw resolves a variant key, and are
-    /// appended to [`MeshSource::pipelines`] in resolution order.
+    /// appended to the source's pipeline list in resolution order.
     ///
     /// [`MeshSource::register_unlit_family`] is the built-in unlit family; a
     /// pipeline with nothing to specialize on is registered with the
-    /// [`TrivialSpecializer`](crate::TrivialSpecializer) and
-    /// [`RenderPipelineFactory`](crate::RenderPipelineFactory) helpers.
+    /// [`TrivialSpecializer`](crate::pipeline::TrivialSpecializer) and
+    /// [`RenderPipelineFactory`](crate::pipeline::RenderPipelineFactory) helpers.
     ///
     /// # Panics
     ///
@@ -648,7 +648,7 @@ impl MeshSource {
     /// state declares, so a mesh may carry any combination of attributes in
     /// any format. The pipeline specializes on the layout.
     ///
-    /// The mesh's [`Aabb`](crate::Aabb) is recorded in the source's
+    /// The mesh's [`Aabb`] is recorded in the source's
     /// mesh-metadata array, which the next built scene uploads.
     ///
     /// [`MeshSource::allocate_unlit_mesh`] is the helper that builds the

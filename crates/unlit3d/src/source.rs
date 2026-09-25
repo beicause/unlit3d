@@ -1,6 +1,6 @@
 //! Frame sources: the things a frame is made of.
 //!
-//! A [`Renderer`](crate::Renderer) draws nothing itself. It assembles a frame
+//! A [`Renderer`](crate::renderer::Renderer) draws nothing itself. It assembles a frame
 //! out of [`FrameSource`]s, each of which builds its own [`Scene`] from the
 //! world and states where in the frame it belongs. The built-in mesh rendering
 //! is one such source ([`MeshSource`](crate::mesh_source::MeshSource)) and a
@@ -128,7 +128,7 @@ pub fn frame_target(world: &LocalWorld) -> Option<FrameTarget> {
 
 /// State the target the frame draws into.
 ///
-/// The frame loop calls this before it renders — [`Renderer::set_render_target`]
+/// The frame loop calls this before it renders — [`Renderer::set_render_target`](crate::renderer::Renderer::set_render_target)
 /// does it for the built-in path. Returns whether a slot existed to write; a
 /// world only gets one from [`spawn_context`].
 pub fn set_frame_target(world: &LocalWorld, target: FrameTarget) -> bool {

@@ -30,8 +30,8 @@ pub struct VertexBufferDesc {
 
 /// Geometry to upload, described the way wgpu describes it.
 ///
-/// [`crate::MeshSource::allocate_mesh`] takes one of these and returns a
-/// [`crate::GpuMesh`] handle. The buffers are moved into the source's
+/// [`crate::mesh_source::MeshSource::allocate_mesh`] takes one of these and returns a
+/// [`crate::components::GpuMesh`] handle. The buffers are moved into the source's
 /// resource graph, so the caller hands over ownership.
 #[derive(Clone, Debug, Default)]
 pub struct MeshDesc {

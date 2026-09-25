@@ -6,16 +6,16 @@
 //! camera, globals or metadata buffers -- a way to rebuild its global bind
 //! group when those buffers change. Nothing here is specific to the built-in
 //! unlit shader: the unlit family is registered through the same
-//! [MeshSource::register_family](crate::MeshSource::register_family) a caller's
+//! [MeshSource::register_family](crate::mesh_source::MeshSource::register_family) a caller's
 //! own family uses, and supplies its own factory like anyone else.
 //!
 //! # Pipeline keys and families
 //!
-//! A [GpuPipeline] component does not name a compiled pipeline. It carries a
+//! A [GpuPipeline](crate::components::GpuPipeline) component does not name a compiled pipeline. It carries a
 //! [PipelineKey], the entity's request for one family's variant: which
 //! concrete pipeline an entity needs depends on the frame's render target and
 //! on the mesh's vertex layout, neither of which is known when the entity is
-//! spawned. A *family* closes that gap. It pairs a [Variants] cache with a
+//! spawned. A *family* closes that gap. It pairs a [Variants](wgpu_unlit_render::specialize::Variants) cache with a
 //! [Specializer] and a [PipelineFactory], queries the world for the entities
 //! that carry its key type, and resolves each to a concrete pipeline. The
 //! renderer registers every family under the [TypeId](core::any::TypeId) of
@@ -26,10 +26,10 @@
 //! The entity, not the renderer, chooses its base descriptor: a
 //! [PipelineKey] reports the blueprint ([PipelineKey::base_descriptor]) its
 //! variants start from, so one family can draw entities whose base options
-//! differ. The blueprint is supplied to [Variants::specialize] lazily and only
+//! differ. The blueprint is supplied to [Variants::specialize](wgpu_unlit_render::specialize::Variants::specialize) lazily and only
 //! on a cache miss.
 //!
-//! Geometry is described by [crate::MeshDesc], which lists vertex buffers
+//! Geometry is described by [crate::mesh::MeshDesc], which lists vertex buffers
 //! tagged with the slot a pipeline expects them in and carries the layout each
 //! buffer has. The renderer assumes no vertex layout, so a mesh can carry any
 //! combination of attributes and a family can specialize on it at draw time.
@@ -153,7 +153,7 @@ pub struct FamilyContext<'a> {
 
 /// The base descriptor an entity's pipeline variants start from.
 ///
-/// A [GpuPipeline] component carries a key of this type. It selects the family
+/// A [GpuPipeline](crate::components::GpuPipeline) component carries a key of this type. It selects the family
 /// the entity draws with -- the family registered for this key type -- and
 /// supplies the blueprint that family's [Specializer] rewrites into the
 /// concrete descriptor. Because the key carries the base, one family can serve

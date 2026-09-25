@@ -253,7 +253,7 @@ impl<M: Mode> World<M> {
     /// Iterate the entities matching `Q` that pass the filter `F`.
     ///
     /// The filter is a [`QueryFilter`]: it narrows the archetypes visited and
-    /// fetches nothing, so [`With`] and [`Without`] cost no borrow and nothing
+    /// fetches nothing, so [`With`](crate::With) and [`Without`](crate::Without) cost no borrow and nothing
     /// appears in the item.
     ///
     /// `````

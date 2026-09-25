@@ -43,7 +43,7 @@ where
     variants: Variants<T, S>,
     /// The factory that turns a variant into a wgpu render pipeline.
     factory: F,
-    /// registered[v] is the wgpu render pipeline for core variant v.
+    /// registered\[v\] is the wgpu render pipeline for core variant v.
     registered: Vec<PipelineId>,
     /// Names the key type without owning one.
     _key: PhantomData<fn() -> K>,

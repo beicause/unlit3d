@@ -192,7 +192,7 @@ impl UiSource {
     /// The resource graph `ctx` addresses in `world`.
     ///
     /// An associated function rather than a method, matching
-    /// [`MeshSource::graph`](crate::MeshSource::graph), so the borrow it takes
+    /// [`MeshSource::graph`](crate::mesh_source::MeshSource::graph), so the borrow it takes
     /// is visibly disjoint from the `&mut self` fields a caller splits
     /// alongside it.
     ///

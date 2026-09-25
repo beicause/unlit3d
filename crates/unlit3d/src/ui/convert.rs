@@ -68,7 +68,7 @@ pub fn to_egui_events<'a>(
 }
 
 /// A key event. The crate carries the text a key produced as a separate
-/// [`TextEvent`], so a key press becomes one egui event here and the text
+/// [`TextEvent`](crate::input::TextEvent), so a key press becomes one egui event here and the text
 /// arrives on its own.
 fn key_events(event: KeyEvent) -> Vec<EguiEvent> {
     // A key only the platform knows has no name in egui's closed key space, so

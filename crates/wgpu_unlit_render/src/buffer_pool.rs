@@ -3,7 +3,7 @@
 //! Uploading a mesh per buffer is wasteful: every `wgpu::Buffer` carries
 //! driver overhead, and a draw can only bind a handful of them. A
 //! [`BufferPool`] instead owns one large buffer and hands out byte ranges
-//! inside it with an [`Allocator`](crate::offset_allocator::Allocator), so
+//! inside it with an [`Allocator`], so
 //! every mesh of a kind shares the same buffer.
 //!
 //! A range is a [`BufferRange`]: a byte offset and a size, plus the
@@ -16,7 +16,7 @@
 //! appends free space rather than re-packing — so an offset stays valid across
 //! a grow and only the buffer handle changes.
 //!
-//! Every range starts at a multiple of [`COPY_BUFFER_ALIGNMENT`], which is
+//! Every range starts at a multiple of [`COPY_BUFFER_ALIGNMENT`](wgpu::COPY_BUFFER_ALIGNMENT), which is
 //! what a GPU buffer sub-allocation needs. The pool grows by doubling when a
 //! range does not fit, copying the old contents into the new buffer.
 //!
@@ -24,7 +24,7 @@
 //!
 //! A range's allocation covers the requested size rounded up to the
 //! alignment, which [`BufferRange::size`] reports. Sizing the pool with
-//! [`min_allocator_size`](crate::offset_allocator::min_allocator_size) is not
+//! [`min_allocator_size`] is not
 //! needed here: the pool grows on demand.
 //!
 //! # Example
@@ -89,7 +89,7 @@ pub struct BufferRange {
 impl BufferRange {
     /// The byte offset the range starts at.
     ///
-    /// This is always a multiple of [`COPY_BUFFER_ALIGNMENT`].
+    /// This is always a multiple of [`COPY_BUFFER_ALIGNMENT`](wgpu::COPY_BUFFER_ALIGNMENT).
     pub fn offset(&self) -> u32 {
         self.allocation.offset
     }
@@ -130,7 +130,7 @@ impl BufferPool {
     /// Creates a pool over a buffer of `size` bytes with the given usages.
     ///
     /// The buffer is created immediately. `size` is rounded up to a multiple
-    /// of [`COPY_BUFFER_ALIGNMENT`].
+    /// of [`COPY_BUFFER_ALIGNMENT`](wgpu::COPY_BUFFER_ALIGNMENT).
     ///
     /// # Panics
     ///
@@ -196,13 +196,13 @@ impl BufferPool {
     ///
     /// Returns `None` only if the pool cannot grow any further (its size would
     /// overflow a `u32`, or it has run out of node slots for its ranges). The
-    /// returned range's offset is a multiple of [`COPY_BUFFER_ALIGNMENT`], and
+    /// returned range's offset is a multiple of [`COPY_BUFFER_ALIGNMENT`](wgpu::COPY_BUFFER_ALIGNMENT), and
     /// its allocation covers `size` rounded up to it.
     ///
     /// Growing allocates a new buffer of twice the pool's size, copies the old
     /// contents into it, and appends the difference to the allocator. Existing
     /// ranges keep their offsets, but the buffer they name changes, so a
-    /// caller holding one must re-read [`BufferRange::buffer`].
+    /// caller holding one must re-read [`BufferPool::buffer`].
     pub fn allocate(
         &mut self,
         device: &wgpu::Device,

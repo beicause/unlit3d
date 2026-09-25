@@ -268,7 +268,7 @@ impl RenderAttachments {
     /// into the color view) and stores without it (the color view *is* the
     /// attachment). The depth attachment discards after a clear and stores
     /// after a load: a transient depth texture (see
-    /// [`Self::depth_is_transient`]) only accepts `Clear + Discard`, while a
+    /// `depth_is_transient`) only accepts `Clear + Discard`, while a
     /// persistent depth texture — a shadow map, a preprocessed depth buffer —
     /// keeps the results for a later pass to sample. The stencil aspect
     /// follows the same rules (the renderer never writes it, so `Clear`
@@ -410,7 +410,7 @@ pub struct FrameTextures {
 /// [`TextureUsages::RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT)
 /// and [`TextureUsages::COPY_SRC`](wgpu::TextureUsages::COPY_SRC) so the
 /// caller can read the frame back. The depth and multisample textures use
-/// [`TextureUsages::RENDER_ATTACHMENT`] |
+/// [`TextureUsages::RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT) |
 /// [`TRANSIENT_ATTACHMENT`](wgpu::TextureUsages::TRANSIENT_ATTACHMENT). The
 /// depth format is [`default_depth_stencil_format`]'s choice for `device`.
 ///

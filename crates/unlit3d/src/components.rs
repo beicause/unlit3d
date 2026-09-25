@@ -117,10 +117,10 @@ impl Default for RenderLoadOps {
 
 /// A handle to a mesh stored in the source's GPU resource graph.
 ///
-/// Created by [`MeshSource::allocate_mesh`] or
-/// [`MeshSource::allocate_unlit_mesh`].
+/// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
+/// [`MeshSource::allocate_unlit_mesh`](crate::mesh_source::MeshSource::allocate_unlit_mesh).
 /// The mesh is ready to draw immediately and the handle stays valid until
-/// [`MeshSource::remove_mesh`] is called with it.
+/// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) is called with it.
 #[derive(Clone, Debug)]
 pub struct GpuMesh {
     /// The mesh's virtual root node in the resource graph.
@@ -128,7 +128,7 @@ pub struct GpuMesh {
     /// It holds no GPU resource of its own and is the mesh's only lifetime
     /// entry point: the vertex and index buffers, the mesh bind group and the
     /// mesh-info uniform are all weak nodes registered under it, so
-    /// [`MeshSource::remove_mesh`] frees the whole
+    /// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) frees the whole
     /// mesh by removing this one node and collecting the parts it leaves
     /// behind. The other ids below are for the draw path, which reads the
     /// parts directly.
@@ -142,7 +142,7 @@ pub struct GpuMesh {
     /// A pipeline family specializes on this: two meshes whose layouts imply
     /// different pipeline descriptors resolve to different compiled pipelines.
     /// It is owned here so a key can name it without going back to the
-    /// [`MeshDesc`](crate::MeshDesc) it was uploaded from. It may name a slot
+    /// [`MeshDesc`](crate::mesh::MeshDesc) it was uploaded from. It may name a slot
     /// whose buffer the draw binds from the renderer rather than the mesh —
     /// the per-instance buffer, for one.
     pub vertex_layout: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
@@ -201,7 +201,7 @@ pub struct GpuMesh {
 
 /// The per-entity request for one family's variant.
 ///
-/// It carries a [PipelineKey] rather than a compiled pipeline: which concrete
+/// It carries a [PipelineKey](crate::pipeline::PipelineKey) rather than a compiled pipeline: which concrete
 /// pipeline an entity needs depends on the frame's render target and on the
 /// entity's vertex layout, neither of which is known when the component is
 /// created. The family the key belongs to is found from the key's type, and
@@ -238,11 +238,11 @@ pub type UnlitPipeline = GpuPipeline<UnlitPipelineKey>;
 /// A handle to a material bind group in the source's GPU resource graph.
 ///
 /// Created by
-/// [`MeshSource::allocate_material`] for a
+/// [`MeshSource::allocate_material`](crate::mesh_source::MeshSource::allocate_material) for a
 /// caller's own layout, or by
-/// [`MeshSource::allocate_unlit_material`]
+/// [`MeshSource::allocate_unlit_material`](crate::mesh_source::MeshSource::allocate_unlit_material)
 /// for the built-in shader's base-color texture and sampler. The handle stays
-/// valid until [`MeshSource::remove_material`]
+/// valid until [`MeshSource::remove_material`](crate::mesh_source::MeshSource::remove_material)
 /// is called with it.
 #[derive(Clone, Debug)]
 pub struct GpuMaterial {
