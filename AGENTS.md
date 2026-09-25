@@ -10,6 +10,10 @@
 - **文档和注释**：保持文档和注释为最新，更新代码的同时，更新有关注释。文档和注释是面向用户的，不要包含不必要的内部细节、不要包含无关的上下文或显而易见的信息。代码、文档、注释默认全用英文。
 - **完成任务后cargo检查**：运行`cargo clippy`和`cargo fmt`（或直接 `cargo xtask check`）。
 
+## Git 工作流
+
+- **主分支（`main`）保持线性历史，不要有 merge commit**。合入改动用 `git cherry-pick`、`git rebase` 或 squash，不要用 `git merge`。
+
 ## 常用命令
 
 - **`cargo xtask check`** — clippy（全工作区、全 target、全 feature，`-D warnings`）后接 `cargo fmt --check`。提交前的门槛。加 `--release` 走 release profile。
