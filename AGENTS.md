@@ -21,8 +21,10 @@
 
 由于`cargo`命令可能运行较慢，要注意：
 - **若改动较小，cargo测试时要按包或名称筛选**，对于较小的改动不要总是跑全量测试。
-- **如果改动不是平台特定的，不要跑特定平台检查（如wasm,android）**。
-- **不要过度跑cargo构建或检查**，若cargo检查通过后没有对rust文件做出显著改动，无需反复执行cargo构建或检查。
+- **不要过度跑cargo build**：
+  1. 尽可能少用cargo build，优先用check或clippy。若cargo check或clippy通过了，则大概率cargo build也能通过。
+  2. 如果改动不是平台特定的，如没有用到`#[cfg(...)]`，就无需跑平台特定（如wasm,android）的检查或构建。
+  4. 有CI兜底。若怀疑存在未捕获的错误可以查看最新一次的github action是否通过。
 
 测试日志走 `log` crate，不靠 `println!`/`eprintln!`：
 
