@@ -241,15 +241,26 @@ fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
     }
 }
 
-/// Vertex count and index count the buffers must hold for `primitives`.
-fn measure(primitives: &[egui::ClippedPrimitive]) -> (usize, usize) {
-    let mut vertices = 0usize;
-    let mut indices = 0usize;
+/// How much geometry a frame holds: the two numbers the packing and the draw
+/// ranges both need, and which must agree between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GeometryCounts {
+    vertices: usize,
+    indices: usize,
+}
+
+/// Count the vertices and indices every tessellated primitive in `primitives`
+/// contributes.
+fn measure(primitives: &[egui::ClippedPrimitive]) -> GeometryCounts {
+    let mut counts = GeometryCounts {
+        vertices: 0,
+        indices: 0,
+    };
     for mesh in primitives.iter().filter_map(mesh_of) {
-        vertices += mesh.vertices.len();
-        indices += mesh.indices.len();
+        counts.vertices += mesh.vertices.len();
+        counts.indices += mesh.indices.len();
     }
-    (vertices, indices)
+    counts
 }
 
 /// Pack `primitives` into `vertices` and `indices`, and fill `draws` with where
@@ -259,18 +270,27 @@ fn measure(primitives: &[egui::ClippedPrimitive]) -> (usize, usize) {
 /// caller that keeps them across frames reuses the allocation. The vertex
 /// buffer holds the position stream first and the interleaved UV-and-color
 /// stream second: wgpu binds one stride per slot and the two differ.
+///
+/// `counts` must be what [`measure`] returned for `primitives`: it is both how
+/// much is written and where the two vertex streams meet.
 fn pack_geometry(
     primitives: &[egui::ClippedPrimitive],
     screen: ScreenDescriptor,
     texture_options: &HashMap<egui::TextureId, egui::TextureOptions>,
+    counts: GeometryCounts,
     vertices: &mut Vec<u8>,
     indices: &mut Vec<u8>,
     draws: &mut Vec<UiDraw>,
 ) {
     use zerocopy::IntoBytes;
 
-    let (vertex_count, index_count) = measure(primitives);
-    let uv_color_start = vertex_count * POSITION_STRIDE;
+    // The split between the two streams is the frame's own vertex count, which
+    // is what `scene` reads back. It is *not* the buffer's capacity: that is
+    // usually larger, and splitting on it would write the UVs and colors
+    // somewhere the draws do not look for them.
+    let uv_color_start = counts.vertices * POSITION_STRIDE;
+    let vertex_count = counts.vertices;
+    let index_count = counts.indices;
 
     vertices.clear();
     vertices.resize(uv_color_start + vertex_count * UV_COLOR_STRIDE, 0);
@@ -349,6 +369,21 @@ struct UiDraw {
     scissor: ScissorRect,
 }
 
+/// The graph nodes backing one egui texture slot.
+///
+/// A slot needs both: the texture, because egui patches its own atlases with
+/// partial updates and a patch is written into the texture, and the view,
+/// because a material bind group samples the view. They are two nodes with an
+/// edge between them, so a patched texture and everything built from it stay
+/// the same resources.
+#[derive(Clone, Copy)]
+struct TextureSlot {
+    /// The texture egui's deltas are written into.
+    texture: ResourceId,
+    /// The default view over it, which the material samples.
+    view: ResourceId,
+}
+
 /// Draws tessellated egui output with the built-in unlit pipeline.
 ///
 /// The UI's GPU resources are registered in a [`ResourceGraph`] the caller
@@ -364,9 +399,8 @@ pub struct EguiIntegration {
     /// Graph node of the caller's global bind group: camera and frame
     /// globals, written by the caller.
     global_group: ResourceId,
-    /// Graph node of the egui texture *view* of every allocated texture
-    /// slot, keyed by egui's own id; the view depends on its texture node.
-    textures: HashMap<egui::TextureId, ResourceId>,
+    /// Graph nodes of every allocated texture slot, keyed by egui's own id.
+    textures: HashMap<egui::TextureId, TextureSlot>,
     /// The sampling options egui last stated for each texture.
     ///
     /// Kept separately from the texture itself because every [`ImageDelta`]
@@ -391,6 +425,11 @@ pub struct EguiIntegration {
     vertex_capacity: usize,
     /// Indices the index buffer holds room for.
     index_capacity: usize,
+    /// Vertices the most recently uploaded frame holds. This is where its two
+    /// vertex streams meet, so [`Self::scene`] has to split at the same point
+    /// [`Self::upload_geometry`] packed at — which is not the capacity whenever
+    /// the buffer has room to spare.
+    frame_vertices: usize,
     /// Staging buffer for the per-frame vertex uploads, reused across frames.
     vertex_staging: StagingBuffer,
     /// Staging buffer for the per-frame index uploads, reused across frames.
@@ -441,6 +480,7 @@ impl EguiIntegration {
             indices: None,
             vertex_capacity: 0,
             index_capacity: 0,
+            frame_vertices: 0,
             vertex_staging: StagingBuffer::new(),
             index_staging: StagingBuffer::new(),
             draws: Vec::new(),
@@ -486,13 +526,14 @@ impl EguiIntegration {
         output.textures_delta.clear();
 
         let primitives = ctx.tessellate(output.shapes, screen.pixels_per_point);
-        let (vertices, indices) = measure(&primitives);
-        if vertices == 0 {
+        let counts = measure(&primitives);
+        if counts.vertices == 0 {
             self.draws.clear();
             return;
         }
-        self.reserve(graph, vertices, indices);
-        self.upload_geometry(encoder, &primitives, screen);
+        self.reserve(graph, counts);
+        self.frame_vertices = counts.vertices;
+        self.upload_geometry(encoder, &primitives, screen, counts);
 
         // Build every material the frame needs here, while the graph is still
         // mutably available: `scene` only reads it, so a material that does
@@ -520,6 +561,7 @@ impl EguiIntegration {
         encoder: &mut wgpu::CommandEncoder,
         primitives: &[egui::ClippedPrimitive],
         screen: ScreenDescriptor,
+        counts: GeometryCounts,
     ) {
         // The scratch buffers are taken out of `self` for the duration, so the
         // draw list can be filled while they are written, then put back: a
@@ -531,6 +573,7 @@ impl EguiIntegration {
             primitives,
             screen,
             &self.texture_options,
+            counts,
             &mut vertices,
             &mut indices,
             &mut self.draws,
@@ -566,8 +609,12 @@ impl EguiIntegration {
             self.indices.as_ref().expect("checked"),
         );
         // The position stream is the first half of the buffer, the interleaved
-        // UVs and colors the second; each holds `vertex_capacity` vertices.
-        let positions_size = (self.vertex_capacity * POSITION_STRIDE) as u64;
+        // UVs and colors the second, and the two meet at the *frame's* vertex
+        // count — the point `upload_geometry` packed at. The buffer usually has
+        // room to spare, so splitting at `vertex_capacity` instead would bind
+        // the second stream to bytes no vertex was written to.
+        let positions_size = (self.frame_vertices * POSITION_STRIDE) as u64;
+        let uv_colors_size = (self.frame_vertices * UV_COLOR_STRIDE) as u64;
         let pipeline = &self.pipeline.pipeline;
         let global = self.bind_group(graph, self.global_group);
         for draw in &self.draws {
@@ -589,7 +636,11 @@ impl EguiIntegration {
             .with_bind_group(GLOBAL_GROUP, global)
             .with_bind_group(MATERIAL_GROUP, material)
             .with_vertex_buffer_range(POSITION_SLOT, vertices, 0..positions_size)
-            .with_vertex_buffer_range(UV_COLOR_SLOT, vertices, positions_size..vertices.size())
+            .with_vertex_buffer_range(
+                UV_COLOR_SLOT,
+                vertices,
+                positions_size..positions_size + uv_colors_size,
+            )
             .with_index_buffer(indices, wgpu::IndexFormat::Uint32)
             .with_scissor(draw.scissor);
             scene.push(entry);
@@ -597,9 +648,10 @@ impl EguiIntegration {
         scene
     }
 
-    /// Reallocate the buffers when they cannot hold `vertices` and `indices`,
-    /// registering any new buffer in `graph`.
-    fn reserve(&mut self, graph: &mut ResourceGraph, vertices: usize, indices: usize) {
+    /// Reallocate the buffers when they cannot hold `counts`, registering any
+    /// new buffer in `graph`.
+    fn reserve(&mut self, graph: &mut ResourceGraph, counts: GeometryCounts) {
+        let GeometryCounts { vertices, indices } = counts;
         // Grow geometrically so a UI that grows over a few frames does not
         // reallocate every frame.
         if self.vertices.is_none() || self.vertex_capacity < vertices {
@@ -661,14 +713,14 @@ impl EguiIntegration {
         if self.materials.iter().any(|(seen, _)| *seen == key) {
             return;
         }
-        let Some(texture) = self.textures.get(&id).copied() else {
+        let Some(slot) = self.textures.get(&id).copied() else {
             return;
         };
         let sampler_id = self.sampler(graph, options);
         let Some(layout) = self.pipeline.material_layout.as_ref() else {
             return;
         };
-        let Some(Resource::TextureView { view, .. }) = graph.get(texture) else {
+        let Some(Resource::TextureView { view, .. }) = graph.get(slot.view) else {
             return;
         };
         let Some(Resource::Sampler(sampler)) = graph.get(sampler_id) else {
@@ -689,7 +741,7 @@ impl EguiIntegration {
             ],
         });
         let id = graph
-            .insert_strong(Resource::BindGroup(group), &[texture, sampler_id])
+            .insert_strong(Resource::BindGroup(group), &[slot.view, sampler_id])
             .expect("both dependencies were registered");
         self.materials.push((key, id));
     }
@@ -730,11 +782,13 @@ impl EguiIntegration {
             }
         }
         for &id in &delta.free {
-            // Removing the texture drops its view, and with it every
-            // material that samples it — the graph propagates the removal
-            // along the dependency edges.
-            if let Some(view) = self.textures.remove(&id) {
-                graph.remove_drop(view);
+            // The texture is the root of the slot's subtree: removing it drops
+            // the view, and with it every material that samples the view — the
+            // graph propagates the removal along the dependency edges. Removing
+            // only the view instead would leave the texture strongly held and
+            // never collected.
+            if let Some(slot) = self.textures.remove(&id) {
+                graph.remove_drop(slot.texture);
             }
             self.texture_options.remove(&id);
             // A material whose nodes were removed no longer resolves; drop
@@ -771,10 +825,10 @@ impl EguiIntegration {
         match delta.pos {
             // A patch written into the texture already there.
             Some([x, y]) => {
-                let Some(&texture_id) = self.textures.get(&id) else {
+                let Some(slot) = self.textures.get(&id) else {
                     return;
                 };
-                let Some(Resource::Texture(texture)) = graph.get(texture_id) else {
+                let Some(Resource::Texture(texture)) = graph.get(slot.texture) else {
                     return;
                 };
                 queue.write_texture(
@@ -812,7 +866,13 @@ impl EguiIntegration {
                 let view_id = graph
                     .insert_strong(view, &[texture_id])
                     .expect("the texture was just registered");
-                self.textures.insert(id, view_id);
+                self.textures.insert(
+                    id,
+                    TextureSlot {
+                        texture: texture_id,
+                        view: view_id,
+                    },
+                );
             }
         }
     }
@@ -1083,10 +1143,12 @@ mod tests {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut draws = Vec::new();
+        let counts = measure(&primitives);
         pack_geometry(
             &primitives,
             test_screen(),
             &HashMap::new(),
+            counts,
             &mut vertices,
             &mut indices,
             &mut draws,
@@ -1141,10 +1203,12 @@ mod tests {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut draws = Vec::new();
+        let counts = measure(&primitives);
         pack_geometry(
             &primitives,
             test_screen(),
             &HashMap::new(),
+            counts,
             &mut vertices,
             &mut indices,
             &mut draws,
@@ -1169,10 +1233,12 @@ mod tests {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut draws = Vec::new();
+        let big_counts = measure(&big);
         pack_geometry(
             &big,
             test_screen(),
             &HashMap::new(),
+            big_counts,
             &mut vertices,
             &mut indices,
             &mut draws,
@@ -1182,10 +1248,12 @@ mod tests {
 
         // A later, smaller frame keeps both allocations rather than taking new
         // ones; a fresh `Vec` per frame would have exactly its own length.
+        let small_counts = measure(&small);
         pack_geometry(
             &small,
             test_screen(),
             &HashMap::new(),
+            small_counts,
             &mut vertices,
             &mut indices,
             &mut draws,

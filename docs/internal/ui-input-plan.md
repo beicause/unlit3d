@@ -1438,3 +1438,80 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 - **`cargo xtask test`**：396 个测试通过，doctest 同样通过。
 - **`typos`** 与 **`tombi lint --error-on-warnings`**：干净。
 - 除这两张有意重拍的快照外，其余快照逐字节不变。
+
+---
+
+## 15. 无头捕获与 CI 快照（示例的第三种运行方式）
+
+本轮的目标是让示例自己成为 CI 可验证的对象：**在无显示器的环境下离屏渲染、回读像素、与快照比对**。为此示例增加了命令行参数与无头模式，顺带修掉了三个既有缺陷。
+
+### 示例的三个运行模式
+
+示例原先是「窗口 + 事件循环」的单一形态。现在 `Scene` 被拆成**与窗口无关的核心**（`LocalWorld` + `Renderer` + 行为组件），窗口只是它的一种驱动：
+
+| 模式 | 目标 | 驱动 |
+| --- | --- | --- |
+| 窗口（默认） | 交换链 | `winit` 事件循环，`RedrawRequested` 推进 `delta_time` |
+| 无头（`--headless`） | 离屏纹理 | 固定步长 `FIXED_STEP = 1/60` |
+
+`Windowed` 结构持有 `Scene` + `WindowSurface`；无头路径完全不建窗口、不进事件循环，只建离屏目标。
+
+### 命令行
+
+无参数解析依赖（工作区里本就没有 `clap`/`pico-args`/`lexopt`），故手写在 `unlit3d_examples/src/cli.rs`：`--name value` 与 `--name=value` 都接受。
+
+```
+--headless          离屏渲染后退出，不开窗口
+--size <WxH>        目标尺寸 [默认 960x720]
+--frames <N>        捕获前绘制的帧数 [默认 2]
+--output <PATH>     把捕获帧写成无损 WebP
+--snapshot <PATH>   与 PATH 处的快照比对
+--update            改写快照而不是比对
+--min-score <S>     匹配所需的最低 SSIMULACRA2 分数 [默认 85]
+--no-ui             只画立方体，不画 UI 覆盖层
+-h, --help          打印用法
+```
+
+`--no-ui` 是观察 3D 场景本身用的：不挂 `UiSource`、不 spawn 两个面板，画面里只剩立方体。
+
+无头路径需要一个**非默认**的 `snapshot` feature：它只为了让示例复用测试工具的「回读 + 感知比对」，因此默认关闭，wasm 与 Android 构建永远看不到它。
+
+### 与 `assert_image_snapshot` 的一个有意分歧
+
+`assert_image_snapshot` 在快照缺失时**写入并视为通过**——这对本地开发友好，但会让 CI 因为「写了它本该检查的东西」而变绿，正是 §13 里那个「CI 从未真正校验过快照」的成因。因此 `--snapshot` 在快照缺失时**直接失败**，必须显式 `--update` 才会写入。
+
+### 三个既有缺陷
+
+1. **`read_texture_bytes` 的行对齐**（`wgpu_unlit_test_util`）：用了 `COPY_BUFFER_ALIGNMENT`（4 字节），而纹理→缓冲拷贝要求 `COPY_BYTES_PER_ROW_ALIGNMENT`（256 字节）。宽度不是 64 的倍数时直接触发 wgpu 校验错误。套件里所有回读都是 256 宽（两个对齐恰好相同），所以这个 bug 一直被掩盖。新增 `a_readback_handles_a_row_that_is_not_copy_aligned`（60 宽）固定它：修前 panic `Bytes per row does not respect COPY_BYTES_PER_ROW_ALIGNMENT`，修后通过。
+
+2. **字体图集的 partial 更新被静默丢弃**（`wgpu_unlit_render/src/ui.rs`）：`EguiIntegration::textures` 存的是**视图**节点，但 `upload_texture` 的 partial 分支却用 `Resource::Texture` 去匹配它——模式永不成立，于是直接 `return`。后果是**首帧之后 egui 新光栅化的字形全部丢失**，例如面板显示 `frame 5` 却渲染成 `frame `（数字不见了）、`frame 30` 渲染成 `frame  0`（`3` 是新字形被丢，`0` 来自首帧图集里的 `0.80`）。修法是新增 `TextureSlot { texture, view }` 同时记录两个节点。新增 `a_patched_texture_shows_the_patch` 固定它：修前 `got [0, 0, 0, 255]`，修后通过。
+
+3. **默认机位让顶面几乎不可见**（示例）：`elevation = 0.3`、`ORBIT_RADIUS = 3.4` ⇒ 相机高度 `3.4·sin(0.3) = 1.0048`，而立方体顶面在 `y = 1.0`——相机只比顶面高 **0.0048**（边长的 0.24%）。顶面因此投影成约 **0.47 像素**高（480×360 时），看起来像「缺了顶面」，实际是取景问题而非渲染缺陷（把仰角改成 0.6/0.9 后顶面完整可见）。改为 `ORBIT_ELEVATION = 0.5`，并把写死的注视点 `(0.0, 0.2, 0.0)` 换成命名常量 `ORBIT_TARGET = 原点`（原本的 `0.2` 属于「硬编码魔数」，且让构图偏下）。
+
+### 无头渲染的确定性
+
+快照要求逐字节可复现，实测两次运行连同 lavapipe 与 radeon **md5 完全一致**。两处非确定性来源被消除：
+
+- **示例侧固定步长**：窗口模式按 `Instant::now()` 的真实耗时推进自转，无头模式改用常量 `FIXED_STEP`。
+- **egui 侧关掉动画**：`UiSource` 把 `time` 喂成 `start.elapsed()`，而 `egui::Window` 的 `Area` 是 `fade_in: true`，透明度按帧间时间差在 `animation_time`（默认 0.2s）内插值——连续的无头帧会让窗口只剩约 8% 不透明度。通过**已公开**的 `UiSource::context_mut()` 调 `all_styles_mut(|s| s.animation_time = 0.0)` 解决：`animation_time = 0` 时插值区间退化，立即取终值，首帧就完全不透明且与真实耗时无关。**没有为此改动库的 API**。
+
+### CI
+
+新增 `snapshot` job（ubuntu-latest，装 `mesa-vulkan-drivers` 提供 lavapipe 软件 Vulkan），跑：
+
+```
+cargo run -p unlit3d_examples --features snapshot -- --headless --frames 30 \
+  --snapshot wgpu_unlit_render_asset_files/snapshots/example.webp
+```
+
+关键点是这个 job 的 `actions/checkout` 带 **`submodules: true`**。其余 job 不带，而 `crates/*/tests/snapshots` 是指向子模块的快照符号链接——子模块未检出时路径不存在，`assert_image_snapshot` 便退化成「写入并通过」，因此 **CI 此前从未真正校验过任何快照**。这里有意只给这一个 job 开子模块，避免让既有快照去面对 lavapipe 与本地 GPU 的差异。
+
+基线 `snapshots/example.webp`（960×720，`--frames 30`）已生成，在 lavapipe 与 radeon 上均得分 100.00。
+
+### 验证
+
+- **`cargo xtask check`**：干净（exit 0，0 error/warning）。
+- **`cargo xtask test`**：405 个测试通过（本轮开始前是 396），doctest 同样通过。
+- **`typos`** 与 **`tombi lint --error-on-warnings` / `tombi format --check`**：干净。
+- 两个新回归测试都验证了「修前失败、修后通过」。
+- 无头捕获两次运行 md5 一致；lavapipe 与 radeon 输出逐字节相同。

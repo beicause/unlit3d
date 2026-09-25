@@ -963,3 +963,77 @@ fn a_color_only_target_draws_a_cube() {
         "the cube should reach a target with no depth attachment"
     );
 }
+
+/// A readback of a texture whose row is not a multiple of the copy alignment
+/// comes back tight and correct.
+///
+/// A texture-to-buffer copy aligns every row to `COPY_BYTES_PER_ROW_ALIGNMENT`,
+/// which is 256 bytes and much coarser than the buffer alignment. A width that
+/// is not a multiple of 64 RGBA pixels — 256 bytes — therefore needs padding
+/// *and* the padding stripped. Every other readback in the suite is 256 wide,
+/// where the two alignments coincide, so an unpadded copy validates there by
+/// luck and fails on any other width.
+#[test]
+fn a_readback_handles_a_row_that_is_not_copy_aligned() {
+    // 60 RGBA pixels is 240 bytes: a multiple of the buffer alignment (4) but
+    // not of the copy row alignment (256), which is exactly the case the
+    // harness used to reject.
+    const WIDTH: u32 = 60;
+    const HEIGHT: u32 = 8;
+    let ctx = Ctx::headless();
+
+    let ft = create_render_target(&ctx.device, COLOR_FORMAT, WIDTH, HEIGHT, 1);
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_unlit::unaligned_clear"),
+        });
+    {
+        let mut pass = ft.attachments.begin_pass(
+            &mut encoder,
+            wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            depth_clear(),
+            stencil_clear(),
+        );
+        Scene::new().record(&mut pass);
+    }
+    ctx.queue.submit([encoder.finish()]);
+
+    let frame = Frame {
+        rgba: read_texture_bytes(&ctx, &ft.color, WIDTH, HEIGHT, texel_bytes(&ft.color)),
+        width: WIDTH,
+        height: HEIGHT,
+    };
+
+    // Tight bytes, not padded ones: the buffer rows are stripped back off.
+    assert_eq!(
+        frame.rgba.len(),
+        (WIDTH * HEIGHT * 4) as usize,
+        "the readback must return exactly the frame's pixels"
+    );
+    // Every row is the clear colour, so a row that lost its stride would show
+    // up as a mismatch somewhere in the image. The readback is the texture's
+    // own sRGB encoding, so the clear value is encoded the same way before
+    // comparing.
+    let encode = |linear: f64| {
+        let c = if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    let expect = [encode(CLEAR[0]), encode(CLEAR[1]), encode(CLEAR[2])];
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let px = frame.pixel_u8(x, y);
+            assert!(
+                px[..3]
+                    .iter()
+                    .zip(expect)
+                    .all(|(&got, want)| got.abs_diff(want) <= 2),
+                "pixel ({x}, {y}) should be the clear colour, got {px:?}"
+            );
+        }
+    }
+}

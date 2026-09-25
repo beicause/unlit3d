@@ -420,3 +420,89 @@ fn user_image_uploads_and_renders() {
         "the image's right half should be white, got {right:?}"
     );
 }
+
+/// Freeing a texture releases the whole slot, so repeated allocate-and-free
+/// cycles do not grow the graph.
+///
+/// egui frees a texture when the last handle to it goes away, which is how a
+/// user's own image is released. A slot is a subtree — the texture, the view a
+/// material samples, and the material — and releasing only the view leaves the
+/// texture strongly held in the graph, so every freed egui texture is a GPU
+/// texture leaked for the life of the frame.
+///
+/// The leak is invisible in one cycle, so this runs two identical ones and
+/// compares: a leak accumulates one slot per cycle.
+#[test]
+fn freeing_a_texture_releases_its_graph_nodes() {
+    let ctx = Ctx::headless();
+    let screen = ScreenDescriptor {
+        size_in_pixels: [WIDTH, HEIGHT],
+        pixels_per_point: 1.0,
+    };
+    let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
+    let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
+    let mut graph = ResourceGraph::new();
+    let camera_id = graph
+        .insert_strong(Resource::Buffer(camera.clone()), &[])
+        .expect("an empty dependency list always resolves");
+    let globals_id = graph
+        .insert_strong(Resource::Buffer(globals.clone()), &[])
+        .expect("an empty dependency list always resolves");
+    let mut ui_opts = ui_options(&ctx.device, true);
+    ui_opts.color_target.format = COLOR_FORMAT;
+    let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
+    let global_group_id = graph
+        .insert_strong(
+            Resource::BindGroup(global_group(&ctx.device, &pipeline, &camera, &globals)),
+            &[camera_id, globals_id],
+        )
+        .expect("both dependencies were registered");
+    let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
+    let egui_ctx = egui::Context::default();
+    let viewport = screen.size_in_points();
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test::encoder"),
+        });
+
+    // Nothing here lays out text: egui builds its font atlas lazily on the
+    // first glyph, and that would add nodes of its own and swamp the count.
+    let mut frame = |graph: &mut ResourceGraph, ui: &mut EguiIntegration, with_image: bool| {
+        let mut handle = None;
+        let output = egui_ctx.run_ui(input(viewport, 1.0), &mut |ui: &mut egui::Ui| {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(egui::Pos2::new(8.0, 8.0), egui::Vec2::new(32.0, 32.0)),
+                0.0,
+                egui::Color32::from_rgb(0, 200, 0),
+            );
+            if with_image {
+                let texture = load_test_image(ui);
+                draw_test_image(ui, &texture);
+                handle = Some(texture);
+            }
+        });
+        ui.update(graph, &ctx.queue, &mut encoder, &egui_ctx, output, screen);
+        // Dropping the last handle is what makes egui free the texture, so the
+        // next frame sees it gone.
+        drop(handle);
+    };
+
+    // The first image frame also grows the geometry buffers to the size the
+    // image needs; every frame after it keeps that capacity, so both measured
+    // frames below have the same buffers.
+    frame(&mut graph, &mut ui, true);
+    frame(&mut graph, &mut ui, false);
+    let after_first_cycle = graph.len();
+
+    frame(&mut graph, &mut ui, true);
+    frame(&mut graph, &mut ui, false);
+    let after_second_cycle = graph.len();
+
+    assert_eq!(
+        after_second_cycle, after_first_cycle,
+        "a second allocate-and-free cycle must not grow the graph: \
+         {after_first_cycle} nodes after the first, {after_second_cycle} after \
+         the second; a leaked texture slot adds one per cycle"
+    );
+}

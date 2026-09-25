@@ -771,3 +771,178 @@ fn mesh_and_ui_survive_a_second_frame() {
         "a static frame must be identical on the next frame"
     );
 }
+
+/// Where [`burst_panel`] always paints its red rectangle.
+const FIXED: Rect = Rect::new(40.0, 40.0, 80.0, 60.0);
+
+/// How many extra rectangles a [`burst_panel`] paints.
+#[derive(Clone, Copy)]
+struct Burst(usize);
+
+/// A panel painting a red rectangle at [`FIXED`], plus `extra` green ones.
+///
+/// The extras exist only to change how much geometry a frame holds: the
+/// geometry buffer grows geometrically and never shrinks, so a frame that once
+/// held many of them leaves the buffer with room to spare for every later one.
+fn burst_panel(extra: Entity) -> UiPanel {
+    UiPanel::new(move |world, _entity, ui| {
+        let burst = world.get::<Burst>(extra).map_or(0, |burst| burst.0);
+        let painter = ui.painter();
+        for index in 0..burst {
+            let column = (index % 8) as f32;
+            let row = (index / 8) as f32;
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(column * 16.0, row * 16.0),
+                    egui::Vec2::splat(8.0),
+                ),
+                0.0,
+                GREEN,
+            );
+        }
+        painter.rect_filled(FIXED.egui(), 0.0, RED);
+    })
+}
+
+/// Render the same small panel twice, after a frame of `burst` extra geometry.
+///
+/// The first frame leaves the geometry buffer sized for `burst` rectangles and
+/// it never shrinks, so the second frame's own geometry sits in a buffer with
+/// room to spare. How much geometry a frame holds must not change where its
+/// vertices are read from.
+fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
+    let mut world = LocalWorld::new();
+    let gpu = ui_only_world(&mut world, ctx);
+    spawn_load_ops(&mut world);
+
+    let extra = world.spawn((Burst(burst),));
+    world.spawn((burst_panel(extra),));
+
+    let target = gpu.bind_offscreen_target_with(&world, 1, false);
+    // The first frame is drawn with the extra geometry, the second without.
+    gpu.render(&world);
+    let _ = world.with_mut::<Burst, _>(extra, |burst| burst.0 = 0);
+    gpu.render(&world);
+    read(ctx, &target)
+}
+
+/// A frame whose geometry buffer has room to spare draws the same picture as
+/// one that fills it exactly.
+///
+/// The buffer is split in two: every vertex's position first, then its UV and
+/// color. That split is the frame's own vertex count, not the buffer's
+/// capacity — and the two differ as soon as a frame shrinks, because the buffer
+/// keeps the larger size it grew to. Splitting on the capacity instead leaves
+/// the positions right and the UVs and colors wrong, which reads back as a
+/// garbled but correctly-placed interface.
+#[test]
+fn a_frame_with_spare_geometry_buffer_room_draws_the_same_picture() {
+    let ctx = Ctx::headless();
+    let grown = frame_after_burst(&ctx, 64);
+    let filled = frame_after_burst(&ctx, 0);
+
+    // Both frames paint the same red rectangle once the burst is gone.
+    let (x, y) = pixel_of(FIXED.centre(), 1.0);
+    assert!(
+        near(grown.pixel_u8(x, y), RED, 8),
+        "the fixed rectangle must still be red after a larger frame, got {:?}",
+        grown.pixel_u8(x, y)
+    );
+    assert_eq!(
+        grown.rgba, filled.rgba,
+        "a frame must draw the same picture whether or not the geometry buffer \
+         has room to spare"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C. Texture updates after the first upload
+// ---------------------------------------------------------------------------
+
+/// Where a patch of the second texture is written, in texels.
+const PATCH_AT: [usize; 2] = [2, 2];
+/// The second texture's side, in texels.
+const PATCHED_SIDE: usize = 8;
+/// Where the patched texture is painted, in logical points.
+const PATCHED: Rect = Rect::new(136.0, 96.0, 64.0, 64.0);
+
+/// A texture that starts black and has a red square patched into its middle.
+///
+/// The whole image is uploaded on the first pass, so the patch in the second
+/// pass is the only thing that can put red in the middle — which is what makes
+/// this a test of the partial-update path rather than of textures in general.
+fn patched_texture() -> UiPanel {
+    /// The texel the patch is filled with.
+    const RED_TEXEL: egui::Color32 = egui::Color32::from_rgb(255, 0, 0);
+    /// The surrounding texels, chosen so only the patch can be red.
+    const BLACK_TEXEL: egui::Color32 = egui::Color32::from_rgb(0, 0, 0);
+
+    let mut handle: Option<egui::TextureHandle> = None;
+    let mut patched = false;
+
+    UiPanel::new(move |_world, _entity, ui| {
+        let handle = handle.get_or_insert_with(|| {
+            let blank = egui::ColorImage::new(
+                [PATCHED_SIDE, PATCHED_SIDE],
+                vec![BLACK_TEXEL; PATCHED_SIDE * PATCHED_SIDE],
+            );
+            let handle =
+                ui.ctx()
+                    .load_texture("unlit3d::patched", blank, egui::TextureOptions::NEAREST);
+            // Painting it here is what makes the frame reference the texture;
+            // the painter only records the id.
+            handle
+        });
+
+        // The patch is written once, after the texture exists, so it arrives as
+        // a partial delta rather than as part of the first full upload.
+        if !patched {
+            patched = true;
+            // A solid square in the middle of the otherwise black image.
+            let texels = vec![RED_TEXEL; (PATCHED_SIDE - 4) * (PATCHED_SIDE - 4)];
+            handle.set_partial(
+                PATCH_AT,
+                egui::ColorImage::new([PATCHED_SIDE - 4, PATCHED_SIDE - 4], texels),
+                egui::TextureOptions::NEAREST,
+            );
+        }
+
+        ui.painter().image(
+            handle.id(),
+            PATCHED.egui(),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    })
+}
+
+/// A texture update that arrives after the texture's first upload is applied.
+///
+/// egui patches its textures — the font atlas grows a glyph at a time — after
+/// the whole image has been uploaded once. The patch is written into the
+/// texture, so the upload path has to reach the texture itself rather than the
+/// view a material samples; reaching for the view finds no texture and the
+/// patch is dropped, which leaves whole glyphs missing from the interface.
+#[test]
+fn a_patched_texture_shows_the_patch() {
+    let ctx = Ctx::headless();
+    let mut world = LocalWorld::new();
+    let gpu = ui_only_world(&mut world, &ctx);
+    spawn_load_ops(&mut world);
+
+    world.spawn((patched_texture(),));
+
+    let target = gpu.bind_offscreen_target_with(&world, 1, false);
+    gpu.render_frames(&world, 2);
+    let frame = read(&ctx, &target);
+
+    // The patch covers the middle of the image, which the draw maps to the
+    // middle of the rectangle.
+    let (x, y) = pixel_of(PATCHED.centre(), 1.0);
+    let pixel = frame.pixel_u8(x, y);
+    assert!(
+        near(pixel, RED, 8),
+        "the patched square must be red, got {pixel:?}; a dropped partial \
+         update leaves the texture black"
+    );
+}
