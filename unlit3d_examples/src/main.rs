@@ -34,13 +34,16 @@ mod cli;
 use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Instant;
 
 use cli::{Args, Parsed};
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
 use unlit3d::winit::WindowSurface;
+// `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
+// library has no clock; `web-time` reads the browser's `Performance.now()`
+// there and re-exports `std::time` everywhere else.
+use web_time::Instant;
 use wgpu_unlit_render::pipeline::UnlitOptions;
 use wgpu_unlit_render::resources::ResourceGraph;
 use winit::application::ApplicationHandler;

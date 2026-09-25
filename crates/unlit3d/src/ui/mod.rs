@@ -30,7 +30,6 @@
 //! frame-globals buffer of its own, plus the bind group binding them.
 
 use core::ops::DerefMut;
-use std::time::Instant;
 
 use unlit_ecs::{Entity, LocalWorld};
 use wgpu_unlit_render::globals::{Globals, View};
@@ -41,6 +40,10 @@ use wgpu_unlit_render::specialize::SurfaceKey;
 use wgpu_unlit_render::ui::{
     EguiIntegration, ScreenDescriptor, screen_view, ui_options_for_surface,
 };
+// `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
+// library has no clock; `web-time` reads the browser's `Performance.now()`
+// there and re-exports `std::time` everywhere else.
+use web_time::Instant;
 use zerocopy::IntoBytes;
 
 use crate::input::InputState;

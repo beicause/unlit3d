@@ -15,6 +15,7 @@ log.workspace = true
 petgraph.workspace = true
 smallvec.workspace = true
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0" }
+web-time = { workspace = true, optional = true }
 wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true
@@ -30,8 +31,9 @@ wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot
 [features]
 default = ["ui", "winit"]
 ## The [`ui`](crate::ui) module: an egui overlay drawn as a frame source, and
-## the [`wgpu_unlit_render`] egui backend it draws with.
-ui = ["dep:egui", "wgpu_unlit_render/egui"]
+## the [`wgpu_unlit_render`] egui backend it draws with. The UI's frame clock
+## is the one place that needs a browser-capable `Instant`.
+ui = ["dep:egui", "dep:web-time", "wgpu_unlit_render/egui"]
 ## Integration with [winit](https://docs.rs/winit): the [`winit`](crate::winit)
 ## module, which presents a [`Renderer`](crate::Renderer) into a window's swap
 ## chain.

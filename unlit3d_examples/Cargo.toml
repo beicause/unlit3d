@@ -8,6 +8,7 @@ license.workspace = true
 glam.workspace = true
 log.workspace = true
 unlit3d = { path = "../crates/unlit3d" }
+web-time.workspace = true
 wgpu.workspace = true
 wgpu_unlit_render = { path = "../crates/wgpu_unlit_render", version = "0.1.0", default-features = false, features = ["unlit"] }
 winit.workspace = true

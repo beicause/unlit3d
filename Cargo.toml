@@ -26,6 +26,9 @@ petgraph = { version = "0.8.3", default-features = false, features = ["graphmap"
 pollster = { version = "0.4.0", default-features = false }
 smallvec = { version = "1.16.1", default-features = false, features = ["const_generics", "const_new", "union"] }
 wasm-bindgen-futures = "0.4.78"
+# `std::time::Instant` panics on `wasm32-unknown-unknown`; this reads the
+# browser's clock there and re-exports `std::time` on every other target.
+web-time = { version = "1.1.0", default-features = false }
 wesl = { version = "0.5.0", default-features = false }
 wesl-core = { version = "0.1.0", default-features = false }
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
