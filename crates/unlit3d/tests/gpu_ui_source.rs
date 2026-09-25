@@ -98,6 +98,140 @@ fn paint(rect: Rect, color: egui::Color32) -> UiPanel {
     })
 }
 
+/// The texels of the test image: four quadrants, each checkerboarded between a
+/// light and a dark shade, so a stretched draw shows eight colours and a broken
+/// sampler is obvious.
+fn test_image() -> egui::ColorImage {
+    const SIZE: usize = 8;
+    const QUADRANT: usize = SIZE / 2;
+
+    /// The light and dark texel of the quadrant `(x, y)` falls in.
+    fn shades(x: usize, y: usize) -> ((u8, u8, u8), (u8, u8, u8)) {
+        match (x / QUADRANT, y / QUADRANT) {
+            (0, 0) => ((255, 96, 96), (160, 0, 0)),
+            (1, 0) => ((96, 255, 96), (0, 160, 0)),
+            (0, 1) => ((96, 96, 255), (0, 0, 160)),
+            _ => ((255, 255, 96), (160, 160, 0)),
+        }
+    }
+
+    let pixels = (0..SIZE)
+        .flat_map(|y| {
+            (0..SIZE).map(move |x| {
+                let (light, dark) = shades(x, y);
+                let (r, g, b) = if (x + y) % 2 == 0 { light } else { dark };
+                egui::Color32::from_rgb(r, g, b)
+            })
+        })
+        .collect();
+    egui::ColorImage::new([SIZE, SIZE], pixels)
+}
+
+/// Where the rich panel puts its parts, in logical points.
+///
+/// They leave the top middle of the frame clear — that is where the mesh shows
+/// through in a combined frame — and the band is the lowest of them, so it is
+/// the only thing covering the bottom of the frame.
+const WIDGETS: Rect = Rect::new(8.0, 8.0, 112.0, 128.0);
+const PICTURE: Rect = Rect::new(136.0, 8.0, 112.0, 72.0);
+const BAND: Rect = Rect::new(8.0, 136.0, 240.0, 40.0);
+
+/// Two of the shades [`test_image`] is built from. Neither appears anywhere
+/// else in the panel, so a pixel of one proves the texture was sampled.
+const LIGHT_GREEN: egui::Color32 = egui::Color32::from_rgb(96, 255, 96);
+const LIGHT_BLUE: egui::Color32 = egui::Color32::from_rgb(96, 96, 255);
+
+/// A rich, deterministic interface: real widgets, a texture and painted
+/// geometry.
+///
+/// Everything sits at a fixed place, and nothing here reads the clock or reacts
+/// to layout feedback, so two frames of the same world come out identical —
+/// which is what lets it stand as a snapshot. The blend band is translucent so
+/// that it shows the UI blending over whatever was drawn before it rather than
+/// replacing it.
+fn rich_panel() -> UiPanel {
+    // The texture is registered inside the closure because it needs a context,
+    // and cached so the passes egui runs in one frame share one handle. The
+    // switch and the slider keep their state between frames for the same
+    // reason: a widget that changed per frame would make the snapshot flaky.
+    let mut image: Option<egui::TextureHandle> = None;
+    let mut spin = true;
+    let mut blend = 0.5f32;
+
+    UiPanel::new(move |_world, _entity, ui| {
+        let image = image.get_or_insert_with(|| {
+            ui.ctx().load_texture(
+                "unlit3d::test-image",
+                test_image(),
+                egui::TextureOptions::NEAREST,
+            )
+        });
+
+        // The widgets go into a child ui pinned to a fixed rectangle, so their
+        // layout does not depend on how much room the other panels took.
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(WIDGETS.egui())
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.heading("unlit3d");
+                ui.label("frame source UI");
+                ui.separator();
+                ui.checkbox(&mut spin, "spin");
+                ui.add(egui::Slider::new(&mut blend, 0.0..=1.0));
+                ui.add(
+                    egui::ProgressBar::new(blend)
+                        .desired_width(104.0)
+                        .text("load"),
+                );
+            },
+        );
+
+        let painter = ui.painter();
+        // The texture, stretched over its own rectangle. `NEAREST` keeps its
+        // texels square, so a sampled pixel is one of the eight colours the
+        // image was built from.
+        painter.image(
+            image.id(),
+            PICTURE.egui(),
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+        painter.line_segment(
+            [
+                egui::pos2(PICTURE.min.x, 86.0),
+                egui::pos2(PICTURE.egui().max.x, 86.0),
+            ],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+        );
+        // Shapes no widget produces, so the frame exercises the tessellated
+        // path as well as the widget one. They sit to the right of the widget
+        // column, clear of the slider's own drag-value box.
+        painter.circle_filled(egui::pos2(190.0, 112.0), 15.0, GREEN);
+        painter.circle_stroke(
+            egui::pos2(190.0, 112.0),
+            15.0,
+            egui::Stroke::new(3.0, egui::Color32::WHITE),
+        );
+        painter.rect_stroke(
+            egui::Rect::from_min_size(egui::pos2(212.0, 96.0), egui::Vec2::new(36.0, 32.0)),
+            3.0,
+            egui::Stroke::new(2.0, RED),
+            egui::StrokeKind::Inside,
+        );
+        painter.rect_filled(BAND.egui(), 0.0, TRANSLUCENT_RED);
+    })
+}
+
+/// A panel that paints the band in `color`, opaque or not.
+///
+/// The band is the part of the panel that covers a mesh behind the UI, so a
+/// test that measures how an order or a blend resolves uses this rather than
+/// the full panel.
+fn band_panel(color: egui::Color32) -> UiPanel {
+    paint(BAND, color)
+}
+
 /// The pixel a point lands on, at `pixels_per_point`.
 fn pixel_of(point: egui::Pos2, pixels_per_point: f32) -> (u32, u32) {
     (
@@ -139,6 +273,24 @@ fn count_in(frame: &Frame, x0: u32, x1: u32, color: egui::Color32, tolerance: u8
     let mut count = 0;
     for y in 0..frame.height {
         for x in x0..x1 {
+            if near(frame.pixel_u8(x, y), color, tolerance) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// Count the pixels of `rect` that are within `tolerance` of `color`.
+///
+/// The rectangle is in logical points, so its pixel extent scales with the
+/// density the same way the panel's own drawing does.
+fn count_in_rect(frame: &Frame, rect: Rect, color: egui::Color32, tolerance: u8) -> usize {
+    let (x0, y0) = pixel_of(rect.min, 1.0);
+    let (x1, y1) = pixel_of(rect.egui().max, 1.0);
+    let mut count = 0;
+    for y in y0..y1.min(frame.height) {
+        for x in x0..x1.min(frame.width) {
             if near(frame.pixel_u8(x, y), color, tolerance) {
                 count += 1;
             }
@@ -192,23 +344,44 @@ fn ui_only_draws_without_a_camera() {
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
 
-    let rect = Rect::new(40.0, 40.0, 80.0, 60.0);
-    world.spawn((paint(rect, RED),));
+    world.spawn((rich_panel(),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
     let frame = read(&ctx, &target);
 
-    let (x, y) = pixel_of(rect.centre(), 1.0);
-    let centre = frame.pixel_u8(x, y);
+    // The textured rectangle samples the image, so pixels of shades only the
+    // image holds prove the texture made it to the GPU and was drawn.
     assert!(
-        near(centre, RED, 8),
-        "the panel should paint its rectangle red at its centre, got {centre:?}"
+        count_in_rect(&frame, PICTURE, LIGHT_GREEN, 12) > 0
+            && count_in_rect(&frame, PICTURE, LIGHT_BLUE, 12) > 0,
+        "the textured rectangle must sample the image's own colours"
     );
-    assert_eq!(
-        count_in(&frame, 0, WIDTH, RED, 8),
-        (rect.size.x * rect.size.y) as usize,
-        "the panel's rectangle should cover exactly its own area"
+    // The widgets lay out text, so the column holds pixels that are neither the
+    // clear colour nor the band: they can only be the text and controls.
+    let (wx0, wy0) = pixel_of(WIDGETS.min, 1.0);
+    let (wx1, wy1) = pixel_of(WIDGETS.egui().max, 1.0);
+    let mut widget_pixels = 0;
+    for y in wy0..wy1 {
+        for x in wx0..wx1 {
+            let pixel = frame.pixel_u8(x, y);
+            if !is_clear(pixel, 12) && !near(pixel, TRANSLUCENT_RED, 8) {
+                widget_pixels += 1;
+            }
+        }
+    }
+    assert!(
+        widget_pixels > 200,
+        "the widget column must draw its text and controls, only {widget_pixels} \
+         pixels differ from the background"
+    );
+    // The band blends over the background rather than replacing it, so it comes
+    // out a darker red than the pure colour.
+    let (bx, by) = pixel_of(BAND.centre(), 1.0);
+    let band = frame.pixel_u8(bx, by);
+    assert!(
+        band[0] > band[1] && band[0] > band[2],
+        "the band tints its own region red, got {band:?}"
     );
 
     assert_image_snapshot("ui_only.webp", &frame, WIDTH, HEIGHT);
@@ -407,19 +580,13 @@ fn mesh_world(ctx: &Ctx, world: &mut LocalWorld) -> TestGpu {
 
 /// Render a mesh+UI frame and return the pixels.
 ///
-/// The UI covers the lower band of the frame and the cube sits in the middle,
-/// so the two overlap; `ui_first` decides which of them is recorded first.
-fn mesh_and_ui_frame(
-    ctx: &Ctx,
-    world: &mut LocalWorld,
-    ui_first: bool,
-    panel_color: egui::Color32,
-) -> Frame {
+/// The `panel` is the UI, and `ui_first` decides whether it is recorded before
+/// or after the mesh.
+fn mesh_and_ui_frame(ctx: &Ctx, world: &mut LocalWorld, ui_first: bool, panel: UiPanel) -> Frame {
     let gpu = mesh_world(ctx, world);
     spawn_load_ops(world);
 
-    let panel = Rect::new(8.0, 96.0, 240.0, 72.0);
-    world.spawn((paint(panel, panel_color),));
+    world.spawn((panel,));
     let ui = spawn_source(world, UiSource::new());
     if ui_first {
         let _ = world.with_mut::<Source, _>(ui, |source| {
@@ -432,21 +599,21 @@ fn mesh_and_ui_frame(
     read(ctx, &target)
 }
 
-/// A pixel above the panel, where only the cube can be.
+/// A pixel above the band, where only the cube can be.
 const CUBE_PIXEL: (u32, u32) = (128, 60);
-/// A pixel inside the panel that the cube also covers.
-const OVERLAP_PIXEL: (u32, u32) = (128, 140);
-/// A pixel inside the panel that the cube does not cover.
-const PANEL_PIXEL: (u32, u32) = (16, 140);
+/// A pixel inside the band that the cube also covers.
+const OVERLAP_PIXEL: (u32, u32) = (128, 144);
+/// A pixel inside the band that the cube does not cover.
+const PANEL_PIXEL: (u32, u32) = (16, 144);
 
 /// A mesh and a UI in one pass: the mesh keeps its own look, the UI covers its
-/// own region, and where they overlap the translucent panel blends over the
+/// own region, and where they overlap the translucent band blends over the
 /// cube.
 #[test]
 fn mesh_and_ui_in_one_frame() {
     let ctx = Ctx::headless();
     let mut world = LocalWorld::new();
-    let frame = mesh_and_ui_frame(&ctx, &mut world, false, TRANSLUCENT_RED);
+    let frame = mesh_and_ui_frame(&ctx, &mut world, false, rich_panel());
 
     let cube = frame.pixel_u8(CUBE_PIXEL.0, CUBE_PIXEL.1);
     let panel = frame.pixel_u8(PANEL_PIXEL.0, PANEL_PIXEL.1);
@@ -490,10 +657,10 @@ fn mesh_and_ui_respects_source_order() {
 
     let ctx = Ctx::headless();
     let mut ui_last = LocalWorld::new();
-    let ui_on_top = mesh_and_ui_frame(&ctx, &mut ui_last, false, OPAQUE_BLUE);
+    let ui_on_top = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE));
 
     let mut ui_first = LocalWorld::new();
-    let mesh_on_top = mesh_and_ui_frame(&ctx, &mut ui_first, true, OPAQUE_BLUE);
+    let mesh_on_top = mesh_and_ui_frame(&ctx, &mut ui_first, true, band_panel(OPAQUE_BLUE));
 
     // The overlap lies over the cube, so whichever source records last wins.
     let overlap_ui_on_top = ui_on_top.pixel_u8(OVERLAP_PIXEL.0, OVERLAP_PIXEL.1);
@@ -577,8 +744,10 @@ fn ui_does_not_clip_the_mesh() {
 
 /// Two frames of a static scene are pixel-identical.
 ///
-/// A difference means some per-frame state — a cache, a uniform or a scene —
-/// leaked from one frame into the next.
+/// A difference means some per-frame state — a cache, a uniform, a texture or a
+/// scene — leaked from one frame into the next. The rich panel is what makes
+/// this worth checking: it registers a texture on its first frame, and every
+/// later frame has to reuse it rather than re-upload or lose it.
 #[test]
 fn mesh_and_ui_survive_a_second_frame() {
     let ctx = Ctx::headless();
@@ -586,8 +755,7 @@ fn mesh_and_ui_survive_a_second_frame() {
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
 
-    let panel = Rect::new(8.0, 96.0, 240.0, 72.0);
-    world.spawn((paint(panel, TRANSLUCENT_RED),));
+    world.spawn((rich_panel(),));
     spawn_source(&mut world, UiSource::new());
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);

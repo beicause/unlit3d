@@ -1407,3 +1407,34 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 
 - **蒙皮（skinning）与形变目标（morph targets）**：仍是 `docs/DESIGN.md` 中的未决项。
 - **输入自动拦截**：按设计不做任何拦截——输入源只通过 `InputCapture` **发布**自己声明捕获了什么，由调用方决定这意味着什么。
+
+---
+
+## 14. 收尾（分配与快照）
+
+实施完成后又做了一轮收尾，目标是兑现「减少不必要的内存分配」这条约定，并把两张 UI 快照做得更有代表性。
+
+### 去掉的每帧分配
+
+帧路径上原本有几处「每帧重新分配」的写法，都改为复用缓冲或直接迭代。它们都不改变输出字节，原有测试与快照可以证明这一点。
+
+- **`wgpu_unlit_render/src/ui.rs`**：`make_material_bind_groups` 里先把材质收集成 `Vec` 再遍历，改为按索引直接构造并复用 `Vec<Material>`；顶点/索引的打包不再每帧新建 `positions`/`uv_colors`/`index_bytes` 三个临时 `Vec`，而是复用 `EguiIntegration` 上的两个 `Vec<u8>` 暂存区（新增自由函数 `pack_geometry`）；`upload_texture` 不再把 `ColorImage` 收集成 `Vec<[u8;4]>`，直接取脚下的 `&[u8]`。
+- **`unlit3d/src/renderer.rs`**：每帧先把所有 `Source` 的 `Entity` 收集成 `Vec` 再遍历，改为 `world.for_each::<&mut Source, _>` 直接在查询里构建场景。
+- **`unlit3d/src/source.rs`**：自由函数 `record_order` 每帧重建三个 `Vec`，改成一个挂在 `Renderer` 上的 `SourceOrder` 结构，跨帧复用 `keys`/`order`/`ambiguous` 三个缓冲；`resolve` 仍按 `mount_index` 消除同序歧义。
+- **`unlit3d/src/ui/mod.rs`**：不再把 `InputState` 的事件 `to_vec()` 克隆出来再转换，而是在借用 `InputState` 期间直接 `convert::to_egui_events` 消费迭代器。
+- **`unlit3d/src/mesh_source.rs`**：两处条件性分配（仅当全局 bind group 变脏时才会走到）——`create_unlit_global_group` 的 `vec![]` 改为定长数组，`rebuild_dirty_global_groups` 的 `collect()` 改为按下标遍历。
+
+新增/强化的测试：`packing_reuses_the_vertex_and_index_buffers`、`a_later_primitive_is_offset_by_the_earlier_one`、`packing_places_each_primitive_where_its_draw_says`（`wgpu_unlit_render`），以及 `resolving_the_order_reuses_its_buffers`（`unlit3d`）。
+
+### 快照的 UI 复杂化
+
+`ui_only.webp` 与 `mesh_and_ui.webp` 原先是「一个色块」和「立方体加一个半透明色带」，几乎不覆盖 UI 系统的实际能力。现在两张快照共用测试里的 `rich_panel()`：`heading`、`label`、`separator`、`checkbox`、`Slider`、`ProgressBar`，一张用 `TextureOptions::NEAREST` 注册、四象限八色的棋盘纹理（`Painter::image` 拉伸绘制），以及 `circle_filled`/`circle_stroke`/`rect_stroke`/`line_segment` 这些不由 widget 产生的几何。右下角的半透明色带保留，用来验证叠加混合而不是覆盖。
+
+面板布局是确定的（固定矩形、不读时钟、状态跨帧保持），所以两张快照仍可复现；`mesh_and_ui_survive_a_second_frame` 现在用这张更复杂的 UI 来跑，因此它同时覆盖了「纹理只在第一帧注册、后续帧必须复用」这条路径。需要说明的是，**这两张快照的重拍与 §13 里 `egui_ui.webp` 的重拍原因不同**：后者是修正了最近邻采样的 bug，前者只是内容变复杂了。
+
+### 再验证
+
+- **`cargo xtask check`**：干净（clippy 全工作区 0 warning）。
+- **`cargo xtask test`**：396 个测试通过，doctest 同样通过。
+- **`typos`** 与 **`tombi lint --error-on-warnings`**：干净。
+- 除这两张有意重拍的快照外，其余快照逐字节不变。
