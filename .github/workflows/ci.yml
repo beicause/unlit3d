@@ -56,11 +56,25 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
+      # The snapshots live in the asset submodule. Without it the
+      # `tests/snapshots` symlinks dangle, and a comparison against a missing
+      # snapshot stores the frame and passes instead of comparing.
       - uses: actions/checkout@v7.0.1
+        with:
+          submodules: true
 
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
+
+      - name: Install Mesa
+        # Linux runners have no GPU: lavapipe is the software Vulkan
+        # implementation the GPU tests render through. macOS has Metal and
+        # Windows has DX12, so neither needs anything installed.
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes mesa-vulkan-drivers
 
       - name: Caching
         uses: Swatinem/rust-cache@v2
