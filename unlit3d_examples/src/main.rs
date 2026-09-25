@@ -55,6 +55,7 @@ const SAMPLE_COUNT: u32 = 4;
 const SPIN: f32 = 0.8;
 /// The timestep the headless path advances the scene by, in seconds, so a
 /// captured frame does not depend on how long the frame took to draw.
+#[cfg(feature = "snapshot")]
 const FIXED_STEP: f32 = 1.0 / 60.0;
 /// The format the headless path renders into.
 ///
@@ -837,6 +838,11 @@ impl Scene {
     }
 
     /// Render one frame into whatever target the caller bound.
+    ///
+    /// Only the headless path draws through this: the windowed one acquires
+    /// the swap chain's image and renders between the acquire and the present,
+    /// so it needs both under one borrow.
+    #[cfg(feature = "snapshot")]
     fn render(&mut self) {
         let (world, renderer) = (&self.world, self.renderer);
         world

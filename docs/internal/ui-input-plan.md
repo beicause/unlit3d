@@ -1515,3 +1515,26 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --frames 30 \
 - **`typos`** 与 **`tombi lint --error-on-warnings` / `tombi format --check`**：干净。
 - 两个新回归测试都验证了「修前失败、修后通过」。
 - 无头捕获两次运行 md5 一致；lavapipe 与 radeon 输出逐字节相同。
+
+### 落盘后的 CI 排查（2026-09-25）
+
+推送 `c4e9125` 后 CI 全红，逐项定位出**两个本地门槛看不见的问题**：
+
+1. **默认 feature 下的 dead code**。`FIXED_STEP` 与 `Scene::render` 只被无头路径使用，
+   而 CI 的 `Build` 步骤用**默认 feature**构建（不开 `snapshot`），`-D warnings` 把它们
+   判为 dead code。`cargo xtask check` 当时只跑 `--all-features`，因此本地是绿的。
+   修法是给两项加 `#[cfg(feature = "snapshot")]`，并**同时补上门槛本身**：
+   `xtask check` 现在先跑默认 feature 再跑 all-features，两次都带 `-D warnings`
+   （此前它甚至不拒绝 warning）。已验证：还原缺陷时门槛 exit 1，修复后 exit 0。
+
+2. **资产子模块是 private**，`submodules: true` 在 CI 里 clone 不到它。这需要账号级
+   决定（改可见性 / 配 PAT），已记入 `.tmp/CI-BLOCKERS.md` 待用户定夺。
+
+另外确认了一件既有事实：各 job 的 `actions/checkout` 都没开 `submodules: true`，
+而 `crates/*/tests/snapshots` 是指向子模块的符号链接，所以**那些快照比对在 CI 里
+一直是空转**（路径不存在 ⇒ `assert_image_snapshot` 走"写入并通过"分支）。
+本次给示例新增的 `--snapshot` 有意改成"缺失即失败"，才让这类问题暴露出来。
+
+同时新增：`pages` / `deploy-pages` 两个 job（把 web 示例发布到 GitHub Pages），
+以及 7 个位置的中英文 README（根目录 + 6 个包，见各 `README.md` /
+`README.zh-CN.md`）。GitHub Pages 已在仓库设置中启用（`build_type=workflow`）。
