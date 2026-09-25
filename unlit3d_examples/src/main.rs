@@ -437,12 +437,13 @@ struct CameraOrbit {
     elevation: f32,
 }
 
-/// The pointer position at the previous move, so a drag can measure itself.
+/// The pointer the drag is following, and where it was at the previous move.
 ///
 /// A behaviour cannot keep this in its own closure across runs and still be
 /// re-entrant, and egui may also run a panel more than once per frame, so the
-/// state lives in a component like every other.
-struct DragFrom(Option<[f32; 2]>);
+/// state lives in a component like every other. Latching onto one contact is
+/// what keeps a second finger — or a lifted one — from steering the camera.
+struct DragFrom(Option<PointerContact>);
 
 /// Counts the frames drawn, for the panel's readout.
 ///
@@ -729,38 +730,73 @@ impl Scene {
             }
         }),));
 
-        // A pointer behaviour: dragging with the left button orbits the
-        // camera. The drag reads the cursor from the frame's state and writes
-        // the orbit, which the frame loop then turns into a camera.
+        // A pointer behaviour: dragging orbits the camera. It is mounted on
+        // `OnPointer` rather than `OnMouse`, so the same drag works with a
+        // mouse and with a finger on a touch screen — a touch never produces a
+        // mouse button, so a mouse-only drag would be dead on a phone.
         world.spawn((OnPointer::new(move |world, _entity, event| {
-            let PointerEvent::Moved { position } = event else {
-                return;
-            };
-            // The drag is the difference from the previous move, so the
-            // previous position is swapped for this one in the same step.
-            let previous = world
-                .with_mut::<DragFrom, _>(cube, |drag| drag.0.replace(*position))
-                .flatten();
-            let Some(previous) = previous else {
-                // The first move only records where the drag started.
+            let Some(position) = event.position else {
+                // A release or a cancellation may arrive without one; there is
+                // no move to measure either way.
+                if matches!(
+                    event.action,
+                    PointerAction::Released { .. } | PointerAction::Left
+                ) {
+                    let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
+                }
                 return;
             };
 
-            let dragging = world
-                .query::<&InputState>()
-                .next()
-                .is_some_and(|(_, state)| state.buttons.contains(PointerButtons::PRIMARY));
-            if !dragging {
-                return;
+            match event.action {
+                // A press starts the drag at the contact that landed, so a
+                // later second finger is ignored: only this contact steers.
+                PointerAction::Pressed => {
+                    let _ = world.with_mut::<DragFrom, _>(cube, |drag| {
+                        drag.0 = Some(PointerContact {
+                            kind: event.kind,
+                            id: event.id,
+                            position,
+                        });
+                    });
+                }
+                PointerAction::Moved => {
+                    // The drag follows the contact it latched onto, and a
+                    // contact that never pressed is a hover, which does not
+                    // drag.
+                    let previous = world.with_mut::<DragFrom, _>(cube, |drag| {
+                        let tracked = drag.0.as_mut()?;
+                        if (tracked.kind, tracked.id) != (event.kind, event.id) {
+                            return None;
+                        }
+                        // The difference is measured in the same step the
+                        // previous position is swapped out.
+                        Some(std::mem::replace(&mut tracked.position, position))
+                    });
+                    let Some(Some(previous)) = previous else {
+                        return;
+                    };
+                    // A pixel of pointer motion is a fixed turn, so a drag
+                    // feels the same however large the window is.
+                    const RADIANS_PER_PIXEL: f32 = 0.01;
+                    let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
+                    let _ = world.with_mut::<CameraOrbit, _>(camera, |orbit| {
+                        // The dragged surface follows the pointer, so the
+                        // camera swings the other way: dragging down pulls the
+                        // face being looked at down and brings the face above
+                        // it into view, not the one below.
+                        orbit.azimuth -= dx * RADIANS_PER_PIXEL;
+                        orbit.elevation =
+                            (orbit.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+                    });
+                }
+                // A lift ends the drag wherever it happened — a cancellation
+                // included, since the platform took the gesture away — and the
+                // next press starts over from the contact that lands.
+                PointerAction::Released { .. } | PointerAction::Left => {
+                    let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
+                }
+                PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
             }
-            // A pixel of pointer motion is a fixed turn, so a drag feels the
-            // same however large the window is.
-            const RADIANS_PER_PIXEL: f32 = 0.01;
-            let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
-            let _ = world.with_mut::<CameraOrbit, _>(camera, |orbit| {
-                orbit.azimuth -= dx * RADIANS_PER_PIXEL;
-                orbit.elevation = (orbit.elevation - dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
-            });
         }),));
 
         if ui {
@@ -771,14 +807,8 @@ impl Scene {
                         let held = world
                             .query::<&InputState>()
                             .next()
-                            .is_some_and(|(_, state)| {
-                                state.buttons.contains(PointerButtons::PRIMARY)
-                            });
-                        ui.label(if held {
-                            "left button: down"
-                        } else {
-                            "left button: up"
-                        });
+                            .is_some_and(|(_, state)| state.pointer_down);
+                        ui.label(if held { "pointer: down" } else { "pointer: up" });
                         // The orbit lives on the camera entity, which is also
                         // what the drag behaviour writes.
                         match world.get::<CameraOrbit>(camera) {

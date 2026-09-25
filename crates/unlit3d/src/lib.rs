@@ -163,9 +163,10 @@ pub mod prelude {
         },
         culling::is_culled,
         input::{
-            ImeEvent, ImeKind, InputEvent, InputState, Key, KeyEvent, Modifiers, OnIme, OnInput,
-            OnKey, OnPointer, OnText, OnTouch, PointerButton, PointerButtons, PointerEvent,
-            TextEvent, TouchEvent, TouchPhase, WheelUnit, dispatch_input,
+            ImeEvent, ImeKind, InputEvent, InputState, Key, KeyEvent, Modifiers, MouseButton,
+            MouseButtons, MouseEvent, OnIme, OnInput, OnKey, OnMouse, OnPointer, OnText, OnTouch,
+            PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent, TouchEvent,
+            TouchPhase, WheelUnit, dispatch_input,
         },
         mesh::{MeshDesc, VertexBufferDesc},
         mesh_source::{MeshSource, UnlitPipelineKey},

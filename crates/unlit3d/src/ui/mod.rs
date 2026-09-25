@@ -833,12 +833,12 @@ mod tests {
         );
     }
 
-    /// A pointer event becomes a click a panel can see.
+    /// A mouse click becomes a click a panel can see.
     ///
     /// The whole chain is exercised: the world's event, its translation, and
     /// egui's own hit testing on a widget the panel painted.
     #[test]
-    fn a_pointer_click_reaches_a_widget() {
+    fn a_mouse_click_reaches_a_widget() {
         /// Where the button is, in points.
         fn button() -> egui::Rect {
             egui::Rect::from_min_size(egui::Pos2::new(8.0, 8.0), egui::Vec2::new(48.0, 24.0))
@@ -874,21 +874,21 @@ mod tests {
         let _ = world.with_mut::<InputState, _>(input, |state| {
             let centre = [button().center().x, button().center().y];
             for event in [
-                crate::input::PointerEvent::Moved { position: centre },
-                crate::input::PointerEvent::Button {
+                crate::input::MouseEvent::Moved { position: centre },
+                crate::input::MouseEvent::Button {
                     position: centre,
-                    button: crate::input::PointerButton::Primary,
+                    button: crate::input::MouseButton::Primary,
                     pressed: true,
                     modifiers: crate::input::Modifiers::default(),
                 },
-                crate::input::PointerEvent::Button {
+                crate::input::MouseEvent::Button {
                     position: centre,
-                    button: crate::input::PointerButton::Primary,
+                    button: crate::input::MouseButton::Primary,
                     pressed: false,
                     modifiers: crate::input::Modifiers::default(),
                 },
             ] {
-                state.push(crate::input::InputEvent::Pointer(event));
+                state.push(crate::input::InputEvent::Mouse(event));
             }
         });
         source.build_scene(&world, ctx, &mut encoder);
@@ -916,8 +916,8 @@ mod tests {
         let input = world.spawn((unlit_ecs::Resource, InputState::default()));
         let _ = world.with_mut::<InputState, _>(input, |state| {
             state.set_size_px(128, 96);
-            state.push(crate::input::InputEvent::Pointer(
-                crate::input::PointerEvent::Moved {
+            state.push(crate::input::InputEvent::Mouse(
+                crate::input::MouseEvent::Moved {
                     position: [16.0, 16.0],
                 },
             ));

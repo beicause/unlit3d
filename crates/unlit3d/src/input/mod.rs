@@ -257,9 +257,9 @@ pub enum Key {
     Other(u32),
 }
 
-/// A pointer button.
+/// A mouse button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PointerButton {
+pub enum MouseButton {
     /// The primary button: usually the left one.
     Primary,
     /// The secondary button: usually the right one.
@@ -275,13 +275,18 @@ pub enum PointerButton {
 }
 
 bitflags! {
-    /// The pointer buttons currently held down.
+    /// The mouse buttons currently held down.
     ///
     /// This is the set of buttons a frame was entered with, not the set of
-    /// buttons a [`PointerEvent`] mentioned: it answers "is the user still
+    /// buttons a [`MouseEvent`] mentioned: it answers "is the user still
     /// dragging?" without scanning the frame's events.
+    ///
+    /// A touch is not a mouse button, so a finger on the screen never sets a
+    /// bit here; the touches that are down live in [`InputState::touches`].
+    /// The device-agnostic half of a drag — where a pointer is and whether it
+    /// is down — is what [`PointerEvent`] carries.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct PointerButtons: u8 {
+    pub struct MouseButtons: u8 {
         /// The primary button is held.
         const PRIMARY = 1 << 0;
         /// The secondary button is held.
@@ -295,21 +300,21 @@ bitflags! {
     }
 }
 
-impl PointerButtons {
-    /// The button closest to `button`, or `None` for [`PointerButton::Other`].
+impl MouseButtons {
+    /// The button closest to `button`, or `None` for [`MouseButton::Other`].
     ///
     /// A code this type does not name has no bit to occupy, so it cannot be
     /// tracked as held. A translation layer should still deliver the
-    /// [`PointerEvent::Button`] itself; only the held set ignores it.
+    /// [`MouseEvent::Button`] itself; only the held set ignores it.
     #[must_use]
-    pub const fn bit_of(button: PointerButton) -> Option<Self> {
+    pub const fn bit_of(button: MouseButton) -> Option<Self> {
         match button {
-            PointerButton::Primary => Some(Self::PRIMARY),
-            PointerButton::Secondary => Some(Self::SECONDARY),
-            PointerButton::Middle => Some(Self::MIDDLE),
-            PointerButton::Back => Some(Self::BACK),
-            PointerButton::Forward => Some(Self::FORWARD),
-            PointerButton::Other(_) => None,
+            MouseButton::Primary => Some(Self::PRIMARY),
+            MouseButton::Secondary => Some(Self::SECONDARY),
+            MouseButton::Middle => Some(Self::MIDDLE),
+            MouseButton::Back => Some(Self::BACK),
+            MouseButton::Forward => Some(Self::FORWARD),
+            MouseButton::Other(_) => None,
         }
     }
 
@@ -419,30 +424,154 @@ pub struct KeyEvent {
     pub modifiers: Modifiers,
 }
 
-/// The pointer moved, changed button, left the window, or produced a gesture.
+/// Which kind of device a [`PointerEvent`] came from.
+///
+/// A pointer is the device-agnostic view of "something pointing at a spot on
+/// the window": a mouse, a finger, a trackpad or a stylus. What the device *is*
+/// decides how a game should read the event — a mouse has buttons and a wheel,
+/// a stylus has pressure and tilt, a finger has neither — so the kind travels
+/// with the event rather than being left to the consumer to guess.
+///
+/// The mouse and touch kinds are the device-specific halves of the same
+/// hardware: a mouse also produces [`MouseEvent`]s and a touch also produces
+/// [`TouchEvent`]s, so a consumer that needs buttons, wheel steps, pressure or
+/// a stable touch id listens for those instead. This is the level for code
+/// that only wants where the pointer is and whether it is down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PointerKind {
+    /// A mouse.
+    Mouse,
+    /// A finger on a touch screen.
+    Touch,
+    /// A trackpad.
+    ///
+    /// A trackpad is not a mouse: it reports gestures a mouse has no notion of
+    /// and reaches the cursor without one. It is named here because two
+    /// platforms report a pinch or a rotation without saying which device
+    /// produced it, and the device is a trackpad in all but the rare case of a
+    /// gesture-capable mouse — the one distinction the platform does not
+    /// disclose, so a consumer that must know has to ask the user or offer
+    /// another control.
+    Trackpad,
+    /// A stylus or other pen-like pointing device.
+    Pen,
+    /// A pointing device this type does not name.
+    ///
+    /// The platforms this crate targets report a closed set of pointer kinds,
+    /// so this is the last resort rather than the common case; a translation
+    /// layer that meets one it cannot classify reports it here instead of
+    /// calling it a mouse.
+    Other,
+}
+
+/// A pointing device moved, went down or up, left the window, or gestured.
+///
+/// This is the device-agnostic half of pointing input: it says where the
+/// pointer is and whether it is down, without naming a mouse button or a touch
+/// id. A drag therefore reads the same whether it is done with a mouse or a
+/// finger — which is what makes one behaviour serve both — while a consumer
+/// that needs the device itself asks for its [`PointerKind`], or listens for
+/// [`MouseEvent`]/[`TouchEvent`] instead.
 ///
 /// Positions are in physical pixels with the origin at the window's top-left
 /// corner, the same space windowing libraries report in. Scaling to
 /// logical points, if a consumer wants them, is the consumer's call.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum PointerEvent {
-    /// The pointer moved to `position`.
+pub struct PointerEvent {
+    /// Which device produced the event.
+    pub kind: PointerKind,
+    /// Which contact of that kind this is.
+    ///
+    /// A mouse is one pointer and always reports `0`. A touch screen is not:
+    /// every finger down at once is its own pointer, carrying the windowing
+    /// library's touch id, which is how a consumer tells a two-finger pinch
+    /// from a single finger sliding. A [`PointerKind::Trackpad`] gesture is not
+    /// a contact at all and likewise reports `0`; a gesture never presses or
+    /// releases, so it and a touch cannot be confused in
+    /// [`InputState::pointers`].
+    ///
+    /// The pair of `kind` and `id` identifies a contact: an id is unique among
+    /// the pointers of its kind, not across kinds.
+    pub id: u64,
+    /// What the device did.
+    pub action: PointerAction,
+    /// The pointer position in physical pixels, or `None` when the action is
+    /// one that has no position — a mouse leaving the window, or a touch the
+    /// platform cancelled.
+    pub position: Option<[f32; 2]>,
+    /// The modifier state when the event was produced.
+    pub modifiers: Modifiers,
+}
+
+/// One pointer that is currently down.
+///
+/// `InputState::pointers` holds one of these per contact, which is what lets a
+/// consumer follow several fingers at once without dropping to the
+/// touch-specific [`TouchEvent`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PointerContact {
+    /// Which device the contact is from.
+    pub kind: PointerKind,
+    /// Which contact of that kind it is, as in [`PointerEvent::id`].
+    pub id: u64,
+    /// Where the contact is, in physical pixels.
+    pub position: [f32; 2],
+}
+
+/// What a pointer did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PointerAction {
+    /// The pointer moved.
+    Moved,
+    /// The pointer went down: a mouse button was pressed, or a finger touched
+    /// the screen.
+    Pressed,
+    /// The pointer came up: the button was released, or the finger lifted.
+    ///
+    /// `cancelled` distinguishes a lift the device reported from one the
+    /// platform took away — a touch the browser turned into a scroll, say. A
+    /// cancelled pointer never completed what it started, so a drag should be
+    /// abandoned rather than treated as a click.
+    Released {
+        /// Whether the platform cancelled the gesture instead of the device
+        /// finishing it.
+        cancelled: bool,
+    },
+    /// The pointer left the window, so its position is no longer known. Only a
+    /// device that hovers — a mouse — can do this.
+    Left,
+    /// A pinch gesture changed the scale by `delta`.
+    Zoom(f32),
+    /// A rotation gesture turned by `delta` radians.
+    Rotate(f32),
+}
+
+/// The mouse moved, changed button, left the window, or scrolled.
+///
+/// Positions are in physical pixels with the origin at the window's top-left
+/// corner, the same space windowing libraries report in. A mouse also produces
+/// [`PointerEvent`]s, so a consumer that only wants "where and whether down"
+/// does not have to know about buttons; this type is for the button and wheel
+/// detail that only a mouse has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MouseEvent {
+    /// The mouse moved to `position`.
     Moved {
-        /// The new pointer position.
+        /// The new mouse position.
         position: [f32; 2],
     },
-    /// A pointer button changed state.
+    /// A mouse button changed state.
     Button {
-        /// The pointer position when the button changed.
+        /// The mouse position when the button changed.
         position: [f32; 2],
         /// Which button.
-        button: PointerButton,
+        button: MouseButton,
         /// Whether the button went down (`true`) or came up (`false`).
         pressed: bool,
         /// The modifier state when the event was produced.
         modifiers: Modifiers,
     },
-    /// The pointer left the window, so there is no position for it any more.
+    /// The mouse left the window, so there is no position for it any more.
     Left,
     /// The wheel or trackpad scrolled by `delta`, measured in `unit`.
     Wheel {
@@ -455,10 +584,6 @@ pub enum PointerEvent {
         /// The modifier state when the event was produced.
         modifiers: Modifiers,
     },
-    /// A pinch gesture changed the scale by `delta`.
-    Zoom(f32),
-    /// A rotation gesture turned by `delta` radians.
-    Rotate(f32),
 }
 
 /// A touch point changed.
@@ -505,7 +630,9 @@ impl Deref for TextEvent {
 pub enum InputEvent {
     /// A key changed state.
     Key(KeyEvent),
-    /// The pointer moved, changed button, left, or gestured.
+    /// The mouse moved, changed button, left, or scrolled.
+    Mouse(MouseEvent),
+    /// A pointing device moved, went down or up, left, or gestured.
     Pointer(PointerEvent),
     /// A touch point changed.
     Touch(TouchEvent),
@@ -562,11 +689,32 @@ pub struct InputState {
     events: Vec<InputEvent>,
     /// The modifier keys currently held.
     pub modifiers: Modifiers,
-    /// The pointer position in physical pixels, or `None` while the pointer is
-    /// outside the window.
+    /// Every pointer currently down, in the order they went down.
+    ///
+    /// A mouse contributes at most one entry and a touch screen one per finger,
+    /// so this is the state that tells a one-finger drag from a two-finger
+    /// gesture. [`Self::pointer`] is the position of the most recent contact
+    /// and is what a single-pointer drag reads.
+    pub pointers: Vec<PointerContact>,
+    /// Where the pointer is in physical pixels, or `None` while it is outside
+    /// the window.
+    ///
+    /// A pointer is a mouse or a finger, so this is set by either and is what
+    /// device-agnostic code reads. With several fingers down it follows the
+    /// most recent contact, which is the one a drag is about.
+    pub pointer: Option<[f32; 2]>,
+    /// Whether any pointer is down: a mouse button is held, a finger is on the
+    /// screen, or several fingers are.
+    ///
+    /// This is [`Self::pointers`] being non-empty, kept as a field because a
+    /// drag asks the question on every move. Read [`Self::pointers`] instead to
+    /// tell how many pointers there are.
+    pub pointer_down: bool,
+    /// The mouse position in physical pixels, or `None` while the mouse is
+    /// outside the window. A finger does not move the mouse.
     pub cursor: Option<[f32; 2]>,
-    /// The pointer buttons currently held.
-    pub buttons: PointerButtons,
+    /// The mouse buttons currently held.
+    pub buttons: MouseButtons,
     /// The touches currently active, as `(touch id, position)` pairs.
     pub touches: Vec<(u64, [f32; 2])>,
     /// Whether the window has focus. Input without focus is usually stale.
@@ -582,8 +730,11 @@ impl Default for InputState {
         Self {
             events: Vec::new(),
             modifiers: Modifiers::default(),
+            pointers: Vec::new(),
+            pointer: None,
+            pointer_down: false,
             cursor: None,
-            buttons: PointerButtons::empty(),
+            buttons: MouseButtons::empty(),
             touches: Vec::new(),
             // A window starts focused, and a caller that knows better seeds it
             // through `set_focused` or a `FocusChanged` event.
@@ -611,6 +762,7 @@ impl InputState {
     pub fn push(&mut self, event: InputEvent) {
         match event {
             InputEvent::Key(event) => self.modifiers = event.modifiers,
+            InputEvent::Mouse(event) => self.apply_mouse(event),
             InputEvent::Pointer(event) => self.apply_pointer(event),
             InputEvent::Touch(event) => self.apply_touch(&event),
             InputEvent::Ime(_) | InputEvent::Text(_) => {}
@@ -639,31 +791,97 @@ impl InputState {
     }
 
     /// Move the pointer without an event, for a caller that tracks it itself.
-    pub fn set_cursor(&mut self, position: Option<[f32; 2]>) {
-        self.cursor = position;
+    ///
+    /// Only the hover position is set: which pointers are down is a fact only
+    /// the events carry, so a caller that synthesises a move cannot invent a
+    /// press through this.
+    pub fn set_pointer(&mut self, position: Option<[f32; 2]>) {
+        self.pointer = position;
     }
 
-    /// Update the state a pointer event leaves behind.
-    fn apply_pointer(&mut self, event: PointerEvent) {
+    /// Update the state a mouse event leaves behind.
+    fn apply_mouse(&mut self, event: MouseEvent) {
         match event {
-            PointerEvent::Moved { position } => self.cursor = Some(position),
-            PointerEvent::Button {
+            MouseEvent::Moved { position } => self.cursor = Some(position),
+            MouseEvent::Button {
                 position,
                 button,
                 pressed,
                 ..
             } => {
                 self.cursor = Some(position);
-                if let Some(bit) = PointerButtons::bit_of(button) {
+                if let Some(bit) = MouseButtons::bit_of(button) {
                     self.buttons.set(bit, pressed);
                 }
             }
-            PointerEvent::Left => self.cursor = None,
-            PointerEvent::Wheel { .. } | PointerEvent::Zoom(_) | PointerEvent::Rotate(_) => {}
+            MouseEvent::Left => self.cursor = None,
+            MouseEvent::Wheel { .. } => {}
         }
     }
 
+    /// Update the state a pointer event leaves behind.
+    ///
+    /// A pointer's down state is device-agnostic, so it is tracked here for a
+    /// mouse and a finger alike; which *button* is held is mouse-only state and
+    /// is left to [`Self::apply_mouse`].
+    fn apply_pointer(&mut self, event: PointerEvent) {
+        if let Some(position) = event.position {
+            self.pointer = Some(position);
+        }
+        // A press or a move may in principle arrive without a position, and a
+        // contact has to be somewhere: the last known pointer position is then
+        // the best answer. A translation layer sends a move before a press, so
+        // a device's first contact has one even then.
+        let position = event.position.or(self.pointer);
+        match event.action {
+            PointerAction::Pressed => {
+                // A second finger presses its own contact without disturbing
+                // the first: this is what makes the two distinguishable, and
+                // why a single down flag would be wrong.
+                match self.contact_mut(event.kind, event.id) {
+                    Some(contact) => contact.position = position.unwrap_or(contact.position),
+                    None => {
+                        if let Some(position) = position {
+                            self.pointers.push(PointerContact {
+                                kind: event.kind,
+                                id: event.id,
+                                position,
+                            });
+                        }
+                    }
+                }
+            }
+            PointerAction::Released { .. } => {
+                self.pointers
+                    .retain(|contact| (contact.kind, contact.id) != (event.kind, event.id));
+            }
+            PointerAction::Left => self.pointer = None,
+            PointerAction::Moved => {
+                // A move only updates a contact that is down; a hover is the
+                // pointer position above and nothing more.
+                if let (Some(contact), Some(position)) =
+                    (self.contact_mut(event.kind, event.id), position)
+                {
+                    contact.position = position;
+                }
+            }
+            PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
+        }
+        self.pointer_down = !self.pointers.is_empty();
+    }
+
+    /// The down contact `kind` and `id` name, if it is one.
+    fn contact_mut(&mut self, kind: PointerKind, id: u64) -> Option<&mut PointerContact> {
+        self.pointers
+            .iter_mut()
+            .find(|contact| (contact.kind, contact.id) == (kind, id))
+    }
+
     /// Update the state a touch event leaves behind.
+    ///
+    /// The active touches are the state a consumer needs to tell one finger
+    /// from another; the device-agnostic down flag is set by the
+    /// [`PointerEvent`] the same touch produces.
     fn apply_touch(&mut self, event: &TouchEvent) {
         match event.phase {
             TouchPhase::Started | TouchPhase::Moved => {
@@ -722,7 +940,16 @@ behaviour!(
      categories — mounts this one instead of the per-category components."
 );
 behaviour!(OnKey, KeyEvent, "Runs for every [`KeyEvent`].");
-behaviour!(OnPointer, PointerEvent, "Runs for every [`PointerEvent`].");
+behaviour!(OnMouse, MouseEvent, "Runs for every [`MouseEvent`].");
+behaviour!(
+    OnPointer,
+    PointerEvent,
+    "Runs for every [`PointerEvent`], whatever device produced it.\n\n\
+     This is the device-agnostic pointing behaviour: a drag written against it\n\
+     works with a mouse, a finger and a stylus alike. A consumer that needs the\n\
+     device's own detail — mouse buttons and wheel steps, or a touch's id and\n\
+     pressure — mounts [`OnMouse`] or [`OnTouch`] beside it."
+);
 behaviour!(OnTouch, TouchEvent, "Runs for every [`TouchEvent`].");
 behaviour!(OnText, TextEvent, "Runs for every [`TextEvent`].");
 behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
@@ -741,6 +968,7 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// | event | components that receive it |
 /// |---|---|
 /// | [`InputEvent::Key`] | [`OnKey`], [`OnInput`] |
+/// | [`InputEvent::Mouse`] | [`OnMouse`], [`OnInput`] |
 /// | [`InputEvent::Pointer`] | [`OnPointer`], [`OnInput`] |
 /// | [`InputEvent::Touch`] | [`OnTouch`], [`OnInput`] |
 /// | [`InputEvent::Text`] | [`OnText`], [`OnInput`] |
@@ -790,6 +1018,11 @@ pub fn dispatch_input(world: &LocalWorld) -> bool {
         match event {
             InputEvent::Key(event) => {
                 for (entity, mut behaviour) in world.query::<&mut OnKey>() {
+                    behaviour.run(world, entity, event);
+                }
+            }
+            InputEvent::Mouse(event) => {
+                for (entity, mut behaviour) in world.query::<&mut OnMouse>() {
                     behaviour.run(world, entity, event);
                 }
             }
@@ -848,8 +1081,18 @@ mod tests {
         })
     }
 
+    fn mouse_event() -> InputEvent {
+        InputEvent::Mouse(MouseEvent::Moved { position: CURSOR })
+    }
+
     fn pointer_event() -> InputEvent {
-        InputEvent::Pointer(PointerEvent::Moved { position: CURSOR })
+        InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Mouse,
+            id: 0,
+            action: PointerAction::Moved,
+            position: Some(CURSOR),
+            modifiers: Modifiers::default(),
+        })
     }
 
     fn touch_event() -> InputEvent {
@@ -883,6 +1126,7 @@ mod tests {
         let mut world = LocalWorld::new();
         let (seen_input, input) = counter();
         let (seen_key, key) = counter();
+        let (seen_mouse, mouse) = counter();
         let (seen_pointer, pointer) = counter();
         let (seen_touch, touch) = counter();
         let (seen_text, text) = counter();
@@ -893,6 +1137,9 @@ mod tests {
         }),));
         world.spawn((OnKey::new(move |_, _, _| {
             seen_key.set(seen_key.get() + 1);
+        }),));
+        world.spawn((OnMouse::new(move |_, _, _| {
+            seen_mouse.set(seen_mouse.get() + 1);
         }),));
         world.spawn((OnPointer::new(move |_, _, _| {
             seen_pointer.set(seen_pointer.get() + 1);
@@ -910,6 +1157,7 @@ mod tests {
         let input_entity = world.spawn((Resource, InputState::default()));
         let events = [
             key_event(Key::W),
+            mouse_event(),
             pointer_event(),
             touch_event(),
             text_event(),
@@ -931,6 +1179,7 @@ mod tests {
 
         assert_eq!(input.get(), event_count, "OnInput hears every event");
         assert_eq!(key.get(), 1, "OnKey hears only the key event");
+        assert_eq!(mouse.get(), 1, "OnMouse hears only the mouse event");
         assert_eq!(pointer.get(), 1);
         assert_eq!(touch.get(), 1);
         assert_eq!(text.get(), 1);
@@ -952,7 +1201,7 @@ mod tests {
         let input_entity = world.spawn((Resource, InputState::default()));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
-            state.push(pointer_event());
+            state.push(mouse_event());
         });
 
         dispatch_input(&world);
@@ -1137,13 +1386,18 @@ mod tests {
             ..Modifiers::default()
         }));
         state.push(InputEvent::FocusChanged(false));
-        state.push(InputEvent::Pointer(PointerEvent::Moved {
+        state.push(InputEvent::Mouse(MouseEvent::Moved { position: CURSOR }));
+        state.push(InputEvent::Mouse(MouseEvent::Button {
             position: CURSOR,
-        }));
-        state.push(InputEvent::Pointer(PointerEvent::Button {
-            position: CURSOR,
-            button: PointerButton::Primary,
+            button: MouseButton::Primary,
             pressed: true,
+            modifiers: Modifiers::default(),
+        }));
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Mouse,
+            id: 0,
+            action: PointerAction::Pressed,
+            position: Some(CURSOR),
             modifiers: Modifiers::default(),
         }));
         state.push(InputEvent::Touch(TouchEvent {
@@ -1153,18 +1407,20 @@ mod tests {
             force: Some(0.5),
         }));
 
-        assert_eq!(state.events().len(), 5);
+        assert_eq!(state.events().len(), 6);
         assert!(state.modifiers.shift);
         assert!(!state.focused);
         assert_eq!(state.cursor, Some(CURSOR));
-        assert!(state.buttons.contains(PointerButtons::PRIMARY));
+        assert!(state.buttons.contains(MouseButtons::PRIMARY));
+        assert_eq!(state.pointer, Some(CURSOR));
+        assert!(state.pointer_down);
         assert_eq!(state.touches, [(7, CURSOR)]);
 
         // An unnamed button has no bit to occupy, but its event is still
         // delivered.
-        state.push(InputEvent::Pointer(PointerEvent::Button {
+        state.push(InputEvent::Mouse(MouseEvent::Button {
             position: CURSOR,
-            button: PointerButton::Other(9),
+            button: MouseButton::Other(9),
             pressed: true,
             modifiers: Modifiers::default(),
         }));
@@ -1172,13 +1428,27 @@ mod tests {
 
         // Releasing clears the bit; ending the touch drops it from the active
         // set.
-        state.push(InputEvent::Pointer(PointerEvent::Button {
+        state.push(InputEvent::Mouse(MouseEvent::Button {
             position: CURSOR,
-            button: PointerButton::Primary,
+            button: MouseButton::Primary,
             pressed: false,
             modifiers: Modifiers::default(),
         }));
-        state.push(InputEvent::Pointer(PointerEvent::Left));
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Mouse,
+            id: 0,
+            action: PointerAction::Released { cancelled: false },
+            position: Some(CURSOR),
+            modifiers: Modifiers::default(),
+        }));
+        state.push(InputEvent::Mouse(MouseEvent::Left));
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Mouse,
+            id: 0,
+            action: PointerAction::Left,
+            position: None,
+            modifiers: Modifiers::default(),
+        }));
         state.push(InputEvent::Touch(TouchEvent {
             id: 7,
             phase: TouchPhase::Moved,
@@ -1186,7 +1456,9 @@ mod tests {
             force: None,
         }));
         assert!(state.buttons.is_empty());
+        assert!(!state.pointer_down);
         assert_eq!(state.cursor, None);
+        assert_eq!(state.pointer, None);
         assert_eq!(state.touches, [(7, [1.0, 2.0])], "moved, not duplicated");
 
         state.push(InputEvent::Touch(TouchEvent {
@@ -1200,6 +1472,187 @@ mod tests {
     }
 
     #[test]
+    fn a_pointer_down_state_is_device_agnostic() {
+        // A finger sets the down flag without touching a mouse button: that is
+        // the whole point of the pointer level, and what lets one drag
+        // behaviour serve a mouse and a touch alike.
+        let mut state = InputState::default();
+
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 1,
+            action: PointerAction::Pressed,
+            position: Some(CURSOR),
+            modifiers: Modifiers::default(),
+        }));
+
+        assert!(state.pointer_down);
+        assert_eq!(state.pointer, Some(CURSOR));
+        assert!(
+            state.buttons.is_empty(),
+            "a touch is not a mouse button being held"
+        );
+        assert_eq!(state.cursor, None, "a touch does not move the mouse");
+
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 1,
+            action: PointerAction::Released { cancelled: true },
+            position: None,
+            modifiers: Modifiers::default(),
+        }));
+        assert!(!state.pointer_down, "a cancelled pointer is no longer down");
+    }
+
+    #[test]
+    fn two_fingers_are_two_pointers() {
+        // A single down flag cannot express this: with one finger lifted the
+        // other is still down, and a drag that read the flag would think the
+        // gesture had ended.
+        let mut state = InputState::default();
+        let press = |id, position| {
+            InputEvent::Pointer(PointerEvent {
+                kind: PointerKind::Touch,
+                id,
+                action: PointerAction::Pressed,
+                position: Some(position),
+                modifiers: Modifiers::default(),
+            })
+        };
+
+        state.push(press(1, [10.0, 10.0]));
+        state.push(press(2, [40.0, 10.0]));
+        assert_eq!(
+            state.pointers,
+            [
+                PointerContact {
+                    kind: PointerKind::Touch,
+                    id: 1,
+                    position: [10.0, 10.0],
+                },
+                PointerContact {
+                    kind: PointerKind::Touch,
+                    id: 2,
+                    position: [40.0, 10.0],
+                },
+            ],
+            "both contacts are tracked, in the order they went down"
+        );
+
+        // Moving one finger moves only its own contact.
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 2,
+            action: PointerAction::Moved,
+            position: Some([50.0, 10.0]),
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(state.pointers[0].position, [10.0, 10.0], "the other stays");
+        assert_eq!(state.pointers[1].position, [50.0, 10.0]);
+        assert_eq!(state.pointer, Some([50.0, 10.0]), "the latest move is it");
+
+        // Lifting one leaves the other down.
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 1,
+            action: PointerAction::Released { cancelled: false },
+            position: Some([10.0, 10.0]),
+            modifiers: Modifiers::default(),
+        }));
+        assert!(state.pointer_down, "one finger is still on the screen");
+        assert_eq!(state.pointers.len(), 1);
+        assert_eq!(state.pointers[0].id, 2);
+
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 2,
+            action: PointerAction::Released { cancelled: false },
+            position: Some([50.0, 10.0]),
+            modifiers: Modifiers::default(),
+        }));
+        assert!(!state.pointer_down, "the screen is clear again");
+        assert!(state.pointers.is_empty());
+    }
+
+    #[test]
+    fn a_mouse_and_a_finger_can_be_down_at_once() {
+        // The two kinds have independent id spaces, so the mouse's `0` and a
+        // touch's id do not collide.
+        let mut state = InputState::default();
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Mouse,
+            id: 0,
+            action: PointerAction::Pressed,
+            position: Some([1.0, 1.0]),
+            modifiers: Modifiers::default(),
+        }));
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 0,
+            action: PointerAction::Pressed,
+            position: Some([2.0, 2.0]),
+            modifiers: Modifiers::default(),
+        }));
+
+        assert_eq!(state.pointers.len(), 2, "the same id on two kinds differ");
+        assert!(state.pointer_down);
+
+        // Releasing the mouse leaves the finger down.
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Mouse,
+            id: 0,
+            action: PointerAction::Released { cancelled: false },
+            position: Some([1.0, 1.0]),
+            modifiers: Modifiers::default(),
+        }));
+        assert_eq!(state.pointers.len(), 1);
+        assert_eq!(state.pointers[0].kind, PointerKind::Touch);
+        assert!(state.pointer_down);
+    }
+
+    #[test]
+    fn a_hover_does_not_press_a_pointer() {
+        // A move over the window is a hover: it sets where the pointer is
+        // without claiming anything is down.
+        let mut state = InputState::default();
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Mouse,
+            id: 0,
+            action: PointerAction::Moved,
+            position: Some(CURSOR),
+            modifiers: Modifiers::default(),
+        }));
+
+        assert_eq!(state.pointer, Some(CURSOR));
+        assert!(!state.pointer_down);
+        assert!(state.pointers.is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_pointer_keeps_the_position_it_was_last_seen_at() {
+        // A cancellation may arrive without a position, and the last known one
+        // is what a consumer abandons the drag from.
+        let mut state = InputState::default();
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 1,
+            action: PointerAction::Moved,
+            position: Some(CURSOR),
+            modifiers: Modifiers::default(),
+        }));
+        state.push(InputEvent::Pointer(PointerEvent {
+            kind: PointerKind::Touch,
+            id: 1,
+            action: PointerAction::Released { cancelled: true },
+            position: None,
+            modifiers: Modifiers::default(),
+        }));
+
+        assert_eq!(state.pointer, Some(CURSOR));
+        assert!(!state.pointer_down);
+    }
+
+    #[test]
     fn clear_events_keeps_the_state() {
         let mut state = InputState::default();
         state.set_size_px(1280, 720);
@@ -1209,12 +1662,10 @@ mod tests {
             ..Modifiers::default()
         }));
         state.push(InputEvent::FocusChanged(false));
-        state.push(InputEvent::Pointer(PointerEvent::Moved {
+        state.push(InputEvent::Mouse(MouseEvent::Moved { position: CURSOR }));
+        state.push(InputEvent::Mouse(MouseEvent::Button {
             position: CURSOR,
-        }));
-        state.push(InputEvent::Pointer(PointerEvent::Button {
-            position: CURSOR,
-            button: PointerButton::Secondary,
+            button: MouseButton::Secondary,
             pressed: true,
             modifiers: Modifiers::default(),
         }));
@@ -1224,7 +1675,7 @@ mod tests {
         assert!(state.events().is_empty());
         assert!(state.modifiers.alt);
         assert_eq!(state.cursor, Some(CURSOR));
-        assert_eq!(state.buttons, PointerButtons::SECONDARY);
+        assert_eq!(state.buttons, MouseButtons::SECONDARY);
         assert!(!state.focused);
         assert_eq!(state.size_px, (1280, 720));
         assert_eq!(state.scale_factor, 2.0);
