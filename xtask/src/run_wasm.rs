@@ -24,21 +24,45 @@ const OUT_DIR: &str = "generated";
 const PORT: u16 = 8000;
 
 /// The web page that imports the bindgen output and starts the example.
+///
+/// The canvas is sized by this page, not by the window attributes the example
+/// asks for: winit writes those into the canvas's inline `style`, and `!important`
+/// is what lets the page override them so the canvas follows a phone's viewport
+/// instead of staying at the desktop size the example requests.
+///
+/// `touch-action: none` is what makes a finger drag reach the app at all. The
+/// Pointer Events specification has `preventDefault()` on `pointerdown` *not*
+/// cancel the browser's own panning, so without it a drag is taken over by the
+/// page mid-gesture and the app is sent a `pointercancel` instead of the moves.
+/// The overflow and overscroll rules keep the page itself from scrolling under
+/// the canvas.
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>unlit3d + winit</title>
     <style>
       html,
       body {
         margin: 0;
-        height: 100%;
+        padding: 0;
+        /* The address bar retracts on scroll, so the dynamic viewport unit is
+           what keeps the canvas filling the visible area on a phone. */
+        height: 100dvh;
+        overflow: hidden;
+        overscroll-behavior: none;
+        background: #101014;
       }
       canvas {
-        width: 100%;
-        height: 100%;
+        display: block;
+        /* Override the inline size winit sets from the window attributes, so
+           the canvas follows the viewport instead of staying at the size the
+           example asks for. */
+        width: 100% !important;
+        height: 100% !important;
+        /* Without this the browser claims a drag as its own pan. */
+        touch-action: none;
       }
     </style>
   </head>
