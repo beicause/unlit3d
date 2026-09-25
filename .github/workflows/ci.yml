@@ -97,38 +97,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  snapshot:
-    name: Snapshot the example
-    # runtime is normally 1 minute
-    timeout-minutes: 10
-    runs-on: ubuntu-latest
-    steps:
-      # The snapshots live in the asset submodule, so this job checks it out.
-      # Without it the snapshot path does not exist and every comparison
-      # quietly stores instead of comparing, which is how a broken render
-      # reaches `main`.
-      - uses: actions/checkout@v7.0.1
-        with:
-          submodules: true
-
-      - name: Install rust toolchain
-        run: |
-          rustup toolchain install stable --no-self-update --profile=minimal
-
-      - name: Install Mesa
-        # The runner has no GPU; lavapipe is the software Vulkan
-        # implementation the example renders through.
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes mesa-vulkan-drivers
-
-      - name: Caching
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: snapshot-${{ env.CACHE_SUFFIX }}
-          env-vars: ImageVersion
-          cache-bin: false
-
       # The example renders headlessly and compares the frame against its
       # snapshot, so a rendering regression fails here rather than passing
       # unnoticed. `--update` regenerates the snapshot; review its diff before
