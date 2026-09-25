@@ -6,20 +6,26 @@ A windowed unlit cube with an egui overlay, rendered through
 [`unlit3d::winit::WindowSurface`](../crates/unlit3d/README.md) — or, headlessly,
 into an offscreen target that is read back and compared against a snapshot.
 It is both the workspace's example program and its rendering-regression check
-in CI.
+in CI, and it is also the Android example, packaged as an APK.
 
 The example is at an **early stage** along with the crates it uses, and it
 exercises parts of them that are still under construction.
 
 ## Role in the workspace
 
-This is the only binary crate in the workspace, and the only consumer that
-combines every other crate: it uses [`unlit3d`](../crates/unlit3d/README.md)
-for the frame loop, ECS components, input and UI, and
+This is the only crate in the workspace that ships a binary, and the only
+consumer that combines every other crate: it uses
+[`unlit3d`](../crates/unlit3d/README.md) for the frame loop, ECS components,
+input and UI, and
 [`wgpu_unlit_render`](../crates/wgpu_unlit_render/README.md) for the pipeline
 options and the resource graph. Its headless path borrows
 [`wgpu_unlit_test_util`](../crates/wgpu_unlit_test_util/README.md) for frame
 readback and scoring, behind the `snapshot` feature.
+
+It is a library as well as a binary, because Android starts neither a process
+nor a command line: the activity loads the shared library and calls its
+`android_main`, and the command-line path is the binary. Both end in the same
+windowed loop, so the example only has one frame loop to maintain.
 
 ## Features
 
@@ -43,6 +49,34 @@ To run the same example in a browser — where WebGPU needs a secure context, so
 ```text
 cargo xtask run-wasm
 ```
+
+## Android
+
+Android starts an *activity*, not a process: the activity loads the shared
+library and calls its `android_main` on a thread of its own, which is why this
+crate is a library as well as a binary. `android_main` builds the event loop
+with the activity winit requires on that platform and hands it to the same
+windowed loop the binary drives.
+
+To build the APK, which cross-compiles the library, stages it in the Gradle
+project's `jniLibs` directory and then runs the Gradle wrapper there:
+
+```text
+cargo xtask build-android
+```
+
+The result is `android/app/build/outputs/apk/debug/app-debug.apk`, installable
+with `adb install`. `--release` builds a release APK instead, which this
+project leaves unsigned. The project's Gradle setup — its `compileSdk`, its
+`minSdk`, its one ABI — and the task's own constants have to agree; see
+[`xtask/README.md`](../xtask/README.md#cargo-xtask-build-android).
+
+The activity is
+[`android/app/src/main/java/org/unlit3d/example/MainActivity.kt`](../android/app/src/main/java/org/unlit3d/example/MainActivity.kt).
+It extends `GameActivity`, which loads the library named by the
+`android.app.lib_name` manifest entry and calls into it, so the activity itself
+only takes the screen over. The whole application — window, GPU context, frame
+loop — is this crate's.
 
 ## Headless capture
 

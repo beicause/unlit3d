@@ -1,5 +1,5 @@
-[profile.dev]
-debug = 1
-
 [alias]
 xtask = "run --manifest-path xtask/Cargo.toml --"
+
+[profile.dev]
+debug = 1

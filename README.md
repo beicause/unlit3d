@@ -21,7 +21,7 @@ progress.
 | [`unlit3d`](crates/unlit3d/README.md) | The upper rendering API: ECS components, frame sources, the mesh source with pipeline families, input, UI overlay, and winit presentation. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The archetype ECS the upper layer is written against. Deliberately small: no change detection, hooks, events, relations or scheduler. |
 | [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, and optional SSIMULACRA2 image snapshots. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed unlit cube with an egui overlay — and its own headless capture mode. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed unlit cube with an egui overlay — and its own headless capture mode. Also the Android example, packaged as an APK. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. Not a workspace member. |
 
 ## How the pieces fit
@@ -60,13 +60,16 @@ architecture and the implementation plan. It is written in Chinese.
 ## Common commands
 
 ```text
-cargo xtask check      # clippy over the whole workspace, then `cargo fmt --check`
-cargo xtask test       # nextest over unit and integration tests, then the doctests
-cargo xtask run-wasm   # build the web example and serve it on localhost
+cargo xtask check          # clippy over the whole workspace, then `cargo fmt --check`
+cargo xtask test           # nextest over unit and integration tests, then the doctests
+cargo xtask run-wasm       # build the web example and serve it on localhost
+cargo xtask build-android  # build the Android example's library and APK
 ```
 
-`cargo xtask check` and `cargo xtask test` both accept `--release`. Lint the
-TOML with `tombi lint --error-on-warnings` and check spelling with `typos`.
+`cargo xtask check` and `cargo xtask test` both accept `--release`, as does
+`cargo xtask build-android`, which additionally needs an Android SDK, an NDK
+and a JDK 17 or newer. Lint the TOML with `tombi lint --error-on-warnings` and
+check spelling with `typos`.
 
 The renderer's GPU tests compare frames against images in
 [`wgpu_unlit_render_asset_files`](wgpu_unlit_render_asset_files/README.md), a
@@ -82,6 +85,7 @@ crates/unlit3d/             the ECS-integrated rendering API
 crates/unlit_ecs/           the archetype ECS
 crates/wgpu_unlit_test_util/ the shared GPU test harness
 unlit3d_examples/           the windowed example and its capture mode
+android/                    the Gradle project that packages the example as an APK
 xtask/                      the `cargo xtask` task runner (excluded from the workspace)
 docs/DESIGN.md              the design document
 ```

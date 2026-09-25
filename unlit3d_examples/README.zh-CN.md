@@ -5,19 +5,23 @@
 一个带 egui 叠加层的窗口化 unlit 立方体，通过
 [`unlit3d::winit::WindowSurface`](../crates/unlit3d/README.zh-CN.md) 渲染；也可以
 无头地渲染到一个离屏目标，回读后与快照比较。它既是本工作区的示例程序，也是 CI 中的
-渲染回归检查。
+渲染回归检查，同时还是 Android 示例，会打包成 APK。
 
 与本示例所用到的那些 crate 一样，示例也处于**早期阶段**，并且会用到其中仍在建设中
 的部分。
 
 ## 在工作区中的位置
 
-这是工作区中唯一的二进制 crate，也是唯一一个把所有其他 crate 组合起来的消费者：它用
+这是工作区中唯一带二进制的 crate，也是唯一一个把所有其他 crate 组合起来的消费者：它用
 [`unlit3d`](../crates/unlit3d/README.zh-CN.md) 处理帧循环、ECS 组件、输入与 UI，用
 [`wgpu_unlit_render`](../crates/wgpu_unlit_render/README.zh-CN.md) 获取管线选项与
 资源图。它的无头路径在 `snapshot` feature 之后借用
 [`wgpu_unlit_test_util`](../crates/wgpu_unlit_test_util/README.zh-CN.md) 做帧回读与
 评分。
+
+它既是库也是二进制，因为 Android 既不启动进程也不提供命令行：activity 加载动态库并
+调用它的 `android_main`，而命令行入口是那个二进制。两者最终进入同一个窗口化循环，
+因此示例只需要维护一个帧循环。
 
 ## Feature
 
@@ -40,6 +44,29 @@ cargo run -p unlit3d_examples
 ```text
 cargo xtask run-wasm
 ```
+
+## Android
+
+Android 启动的是一个 *activity*，而不是进程：activity 加载动态库，并在线程中调用它的
+`android_main`——这正是本 crate 既是库也是二进制的原因。`android_main` 用该平台要求
+的 activity 构建事件循环，然后交给二进制所驱动的那个同样的窗口化循环。
+
+构建 APK：先交叉编译动态库，把它放进 Gradle 工程的 `jniLibs` 目录，再在那里运行
+Gradle wrapper：
+
+```text
+cargo xtask build-android
+```
+
+产物是 `android/app/build/outputs/apk/debug/app-debug.apk`，可用 `adb install` 安装。
+`--release` 改为构建 release APK，本工程让它保持未签名。工程的 Gradle 配置——它的
+`compileSdk`、`minSdk` 和唯一的 ABI——必须与任务中的常量一致，参见
+[`xtask/README.zh-CN.md`](../xtask/README.zh-CN.md#cargo-xtask-build-android)。
+
+activity 位于
+[`android/app/src/main/java/org/unlit3d/example/MainActivity.kt`](../android/app/src/main/java/org/unlit3d/example/MainActivity.kt)。
+它继承 `GameActivity`，后者会加载清单项 `android.app.lib_name` 指定的动态库并调用进去，
+因此 activity 本身只负责接管屏幕。整个应用——窗口、GPU 上下文、帧循环——都在本 crate 中。
 
 ## 无头捕获
 

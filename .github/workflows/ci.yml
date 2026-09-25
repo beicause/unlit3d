@@ -137,7 +137,7 @@ jobs:
       - name: Caching
         uses: Swatinem/rust-cache@v2
         with:
-          key: build-wasm-${{ matrix.os }}-${{ env.CACHE_SUFFIX }}
+          key: build-wasm-${{ env.CACHE_SUFFIX }}
           env-vars: ImageVersion
           cache-bin: false
 
@@ -145,12 +145,22 @@ jobs:
         run: cargo clippy --workspace --all-targets --no-default-features -- -Dwarnings
 
       - name: Build wasm
-        run: cargo build --workspace --target wasm32-unknown-unknown --all-targets
+        # Not `--all-targets`: the example crate is a `cdylib` as well as a
+        # binary, and on `wasm32-unknown-unknown` both want to write
+        # `unlit3d_examples.wasm`, which cargo warns about as an output
+        # filename collision. The binary is what a browser runs; the library
+        # exists for Android, so only the targets that never produce it are
+        # built here.
+        run: >
+          cargo build --workspace --target wasm32-unknown-unknown
+          --bins --tests --benches --examples
 
   build-android:
     name: Build android
-    # runtime is normally 30 seconds
-    timeout-minutes: 5
+    # A Gradle build downloads its own distribution and dependencies, and the
+    # Rust cross-build walks the whole dependency tree; the caches make the
+    # runs after the first much shorter.
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -163,22 +173,52 @@ jobs:
       - name: Caching
         uses: Swatinem/rust-cache@v2
         with:
-          key: build-android-${{ matrix.os }}-${{ env.CACHE_SUFFIX }}
+          key: build-android-${{ env.CACHE_SUFFIX }}
           env-vars: ImageVersion
           cache-bin: false
+
+      # AGP 9 requires JDK 17 or newer, and the runner image's default is not
+      # guaranteed to be one the wrapper accepts.
+      - name: Set up JDK
+        uses: actions/setup-java@v6.0.1
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # Caches the Gradle user home — the distribution and the dependency
+      # cache — through `actions/cache`, rather than the proprietary provider
+      # this action defaults to.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6.3.0
+        with:
+          cache-provider: basic
 
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.23.0
 
-      - name: Install Android NDK
-        run: ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager 'ndk;${{env.ANDROID_NDK_VERSION}}'
-
+      # The NDK is not installed here: the runner image already carries the
+      # version this project pins, and `cargo ndk` finds it by itself.
       - name: Install cargo-ndk
         run: cargo binstall --no-confirm cargo-ndk
 
-      - name: Build
-        run: >
-          export ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${{env.ANDROID_NDK_VERSION}}
-          && export ANDROID_NDK_ROOT=${ANDROID_NDK_HOME}
-          && cargo ndk-env -t arm64-v8a
-          && cargo ndk -t arm64-v8a -P 26 build
+      # One command for both halves: `cargo ndk` builds the example's shared
+      # library into the APK's `jniLibs` directory, then the task runs the
+      # Gradle wrapper on `android/`. A debug APK is what is published because
+      # it is the one the build signs: an unsigned release APK cannot be
+      # installed without a signing step of its own.
+      #
+      # `ANDROID_HOME` comes from the runner image rather than this workflow's
+      # `env`, so it is expanded by the shell: the `env` context only holds
+      # variables a workflow sets, not the ones the runner inherits.
+      - name: Build the APK
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
+          export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+          cargo xtask build-android
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unlit3d-examples-apk
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

@@ -3,7 +3,7 @@
 # xtask
 
 仓库的任务执行器，由 `cargo xtask` 别名驱动。它包装了贡献者在提交前会运行的命令，
-使 CI 与本地运行不会彼此脱节，同时负责构建并服务 web 示例。
+使 CI 与本地运行不会彼此脱节，同时负责构建示例的 web 与 Android 产物。
 
 这只是本仓库的开发工具。它不是工作区成员——工作区 manifest 把它列在 `exclude` 下，
 `.cargo/config.toml` 以 `xtask = "run --manifest-path xtask/Cargo.toml --"` 把它接进来
@@ -13,9 +13,10 @@
 ## 任务
 
 ```text
-cargo xtask check      # 对全工作区跑 clippy，随后 cargo fmt --check
-cargo xtask test       # 用 nextest 跑单元与集成测试，随后跑 doctest
-cargo xtask run-wasm   # 构建 web 示例并提供给浏览器
+cargo xtask check          # 对全工作区跑 clippy，随后 cargo fmt --check
+cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
+cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
+cargo xtask build-android  # 构建 Android 动态库及其 APK
 ```
 
 ### `cargo xtask check`
@@ -42,15 +43,35 @@ WebGPU 只在*安全上下文*中可用，`localhost` 是安全上下文而 `fil
 `--no-serve` 只构建并跑 bindgen、不提供服务；`--release` 走 release 构建；尾部的
 位置参数会透传给 `cargo build`。
 
+这里显式指定了二进制 target，而不是交给默认的 target 选择：示例 crate 同时是
+`cdylib` 和二进制，在 `wasm32-unknown-unknown` 上两者都想写出
+`unlit3d_examples.wasm`，cargo 会就此报告输出文件名冲突。浏览器运行的是二进制。
+
+### `cargo xtask build-android`
+
+两个工具，沿语言边界分工。`cargo ndk` 为 Android 交叉编译示例并把 `.so` 放进 app 的
+`jniLibs` 目录——Gradle 正是在那里寻找原生库并打包它找到的一切；随后 Gradle 编译
+activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK 就是一个无法启动的 activity。
+
+两个工具都从环境变量自我配置：`cargo ndk` 从 `ANDROID_NDK_HOME` 读取 NDK（否则取
+`ANDROID_HOME/ndk` 下最新的一版），Gradle 从 `ANDROID_HOME` 读取 SDK（否则看
+`android/local.properties`）。`PATH` 上需要有 JDK 17 或更新版本，这是 AGP 的要求。
+
+只编译一个 ABI（`arm64-v8a`）和一个 API 级别（26），与
+`android/app/build.gradle.kts` 中的 `abiFilters` 和 `minSdk` 一致——这两个文件就是
+构建中 Rust 一半与 Gradle 一半之间的全部契约。默认是 debug 构建类型；`--release`
+构建 release APK，由于本工程不提供签名配置，它保持未签名。
+
 ## 结构
 
 ```text
-src/main.rs      参数解析（argh）与任务分发
-src/check.rs     cargo xtask check
-src/test.rs      cargo xtask test
-src/run_wasm.rs  cargo xtask run-wasm：wasm 构建、bindgen 与页面
-src/http.rs      run-wasm 用来提供服务的静态文件服务器
-src/step.rs      运行单个子命令并报告是哪一步失败
+src/main.rs          参数解析（argh）与任务分发
+src/check.rs         cargo xtask check
+src/test.rs          cargo xtask test
+src/run_wasm.rs      cargo xtask run-wasm：wasm 构建、bindgen 与页面
+src/build_android.rs cargo xtask build-android：交叉构建与 APK
+src/http.rs          run-wasm 用来提供服务的静态文件服务器
+src/step.rs          运行单个子命令并报告是哪一步失败
 ```
 
 本 crate 禁止 `missing_docs`，因此每个条目都带有文档注释。

@@ -9,8 +9,8 @@ license.workspace = true
 # Android build packages — the activity loads the shared library and calls into
 # it. `rlib` is what the binary links against, `cdylib` is what Android loads.
 [lib]
-name = "unlit3d_examples"
 crate-type = ["cdylib", "rlib"]
+name = "unlit3d_examples"
 
 [[bin]]
 name = "unlit3d_examples"
@@ -30,15 +30,15 @@ winit.workspace = true
 # rather than a copy. Off by default: the windowed example needs neither.
 wgpu_unlit_test_util = { path = "../crates/wgpu_unlit_test_util", features = ["snapshot"], optional = true }
 
-# The GPU context is requested asynchronously, so the setup future needs a
-# driver: a blocking executor natively, the browser's task queue on the web.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster.workspace = true
-
 # The logger backend, which differs by platform even though there is only one
 # per target: `env_logger` writes to the terminal a command line runs in.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 env_logger.workspace = true
+
+# The GPU context is requested asynchronously, so the setup future needs a
+# driver: a blocking executor natively, the browser's task queue on the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The logger backend and panic hook forward to the browser console.

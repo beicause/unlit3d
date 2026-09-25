@@ -15,6 +15,7 @@
 - **`cargo xtask check`** — clippy（全工作区、全 target、全 feature，`-D warnings`）后接 `cargo fmt --check`。提交前的门槛。加 `--release` 走 release profile。
 - **`cargo xtask test`** — 跑测试：`cargo nextest run` 覆盖单元与集成测试，随后 `cargo test --doc` 补上 nextest 不跑的 doctest。CI 跑的就是这一条命令，本地别自己拼 `cargo test`。加 `--release` 走 release profile。
 - **`cargo xtask run-wasm`** — 构建 web 示例并用内置静态服务器提供（WebGPU 需要 secure context，`file://` 不行）。`--no-serve` 只构建，`--release` 走 release。
+- **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译示例的动态库放进 `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，`--release` 构建未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`（NDK 由 cargo-ndk 自动探测）。
 - **`cargo nextest run`** — 需要按名筛选或重跑单个测试时直接用（`-p <crate>`、`-E 'test(<name>)'`）。nextest 不跑 doctest，也别用它代替 `cargo xtask test`。
 - **`typos`** — 拼写检查，扫全仓库。
 - **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。改过任何 `Cargo.toml` 后务必跑。
