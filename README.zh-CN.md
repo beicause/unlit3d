@@ -1,0 +1,83 @@
+[English](README.md) | 简体中文
+
+# unlit3d
+
+面向 WebGPU 的**无光照（unlit）**绘制的紧凑、有主见的 3D 渲染器，以及构建在其上的
+ECS 层。本工作区以 WebGPU（及其背后的原生后端）为目标，并且移动端优先；不支持
+WebGL 与 GLES。它在一个 render pass 内把整个场景——不透明与透明实例一视同仁——
+绘制到一个 `wgpu::TextureView`，带有 CPU 视锥剔除，以及为 CI 快照测试准备的一流
+无头渲染路径。
+
+项目处于**极早期开发阶段**。API 会自由变动，设计文档中仍列有未完成的工作；请把
+每个 crate 都视为进行中的产物。
+
+## Crate 一览
+
+| Crate | 职责 |
+|-------|------|
+| [`wgpu_unlit_render`](crates/wgpu_unlit_render/README.zh-CN.md) | 底层渲染器：资源图、网格顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 管线，以及 egui 后端。它不认识 ECS。 |
+| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 上层渲染 API：ECS 组件、帧源、带有管线家族（family）的 mesh 源、输入、UI 叠加层，以及 winit 呈现。 |
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 上层所针对的 archetype ECS。刻意精简：没有变化检测、钩子、事件、实体关系或调度器。 |
+| [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读，以及可选的 SSIMULACRA2 图像快照。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 带 egui 叠加层的窗口化 unlit 立方体——以及它自己的无头捕获模式。 |
+| [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的仓库任务执行器。不是工作区成员。 |
+
+## 各部分的配合方式
+
+`wgpu_unlit_render` 是基础，不依赖工作区中的任何其他 crate。`unlit3d` 构建在它和
+`unlit_ecs` 之上，并把两者保留为直接依赖而非整体重导出：它的 `prelude` 重导出
+大多数调用者需要的条目，其余条目仍可通过各自的 crate 路径访问。
+`wgpu_unlit_test_util` 是两个渲染 crate 的 dev-dependency；`unlit3d_examples`
+仅在开启 `snapshot` feature 时使用它。
+
+两条原则决定了这种分层：
+
+- **内置管线不享有特权。** unlit 管线用到的一切——绑定槽位、顶点压缩、资源追踪、
+  变体缓存——都是公开的，并且它由调用者自建管线时所用的同一批设施组合而成。
+- **帧源彼此平等。** 一帧由若干 `unlit3d::source::FrameSource` 实现拼成，每个实现
+  各自产出 `wgpu_unlit_render::scene::Scene`；内置网格渲染是其中一个源，调用者
+  自己的绘制趟次是另一个，两者权限完全相同。
+
+设计取舍、架构与实施计划见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+
+## 环境要求
+
+- 较新的 stable Rust 工具链（edition 2024）。
+- 一个支持 WebGPU 的设备，用于运行 GPU 测试与示例。在无 GPU 的 CI runner 上，
+  Mesa 的 `lavapipe` 充当软件 Vulkan 实现。
+- [`cargo-nextest`](https://nexte.st)，用于测试套件。
+- [`typos`](https://github.com/crate-ci/typos) 与
+  [`tombi`](https://github.com/tombi-toml/tombi)，用于复现 CI 的 lint 步骤。
+
+## 常用命令
+
+```text
+cargo xtask check      # 对全工作区跑 clippy，随后 cargo fmt --check
+cargo xtask test       # 用 nextest 跑单元与集成测试，随后跑 doctest
+cargo xtask run-wasm   # 构建 web 示例并在 localhost 上提供服务
+```
+
+`cargo xtask check` 与 `cargo xtask test` 都接受 `--release`。TOML 用
+`tombi lint --error-on-warnings` 检查，拼写用 `typos` 检查。
+
+渲染器的 GPU 测试会把帧与
+[`wgpu_unlit_render_asset_files`](wgpu_unlit_render_asset_files/README.md) 中的图像
+比较；该目录是 git submodule，在每个测试 crate 中以 `tests/snapshots` 软链接接入。
+用 `git submodule update --init` 拉取，并用 `SNAPSHOT_UPDATE=1` 重新生成你确有意
+改动的快照。
+
+## 工作区结构
+
+```text
+crates/wgpu_unlit_render/   渲染器、它的 WESL 着色器与 GPU 测试
+crates/unlit3d/             与 ECS 集成的渲染 API
+crates/unlit_ecs/           archetype ECS
+crates/wgpu_unlit_test_util/ 共享的 GPU 测试骨架
+unlit3d_examples/           窗口化示例及其捕获模式
+xtask/                      cargo xtask 任务执行器（不在工作区内）
+docs/DESIGN.md              设计文档
+```
+
+## 许可证
+
+双许可：MIT 或 Apache-2.0，任选其一，如工作区 manifest 所声明。
