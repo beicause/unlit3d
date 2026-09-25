@@ -1,0 +1,20 @@
+<!-- The example's launcher icon: a lit face of a cube, which is what the
+     example draws. A vector so that the icon needs no raster assets. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#1B1F23"
+        android:pathData="M4,4h100v100h-100z" />
+    <path
+        android:fillColor="#E8E2D8"
+        android:pathData="M54,26L86,45L54,64L22,45z" />
+    <path
+        android:fillColor="#A79E90"
+        android:pathData="M22,45L54,64L54,86L22,67z" />
+    <path
+        android:fillColor="#C6BDAE"
+        android:pathData="M86,45L86,67L54,86L54,64z" />
+</vector>

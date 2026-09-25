@@ -4,6 +4,18 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+# The windowed example is a library as well as a binary: the binary is the
+# command line every desktop and web build runs, and the library is what the
+# Android build packages — the activity loads the shared library and calls into
+# it. `rlib` is what the binary links against, `cdylib` is what Android loads.
+[lib]
+name = "unlit3d_examples"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "unlit3d_examples"
+path = "src/main.rs"
+
 [dependencies]
 glam.workspace = true
 log.workspace = true
@@ -21,9 +33,12 @@ wgpu_unlit_test_util = { path = "../crates/wgpu_unlit_test_util", features = ["s
 # The GPU context is requested asynchronously, so the setup future needs a
 # driver: a blocking executor natively, the browser's task queue on the web.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The logger backend: `env_logger` reads `RUST_LOG` natively.
-env_logger.workspace = true
 pollster.workspace = true
+
+# The logger backend, which differs by platform even though there is only one
+# per target: `env_logger` writes to the terminal a command line runs in.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
+env_logger.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The logger backend and panic hook forward to the browser console.
@@ -36,7 +51,10 @@ wasm-bindgen-futures.workspace = true
 # here rather than passing a feature means a plain Android build works; a
 # feature would have to be turned on by every caller. `GameActivity` supports
 # the wider range of Android versions.
+#
+# There is no terminal behind an activity, so the logger backend is logcat.
 [target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15.1"
 winit = { workspace = true, features = ["android-game-activity"] }
 
 [features]

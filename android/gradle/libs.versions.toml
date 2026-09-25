@@ -1,0 +1,15 @@
+[versions]
+agp = "9.4.1"
+appcompat = "1.8.0"
+core = "1.19.1"
+# The 4.4 line android-activity supports; its native interface is what the
+# crate's glue layer is compiled against.
+gamesActivity = "4.4.2"
+
+[libraries]
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+core = { group = "androidx.core", name = "core", version.ref = "core" }
+games-activity = { group = "androidx.games", name = "games-activity", version.ref = "gamesActivity" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

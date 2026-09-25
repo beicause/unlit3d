@@ -1,0 +1,7 @@
+.gradle
+.kotlin
+local.properties
+build/
+# Written by `cargo xtask build-android`, which is what supplies the APK's
+# native library.
+app/src/main/jniLibs/

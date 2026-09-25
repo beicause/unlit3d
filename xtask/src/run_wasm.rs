@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{RunWasmArgs, http};
+use super::{RunWasmArgs, http, step};
 
 /// The binary crate whose example runs on the web.
 const EXAMPLE_CRATE: &str = "unlit3d_examples";
@@ -92,14 +92,20 @@ pub fn run(args: &RunWasmArgs) -> Result<(), String> {
 }
 
 /// Compile the example for `wasm32-unknown-unknown`.
+///
+/// The example is a library as well as a binary — Android packages the library
+/// and the binary is what a browser runs — so the bin is named explicitly.
+/// Building every target instead would build the cdylib for the web, where it
+/// is not what runs, and the two share the `unlit3d_examples.wasm` filename.
 fn build(args: &RunWasmArgs) -> Result<(), String> {
     let profile: &[&str] = if args.release { &["--release"] } else { &[] };
     let mut cargo = std::process::Command::new("cargo");
     cargo
         .args(["build", "--target", TARGET, "-p", EXAMPLE_CRATE])
+        .args(["--bin", BINARY_NAME])
         .args(profile)
         .args(&args.cargo_args);
-    run_step(&mut cargo, "the wasm build")
+    step::run(&mut cargo, "the wasm build")
 }
 
 /// Turn the wasm into the JS loader a browser imports, and write the page.
@@ -112,7 +118,7 @@ fn bindgen(args: &RunWasmArgs) -> Result<(), String> {
         .arg(out_dir(args))
         .arg("--out-name")
         .arg(BINARY_NAME);
-    run_step(&mut bindgen, "wasm-bindgen")?;
+    step::run(&mut bindgen, "wasm-bindgen")?;
 
     // The loader is imported as `./unlit3d_examples.js`, so the page sits
     // beside it. Written only when absent, so a customized one survives.
@@ -139,16 +145,3 @@ fn wasm_path(args: &RunWasmArgs) -> PathBuf {
         .join(format!("{BINARY_NAME}.wasm"))
 }
 
-/// Run `command`, reporting the step that failed.
-fn run_step(command: &mut std::process::Command, step: &str) -> Result<(), String> {
-    let status = command
-        .status()
-        .map_err(|error| format!("running {step}: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "{step} failed; fix the diagnostics above and run again"
-        ))
-    }
-}

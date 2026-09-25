@@ -6,11 +6,14 @@
 //! * `cargo xtask check` — clippy and fmt, the bar a commit is held to.
 //! * `cargo xtask test` — the test suite, through nextest.
 //! * `cargo xtask run-wasm` — build and serve the web example.
+//! * `cargo xtask build-android` — build the example's Android library and the
+//!   APK that packages it.
 //!
 //! The crate is not a workspace member; it is wired up through the `xtask`
 //! alias in `.cargo/config.toml`, so the task runner's dependencies never
 //! weigh on the workspace the tasks act on.
 
+mod build_android;
 mod check;
 mod http;
 mod run_wasm;
@@ -32,6 +35,7 @@ fn run() -> Result<(), String> {
         Task::Check(task) => check::run(task.release),
         Task::Test(task) => test::run(task.release),
         Task::RunWasm(task) => run_wasm::run(&task),
+        Task::BuildAndroid(task) => build_android::run(&task),
     }
 }
 
@@ -56,6 +60,8 @@ enum Task {
     Test(TestArgs),
     /// Build and serve the web example.
     RunWasm(RunWasmArgs),
+    /// Build the Android example's shared library and the APK around it.
+    BuildAndroid(BuildAndroidArgs),
 }
 
 /// Arguments of `cargo xtask check`.
@@ -101,4 +107,17 @@ struct RunWasmArgs {
     /// extra arguments for the cargo build.
     #[argh(positional, greedy)]
     cargo_args: Vec<String>,
+}
+
+/// Arguments of `cargo xtask build-android`.
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "build-android",
+    description = "build the Android example's shared library and the APK around it"
+)]
+struct BuildAndroidArgs {
+    /// build a release APK instead of a debug one.
+    #[argh(switch)]
+    release: bool,
 }
