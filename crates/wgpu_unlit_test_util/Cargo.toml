@@ -1,8 +1,12 @@
 [package]
 name = "wgpu_unlit_test_util"
-version = "0.1.0"
+version = "0.1.0-dev.1"
 edition.workspace = true
+description = "The headless GPU test harness for the unlit3d workspace: device setup, buffer and texture readback, SSIMULACRA2 snapshot assertions."
+repository.workspace = true
 license.workspace = true
+keywords = ["snapshot", "testing", "webgpu", "wgpu"]
+publish = false
 
 [dependencies]
 glam.workspace = true

@@ -1,8 +1,11 @@
 [package]
 name = "unlit3d"
-version = "0.1.0"
+version = "0.1.0-dev.1"
 edition.workspace = true
+description = "The high-level WebGPU rendering API over wgpu_unlit_render and unlit_ecs: ECS components, frame sources, input, UI and winit presentation."
+repository.workspace = true
 license.workspace = true
+keywords = ["ecs", "gamedev", "rendering", "webgpu", "wgpu"]
 
 [dependencies]
 arrayvec.workspace = true
@@ -14,12 +17,12 @@ hashbrown.workspace = true
 log.workspace = true
 petgraph.workspace = true
 smallvec.workspace = true
-unlit_ecs = { path = "../unlit_ecs", version = "0.1.0" }
+unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.1" }
 web-time = { workspace = true, optional = true }
 wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true
-wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0", default-features = false, features = ["unlit"] }
+wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
 winit = { workspace = true, optional = true }
 zerocopy.workspace = true
 zerocopy-derive.workspace = true

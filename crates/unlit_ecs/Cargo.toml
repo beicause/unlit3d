@@ -1,8 +1,11 @@
 [package]
 name = "unlit_ecs"
-version = "0.1.0"
+version = "0.1.0-dev.1"
 edition.workspace = true
+description = "A compact archetype ECS: immutable archetypes, cell-based components, behaviour components instead of systems."
+repository.workspace = true
 license.workspace = true
+keywords = ["archetype", "ecs", "gamedev"]
 
 [dependencies]
 hashbrown.workspace = true

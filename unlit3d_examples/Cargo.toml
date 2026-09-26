@@ -1,8 +1,12 @@
 [package]
 name = "unlit3d_examples"
-version = "0.1.0"
+version = "0.1.0-dev.1"
 edition.workspace = true
+description = "A windowed unlit3d example with selectable scenes, plus the headless snapshot runner the CI rendering check uses."
+repository.workspace = true
 license.workspace = true
+keywords = ["example", "gamedev", "webgpu", "wgpu"]
+publish = false
 
 # The windowed example is a library as well as a binary: the binary is the
 # command line every desktop and web build runs, and the library is what the
@@ -23,7 +27,7 @@ log.workspace = true
 unlit3d = { path = "../crates/unlit3d" }
 web-time.workspace = true
 wgpu.workspace = true
-wgpu_unlit_render = { path = "../crates/wgpu_unlit_render", version = "0.1.0", default-features = false, features = ["unlit"] }
+wgpu_unlit_render = { path = "../crates/wgpu_unlit_render", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
 winit.workspace = true
 
 # The headless capture path reads frames back and scores them against
