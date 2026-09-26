@@ -29,7 +29,7 @@
 - 支持自定义的着色器、管线和绑定组。
 - 仅3D，不对2D进行特殊优化。
 - 顶点属性是压缩的，位置用Snorm16x4，UV用Snorm16x2，两者配合aabb中心和范围、uv最小值和范围解码。顶点色用Unorm8x4，骨骼索引用Uint16x4，骨骼权重Unorm16x4。
-- 默认管线的顶点缓冲可以有3个：一个用于位置+可选骨骼索引+骨骼权重，一个用于UV+顶点色，一个用于逐实例步进的属性（每实例变换矩阵和基础色，因此材质绑定无需基础色）。
+- 默认管线的顶点缓冲可以有3个：一个用于位置+可选骨骼索引+骨骼权重，一个用于UV+顶点色，一个用于逐实例步进的属性（每实例变换矩阵、基础色，以及姿势基址，因此材质绑定无需基础色）。
 - 不自动实例化，支持手动实例化。
 - 渲染何时结束是确定性的，便于快照测试。
 - `wgpu_unlit_render`分层：核心不依赖任何内置实现；内置的unlit管线由`unlit` feature（默认开启）提供，基于它构建的`egui`后端由`egui` feature提供；关闭`unlit`时WESL包也不再包含unlit着色器模块。
@@ -62,7 +62,7 @@ for pipeline in scene.pipelines {
 
     // By default, there is 1 global binding in index 0.
     for (idx, global_binding) in pipeline.bindings {
-        pass.set_bind_group(idx, global_binding);  // camera, globals (time, delta, frame count), mesh metadata (vertex decoding metadata, morph targets info), and custom.
+        pass.set_bind_group(idx, global_binding);  // camera, globals (time, delta, frame count), mesh metadata (vertex decoding metadata), the frame's pose arrays (joint matrices, morph weights), and custom.
     }
 
     for material in pipeline.materials {
@@ -74,12 +74,12 @@ for pipeline in scene.pipelines {
         for mesh in material.meshes {
             // By default, there is 1 mesh binding in index 2.
             for (idx, mesh_binding) in mesh.bindings {
-                pass.set_bind_group(idx, mesh_binding); // mesh metadata index, joint matrices, morph deltas, morph weights, and custom.
+                pass.set_bind_group(idx, mesh_binding); // mesh metadata index, morph deltas, and custom.
             }
 
-            // By default, there is 3 or 4 vertex buffers: position, uv+color, instance data, and optional joint index+joint weight
+            // By default, there are at most 3 vertex buffers: position (+ optional joint indices + joint weights, which share its stream), uv+color, and per-instance data.
             for (idx, vertex_buffer) in mesh.vertex_buffers {
-                pass.set_vertex_buffer(idx, vertex_buffer); // per-vertex attributes, per-instance model transform, base color, and custom.
+                pass.set_vertex_buffer(idx, vertex_buffer); // per-vertex attributes, per-instance model transform, base color, pose base, and custom.
             }
 
             if let Some(index_buffer) = mesh.index_buffer {
@@ -155,6 +155,24 @@ UI对输入的**捕获**（是否想独占指针/键盘）按egui的语义需要
 池的大小稳定在在飞帧数，不随帧数增长；帧变大时替换过小的buffer而不是并存；尺寸长期回落后可显式回收。逐帧上传对调用方透明：调用方只维护CPU侧数据，如分配或移除mesh，渲染帧时自动把变更同步到GPU，无需记住调用上传API。这不同于前面「资源」一节中依赖图的延迟更新，后者在buffer等资源被替换后仍由用户调用API触发。
 
 一帧的上传与消费它们的render pass记录进同一个encoder，因此一帧一次提交，这保持了渲染结束的确定性；没有内容的帧也提交，以带上该帧的上传。
+
+### 蒙皮和形变目标：CPU驱动的逐实例状态
+
+关节矩阵与形变权重是典型的「CPU每帧改写」的数据，因此它们的设计要回答一个位置问题：**放在哪里**。
+
+放在mesh自己的绑定组里是行不通的。mesh与实例是多对一：同一个mesh可以被多个实体绘制，而每个实体的姿势通常不同（一队敌人各自动画）。绑定组是按mesh绑定的，无法表达逐实例状态。逐实例各建一个绑定组同样不可取——那等于每帧每实例都重建绑定组。
+
+因此姿势被拆成两半，各归其位：
+
+- **数据进全帧共享的SSBO**，绑定在global组。所有可见实例的关节矩阵拼成一个数组，形变权重拼成另一个。
+- **定位信息进实例流**。每个实例的逐实例记录里带一个姿势基址（`Uint32x2`：关节矩阵基址与权重基址），着色器用它找到自己的切片。逐实例步进属性按实例序号寻址，天然配合「每个实例一个draw」，也不阻碍将来合并为实例化draw。
+
+姿势本身在高层是**组件**，放在独立实体上，mesh实体用两个独立的引用组件（skin引用、morph引用）关联过去。这与「资源是标记组件、资源引用是实体引用」一脉相承，并带来两个直接好处：
+
+- **共享即共享一个实体**：多个mesh引用同一个姿势实体就共用一个姿势，改一次全都动；要各自独立就各自引用不同的实体。两者是同一套机制，不需要额外的句柄类型。
+- **改姿势是一次组件写入**：无需任何GPU调用，渲染器在下一帧自动打包上传。与「逐帧上传对调用方透明」一致——调用方只维护CPU侧数据，不记得有上传这回事。
+
+**代价是引用必须给出**：mesh的顶点流带骨骼索引、或带morph targets时，它的实体必须挂上对应的引用组件，否则渲染时panic而不是静默地按零号姿势绘制——静默降级会把「忘记关联」变成难以察觉的画面错误。另一条约束是权重的数量必须与该mesh的target数量一致，因为着色器的循环上界是mesh自己的target数，越界读storage是运行期错误而非可捕获的panic。
 
 ### 高层API
 
