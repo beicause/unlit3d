@@ -17,7 +17,7 @@
 //! a grow and only the buffer handle changes.
 //!
 //! Every range starts at a multiple of [`COPY_BUFFER_ALIGNMENT`](wgpu::COPY_BUFFER_ALIGNMENT), which is
-//! what a GPU buffer sub-allocation needs. The pool grows by doubling when a
+//! what a GPU buffer sub-allocation needs. The pool grows by 1.5x when a
 //! range does not fit, copying the old contents into the new buffer.
 //!
 //! # Sizing
@@ -199,7 +199,7 @@ impl BufferPool {
     /// returned range's offset is a multiple of [`COPY_BUFFER_ALIGNMENT`](wgpu::COPY_BUFFER_ALIGNMENT), and
     /// its allocation covers `size` rounded up to it.
     ///
-    /// Growing allocates a new buffer of twice the pool's size, copies the old
+    /// Growing allocates a new buffer 1.5x the pool's size, copies the old
     /// contents into it, and appends the difference to the allocator. Existing
     /// ranges keep their offsets, but the buffer they name changes, so a
     /// caller holding one must re-read [`BufferPool::buffer`].
@@ -241,11 +241,11 @@ impl BufferPool {
         }
     }
 
-    /// Doubles the pool until `size` fits, copying the contents across.
+    /// Grows the pool by 1.5x until `size` fits, copying the contents across.
     ///
     /// Returns `None` if the pool cannot grow, leaving it unchanged.
     fn grow(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, size: u32) -> Option<()> {
-        // Grow by the larger of a doubling and what the range that did not fit
+        // Grow by 1.5x and at least as much as the range that did not fit
         // needs, so one grow is always enough for it.
         //
         // The size to grow by is the allocator's minimum for `size`, not
@@ -256,7 +256,7 @@ impl BufferPool {
         // is representable by a bin, which is what makes the range findable.
         let current = self.allocator.size();
         let needed = min_allocator_size(size, ALIGNMENT);
-        let additional = current.max(needed);
+        let additional = needed.max(current / 2);
         let target = current.checked_add(additional)?;
 
         // Reserve the node for the appended range before allocating anything:

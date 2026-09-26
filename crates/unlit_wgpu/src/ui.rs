@@ -717,7 +717,9 @@ impl EguiIntegration {
         // Grow geometrically so a UI that grows over a few frames does not
         // reallocate every frame.
         if self.vertices.is_none() || self.vertex_capacity < vertices {
-            self.vertex_capacity = vertices.max(self.vertex_capacity * 2).max(1);
+            self.vertex_capacity = vertices
+                .max(self.vertex_capacity + self.vertex_capacity / 2)
+                .max(1);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ui::vertices"),
                 size: (self.vertex_capacity * (POSITION_STRIDE + UV_COLOR_STRIDE)) as u64,
@@ -740,7 +742,9 @@ impl EguiIntegration {
             self.vertices = Some(buffer);
         }
         if self.indices.is_none() || self.index_capacity < indices {
-            self.index_capacity = indices.max(self.index_capacity * 2).max(1);
+            self.index_capacity = indices
+                .max(self.index_capacity + self.index_capacity / 2)
+                .max(1);
             let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("ui::indices"),
                 size: (self.index_capacity * size_of::<u32>()) as u64,

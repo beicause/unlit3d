@@ -259,7 +259,6 @@ impl VertexStreamPool {
                 // no attributes gets no buffer and no part in the allocation.
                 continue;
             }
-            let wanted = growth_step(end);
             let stream = self
                 .streams
                 .entry(layout.clone())
@@ -267,9 +266,12 @@ impl VertexStreamPool {
                     buffer: create_buffer(device, self.label, self.usage, 0),
                     water_mark: 0,
                 });
-            if stream.water_mark >= wanted {
+            // A stream that already covers the allocation's end needs nothing;
+            // only then is a grown capacity chosen.
+            if stream.water_mark >= end {
                 continue;
             }
+            let wanted = growth_step(stream.water_mark, end);
             stream.buffer = copy_into_larger(
                 device,
                 queue,
@@ -287,8 +289,8 @@ impl VertexStreamPool {
     ///
     /// Returns `None` if it cannot grow, leaving the pool unchanged.
     fn grow(&mut self, count: u32) -> Option<()> {
-        // Grow by the larger of a doubling and what the allocation that did
-        // not fit needs, so one grow is always enough for it.
+        // Grow by 1.5x and at least as much as the allocation that did not
+        // fit needs, so one grow is always enough for it.
         //
         // The size to grow by is the allocator's minimum for `count`, not
         // `count` itself: a free range is filed under its rounded-down size
@@ -299,7 +301,7 @@ impl VertexStreamPool {
         // range findable.
         let current = self.allocator.size();
         let needed = min_allocator_size(count, ELEMENT_ALIGNMENT);
-        let additional = current.max(needed);
+        let additional = needed.max(current / 2);
         if !self.allocator.extend(additional) {
             return None;
         }
@@ -332,9 +334,12 @@ fn copy_into_larger(
     larger
 }
 
-/// Rounds an element count up to the pool's growth step.
-fn growth_step(count: u32) -> u32 {
-    count.max(MIN_ELEMENTS).next_power_of_two()
+/// The element count to grow `current` to so it covers `count`.
+///
+/// Growth is geometric (1.5x) so repeated growth does not reallocate every
+/// frame, and never rounds below the minimum the pool needs.
+fn growth_step(current: u32, count: u32) -> u32 {
+    count.max(current + current / 2).max(MIN_ELEMENTS)
 }
 
 /// Creates a buffer of `size` bytes with the usages the pool needs.

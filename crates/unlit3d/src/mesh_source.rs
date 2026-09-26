@@ -102,6 +102,15 @@ fn index_format_size(format: wgpu::IndexFormat) -> u32 {
     }
 }
 
+/// The capacity that covers `needed` after growing from `current`.
+///
+/// Growing by 1.5x amortizes repeated growth, and the `max` keeps the buffer
+/// from shrinking back when the array temporarily shrinks; the floor of one
+/// keeps every buffer non-empty.
+fn grown_capacity(current: u32, needed: u32) -> u32 {
+    needed.max(current + current / 2).max(1)
+}
+
 /// Build the unlit shader's global bind group from the source's buffers.
 ///
 /// A free function rather than a method so the rebuild closure the pipeline is
@@ -1617,7 +1626,7 @@ impl MeshSource {
     fn upload_joints(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
         let needed = self.packed_joints.len().max(1) as u32;
         if needed > self.joints_capacity {
-            let capacity = needed.max(self.joints_capacity * 2);
+            let capacity = grown_capacity(self.joints_capacity, needed);
             let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::pose::joints"),
                 size: capacity as u64
@@ -1650,7 +1659,7 @@ impl MeshSource {
     fn upload_morph_weights(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
         let needed = self.packed_morph_weights.len().max(1) as u32;
         if needed > self.morph_weights_capacity {
-            let capacity = needed.max(self.morph_weights_capacity * 2);
+            let capacity = grown_capacity(self.morph_weights_capacity, needed);
             let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::pose::morph_weights"),
                 size: capacity as u64 * size_of::<f32>() as u64,
@@ -1806,9 +1815,8 @@ impl MeshSource {
 
         let needed = self.metadata.len().max(1) as u32;
         if needed > self.metadata_capacity {
-            // Grow geometrically so repeated allocations amortize, and
-            // recreate rather than resize: a buffer has a fixed size.
-            let capacity = needed.max(self.metadata_capacity * 2);
+            // Recreate rather than resize: a buffer has a fixed size.
+            let capacity = grown_capacity(self.metadata_capacity, needed);
             let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::mesh_metadata"),
                 size: capacity as u64 * size_of::<MeshMetadata>() as u64,
@@ -1897,7 +1905,7 @@ impl MeshSource {
         if count <= self.instance_capacity {
             return;
         }
-        let new_cap = count.max(self.instance_capacity * 2).max(1);
+        let new_cap = grown_capacity(self.instance_capacity, count);
         let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
             label: Some("unlit3d::instance"),
             size: (new_cap as u64) * size_of::<MeshInstance>() as u64,
@@ -3234,8 +3242,7 @@ mod tests {
     fn the_metadata_buffer_grows_only_when_the_array_outgrows_it() {
         let mut h = harness();
         let ctx = h.source.context();
-        // The source starts with room for one entry and grows by doubling,
-        // so only the entries past the capacity it holds recreate the buffer.
+        // The source starts with room for one entry and grows by 1.5x.
         assert_eq!(h.source.metadata_capacity, 1);
 
         h.tri_mesh();
@@ -3251,20 +3258,42 @@ mod tests {
             "a second entry outgrows room for one"
         );
 
-        // A third entry does not fit in two, so the buffer doubles again.
+        // A third and fourth entry outgrow the 1.5x capacity in turn.
+        h.tri_mesh();
+        let encoder = h.encoder();
+        h.source.upload_metadata(&h.world, &mut { encoder });
+        assert_eq!(h.source.metadata_capacity, 3);
+
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
         assert_eq!(h.source.metadata_capacity, 4);
 
-        // A fourth entry does fit in four, so the buffer is left alone.
+        // A fifth entry outgrows four, so the buffer grows again.
         let before = MeshSource::graph(&h.world, ctx)
             .get_buffer(h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
-        assert_eq!(h.source.metadata_capacity, 4, "four entries fit");
+        assert_eq!(
+            h.source.metadata_capacity, 6,
+            "growing past four reaches six (4 * 1.5)"
+        );
+        assert_ne!(
+            MeshSource::graph(&h.world, ctx).get_buffer(h.source.metadata_buf),
+            before.as_ref(),
+            "growth replaced the buffer"
+        );
+
+        // A sixth entry fits in six, so the buffer is left alone.
+        let before = MeshSource::graph(&h.world, ctx)
+            .get_buffer(h.source.metadata_buf)
+            .cloned();
+        h.tri_mesh();
+        let encoder = h.encoder();
+        h.source.upload_metadata(&h.world, &mut { encoder });
+        assert_eq!(h.source.metadata_capacity, 6, "six entries fit");
         assert_eq!(
             MeshSource::graph(&h.world, ctx).get_buffer(h.source.metadata_buf),
             before.as_ref(),
@@ -3569,5 +3598,17 @@ mod tests {
                 .is_none(),
             "the index pool is gone"
         );
+    }
+
+    #[test]
+    fn grown_capacity_never_shrinks_and_covers_the_need() {
+        // Beyond the 1.5x growth, the need itself wins.
+        assert_eq!(grown_capacity(16, 30), 30);
+        assert_eq!(grown_capacity(16, 40), 40);
+        // Otherwise the capacity grows by 1.5x, which is at least `needed`.
+        assert_eq!(grown_capacity(16, 17), 24);
+        assert_eq!(grown_capacity(16, 24), 24);
+        // An empty allocator still ends up with one unit.
+        assert_eq!(grown_capacity(0, 0), 1);
     }
 }
