@@ -1164,18 +1164,18 @@ impl MeshSource {
         let (index_buffer, count, indexed, index_allocation, first_index) = match indices {
             Some(indices) if !indices.is_empty() => {
                 let index_count = indices.len() as u32;
-                let format = if compress_indices(indices).is_ok() {
-                    wgpu::IndexFormat::Uint16
-                } else {
-                    wgpu::IndexFormat::Uint32
-                };
-                let data: Vec<u8> = match format {
-                    wgpu::IndexFormat::Uint16 => compress_indices(indices)
-                        .expect("checked above")
-                        .collect::<Vec<u16>>()
-                        .as_bytes()
-                        .to_vec(),
-                    _ => indices.as_bytes().to_vec(),
+                // Build the index bytes in one pass over the input: `Uint16`
+                // when every index fits, otherwise `Uint32` — the same choice
+                // the compressor makes.
+                let (format, data): (wgpu::IndexFormat, Vec<u8>) = match compress_indices(indices) {
+                    Ok(compressed) => {
+                        let mut data = Vec::with_capacity(index_count as usize * size_of::<u16>());
+                        for index in compressed {
+                            data.extend_from_slice(&index.to_ne_bytes());
+                        }
+                        (wgpu::IndexFormat::Uint16, data)
+                    }
+                    Err(_) => (wgpu::IndexFormat::Uint32, indices.as_bytes().to_vec()),
                 };
                 let padded_len = data
                     .len()
