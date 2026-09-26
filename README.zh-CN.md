@@ -2,6 +2,11 @@
 
 # unlit3d
 
+[![Build](https://github.com/beicause/unlit3d/actions/workflows/ci.yml/badge.svg)](https://github.com/beicause/unlit3d/actions)
+[![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](https://github.com/beicause/unlit3d)
+[![Cargo](https://img.shields.io/crates/v/unlit3d.svg)](https://crates.io/crates/unlit3d)
+[![Documentation](https://docs.rs/unlit3d/badge.svg)](https://docs.rs/unlit3d)
+
 面向 WebGPU 的紧凑、可拓展的、有主见的 3D 渲染器，以及构建在其上的
 ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支持 WebGL 与 GLES。
 它直接使用并暴露 `wgpu` 资源，允许底层控制和拓展，带有很少的CPU端的高级封装。
@@ -16,8 +21,9 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   Web 示例与 Android APK。
 - **由调用者组合的场景。** 一帧由若干帧源拼成，各自贡献绘制并声明自己在帧中的位置。
   内置网格渲染、egui 叠加层与调用者自己的绘制趟次权限完全相同。
-- **精简的 ECS。** 可渲染实体把网格、材质与管线作为组件携带；借鉴 OPP 重视对象状态，
-  行为是持有闭包的组件而非 system，游戏逻辑与绘制共用同一套模型。
+- **精简的 ECS。** 借鉴 OPP 重视对象状态，实体原型不可变，系统由外部驱动而非内置，
+  行为是持有闭包的组件而非 system，参见[unlit_ecs](./crates/unlit_ecs/README.zh-CN.md)。
+  可渲染实体把网格、材质与管线作为组件携带，游戏逻辑与绘制共用同一套模型。
 - **按变体组合的 unlit 管线。** 着色器变体只含网格实际使用的通道——位置、UV、顶点色、
   逐实例变换与颜色、基础色纹理、蒙皮、形变目标——并针对本帧的渲染目标特化。
 - **常驻且池化的 GPU 资源。** 直接使用 `wgpu` 资源；跨帧保留，按需重建，并共享复用

@@ -2,6 +2,11 @@ English | [简体中文](README.zh-CN.md)
 
 # unlit3d
 
+[![Build](https://github.com/beicause/unlit3d/actions/workflows/ci.yml/badge.svg)](https://github.com/beicause/unlit3d/actions)
+[![License](https://img.shields.io/badge/license-Apache--2.0_OR_MIT-blue.svg)](https://github.com/beicause/unlit3d)
+[![Cargo](https://img.shields.io/crates/v/unlit3d.svg)](https://crates.io/crates/unlit3d)
+[![Documentation](https://docs.rs/unlit3d/badge.svg)](https://docs.rs/unlit3d)
+
 A compact, extensible, opinionated 3D renderer for WebGPU, plus the ECS layer
 built on top of it. It ships a built-in **unlit** pipeline, is mobile-first, and
 does not support WebGL or GLES. It uses and exposes `wgpu` resources directly,
@@ -22,10 +27,12 @@ progress.
   contribute their own draws and state where in the frame they belong. The
   built-in mesh rendering, the egui overlay and a caller's own pass have exactly
   the same standing.
-- **A small ECS.** A renderable entity carries its mesh, material and pipeline
-  as components; borrowing OOP's focus on object state, a behaviour is a
-  component holding a closure rather than a system, so game logic and drawing
-  share one model.
+- **A small ECS.** Borrowing OOP's focus on object state, an entity's archetype
+  is immutable, systems are driven externally rather than built in, and a
+  behaviour is a component holding a closure rather than a system — see
+  [unlit_ecs](./crates/unlit_ecs/README.md). A renderable entity carries its
+  mesh, material and pipeline as components, so game logic and drawing share
+  one model.
 - **A variant-driven unlit pipeline.** A shader variant contains exactly the
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
