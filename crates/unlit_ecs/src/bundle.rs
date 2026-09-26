@@ -98,6 +98,9 @@ macro_rules! impl_bundle {
     };
 }
 
+// The type-parameter names run A..Q but skip O: a bare `O` reads like a zero
+// in type lists and invites miscounting. The impls cover tuples up to sixteen
+// components.
 impl_bundle!(A);
 impl_bundle!(A, B);
 impl_bundle!(A, B, C);
