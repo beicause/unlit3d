@@ -1,26 +1,32 @@
-//! An unlit cube with an egui overlay, rendered through
-//! [`unlit3d::winit::WindowSurface`] — or, headlessly, into an offscreen target
-//! that is read back.
+//! A windowed example with selectable scenes and an egui overlay, rendered
+//! through [`unlit3d::winit::WindowSurface`] — or, headlessly, into an
+//! offscreen target that is read back and compared against stored snapshots.
 //!
-//! Run with `cargo run -p unlit3d_examples`; `Esc` closes the window. Click the
-//! panel's button, or drag with the left button, to see the UI take input while
-//! the cube keeps spinning.
+//! Run with `cargo run -p unlit3d_examples`; `Esc` closes the window. The
+//! windowed loop shows the scene the command line selected — by default the
+//! example's own spinning cube — and a panel lists every scene, so one can be
+//! switched to at runtime. Click the panel's button, or drag with the left
+//! button, to see the UI take input while the cube keeps spinning.
 //!
-//! The example is also its own capture tool: `--headless` renders offscreen,
-//! reads the frame back and can compare it against a snapshot, so a CI run can
-//! check the example's output without a display. That path reads and scores
-//! frames with the test harness, so it needs the `snapshot` feature:
+//! Every scene is a [`scenes::SceneDef`] that builds an ECS world and reports
+//! the snapshot each frame verifies against. The scenes are ported from the
+//! GPU snapshot tests that used to live in `crates/unlit3d/tests`, and the
+//! example's headless path is the check that replaced them: `--headless
+//! --scene <ID>` renders the scene offscreen, reads each frame back and
+//! compares it against the stored snapshot, so CI runs the same command the
+//! tests used to. That path reads and scores frames with the test harness, so
+//! it needs the `snapshot` feature:
 //!
 //! ```text
-//! cargo run -p unlit3d_examples --features snapshot -- --headless --snapshot frame.webp
+//! cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skinned
 //! ```
 //!
 //! The windowed path is the whole frame loop a windowed app needs. The renderer
-//! is spawned once as a resource entity, a cube mesh and its material are
-//! allocated through it, and every `RedrawRequested` acquires the swap chain's
-//! next image, renders the ECS world into it and presents it. A resize is
-//! handed to the surface, which reconfigures the swap chain and rebuilds the
-//! depth and multisample attachments the renderer draws with.
+//! is spawned once as a resource entity, a scene's meshes and materials are
+//! allocated through its mesh source, and every `RedrawRequested` acquires the
+//! swap chain's next image, renders the ECS world into it and presents it. A
+//! resize is handed to the surface, which reconfigures the swap chain and
+//! rebuilds the depth and multisample attachments the renderer draws with.
 //!
 //! The GPU context is requested asynchronously, because the adapter and device
 //! requests are: on the web they resolve on the browser's task queue, so the
@@ -40,6 +46,8 @@
 //! it the activity. The crate is therefore a library as well as the binary,
 //! and both entries end in the same windowed loop.
 
+pub mod scenes;
+
 mod cli;
 
 #[cfg(target_os = "android")]
@@ -50,6 +58,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use cli::{Args, Parsed};
+use scenes::SceneControl;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
@@ -58,7 +67,6 @@ use unlit3d::winit::WindowSurface;
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
 use web_time::Instant;
-use wgpu_unlit_render::pipeline::UnlitOptions;
 use wgpu_unlit_render::resources::ResourceGraph;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -66,14 +74,14 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
-/// The number of samples every frame is rendered with.
-const SAMPLE_COUNT: u32 = 4;
-/// How fast the cube spins, in radians per second.
-const SPIN: f32 = 0.8;
+/// The number of samples the windowed loop presents every frame with.
+const SAMPLE_COUNT: u32 = scenes::cube::SAMPLE_COUNT;
+
 /// The timestep the headless path advances the scene by, in seconds, so a
 /// captured frame does not depend on how long the frame took to draw.
 #[cfg(feature = "snapshot")]
 const FIXED_STEP: f32 = 1.0 / 60.0;
+
 /// The format the headless path renders into.
 ///
 /// sRGB, like the view a window surface presents through: it is what lets the
@@ -159,6 +167,11 @@ pub fn run() -> ExitCode {
         }
     };
 
+    if args.list_scenes {
+        stdout(&scenes::list_text());
+        return ExitCode::SUCCESS;
+    }
+
     if args.headless {
         return headless(args);
     }
@@ -170,97 +183,31 @@ pub fn run() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Render offscreen, read the frame back and report on it.
+/// Render offscreen, read the frames back and report on them.
 ///
 /// No window and no event loop: the frames are drawn as fast as the device
 /// takes them, on a fixed timestep so the same command produces the same
-/// picture.
+/// picture. Every scene's frames are compared against its own snapshots,
+/// unless a raw `--snapshot <PATH>` capture was asked for instead.
 #[cfg(feature = "snapshot")]
 fn headless(args: Args) -> ExitCode {
-    use wgpu_unlit_test_util::{read_texture_bytes, score_frame_webp, store_frame_webp};
+    use wgpu_unlit_test_util::Ctx;
 
-    let context = wgpu_unlit_test_util::Ctx::headless();
-    let mut scene = Scene::new(
-        context.device.clone(),
-        context.queue.clone(),
-        args.size,
-        SceneOptions {
-            ui: !args.no_ui,
-            reproducible: true,
-        },
-    );
+    let ctx = Ctx::headless();
 
-    let (world, renderer) = (&scene.world, scene.renderer);
-    let target = world
-        .with_mut::<Renderer, _>(renderer, |renderer| {
-            bind_offscreen_target(world, renderer, &context.device, args.size, SAMPLE_COUNT)
-        })
-        .expect("the renderer is a resource entity");
+    // `--scene all` runs every scene, which is what CI does; anything else
+    // runs the one the command line named.
+    let scenes: Vec<&scenes::SceneDef> = if args.scene == "all" {
+        scenes::SCENES.to_vec()
+    } else {
+        vec![scenes::by_id(&args.scene).expect("validated by the CLI")]
+    };
 
-    for _ in 0..args.frames {
-        scene.advance(FIXED_STEP);
-        scene.render();
-        scene.end_frame();
-    }
-
-    let (width, height) = args.size;
-    let bytes_per_pixel = HEADLESS_FORMAT
-        .block_copy_size(None)
-        .expect("an RGBA8 format has a block copy size");
-    let frame = read_texture_bytes(&context, &target, width, height, bytes_per_pixel);
-    log::info!(
-        "captured a {width}x{height} frame over {} frames",
-        args.frames
-    );
-
+    // Every scene runs even when one fails, so a CI run reports every
+    // mismatch in a single pass.
     let mut failed = false;
-    if let Some(path) = &args.output {
-        match store_frame_webp(path, &frame, width, height) {
-            Ok(()) => log::info!("wrote {}", path.display()),
-            Err(error) => {
-                stderr(&format!("error: writing {}: {error}\n", path.display()));
-                failed = true;
-            }
-        }
-    }
-
-    if let Some(path) = &args.snapshot {
-        let label = path.display();
-        if args.update {
-            match store_frame_webp(path, &frame, width, height) {
-                Ok(()) => log::info!("updated the snapshot at {label}"),
-                Err(error) => {
-                    stderr(&format!("error: writing {label}: {error}\n"));
-                    failed = true;
-                }
-            }
-        } else if !path.exists() {
-            // Storing a missing snapshot would pass CI by writing the very
-            // thing it is meant to check, so the caller has to ask.
-            stderr(&format!(
-                "error: no snapshot at {label} to compare against; \
-                 store one with `--update` and review it\n"
-            ));
-            failed = true;
-        } else {
-            match score_frame_webp(path, &frame, width, height) {
-                Ok(score) if score >= args.min_score => {
-                    log::info!("snapshot {label}: SSIMULACRA2 score {score:.2}");
-                }
-                Ok(score) => {
-                    stderr(&format!(
-                        "error: the frame does not match {label}: \
-                         SSIMULACRA2 score {score:.2} < {:.2}\n",
-                        args.min_score
-                    ));
-                    failed = true;
-                }
-                Err(error) => {
-                    stderr(&format!("error: comparing against {label}: {error}\n"));
-                    failed = true;
-                }
-            }
-        }
+    for def in scenes {
+        failed |= run_headless_scene(&ctx, def, &args);
     }
 
     if failed {
@@ -280,12 +227,172 @@ fn headless(_args: Args) -> ExitCode {
     ExitCode::from(2)
 }
 
+/// Render one scene offscreen and compare its frames against its snapshots.
+///
+/// Returns whether anything failed: a snapshot that does not match, one that
+/// is missing, or a frame that could not be written.
+#[cfg(feature = "snapshot")]
+fn run_headless_scene(
+    ctx: &wgpu_unlit_test_util::Ctx,
+    def: &'static scenes::SceneDef,
+    args: &Args,
+) -> bool {
+    use wgpu_unlit_test_util::{read_texture_bytes, store_frame_webp};
+
+    let size = args.size.unwrap_or(def.size);
+    let frames = args.frames.unwrap_or(def.frames);
+    // A scene's own snapshots only describe a run that reproduces the scene's
+    // stored settings. Overriding the size, the frame count or the UI makes a
+    // custom capture instead, which compares against `--snapshot <PATH>`.
+    let reproduces_scene = args.size.is_none() && args.frames.is_none() && !args.no_ui;
+    if args.update && args.snapshot.is_none() && !reproduces_scene {
+        stderr(
+            "error: `--update` without `--snapshot <PATH>` needs the scene's own \
+             size, frame count and UI; pass `--snapshot <PATH>` to store a custom \
+             capture instead\n",
+        );
+        return true;
+    }
+    let mut scene = Scene::new(
+        ctx.device.clone(),
+        ctx.queue.clone(),
+        size,
+        scenes::SceneOptions {
+            ui: def.ui && !args.no_ui,
+            selector: false,
+            reproducible: true,
+        },
+        def,
+    );
+
+    let (world, renderer) = (&scene.world, scene.renderer);
+    let target = world
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            bind_offscreen_target(world, renderer, &ctx.device, size, def.samples, def.depth)
+        })
+        .expect("the renderer is a resource entity");
+
+    let (width, height) = size;
+    let bytes_per_pixel = HEADLESS_FORMAT
+        .block_copy_size(None)
+        .expect("an RGBA8 format has a block copy size");
+
+    let mut failed = false;
+    for frame in 0..frames {
+        scene.advance(FIXED_STEP);
+        scene.render();
+        scene.end_frame();
+
+        // A scene's own snapshots are compared frame by frame; a raw
+        // `--snapshot <PATH>` capture is compared once, after the loop.
+        if args.snapshot.is_none()
+            && reproduces_scene
+            && let Some(name) = (scene.control.snapshot)(frame)
+        {
+            let bytes = read_texture_bytes(ctx, &target, width, height, bytes_per_pixel);
+            let path = args.snapshot_dir.join(&name);
+            failed |= compare_frame(&path, &bytes, width, height, args.update, args.min_score);
+        }
+    }
+    log::info!(
+        "scene `{}`: captured a {width}x{height} frame over {} frames",
+        def.id,
+        frames
+    );
+
+    // The last frame is read back once more for `--output` and a raw
+    // `--snapshot <PATH>` comparison, so it is the last frame drawn whatever
+    // the frame count was.
+    let last_frame = read_texture_bytes(ctx, &target, width, height, bytes_per_pixel);
+
+    if let Some(path) = &args.output {
+        match store_frame_webp(path, &last_frame, width, height) {
+            Ok(()) => log::info!("wrote {}", path.display()),
+            Err(error) => {
+                stderr(&format!("error: writing {}: {error}\n", path.display()));
+                failed = true;
+            }
+        }
+    }
+
+    if let Some(path) = &args.snapshot {
+        failed |= compare_frame(
+            path,
+            &last_frame,
+            width,
+            height,
+            args.update,
+            args.min_score,
+        );
+    }
+
+    failed
+}
+
+/// Store or score `rgba` against the snapshot at `path`.
+///
+/// `update` stores the frame; otherwise a missing snapshot is an error rather
+/// than a cue to write one, and a present one is scored on SSIMULACRA2.
+#[cfg(feature = "snapshot")]
+fn compare_frame(
+    path: &std::path::Path,
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    update: bool,
+    min_score: f64,
+) -> bool {
+    use wgpu_unlit_test_util::{score_frame_webp, store_frame_webp};
+
+    let label = path.display();
+    if update {
+        match store_frame_webp(path, rgba, width, height) {
+            Ok(()) => {
+                log::info!("updated the snapshot at {label}");
+                false
+            }
+            Err(error) => {
+                stderr(&format!("error: writing {label}: {error}\n"));
+                true
+            }
+        }
+    } else if !path.exists() {
+        // Storing a missing snapshot would pass CI by writing the very
+        // thing it is meant to check, so the caller has to ask.
+        stderr(&format!(
+            "error: no snapshot at {label} to compare against; \
+             store one with `--update` and review it\n"
+        ));
+        true
+    } else {
+        match score_frame_webp(path, rgba, width, height) {
+            Ok(score) if score >= min_score => {
+                log::info!("snapshot {label}: SSIMULACRA2 score {score:.2}");
+                false
+            }
+            Ok(score) => {
+                stderr(&format!(
+                    "error: the frame does not match {label}: \
+                     SSIMULACRA2 score {score:.2} < {min_score:.2}\n"
+                ));
+                true
+            }
+            Err(error) => {
+                stderr(&format!("error: comparing against {label}: {error}\n"));
+                true
+            }
+        }
+    }
+}
+
 /// Bind an offscreen `size`-pixel target as the renderer's render target, and
 /// return the color texture the frames land in.
 ///
 /// The attachments go into the frame's resource graph exactly as a window
 /// surface's do, so the renderer specializes its pipelines on them the same
-/// way — and the color texture is the one a readback copies out of.
+/// way — and the color texture is the one a readback copies out of. A scene
+/// declares its own sample count and whether it draws into a depth attachment,
+/// matching how its snapshots were captured.
 #[cfg(feature = "snapshot")]
 fn bind_offscreen_target(
     world: &LocalWorld,
@@ -293,7 +400,9 @@ fn bind_offscreen_target(
     device: &wgpu::Device,
     size: (u32, u32),
     samples: u32,
+    with_depth: bool,
 ) -> wgpu::Texture {
+    use wgpu_unlit_render::render_attachments::create_render_target;
     use wgpu_unlit_render::resources::Resource as GraphResource;
 
     let target = create_render_target(device, HEADLESS_FORMAT, size.0, size.1, samples);
@@ -310,14 +419,15 @@ fn bind_offscreen_target(
                 .expect("a texture view has no dependencies")
         };
         let color = insert(&mut graph, GraphResource::from(default_view(&target.color)));
-        let depth = insert(&mut graph, GraphResource::from(default_view(&target.depth)));
+        let depth = with_depth
+            .then(|| insert(&mut graph, GraphResource::from(default_view(&target.depth))));
         let msaa = target
             .msaa
             .as_ref()
             .map(|msaa| insert(&mut graph, GraphResource::from(default_view(msaa))));
         (color, depth, msaa)
     };
-    renderer.set_render_target(world, Some(color_view), Some(depth_view), msaa_view);
+    renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);
 
     target.color
 }
@@ -330,6 +440,7 @@ fn bind_offscreen_target(
 fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     // Poll rather than wait: the scene animates every frame.
     event_loop.set_control_flow(ControlFlow::Poll);
+    let scene = scenes::by_id(&args.scene).expect("validated by the CLI");
     let app = App {
         proxy: event_loop.create_proxy(),
         window: None,
@@ -340,7 +451,8 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         // Overwritten by the first frame, so its delta — the gap between
         // startup and that frame — is not mistaken for a frame's own.
         last_frame: Instant::now(),
-        size: args.size,
+        initial_size: args.size.unwrap_or(scene.size),
+        initial_scene: scene,
     };
 
     // Native runs the loop on this thread. The web hands the app to the
@@ -371,9 +483,13 @@ enum UserEvent {
 ///
 /// The state is split by how long it lives, because a suspension does not reset
 /// all of it. The window handle and the GPU context outlive a suspension; the
-/// ECS world outlives it too, and holds everything the example has — the spin
-/// angle, the camera orbit, the panel's values. Only the swap chain, which a
+/// ECS world outlives it too, and holds everything the current scene has — the
+/// spin angle, the camera orbit, the panel values. Only the swap chain, which a
 /// suspension does invalidate, is dropped and built again.
+///
+/// Switching scenes is a rebuild of that world: the old scene's world and the
+/// surface presenting it go together, and the new scene is built with the same
+/// GPU context and window.
 struct App {
     /// Sends the async GPU setup's result back to the loop.
     proxy: EventLoopProxy<UserEvent>,
@@ -397,8 +513,10 @@ struct App {
     foreground: bool,
     /// The time the previous frame was drawn at, for the frame delta.
     last_frame: Instant,
-    /// The window's initial size, from the command line.
-    size: (u32, u32),
+    /// The window's initial size, from the command line or the scene's own.
+    initial_size: (u32, u32),
+    /// The scene the example starts with; a switch replaces it.
+    initial_scene: &'static scenes::SceneDef,
 }
 
 /// The GPU context a scene draws with, requested asynchronously.
@@ -486,9 +604,10 @@ impl GpuState {
 /// The scene's world and the frame loop that drives it.
 ///
 /// Deliberately knows nothing about how a frame reaches a display: it advances
-/// the behaviour components and renders into whatever target is bound, so the
+/// the scene's behaviour and renders into whatever target is bound, so the
 /// windowed and headless paths differ only in what they bind and what they do
-/// with the result.
+/// with the result. The scene itself is a [`scenes::SceneDef`] whose build
+/// populated the world and returned the [`SceneControl`] this drives.
 struct Scene {
     world: LocalWorld,
     /// The renderer resource entity: the handle every renderer access goes
@@ -499,59 +618,19 @@ struct Scene {
     input: WinitInput,
     /// The render target size, in pixels.
     size: (u32, u32),
+    /// The scene's per-frame behaviour and snapshot table.
+    control: SceneControl,
+    /// The frames the scene has drawn.
+    frame: u32,
+    /// The scene-selector's switch component, read once per frame.
+    switch: Entity,
+    /// A scene switch requested by the selector, consumed by the frame loop.
+    pending: Option<&'static scenes::SceneDef>,
 }
 
-/// What a scene is built with.
-#[derive(Clone, Copy)]
-struct SceneOptions {
-    /// Mount the egui overlay and its panels.
-    ui: bool,
-    /// Suppress everything egui animates against the clock, so a captured
-    /// frame does not depend on when it was drawn.
-    reproducible: bool,
-}
-
-/// Set by the panel's button, read once by the frame loop.
-struct SpinReset(bool);
-
-/// A behaviour component: the cube turns by `radians_per_second`.
-///
-/// `spinning` is a sibling the panel's checkbox writes, so the panel and the
-/// spin never borrow the same component.
-struct Spin {
-    radians_per_second: f32,
-    /// Whether the cube is currently turning.
-    spinning: bool,
-    /// The angle turned so far, advanced once per frame.
-    angle: f32,
-}
-
-/// How far the camera has been dragged around the cube, in radians.
-///
-/// Set by the panel's slider and by dragging with the left button; read by the
-/// frame loop when it rebuilds the camera. It is state, so it lives in a
-/// component rather than in a behaviour's closure.
-struct CameraOrbit {
-    /// The azimuth the camera looks from.
-    azimuth: f32,
-    /// How far above the horizon it sits.
-    elevation: f32,
-}
-
-/// The pointer the drag is following, and where it was at the previous move.
-///
-/// A behaviour cannot keep this in its own closure across runs and still be
-/// re-entrant, and egui may also run a panel more than once per frame, so the
-/// state lives in a component like every other. Latching onto one contact is
-/// what keeps a second finger — or a lifted one — from steering the camera.
-struct DragFrom(Option<PointerContact>);
-
-/// Counts the frames drawn, for the panel's readout.
-///
-/// The panel cannot accumulate this in its own closure — egui may run a panel
-/// more than once per frame — so the frame loop advances it once and the panel
-/// only reads it.
-struct FrameCount(u64);
+/// Set by the windowed shell's scene-selector panel, read once by the frame
+/// loop.
+struct SceneSwitch(Option<&'static scenes::SceneDef>);
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -572,7 +651,10 @@ impl ApplicationHandler<UserEvent> for App {
             )]
             let mut attributes = Window::default_attributes()
                 .with_title("unlit3d + winit")
-                .with_inner_size(winit::dpi::LogicalSize::new(self.size.0, self.size.1));
+                .with_inner_size(winit::dpi::LogicalSize::new(
+                    self.initial_size.0,
+                    self.initial_size.1,
+                ));
 
             // winit creates the canvas but does not put it in the page; without
             // this the web build would render to nothing visible.
@@ -701,7 +783,7 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Ask for another frame every turn of the loop, so the cube animates.
+        // Ask for another frame every turn of the loop, so the scene animates.
         // Nothing is asked for while suspended: the app is not being looked at,
         // and on Android its surface is gone until the next resume.
         if self.foreground
@@ -721,6 +803,9 @@ impl App {
     /// lifecycle — so this is called after each and does nothing until all
     /// three are here. The scene is built once and outlives every suspension;
     /// the swap chain is built, released and built again around them.
+    ///
+    /// The scene is the one [`Self::initial_scene`] names — the command line's
+    /// `--scene`, replaced when the selector panel requests a switch.
     fn present(&mut self) {
         let (Some(context), Some(window)) = (self.context.ready(), self.window.clone()) else {
             return;
@@ -739,15 +824,21 @@ impl App {
             // Kept across a suspension, so the world's state survives it.
             Some(scene) => scene,
             None => {
+                let def = self.initial_scene;
                 self.scene = Some(Scene::new(
                     context.device.clone(),
                     context.queue.clone(),
                     size,
-                    SceneOptions {
-                        ui: true,
+                    scenes::SceneOptions {
+                        ui: def.ui,
+                        selector: true,
                         reproducible: false,
                     },
+                    def,
                 ));
+                if let Some(window) = &self.window {
+                    window.set_title(&format!("unlit3d — {}", def.title));
+                }
                 self.scene.as_mut().expect("the scene was just built")
             }
         };
@@ -831,6 +922,26 @@ impl App {
             .expect("the renderer is a resource entity");
     }
 
+    /// Rebuild the scene and its surface around `def`.
+    ///
+    /// The old world and the surface presenting it go together: the surface's
+    /// attachments live in the old world's resource graph, so it is released
+    /// before the world is dropped. The new scene is built with the same GPU
+    /// context and window.
+    fn switch_scene(&mut self, def: &'static scenes::SceneDef) {
+        if let (Some(surface), Some(scene)) = (self.surface.take(), self.scene.as_ref()) {
+            let (world, renderer) = (&scene.world, scene.renderer);
+            world
+                .with_mut::<Renderer, _>(renderer, |renderer| {
+                    surface.release(world, renderer);
+                })
+                .expect("the renderer is a resource entity");
+        }
+        self.scene = None;
+        self.initial_scene = def;
+        self.present();
+    }
+
     /// Advance the scene by the time since the previous frame and present it.
     ///
     /// Does nothing while suspended or while the swap chain is released: the
@@ -840,6 +951,15 @@ impl App {
         if !self.foreground {
             return;
         }
+
+        // A switch requested by the selector panel is handled before the frame
+        // is drawn: the next redraw presents the new scene.
+        let switch = self.scene.as_mut().and_then(|scene| scene.take_switch());
+        if let Some(def) = switch {
+            self.switch_scene(def);
+            return;
+        }
+
         let (Some(surface), Some(scene)) = (self.surface.as_mut(), self.scene.as_mut()) else {
             return;
         };
@@ -871,256 +991,49 @@ impl App {
 }
 
 impl Scene {
-    /// Build the scene the GPU context draws.
+    /// Build the scene `def` into a fresh world.
     ///
     /// Sync, and on the main thread: the ECS world is single-threaded, so it
-    /// lives on the thread the event loop runs on.
+    /// lives on the thread the event loop runs on. The world starts with the
+    /// frame's GPU context and the renderer resource entity; the scene's build
+    /// adds its sources, meshes, camera and entities, and returns the
+    /// [`SceneControl`] that drives them.
     fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         size: (u32, u32),
-        options: SceneOptions,
+        options: scenes::SceneOptions,
+        def: &'static scenes::SceneDef,
     ) -> Self {
-        let SceneOptions { ui, reproducible } = options;
-        // The frame's GPU context, the built-in mesh source and the frame
-        // driver, all as resource entities. Every renderable entity carries a
-        // key built from the source's options.
         let mut world = LocalWorld::new();
         let context = spawn_context(&mut world, device, queue, ResourceGraph::new());
-        let mut source = MeshSource::new(&world, context);
-        source.register_unlit_family(&world);
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world)));
-        let source_entity = spawn_source(&mut world, source);
         let renderer = world.spawn((Resource, Renderer::new(context)));
+        let control = (def.build)(&mut world, context, renderer, size, options);
 
-        // Geometry, its base-color texture and its material, all allocated
-        // through the mesh source so they live in the frame's resource graph.
-        let (mesh, material) = world
-            .with_mut::<Source, _>(source_entity, |source| {
-                let source = source
-                    .as_mut::<MeshSource>()
-                    .expect("the source entity carries a MeshSource");
-                let (positions, uvs, colors, indices) = cube();
-                let mesh = source.allocate_unlit_mesh(
-                    &world,
-                    &key,
-                    UnlitMeshDesc {
-                        positions: &positions,
-                        uvs: Some(&uvs),
-                        colors: Some(&colors),
-                        indices: Some(&indices),
-                        ..Default::default()
-                    },
-                );
-                let texture = checkerboard(&source.device(&world), &source.queue(&world), 64);
-                let view = source.register_texture_and_default_view(&world, texture).1;
-                // Linear filtering: the checkerboard is a high-frequency
-                // pattern, and point sampling it under minification aliases
-                // into moire on the faces the camera sees at a glancing angle.
-                let sampler = source.register_sampler(
-                    &world,
-                    Some(wgpu::SamplerDescriptor {
-                        mag_filter: wgpu::FilterMode::Linear,
-                        min_filter: wgpu::FilterMode::Linear,
-                        mipmap_filter: wgpu::MipmapFilterMode::Linear,
-                        anisotropy_clamp: 4,
-                        ..Default::default()
-                    }),
-                );
-                let material = source
-                    .allocate_unlit_material(&world, &key, view, sampler)
-                    .expect("the standard options read a base-color texture");
-                (mesh, material)
-            })
-            .expect("the source entity exists");
-
-        // The camera the frame is viewed from, and the cube itself. A frame
-        // with no RenderLoadOps component is opened with the defaults, so the
-        // pass clears color and depth on its own.
-        let aspect = size.0 as f32 / size.1 as f32;
-        let orbit = CameraOrbit {
-            azimuth: 0.6,
-            elevation: ORBIT_ELEVATION,
-        };
-        let camera = world.spawn((orbit_camera(aspect, orbit.azimuth, orbit.elevation), orbit));
-        // The cube carries its spin and the orbit the panels drive, so one
-        // entity owns everything the frame loop and the panels share.
-        let cube = world.spawn((
-            Transform::default(),
-            Spin {
-                radians_per_second: SPIN,
-                spinning: true,
-                angle: 0.0,
-            },
-            SpinReset(false),
-            DragFrom(None),
-            FrameCount(0),
-            mesh,
-            material,
-            UnlitPipeline::new(key),
-        ));
-
-        // Input: the adapter spawns the `InputState` resource it fills, and
-        // the UI source reads that same resource, so one frame of events is
-        // seen by both the panels and the game's own behaviour components.
         let input = WinitInput::new(&mut world);
+        // The selector's switch component lives in every world; only a windowed
+        // run mounts the panel that writes it.
+        let switch = world.spawn((SceneSwitch(None),));
 
-        // The UI is a frame source like the mesh path, so mounting it is an
-        // ordinary spawn. It declares `FrameOrder::OVERLAY`, which is what
-        // puts it after the cube however the two were mounted.
-        //
-        // Without it the frame holds only the cube, which is what makes the
-        // 3D scene observable on its own.
-        let mut source_ui = UiSource::new();
-        if reproducible {
-            // egui fades a window in over the first frames and animates widget
-            // transitions, all measured against the clock it is handed. With no
-            // animation time every one of them is already over, so the first
-            // frame is fully drawn and does not depend on when it was taken.
-            source_ui
-                .context_mut()
-                .all_styles_mut(|style| style.animation_time = 0.0);
-        }
-        spawn_source(&mut world, source_ui);
-
-        // Two panels, because a panel is an entity: a second interface is a
-        // second spawn, with its own sibling state, and the source drives both
-        // without knowing either of them.
-        if ui {
-            world.spawn((UiPanel::new(move |world, _entity, ui| {
-                egui::Window::new("unlit3d").show(ui.ctx(), |ui| {
-                    let frames = world.get::<FrameCount>(cube).map_or(0, |frames| frames.0);
-                    ui.label(format!("frame {frames}"));
-                    ui.label("The cube spins behind this panel.");
-
-                    // A checkbox writes the `Spin` sibling, and the frame loop
-                    // advances the angle; a behaviour component cannot hold the
-                    // state it reads.
-                    let spinning = world.get::<Spin>(cube).is_some_and(|spin| spin.spinning);
-                    let mut spinning_now = spinning;
-                    if ui.checkbox(&mut spinning_now, "Spin").changed() {
-                        let _ =
-                            world.with_mut::<Spin, _>(cube, |spin| spin.spinning = spinning_now);
-                    }
-
-                    let mut speed = world
-                        .get::<Spin>(cube)
-                        .map_or(SPIN, |spin| spin.radians_per_second);
-                    if ui
-                        .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
-                        .changed()
-                    {
-                        let _ =
-                            world.with_mut::<Spin, _>(cube, |spin| spin.radians_per_second = speed);
-                    }
-
-                    if ui.button("Reset the spin").clicked() {
-                        let _ = world.with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
-                    }
-                });
-            }),));
-        }
-        // The second panel shows the world's input state, which is what makes
-        // the events visible next to the UI they also drive.
-        // A key behaviour: space toggles the spin, and it reads the state the
-        // panel's checkbox also writes. Behaviours cannot re-borrow their own
-        // component, so the flag lives on the cube entity beside it.
-        world.spawn((OnKey::new(move |world, _entity, key| {
-            if key.pressed && !key.repeat && key.key == Key::Space {
-                let _ = world.with_mut::<Spin, _>(cube, |spin| spin.spinning = !spin.spinning);
+        // The UI source drives the scene's own panels — and, in a windowed
+        // run, the selector panel. A headless scene without UI mounts none.
+        if options.ui || options.selector {
+            let mut source_ui = UiSource::new();
+            if options.reproducible && def.reproducible_ui {
+                // egui fades a window in over the first frames and animates
+                // widget transitions, all measured against the clock it is
+                // handed. With no animation time every one of them is already
+                // over, so the first frame is fully drawn and does not depend
+                // on when it was taken.
+                source_ui
+                    .context_mut()
+                    .all_styles_mut(|style| style.animation_time = 0.0);
             }
-        }),));
+            spawn_source(&mut world, source_ui);
+        }
 
-        // A pointer behaviour: dragging orbits the camera. It is mounted on
-        // `OnPointer` rather than `OnMouse`, so the same drag works with a
-        // mouse and with a finger on a touch screen — a touch never produces a
-        // mouse button, so a mouse-only drag would be dead on a phone.
-        world.spawn((OnPointer::new(move |world, _entity, event| {
-            let Some(position) = event.position else {
-                // A release or a cancellation may arrive without one; there is
-                // no move to measure either way.
-                if matches!(
-                    event.action,
-                    PointerAction::Released { .. } | PointerAction::Left
-                ) {
-                    let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
-                }
-                return;
-            };
-
-            match event.action {
-                // A press starts the drag at the contact that landed, so a
-                // later second finger is ignored: only this contact steers.
-                PointerAction::Pressed => {
-                    let _ = world.with_mut::<DragFrom, _>(cube, |drag| {
-                        drag.0 = Some(PointerContact {
-                            kind: event.kind,
-                            id: event.id,
-                            position,
-                        });
-                    });
-                }
-                PointerAction::Moved => {
-                    // The drag follows the contact it latched onto, and a
-                    // contact that never pressed is a hover, which does not
-                    // drag.
-                    let previous = world.with_mut::<DragFrom, _>(cube, |drag| {
-                        let tracked = drag.0.as_mut()?;
-                        if (tracked.kind, tracked.id) != (event.kind, event.id) {
-                            return None;
-                        }
-                        // The difference is measured in the same step the
-                        // previous position is swapped out.
-                        Some(std::mem::replace(&mut tracked.position, position))
-                    });
-                    let Some(Some(previous)) = previous else {
-                        return;
-                    };
-                    // A pixel of pointer motion is a fixed turn, so a drag
-                    // feels the same however large the window is.
-                    const RADIANS_PER_PIXEL: f32 = 0.01;
-                    let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
-                    let _ = world.with_mut::<CameraOrbit, _>(camera, |orbit| {
-                        // The dragged surface follows the pointer, so the
-                        // camera swings the other way: dragging down pulls the
-                        // face being looked at down and brings the face above
-                        // it into view, not the one below.
-                        orbit.azimuth -= dx * RADIANS_PER_PIXEL;
-                        orbit.elevation =
-                            (orbit.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
-                    });
-                }
-                // A lift ends the drag wherever it happened — a cancellation
-                // included, since the platform took the gesture away — and the
-                // next press starts over from the contact that lands.
-                PointerAction::Released { .. } | PointerAction::Left => {
-                    let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
-                }
-                PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
-            }
-        }),));
-
-        if ui {
-            world.spawn((UiPanel::new(move |world, _entity, ui| {
-                egui::Window::new("input")
-                    .default_pos([16.0, 300.0])
-                    .show(ui.ctx(), |ui| {
-                        let held = world
-                            .query::<&InputState>()
-                            .next()
-                            .is_some_and(|(_, state)| state.pointer_down);
-                        ui.label(if held { "pointer: down" } else { "pointer: up" });
-                        // The orbit lives on the camera entity, which is also
-                        // what the drag behaviour writes.
-                        match world.get::<CameraOrbit>(camera) {
-                            Some(orbit) => ui.label(format!(
-                                "azimuth {:.2}, elevation {:.2}",
-                                orbit.azimuth, orbit.elevation
-                            )),
-                            None => ui.label("no camera state"),
-                        };
-                    });
-            }),));
+        if options.selector {
+            mount_selector(&mut world, switch, def);
         }
 
         Self {
@@ -1128,10 +1041,14 @@ impl Scene {
             renderer,
             input,
             size,
+            control,
+            frame: 0,
+            switch,
+            pending: None,
         }
     }
 
-    /// Advance the scene's behaviour components by `delta_time` seconds.
+    /// Advance the scene by `delta_time` seconds.
     fn advance(&mut self, delta_time: f32) {
         // The frame's input events run the world's behaviour components. The
         // UI source and the dispatcher read the same list, and the caller
@@ -1140,35 +1057,21 @@ impl Scene {
         dispatch_input(&self.world);
         self.world.apply();
 
-        // The panel's button leaves its press as state; consume it here, once.
-        for (_, mut reset) in self.world.query::<&mut SpinReset>() {
-            if core::mem::take(&mut reset.0) {
-                for (_, mut spin) in self.world.query::<&mut Spin>() {
-                    spin.angle = 0.0;
-                }
-            }
-        }
+        // The scene's own per-frame behaviour runs after the input, so the
+        // world the renderer reads is this frame's.
+        (self.control.advance)(&mut self.world, self.frame, delta_time);
+        self.frame += 1;
 
-        // The behaviour components run first: the world the renderer reads is
-        // this frame's. The panel writes the flags and this advances them, so
-        // a panel running twice in a frame cannot double a step.
-        for (_, mut frames) in self.world.query::<&mut FrameCount>() {
-            frames.0 += 1;
-        }
-        for (_, (mut spin, mut transform)) in self.world.query::<(&mut Spin, &mut Transform)>() {
-            if spin.spinning {
-                spin.angle += spin.radians_per_second * delta_time;
-            }
-            transform.rotation = glam::Quat::from_rotation_y(spin.angle);
-        }
+        // The selector's request, read once so the frame loop can act on it.
+        self.pending = self
+            .world
+            .with_mut::<SceneSwitch, _>(self.switch, |s| s.0.take())
+            .expect("the switch component exists");
+    }
 
-        // The camera follows the orbit a slider or a drag set. Nothing advanced
-        // it per frame, so a still scene has a still camera and two frames are
-        // comparable.
-        let aspect = self.size.0 as f32 / self.size.1 as f32;
-        for (_, (orbit, mut camera)) in self.world.query::<(&CameraOrbit, &mut Camera)>() {
-            *camera = orbit_camera(aspect, orbit.azimuth, orbit.elevation);
-        }
+    /// A scene switch requested by the selector panel, if any.
+    fn take_switch(&mut self) -> Option<&'static scenes::SceneDef> {
+        self.pending.take()
     }
 
     /// Render one frame into whatever target the caller bound.
@@ -1196,122 +1099,23 @@ impl Scene {
     }
 }
 
-/// How far from the target the camera orbits, in world units.
-const ORBIT_RADIUS: f32 = 3.4;
-
-/// How high above the horizon the camera starts, in radians.
+/// Mount the windowed shell's scene-selector panel.
 ///
-/// High enough that the cube's top face is unmistakably visible. Much below
-/// this the eye sits almost in the top face's own plane, the face projects to
-/// well under a pixel, and the cube reads as though it had no lid.
-const ORBIT_ELEVATION: f32 = 0.5;
-
-/// The point the camera looks at, in world units.
-///
-/// The origin, which is the cube's centre. Looking anywhere else pushes the
-/// cube off-centre for no reason.
-const ORBIT_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.0, 0.0);
-
-/// A camera orbiting [`ORBIT_TARGET`] at `azimuth` and `elevation`, in radians.
-///
-/// The built-in pipeline compares depth with `Greater` and clears to the far
-/// plane, so the projection is reverse-z infinite.
-fn orbit_camera(aspect: f32, azimuth: f32, elevation: f32) -> Camera {
-    let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
-        60f32.to_radians(),
-        aspect,
-        0.1,
-    );
-    let eye = ORBIT_TARGET
-        + ORBIT_RADIUS
-            * glam::Vec3::new(
-                elevation.cos() * azimuth.sin(),
-                elevation.sin(),
-                elevation.cos() * azimuth.cos(),
-            );
-    let view = glam::camera::rh::view::look_at_mat4(eye, ORBIT_TARGET, glam::Vec3::Y);
-    Camera {
-        clip_from_world: projection * view,
-        position: eye,
-    }
-}
-
-/// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
-type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
-
-/// A unit cube with per-face UVs and vertex colors.
-fn cube() -> RawMesh {
-    // Each face as (normal, tangent); the bitangent is their cross product.
-    let faces = [
-        ([-1.0f32, 0.0, 0.0], [0.0f32, 0.0, -1.0]),
-        ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-        ([0.0, -1.0, 0.0], [1.0, 0.0, 0.0]),
-        ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
-        ([0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]),
-        ([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
-    ];
-
-    let mut positions = Vec::new();
-    let mut uvs = Vec::new();
-    let mut colors = Vec::new();
-    let mut indices = Vec::new();
-    for (normal, tangent) in faces {
-        let base = positions.len() as u32;
-        let (normal, tangent) = (glam::Vec3::from(normal), glam::Vec3::from(tangent));
-        let bitangent = normal.cross(tangent);
-        for (u, v) in [(-1.0f32, -1.0f32), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            let position = normal + tangent * u + bitangent * v;
-            positions.push(position.to_array());
-            uvs.push([(u + 1.0) * 0.5, (v + 1.0) * 0.5]);
-            let color = (position + 1.0) * 0.5;
-            colors.push([
-                (color.x * 255.0) as u8,
-                (color.y * 255.0) as u8,
-                (color.z * 255.0) as u8,
-                255,
-            ]);
-        }
-        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    (positions, uvs, colors, indices)
-}
-
-/// A `size` x `size` checkerboard base-color texture.
-fn checkerboard(device: &wgpu::Device, queue: &wgpu::Queue, size: u32) -> wgpu::Texture {
-    let mut texels = Vec::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let value = if (x + y) % 2 == 0 { 235u8 } else { 60 };
-            texels.extend_from_slice(&[value, value, value, 255]);
-        }
-    }
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("example::checkerboard"),
-        size: wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        texture.as_image_copy(),
-        &texels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(size * 4),
-            rows_per_image: Some(size),
-        },
-        wgpu::Extent3d {
-            width: size,
-            height: size,
-            depth_or_array_layers: 1,
-        },
-    );
-    texture
+/// The panel lists every scene and writes its choice into the [`SceneSwitch`]
+/// component, which the frame loop reads once after the frame's advance.
+fn mount_selector(world: &mut LocalWorld, switch: Entity, current: &'static scenes::SceneDef) {
+    world.spawn((UiPanel::new(move |world, _entity, ui| {
+        egui::Window::new("scenes")
+            .default_pos([16.0, 430.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(format!("{} — {}", current.title, current.description));
+                ui.separator();
+                for scene in scenes::SCENES.iter().copied() {
+                    let selected = scene.id == current.id;
+                    if ui.selectable_label(selected, scene.title).clicked() {
+                        let _ = world.with_mut::<SceneSwitch, _>(switch, |s| s.0 = Some(scene));
+                    }
+                }
+            });
+    }),));
 }

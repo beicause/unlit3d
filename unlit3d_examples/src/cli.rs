@@ -6,20 +6,24 @@
 
 use std::path::PathBuf;
 
-/// The size the example renders at when the window or `--size` says otherwise.
-pub const DEFAULT_SIZE: (u32, u32) = (960, 720);
-
-/// How many frames the headless path draws before reading one back.
-///
-/// The second frame is the first egui has its font metrics for, so a capture
-/// needs at least two to show laid-out text.
-pub const DEFAULT_FRAMES: u32 = 2;
+use crate::scenes;
 
 /// The lowest SSIMULACRA2 score that counts as matching by default.
 ///
 /// The same threshold the snapshot tests use, restated here so the command line
 /// does not have to reach into the test harness for it.
 pub const DEFAULT_MIN_SCORE: f64 = 85.0;
+
+/// The default snapshot directory: the asset submodule's `snapshots`.
+///
+/// Resolved through the crate's manifest rather than the working directory, so
+/// `cargo run` finds it wherever it is invoked from.
+pub fn default_snapshot_dir() -> PathBuf {
+    PathBuf::from(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../wgpu_unlit_render_asset_files/snapshots"
+    ))
+}
 
 /// What the command line asked the example to do.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,33 +40,44 @@ pub struct Args {
     /// Render offscreen, read the frame back and exit, without opening a
     /// window.
     pub headless: bool,
-    /// The render target size, in pixels.
-    pub size: (u32, u32),
-    /// How many frames to draw before capturing.
-    pub frames: u32,
+    /// The scene to run, or `"all"` for every scene in a headless run.
+    pub scene: String,
+    /// Print the scene list and exit.
+    pub list_scenes: bool,
+    /// The render target size, in pixels; the scene's own size when `None`.
+    pub size: Option<(u32, u32)>,
+    /// How many frames to draw before capturing; the scene's own count when
+    /// `None`.
+    pub frames: Option<u32>,
     /// Write the captured frame to this path as a lossless WebP.
     pub output: Option<PathBuf>,
-    /// Compare the captured frame against the snapshot at this path.
+    /// Compare the captured frame against the snapshot at this path, instead
+    /// of the scene's own snapshots.
     pub snapshot: Option<PathBuf>,
-    /// Store the snapshot instead of comparing against it.
+    /// Store snapshots instead of comparing against them.
     pub update: bool,
-    /// Draw the cube without the UI, so the capture shows the 3D scene alone.
+    /// Draw the scene without its UI, so the capture shows the 3D scene alone.
     pub no_ui: bool,
     /// The lowest SSIMULACRA2 score that counts as matching.
     pub min_score: f64,
+    /// Where the scene's own snapshots resolve, by name.
+    pub snapshot_dir: PathBuf,
 }
 
 impl Default for Args {
     fn default() -> Self {
         Self {
             headless: false,
-            size: DEFAULT_SIZE,
-            frames: DEFAULT_FRAMES,
+            scene: scenes::default().id.to_owned(),
+            list_scenes: false,
+            size: None,
+            frames: None,
             output: None,
             snapshot: None,
             update: false,
             no_ui: false,
             min_score: DEFAULT_MIN_SCORE,
+            snapshot_dir: default_snapshot_dir(),
         }
     }
 }
@@ -71,26 +86,35 @@ impl Default for Args {
 pub fn usage() -> String {
     format!(
         "\
-A windowed unlit cube with an egui overlay.
+A windowed example with selectable scenes and an egui overlay — or, headlessly,
+an offscreen capture that verifies each scene against its stored snapshots.
 
 Usage: unlit3d_examples [OPTIONS]
 
 Options:
       --headless          Render offscreen and exit without opening a window
-      --size <WxH>        Render target size in pixels [default: {}x{}]
-      --frames <N>        Frames to draw before capturing [default: {}]
+      --scene <ID>        The scene to run, or `all` for every scene [default: {}]
+      --list-scenes       Print the scene table and exit
+      --size <WxH>        Render target size in pixels [default: the scene's own]
+      --frames <N>        Frames to draw before capturing [default: the scene's own]
       --output <PATH>     Write the captured frame to PATH as a WebP
       --snapshot <PATH>   Compare the captured frame against the snapshot at PATH
-      --update            Store PATH instead of comparing against it
-      --no-ui             Draw the cube without the UI overlay
+      --update            Store the snapshots being compared instead
+      --no-ui             Draw the scene without its UI overlay
       --min-score <S>     Lowest matching SSIMULACRA2 score [default: {}]
+      --snapshot-dir <D>  Where the scene's own snapshots resolve [default: {}]
   -h, --help              Print this help
+
+{}
 
 The headless options need the `snapshot` feature, which is what reads frames
 back and scores them:
-    cargo run -p unlit3d_examples --features snapshot -- --headless --snapshot out.webp
+    cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skinned
 ",
-        DEFAULT_SIZE.0, DEFAULT_SIZE.1, DEFAULT_FRAMES, DEFAULT_MIN_SCORE,
+        scenes::default().id,
+        DEFAULT_MIN_SCORE,
+        default_snapshot_dir().display(),
+        scenes::list_text(),
     )
 }
 
@@ -117,11 +141,16 @@ where
             "--headless" => parsed.headless = true,
             "--update" => parsed.update = true,
             "--no-ui" => parsed.no_ui = true,
-            "--size" => parsed.size = parse_size(&value(&name, inline, &mut args)?)?,
-            "--frames" => parsed.frames = parse_count(&value(&name, inline, &mut args)?)?,
+            "--list-scenes" => parsed.list_scenes = true,
+            "--scene" => parsed.scene = value(&name, inline, &mut args)?,
+            "--size" => parsed.size = Some(parse_size(&value(&name, inline, &mut args)?)?),
+            "--frames" => parsed.frames = Some(parse_count(&value(&name, inline, &mut args)?)?),
             "--min-score" => parsed.min_score = parse_score(&value(&name, inline, &mut args)?)?,
             "--output" => parsed.output = Some(PathBuf::from(value(&name, inline, &mut args)?)),
             "--snapshot" => parsed.snapshot = Some(PathBuf::from(value(&name, inline, &mut args)?)),
+            "--snapshot-dir" => {
+                parsed.snapshot_dir = PathBuf::from(value(&name, inline, &mut args)?);
+            }
             other => return Err(format!("unknown option `{other}`")),
         }
     }
@@ -141,9 +170,25 @@ where
         if let Some(option) = capture_option {
             return Err(format!("`{option}` needs `--headless`"));
         }
+        if parsed.scene == "all" {
+            return Err("`--scene all` needs `--headless`".to_owned());
+        }
     }
-    if parsed.update && parsed.snapshot.is_none() {
-        return Err("`--update` needs `--snapshot <PATH>`".to_owned());
+
+    // A scene the example does not know is a typo worth reporting, whichever
+    // mode it was asked in. `all` is not a scene of its own.
+    if parsed.scene != "all" && scenes::by_id(&parsed.scene).is_none() {
+        return Err(format!(
+            "unknown scene `{}`\n{}",
+            parsed.scene,
+            scenes::list_text()
+        ));
+    }
+
+    // A raw capture against one path and a run over every scene cannot both
+    // say what to compare.
+    if parsed.scene == "all" && (parsed.snapshot.is_some() || parsed.output.is_some()) {
+        return Err("`--scene all` cannot be combined with `--output` or `--snapshot`".to_owned());
     }
 
     Ok(Parsed::Run(parsed))
@@ -207,11 +252,13 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_windows_at_the_default_size() {
+    fn no_arguments_run_the_default_scene_windowed() {
         let args = run(&[]).expect("no arguments parse");
         assert!(!args.headless);
-        assert_eq!(args.size, DEFAULT_SIZE);
-        assert_eq!(args.frames, DEFAULT_FRAMES);
+        assert_eq!(args.scene, scenes::default().id);
+        assert!(!args.list_scenes);
+        assert_eq!(args.size, None);
+        assert_eq!(args.frames, None);
         assert_eq!(args.output, None);
         assert_eq!(args.snapshot, None);
         assert!(!args.update);
@@ -223,6 +270,8 @@ mod tests {
     fn the_capture_options_are_read() {
         let args = run(&[
             "--headless",
+            "--scene",
+            "ecs_skinned",
             "--size",
             "320x240",
             "--frames",
@@ -234,22 +283,26 @@ mod tests {
             "--update",
             "--min-score",
             "90.5",
+            "--snapshot-dir",
+            "snaps",
         ])
         .expect("the capture options parse");
 
         assert!(args.headless);
-        assert_eq!(args.size, (320, 240));
-        assert_eq!(args.frames, 5);
+        assert_eq!(args.scene, "ecs_skinned");
+        assert_eq!(args.size, Some((320, 240)));
+        assert_eq!(args.frames, Some(5));
         assert_eq!(args.output.as_deref(), Some("frame.webp".as_ref()));
         assert_eq!(args.snapshot.as_deref(), Some("snap.webp".as_ref()));
         assert!(args.update);
         assert_eq!(args.min_score, 90.5);
+        assert_eq!(args.snapshot_dir, PathBuf::from("snaps"));
     }
 
     #[test]
     fn an_equals_sign_carries_the_value() {
         let args = run(&["--headless", "--size=64x32", "--min-score=70"]).expect("`=` parses");
-        assert_eq!(args.size, (64, 32));
+        assert_eq!(args.size, Some((64, 32)));
         assert_eq!(args.min_score, 70.0);
     }
 
@@ -269,13 +322,29 @@ mod tests {
             run(&["--output", "frame.webp"]),
             Err("`--output` needs `--headless`".to_owned())
         );
+        assert_eq!(
+            run(&["--update"]),
+            Err("`--update` needs `--headless`".to_owned())
+        );
     }
 
     #[test]
-    fn update_without_a_snapshot_is_rejected() {
+    fn an_unknown_scene_is_rejected() {
+        assert!(run(&["--headless", "--scene", "nonsense"]).is_err());
+        assert!(run(&["--scene", "nonsense"]).is_err());
+    }
+
+    #[test]
+    fn running_every_scene_is_headless_only() {
+        let args = run(&["--headless", "--scene", "all"]).expect("headless `all` parses");
+        assert_eq!(args.scene, "all");
         assert_eq!(
-            run(&["--headless", "--update"]),
-            Err("`--update` needs `--snapshot <PATH>`".to_owned())
+            run(&["--scene", "all"]),
+            Err("`--scene all` needs `--headless`".to_owned())
+        );
+        assert!(
+            run(&["--headless", "--scene", "all", "--snapshot", "x.webp"]).is_err(),
+            "a raw capture cannot be combined with every scene"
         );
     }
 
