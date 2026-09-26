@@ -112,14 +112,17 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
       # The example renders headlessly and compares the frame against its
-      # snapshot, so a rendering regression fails here rather than passing
-      # unnoticed. `--update` regenerates the snapshot; review its diff before
+      # The example renders every scene headlessly and compares each frame
+      # against its stored snapshot, so a rendering regression fails here
+      # rather than passing unnoticed. This is the check that replaced the
+      # snapshot tests that used to live in `crates/unlit3d/tests`; the
+      # scenes and their snapshots are described in `unlit3d_examples`.
+      # `--update` regenerates the snapshots; review their diff before
       # committing it.
-      - name: Compare the example against its snapshot
+      - name: Compare the example's scenes against their snapshots
         run: >
           cargo run -p unlit3d_examples --features snapshot
-          -- --headless --frames 30
-          --snapshot wgpu_unlit_render_asset_files/snapshots/example.webp
+          -- --headless --scene all
 
   build-wasm:
     name: Build wasm
