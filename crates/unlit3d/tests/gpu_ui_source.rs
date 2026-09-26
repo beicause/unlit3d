@@ -6,9 +6,12 @@
 //! pass, which is where the two sources have to agree on record order, scissor
 //! state and the frame's load ops.
 //!
-//! Every UI test renders one frame to warm egui up — the first frame does not
-//! know the font metrics — and asserts on the second. Nothing here reads the
-//! clock or the layout feedback, so a frame is reproducible.
+//! The snapshot coverage that used to live here now runs in `unlit3d_examples`
+//! (the `ui_only` and `mesh_and_ui` scenes), whose headless path verifies the
+//! same frames against the stored snapshots. Every remaining test renders one
+//! frame to warm egui up — the first frame does not know the font metrics —
+//! and asserts on the second. Nothing here reads the clock or the layout
+//! feedback, so a frame is reproducible.
 
 #![cfg(feature = "ui")]
 
@@ -52,7 +55,7 @@ const RED: egui::Color32 = egui::Color32::from_rgb(255, 0, 0);
 /// The second panel's colour, chosen so a pixel tells the two apart.
 const GREEN: egui::Color32 = egui::Color32::from_rgb(0, 255, 0);
 
-/// A translucent red: the UI's red at half alpha.
+/// A translucent red: the UI's red at half alpha, for the rich panel's band.
 const TRANSLUCENT_RED: egui::Color32 = egui::Color32::from_rgba_premultiplied(128, 0, 0, 128);
 
 /// Where a panel paints, in logical points.
@@ -135,11 +138,6 @@ fn test_image() -> egui::ColorImage {
 const WIDGETS: Rect = Rect::new(8.0, 8.0, 112.0, 128.0);
 const PICTURE: Rect = Rect::new(136.0, 8.0, 112.0, 72.0);
 const BAND: Rect = Rect::new(8.0, 136.0, 240.0, 40.0);
-
-/// Two of the shades [`test_image`] is built from. Neither appears anywhere
-/// else in the panel, so a pixel of one proves the texture was sampled.
-const LIGHT_GREEN: egui::Color32 = egui::Color32::from_rgb(96, 255, 96);
-const LIGHT_BLUE: egui::Color32 = egui::Color32::from_rgb(96, 96, 255);
 
 /// A rich, deterministic interface: real widgets, a texture and painted
 /// geometry.
@@ -281,24 +279,6 @@ fn count_in(frame: &Frame, x0: u32, x1: u32, color: egui::Color32, tolerance: u8
     count
 }
 
-/// Count the pixels of `rect` that are within `tolerance` of `color`.
-///
-/// The rectangle is in logical points, so its pixel extent scales with the
-/// density the same way the panel's own drawing does.
-fn count_in_rect(frame: &Frame, rect: Rect, color: egui::Color32, tolerance: u8) -> usize {
-    let (x0, y0) = pixel_of(rect.min, 1.0);
-    let (x1, y1) = pixel_of(rect.egui().max, 1.0);
-    let mut count = 0;
-    for y in y0..y1.min(frame.height) {
-        for x in x0..x1.min(frame.width) {
-            if near(frame.pixel_u8(x, y), color, tolerance) {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
 /// A UI-only world: a frame context, a renderer and a `UiSource`, with no
 /// `MeshSource` and no camera.
 fn ui_only_world(world: &mut LocalWorld, ctx: &Ctx) -> TestGpu {
@@ -332,60 +312,6 @@ fn spawn_load_ops(world: &mut LocalWorld) {
 // ---------------------------------------------------------------------------
 // A. UI only — no mesh source, no camera
 // ---------------------------------------------------------------------------
-
-/// The UI draws in a frame with no camera and no mesh source at all.
-///
-/// This is the frame shape the renderer used to skip: it returned early when
-/// the world held no camera, so a UI-only frame would have come out empty.
-#[test]
-fn ui_only_draws_without_a_camera() {
-    let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
-    let gpu = ui_only_world(&mut world, &ctx);
-    spawn_load_ops(&mut world);
-
-    world.spawn((rich_panel(),));
-
-    let target = gpu.bind_offscreen_target_with(&world, 1, false);
-    gpu.render_frames(&world, 2);
-    let frame = read(&ctx, &target);
-
-    // The textured rectangle samples the image, so pixels of shades only the
-    // image holds prove the texture made it to the GPU and was drawn.
-    assert!(
-        count_in_rect(&frame, PICTURE, LIGHT_GREEN, 12) > 0
-            && count_in_rect(&frame, PICTURE, LIGHT_BLUE, 12) > 0,
-        "the textured rectangle must sample the image's own colours"
-    );
-    // The widgets lay out text, so the column holds pixels that are neither the
-    // clear colour nor the band: they can only be the text and controls.
-    let (wx0, wy0) = pixel_of(WIDGETS.min, 1.0);
-    let (wx1, wy1) = pixel_of(WIDGETS.egui().max, 1.0);
-    let mut widget_pixels = 0;
-    for y in wy0..wy1 {
-        for x in wx0..wx1 {
-            let pixel = frame.pixel_u8(x, y);
-            if !is_clear(pixel, 12) && !near(pixel, TRANSLUCENT_RED, 8) {
-                widget_pixels += 1;
-            }
-        }
-    }
-    assert!(
-        widget_pixels > 200,
-        "the widget column must draw its text and controls, only {widget_pixels} \
-         pixels differ from the background"
-    );
-    // The band blends over the background rather than replacing it, so it comes
-    // out a darker red than the pure colour.
-    let (bx, by) = pixel_of(BAND.centre(), 1.0);
-    let band = frame.pixel_u8(bx, by);
-    assert!(
-        band[0] > band[1] && band[0] > band[2],
-        "the band tints its own region red, got {band:?}"
-    );
-
-    assert_image_snapshot("ui_only.webp", &frame, WIDTH, HEIGHT);
-}
 
 /// Two panels are both driven, and each paints its own region.
 ///
@@ -605,45 +531,6 @@ const CUBE_PIXEL: (u32, u32) = (128, 60);
 const OVERLAP_PIXEL: (u32, u32) = (128, 144);
 /// A pixel inside the band that the cube does not cover.
 const PANEL_PIXEL: (u32, u32) = (16, 144);
-
-/// A mesh and a UI in one pass: the mesh keeps its own look, the UI covers its
-/// own region, and where they overlap the translucent band blends over the
-/// cube.
-#[test]
-fn mesh_and_ui_in_one_frame() {
-    let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
-    let frame = mesh_and_ui_frame(&ctx, &mut world, false, rich_panel());
-
-    let cube = frame.pixel_u8(CUBE_PIXEL.0, CUBE_PIXEL.1);
-    let panel = frame.pixel_u8(PANEL_PIXEL.0, PANEL_PIXEL.1);
-    let overlap = frame.pixel_u8(OVERLAP_PIXEL.0, OVERLAP_PIXEL.1);
-
-    assert!(
-        !is_clear(cube, 12) && !near(cube, TRANSLUCENT_RED, 8),
-        "the cube keeps its own look where no panel covers it, got {cube:?}"
-    );
-    assert!(
-        panel[0] > panel[1] && panel[0] > panel[2],
-        "the translucent panel tints its own region red, got {panel:?}"
-    );
-    // The panel blends over the cube rather than replacing it, so the overlap
-    // is neither the panel's colour alone nor the cube's.
-    assert!(
-        overlap != panel,
-        "the panel should blend over the cube, not flatten it: overlap {overlap:?} equals panel {panel:?}"
-    );
-    assert!(
-        overlap != cube,
-        "the panel should tint the cube behind it, but overlap {overlap:?} equals cube {cube:?}"
-    );
-    assert!(
-        overlap[0] > overlap[2],
-        "the blend takes the panel's red, got {overlap:?}"
-    );
-
-    assert_image_snapshot("mesh_and_ui.webp", &frame, WIDTH, HEIGHT);
-}
 
 /// Record order follows the declared `FrameOrder`, not the mount order.
 ///
