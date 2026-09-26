@@ -23,6 +23,7 @@ pub mod instanced;
 pub mod mesh_and_ui;
 pub mod morphed;
 pub mod skinned;
+pub mod transparent;
 pub mod ui_only;
 
 use unlit3d::prelude::*;
@@ -112,6 +113,7 @@ pub static SCENES: &[&SceneDef] = &[
     &skinned::SCENE,
     &morphed::SCENE,
     &instanced::SCENE,
+    &transparent::SCENE,
 ];
 
 /// The scene whose id is `id`, if any.

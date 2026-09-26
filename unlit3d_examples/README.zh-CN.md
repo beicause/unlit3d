@@ -25,11 +25,14 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+  transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
 
 每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此
 [`unlit3d_asset_files`](../unlit3d_asset_files/README.md) 中存储
-的快照仍然能验证它。场景全部用公开的 `unlit3d` API 构建——示例没有任何一处触碰到
+的快照仍然能验证它。`transparent_zsorted` 是个例外：它并非从测试移植而来，而是补上移植
+场景所缺的覆盖——重叠的半透明绘制，其合成结果同时取决于 z 排序与混合状态，这两者都是
+不透明场景不会触及的。场景全部用公开的 `unlit3d` API 构建——示例没有任何一处触碰到
 crate 的内部实现。
 
 ## 在工作区中的位置

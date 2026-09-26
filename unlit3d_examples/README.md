@@ -28,13 +28,18 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+  transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
 
 Each scene reproduces exactly what its test froze: the same world, camera and
 frame sequence, so the stored snapshots in
 [`unlit3d_asset_files`](../unlit3d_asset_files/README.md)
-still verify it. The scenes are built with the same public `unlit3d` API any
-caller would use — nothing in the example reaches into the crates' internals.
+still verify it. `transparent_zsorted` is the exception: it is not ported from a
+test but adds the coverage the ported scenes lack — overlapping translucent
+draws, whose composite depends on both the z-sort and the blend state, neither
+of which the opaque scenes exercise. The scenes are built with the same public
+`unlit3d` API any caller would use — nothing in the example reaches into the
+crates' internals.
 
 ## Role in the workspace
 
