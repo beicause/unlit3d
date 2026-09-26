@@ -153,7 +153,7 @@ UI 面板是行为组件，所以挂载一个界面就是一次普通的 spawn�
 
 ```rust
 # #[cfg(feature = "ui")]
-# fn main() {
+# {
 use unlit3d::prelude::*;
 
 let mut world = LocalWorld::new();
@@ -161,8 +161,6 @@ world.spawn((UiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),));
 # }
-# #[cfg(not(feature = "ui"))]
-# fn main() {}
 ```
 
 ## 输入

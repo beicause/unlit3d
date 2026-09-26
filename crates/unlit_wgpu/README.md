@@ -74,7 +74,7 @@ mesh compression, every bind group and the draw.
 
 ```rust
 # #[cfg(feature = "unlit")]
-# fn main() {
+# {
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
     MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
@@ -393,8 +393,6 @@ let example = Example::new(&device, &queue);
 example.draw(256, 192);
 device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 # }
-# #[cfg(not(feature = "unlit"))]
-# fn main() {}
 ```
 
 The doc comments of `mesh`, `buffer_pool`, `offset_allocator`, `staging` and
