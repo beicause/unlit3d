@@ -5,6 +5,8 @@
 //! draw commands.
 
 use arrayvec::ArrayVec;
+use unlit_ecs::Entity;
+use wgpu_unlit_render::mesh::JointMatrix;
 use wgpu_unlit_render::offset_allocator::Allocation;
 use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
 use wgpu_unlit_render::resources::ResourceId;
@@ -12,7 +14,6 @@ use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
 
 use crate::bounds::Aabb;
-use crate::mesh::MorphWeights;
 use crate::mesh_source::UnlitPipelineKey;
 
 /// World-space transform (translation, rotation, scale).
@@ -203,42 +204,118 @@ pub struct GpuMesh {
     ///
     /// A morph target's displacement is storage data rather than a vertex
     /// attribute, so this — not the vertex layout — is what tells a draw's key
-    /// that the mesh reads morph positions.
+    /// that the mesh reads morph positions. It is also the number of weights
+    /// the [`MorphWeights`] entity a mesh references has to hold.
     pub morph_targets: u32,
 
-    /// The mesh's skin, when it was uploaded with one.
+    /// Whether the mesh's position stream carries joint indices and weights.
     ///
-    /// The pose buffers are rewritten in place through
-    /// [`MeshSource::update_skin`](crate::mesh_source::MeshSource::update_skin)
-    /// rather than replaced, so this survives every pose change.
-    pub skin: Option<GpuSkin>,
-
-    /// The mesh's morph targets, when it was uploaded with any.
-    ///
-    /// The weights it names may be shared with other meshes, so a mesh does
-    /// not own them: update them through the handle, not through the mesh.
-    pub morph: Option<GpuMorph>,
+    /// A skinned draw reads the joint matrices a [`SkinPose`] entity holds, so
+    /// a mesh with this set has to say which entity that is with a
+    /// [`SkinBinding`].
+    pub skinned: bool,
 }
 
-/// The joint matrices a skinned mesh deforms with, as the mesh stores them.
-#[derive(Clone, Debug)]
-pub struct GpuSkin {
-    /// The buffer the matrices live in, bound at the mesh group's joint
-    /// binding.
-    pub matrices: wgpu::Buffer,
-    /// How many matrices it holds.
-    pub joint_count: u32,
+/// The joint matrices one pose is drawn with, as animating code updates them.
+///
+/// This is a component: put it on an entity of its own and let the renderer
+/// upload it, so animating a skeleton is one component write and no GPU call.
+/// A mesh is drawn by this pose when its own entity names that entity with a
+/// [`SkinBinding`]. One pose entity may back any number of meshes, and a mesh
+/// may be given its own pose entity to deform independently.
+///
+/// The matrices are the joint's animated transform times the inverse of the
+/// transform it was bound in, applied in the mesh's own space. A vertex is
+/// deformed by the weighted sum of the matrices its own joint indices name, so
+/// the pose has to hold at least as many matrices as the highest index any of
+/// its meshes uses; allocation cannot check that, and reading past the end of
+/// the uploaded pose is a GPU out-of-bounds access.
+///
+/// Only meshes whose variant reads joints see this: one that reads none ignores
+/// the pose it was bound to, exactly as it ignores a UV slice it does not
+/// declare.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkinPose {
+    /// One matrix per joint, in the order the mesh's joint indices address
+    /// them.
+    pub matrices: Vec<JointMatrix>,
 }
 
-/// The morph targets a mesh blends, as the mesh stores them.
-#[derive(Clone, Debug)]
-pub struct GpuMorph {
-    /// The weights that blend the mesh's targets, which other meshes may
-    /// share.
-    pub weights: MorphWeights,
-    /// How many targets the mesh carries, which is also how many weights the
-    /// handle holds.
-    pub target_count: u32,
+impl SkinPose {
+    /// A pose of `matrices`, one per joint.
+    pub fn new(matrices: impl Into<Vec<JointMatrix>>) -> Self {
+        Self {
+            matrices: matrices.into(),
+        }
+    }
+}
+
+/// The morph-target weights one pose blends with, as animating code updates
+/// them.
+///
+/// Like [`SkinPose`] this is a component of its own entity, referenced by the
+/// meshes drawn with it through a [`MorphBinding`]; a mesh without one requires
+/// no weights. The weights apply to the targets in order, so the pose has to
+/// hold exactly as many weights as each of its meshes has targets —
+/// [`GpuMesh::morph_targets`] — and the renderer checks that every frame rather
+/// than reading weights that do not exist.
+///
+/// A weight of zero skips its target's displacement entirely, which is how a
+/// pose blends between targets.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MorphWeights {
+    /// One weight per morph target, in target order.
+    pub weights: Vec<f32>,
+}
+
+impl MorphWeights {
+    /// A pose blending `weights`, one per target.
+    pub fn new(weights: impl Into<Vec<f32>>) -> Self {
+        Self {
+            weights: weights.into(),
+        }
+    }
+}
+
+/// Names the [`SkinPose`] entity a mesh is drawn with.
+///
+/// Put this on the mesh's own entity, alongside its [`GpuMesh`] and
+/// [`GpuPipeline`]: the pose itself lives on the entity this names, so two
+/// meshes may share one pose by naming the same entity, or deform independently
+/// by naming different ones.
+///
+/// A mesh whose vertex stream carries joints needs this; one whose stream does
+/// not ignores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SkinBinding {
+    /// The entity carrying the [`SkinPose`] this mesh is drawn with.
+    pub pose: Entity,
+}
+
+impl SkinBinding {
+    /// Bind a mesh to the pose on `pose`.
+    pub const fn new(pose: Entity) -> Self {
+        Self { pose }
+    }
+}
+
+/// Names the [`MorphWeights`] entity a mesh is drawn with.
+///
+/// The counterpart of [`SkinBinding`] for morph targets: the weights live on
+/// the entity this names, so several meshes can share one blended pose.
+///
+/// A mesh with morph targets needs this; one with none ignores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MorphBinding {
+    /// The entity carrying the [`MorphWeights`] this mesh is drawn with.
+    pub weights: Entity,
+}
+
+impl MorphBinding {
+    /// Bind a mesh to the weights on `weights`.
+    pub const fn new(weights: Entity) -> Self {
+        Self { weights }
+    }
 }
 
 /// The per-entity request for one family's variant.

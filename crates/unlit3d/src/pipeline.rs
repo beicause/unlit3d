@@ -63,8 +63,8 @@ pub type GlobalGroupRebuild = Arc<dyn Fn(&RenderResources) -> wgpu::BindGroup>;
 /// The source's global buffers, as a rebuild closure sees them.
 ///
 /// These are the buffers every pipeline can rely on the renderer keeping
-/// up to date: the camera uniform, the frame globals and the mesh-metadata
-/// storage buffer.
+/// up to date: the camera uniform, the frame globals, the mesh-metadata
+/// storage buffer and the frame's two pose arrays.
 #[derive(Clone, Debug)]
 pub struct RenderResources {
     /// The camera uniform buffer.
@@ -73,6 +73,12 @@ pub struct RenderResources {
     pub globals: wgpu::Buffer,
     /// The mesh-metadata storage buffer.
     pub metadata: wgpu::Buffer,
+    /// The frame's joint matrices: every visible skinned instance's joints,
+    /// one array for the whole frame.
+    pub joints: wgpu::Buffer,
+    /// The frame's morph weights: every visible morphed instance's weights, one
+    /// array for the whole frame.
+    pub morph_weights: wgpu::Buffer,
 }
 
 /// A pipeline and the layouts its draws agree with.

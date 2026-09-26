@@ -206,24 +206,26 @@ impl TestGpu {
         self.with_mesh_source(world, |source, world| source.remove_mesh(world, mesh));
     }
 
-    /// Allocate a cube through the source under `key`, deformed by `skin` and
-    /// the `morph` targets and weights.
+    /// Allocate a cube through the source under `key`, carrying the joint
+    /// stream and morph targets the variant reads.
     ///
     /// The key must be a variant that declares the matching channels — the
-    /// joint stream for a skin, the morph bindings for targets — which is what
+    /// joint stream for joints, the morph bindings for targets — which is what
     /// a test of either path builds with [`deformation_options`].
+    ///
+    /// The pose itself is not here: the joints and weights a frame deforms by
+    /// live in components of their own, so a test that animates one attaches
+    /// [`SkinPose`]/[`MorphWeights`] and the binding components to its
+    /// entities.
     pub fn allocate_deformed_cube_mesh(
         &self,
         world: &LocalWorld,
         key: &UnlitPipelineKey,
-        skin: Option<UnlitSkin<'_>>,
-        morph: Option<(&[UnlitMorphTarget<'_>], &MorphWeights)>,
+        joints: Option<&[[u16; 4]]>,
+        weights: Option<&[[f32; 4]]>,
+        morph_targets: &[UnlitMorphTarget<'_>],
     ) -> GpuMesh {
         let (positions, uvs, colors, indices) = cube();
-        let (morph_targets, morph_weights) = match morph {
-            Some((targets, weights)) => (targets, Some(weights.clone())),
-            None => (&[][..], None),
-        };
         self.with_mesh_source(world, |source, world| {
             source.allocate_unlit_mesh(
                 world,
@@ -233,9 +235,9 @@ impl TestGpu {
                     uvs: Some(&uvs),
                     colors: Some(&colors),
                     indices: Some(&indices),
-                    skin,
+                    joints,
+                    weights,
                     morph_targets,
-                    morph_weights,
                 },
             )
         })
@@ -263,32 +265,27 @@ impl TestGpu {
                     uvs: Some(&uvs),
                     colors: Some(&colors),
                     indices: Some(&indices),
-                    skin: Some(skin.desc()),
+                    joints: Some(&skin.joints),
+                    weights: Some(&skin.weights),
                     morph_targets: &[],
-                    morph_weights: None,
                 },
             )
         });
         (mesh, skin)
     }
 
-    /// Allocate a cube morphed by `targets`, plus the weight handle that drives
-    /// it.
+    /// Allocate a cube morphed by `targets`, returning the mesh.
     ///
-    /// The handle is returned so a test can share it with a second mesh, or
-    /// update it without naming a mesh at all.
+    /// The weights that blend the targets are not part of the mesh: they live
+    /// in a [`MorphWeights`] component the test attaches to an entity and names
+    /// with a [`MorphBinding`].
     pub fn allocate_morphed_cube_mesh(
         &self,
         world: &LocalWorld,
         key: &UnlitPipelineKey,
         targets: &[UnlitMorphTarget<'_>],
-        weights: &[f32],
-    ) -> (GpuMesh, MorphWeights) {
-        let handle = self.with_mesh_source(world, |source, world| {
-            source.allocate_morph_weights(world, weights)
-        });
-        let mesh = self.allocate_deformed_cube_mesh(world, key, None, Some((targets, &handle)));
-        (mesh, handle)
+    ) -> GpuMesh {
+        self.allocate_deformed_cube_mesh(world, key, None, None, targets)
     }
 
     /// Allocate an offscreen colour target and a matching depth-stencil target,
@@ -436,8 +433,8 @@ pub fn deformation_options(
 ///
 /// The identity pose deforms nothing: a vertex's weights sum to one, so the
 /// weighted sum of identity matrices is the vertex itself. A test that wants a
-/// visible deformation replaces them through
-/// [`MeshSource::update_skin`](unlit3d::mesh_source::MeshSource::update_skin).
+/// visible deformation replaces one of them before building a
+/// [`SkinPose`].
 pub fn rest_pose(joint_count: usize) -> Vec<JointMatrix> {
     vec![glam::Mat4::IDENTITY; joint_count]
 }
@@ -449,13 +446,16 @@ pub fn rest_pose(joint_count: usize) -> Vec<JointMatrix> {
 /// high it sits, so the mesh bends rather than shears. The weights exercise the
 /// four-lane weighted sum the shader computes — a vertex split across both
 /// joints is the case a single-joint binding would not catch.
+///
+/// The joint stream and weights are what a mesh is uploaded with; the matrices
+/// are the pose an entity carries, which [`Self::pose`] builds.
 pub struct BendSkin {
     /// Four joint indices per vertex: the base and the bending joint.
     pub joints: Vec<[u16; 4]>,
     /// Four weights per vertex, summing to one.
     pub weights: Vec<[f32; 4]>,
-    /// The bind pose, one matrix per joint.
-    pub pose: Vec<JointMatrix>,
+    /// The angle the bending joint is rotated by.
+    angle: f32,
     /// The height the bending joint pivots about, in the mesh's own space.
     pivot: f32,
 }
@@ -478,32 +478,28 @@ impl BendSkin {
                 ([0u16, 1, 0, 0], [1.0 - t, t, 0.0, 0.0])
             })
             .unzip();
-        let mut skin = Self {
+        Self {
             joints,
             weights,
-            pose: rest_pose(2),
+            angle,
             pivot: min,
-        };
-        skin.set_angle(angle);
-        skin
+        }
     }
 
     /// Replace the bending joint's rotation, which pivots about the mesh's
     /// lowest point rather than its origin: a cube centred on the origin would
     /// otherwise swing through the ground instead of bending over it.
     pub fn set_angle(&mut self, angle: f32) {
-        self.pose[1] = glam::Mat4::from_translation(glam::Vec3::Y * self.pivot)
-            * glam::Mat4::from_rotation_z(angle)
-            * glam::Mat4::from_translation(glam::Vec3::Y * -self.pivot);
+        self.angle = angle;
     }
 
-    /// The skin as the allocator takes it.
-    pub fn desc(&self) -> UnlitSkin<'_> {
-        UnlitSkin {
-            joints: &self.joints,
-            weights: &self.weights,
-            pose: &self.pose,
-        }
+    /// The pose the two joints are at, ready to attach to an entity.
+    pub fn pose(&self) -> SkinPose {
+        let mut matrices = rest_pose(2);
+        matrices[1] = glam::Mat4::from_translation(glam::Vec3::Y * self.pivot)
+            * glam::Mat4::from_rotation_z(self.angle)
+            * glam::Mat4::from_translation(glam::Vec3::Y * -self.pivot);
+        SkinPose::new(matrices)
     }
 }
 

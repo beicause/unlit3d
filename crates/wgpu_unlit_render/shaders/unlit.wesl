@@ -34,25 +34,28 @@
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
 //   group 0  binding 2  mesh_meta     `array<MeshMetadata>` decode parameters
+//   group 0  binding 3  joint_matrices `array<mat4x4<f32>>`  [VERTEX_JOINTS]
+//   group 0  binding 4  morph_weights `array<f32>`           [MORPH_POSITIONS]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
 //   group 2  binding 0  mesh_info     `MeshInfo` addressing
-//   group 2  binding 1  joints        `array<mat4x4<f32>>`  [VERTEX_JOINTS]
-//   group 2  binding 2  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
-//   group 2  binding 3  morph_weights `array<f32>`           [MORPH_POSITIONS]
+//   group 2  binding 1  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
 //
 //   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
 //                      decoded through `mesh_meta`, followed by the joint pair
 //                      Uint16x4 indices + Unorm16x4 weights [VERTEX_JOINTS]
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
 //                      plus color Unorm8x4 [VERTEX_COLOR]
-//   slot 2  instance   Float32x4x3 model matrix + Float32x4 base color,
-//                      stepped per instance [VERTEX_INSTANCE]
+//   slot 2  instance   Float32x4x3 model matrix + Float32x4 base color
+//                      + Uint32x4 pose base, stepped per instance
+//                      [VERTEX_INSTANCE]
 //
 // The mesh metadata bindings exist only when a channel is compressed: a
 // variant that reads every channel uncompressed declares no metadata binding
-// at all. The mesh group exists when the variant reads metadata, joint or
-// morph data, which is any skinned or morphed draw.
+// at all. The mesh group exists when the variant reads metadata or morph
+// displacements. The pose lives in the global group rather than a mesh's own
+// because it is per-instance state: one array serves every draw of the frame,
+// and each instance slices into it at the base its own record carries.
 
 import package::globals;
 import package::mesh_compression;
@@ -65,27 +68,38 @@ import package::view;
 @if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
 @group(0) @binding(2) var<storage, read> mesh_meta: array<mesh_metadata::MeshMetadata>;
 
+/// This frame's joint matrices, indexed by the joint pair in the position
+/// stream. Each one is a joint's animated transform times its inverse bind
+/// pose, applied in the mesh's own space.
+///
+/// The array holds the pose of every visible instance, and an instance reads
+/// its own joints from `in.pose.x`; that is what lets two instances of one mesh
+/// deform differently.
+@if(VERTEX_JOINTS)
+@group(0) @binding(3) var<storage, read> joint_matrices: array<mat4x4<f32>>;
+
+/// This frame's morph weights, one per target of every morphed instance.
+///
+/// Like the joint matrices this is per-instance data in one frame-wide array,
+/// and an instance reads its own weights from `in.pose.y`.
+@if(MORPH_POSITIONS)
+@group(0) @binding(4) var<storage, read> morph_weights: array<f32>;
+
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
 
-@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || VERTEX_JOINTS || MORPH_POSITIONS)
+@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS)
 @group(2) @binding(0) var<uniform> mesh_info: mesh_metadata::MeshInfo;
-
-/// This draw's joint matrices, indexed by the joint pair in the position
-/// stream. Each one is a joint's animated transform times its inverse bind
-/// pose, applied in the mesh's own space.
-@if(VERTEX_JOINTS)
-@group(2) @binding(1) var<storage, read> joint_matrices: array<mat4x4<f32>>;
 
 /// Every morph target's per-vertex position displacement, flat and tightly
 /// packed: for each vertex, `MeshInfo::morph_count` targets in order, three
 /// components each.
+///
+/// A target's displacement is geometry, not pose: every vertex of the mesh has
+/// its own, so this stays a buffer of the mesh's own rather than one the whole
+/// frame shares.
 @if(MORPH_POSITIONS)
-@group(2) @binding(2) var<storage, read> morph_deltas: array<f32>;
-
-/// One weight per morph target, multiplied into the matching displacement.
-@if(MORPH_POSITIONS)
-@group(2) @binding(3) var<storage, read> morph_weights: array<f32>;
+@group(2) @binding(1) var<storage, read> morph_deltas: array<f32>;
 
 struct VertexInput {
     /// Per-vertex position: full precision, or compressed to Snorm16x4
@@ -112,6 +126,10 @@ struct VertexInput {
     @if(VERTEX_JOINTS) @location(7) joints: vec4<u32>,
     /// Joint weights, Unorm16x4, summing to 1.
     @if(VERTEX_JOINTS) @location(8) weights: vec4<f32>,
+
+    /// Per-instance pose base, Uint32x4: `.x` is the instance's first joint
+    /// matrix and `.y` its first morph weight in the frame's shared arrays.
+    @if(VERTEX_INSTANCE) @location(9) pose: vec4<u32>,
 }
 
 struct VertexOut {
@@ -134,18 +152,24 @@ public fn transform_point(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, p: vec3<f
 /// times the inverse bind pose — applied to the vertex. The weights of a vertex
 /// are a partition of unity, so the weighted sum needs no division.
 ///
-/// The matrices are read from the module-scope binding rather than passed in:
-/// WGSL forbids passing a pointer to storage space into a function. Four lanes
-/// are unrolled rather than looped, because indexing the array with a variable
-/// would need one, and the attribute is fixed at four joints.
+/// `joint_base` is the offset of this instance's matrices in the frame's shared
+/// array. The matrices are read from the module-scope binding rather than
+/// passed in: WGSL forbids passing a pointer to storage space into a function.
+/// Four lanes are unrolled rather than looped, because indexing the array with
+/// a variable would need one, and the attribute is fixed at four joints.
 @if(VERTEX_JOINTS)
-fn skin_position(position: vec3<f32>, indices: vec4<u32>, weights: vec4<f32>) -> vec3<f32> {
+fn skin_position(
+    position: vec3<f32>,
+    indices: vec4<u32>,
+    weights: vec4<f32>,
+    joint_base: u32,
+) -> vec3<f32> {
     let point = vec4<f32>(position, 1.0);
     var skinned = vec3<f32>(0.0, 0.0, 0.0);
-    skinned += weights.x * (joint_matrices[indices.x] * point).xyz;
-    skinned += weights.y * (joint_matrices[indices.y] * point).xyz;
-    skinned += weights.z * (joint_matrices[indices.z] * point).xyz;
-    skinned += weights.w * (joint_matrices[indices.w] * point).xyz;
+    skinned += weights.x * (joint_matrices[joint_base + indices.x] * point).xyz;
+    skinned += weights.y * (joint_matrices[joint_base + indices.y] * point).xyz;
+    skinned += weights.z * (joint_matrices[joint_base + indices.z] * point).xyz;
+    skinned += weights.w * (joint_matrices[joint_base + indices.w] * point).xyz;
     return skinned;
 }
 
@@ -153,20 +177,21 @@ fn skin_position(position: vec3<f32>, indices: vec4<u32>, weights: vec4<f32>) ->
 ///
 /// The displacements are flat and tightly packed: for each vertex,
 /// `mesh_info.morph_count` consecutive targets in target order, three
-/// components each. `delta_base` is the offset of this vertex's block, and the
-/// weights hold the mesh's weight for each target.
+/// components each. `delta_base` is the offset of this vertex's block, and
+/// `weight_base` the offset of this instance's weights in the frame's shared
+/// array.
 ///
 /// Only the first-order — linear — displacement is applied, which is all a
 /// position-only morph target needs.
 @if(MORPH_POSITIONS)
-fn morph_position(position: vec3<f32>, delta_base: u32) -> vec3<f32> {
+fn morph_position(position: vec3<f32>, delta_base: u32, weight_base: u32) -> vec3<f32> {
     var morphed = position;
     var morph = 0u;
     loop {
         if morph >= mesh_info.morph_count {
             break;
         }
-        let weight = morph_weights[morph];
+        let weight = morph_weights[weight_base + morph];
         // An inactive target is the common case: it costs a load and a compare
         // rather than three more loads.
         if weight != 0.0 {
@@ -209,12 +234,21 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     // pool — `firstVertex + i`, or an index plus `baseVertex` — so the morph
     // deltas, which are stored per mesh, are addressed relative to the mesh's
     // own first vertex.
+    //
+    // The pose the instance deforms by is addressed through `in.pose`: the
+    // joint matrices and morph weights are frame-wide arrays, and every
+    // instance names its own slice of them. That is what lets two instances of
+    // one mesh hold different poses.
     @if(MORPH_POSITIONS) {
         let local_vertex = vertex_index - mesh_info.vertex_offset;
-        local = morph_position(local, local_vertex * mesh_info.morph_count * 3u);
+        local = morph_position(
+            local,
+            local_vertex * mesh_info.morph_count * 3u,
+            in.pose.y,
+        );
     }
     @if(VERTEX_JOINTS) {
-        local = skin_position(local, in.joints, in.weights);
+        local = skin_position(local, in.joints, in.weights, in.pose.x);
     }
 
     // Without an instance stream nothing transforms the vertex: the

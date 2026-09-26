@@ -33,6 +33,12 @@ pub(crate) struct VisibleMesh {
     pub(crate) entity: Entity,
     /// The model matrix and base color the draw will use.
     pub(crate) instance: MeshInstance,
+    /// Whether the mesh's position stream carries joints, so the frame has to
+    /// resolve the pose entity it binds.
+    pub(crate) skinned: bool,
+    /// How many morph targets the mesh blends, so the frame knows whether it
+    /// needs the weights a pose entity holds.
+    pub(crate) morph_targets: u32,
 }
 
 /// Collect every mesh entity the frustum can see into `out`, replacing its
@@ -42,6 +48,11 @@ pub(crate) struct VisibleMesh {
 /// identity; its tint is its optional [InstanceColor], defaulting to white.
 /// The same resolved [MeshInstance] is what the entity is finally drawn with,
 /// so culling and drawing cannot disagree about where the mesh is.
+///
+/// The pose base is left at zero here: it is only known once the frame has
+/// packed the poses of the meshes that passed culling, so
+/// [`MeshSource::pack_poses`](crate::mesh_source::MeshSource::pack_poses) fills
+/// it in.
 pub(crate) fn collect_visible(
     world: &LocalWorld,
     frustum: &FrustumPlanes,
@@ -62,6 +73,8 @@ pub(crate) fn collect_visible(
         out.push(VisibleMesh {
             entity,
             instance: MeshInstance::new(model, base_color),
+            skinned: mesh.skinned,
+            morph_targets: mesh.morph_targets,
         });
     }
 }
@@ -126,8 +139,7 @@ mod tests {
             metadata_index: 0,
             bind_group_id: None,
             morph_targets: 0,
-            skin: None,
-            morph: None,
+            skinned: false,
             vertex_allocation: None,
             index_allocation: None,
         };

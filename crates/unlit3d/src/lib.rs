@@ -167,8 +167,8 @@ pub mod prelude {
     pub use crate::{
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
-            Camera, GpuMaterial, GpuMesh, GpuMorph, GpuPipeline, GpuSkin, InstanceColor,
-            RenderLoadOps, Transform, UnlitPipeline, ZSortedDrawing,
+            Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, MorphBinding, MorphWeights,
+            RenderLoadOps, SkinBinding, SkinPose, Transform, UnlitPipeline, ZSortedDrawing,
         },
         culling::is_culled,
         input::{
@@ -178,8 +178,7 @@ pub mod prelude {
             TouchPhase, WheelUnit, dispatch_input,
         },
         mesh::{
-            JointMatrix, MeshDesc, MeshPoseDesc, MorphDesc, MorphWeights, SkinDesc, UnlitMeshDesc,
-            UnlitMorphTarget, UnlitSkin, VertexBufferDesc,
+            JointMatrix, MeshDesc, MorphDeltas, UnlitMeshDesc, UnlitMorphTarget, VertexBufferDesc,
         },
         mesh_source::{MeshSource, UnlitPipelineKey},
         pipeline::{

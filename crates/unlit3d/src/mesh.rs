@@ -5,12 +5,18 @@
 //! index buffer, and the mesh's local-space [`Aabb`]. The renderer assumes no
 //! particular vertex layout, so a mesh can carry any combination of attributes
 //! and one pipeline, several, or none may specialize on it.
+//!
+//! A mesh's *pose* is not part of its description. Joint matrices and morph
+//! weights are per-frame CPU state, so they live in components of their own —
+//! [`SkinPose`](crate::components::SkinPose) and
+//! [`MorphWeights`](crate::components::MorphWeights) — that the mesh's entity
+//! references through a [`SkinBinding`](crate::components::SkinBinding) and a
+//! [`MorphBinding`](crate::components::MorphBinding).
 
 use arrayvec::ArrayVec;
 
 use crate::bounds::Aabb;
 pub use wgpu_unlit_render::mesh::JointMatrix;
-use wgpu_unlit_render::resources::ResourceId;
 use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 use wgpu_unlit_render::specialize::VertexAttributes;
 
@@ -69,62 +75,29 @@ pub struct MeshDesc {
     /// the mesh's resources.
     pub mesh_info_buffer: Option<wgpu::Buffer>,
 
-    /// The scene data the mesh's `bind_group` reads besides the mesh-info
-    /// uniform: the joint matrices and morph targets it deforms with.
+    /// The morph displacements the mesh's `bind_group` reads.
     ///
-    /// Their buffers are moved into the resource graph with the mesh. Each is
-    /// recorded as a *weak* node under the mesh's virtual root, and as a
-    /// dependency of the bind group, so replacing one marks that group dirty
-    /// and removing the mesh releases it with the rest of the mesh's
-    /// resources. A mesh with no pose data leaves this at its default.
-    pub pose: MeshPoseDesc,
+    /// The buffer is moved into the resource graph with the mesh and recorded
+    /// as a *weak* node under the mesh's virtual root, so removing the mesh
+    /// releases it with the rest of the mesh's resources. A mesh with no morph
+    /// targets leaves this `None`.
+    ///
+    /// The weights that blend these displacements are *not* here: they are
+    /// per-instance pose state a [`MorphWeights`](crate::components::MorphWeights)
+    /// entity holds, so a mesh names the entity rather than owning the weights.
+    pub morph_deltas: Option<MorphDeltas>,
 }
 
-/// The scene data a mesh's `bind_group` reads besides its `MeshInfo` uniform.
-///
-/// Every buffer is moved into the resource graph with the mesh, so the caller
-/// hands over ownership; a mesh without pose data passes none of them.
-#[derive(Clone, Debug, Default)]
-pub struct MeshPoseDesc {
-    /// The mesh's skin, for a pipeline that reads joint matrices.
-    pub skin: Option<SkinDesc>,
-    /// The mesh's morph displacements, for a pipeline that reads morph
-    /// positions.
-    pub morph: Option<MorphDesc>,
-}
-
-/// A mesh's joint matrices and how many of them there are.
+/// A mesh's morph displacements and how many targets follow each vertex.
 #[derive(Clone, Debug)]
-pub struct SkinDesc {
-    /// The joint matrices, one per joint, moved into the resource graph.
-    pub matrices: wgpu::Buffer,
-    /// How many matrices the buffer holds.
-    pub joint_count: u32,
-}
-
-/// A mesh's morph displacements.
-///
-/// The weights that blend them are *not* here: they are a
-/// [`MorphWeights`] the caller owns and may share between meshes, so a mesh
-/// names one rather than owning it.
-#[derive(Clone, Debug)]
-pub struct MorphDesc {
+pub struct MorphDeltas {
     /// Every target's per-vertex position displacement, flat and tightly
     /// packed: for each vertex, `target_count` targets in order, three
     /// components each.
-    pub deltas: wgpu::Buffer,
-    /// The weights that blend the targets, shared or private.
-    pub weights: MorphWeights,
+    pub buffer: wgpu::Buffer,
     /// How many targets follow each vertex.
     pub target_count: u32,
 }
-
-/// How many graph nodes a mesh's pose contributes at most: the joint matrices
-/// and the morph displacements.
-///
-/// The morph weights are not counted: they are a [`MorphWeights`] resource the
-/// mesh reads rather than one it contributes.
-pub const MAX_POSE_PARTS: usize = 2;
 
 /// The channels of one mesh uploaded through
 /// [`MeshSource::allocate_unlit_mesh`](crate::mesh_source::MeshSource::allocate_unlit_mesh).
@@ -132,6 +105,12 @@ pub const MAX_POSE_PARTS: usize = 2;
 /// Every slice describes the same vertices, in the same order; only
 /// [`Self::positions`] is required, because a variant without a position
 /// stream draws a single point and needs no geometry at all.
+///
+/// The pose a mesh is drawn with is not here: joint matrices and morph weights
+/// are CPU-driven per-frame state, so they live on the entities a
+/// [`SkinBinding`](crate::components::SkinBinding) and a
+/// [`MorphBinding`](crate::components::MorphBinding) name and the renderer
+/// uploads them every frame.
 #[derive(Clone, Debug, Default)]
 pub struct UnlitMeshDesc<'a> {
     /// Per-vertex positions, in the mesh's local space.
@@ -142,41 +121,16 @@ pub struct UnlitMeshDesc<'a> {
     pub colors: Option<&'a [[u8; 4]]>,
     /// Triangle indices, for an indexed draw.
     pub indices: Option<&'a [u32]>,
-    /// The skin that deforms the mesh, for a variant that reads joints.
-    pub skin: Option<UnlitSkin<'a>>,
-    /// The morph targets that displace the mesh, in target order.
-    pub morph_targets: &'a [UnlitMorphTarget<'a>],
-    /// The weights that blend [`Self::morph_targets`].
-    ///
-    /// Required — and required to be as long as the target slice — by a
-    /// variant that reads morph positions, ignored by one that does not. The
-    /// same handle may back several meshes, which then share one pose; see
-    /// [`MorphWeights`].
-    pub morph_weights: Option<MorphWeights>,
-}
-
-/// A mesh's skin: the joints each vertex is bound to, and the pose they deform
-/// it by.
-///
-/// The joint matrices live in a buffer the mesh owns, so a later frame updates
-/// the pose with
-/// [`MeshSource::update_skin`](crate::mesh_source::MeshSource::update_skin)
-/// rather than re-uploading the mesh.
-#[derive(Clone, Copy, Debug)]
-pub struct UnlitSkin<'a> {
-    /// Per-vertex joint indices, four per vertex.
-    pub joints: &'a [[u16; 4]],
-    /// Per-vertex joint weights, four per vertex, summing to 1.
+    /// The joints each vertex is bound to, for a variant that reads joints.
+    pub joints: Option<&'a [[u16; 4]]>,
+    /// The joint weights of each vertex, four per vertex, for a variant that
+    /// reads joints.
     ///
     /// Weights are normalized on upload, so a caller may pass unnormalized
     /// ones; a vertex whose weights sum to zero is left undeformed.
-    pub weights: &'a [[f32; 4]],
-    /// The bind pose: one matrix per joint, each the joint's world transform
-    /// times the inverse of the transform it was bound in.
-    ///
-    /// A vertex is deformed by the weighted sum of the matrices its indices
-    /// name.
-    pub pose: &'a [JointMatrix],
+    pub weights: Option<&'a [[f32; 4]]>,
+    /// The morph targets that displace the mesh, in target order.
+    pub morph_targets: &'a [UnlitMorphTarget<'a>],
 }
 
 /// One morph target of a mesh: the displacement it applies to every vertex.
@@ -185,53 +139,11 @@ pub struct UnlitSkin<'a> {
 /// and a target displaces every vertex of the mesh it belongs to, so
 /// [`Self::positions`] must be as long as the mesh's own vertex list. How much
 /// of the displacement applies is the mesh's
-/// [`MorphWeights`], not the target's: the same target can be weighted
-/// differently by two meshes sharing it.
+/// [`MorphWeights`](crate::components::MorphWeights) component, not the
+/// target's: the same target can be weighted differently by two meshes sharing
+/// it.
 #[derive(Clone, Copy, Debug)]
 pub struct UnlitMorphTarget<'a> {
     /// Per-vertex position displacement, in the mesh's local space.
     pub positions: &'a [[f32; 3]],
-}
-
-/// The weights that blend a mesh's morph targets, as a resource of its own.
-///
-/// The handle names a weight buffer in the resource graph, which makes the
-/// weights *shareable*: allocating several meshes with the same handle binds
-/// them to one buffer, so
-/// [`MeshSource::update_morph_weights`](crate::mesh_source::MeshSource::update_morph_weights)
-/// writes one pose that every one of them draws with. That is what a crowd of
-/// copies of one mesh usually wants, and it costs one buffer instead of one
-/// per mesh.
-///
-/// A mesh whose weights should move on its own needs a handle of its own.
-///
-/// # Sharing rules
-///
-/// Every mesh sharing a handle must carry the same number of morph targets:
-/// the shader loops up to the mesh's own target count, so a longer loop over a
-/// shorter buffer would read out of bounds. Allocation enforces this.
-#[derive(Clone, Debug)]
-pub struct MorphWeights {
-    /// The buffer's node in the resource graph.
-    pub(crate) buffer: ResourceId,
-    /// How many weights the buffer holds, which is the target count a mesh
-    /// sharing it must carry.
-    pub(crate) target_count: u32,
-}
-
-impl MorphWeights {
-    /// How many weights the handle holds.
-    pub fn target_count(&self) -> u32 {
-        self.target_count
-    }
-
-    /// The graph node that holds the weights.
-    ///
-    /// Two handles with the same node name the same weights, and so the same
-    /// pose. The node is useful for inspecting the buffer's lifetime; the
-    /// weights themselves are written through
-    /// [`MeshSource::update_morph_weights`](crate::mesh_source::MeshSource::update_morph_weights).
-    pub fn resource(&self) -> ResourceId {
-        self.buffer
-    }
 }

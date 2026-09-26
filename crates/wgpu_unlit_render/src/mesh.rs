@@ -270,8 +270,8 @@ impl MeshInfo {
     }
 }
 
-/// One per-instance record: the affine model matrix and base color the
-/// built-in pipeline reads from its per-instance vertex buffer.
+/// One per-instance record: the affine model matrix, base color and pose base
+/// the built-in pipeline reads from its per-instance vertex buffer.
 ///
 /// This is the vertex stream of `unlit.wesl`'s instance slot, so upload a
 /// `&[MeshInstance]` as that slot's buffer. The matrix is packed as three
@@ -279,6 +279,11 @@ impl MeshInfo {
 /// component, which is why it is stored as [`glam::Vec4`]s rather than a
 /// [`glam::Mat4`]: the shader transforms a point with three dot products and
 /// never treats it as a matrix.
+///
+/// [`Self::pose`] addresses the frame's shared pose arrays, which is what lets
+/// two instances of one mesh deform differently: the joints and morph weights a
+/// draw deforms by are per-instance state, so they cannot live in the mesh's
+/// own bind group.
 ///
 /// Vertex attributes are addressed by the explicit offsets of
 /// [`crate::pipeline::UnlitPipeline::vertex_buffer_layouts`], not by WGSL
@@ -300,10 +305,22 @@ pub struct MeshInstance {
     pub model: [glam::Vec4; 3],
     /// Linear RGBA base color.
     pub base_color: glam::Vec4,
+    /// Where this instance's pose starts in the frame's shared pose arrays: `x`
+    /// indexes the joint matrices, `y` the morph weights.
+    ///
+    /// Both arrays hold the pose of every visible instance, so the shader reads
+    /// a joint or a weight at this base plus its own index. Zero for an
+    /// instance that deforms by nothing. Only `x` and `y` are meaningful; the
+    /// vector is four lanes wide so the record stays a whole number of `vec4`s
+    /// and carries no padding bytes.
+    pub pose: glam::UVec4,
 }
 
 impl MeshInstance {
     /// Build an instance from a world transform and a linear RGBA base color.
+    ///
+    /// The instance reads no pose data; point it at some with
+    /// [`Self::with_pose`].
     pub fn new(world_from_local: glam::Affine3A, base_color: glam::Vec4) -> Self {
         let linear = world_from_local.matrix3;
         let translation = world_from_local.translation;
@@ -314,7 +331,16 @@ impl MeshInstance {
                 linear.z_axis.extend(translation.z),
             ],
             base_color,
+            pose: glam::UVec4::ZERO,
         }
+    }
+
+    /// Point this instance at the joint matrices starting at `joints` and the
+    /// morph weights starting at `weights` in the frame's shared pose arrays.
+    #[must_use]
+    pub fn with_pose(mut self, joints: u32, weights: u32) -> Self {
+        self.pose = glam::UVec4::new(joints, weights, 0, 0);
+        self
     }
 }
 

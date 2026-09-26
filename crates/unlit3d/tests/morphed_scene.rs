@@ -1,11 +1,11 @@
 //! Multi-frame snapshot coverage for position morph targets.
 //!
 //! A cube with two morph targets is drawn over several frames while its target
-//! weights animate: the weights are rewritten every frame through the source,
-//! and each frame is stored as its own snapshot. The sequence is what shows a
-//! wrong target stride, a stale weight or a mispacked displacement — a static
-//! snapshot cannot tell a correct morph from one whose weight never reaches the
-//! shader.
+//! weights animate: the weights live in a [`MorphWeights`] component the CPU
+//! updates, and each frame is stored as its own snapshot. The sequence is what
+//! shows a wrong target stride, a stale weight or a mispacked displacement — a
+//! static snapshot cannot tell a correct morph from one whose weight never
+//! reaches the shader.
 
 pub mod common;
 
@@ -69,7 +69,7 @@ fn ecs_morphed_cube_matches_snapshots() {
     let gpu = TestGpu::new(&mut world, &ctx);
 
     // The variant that reads the morph bindings: its mesh group carries the
-    // displacement and weight buffers a plain cube's does not.
+    // displacement buffer a plain cube's does not.
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     let (positions, _uvs, _colors, _indices) = cube();
     let (taper, widen) = morph_targets(&positions);
@@ -77,9 +77,13 @@ fn ecs_morphed_cube_matches_snapshots() {
         UnlitMorphTarget { positions: &taper },
         UnlitMorphTarget { positions: &widen },
     ];
-    let (mesh, handle) = gpu.allocate_morphed_cube_mesh(&world, &key, &targets, &weights(0));
+    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
 
     world.spawn((camera(),));
+    // The weights are an entity of their own: the mesh names it rather than
+    // owning it, so blending a pose is one component write and nothing on the
+    // mesh changes.
+    let weights_entity = world.spawn((MorphWeights::new(weights(0)),));
     world.spawn((
         Transform {
             scale: glam::Vec3::splat(0.9),
@@ -88,16 +92,19 @@ fn ecs_morphed_cube_matches_snapshots() {
         InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
         mesh.clone(),
         UnlitPipeline::new(key.clone()),
+        MorphBinding::new(weights_entity),
     ));
     let target = gpu.bind_offscreen_target(&world, "test::ecs_morphed");
 
     let mut previous: Option<Vec<u8>> = None;
     for frame in 0..FRAMES {
-        // The weights are a per-frame buffer write, not a mesh re-upload: the
-        // mesh's bind group is the same one the first frame drew with.
-        gpu.with_mesh_source(&world, |source, world| {
-            source.update_morph_weights(world, &handle, &weights(frame));
-        });
+        // The weights are a component write, not a mesh re-upload and not a
+        // GPU call: the source packs and uploads them once per frame.
+        let frame_weights = weights(frame);
+        world
+            .get_mut::<MorphWeights>(weights_entity)
+            .expect("the weight entity carries a `MorphWeights`")
+            .weights = frame_weights.to_vec();
 
         gpu.render(&world);
 
@@ -140,13 +147,11 @@ fn morphing_without_targets_panics() {
     let mut world = LocalWorld::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
-    let weights = gpu.with_mesh_source(&world, |source, world| {
-        source.allocate_morph_weights(world, &[0.0, 0.0])
-    });
-    gpu.allocate_deformed_cube_mesh(&world, &key, None, Some((&[], &weights)));
+    gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &[]);
 }
 
-/// A mesh whose weights do not match its target count is rejected.
+/// A mesh whose weights do not match its target count is rejected rather than
+/// read past the end of the packed pose.
 #[test]
 #[should_panic(expected = "a mesh's morph weights must hold one weight per morph target")]
 fn mismatched_morph_weight_count_panics() {
@@ -160,17 +165,25 @@ fn mismatched_morph_weight_count_panics() {
         UnlitMorphTarget { positions: &taper },
         UnlitMorphTarget { positions: &widen },
     ];
-    // Two targets, one weight: the shader would loop past the buffer's end.
-    let weights = gpu.with_mesh_source(&world, |source, world| {
-        source.allocate_morph_weights(world, &[0.5])
-    });
-    gpu.allocate_deformed_cube_mesh(&world, &key, None, Some((&targets, &weights)));
+    // Two targets, one weight: the shader would loop past the end of the pose.
+    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
+    let weights_entity = world.spawn((MorphWeights::new(vec![0.5]),));
+
+    world.spawn((camera(),));
+    world.spawn((
+        mesh,
+        UnlitPipeline::new(key),
+        MorphBinding::new(weights_entity),
+    ));
+    gpu.bind_offscreen_target(&world, "test::ecs_morphed_mismatch");
+    gpu.render(&world);
 }
 
-/// Several meshes can share one weight handle, and updating it once moves all
-/// of them.
+/// A morphed mesh drawn without a weight entity is rejected rather than blended
+/// by whatever the frame packed for somebody else.
 #[test]
-fn meshes_can_share_one_morph_weight_handle() {
+#[should_panic(expected = "a mesh with morph targets needs a `MorphBinding`")]
+fn morphing_without_a_weight_binding_panics() {
     let ctx = Ctx::headless();
     let mut world = LocalWorld::new();
     let gpu = TestGpu::new(&mut world, &ctx);
@@ -181,52 +194,63 @@ fn meshes_can_share_one_morph_weight_handle() {
         UnlitMorphTarget { positions: &taper },
         UnlitMorphTarget { positions: &widen },
     ];
-    let (first, weights) = gpu.allocate_morphed_cube_mesh(&world, &key, &targets, &[0.0, 0.0]);
-    // The second mesh takes the *same* handle, which is the point: it costs no
-    // second weight buffer and follows the first mesh's pose.
-    let second = gpu.allocate_deformed_cube_mesh(&world, &key, None, Some((&targets, &weights)));
-    assert_eq!(weights.target_count(), 2);
-    assert_eq!(
-        second.morph.as_ref().map(|morph| morph.target_count),
-        Some(2)
-    );
-    let first_weights = &first
-        .morph
-        .as_ref()
-        .expect("the first mesh is morphed")
-        .weights;
-    let second_weights = &second
-        .morph
-        .as_ref()
-        .expect("the second mesh is morphed")
-        .weights;
-    assert_eq!(
-        first_weights.resource(),
-        second_weights.resource(),
-        "both meshes read one weight buffer"
-    );
+    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
 
-    // Retiring one mesh must not free the weights the other still reads: the
-    // handle is strong, so it outlives either mesh alone. The buffer is what
-    // proves it — a freed dependency would be gone from the graph.
-    gpu.remove_mesh(&world, first);
-    assert!(
-        gpu.graph(&world).get_buffer(weights.resource()).is_some(),
-        "the shared weights outlive the mesh that no longer reads them"
-    );
-    gpu.with_mesh_source(&world, |source, world| {
-        source.update_morph_weights(world, &weights, &[1.0, 0.0]);
-    });
+    world.spawn((camera(),));
+    world.spawn((mesh, UnlitPipeline::new(key)));
+    gpu.bind_offscreen_target(&world, "test::ecs_morphed_unbound");
+    gpu.render(&world);
+}
 
-    // The shared weights outlive the last mesh that read them too: they are
-    // the caller's resource, so retiring a mesh never frees a pose another
-    // mesh may still share.
-    gpu.remove_mesh(&world, second);
-    assert!(
-        gpu.graph(&world).get_buffer(weights.resource()).is_some(),
-        "the shared weights outlive the last mesh that read them"
+/// Several meshes can share one weight entity, and moving it moves all of them.
+#[test]
+fn meshes_can_share_one_morph_weights() {
+    let ctx = Ctx::headless();
+    let mut world = LocalWorld::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
+    let (positions, _uvs, _colors, _indices) = cube();
+    let (taper, widen) = morph_targets(&positions);
+    let targets = [
+        UnlitMorphTarget { positions: &taper },
+        UnlitMorphTarget { positions: &widen },
+    ];
+    let first = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
+    let second = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
+
+    // One weight entity, named by both meshes: a crowd of copies of one mesh
+    // shares one blended pose instead of holding a copy each.
+    let weights_entity = world.spawn((MorphWeights::new(vec![0.0, 0.0]),));
+    world.spawn((camera(),));
+    for (mesh, x) in [(first, -0.7), (second, 0.7)] {
+        world.spawn((
+            Transform {
+                translation: glam::Vec3::new(x, 0.0, 0.0),
+                ..Default::default()
+            },
+            mesh,
+            UnlitPipeline::new(key.clone()),
+            MorphBinding::new(weights_entity),
+        ));
+    }
+    let target = gpu.bind_offscreen_target(&world, "test::ecs_morphed_shared");
+
+    // Zero weights and a blended pose must render differently: if the source
+    // packed one pose per mesh rather than one per instance, the shared entity
+    // would reach only one of them.
+    let read = |gpu: &TestGpu| {
+        gpu.render(&world);
+        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+    };
+    let unweighted = read(&gpu);
+    world
+        .get_mut::<MorphWeights>(weights_entity)
+        .expect("the weight entity carries a `MorphWeights`")
+        .weights = vec![1.0, 0.0];
+    let blended = read(&gpu);
+
+    assert_ne!(
+        unweighted, blended,
+        "the shared weights must reach both meshes"
     );
-    gpu.with_mesh_source(&world, |source, world| {
-        source.update_morph_weights(world, &weights, &[0.0, 1.0]);
-    });
 }
