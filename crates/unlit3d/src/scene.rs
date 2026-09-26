@@ -188,11 +188,7 @@ where
             }
         };
 
-        let centre = glam::Vec3A::new(
-            instance.model[0].w,
-            instance.model[1].w,
-            instance.model[2].w,
-        );
+        let centre = glam::Vec3A::from(instance.translation());
         let depth = (centre - glam::Vec3A::from(self.frame.camera.position)).length();
         let sort_key = match self.frame.world.get::<GpuMaterial>(entity) {
             Some(material) => material.sort_key(),

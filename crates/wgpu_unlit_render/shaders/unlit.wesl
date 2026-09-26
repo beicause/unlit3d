@@ -46,8 +46,8 @@
 //                      Uint16x4 indices + Unorm16x4 weights [VERTEX_JOINTS]
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
 //                      plus color Unorm8x4 [VERTEX_COLOR]
-//   slot 2  instance   Float32x4x3 model matrix + Float32x4 base color
-//                      + Uint32x4 pose base, stepped per instance
+//   slot 2  instance   Float32x4x3 model matrix + Unorm8x4 base color
+//                      + Uint32x2 pose base, stepped per instance
 //                      [VERTEX_INSTANCE]
 //
 // The mesh metadata bindings exist only when a channel is compressed: a
@@ -117,7 +117,8 @@ struct VertexInput {
     @if(VERTEX_INSTANCE) @location(3) model_0: vec4<f32>,
     @if(VERTEX_INSTANCE) @location(4) model_1: vec4<f32>,
     @if(VERTEX_INSTANCE) @location(5) model_2: vec4<f32>,
-    /// Per-instance base color.
+    /// Per-instance base color, Unorm8x4, unpacked to `0..=1` by the vertex
+    /// format.
     @if(VERTEX_INSTANCE) @location(6) base_color: vec4<f32>,
 
     /// Joint indices, Uint16x4. They address data rather than interpolate, so
@@ -127,9 +128,9 @@ struct VertexInput {
     /// Joint weights, Unorm16x4, summing to 1.
     @if(VERTEX_JOINTS) @location(8) weights: vec4<f32>,
 
-    /// Per-instance pose base, Uint32x4: `.x` is the instance's first joint
+    /// Per-instance pose base, Uint32x2: `.x` is the instance's first joint
     /// matrix and `.y` its first morph weight in the frame's shared arrays.
-    @if(VERTEX_INSTANCE) @location(9) pose: vec4<u32>,
+    @if(VERTEX_INSTANCE) @location(9) pose: vec2<u32>,
 }
 
 struct VertexOut {

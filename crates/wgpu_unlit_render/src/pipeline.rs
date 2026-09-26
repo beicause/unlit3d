@@ -799,8 +799,8 @@ impl UnlitPipeline {
             location::MODEL_0 => Float32x4,
             location::MODEL_1 => Float32x4,
             location::MODEL_2 => Float32x4,
-            location::BASE_COLOR => Float32x4,
-            location::POSE => Uint32x4,
+            location::BASE_COLOR => Unorm8x4,
+            location::POSE => Uint32x2,
         ];
 
         // Each stream describes its own layout, so the attributes a pipeline
@@ -814,8 +814,10 @@ impl UnlitPipeline {
             flags
                 .contains(UnlitFlags::VERTEX_INSTANCE)
                 .then(|| VertexBufferLayoutDesc {
-                    // Every instance attribute is a whole `vec4`, so the
-                    // element is the sum of their sizes and carries no padding.
+                    // The record is tightly packed, so its stride is the sum of
+                    // the attribute formats: the flat `[f32; 4]` columns and the
+                    // `Uint32x2` pose base carry no alignment padding, and the
+                    // `Unorm8x4` color fills its four bytes exactly.
                     array_stride: INSTANCE_ATTRIBUTES
                         .iter()
                         .map(|attribute| attribute.format.size())
@@ -1583,9 +1585,21 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             size_of::<MeshInstance>() as u64,
             "the instance stride must step exactly one MeshInstance"
         );
+        // The record has to be tightly packed: `IntoBytes` rejects a type with
+        // padding, so the sum of the formats is the whole stride and the last
+        // attribute ends where the record does.
+        let formats: u64 = instance
+            .attributes
+            .iter()
+            .map(|attribute| attribute.format.size())
+            .sum();
+        assert_eq!(
+            formats, instance.array_stride,
+            "the instance record carries no padding"
+        );
 
         let model = offset_of!(MeshInstance, model) as u64;
-        let vec4 = size_of::<glam::Vec4>() as u64;
+        let vec4 = size_of::<[f32; 4]>() as u64;
         let expected = [
             model,
             model + vec4,
@@ -1616,15 +1630,17 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 location::POSE,
             ]
         );
-        // The matrix and color are floats; the pose base indexes the frame's
-        // pose arrays and so is integer.
-        for attribute in &instance.attributes {
-            let expected = if attribute.shader_location == location::POSE {
-                wgpu::VertexFormat::Uint32x4
-            } else {
-                wgpu::VertexFormat::Float32x4
-            };
-            assert_eq!(attribute.format, expected, "{attribute:?}");
-        }
+        // The matrix columns are floats, the color is quantized and the pose
+        // base indexes the frame's pose arrays and so is integer.
+        let expected_formats = [
+            wgpu::VertexFormat::Float32x4,
+            wgpu::VertexFormat::Float32x4,
+            wgpu::VertexFormat::Float32x4,
+            wgpu::VertexFormat::Unorm8x4,
+            wgpu::VertexFormat::Uint32x2,
+        ];
+        let formats: Vec<wgpu::VertexFormat> =
+            instance.attributes.iter().map(|a| a.format).collect();
+        assert_eq!(formats, expected_formats, "{instance:?}");
     }
 }

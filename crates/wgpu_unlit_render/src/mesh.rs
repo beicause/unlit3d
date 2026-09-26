@@ -276,7 +276,7 @@ impl MeshInfo {
 /// This is the vertex stream of `unlit.wesl`'s instance slot, so upload a
 /// `&[MeshInstance]` as that slot's buffer. The matrix is packed as three
 /// columns with each column's `.w` holding the matching translation
-/// component, which is why it is stored as [`glam::Vec4`]s rather than a
+/// component, which is why it is stored as columns rather than a
 /// [`glam::Mat4`]: the shader transforms a point with three dot products and
 /// never treats it as a matrix.
 ///
@@ -289,6 +289,11 @@ impl MeshInfo {
 /// [`crate::pipeline::UnlitPipeline::vertex_buffer_layouts`], not by WGSL
 /// shader-layout rules, so this type makes no `const_shader_layout` claim;
 /// that the offsets line up is asserted by a test instead.
+///
+/// The record is tightly packed — the sum of its vertex formats is its stride —
+/// which is why the columns are `[f32; 4]` rather than [`glam::Vec4`]: a `Vec4`
+/// is sixteen-byte aligned, which would round the record up and leave trailing
+/// padding the upload would have to write as zeroes.
 #[repr(C)]
 #[derive(
     Clone,
@@ -302,44 +307,46 @@ impl MeshInfo {
 )]
 pub struct MeshInstance {
     /// Affine model matrix columns, translation in each `.w` lane.
-    pub model: [glam::Vec4; 3],
-    /// Linear RGBA base color.
-    pub base_color: glam::Vec4,
-    /// Where this instance's pose starts in the frame's shared pose arrays: `x`
-    /// indexes the joint matrices, `y` the morph weights.
-    ///
-    /// Both arrays hold the pose of every visible instance, so the shader reads
-    /// a joint or a weight at this base plus its own index. Zero for an
-    /// instance that deforms by nothing. Only `x` and `y` are meaningful; the
-    /// vector is four lanes wide so the record stays a whole number of `vec4`s
-    /// and carries no padding bytes.
-    pub pose: glam::UVec4,
+    pub model: [[f32; 4]; 3],
+    /// Linear RGBA base color, `Unorm8x4`.
+    pub base_color: CompressedColor,
+    /// Where this instance's pose starts in the frame's shared pose arrays.
+    pub pose: PoseBase,
 }
 
 impl MeshInstance {
     /// Build an instance from a world transform and a linear RGBA base color.
     ///
-    /// The instance reads no pose data; point it at some with
-    /// [`Self::with_pose`].
+    /// The color is quantized to the `Unorm8x4` the instance stream carries, so
+    /// a component outside `0..=1` saturates rather than wrapping. The instance
+    /// reads no pose data; point it at some with [`Self::with_pose`].
     pub fn new(world_from_local: glam::Affine3A, base_color: glam::Vec4) -> Self {
         let linear = world_from_local.matrix3;
         let translation = world_from_local.translation;
         Self {
             model: [
-                linear.x_axis.extend(translation.x),
-                linear.y_axis.extend(translation.y),
-                linear.z_axis.extend(translation.z),
+                linear.x_axis.extend(translation.x).to_array(),
+                linear.y_axis.extend(translation.y).to_array(),
+                linear.z_axis.extend(translation.z).to_array(),
             ],
-            base_color,
-            pose: glam::UVec4::ZERO,
+            base_color: base_color.to_array().map(f32_to_unorm8),
+            pose: PoseBase::ZERO,
         }
+    }
+
+    /// The world-space translation this instance places its mesh at.
+    ///
+    /// The model matrix stores it in the `.w` lane of each column, so this is
+    /// how a caller reads it back out.
+    pub fn translation(&self) -> glam::Vec3 {
+        glam::Vec3::new(self.model[0][3], self.model[1][3], self.model[2][3])
     }
 
     /// Point this instance at the joint matrices starting at `joints` and the
     /// morph weights starting at `weights` in the frame's shared pose arrays.
     #[must_use]
     pub fn with_pose(mut self, joints: u32, weights: u32) -> Self {
-        self.pose = glam::UVec4::new(joints, weights, 0, 0);
+        self.pose = PoseBase::new(joints, weights);
         self
     }
 }
@@ -366,6 +373,45 @@ pub type CompressedColor = [u8; 4];
 /// One vertex's joint indices: `Uint16x4`.
 pub type CompressedJoints = [u16; 4];
 
+/// Where one instance's pose starts in the frame's shared pose arrays:
+/// `Uint32x2`, with `x` indexing the joint matrices and `y` the morph weights.
+///
+/// Both arrays hold the pose of every visible instance, so the shader reads a
+/// joint or a weight at this base plus its own index. Zero for an instance that
+/// deforms by nothing.
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+)]
+pub struct PoseBase {
+    /// The instance's first joint matrix.
+    pub joints: u32,
+    /// The instance's first morph weight.
+    pub weights: u32,
+}
+
+impl PoseBase {
+    /// An instance that deforms by nothing.
+    pub const ZERO: Self = Self {
+        joints: 0,
+        weights: 0,
+    };
+
+    /// The base an instance deforming by the joint matrices at `joints` and the
+    /// morph weights at `weights` reads from.
+    pub const fn new(joints: u32, weights: u32) -> Self {
+        Self { joints, weights }
+    }
+}
 /// One vertex's joint weights: `Unorm16x4`, summing to 1.
 pub type CompressedWeights = [u16; 4];
 

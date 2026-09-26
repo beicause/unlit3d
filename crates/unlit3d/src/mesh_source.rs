@@ -22,7 +22,7 @@ use unlit_ecs::{LocalWorld, TypeIdHashMap};
 use wgpu_unlit_render::buffer_pool::BufferPool;
 use wgpu_unlit_render::globals::{Globals, View};
 use wgpu_unlit_render::mesh::{
-    JointMatrix, MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_weights,
+    JointMatrix, MeshInfo, MeshInstance, MeshMetadata, PoseBase, compress_indices, compress_weights,
 };
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
@@ -1606,7 +1606,7 @@ impl MeshSource {
                 0
             };
 
-            entry.mesh.instance.pose = glam::UVec4::new(joints_base, weights_base, 0, 0);
+            entry.mesh.instance.pose = PoseBase::new(joints_base, weights_base);
         }
     }
 
@@ -2402,9 +2402,9 @@ mod tests {
             scale: glam::Vec3::ONE,
         };
         let instance = MeshInstance::new(t.compute_matrix(), glam::Vec4::new(1.0, 1.0, 1.0, 1.0));
-        assert_eq!(instance.model[0].w, 1.0);
-        assert_eq!(instance.model[1].w, 2.0);
-        assert_eq!(instance.model[2].w, 3.0);
+        assert_eq!(instance.translation(), glam::Vec3::new(1.0, 2.0, 3.0));
+        // The color is quantized to the `Unorm8x4` the stream carries.
+        assert_eq!(instance.base_color, [u8::MAX; 4]);
     }
 
     // -- pipeline registration ---------------------------------------------
