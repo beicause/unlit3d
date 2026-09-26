@@ -595,6 +595,24 @@ impl EguiIntegration {
         graph.cleanup_drop();
     }
 
+    /// Move the integration onto `pipeline`, keeping every node it registered.
+    ///
+    /// A different render target specializes the pipeline differently, and the
+    /// materials were created from the old pipeline's material layout, so they
+    /// are dropped here — but only they: the textures, views, samplers and
+    /// geometry buffers do not depend on the target, and egui will not resend
+    /// its font atlas after a rebuild, so discarding them would both leak the
+    /// old nodes and leave the new integration unable to draw text. The next
+    /// [`Self::update`] rebuilds each missing material from the new layout.
+    pub fn retarget(&mut self, graph: &mut ResourceGraph, pipeline: UnlitPipeline) {
+        for &(_, id) in &self.materials {
+            graph.remove_drop(id);
+        }
+        self.materials.clear();
+        self.draws.clear();
+        self.pipeline = pipeline;
+    }
+
     /// Pack `primitives` into the vertex and index buffers, staging the bytes
     /// through `encoder`, and fill [`Self::draws`] with where each one landed.
     ///

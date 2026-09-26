@@ -239,7 +239,9 @@ impl UiSource {
                 graph
                     .replace(gpu.global_group, Resource::BindGroup(group))
                     .expect("the global group is registered in the graph");
-                gpu.integration = EguiIntegration::new(device, gpu.global_group, pipeline);
+                // Same uniforms, same group node, same integration state; the
+                // new pipeline is all that actually changed.
+                gpu.integration.retarget(&mut *graph, pipeline);
             }
             None => {
                 let camera = uniform_buffer(
