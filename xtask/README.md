@@ -1,15 +1,16 @@
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](https://github.com/beicause/unlit3d/blob/main/xtask/README.zh-CN.md)
 
 # xtask
 
 The repository's task runner, behind the `cargo xtask` alias. It wraps the
-commands a contributor runs before a commit, so CI and a local run cannot
-drift apart, and it builds the example's web and Android artifacts.
+commands a contributor runs before a commit, so CI and a local run cannot drift
+apart, and it builds the example's web and Android artifacts.
 
 This is a development tool for this repository only. It is not a workspace
-member — the workspace manifest lists it under `exclude`, and `.cargo/config.toml`
-wires it up as `xtask = "run --manifest-path xtask/Cargo.toml --"` — so the task
-runner's own dependencies never weigh on the workspace the tasks act on. It is
+member — the workspace manifest lists it under `exclude`, and
+`.cargo/config.toml` wires it up as
+`xtask = "run --manifest-path xtask/Cargo.toml --"` — so the task runner's own
+dependencies never weigh on the workspace the tasks act on. It is
 `publish = false`.
 
 ## Tasks
@@ -51,8 +52,8 @@ and prints the URL to open. `--no-serve` builds and runs bindgen without
 serving; `--release` builds in release mode; trailing positional arguments are
 passed through to the `cargo build`.
 
-The binary is named explicitly rather than left to the default target
-selection: the example crate is a `cdylib` as well as a binary, and on
+The binary is named explicitly rather than left to the default target selection:
+the example crate is a `cdylib` as well as a binary, and on
 `wasm32-unknown-unknown` both want to write `unlit3d_examples.wasm`, which cargo
 reports as an output filename collision. The binary is what a browser runs.
 
@@ -60,30 +61,29 @@ reports as an output filename collision. The binary is what a browser runs.
 
 Two tools, split along the language boundary. `cargo ndk` cross-compiles the
 example for Android and drops the `.so` into the app's `jniLibs` directory,
-which is where Gradle looks for native libraries and packages whatever it
-finds; Gradle then compiles the activity and assembles the APK around it. The
-library is built first because an APK without it is an activity that cannot
-start.
+which is where Gradle looks for native libraries and packages whatever it finds;
+Gradle then compiles the activity and assembles the APK around it. The library
+is built first because an APK without it is an activity that cannot start.
 
 Both tools configure themselves from the environment: `cargo ndk` reads the NDK
 out of `ANDROID_NDK_HOME` (or the newest one under `ANDROID_HOME/ndk`) and
 Gradle reads the SDK out of `ANDROID_HOME` (or `android/local.properties`). A
 JDK 17 or newer must be on `PATH`, which is what AGP requires.
 
-One ABI, `arm64-v8a`, and one API level, 26, are compiled, matching
-`abiFilters` and `minSdk` in `android/app/build.gradle.kts` — those two files
-are the whole contract between the Rust and Gradle halves of the build. The
-default build type is debug; `--release` builds a release APK, which is left
-unsigned because the project ships no signing configuration.
+One ABI, `arm64-v8a`, and one API level, 26, are compiled, matching `abiFilters`
+and `minSdk` in `android/app/build.gradle.kts` — those two files are the whole
+contract between the Rust and Gradle halves of the build. The default build type
+is debug; `--release` builds a release APK, which is left unsigned because the
+project ships no signing configuration.
 
 ### `cargo xtask publish`
 
 Publishes the crates that reach crates.io — `unlit_ecs`, `unlit_wgpu` and
 `unlit3d` — one at a time and in that order. The order is a requirement rather
 than a preference: a crate cannot be packaged until the crates it depends on are
-in the registry, so publishing `unlit3d` first fails with `no matching package
-named unlit_ecs found`. `cargo publish` waits for each uploaded crate to appear
-in the index, which is what makes the next one resolve.
+in the registry, so publishing `unlit3d` first fails with
+`no matching package named unlit_ecs found`. `cargo publish` waits for each
+uploaded crate to appear in the index, which is what makes the next one resolve.
 
 `cargo publish --workspace` would order the crates itself, but its `--dry-run`
 cannot verify the packages (rust-lang/cargo#16525); publishing crate by crate
@@ -107,8 +107,6 @@ src/publish.rs        `cargo xtask publish`: the crates and their publish order
 src/http.rs           the static file server `run-wasm` serves with
 src/step.rs           running one child command and reporting which step failed
 ```
-
-The crate denies `missing_docs`, so every item carries a doc comment.
 
 ## Building it
 

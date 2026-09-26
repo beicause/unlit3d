@@ -1,15 +1,16 @@
-English | [简体中文](README.zh-CN.md)
+English | [简体中文](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md)
 
 # unlit3d_examples
 
 A windowed example with selectable scenes, rendered through
-[`unlit3d::winit::WindowSurface`](../crates/unlit3d/README.md) — or, headlessly,
-into an offscreen target that is read back and compared against stored
-snapshots. It is both the workspace's example program and its rendering
-regression check in CI, and it is also the Android example, packaged as an APK.
+[`unlit3d::winit::WindowSurface`]
+— or, headlessly, into an offscreen target that is read back and compared
+against stored snapshots. It is both the workspace's example program and its
+rendering regression check in CI, and it is also the Android example, packaged
+as an APK.
 
-The example is at an **early stage** along with the crates it uses, and it
-exercises parts of them that are still under construction.
+It is at an **early stage** along with the crates it uses, and it exercises
+parts of them that are still under construction.
 
 ## Scenes
 
@@ -32,36 +33,41 @@ Scenes:
 ```
 
 Each scene reproduces exactly what its test froze: the same world, camera and
-frame sequence, so the stored snapshots in
-[`unlit3d_asset_files`](../unlit3d_asset_files/README.md)
-still verify it. `transparent_zsorted` is the exception: it is not ported from a
-test but adds the coverage the ported scenes lack — overlapping translucent
-draws, whose composite depends on both the z-sort and the blend state, neither
-of which the opaque scenes exercise. The scenes are built with the same public
-`unlit3d` API any caller would use — nothing in the example reaches into the
-crates' internals.
+frame sequence, so the stored snapshots still verify it. `transparent_zsorted`
+is the exception: it is not ported from a test but adds the coverage the ported
+scenes lack — overlapping translucent draws, whose composite depends on both the
+z-sort and the blend state, neither of which the opaque scenes exercise.
 
-## Role in the workspace
+Every scene is built with the same public `unlit3d` API any caller would use —
+nothing in the example reaches into the crates' internals.
 
-This is the only crate in the workspace that ships a binary, and the only
-consumer that combines every other crate: it uses
-[`unlit3d`](../crates/unlit3d/README.md) for the frame loop, ECS components,
-input and UI, and
-[`unlit_wgpu`](../crates/unlit_wgpu/README.md) for the pipeline
-options and the resource graph. Its headless path borrows
-[`unlit_wgpu_test_util`](../crates/unlit_wgpu_test_util/README.md) for frame
-readback and scoring, behind the `snapshot` feature.
+## How it runs
 
-It is a library as well as a binary, because Android starts neither a process
-nor a command line: the activity loads the shared library and calls its
-`android_main`, and the command-line path is the binary. Both end in the same
-windowed loop, so the example only has one frame loop to maintain.
+The windowed path is the whole frame loop a windowed app needs. The renderer is
+spawned once as a resource entity, a scene's meshes and materials are allocated
+through its mesh source, and every `RedrawRequested` acquires the swap chain's
+next image, renders the ECS world into it and presents it. A resize is handed to
+the surface, which reconfigures the swap chain and rebuilds the depth and
+multisample attachments the renderer draws with.
+
+The GPU context is requested asynchronously, because the adapter and device
+requests are: on the web they resolve on the browser's task queue, so the frame
+loop must not block on them. The window is created on the main thread — winit
+hands out a window's raw handle only from the thread that owns it — and the
+context arrives back through the event loop's proxy, where the scene is built on
+the thread that owns the ECS world.
+
+A suspension does not reset any of that. The platform invalidates the render
+surface, and on Android destroys the native window under it, but the window
+handle, the GPU context and the whole ECS world stay: the swap chain alone is
+released and built again on the next resume, so the app comes back to the state
+it left — the same spin angle, camera orbit and panel values.
 
 ## Features
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `snapshot` | no | the headless capture path: `--headless`, `--output` and `--snapshot`. It pulls in the test harness's frame readback and perceptual comparison, so the windowed example needs neither, and the wasm and Android builds never see it |
+| `snapshot` | no | the headless capture path: `--headless`, `--output` and `--snapshot`. It pulls in the test harness's frame readback and perceptual comparison, so the wasm and Android builds never see it |
 
 ## Running it
 
@@ -70,10 +76,9 @@ cargo run -p unlit3d_examples
 ```
 
 A window opens with the default scene — a spinning, textured cube and two egui
-panels — plus a panel that lists every scene, so one can be switched to at
-runtime. `Esc` closes it; the cube's panel's button, checkbox and slider drive
-the spin, and dragging with the left button orbits the camera. A scene can be
-selected from the command line instead:
+panels — plus a panel that lists every scene. `Esc` closes it; the cube's
+panel's button, checkbox and slider drive the spin, and dragging with the left
+button orbits the camera. A scene can be selected from the command line instead:
 
 ```text
 cargo run -p unlit3d_examples -- --scene ecs_skinned
@@ -86,13 +91,18 @@ To run the same example in a browser — where WebGPU needs a secure context, so
 cargo xtask run-wasm
 ```
 
+It is a library as well as a binary, because Android starts neither a process
+nor a command line: the activity loads the shared library and calls its
+`android_main`, and the command-line path is the binary. Both end in the same
+windowed loop, so the example only has one frame loop to maintain.
+
 ## Android
 
 Android starts an *activity*, not a process: the activity loads the shared
-library and calls its `android_main` on a thread of its own, which is why this
-crate is a library as well as a binary. `android_main` builds the event loop
-with the activity winit requires on that platform and hands it to the same
-windowed loop the binary drives, starting with the default scene.
+library and calls its `android_main` on a thread of its own. `android_main`
+builds the event loop with the activity winit requires on that platform and
+hands it to the same windowed loop the binary drives, starting with the default
+scene.
 
 To build the APK, which cross-compiles the library, stages it in the Gradle
 project's `jniLibs` directory and then runs the Gradle wrapper there:
@@ -102,13 +112,13 @@ cargo xtask build-android
 ```
 
 The result is `android/app/build/outputs/apk/debug/app-debug.apk`, installable
-with `adb install`. `--release` builds a release APK instead, which this
-project leaves unsigned. The project's Gradle setup — its `compileSdk`, its
-`minSdk`, its one ABI — and the task's own constants have to agree; see
-[`xtask/README.md`](../xtask/README.md#cargo-xtask-build-android).
+with `adb install`. `--release` builds a release APK instead, which this project
+leaves unsigned. The project's Gradle setup and the task's own constants have to
+agree; see the
+[task runner's README](https://github.com/beicause/unlit3d/blob/main/xtask/README.md#cargo-xtask-build-android).
 
 The activity is
-[`android/app/src/main/java/org/unlit3d/example/MainActivity.kt`](../android/app/src/main/java/org/unlit3d/example/MainActivity.kt).
+[`MainActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/MainActivity.kt).
 It extends `GameActivity`, which loads the library named by the
 `android.app.lib_name` manifest entry and calls into it, so the activity itself
 only takes the screen over. The whole application — window, GPU context, frame
@@ -131,9 +141,8 @@ with code 2. `--scene all` runs every scene, which is what CI does.
 ### Options
 
 The options are declared and parsed with
-[`argh`](https://docs.rs/argh) — the same library `xtask` uses. Every option is
-`--name value` or a bare flag; the value must be the next argument, so
-`--name=value` is not accepted.
+[`argh`](https://docs.rs/argh). Every option is `--name value` or a bare flag;
+the value must be the next argument, so `--name=value` is not accepted.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
@@ -141,20 +150,19 @@ The options are declared and parsed with
 | `--scene <ID>` | `cube` | The scene to run; `all` runs every scene (headless only) |
 | `--list-scenes` | off | Print the scene table and exit |
 | `--size <WxH>` | the scene's own | Render target size in pixels; also the window's initial size |
-| `--frames <N>` | the scene's own | Frames to draw before capturing. The scene's own count is what its snapshots were stored at; `--frames` overrides it |
+| `--frames <N>` | the scene's own | Frames to draw before capturing |
 | `--output <PATH>` | none | Write the captured frame to `PATH` as a lossless WebP |
 | `--snapshot <PATH>` | none | Compare the captured frame against the snapshot at `PATH`, instead of the scene's own snapshots |
 | `--update` | off | Store the snapshots being compared instead of comparing them |
 | `--no-ui` | off | Draw the scene without its UI overlay |
 | `--min-score <S>` | `85.0` | Lowest SSIMULACRA2 score that counts as matching |
 | `--snapshot-dir <D>` | the asset submodule's `snapshots` | Where the scene's own snapshots resolve, by name |
-| `-h`, `--help` | | Print the usage text and the scene table |
 
 `--output`, `--snapshot`, `--update` and `--scene all` have no meaning in the
 windowed loop, so asking for one without `--headless` is an error rather than a
 silent no-op. `--scene all` cannot be combined with `--output` or `--snapshot`.
-`--no-ui` is only honoured by the headless path; the windowed path always
-mounts the UI.
+`--no-ui` is only honoured by the headless path; the windowed path always mounts
+the UI.
 
 ### Playback pace
 
@@ -163,23 +171,21 @@ matches its snapshots frame by frame. The windowed loop instead plays them over
 time: a scene whose animation was frozen as a few frames holds each one for
 `SEQUENCE_STEP` (currently 0.5 s), so the sequence is watchable rather than
 flashing past at the refresh rate. At most one sequence step is taken per
-windowed frame, so a stall does not skip frames. Continuously animated scenes —
-the spinning cube, say — are unaffected, since they advance from the frame
-delta already.
+windowed frame, so a stall does not skip frames.
 
 ### Snapshots
 
 Without `--snapshot`, a headless run compares every frame the scene declares a
-snapshot for — a multi-frame scene's whole sequence — against the snapshot
-directory. The comparison uses SSIMULACRA2 and exits non-zero when the score
-falls below `--min-score`. If a snapshot is missing it refuses to compare and
-tells you to generate one with `--update` — writing a missing snapshot would
-let a regression pass CI by creating the very file the check is meant to read.
+snapshot for against the snapshot directory. The comparison uses SSIMULACRA2 and
+exits non-zero when the score falls below `--min-score`. If a snapshot is
+missing it refuses to compare and tells you to generate one with `--update` —
+writing a missing snapshot would let a regression pass CI by creating the very
+file the check is meant to read.
 
 A scene's own snapshots only describe a run that reproduces the scene's stored
-settings. Overriding `--size`, `--frames` or `--no-ui` therefore makes a custom
-capture that is written with `--output` but not compared against the scene's
-snapshots; compare it explicitly with `--snapshot <PATH>` instead.
+settings, so overriding `--size`, `--frames` or `--no-ui` makes a custom capture
+that is written with `--output` but not compared against the scene's snapshots;
+compare it explicitly with `--snapshot <PATH>` instead.
 
 ```text
 cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
@@ -188,7 +194,7 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 is exactly what the CI snapshot job runs, against the submodule's committed
 images. To re-bless one or all of them after an intentional rendering change,
 add `--update`, then review the image diffs in
-[`unlit3d_asset_files`](../unlit3d_asset_files/README.md)
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
 before committing them. That submodule is checked out with
 `git submodule update --init`.
 

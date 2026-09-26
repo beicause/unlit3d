@@ -1,11 +1,11 @@
-[English](README.md) | 简体中文
+[English](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md) | 简体中文
 
 # unlit3d_examples
 
 一个带 egui 叠加层、可切换场景的窗口化示例，通过
-[`unlit3d::winit::WindowSurface`](../crates/unlit3d/README.zh-CN.md) 渲染；也可以
-无头地渲染到一个离屏目标，回读后与存储的快照比较。它既是本工作区的示例程序，也是 CI 中的
-渲染回归检查，同时还是 Android 示例，会打包成 APK。
+[`unlit3d::winit::WindowSurface`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
+渲染；也可以无头地渲染到一个离屏目标，回读后与存储的快照比较。它既是本工作区的示例
+程序，也是 CI 中的渲染回归检查，同时还是 Android 示例，会打包成 APK。
 
 与本示例所用到的那些 crate 一样，示例也处于**早期阶段**，并且会用到其中仍在建设中
 的部分。
@@ -28,31 +28,33 @@ Scenes:
   transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
 
-每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此
-[`unlit3d_asset_files`](../unlit3d_asset_files/README.md) 中存储
-的快照仍然能验证它。`transparent_zsorted` 是个例外：它并非从测试移植而来，而是补上移植
-场景所缺的覆盖——重叠的半透明绘制，其合成结果同时取决于 z 排序与混合状态，这两者都是
-不透明场景不会触及的。场景全部用公开的 `unlit3d` API 构建——示例没有任何一处触碰到
-crate 的内部实现。
+每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此存储的快照仍然
+能验证它。`transparent_zsorted` 是个例外：它并非从测试移植而来，而是补上移植场景所缺
+的覆盖——重叠的半透明绘制，其合成结果同时取决于 z 排序与混合状态，这两者都是不透明
+场景不会触及的。场景全部用公开的 `unlit3d` API 构建——示例没有任何一处触碰到 crate
+的内部实现。
 
-## 在工作区中的位置
+## 运行方式
 
-这是工作区中唯一带二进制的 crate，也是唯一一个把所有其他 crate 组合起来的消费者：它用
-[`unlit3d`](../crates/unlit3d/README.zh-CN.md) 处理帧循环、ECS 组件、输入与 UI，用
-[`unlit_wgpu`](../crates/unlit_wgpu/README.zh-CN.md) 获取管线选项与
-资源图。它的无头路径在 `snapshot` feature 之后借用
-[`unlit_wgpu_test_util`](../crates/unlit_wgpu_test_util/README.zh-CN.md) 做帧回读与
-评分。
+窗口化路径就是一个窗口应用所需的完整帧循环。渲染器作为资源实体只生成一次，场景的网格
+与材质通过它的 mesh source 分配；每次 `RedrawRequested` 都获取交换链的下一个图像，把
+ECS world 渲染进去并呈现。窗口尺寸变化交给 surface 处理，它会重新配置交换链，并重建
+渲染器绘制所用的深度与多重采样附件。
 
-它既是库也是二进制，因为 Android 既不启动进程也不提供命令行：activity 加载动态库并
-调用它的 `android_main`，而命令行入口是那个二进制。两者最终进入同一个窗口化循环，
-因此示例只需要维护一个帧循环。
+GPU 上下文是异步请求的，因为 adapter 与 device 请求本身就是异步：在 web 上它们由浏览器
+的任务队列完成，所以帧循环不能阻塞等待。窗口在主线程创建——winit 只从拥有窗口的线程
+交出它的原始句柄——而上下文通过事件循环的 proxy 返回，场景就在拥有 ECS world 的线程上
+构建。
+
+挂起（suspend）不会重置上述任何状态。平台会使渲染 surface 失效，在 Android 上还会销毁
+它底下的原生窗口，但窗口句柄、GPU 上下文与整个 ECS world 都会保留：只有交换链被释放，
+并在下次恢复时重建，因此应用会回到离开时的状态——相同的自转角、相机环绕与面板值。
 
 ## Feature
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `snapshot` | 否 | 无头捕获路径：`--headless`、`--output` 与 `--snapshot`。它会引入测试骨架的帧回读与感知比较，因此窗口化示例两者都不需要，wasm 与 Android 构建也永远不会看到它 |
+| `snapshot` | 否 | 无头捕获路径：`--headless`、`--output` 与 `--snapshot`。它会引入测试骨架的帧回读与感知比较，因此 wasm 与 Android 构建永远不会看到它 |
 
 ## 运行
 
@@ -75,11 +77,15 @@ cargo run -p unlit3d_examples -- --scene ecs_skinned
 cargo xtask run-wasm
 ```
 
+它既是库也是二进制，因为 Android 既不启动进程也不提供命令行：activity 加载动态库并
+调用它的 `android_main`，而命令行入口是那个二进制。两者最终进入同一个窗口化循环，
+因此示例只需要维护一个帧循环。
+
 ## Android
 
 Android 启动的是一个 *activity*，而不是进程：activity 加载动态库，并在线程中调用它的
-`android_main`——这正是本 crate 既是库也是二进制的原因。`android_main` 用该平台要求
-的 activity 构建事件循环，然后交给二进制所驱动的那个同样的窗口化循环，从默认场景开始。
+`android_main`。`android_main` 用该平台要求的 activity 构建事件循环，然后交给二进制
+所驱动的那个同样的窗口化循环，从默认场景开始。
 
 构建 APK：先交叉编译动态库，把它放进 Gradle 工程的 `jniLibs` 目录，再在那里运行
 Gradle wrapper：
@@ -89,12 +95,12 @@ cargo xtask build-android
 ```
 
 产物是 `android/app/build/outputs/apk/debug/app-debug.apk`，可用 `adb install` 安装。
-`--release` 改为构建 release APK，本工程让它保持未签名。工程的 Gradle 配置——它的
-`compileSdk`、`minSdk` 和唯一的 ABI——必须与任务中的常量一致，参见
-[`xtask/README.zh-CN.md`](../xtask/README.zh-CN.md#cargo-xtask-build-android)。
+`--release` 改为构建 release APK，本工程让它保持未签名。工程的 Gradle 配置必须与任务
+中的常量一致，参见
+[任务执行器的 README](https://github.com/beicause/unlit3d/blob/main/xtask/README.zh-CN.md#cargo-xtask-build-android)。
 
 activity 位于
-[`android/app/src/main/java/org/unlit3d/example/MainActivity.kt`](../android/app/src/main/java/org/unlit3d/example/MainActivity.kt)。
+[`MainActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/MainActivity.kt)。
 它继承 `GameActivity`，后者会加载清单项 `android.app.lib_name` 指定的动态库并调用进去，
 因此 activity 本身只负责接管屏幕。整个应用——窗口、GPU 上下文、帧循环——都在本 crate 中。
 
@@ -113,8 +119,8 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 
 ### 选项
 
-选项用 [`argh`](https://docs.rs/argh) 声明与解析（与 `xtask` 同一个库），每个选项都是
-`--name value` 或裸开关；值必须作为下一个参数传入，不支持 `--name=value`。
+选项用 [`argh`](https://docs.rs/argh) 声明与解析。每个选项都是 `--name value` 或裸
+开关；值必须作为下一个参数传入，不支持 `--name=value`。
 
 | 选项 | 默认值 | 含义 |
 |------|--------|------|
@@ -122,14 +128,13 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 | `--scene <ID>` | `cube` | 要运行的场景；`all` 运行全部（仅无头模式） |
 | `--list-scenes` | 关 | 打印场景表并退出 |
 | `--size <WxH>` | 场景自己的 | 渲染目标尺寸（像素）；同时作为窗口的初始尺寸 |
-| `--frames <N>` | 场景自己的 | 捕获前绘制的帧数。场景自己的帧数就是快照存储时的帧数；`--frames` 覆盖它 |
+| `--frames <N>` | 场景自己的 | 捕获前绘制的帧数 |
 | `--output <PATH>` | 无 | 把捕获到的帧以无损 WebP 写入 `PATH` |
 | `--snapshot <PATH>` | 无 | 把捕获到的帧与 `PATH` 处的快照比较，而不是与场景自己的快照比较 |
 | `--update` | 关 | 存储正在比较的快照，而不是与之比较 |
-| `--no-ui` | 关 | 只画场景的 3D 内容，不画它的 UI 叠加层 |
+| `--no-ui` | 关 | 不画场景的 UI 叠加层 |
 | `--min-score <S>` | `85.0` | 视为匹配的最低 SSIMULACRA2 分数 |
 | `--snapshot-dir <D>` | 资产 submodule 的 `snapshots` | 场景自己的快照按名解析的目录 |
-| `-h`、`--help` | | 打印用法说明与场景表 |
 
 `--output`、`--snapshot`、`--update` 与 `--scene all` 在窗口循环中没有意义，因此不带
 `--headless` 使用其中任何一个都算错误，而不是被静默忽略。`--scene all` 不能与
@@ -139,17 +144,16 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 
 无头捕获把多帧场景的每一帧紧挨着画一遍，所以一次运行逐帧匹配快照。窗口化运行则按时间
 播放：把动画冻结成若干帧的场景，每帧停留 `SEQUENCE_STEP`（当前为 0.5 秒），因此肉眼
-可看，而不是随刷新率一闪而过。窗口循环每次最多推进一帧序列，卡顿不会跳帧。连续动画的
-场景（例如自转的立方体）不受影响，它们本来就按帧间隔推进。
+可看，而不是随刷新率一闪而过。窗口循环每次最多推进一帧序列，卡顿不会跳帧。
 
 ### 快照
 
-不带 `--snapshot` 时，无头运行会把场景声明了快照的每一帧——多帧场景的整个序列——与
-快照目录比较。比较用 SSIMULACRA2，分数低于 `--min-score` 时以非零码退出。若快照不
-存在，它会拒绝比较，并提示用 `--update` 生成一个——写入一个缺失的快照会让回归通过
-CI，因为它创建的正是这项检查要读取的文件。
+不带 `--snapshot` 时，无头运行会把场景声明了快照的每一帧与快照目录比较。比较用
+SSIMULACRA2，分数低于 `--min-score` 时以非零码退出。若快照不存在，它会拒绝比较，并
+提示用 `--update` 生成一个——写入一个缺失的快照会让回归通过 CI，因为它创建的正是这项
+检查要读取的文件。
 
-场景自己的快照只描述“精确重现该场景存储设置”的那一次运行。因此覆盖 `--size`、
+场景自己的快照只描述"精确重现该场景存储设置"的那一次运行。因此覆盖 `--size`、
 `--frames` 或 `--no-ui` 得到的是一次自定义捕获：它可以用 `--output` 写出，但不会与
 场景自己的快照比较；要比较请显式用 `--snapshot <PATH>`。
 
@@ -159,8 +163,8 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 
 这正是 CI 快照任务所跑的、针对 submodule 中已提交图像的命令。确有意改动渲染结果后，
 要重新生成其中一份或全部，加上 `--update`，然后在提交前审查
-[`unlit3d_asset_files`](../unlit3d_asset_files/README.md) 中的
-图像差异。该 submodule 用 `git submodule update --init` 检出。
+[`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
+中的图像差异。该 submodule 用 `git submodule update --init` 检出。
 
 ## 测试
 

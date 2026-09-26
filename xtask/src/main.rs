@@ -1,19 +1,4 @@
-//! Repository task runner.
-//!
-//! Every task is a `cargo xtask <name>` invocation. The tasks a contributor
-//! reaches for day to day:
-//!
-//! * `cargo xtask check` — clippy and fmt, the bar a commit is held to.
-//! * `cargo xtask test` — the test suite, through nextest.
-//! * `cargo xtask run-wasm` — build and serve the web example.
-//! * `cargo xtask build-android` — build the example's Android library and the
-//!   APK that packages it.
-//! * `cargo xtask publish` — upload the publishable crates to crates.io, in
-//!   dependency order.
-//!
-//! The crate is not a workspace member; it is wired up through the `xtask`
-//! alias in `.cargo/config.toml`, so the task runner's dependencies never
-//! weigh on the workspace the tasks act on.
+#![doc = include_str!("../README.md")]
 
 mod build_android;
 mod check;

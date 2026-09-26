@@ -1,4 +1,4 @@
-[English](README.md) | 简体中文
+[English](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) | 简体中文
 
 # unlit_ecs
 
@@ -6,48 +6,45 @@
 自己的 cell 里——正因如此，一个共享的 `&World` 就能在不使用任何 `unsafe` 的前提下
 读取*并*写入组件。
 
-设计刻意保持精简。没有变化检测、没有组件钩子、没有事件与观察者、没有实体关系、
-也没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。
+设计刻意保持精简：没有变化检测、没有组件钩子、没有事件与观察者、没有实体关系、
+也没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。除一个哈希器
+外本 crate 没有其他依赖，也不依赖工作区中的任何其他 crate，因此可以单独使用；它对
+渲染一无所知。
 
-本 crate 处于**极早期开发阶段**，API 会自由变动。除一个哈希器外它没有其他依赖，
-也不依赖工作区中的任何其他 crate，因此可以单独使用。
-
-## 在工作区中的位置
-
-`unlit_ecs` 是高层所针对的 world；与 ECS 集成的渲染 API 是
-[`unlit3d`](../unlit3d/README.zh-CN.md)，GPU 测试所用的测试骨架是
-[`unlit_wgpu_test_util`](../unlit_wgpu_test_util/README.zh-CN.md)。本 crate 对渲染
-一无所知。
+本 crate 处于**极早期开发阶段**，API 会自由变动。
 
 ## 模型
 
 - **实体的组件集合在 spawn 时就固定了。** 组件只能读写，不能增删；要改变集合，
   必须 despawn 该实体再重新 spawn。不可变的原型正是让存储可预测、并消除其他 ECS
   设计中容易泄漏的「组件被移除」记账工作的原因。
+- **读写只需要 `&World`。** 结构变更——spawn 与 despawn——需要 `&mut World`，或者
+  由驱动器应用的 `Commands` 队列。
+- **两个 world 只在 cell 上不同。** `LocalWorld` 把组件存在 `RefCell` 里，是
+  `!Send` 的，因此留在创建它的线程——渲染器和其他与线程绑定的状态属于这里。
+  `SendWorld` 把它们存在 `RwLock` 里，是 `Send + Sync` 的。其余全是共享代码。
 - **没有资源（resource）。** crate 不标记也不追踪任何资源；想被随处访问的实体就是
   普通实体，调用者自行保存它的句柄，需要时可以用自己的标记组件加以标记。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
-- **没有实体关系。** 当一个实体指向另一个实体时，`Entity` 句柄存放在组件里，由调用者
-  自行维护；world 不追踪也不清理该引用。
-- **两个 world，一份实现。** `LocalWorld` 把组件存在 `RefCell` 里，是 `!Send` 的，
-  因此留在自己的线程——渲染器和其他与线程绑定的状态属于这里。`SendWorld` 把它们存在
-  `RwLock` 里，是 `Send + Sync` 的。两者只在 cell 上不同，其余全是共享代码。
+- **没有实体关系。** 当一个实体指向另一个实体时，`Entity` 句柄存放在组件里，由
+  调用者自行维护；world 不追踪也不清理该引用。
 - **借用冲突是 panic，而不是编译错误。** 请求一个已被借用的组件，或在同一个查询里两次
   以 `&mut` 取同一组件，都会报出组件名并终止。这是不做访问冲突分析的代价。
 
 ## 内容概览
 
-`World`（以及 `LocalWorld` / `SendWorld` 别名）、`Entity`、`Bundle` /
-`ArchetypeBuilder`、`Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、
-用于延迟结构变更的 `Command` / `Commands`、用于直接检视存储的
-`Archetype` / `Archetypes`，以及专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
+`World`（以及 `LocalWorld` / `SendWorld` 别名）、`Entity`、
+`Bundle` / `ArchetypeBuilder`、`Query` 与 `QueryFilter`（`With`、
+`Without`、`Or`、元组）、用于延迟结构变更的 `Command` / `Commands`、
+用于直接检视存储的 `Archetype` / `Archetypes`，以及专用哈希容器
+`TypeIdHashMap`、`EntityHashMap` 等。
 
-`Commands` 队列之所以存在，是因为结构变更需要 `&mut World`：只持有共享 world 的回调
-改为把 spawn 或 despawn 排入队列，由驱动器调用 `World::apply` 落盘。`Commands::spawn`
-会立即预留一个 `Entity`，因此该句柄在队列被应用之前就可用了——可以存进组件里，也可以
-传给另一个回调。
+`Commands` 队列之所以存在，是因为结构变更需要 `&mut World`：只持有共享 world 的
+回调改为把 spawn 或 despawn 排入队列，由驱动器调用 `World::apply` 落盘。
+`Commands::spawn` 会立即预留一个 `Entity`，因此该句柄在队列被应用之前就可用了
+——可以存进组件里，也可以传给另一个回调。
 
 遍历是确定性的：archetype 按创建顺序访问，行按存储顺序访问。archetype 按需创建，
 永不删除。
@@ -81,7 +78,7 @@ let _ = world
     .count();
 ```
 
-读写只需要 `&World`；spawn 与 despawn 需要 `&mut World`，或者排入队列的命令：
+spawn 与 despawn 需要 `&mut World`，或者排入队列的命令：
 
 ```rust
 use unlit_ecs::LocalWorld;

@@ -1,4 +1,4 @@
-[English](README.md) | 简体中文
+[English](https://github.com/beicause/unlit3d/blob/main/xtask/README.md) | 简体中文
 
 # xtask
 
@@ -90,8 +90,6 @@ src/publish.rs       cargo xtask publish：要发布的 crate 及其顺序
 src/http.rs          run-wasm 用来提供服务的静态文件服务器
 src/step.rs          运行单个子命令并报告是哪一步失败
 ```
-
-本 crate 禁止 `missing_docs`，因此每个条目都带有文档注释。
 
 ## 构建它
 

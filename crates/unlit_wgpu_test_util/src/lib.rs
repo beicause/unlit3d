@@ -1,25 +1,4 @@
-//! Shared GPU test harness for unlit-wgpu crates.
-//!
-//! Every test drives wgpu through a real `wgpu::Device` and reads
-//! buffer/texture data back for assertions.  The harness is deliberately
-//! self-contained: besides `wgpu`, `glam`, `log`, `pollster` (driving wgpu's
-//! async adapter/device requests), the platform logger backend, plus
-//! `fast-ssim2` and `image` (both behind the `snapshot` feature) it depends on
-//! nothing else.
-//!
-//! # Logging
-//!
-//! The harness reports what it does through [`log`] rather than by printing:
-//! [`Ctx::headless`] installs a backend on first use, so a test's own
-//! `log` records — and wgpu's — reach the terminal.  `RUST_LOG` selects the
-//! level; the default is `warn`.
-//!
-//! # Features
-//!
-//! | Feature | Description |
-//! |---------|-------------|
-//! | `snapshot` | Enables perceptual snapshot assertions via SSIMULACRA2. |
-
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
 use std::sync::Once;

@@ -1,4 +1,4 @@
-[English](README.md) | 简体中文
+[English](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu_test_util/README.md) | 简体中文
 
 # unlit_wgpu_test_util
 
@@ -9,14 +9,13 @@
 它刻意保持自包含：除 `wgpu`、`glam`、`log` 与 `pollster`，加上平台的日志后端，以及
 `snapshot` feature 之后的 `fast-ssim2` 与 `image` 之外，它不依赖任何东西。
 
-本 crate 处于**极早期开发阶段**；API 会自由变动。它不属于对外的渲染 API。
-
-## 在工作区中的位置
-
-`unlit_wgpu_test_util` 是 [`unlit_wgpu`](../unlit_wgpu/README.zh-CN.md)
-与 [`unlit3d`](../unlit3d/README.zh-CN.md) 的 **dev-dependency**，也是
-[`unlit3d_examples`](../../unlit3d_examples/README.zh-CN.md) 在 `snapshot` feature 之后
-的可选依赖。实际发布的渲染路径不依赖它。
+本 crate 处于**极早期开发阶段**；API 会自由变动。它不属于对外的渲染 API：实际发布的
+渲染路径不依赖它。它是
+[`unlit_wgpu`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu/README.zh-CN.md)
+与 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
+的 **dev-dependency**，也是
+[`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md)
+在 `snapshot` feature 之后的可选依赖。
 
 ## 提供的内容
 
@@ -49,7 +48,7 @@
   调用者使用。
 - 快照以 `name` 在 `tests/snapshots` 下查找（相对于进程的工作目录），并以无损 WebP
   存储。该目录是指向
-  [`unlit3d_asset_files`](../../unlit3d_asset_files/README.md)
+  [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
   submodule 的软链接；用 `git submodule update --init` 拉取。
 
 快照缺失时会被*存储*而不是比较；设置 `SNAPSHOT_UPDATE=1` 会重新存储它触及的每个
@@ -65,7 +64,7 @@ git -C unlit3d_asset_files diff   # 提交前先审查
 
 ## 用法
 
-```rust
+```rust,no_run
 use unlit_wgpu_test_util::{Ctx, read_texture_bytes};
 
 let ctx = Ctx::headless();
