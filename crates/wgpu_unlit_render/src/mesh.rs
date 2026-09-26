@@ -7,11 +7,165 @@
 //! produce them together with the packed attribute streams.
 //!
 //! The Rust side and the WGSL side (`mesh_metadata.wesl`) are kept in sync by
-//! the crate. [`MeshVertexStreamWriter`] packs the optional per-vertex UV and color
-//! channels a vertex stream declares, whichever pipeline then draws it.
+//! the crate. [`MeshVertexStreamWriter`] and [`PositionStreamWriter`] pack the
+//! per-vertex streams a draw declares, whichever pipeline then draws them.
+//!
+//! # One description per stream
+//!
+//! A stream is described by [`StreamChannels`]: one attribute location and
+//! [`ChannelEncoding`] per channel, in the order the channels are interleaved.
+//! The pipeline's vertex layout, the compression that packs a mesh and the
+//! streams a pool allocates all derive their bytes per vertex from that same
+//! description, so the three cannot drift apart.
 
 use wgpu::WriteOnly;
 use zerocopy::IntoBytes;
+
+/// How one compressed channel is encoded as a vertex attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ChannelEncoding {
+    /// An AABB-quantized position: `Snorm16x4`, decoded through
+    /// [`MeshMetadata`]'s bounding box.
+    CompressedPosition,
+    /// A full-precision position: `Float32x3`.
+    UncompressedPosition,
+    /// A range-remapped UV: `Snorm16x2`, decoded through
+    /// [`MeshMetadata::uv_min_and_extents`].
+    CompressedUv,
+    /// A full-precision UV: `Float32x2`.
+    UncompressedUv,
+    /// A vertex color, `Unorm8x4`, stored as it arrives.
+    Color,
+    /// A joint index, `Uint16x4`. Indices address data structurally rather
+    /// than interpolating, so they are never normalized.
+    Joints,
+    /// A joint weight, `Unorm16x4` in `[0, 1]`.
+    Weights,
+}
+
+impl ChannelEncoding {
+    /// The vertex format the channel is stored in.
+    pub const fn format(self) -> wgpu::VertexFormat {
+        match self {
+            Self::CompressedPosition => wgpu::VertexFormat::Snorm16x4,
+            Self::UncompressedPosition => wgpu::VertexFormat::Float32x3,
+            Self::CompressedUv => wgpu::VertexFormat::Snorm16x2,
+            Self::UncompressedUv => wgpu::VertexFormat::Float32x2,
+            Self::Color => wgpu::VertexFormat::Unorm8x4,
+            Self::Joints => wgpu::VertexFormat::Uint16x4,
+            Self::Weights => wgpu::VertexFormat::Unorm16x4,
+        }
+    }
+
+    /// Bytes the channel occupies, which is its attribute's size.
+    pub const fn size(self) -> u32 {
+        self.format().size() as u32
+    }
+}
+
+/// The channels one per-vertex stream carries, in the order they are
+/// interleaved.
+///
+/// Each channel is an attribute location paired with its encoding, and the
+/// attributes of a wgpu vertex-buffer layout are laid out in exactly this
+/// order: sequential offsets from the channel sizes, stride the sum of them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct StreamChannels {
+    /// The channels, in attribute order.
+    channels: arrayvec::ArrayVec<(u32, ChannelEncoding), { StreamChannels::CAPACITY }>,
+}
+
+impl StreamChannels {
+    /// How many channels one stream can carry.
+    pub const CAPACITY: usize = 8;
+
+    /// A stream carrying `channels`, in attribute order.
+    ///
+    /// # Panics
+    ///
+    /// If there are more than [`Self::CAPACITY`] of them.
+    pub fn new(channels: impl IntoIterator<Item = (u32, ChannelEncoding)>) -> Self {
+        Self {
+            channels: channels.into_iter().collect(),
+        }
+    }
+
+    /// Append one channel after the channels already declared.
+    ///
+    /// # Panics
+    ///
+    /// If the stream already holds [`Self::CAPACITY`] channels.
+    pub fn push(&mut self, channel: (u32, ChannelEncoding)) {
+        self.channels
+            .try_push(channel)
+            .expect("a vertex stream holds at most `StreamChannels::CAPACITY` channels");
+    }
+
+    /// The channels in attribute order.
+    pub fn iter(&self) -> impl Iterator<Item = &(u32, ChannelEncoding)> {
+        self.channels.iter()
+    }
+
+    /// Whether no channel is declared, in which case the slot must be left out
+    /// of a pipeline's vertex-buffer list.
+    pub fn is_empty(&self) -> bool {
+        self.channels.is_empty()
+    }
+
+    /// Bytes per vertex, the sum of the channel sizes.
+    pub fn stride(&self) -> u32 {
+        self.channels
+            .iter()
+            .map(|(_, encoding)| encoding.size())
+            .sum()
+    }
+
+    /// Bytes a `vertex_count`-long stream occupies.
+    pub fn byte_len(&self, vertex_count: usize) -> usize {
+        vertex_count * self.stride() as usize
+    }
+
+    /// The offset each channel's attribute sits at, in attribute order.
+    ///
+    /// These are the offsets a wgpu vertex-buffer layout declares; a packed
+    /// stream writes its channels at the same offsets.
+    pub fn attribute_offsets(&self) -> impl Iterator<Item = (u32, ChannelEncoding, u64)> + '_ {
+        let mut offset = 0u64;
+        self.channels.iter().map(move |&(location, encoding)| {
+            let at = offset;
+            offset += u64::from(encoding.size());
+            (location, encoding, at)
+        })
+    }
+
+    /// The wgpu vertex-buffer layout these channels describe.
+    ///
+    /// The attributes are declared in channel order with the offsets
+    /// [`Self::attribute_offsets`] reports and the stride [`Self::stride`]
+    /// reports, so the layout a pipeline declares and the bytes
+    /// [`PositionStreamWriter`]/[`MeshVertexStreamWriter`] pack always agree.
+    pub fn layout(&self) -> crate::specialize::VertexBufferLayoutDesc {
+        let array_stride = u64::from(self.stride());
+        assert!(
+            array_stride.is_multiple_of(wgpu::VERTEX_ALIGNMENT),
+            "vertex stride {array_stride} must be a multiple of `VERTEX_ALIGNMENT`"
+        );
+        crate::specialize::VertexBufferLayoutDesc {
+            array_stride,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: self
+                .attribute_offsets()
+                .map(
+                    |(shader_location, encoding, offset)| wgpu::VertexAttribute {
+                        format: encoding.format(),
+                        offset,
+                        shader_location,
+                    },
+                )
+                .collect(),
+        }
+    }
+}
 
 /// Failure reasons reported by the compression helpers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,12 +242,22 @@ pub struct MeshMetadata {
 pub struct MeshInfo {
     /// Index into the `array<MeshMetadata>` bound with the global group.
     pub metadata_index: u32,
+    /// First element this mesh's vertices occupy in the pool its streams live
+    /// in, which is the draw's `firstVertex` or `baseVertex`.
+    ///
+    /// A shader that has to map a vertex back to its mesh-local ordinal — the
+    /// morph deltas, which are stored per mesh — subtracts it from
+    /// `@builtin(vertex_index)`.
+    pub vertex_offset: u32,
+    /// How many morph targets follow each vertex in the morph binding.
+    ///
+    /// Zero without [`UnlitFlags::MORPH_POSITIONS`].
+    ///
+    /// [`UnlitFlags::MORPH_POSITIONS`]:
+    ///     crate::pipeline::UnlitFlags::MORPH_POSITIONS
+    pub morph_count: u32,
     /// Explicit tail padding.
     pub pad0: u32,
-    /// Explicit tail padding.
-    pub pad1: u32,
-    /// Explicit tail padding.
-    pub pad2: u32,
 }
 
 impl MeshInfo {
@@ -368,16 +532,6 @@ pub fn positions_as_bytes(positions: &[CompressedPosition]) -> &[u8] {
     positions.as_bytes()
 }
 
-/// Byte view of a compressed UV stream, ready for upload.
-pub fn uvs_as_bytes(uvs: &[CompressedUv]) -> &[u8] {
-    uvs.as_bytes()
-}
-
-/// Byte view of a color stream, ready for upload.
-pub fn colors_as_bytes(colors: &[CompressedColor]) -> &[u8] {
-    colors.as_bytes()
-}
-
 /// Byte view of a joint-index stream, ready for upload.
 pub fn joints_as_bytes(joints: &[CompressedJoints]) -> &[u8] {
     joints.as_bytes()
@@ -448,36 +602,42 @@ impl MeshVertexStreamWriter {
         self.flags.contains(UvColorFlags::UNCOMPRESSED_UV)
     }
 
-    /// Bytes per vertex of the packed stream.
-    pub fn stride(&self) -> u32 {
-        let uv = if self.uv() { self.uv_size() } else { 0 };
-        let color = if self.color() {
-            wgpu::VertexFormat::Unorm8x4.size() as u32
-        } else {
-            0
-        };
-        uv + color
-    }
-
-    /// Bytes the UV attribute occupies in this encoding.
-    fn uv_size(&self) -> u32 {
-        let format = if self.uncompressed_uv() {
-            wgpu::VertexFormat::Float32x2
-        } else {
-            wgpu::VertexFormat::Snorm16x2
-        };
-        format.size() as u32
-    }
-
     /// Whether the variant declares no attributes at all, in which case the
     /// slot must be omitted from the vertex-buffer list.
     pub fn is_empty(&self) -> bool {
         !self.uv() && !self.color()
     }
 
+    /// The channels this stream carries, in attribute order.
+    ///
+    /// The single description the stride, the attribute offsets and the packed
+    /// bytes are all derived from.
+    pub fn channels(&self) -> StreamChannels {
+        let mut channels = StreamChannels::default();
+        if self.uv() {
+            channels.push((
+                crate::pipeline::location::UV,
+                if self.uncompressed_uv() {
+                    ChannelEncoding::UncompressedUv
+                } else {
+                    ChannelEncoding::CompressedUv
+                },
+            ));
+        }
+        if self.color() {
+            channels.push((crate::pipeline::location::COLOR, ChannelEncoding::Color));
+        }
+        channels
+    }
+
+    /// Bytes per vertex of the packed stream.
+    pub fn stride(&self) -> u32 {
+        self.channels().stride()
+    }
+
     /// Bytes one `vertex_count`-long stream occupies.
     pub fn byte_len(&self, vertex_count: usize) -> usize {
-        vertex_count * self.stride() as usize
+        self.channels().byte_len(vertex_count)
     }
 
     /// Compress the raw `uvs` and write the interleaved result, together
@@ -642,6 +802,14 @@ impl MeshVertexStreamWriter {
     }
 }
 
+/// One joint's skinning matrix: the joint's transform times the inverse of
+/// the bind-pose transform, applied to a vertex in the mesh's local space.
+///
+/// This is the element type of the `array<mat4x4<f32>>` a skinned variant
+/// binds at [`JOINTS_BINDING`](crate::pipeline::JOINTS_BINDING), so a mesh
+/// uploads a `&[JointMatrix]` there and a vertex's joint index selects one.
+pub type JointMatrix = glam::Mat4;
+
 /// Bytes per vertex of the widest UV-and-color stream, used to size the
 /// per-vertex scratch the writer assembles on the stack.
 ///
@@ -649,6 +817,215 @@ impl MeshVertexStreamWriter {
 /// the color, so the scratch covers those two attribute formats.
 const MAX_UV_COLOR_STRIDE: usize =
     wgpu::VertexFormat::Float32x2.size() as usize + wgpu::VertexFormat::Unorm8x4.size() as usize;
+
+/// The channels of the position vertex stream: a position and, for a skinned
+/// mesh, the joint indices and weights that deform it.
+///
+/// Joints and weights share this stream rather than getting one of their own,
+/// so a skinned mesh's per-vertex data stays one buffer and one stride. The
+/// joint pair is addressed by vertex index rather than by attribute, so
+/// nothing else about a draw changes when the stream carries it.
+///
+/// The order is the attribute order: position, joint indices, joint weights.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PositionStreamChannels {
+    /// How the position itself is encoded, or `None` for a variant that reads
+    /// no position at all — its geometry is a single point at the instance
+    /// origin, which is what a point or impostor draw wants.
+    pub position: Option<ChannelEncoding>,
+    /// Whether the stream carries joint indices and weights.
+    pub joints: bool,
+}
+
+impl PositionStreamChannels {
+    /// The channels of the stream, in attribute order.
+    pub fn channels(&self) -> StreamChannels {
+        let mut channels = StreamChannels::default();
+        if let Some(position) = self.position {
+            channels.push((crate::pipeline::location::POSITION, position));
+        }
+        if self.joints {
+            channels.push((crate::pipeline::location::JOINTS, ChannelEncoding::Joints));
+            channels.push((
+                crate::pipeline::location::JOINTS_WEIGHTS,
+                ChannelEncoding::Weights,
+            ));
+        }
+        channels
+    }
+}
+
+/// Packs the position vertex stream: the compressed position and, when the
+/// stream declares them, the joint indices and weights that deform it.
+///
+/// Joints and weights share the position's stream, so a skinned mesh's draw
+/// names one buffer for all three channels. Positions are compressed against
+/// the mesh's bounding box exactly as [`compress_positions`] does; the joint
+/// pair arrives already in its stored widths and is copied through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PositionStreamWriter {
+    /// The channels this stream writes.
+    pub channels: PositionStreamChannels,
+}
+
+impl PositionStreamWriter {
+    /// Whether the stream carries joint indices and weights.
+    pub fn joints(&self) -> bool {
+        self.channels.joints
+    }
+
+    /// Whether the position is written full precision rather than compressed
+    /// to `Snorm16x4`.
+    pub fn uncompressed_position(&self) -> bool {
+        matches!(
+            self.channels.position,
+            Some(ChannelEncoding::UncompressedPosition)
+        )
+    }
+
+    /// Bytes per vertex of the packed stream.
+    pub fn stride(&self) -> u32 {
+        self.channels.channels().stride()
+    }
+
+    /// Bytes one `vertex_count`-long stream occupies.
+    pub fn byte_len(&self, vertex_count: usize) -> usize {
+        self.channels.channels().byte_len(vertex_count)
+    }
+
+    /// Compress the raw `positions` and write the interleaved result, together
+    /// with the already compressed joint pair, into `out` — which must be
+    /// exactly [`Self::byte_len`]`(vertex_count)` bytes.
+    ///
+    /// `metadata` receives the bounding box the position compression derives,
+    /// exactly as [`compress_positions`] would.
+    ///
+    /// `joints` and `weights` are taken as their stored widths, because that
+    /// is what the stream stores; float weights can be quantized with
+    /// [`compress_weights`] first. A stream that declares no joints ignores
+    /// both slices.
+    ///
+    /// # Panics
+    ///
+    /// If a declared channel has no matching slice, if the slice lengths
+    /// disagree, or if `out` is not exactly one stream long.
+    pub fn write(
+        &self,
+        positions: &[[f32; 3]],
+        joints: &[CompressedJoints],
+        weights: &[CompressedWeights],
+        metadata: &mut MeshMetadata,
+        out: WriteOnly<'_, [u8]>,
+    ) {
+        use zerocopy::IntoBytes;
+
+        let vertex_count = positions.len();
+        if self.joints() {
+            assert_eq!(
+                joints.len(),
+                vertex_count,
+                "the joint stream must describe the same vertices as the positions"
+            );
+            assert_eq!(
+                weights.len(),
+                vertex_count,
+                "the weight stream must describe the same vertices as the positions"
+            );
+        }
+        assert_eq!(
+            out.len(),
+            self.byte_len(vertex_count),
+            "the target must hold exactly one packed vertex stream"
+        );
+        if vertex_count == 0 {
+            return;
+        }
+
+        // Deriving the bounding box is the only pass over the input; the
+        // encoding itself streams straight into `out`. An uncompressed
+        // position is copied as it is, so it never derives metadata.
+        let write_position = self.channels.position;
+        let uncompressed = self.uncompressed_position();
+        let write_joints = self.joints();
+        let stride = self.stride() as usize;
+        let mut packed_positions = (!uncompressed && write_position.is_some())
+            .then(|| compress_positions(positions, metadata))
+            .into_iter()
+            .flatten();
+
+        // Each vertex is assembled as a fixed-size array on the stack and
+        // streamed out.
+        out.write_iter((0..vertex_count).flat_map(move |index| {
+            let mut vertex = [0u8; MAX_POSITION_STRIDE];
+            let mut len = 0;
+            match write_position {
+                Some(_) if uncompressed => {
+                    let bytes = positions[index].as_bytes();
+                    vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                    len += bytes.len();
+                }
+                Some(_) => {
+                    let position = packed_positions.next().expect("one position per vertex");
+                    let bytes = position.as_bytes();
+                    vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                    len += bytes.len();
+                }
+                // No position channel: the stream carries whatever follows,
+                // which is nothing unless the variant also reads joints.
+                None => {}
+            }
+            if write_joints {
+                let bytes = joints[index].as_bytes();
+                vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                len += bytes.len();
+                let bytes = weights[index].as_bytes();
+                vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                len += bytes.len();
+            }
+            debug_assert_eq!(len, stride);
+            vertex.into_iter().take(len)
+        }));
+    }
+}
+
+/// The joint indices and weights of one vertex, as the position stream stores
+/// them.
+///
+/// The pair shares the position's stream, so this is the layout the shader's
+/// `VertexInput` declares for them: `Uint16x4` indices followed by `Unorm16x4`
+/// weights. The two are written together and never separately, which is why
+/// the stream carries them as one unit.
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+)]
+pub struct JointPair {
+    /// Joint indices into the mesh's joint matrices, `Uint16x4`.
+    pub joints: CompressedJoints,
+    /// Joint weights, `Unorm16x4`, which should sum to 1.
+    pub weights: CompressedWeights,
+}
+
+impl JointPair {
+    /// Bytes one pair occupies, the sum of the two channels.
+    pub const SIZE: u32 = ChannelEncoding::Joints.size() + ChannelEncoding::Weights.size();
+}
+
+/// Bytes per vertex of the widest position stream, used to size the per-vertex
+/// scratch the writer assembles on the stack.
+///
+/// The widest encoding is an uncompressed position followed by the joint pair.
+const MAX_POSITION_STRIDE: usize =
+    wgpu::VertexFormat::Float32x3.size() as usize + JointPair::SIZE as usize;
 
 #[cfg(test)]
 mod tests {
@@ -891,6 +1268,81 @@ mod tests {
     fn weights_clamp_out_of_range_components() {
         let weights: Vec<_> = compress_weights(&[[0.0, 0.5, 1.0, 2.0]]).collect();
         assert_eq!(weights[0], [0, 32_768, 65_535, 65_535]);
+    }
+
+    /// The joint pair follows the position in the same stream, in the shader's
+    /// attribute order, and a stream that declares no joints stays as narrow as
+    /// the position alone.
+    #[test]
+    fn position_stream_appends_the_joint_pair_after_the_position() {
+        let positions = [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]];
+        let joints = [[1u16, 2, 3, 4], [5, 6, 7, 8]];
+        let weights: Vec<_> =
+            compress_weights(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0]]).collect();
+
+        let mut metadata = MeshMetadata::default();
+        let plain = PositionStreamWriter {
+            channels: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: false,
+            },
+        };
+        assert_eq!(plain.stride(), ChannelEncoding::CompressedPosition.size());
+
+        let skinned = PositionStreamWriter {
+            channels: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: true,
+            },
+        };
+        assert_eq!(
+            skinned.stride(),
+            ChannelEncoding::CompressedPosition.size() + JointPair::SIZE
+        );
+
+        let mut out = vec![0u8; skinned.byte_len(2)];
+        skinned.write(
+            &positions,
+            &joints,
+            &weights,
+            &mut metadata,
+            WriteOnly::from_mut(out.as_mut_slice()),
+        );
+
+        // The position comes first, exactly as the plain stream writes it, so
+        // the joint pair cannot disturb the decode the metadata describes.
+        let mut plain_out = vec![0u8; plain.byte_len(2)];
+        plain.write(
+            &positions,
+            &[],
+            &[],
+            &mut MeshMetadata::default(),
+            WriteOnly::from_mut(plain_out.as_mut_slice()),
+        );
+        let position_size = ChannelEncoding::CompressedPosition.size() as usize;
+        let pair_size = JointPair::SIZE as usize;
+        let stride = skinned.stride() as usize;
+        for vertex in 0..2 {
+            assert_eq!(
+                &out[vertex * stride..vertex * stride + position_size],
+                &plain_out[vertex * position_size..(vertex + 1) * position_size],
+                "vertex {vertex} position"
+            );
+            let pair =
+                &out[vertex * stride + position_size..vertex * stride + position_size + pair_size];
+            assert_eq!(&pair[..8], joints[vertex].as_bytes());
+            assert_eq!(&pair[8..], weights[vertex].as_bytes());
+        }
+
+        // A stream with neither a position nor joints writes nothing at all.
+        let empty = PositionStreamWriter {
+            channels: PositionStreamChannels {
+                position: None,
+                joints: false,
+            },
+        };
+        assert_eq!(empty.stride(), 0);
+        assert_eq!(empty.byte_len(2), 0);
     }
 
     #[test]

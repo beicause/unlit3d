@@ -125,6 +125,9 @@ mod tests {
             aabb: Aabb::new(Vec3::ZERO, Vec3::splat(0.5)),
             metadata_index: 0,
             bind_group_id: None,
+            morph_targets: 0,
+            skin: None,
+            morph: None,
             vertex_allocation: None,
             index_allocation: None,
         };

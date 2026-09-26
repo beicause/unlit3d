@@ -281,7 +281,7 @@ impl VertexBufferLayoutDesc {
 
     /// Borrow this layout as a wgpu one, for the duration of a pipeline
     /// creation.
-    fn as_wgpu(&self) -> wgpu::VertexBufferLayout<'_> {
+    pub(crate) fn as_wgpu(&self) -> wgpu::VertexBufferLayout<'_> {
         wgpu::VertexBufferLayout {
             array_stride: self.array_stride,
             step_mode: self.step_mode,

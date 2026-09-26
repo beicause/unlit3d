@@ -168,10 +168,13 @@ impl TestGpu {
             source.allocate_unlit_mesh(
                 world,
                 &self.key,
-                &positions,
-                Some(&uvs),
-                Some(&colors),
-                Some(&indices),
+                UnlitMeshDesc {
+                    positions: &positions,
+                    uvs: Some(&uvs),
+                    colors: Some(&colors),
+                    indices: Some(&indices),
+                    ..Default::default()
+                },
             )
         })
     }
@@ -187,10 +190,13 @@ impl TestGpu {
             source.allocate_unlit_mesh(
                 world,
                 &self.key,
-                &positions,
-                Some(&uvs),
-                Some(&colors),
-                Some(&indices),
+                UnlitMeshDesc {
+                    positions: &positions,
+                    uvs: Some(&uvs),
+                    colors: Some(&colors),
+                    indices: Some(&indices),
+                    ..Default::default()
+                },
             )
         })
     }
@@ -198,6 +204,66 @@ impl TestGpu {
     /// Free `mesh` through the source.
     pub fn remove_mesh(&self, world: &LocalWorld, mesh: GpuMesh) {
         self.with_mesh_source(world, |source, world| source.remove_mesh(world, mesh));
+    }
+
+    /// Allocate a cube through the source under `key`, deformed by `skin` and
+    /// `morph_targets`.
+    ///
+    /// The key must be a variant that declares the matching channels — the
+    /// joint stream for a skin, the morph bindings for targets — which is what
+    /// a test of either path builds with [`deformation_options`].
+    pub fn allocate_deformed_cube_mesh(
+        &self,
+        world: &LocalWorld,
+        key: &UnlitPipelineKey,
+        skin: Option<UnlitSkin<'_>>,
+        morph_targets: &[UnlitMorphTarget<'_>],
+    ) -> GpuMesh {
+        let (positions, uvs, colors, indices) = cube();
+        self.with_mesh_source(world, |source, world| {
+            source.allocate_unlit_mesh(
+                world,
+                key,
+                UnlitMeshDesc {
+                    positions: &positions,
+                    uvs: Some(&uvs),
+                    colors: Some(&colors),
+                    indices: Some(&indices),
+                    skin,
+                    morph_targets,
+                },
+            )
+        })
+    }
+
+    /// Allocate a cube skinned by a [`BendSkin`], returning both the mesh and
+    /// the skin that drives it.
+    ///
+    /// The skin is derived from the very positions the mesh is built from, so
+    /// its per-vertex blend cannot drift from the geometry it deforms.
+    pub fn allocate_bent_cube_mesh(
+        &self,
+        world: &LocalWorld,
+        key: &UnlitPipelineKey,
+        angle: f32,
+    ) -> (GpuMesh, BendSkin) {
+        let (positions, uvs, colors, indices) = cube();
+        let skin = BendSkin::new(&positions, angle);
+        let mesh = self.with_mesh_source(world, |source, world| {
+            source.allocate_unlit_mesh(
+                world,
+                key,
+                UnlitMeshDesc {
+                    positions: &positions,
+                    uvs: Some(&uvs),
+                    colors: Some(&colors),
+                    indices: Some(&indices),
+                    skin: Some(skin.desc()),
+                    morph_targets: &[],
+                },
+            )
+        });
+        (mesh, skin)
     }
 
     /// Allocate an offscreen colour target and a matching depth-stencil target,
@@ -318,6 +384,103 @@ fn unlit_options(device: &wgpu::Device) -> wgpu_unlit_render::pipeline::UnlitOpt
 
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
 pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
+
+/// Unlit options for a variant that deforms its vertices.
+///
+/// `joints` adds the joint stream and the joint-matrix binding; `morphs` adds
+/// the morph-delta and morph-weight bindings. Both start from
+/// [`unlit_options`], so a deformed test draws the same cube under the same
+/// camera as an undeformed one.
+pub fn deformation_options(
+    device: &wgpu::Device,
+    joints: bool,
+    morphs: bool,
+) -> wgpu_unlit_render::pipeline::UnlitOptions {
+    use wgpu_unlit_render::pipeline::UnlitFlags;
+    let mut options = unlit_options(device);
+    if joints {
+        options.flags |= UnlitFlags::VERTEX_JOINTS;
+    }
+    if morphs {
+        options.flags |= UnlitFlags::MORPH_POSITIONS;
+    }
+    options
+}
+
+/// A rig of `joint_count` joints, all at rest, returned as joint matrices.
+///
+/// The identity pose deforms nothing: a vertex's weights sum to one, so the
+/// weighted sum of identity matrices is the vertex itself. A test that wants a
+/// visible deformation replaces them through
+/// [`MeshSource::update_skin`](unlit3d::mesh_source::MeshSource::update_skin).
+pub fn rest_pose(joint_count: usize) -> Vec<JointMatrix> {
+    vec![glam::Mat4::IDENTITY; joint_count]
+}
+
+/// A two-joint skin that bends a mesh about its own base.
+///
+/// The lower joint is the base and stays at rest; the upper one rotates about
+/// the mesh's lowest point, and every vertex is weighted between them by how
+/// high it sits, so the mesh bends rather than shears. The weights exercise the
+/// four-lane weighted sum the shader computes — a vertex split across both
+/// joints is the case a single-joint binding would not catch.
+pub struct BendSkin {
+    /// Four joint indices per vertex: the base and the bending joint.
+    pub joints: Vec<[u16; 4]>,
+    /// Four weights per vertex, summing to one.
+    pub weights: Vec<[f32; 4]>,
+    /// The bind pose, one matrix per joint.
+    pub pose: Vec<JointMatrix>,
+    /// The height the bending joint pivots about, in the mesh's own space.
+    pivot: f32,
+}
+
+impl BendSkin {
+    /// Skin `positions` to two joints, splitting each vertex by its height.
+    ///
+    /// The blend runs over the mesh's own vertical extent, so a unit cube's
+    /// bottom is fully on the base joint and its top fully on the bending one.
+    pub fn new(positions: &[[f32; 3]], angle: f32) -> Self {
+        let (min, max) = positions.iter().fold(
+            (f32::INFINITY, f32::NEG_INFINITY),
+            |(min, max), position| (min.min(position[1]), max.max(position[1])),
+        );
+        let height = (max - min).max(f32::EPSILON);
+        let (joints, weights) = positions
+            .iter()
+            .map(|position| {
+                let t = ((position[1] - min) / height).clamp(0.0, 1.0);
+                ([0u16, 1, 0, 0], [1.0 - t, t, 0.0, 0.0])
+            })
+            .unzip();
+        let mut skin = Self {
+            joints,
+            weights,
+            pose: rest_pose(2),
+            pivot: min,
+        };
+        skin.set_angle(angle);
+        skin
+    }
+
+    /// Replace the bending joint's rotation, which pivots about the mesh's
+    /// lowest point rather than its origin: a cube centred on the origin would
+    /// otherwise swing through the ground instead of bending over it.
+    pub fn set_angle(&mut self, angle: f32) {
+        self.pose[1] = glam::Mat4::from_translation(glam::Vec3::Y * self.pivot)
+            * glam::Mat4::from_rotation_z(angle)
+            * glam::Mat4::from_translation(glam::Vec3::Y * -self.pivot);
+    }
+
+    /// The skin as the allocator takes it.
+    pub fn desc(&self) -> UnlitSkin<'_> {
+        UnlitSkin {
+            joints: &self.joints,
+            weights: &self.weights,
+            pose: &self.pose,
+        }
+    }
+}
 
 /// A unit cube centred at the origin, returned as
 /// `(positions, uvs, colors, indices)`.

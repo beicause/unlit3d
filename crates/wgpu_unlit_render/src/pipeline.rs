@@ -7,11 +7,16 @@
 //! channels need, so nothing unused reaches the GPU.
 
 #[cfg(feature = "unlit")]
-use crate::mesh::{MeshInfo, MeshVertexStreamWriter, UvColorFlags};
+use crate::mesh::{
+    ChannelEncoding, MeshInfo, MeshVertexStreamWriter, PositionStreamChannels,
+    PositionStreamWriter, UvColorFlags,
+};
 #[cfg(feature = "unlit")]
 use crate::render_attachments::default_depth_stencil_format;
 #[cfg(feature = "unlit")]
-use crate::specialize::{Canonical, Specializable, Specializer, SurfaceKey};
+use crate::specialize::{
+    Canonical, Specializable, Specializer, SurfaceKey, VertexBufferLayoutDesc,
+};
 
 /// Binding slot of the camera uniform in the global bind group.
 pub const CAMERA_BINDING: u32 = 0;
@@ -31,6 +36,12 @@ pub const BASE_COLOR_SAMPLER_BINDING: u32 = 1;
 pub const MESH_GROUP: u32 = 2;
 /// Binding slot of the mesh-info uniform in the mesh group.
 pub const MESH_INFO_BINDING: u32 = 0;
+/// Binding slot of the array of joint matrices in the mesh group.
+pub const JOINTS_BINDING: u32 = 1;
+/// Binding slot of the morph position displacements in the mesh group.
+pub const MORPH_DELTAS_BINDING: u32 = 2;
+/// Binding slot of the morph-target weights in the mesh group.
+pub const MORPH_WEIGHTS_BINDING: u32 = 3;
 
 /// Vertex-buffer slot carrying compressed positions.
 pub const POSITION_SLOT: u32 = 0;
@@ -40,8 +51,7 @@ pub const UV_COLOR_SLOT: u32 = 1;
 pub const INSTANCE_SLOT: u32 = 2;
 
 /// Vertex attribute locations declared by the built-in shader.
-#[cfg(feature = "unlit")]
-mod location {
+pub mod location {
     /// Compressed position (`Snorm16x4`).
     pub const POSITION: u32 = 0;
     /// Compressed UV (`Snorm16x2`).
@@ -56,6 +66,11 @@ mod location {
     pub const MODEL_2: u32 = 5;
     /// Per-instance base color.
     pub const BASE_COLOR: u32 = 6;
+    /// Joint indices (`Uint16x4`), read from the position stream.
+    pub const JOINTS: u32 = 7;
+    /// Joint weights (`Unorm16x4`), read from the position stream right after
+    /// the indices.
+    pub const JOINTS_WEIGHTS: u32 = 8;
 }
 
 /// Entry point name of the built-in shader's vertex stage.
@@ -73,7 +88,7 @@ bitflags::bitflags! {
     /// attribute or binding, so a variant contains exactly what it uses. The
     /// flags are independent except where noted.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-    pub struct UnlitFlags: u8 {
+    pub struct UnlitFlags: u16 {
         /// Read a per-vertex position.
         ///
         /// Without it the geometry is a single point at the instance origin,
@@ -109,6 +124,20 @@ bitflags::bitflags! {
         /// a target that encodes sRGB would otherwise encode them a second
         /// time. Alpha is coverage rather than color, so it never converts.
         const SRGB_TO_LINEAR_OUTPUT = 1 << 7;
+        /// Read per-vertex joint indices and weights from the position stream
+        /// and deform the vertex by the joint matrices the mesh group binds.
+        ///
+        /// The joint pair is part of [`Self::VERTEX_POSITION`]'s stream, so
+        /// this requires it; the deformation happens before the instance
+        /// transform, in the mesh's own space.
+        const VERTEX_JOINTS = 1 << 8;
+        /// Read a per-vertex morph position offset and add it to the
+        /// deformed position.
+        ///
+        /// Every morph target's delta for one vertex is read and weighted by
+        /// the mesh's morph weights, so a target with a zero weight costs
+        /// nothing but a multiply. Requires [`Self::VERTEX_POSITION`].
+        const MORPH_POSITIONS = 1 << 9;
     }
 }
 
@@ -120,13 +149,16 @@ impl UnlitFlags {
     /// specialized; the material and target flags
     /// [`Self::BASE_COLOR_TEXTURE`] and
     /// [`Self::SRGB_TO_LINEAR_OUTPUT`] are the base descriptor's and
-    /// must survive.
+    /// must survive, and so is [`Self::MORPH_POSITIONS`] — a morph target's
+    /// displacements are storage data rather than a vertex attribute, so no
+    /// layout can imply them.
     pub const MESH_MASK: UnlitFlags = UnlitFlags::VERTEX_POSITION
         .union(UnlitFlags::UNCOMPRESSED_POSITION)
         .union(UnlitFlags::VERTEX_UV)
         .union(UnlitFlags::UNCOMPRESSED_UV)
         .union(UnlitFlags::VERTEX_COLOR)
-        .union(UnlitFlags::VERTEX_INSTANCE);
+        .union(UnlitFlags::VERTEX_INSTANCE)
+        .union(UnlitFlags::VERTEX_JOINTS);
 
     /// The [`Self::MESH_MASK`] flags one vertex-buffer slot implies.
     ///
@@ -147,6 +179,12 @@ impl UnlitFlags {
                         if attribute.format == wgpu::VertexFormat::Float32x3 {
                             flags |= UnlitFlags::UNCOMPRESSED_POSITION;
                         }
+                    }
+                    // The joint pair is part of this stream rather than a
+                    // stream of its own: the indices are the flag's evidence,
+                    // and the weights follow them.
+                    if attribute.shader_location == location::JOINTS {
+                        flags |= UnlitFlags::VERTEX_JOINTS;
                     }
                 }
             }
@@ -283,7 +321,7 @@ impl UnlitOptions {
     ///
     /// Every name appears, so the composed variant never sees a name it does
     /// not know.
-    pub fn features(&self) -> [(&'static str, bool); 8] {
+    pub fn features(&self) -> [(&'static str, bool); 10] {
         [
             (
                 "VERTEX_POSITION",
@@ -314,7 +352,35 @@ impl UnlitOptions {
                 "SRGB_TO_LINEAR_OUTPUT",
                 self.flags.contains(UnlitFlags::SRGB_TO_LINEAR_OUTPUT),
             ),
+            (
+                "VERTEX_JOINTS",
+                self.flags.contains(UnlitFlags::VERTEX_JOINTS),
+            ),
+            (
+                "MORPH_POSITIONS",
+                self.flags.contains(UnlitFlags::MORPH_POSITIONS),
+            ),
         ]
+    }
+
+    /// Whether this variant reads the mesh group: the [`MeshInfo`] uniform and
+    /// whichever of the metadata, joint or morph bindings it declares.
+    ///
+    /// Mirrors the shader's mesh-group condition, so the layout and the
+    /// composed variant agree on whether the group exists.
+    pub fn needs_mesh_group(&self) -> bool {
+        self.needs_metadata() || self.needs_joints() || self.needs_morphs()
+    }
+
+    /// Whether this variant deforms its vertices by joint matrices and so
+    /// reads the mesh group's array of them.
+    pub fn needs_joints(&self) -> bool {
+        self.flags.contains(UnlitFlags::VERTEX_JOINTS)
+    }
+
+    /// Whether this variant reads the mesh group's morph deltas and weights.
+    pub fn needs_morphs(&self) -> bool {
+        self.flags.contains(UnlitFlags::MORPH_POSITIONS)
     }
 
     /// Whether this variant reads a compressed channel and therefore needs the
@@ -339,6 +405,26 @@ impl UnlitOptions {
     pub fn uv_color_stream(&self) -> MeshVertexStreamWriter {
         MeshVertexStreamWriter {
             flags: uv_color_flags(self.flags),
+        }
+    }
+
+    /// The position vertex stream this variant expects.
+    ///
+    /// The joint indices and weights the variant deforms with belong to this
+    /// stream rather than one of their own, so a skinned variant's stream is
+    /// wider by the joint pair and nothing else changes.
+    pub fn position_stream(&self) -> PositionStreamWriter {
+        PositionStreamWriter {
+            channels: PositionStreamChannels {
+                position: self.flags.contains(UnlitFlags::VERTEX_POSITION).then(|| {
+                    if self.flags.contains(UnlitFlags::UNCOMPRESSED_POSITION) {
+                        ChannelEncoding::UncompressedPosition
+                    } else {
+                        ChannelEncoding::CompressedPosition
+                    }
+                }),
+                joints: self.flags.contains(UnlitFlags::VERTEX_JOINTS),
+            },
         }
     }
 }
@@ -456,6 +542,10 @@ impl UnlitPipeline {
         });
 
         let vertex_buffers = Self::vertex_buffer_layouts(options);
+        let vertex_buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = vertex_buffers
+            .iter()
+            .map(|layout| layout.as_ref().map(VertexBufferLayoutDesc::as_wgpu))
+            .collect();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgpu_unlit_render::unlit"),
             layout: Some(&pipeline_layout),
@@ -580,10 +670,13 @@ impl UnlitPipeline {
                 })
             });
 
-        let mesh = options.needs_metadata().then(|| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("wgpu_unlit_render::unlit::mesh"),
-                entries: &[wgpu::BindGroupLayoutEntry {
+        let mesh =
+            options.needs_mesh_group().then(|| {
+                // The mesh group is the draw's own data: the metadata index it
+                // addresses, and the pose it deforms with. Its layout grows with
+                // the variant, and every entry is a binding the pipeline declares.
+                let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 4>::new();
+                entries.push(wgpu::BindGroupLayoutEntry {
                     binding: MESH_INFO_BINDING,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
@@ -594,9 +687,63 @@ impl UnlitPipeline {
                         ),
                     },
                     count: None,
-                }],
-            })
-        });
+                });
+                if options.needs_joints() {
+                    entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: JOINTS_BINDING,
+                    // A lone matrix element: the array may grow without
+                    // invalidating the layout, exactly like the metadata
+                    // buffer's element stride.
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            <crate::mesh::JointMatrix as const_shader_layout::ShaderLayout>::SIZE,
+                        ),
+                    },
+                    count: None,
+                });
+                }
+                if options.needs_morphs() {
+                    // One position component of one target: the buffer is sized by
+                    // the mesh, and like the other storage entries its binding
+                    // minimum is a single element so growing the mesh never
+                    // invalidates the layout.
+                    entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: MORPH_DELTAS_BINDING,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            wgpu::BufferAddress::from(size_of::<f32>() as u64).try_into().expect(
+                                "a float is non-zero, so its size is a valid binding minimum",
+                            ),
+                        ),
+                    },
+                    count: None,
+                });
+                    entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: MORPH_WEIGHTS_BINDING,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: Some(
+                            wgpu::BufferAddress::from(size_of::<f32>() as u64).try_into().expect(
+                                "a float is non-zero, so its size is a valid binding minimum",
+                            ),
+                        ),
+                    },
+                    count: None,
+                });
+                }
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("wgpu_unlit_render::unlit::mesh"),
+                    entries: &entries,
+                })
+            });
 
         UnlitBindGroupLayouts {
             global,
@@ -612,49 +759,8 @@ impl UnlitPipeline {
     /// without either channel, or the instance slot without
     /// [`UnlitFlags::VERTEX_INSTANCE`] — is reported as `None`, so a variant
     /// never binds a buffer the shader does not declare.
-    pub fn vertex_buffer_layouts(
-        options: &UnlitOptions,
-    ) -> [Option<wgpu::VertexBufferLayout<'static>>; 3] {
+    pub fn vertex_buffer_layouts(options: &UnlitOptions) -> [Option<VertexBufferLayoutDesc>; 3] {
         let flags = options.flags;
-
-        // One static slice per position encoding: the layout must be
-        // `'static` to live on the pipeline descriptor.
-        const POSITION_COMPRESSED: [wgpu::VertexAttribute; 1] =
-            wgpu::vertex_attr_array![location::POSITION => Snorm16x4];
-        const POSITION_UNCOMPRESSED: [wgpu::VertexAttribute; 1] =
-            wgpu::vertex_attr_array![location::POSITION => Float32x3];
-
-        // One static slice per UV / color combination.
-        const UV_COMPRESSED_ONLY: [wgpu::VertexAttribute; 1] =
-            wgpu::vertex_attr_array![location::UV => Snorm16x2];
-        const UV_UNCOMPRESSED_ONLY: [wgpu::VertexAttribute; 1] =
-            wgpu::vertex_attr_array![location::UV => Float32x2];
-        const COLOR_ONLY: [wgpu::VertexAttribute; 1] =
-            wgpu::vertex_attr_array![location::COLOR => Unorm8x4];
-        const UV_COMPRESSED_COLOR: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![location::UV => Snorm16x2, location::COLOR => Unorm8x4];
-        const UV_UNCOMPRESSED_COLOR: [wgpu::VertexAttribute; 2] =
-            wgpu::vertex_attr_array![location::UV => Float32x2, location::COLOR => Unorm8x4];
-
-        let position_attributes = flags.contains(UnlitFlags::VERTEX_POSITION).then(|| {
-            if flags.contains(UnlitFlags::UNCOMPRESSED_POSITION) {
-                &POSITION_UNCOMPRESSED[..]
-            } else {
-                &POSITION_COMPRESSED[..]
-            }
-        });
-
-        let stream = options.uv_color_stream();
-        let uncompressed_uv = stream.uncompressed_uv();
-        let uv_color_attributes: Option<&'static [wgpu::VertexAttribute]> =
-            match (stream.uv(), stream.color()) {
-                (false, false) => None,
-                (true, false) if uncompressed_uv => Some(&UV_UNCOMPRESSED_ONLY),
-                (true, false) => Some(&UV_COMPRESSED_ONLY),
-                (false, true) => Some(&COLOR_ONLY),
-                (true, true) if uncompressed_uv => Some(&UV_UNCOMPRESSED_COLOR),
-                (true, true) => Some(&UV_COMPRESSED_COLOR),
-            };
 
         const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = wgpu::vertex_attr_array![
             location::MODEL_0 => Float32x4,
@@ -663,14 +769,22 @@ impl UnlitPipeline {
             location::BASE_COLOR => Float32x4,
         ];
 
+        // Each stream describes its own layout, so the attributes a pipeline
+        // declares and the bytes a packed mesh writes come from one
+        // description and cannot drift apart.
+        let position = options.position_stream().channels.channels();
+        let uv_color = options.uv_color_stream().channels();
         [
-            position_attributes
-                .map(|attributes| vertex_layout(attributes, wgpu::VertexStepMode::Vertex)),
-            uv_color_attributes
-                .map(|attributes| vertex_layout(attributes, wgpu::VertexStepMode::Vertex)),
+            (!position.is_empty()).then(|| position.layout()),
+            (!uv_color.is_empty()).then(|| uv_color.layout()),
             flags
                 .contains(UnlitFlags::VERTEX_INSTANCE)
-                .then(|| vertex_layout(&INSTANCE_ATTRIBUTES, wgpu::VertexStepMode::Instance)),
+                .then(|| VertexBufferLayoutDesc {
+                    array_stride: wgpu::VertexFormat::Float32x4.size()
+                        * INSTANCE_ATTRIBUTES.len() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: INSTANCE_ATTRIBUTES.into_iter().collect(),
+                }),
         ]
     }
 }
@@ -755,34 +869,6 @@ fn default_depth_stencil_state() -> wgpu::DepthStencilState {
     }
 }
 
-/// Build a tightly-packed vertex-buffer layout, deriving the stride from the
-/// attribute formats.
-///
-/// The attributes are `'static` so the resulting layout can outlive this call
-/// and be stored on the pipeline descriptor.
-///
-/// # Panics
-/// If the derived stride is not a multiple of [`wgpu::VERTEX_ALIGNMENT`].
-#[cfg(feature = "unlit")]
-fn vertex_layout(
-    attributes: &'static [wgpu::VertexAttribute],
-    step_mode: wgpu::VertexStepMode,
-) -> wgpu::VertexBufferLayout<'static> {
-    let array_stride = attributes
-        .iter()
-        .map(|attribute| attribute.format.size())
-        .sum::<u64>();
-    assert!(
-        array_stride.is_multiple_of(wgpu::VERTEX_ALIGNMENT),
-        "vertex stride {array_stride} must be a multiple of wgpu::VERTEX_ALIGNMENT"
-    );
-    wgpu::VertexBufferLayout {
-        array_stride,
-        step_mode,
-        attributes,
-    }
-}
-
 /// Compose the built-in `unlit.wesl` for `options`.
 ///
 /// # Panics
@@ -807,6 +893,16 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
         !flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) || flags.contains(UnlitFlags::VERTEX_UV),
         "the base-color texture is sampled with the per-vertex UV, so \
          `BASE_COLOR_TEXTURE` requires `VERTEX_UV`"
+    );
+    assert!(
+        !flags.contains(UnlitFlags::VERTEX_JOINTS) || flags.contains(UnlitFlags::VERTEX_POSITION),
+        "the joint stream is part of the position stream, so \
+         `VERTEX_JOINTS` requires `VERTEX_POSITION`"
+    );
+    assert!(
+        !flags.contains(UnlitFlags::MORPH_POSITIONS) || flags.contains(UnlitFlags::VERTEX_POSITION),
+        "a morph target displaces the position, so `MORPH_POSITIONS` \
+         requires `VERTEX_POSITION`"
     );
 
     let main_path = wesl::syntax::ModulePath::new(
@@ -895,8 +991,9 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
     /// Every flag combination that composes.
     ///
-    /// `BASE_COLOR_TEXTURE` implies `VERTEX_UV`, and an uncompressed channel
-    /// implies its channel, so the invalid combinations are skipped.
+    /// `BASE_COLOR_TEXTURE` implies `VERTEX_UV`, an uncompressed channel
+    /// implies its channel, and the joint and morph channels imply the position
+    /// they deform, so the invalid combinations are skipped.
     fn all_variants() -> Vec<UnlitOptions> {
         let mut variants = Vec::new();
         for vertex_position in [false, true] {
@@ -906,35 +1003,52 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                         for vertex_color in [false, true] {
                             for vertex_instance in [false, true] {
                                 for base_color_texture in [false, true] {
-                                    let mut flags = UnlitFlags::empty();
-                                    flags.set(UnlitFlags::VERTEX_POSITION, vertex_position);
-                                    flags.set(
-                                        UnlitFlags::UNCOMPRESSED_POSITION,
-                                        uncompressed_position,
-                                    );
-                                    flags.set(UnlitFlags::VERTEX_UV, vertex_uv);
-                                    flags.set(UnlitFlags::UNCOMPRESSED_UV, uncompressed_uv);
-                                    flags.set(UnlitFlags::VERTEX_COLOR, vertex_color);
-                                    flags.set(UnlitFlags::VERTEX_INSTANCE, vertex_instance);
-                                    flags.set(UnlitFlags::BASE_COLOR_TEXTURE, base_color_texture);
-                                    if base_color_texture && !vertex_uv {
-                                        continue;
+                                    for vertex_joints in [false, true] {
+                                        for morph_positions in [false, true] {
+                                            let mut flags = UnlitFlags::empty();
+                                            flags.set(UnlitFlags::VERTEX_POSITION, vertex_position);
+                                            flags.set(
+                                                UnlitFlags::UNCOMPRESSED_POSITION,
+                                                uncompressed_position,
+                                            );
+                                            flags.set(UnlitFlags::VERTEX_UV, vertex_uv);
+                                            flags.set(UnlitFlags::UNCOMPRESSED_UV, uncompressed_uv);
+                                            flags.set(UnlitFlags::VERTEX_COLOR, vertex_color);
+                                            flags.set(UnlitFlags::VERTEX_INSTANCE, vertex_instance);
+                                            flags.set(
+                                                UnlitFlags::BASE_COLOR_TEXTURE,
+                                                base_color_texture,
+                                            );
+                                            flags.set(UnlitFlags::VERTEX_JOINTS, vertex_joints);
+                                            flags.set(UnlitFlags::MORPH_POSITIONS, morph_positions);
+                                            if base_color_texture && !vertex_uv {
+                                                continue;
+                                            }
+                                            if uncompressed_position && !vertex_position {
+                                                continue;
+                                            }
+                                            if uncompressed_uv && !vertex_uv {
+                                                continue;
+                                            }
+                                            // The joint stream is part of the position
+                                            // stream, and a morph target displaces the
+                                            // position.
+                                            if (vertex_joints || morph_positions)
+                                                && !vertex_position
+                                            {
+                                                continue;
+                                            }
+                                            // A variant reading nothing composes an
+                                            // empty vertex-input struct.
+                                            if flags.is_empty() {
+                                                continue;
+                                            }
+                                            variants.push(UnlitOptions {
+                                                flags,
+                                                ..UnlitOptions::standard_shape()
+                                            });
+                                        }
                                     }
-                                    if uncompressed_position && !vertex_position {
-                                        continue;
-                                    }
-                                    if uncompressed_uv && !vertex_uv {
-                                        continue;
-                                    }
-                                    // A variant reading nothing composes an
-                                    // empty vertex-input struct.
-                                    if flags.is_empty() {
-                                        continue;
-                                    }
-                                    variants.push(UnlitOptions {
-                                        flags,
-                                        ..UnlitOptions::standard_shape()
-                                    });
                                 }
                             }
                         }
@@ -1175,14 +1289,30 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 "variant {options:?}"
             );
             // The metadata bindings exist only while a channel is compressed.
+            // The declarations are matched rather than the bare names, which
+            // also occur inside `mesh_metadata::MeshInfo`.
             assert_eq!(
-                wgsl.contains("mesh_meta"),
+                wgsl.contains("var<storage, read> mesh_meta"),
                 options.needs_metadata(),
                 "variant {options:?}"
             );
+            // The mesh group exists whenever the variant reads any per-mesh
+            // data: the decode parameters, the joint matrices or the morph
+            // displacements.
             assert_eq!(
-                wgsl.contains("mesh_info"),
-                options.needs_metadata(),
+                wgsl.contains("var<uniform> mesh_info"),
+                options.needs_mesh_group(),
+                "variant {options:?}"
+            );
+            assert_eq!(
+                wgsl.contains("var<storage, read> joint_matrices"),
+                options.needs_joints(),
+                "variant {options:?}"
+            );
+            assert_eq!(
+                wgsl.contains("var<storage, read> morph_deltas")
+                    && wgsl.contains("var<storage, read> morph_weights"),
+                options.needs_morphs(),
                 "variant {options:?}"
             );
             // Without a position stream the vertex input declares no
@@ -1198,6 +1328,11 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             assert_eq!(
                 vertex_input.contains("position:"),
                 flags.contains(UnlitFlags::VERTEX_POSITION),
+                "variant {options:?}"
+            );
+            assert_eq!(
+                vertex_input.contains("joints:") && vertex_input.contains("weights:"),
+                options.needs_joints(),
                 "variant {options:?}"
             );
         }

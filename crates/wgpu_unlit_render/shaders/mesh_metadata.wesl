@@ -24,17 +24,24 @@ public struct MeshMetadata {
     uv_min_and_extents: vec4<f32>,
 }
 
-/// Per-mesh addressing into the shared mesh-metadata array.
+/// Per-mesh addressing into the shared mesh-metadata array and into the
+/// per-mesh streams a draw reads.
 ///
 /// Bound as a small uniform at the mesh group, so a draw selects its decode
 /// parameters without an extra per-instance attribute.
 public struct MeshInfo {
     /// Index into the `array<MeshMetadata>` bound with the global group.
     metadata_index: u32,
+    /// First element this mesh's vertices occupy in the pool its streams live
+    /// in, which is the draw's `firstVertex` or `baseVertex`.
+    ///
+    /// A shader that maps a vertex back to its mesh-local ordinal — the morph
+    /// deltas, which are stored per mesh — subtracts it from
+    /// `@builtin(vertex_index)`.
+    vertex_offset: u32,
+    /// Number of morph targets whose deltas follow each vertex. Zero without
+    /// morph targets.
+    morph_count: u32,
     /// Explicit tail padding.
     pad0: u32,
-    /// Explicit tail padding.
-    pad1: u32,
-    /// Explicit tail padding.
-    pad2: u32,
 }

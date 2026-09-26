@@ -197,6 +197,43 @@ pub struct GpuMesh {
     ///
     /// `None` when the mesh was uploaded without one.
     pub bind_group_id: Option<ResourceId>,
+
+    /// How many morph targets the mesh carries, zero when it has none.
+    ///
+    /// A morph target's displacement is storage data rather than a vertex
+    /// attribute, so this — not the vertex layout — is what tells a draw's key
+    /// that the mesh reads morph positions.
+    pub morph_targets: u32,
+
+    /// The mesh's skin, when it was uploaded with one.
+    ///
+    /// The pose buffers are rewritten in place through
+    /// [`MeshSource::update_skin`](crate::mesh_source::MeshSource::update_skin)
+    /// rather than replaced, so this survives every pose change.
+    pub skin: Option<GpuSkin>,
+
+    /// The mesh's morph targets, when it was uploaded with any.
+    pub morph: Option<GpuMorph>,
+}
+
+/// The joint matrices a skinned mesh deforms with, as the mesh stores them.
+#[derive(Clone, Debug)]
+pub struct GpuSkin {
+    /// The buffer the matrices live in, bound at the mesh group's joint
+    /// binding.
+    pub matrices: wgpu::Buffer,
+    /// How many matrices it holds.
+    pub joint_count: u32,
+}
+
+/// The morph targets a mesh blends, as the mesh stores them.
+#[derive(Clone, Debug)]
+pub struct GpuMorph {
+    /// The weights, one per target, bound at the mesh group's morph-weight
+    /// binding.
+    pub weights: wgpu::Buffer,
+    /// How many targets the mesh carries.
+    pub target_count: u32,
 }
 
 /// The per-entity request for one family's variant.

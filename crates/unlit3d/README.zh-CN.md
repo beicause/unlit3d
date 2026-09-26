@@ -82,7 +82,17 @@ let renderer = world.spawn((Resource, Renderer::new(ctx)));
 let mesh = world
     .with_mut::<Source, _>(source, |source| {
         let source = source.as_mut::<MeshSource>().unwrap();
-        source.allocate_unlit_mesh(&world, &key, &positions, Some(&uvs), Some(&colors), Some(&indices))
+        source.allocate_unlit_mesh(
+            &world,
+            &key,
+            UnlitMeshDesc {
+                positions: &positions,
+                uvs: Some(&uvs),
+                colors: Some(&colors),
+                indices: Some(&indices),
+                ..Default::default()
+            },
+        )
     })
     .unwrap();
 

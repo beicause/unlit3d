@@ -72,7 +72,16 @@
 //!         let colors = [[255u8; 4]; 3];
 //!         let indices = [0u32, 1, 2];
 //!         let mesh = source.allocate_unlit_mesh(
-//!             &world, &key, &positions, Some(&uvs), Some(&colors), Some(&indices));
+//!             &world,
+//!             &key,
+//!             UnlitMeshDesc {
+//!                 positions: &positions,
+//!                 uvs: Some(&uvs),
+//!                 colors: Some(&colors),
+//!                 indices: Some(&indices),
+//!                 ..Default::default()
+//!             },
+//!         );
 //!         let device = source.device(&world);
 //!         let texture = device.create_texture(&wgpu::TextureDescriptor {
 //!             label: Some("example::texture"),
@@ -158,8 +167,8 @@ pub mod prelude {
     pub use crate::{
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
-            Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, RenderLoadOps, Transform,
-            UnlitPipeline, ZSortedDrawing,
+            Camera, GpuMaterial, GpuMesh, GpuMorph, GpuPipeline, GpuSkin, InstanceColor,
+            RenderLoadOps, Transform, UnlitPipeline, ZSortedDrawing,
         },
         culling::is_culled,
         input::{
@@ -168,7 +177,10 @@ pub mod prelude {
             PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent, TouchEvent,
             TouchPhase, WheelUnit, dispatch_input,
         },
-        mesh::{MeshDesc, VertexBufferDesc},
+        mesh::{
+            JointMatrix, MeshDesc, MeshPoseDesc, MorphDesc, SkinDesc, UnlitMeshDesc,
+            UnlitMorphTarget, UnlitSkin, VertexBufferDesc,
+        },
         mesh_source::{MeshSource, UnlitPipelineKey},
         pipeline::{
             DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineDesc,

@@ -904,10 +904,13 @@ impl Scene {
                 let mesh = source.allocate_unlit_mesh(
                     &world,
                     &key,
-                    &positions,
-                    Some(&uvs),
-                    Some(&colors),
-                    Some(&indices),
+                    UnlitMeshDesc {
+                        positions: &positions,
+                        uvs: Some(&uvs),
+                        colors: Some(&colors),
+                        indices: Some(&indices),
+                        ..Default::default()
+                    },
                 );
                 let texture = checkerboard(&source.device(&world), &source.queue(&world), 64);
                 let view = source.register_texture_and_default_view(&world, texture).1;

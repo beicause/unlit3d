@@ -22,12 +22,13 @@ use unlit_ecs::{LocalWorld, TypeIdHashMap};
 use wgpu_unlit_render::buffer_pool::BufferPool;
 use wgpu_unlit_render::globals::{Globals, View};
 use wgpu_unlit_render::mesh::{
-    MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
+    JointMatrix, MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_weights,
 };
 use wgpu_unlit_render::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    INSTANCE_SLOT, MESH_INFO_BINDING, MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT,
-    UnlitFlags, UnlitOptions, UnlitPipeline, apply_surface,
+    INSTANCE_SLOT, JOINTS_BINDING, MESH_INFO_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
+    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
+    apply_surface,
 };
 use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
 use wgpu_unlit_render::scene::{MAX_VERTEX_BUFFERS, Scene};
@@ -40,9 +41,9 @@ use wgpu_unlit_render::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
 
 use crate::bounds::Aabb;
-use crate::components::{Camera, GpuMaterial, GpuMesh};
+use crate::components::{Camera, GpuMaterial, GpuMesh, GpuMorph, GpuSkin};
 use crate::culling::VisibleMesh;
-use crate::mesh::MeshDesc;
+use crate::mesh::{MAX_POSE_PARTS, MeshDesc, MeshPoseDesc, MorphDesc, SkinDesc, UnlitMeshDesc};
 use crate::pipeline::{
     DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, PipelineDesc, PipelineFactory,
     PipelineId, PipelineKey, RegisteredGlobal, RenderResources,
@@ -53,10 +54,46 @@ use crate::scene::{
 };
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
 
+/// The entries of an unlit mesh's bind group, in the order the variant's mesh
+/// layout declares them.
+///
+/// The mesh-info uniform is the group's first entry always; the pose buffers
+/// follow it only when the mesh carries them. A variant that reads a pose
+/// binding the mesh did not supply is a programming error, and the bind group
+/// creation below rejects it.
+fn mesh_group_entries<'a>(
+    mesh_info: &'a wgpu::Buffer,
+    skin: Option<&'a SkinDesc>,
+    morph: Option<&'a MorphDesc>,
+) -> arrayvec::ArrayVec<wgpu::BindGroupEntry<'a>, { MAX_POSE_PARTS + 1 }> {
+    let mut entries = arrayvec::ArrayVec::new();
+    entries.push(wgpu::BindGroupEntry {
+        binding: MESH_INFO_BINDING,
+        resource: mesh_info.as_entire_binding(),
+    });
+    if let Some(skin) = skin {
+        entries.push(wgpu::BindGroupEntry {
+            binding: JOINTS_BINDING,
+            resource: skin.matrices.as_entire_binding(),
+        });
+    }
+    if let Some(morph) = morph {
+        entries.push(wgpu::BindGroupEntry {
+            binding: MORPH_DELTAS_BINDING,
+            resource: morph.deltas.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: MORPH_WEIGHTS_BINDING,
+            resource: morph.weights.as_entire_binding(),
+        });
+    }
+    entries
+}
+
 /// The most resources one mesh can be built from: every vertex buffer a pass
-/// can bind, plus the index buffer, the mesh bind group and the mesh-info
-/// uniform.
-const MAX_MESH_PARTS: usize = MAX_VERTEX_BUFFERS + 3;
+/// can bind, plus the index buffer, the mesh bind group, the mesh-info uniform
+/// and the three pose buffers a skinned, morphed mesh may carry.
+const MAX_MESH_PARTS: usize = MAX_VERTEX_BUFFERS + 3 + MAX_POSE_PARTS;
 
 /// The byte size of one index of `format`.
 ///
@@ -187,6 +224,10 @@ impl SpecializerKey for UnlitDrawKey {
 }
 
 /// The flag set a mesh's vertex layout implies, from every slot it declares.
+///
+/// A mesh's vertex layout cannot imply the morph flag — the displacements are
+/// storage data rather than attributes — so morph channels come from the
+/// entity's own key, like the material and target flags.
 fn unlit_flags_for_layout(layout: &[(u32, VertexBufferLayoutDesc)]) -> UnlitFlags {
     layout
         .iter()
@@ -687,6 +728,7 @@ impl MeshSource {
             aabb,
             bind_group,
             mesh_info_buffer,
+            pose,
         } = desc;
 
         // The parts, capped like the description they come from: a mesh cannot
@@ -732,8 +774,38 @@ impl MeshSource {
                 .expect("a mesh-info buffer has no dependencies")
         });
 
+        // The pose buffers — the joint matrices and the morph targets — are
+        // weak nodes like the mesh-info uniform, and like it they are the
+        // bind group's dependencies: an update writes into one rather than
+        // replacing it, so the group survives a pose change.
+        let MeshPoseDesc { skin, morph } = pose;
+        // The handles a pose update goes through name the buffers directly, so
+        // a frame rewrites them in place instead of looking the mesh up again.
+        let skin_handle = skin.as_ref().map(|skin| GpuSkin {
+            matrices: skin.matrices.clone(),
+            joint_count: skin.joint_count,
+        });
+        let morph_handle = morph.as_ref().map(|morph| GpuMorph {
+            weights: morph.weights.clone(),
+            target_count: morph.target_count,
+        });
+        let skin_id = skin.as_ref().map(|skin| {
+            Self::graph(world, self.context)
+                .insert_weak(Resource::Buffer(skin.matrices.clone()), &[])
+                .expect("a joint-matrix buffer has no dependencies")
+        });
+        let morph_ids = morph.as_ref().map(|morph| {
+            let deltas = Self::graph(world, self.context)
+                .insert_weak(Resource::Buffer(morph.deltas.clone()), &[])
+                .expect("a morph-delta buffer has no dependencies");
+            let weights = Self::graph(world, self.context)
+                .insert_weak(Resource::Buffer(morph.weights.clone()), &[])
+                .expect("a morph-weight buffer has no dependencies");
+            (deltas, weights)
+        });
+
         let bind_group_id = bind_group.map(|bind_group| {
-            // Only the uniform the group reads, so replacing or removing it
+            // Only the buffers the group reads, so replacing or removing one
             // reaches the group. The mesh's vertex and index buffers are
             // deliberately absent: a draw binds them directly, the group reads
             // none of them, and a pooled buffer changes when the pool grows —
@@ -741,6 +813,13 @@ impl MeshSource {
             // the pool for nothing.
             let mut dependencies = ArrayVec::<ResourceId, MAX_MESH_PARTS>::new();
             dependencies.extend(mesh_info_id);
+            dependencies.extend(skin_id);
+            dependencies.extend(
+                morph_ids
+                    .map(|(deltas, weights)| [deltas, weights])
+                    .into_iter()
+                    .flatten(),
+            );
             Self::graph(world, self.context)
                 .insert_weak(Resource::BindGroup(bind_group), &dependencies)
                 .expect("a mesh bind group's dependencies are in the graph")
@@ -785,6 +864,13 @@ impl MeshSource {
         parts.extend(index_buffer.map(|(id, _format)| id));
         parts.extend(bind_group_id);
         parts.extend(mesh_info_id);
+        parts.extend(skin_id);
+        parts.extend(
+            morph_ids
+                .map(|(deltas, weights)| [deltas, weights])
+                .into_iter()
+                .flatten(),
+        );
         let root = Self::graph(world, self.context)
             .insert_strong(Resource::Virtual, &parts)
             .expect("a mesh's parts are in the graph");
@@ -801,6 +887,9 @@ impl MeshSource {
             aabb,
             metadata_index,
             bind_group_id,
+            morph_targets: morph_handle.as_ref().map_or(0, |morph| morph.target_count),
+            skin: skin_handle,
+            morph: morph_handle,
             vertex_allocation: None,
             index_allocation: None,
         }
@@ -815,13 +904,23 @@ impl MeshSource {
     /// shader reads its decode parameters from. Colours are already stored in
     /// the width they are uploaded at, so they are copied through unchanged.
     ///
+    /// A skinned mesh's joint indices and weights are packed into the *same*
+    /// stream as its positions, right after them, and its joint matrices go
+    /// into a buffer of its own. A morphed mesh's per-vertex displacements go
+    /// into another pair of buffers. Neither is a vertex attribute, so neither
+    /// changes the draw's geometry; a later pose change rewrites the mesh's
+    /// buffers with [`MeshSource::update_skin`] and
+    /// [`MeshSource::update_morph_weights`] rather than re-uploading the mesh.
+    ///
     /// This is a convenience over [`MeshSource::allocate_mesh`]: it builds the
     /// same [`MeshDesc`] a caller could build by hand, and shares the
     /// compression in [wgpu_unlit_render::mesh] with anyone else who wants it.
     ///
     /// Which channels are packed is the key's own vertex layout: a slice for a
     /// channel the variant does not declare is left out, so the buffer always
-    /// matches what the shader reads.
+    /// matches what the shader reads. Who *deforms* the mesh is the mesh's:
+    /// the key asks for the joint and morph channels, and a mesh without the
+    /// matching data simply draws undeformed.
     ///
     /// # Panics
     ///
@@ -832,13 +931,19 @@ impl MeshSource {
         &mut self,
         world: &LocalWorld,
         key: &UnlitPipelineKey,
-        positions: &[[f32; 3]],
-        uvs: Option<&[[f32; 2]]>,
-        colors: Option<&[[u8; 4]]>,
-        indices: Option<&[u32]>,
+        desc: UnlitMeshDesc<'_>,
     ) -> GpuMesh {
         let device = self.device(world);
         let queue = self.queue(world);
+
+        let UnlitMeshDesc {
+            positions,
+            uvs,
+            colors,
+            indices,
+            skin,
+            morph_targets,
+        } = desc;
 
         // The key's layouts are derived on the fly: the source keeps no
         // per-family state, and the pure layout builder is the same one the
@@ -849,19 +954,54 @@ impl MeshSource {
             .mesh
             .clone()
             .expect("the unlit variant reads mesh metadata");
-        // The stream is the key's, not the caller's: the UV-and-color buffer
-        // has to be packed the way the shader reading it declares its vertex
-        // layout, so a channel the key does not read is left out.
+        // The streams are the key's, not the caller's: a buffer has to be
+        // packed the way the shader reading it declares its vertex layout, so
+        // a channel the key does not read is left out.
+        let position_stream = options.position_stream();
         let uv_color_stream = options.uv_color_stream();
 
-        // Compress vertex streams.
+        // The joint pair belongs to the position stream, so a skinned mesh's
+        // stream is wider by it and no separate buffer exists. A variant that
+        // deforms by joints reads them from that stream, so it needs the
+        // caller's joint indices and weights exactly as a compressed variant
+        // needs its UVs. A variant that reads none ignores a skin it was
+        // handed, as it ignores UVs it does not declare.
+        let skinned = options.needs_joints();
+        let (packed_joints, packed_weights) = if skinned {
+            let skin = skin.expect("a variant that reads joints needs the mesh's skin");
+            assert_eq!(
+                skin.joints.len(),
+                positions.len(),
+                "the joint stream must describe the same vertices as the positions"
+            );
+            assert_eq!(
+                skin.weights.len(),
+                positions.len(),
+                "the weight stream must describe the same vertices as the positions"
+            );
+            (
+                skin.joints.to_vec(),
+                compress_weights(skin.weights).collect(),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        // Compress every vertex stream.
         let mut meta = MeshMetadata::default();
-        let packed_positions: Vec<_> = compress_positions(positions, &mut meta).collect();
-        let vertex_count = packed_positions.len();
+        let position_len = position_stream.byte_len(positions.len());
+        let mut position_data = vec![0u8; position_len];
+        position_stream.write(
+            positions,
+            &packed_joints,
+            &packed_weights,
+            &mut meta,
+            wgpu::WriteOnly::from_mut(position_data.as_mut_slice()),
+        );
+        let vertex_count = positions.len();
 
         // UV and colour vertex data, interleaved in the order the shader
         // declares: the channel a slice is given for is the channel packed.
-        use wgpu::WriteOnly;
         let uv_color_len = uv_color_stream.byte_len(vertex_count);
         let mut uv_color_data = vec![0u8; uv_color_len];
         if uv_color_len > 0 {
@@ -869,9 +1009,74 @@ impl MeshSource {
                 uvs.unwrap_or(&[]),
                 colors.unwrap_or(&[]),
                 &mut meta,
-                WriteOnly::from_mut(uv_color_data.as_mut_slice()),
+                wgpu::WriteOnly::from_mut(uv_color_data.as_mut_slice()),
             );
         }
+
+        // The pose buffers, when the draw reads one. The joint matrices and the
+        // morph displacements are written once here and rewritten in place by
+        // `update_skin`/`update_morph_weights`, so the mesh's bind group never
+        // has to be rebuilt for a pose change.
+        let skin_desc = skinned.then(|| {
+            let matrices = skin.expect("checked above").pose;
+            assert!(
+                !matrices.is_empty(),
+                "a skinned mesh needs at least one joint matrix"
+            );
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("unlit3d::mesh::joints"),
+                size: size_of_val(matrices) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&buffer, 0, matrices.as_bytes());
+            SkinDesc {
+                matrices: buffer,
+                joint_count: matrices.len() as u32,
+            }
+        });
+
+        let morph_desc = options.needs_morphs().then(|| {
+            assert!(
+                !morph_targets.is_empty(),
+                "a variant that reads morph positions needs the mesh's morph targets"
+            );
+            let target_count = morph_targets.len() as u32;
+            // One vertex's targets are contiguous, so the flat array is a
+            // vertex-major, target-minor matrix of three-component
+            // displacements.
+            let mut deltas = Vec::with_capacity(positions.len() * morph_targets.len() * 3);
+            for vertex in 0..positions.len() {
+                for target in morph_targets {
+                    assert_eq!(
+                        target.positions.len(),
+                        positions.len(),
+                        "a morph target must displace every vertex of its mesh"
+                    );
+                    deltas.extend_from_slice(&target.positions[vertex]);
+                }
+            }
+            let weights: Vec<f32> = morph_targets.iter().map(|target| target.weight).collect();
+            let deltas_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("unlit3d::mesh::morph_deltas"),
+                size: size_of_val(deltas.as_slice()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let weights_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("unlit3d::mesh::morph_weights"),
+                size: size_of_val(weights.as_slice()) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&deltas_buf, 0, deltas.as_bytes());
+            queue.write_buffer(&weights_buf, 0, weights.as_bytes());
+            MorphDesc {
+                deltas: deltas_buf,
+                weights: weights_buf,
+                target_count,
+            }
+        });
 
         // The mesh-info uniform and the bind group the shader reads it
         // through. The index is unknown until the mesh is allocated below, and
@@ -886,10 +1091,10 @@ impl MeshSource {
         let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::mesh::bind_group"),
             layout: &mesh_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: MESH_INFO_BINDING,
-                resource: mesh_info_buf.as_entire_binding(),
-            }],
+            // The entries follow the variant's own layout: the metadata index
+            // is always there, and a pose binding exists exactly when the
+            // variant reads it and the mesh supplied it.
+            entries: &mesh_group_entries(&mesh_info_buf, skin_desc.as_ref(), morph_desc.as_ref()),
         });
 
         // Index buffer (optional): `Uint16` when every index fits, otherwise
@@ -952,7 +1157,7 @@ impl MeshSource {
             vertex_layouts
                 .get(slot as usize)
                 .and_then(|layout| layout.as_ref())
-                .map(VertexBufferLayoutDesc::from_wgpu)
+                .cloned()
                 .unwrap_or(VertexBufferLayoutDesc {
                     array_stride: 0,
                     step_mode: wgpu::VertexStepMode::Vertex,
@@ -975,10 +1180,7 @@ impl MeshSource {
             .expect("the vertex pool grows with the mesh");
         let vertex_offset = vertices.offset();
         for (_slot, (layout, data)) in [
-            (
-                POSITION_SLOT,
-                (&position_layout, packed_positions.as_bytes()),
-            ),
+            (POSITION_SLOT, (&position_layout, position_data.as_bytes())),
             (UV_COLOR_SLOT, (&uv_color_layout, uv_color_data.as_bytes())),
         ] {
             if layout.array_stride == 0 {
@@ -1023,9 +1225,29 @@ impl MeshSource {
                 // the group depends on it: the uniform is inserted weak, and
                 // removing the mesh frees the group and then collects the
                 // orphaned uniform.
-                mesh_info_buffer: Some(mesh_info_buf),
+                mesh_info_buffer: Some(mesh_info_buf.clone()),
+                pose: MeshPoseDesc {
+                    skin: skin_desc,
+                    morph: morph_desc,
+                },
             },
             meta,
+        );
+
+        // The addressing the shader reads: the metadata index names the decode
+        // parameters, the vertex offset maps `@builtin(vertex_index)` back to
+        // this mesh's own vertex ordinal for the morph displacements, and the
+        // target count bounds that loop.
+        queue.write_buffer(
+            &mesh_info_buf,
+            0,
+            MeshInfo {
+                metadata_index: mesh.metadata_index,
+                vertex_offset,
+                morph_count: mesh.morph_targets,
+                pad0: 0,
+            }
+            .as_bytes(),
         );
 
         // The source binds the per-instance buffer at [INSTANCE_SLOT] for
@@ -1245,6 +1467,70 @@ impl MeshSource {
         graph.remove_drop(material.bind_group_id);
         // A resource that only fed this material's bind group is an orphan now.
         graph.cleanup_drop();
+    }
+
+    // -- poses -----------------------------------------------------------------
+
+    /// Replace the bind pose of the skinned `mesh` and upload it.
+    ///
+    /// The matrices go into the buffer the mesh already binds, so the mesh's
+    /// bind group is untouched: this is what animating a skeleton per frame
+    /// costs — one buffer write, no re-specialization and no group rebuild.
+    ///
+    /// # Panics
+    ///
+    /// If `mesh` has no skin, or if `matrices` has more entries than the
+    /// buffer's joint count.
+    pub fn update_skin(&mut self, world: &LocalWorld, mesh: &GpuMesh, matrices: &[JointMatrix]) {
+        let skin = mesh
+            .skin
+            .as_ref()
+            .expect("the mesh was uploaded with a skin");
+        Self::write_pose_buffer(
+            &self.queue(world),
+            &skin.matrices,
+            matrices.as_bytes(),
+            "joint matrices",
+        );
+    }
+
+    /// Replace the morph-target weights of `mesh` and upload them.
+    ///
+    /// The weights are applied by the vertex shader, so a partially weighted
+    /// pose costs one buffer write and no mesh re-upload. The number of
+    /// weights must match the target count the mesh was uploaded with; a
+    /// weight left at zero skips its target's displacement entirely.
+    ///
+    /// # Panics
+    ///
+    /// If `mesh` has no morph targets, or if `weights` has more entries than
+    /// the mesh's target count.
+    pub fn update_morph_weights(&mut self, world: &LocalWorld, mesh: &GpuMesh, weights: &[f32]) {
+        let morph = mesh
+            .morph
+            .as_ref()
+            .expect("the mesh was uploaded with morph targets");
+        Self::write_pose_buffer(
+            &self.queue(world),
+            &morph.weights,
+            weights.as_bytes(),
+            "morph weights",
+        );
+    }
+
+    /// Write a pose buffer through the queue, rejecting an over-long slice.
+    ///
+    /// A pose buffer is sized once at upload and rewritten in place, so a
+    /// longer replacement is a caller error rather than something to
+    /// reallocate: growing it would invalidate the bind group that reads it.
+    fn write_pose_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, bytes: &[u8], what: &str) {
+        assert!(
+            bytes.len() as u64 <= buffer.size(),
+            "a {what} update of {} bytes does not fit the {}-byte buffer it would rewrite",
+            bytes.len(),
+            buffer.size()
+        );
+        queue.write_buffer(buffer, 0, bytes);
     }
 
     // -- internal helpers ------------------------------------------------------
@@ -1786,10 +2072,13 @@ mod tests {
             self.source.allocate_unlit_mesh(
                 &self.world,
                 &self.key,
-                &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-                Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-                Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-                Some(&[0u32, 1, 2]),
+                UnlitMeshDesc {
+                    positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                    colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                    indices: Some(&[0u32, 1, 2]),
+                    ..Default::default()
+                },
             )
         }
 
@@ -1999,18 +2288,24 @@ mod tests {
         let standard_mesh = h.source.allocate_unlit_mesh(
             &h.world,
             &standard,
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-            Some(&[0u32, 1, 2]),
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                indices: Some(&[0u32, 1, 2]),
+                ..Default::default()
+            },
         );
         let uv_less_mesh = h.source.allocate_unlit_mesh(
             &h.world,
             &uv_less,
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-            Some(&[0u32, 1, 2]),
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                indices: Some(&[0u32, 1, 2]),
+                ..Default::default()
+            },
         );
         assert!(
             unlit_flags_for_layout(&standard_mesh.vertex_layout).contains(UnlitFlags::VERTEX_UV)
@@ -2318,10 +2613,13 @@ mod tests {
         let mesh = h.source.allocate_unlit_mesh(
             &h.world,
             &key,
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-            None,
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                indices: None,
+                ..Default::default()
+            },
         );
 
         assert!(!mesh.indexed);
@@ -2500,10 +2798,13 @@ mod tests {
         let uv_less_mesh = h.source.allocate_unlit_mesh(
             &h.world,
             &uv_less_key,
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-            Some(&[0u32, 1, 2]),
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                indices: Some(&[0u32, 1, 2]),
+                ..Default::default()
+            },
         );
         let surface = h.target.surface;
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
@@ -2861,10 +3162,13 @@ mod tests {
         let mesh = h.source.allocate_unlit_mesh(
             &h.world,
             &key,
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-            Some(&[0u32, 1, 2]),
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                indices: Some(&[0u32, 1, 2]),
+                ..Default::default()
+            },
         );
         h.world
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
@@ -2914,18 +3218,24 @@ mod tests {
         let first = h.source.allocate_unlit_mesh(
             &h.world,
             &key,
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-            Some(&[0u32, 1, 2]),
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                indices: Some(&[0u32, 1, 2]),
+                ..Default::default()
+            },
         );
         let second = h.source.allocate_unlit_mesh(
             &h.world,
             &key,
-            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-            Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
-            Some(&[0u32, 1, 2]),
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
+                indices: Some(&[0u32, 1, 2]),
+                ..Default::default()
+            },
         );
         assert!(first.indexed && second.indexed, "both meshes are indexed");
         assert_ne!(first.first, second.first, "the slices do not overlap");

@@ -26,16 +26,24 @@
 //                        the target expects linear values, so convert the
 //                        fragment's RGB from sRGB to linear before writing;
 //                        alpha is coverage and never converts
+//   VERTEX_JOINTS        read joint indices and weights from the position
+//                        stream and deform the vertex by the joint matrices
+//   MORPH_POSITIONS      read a per-vertex morph position offset and add it
+//                        to the deformed position
 //
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
 //   group 0  binding 2  mesh_meta     `array<MeshMetadata>` decode parameters
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
-//   group 2  binding 0  mesh_info     `MeshInfo` metadata index
+//   group 2  binding 0  mesh_info     `MeshInfo` addressing
+//   group 2  binding 1  joints        `array<mat4x4<f32>>`  [VERTEX_JOINTS]
+//   group 2  binding 2  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
+//   group 2  binding 3  morph_weights `array<f32>`           [MORPH_POSITIONS]
 //
 //   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
-//                      decoded through `mesh_meta`
+//                      decoded through `mesh_meta`, followed by the joint pair
+//                      Uint16x4 indices + Unorm16x4 weights [VERTEX_JOINTS]
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
 //                      plus color Unorm8x4 [VERTEX_COLOR]
 //   slot 2  instance   Float32x4x3 model matrix + Float32x4 base color,
@@ -43,7 +51,8 @@
 //
 // The mesh metadata bindings exist only when a channel is compressed: a
 // variant that reads every channel uncompressed declares no metadata binding
-// at all.
+// at all. The mesh group exists when the variant reads metadata, joint or
+// morph data, which is any skinned or morphed draw.
 
 import package::globals;
 import package::mesh_compression;
@@ -59,8 +68,24 @@ import package::view;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
 
-@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
+@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || VERTEX_JOINTS || MORPH_POSITIONS)
 @group(2) @binding(0) var<uniform> mesh_info: mesh_metadata::MeshInfo;
+
+/// This draw's joint matrices, indexed by the joint pair in the position
+/// stream. Each one is a joint's animated transform times its inverse bind
+/// pose, applied in the mesh's own space.
+@if(VERTEX_JOINTS)
+@group(2) @binding(1) var<storage, read> joint_matrices: array<mat4x4<f32>>;
+
+/// Every morph target's per-vertex position displacement, flat and tightly
+/// packed: for each vertex, `MeshInfo::morph_count` targets in order, three
+/// components each.
+@if(MORPH_POSITIONS)
+@group(2) @binding(2) var<storage, read> morph_deltas: array<f32>;
+
+/// One weight per morph target, multiplied into the matching displacement.
+@if(MORPH_POSITIONS)
+@group(2) @binding(3) var<storage, read> morph_weights: array<f32>;
 
 struct VertexInput {
     /// Per-vertex position: full precision, or compressed to Snorm16x4
@@ -80,6 +105,13 @@ struct VertexInput {
     @if(VERTEX_INSTANCE) @location(5) model_2: vec4<f32>,
     /// Per-instance base color.
     @if(VERTEX_INSTANCE) @location(6) base_color: vec4<f32>,
+
+    /// Joint indices, Uint16x4. They address data rather than interpolate, so
+    /// they are never normalized, and they are part of the position stream
+    /// rather than a stream of their own.
+    @if(VERTEX_JOINTS) @location(7) joints: vec4<u32>,
+    /// Joint weights, Unorm16x4, summing to 1.
+    @if(VERTEX_JOINTS) @location(8) weights: vec4<f32>,
 }
 
 struct VertexOut {
@@ -96,8 +128,62 @@ public fn transform_point(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, p: vec3<f
     return vec3<f32>(dot(m0, v), dot(m1, v), dot(m2, v));
 }
 
+/// Deform a local-space vertex by the joints `indices`/`weights` name.
+///
+/// Each joint contributes its skinning matrix — the joint's animated transform
+/// times the inverse bind pose — applied to the vertex. The weights of a vertex
+/// are a partition of unity, so the weighted sum needs no division.
+///
+/// The matrices are read from the module-scope binding rather than passed in:
+/// WGSL forbids passing a pointer to storage space into a function. Four lanes
+/// are unrolled rather than looped, because indexing the array with a variable
+/// would need one, and the attribute is fixed at four joints.
+@if(VERTEX_JOINTS)
+fn skin_position(position: vec3<f32>, indices: vec4<u32>, weights: vec4<f32>) -> vec3<f32> {
+    let point = vec4<f32>(position, 1.0);
+    var skinned = vec3<f32>(0.0, 0.0, 0.0);
+    skinned += weights.x * (joint_matrices[indices.x] * point).xyz;
+    skinned += weights.y * (joint_matrices[indices.y] * point).xyz;
+    skinned += weights.z * (joint_matrices[indices.z] * point).xyz;
+    skinned += weights.w * (joint_matrices[indices.w] * point).xyz;
+    return skinned;
+}
+
+/// Add the weighted displacement of every morph target to a vertex.
+///
+/// The displacements are flat and tightly packed: for each vertex,
+/// `mesh_info.morph_count` consecutive targets in target order, three
+/// components each. `delta_base` is the offset of this vertex's block, and the
+/// weights hold the mesh's weight for each target.
+///
+/// Only the first-order — linear — displacement is applied, which is all a
+/// position-only morph target needs.
+@if(MORPH_POSITIONS)
+fn morph_position(position: vec3<f32>, delta_base: u32) -> vec3<f32> {
+    var morphed = position;
+    var morph = 0u;
+    loop {
+        if morph >= mesh_info.morph_count {
+            break;
+        }
+        let weight = morph_weights[morph];
+        // An inactive target is the common case: it costs a load and a compare
+        // rather than three more loads.
+        if weight != 0.0 {
+            let base = delta_base + morph * 3u;
+            morphed += weight * vec3<f32>(
+                morph_deltas[base],
+                morph_deltas[base + 1u],
+                morph_deltas[base + 2u],
+            );
+        }
+        morph += 1u;
+    }
+    return morphed;
+}
+
 @vertex
-public fn vs_main(in: VertexInput) -> VertexOut {
+public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexOut {
     // The block form would scope `metadata` to the block, so the declaration
     // itself carries the condition.
     @if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
@@ -113,6 +199,22 @@ public fn vs_main(in: VertexInput) -> VertexOut {
     }
     @if(VERTEX_POSITION && !UNCOMPRESSED_POSITION) {
         local = mesh_compression::decode_position(in.position.xyz, metadata);
+    }
+
+    // Deformation happens in the mesh's own space, before the instance
+    // transform places the vertex in the world: a joint matrix is relative to
+    // the mesh, and a morph displacement is a local offset.
+    //
+    // `@builtin(vertex_index)` is the draw's vertex ordinal in the stream's
+    // pool — `firstVertex + i`, or an index plus `baseVertex` — so the morph
+    // deltas, which are stored per mesh, are addressed relative to the mesh's
+    // own first vertex.
+    @if(MORPH_POSITIONS) {
+        let local_vertex = vertex_index - mesh_info.vertex_offset;
+        local = morph_position(local, local_vertex * mesh_info.morph_count * 3u);
+    }
+    @if(VERTEX_JOINTS) {
+        local = skin_position(local, in.joints, in.weights);
     }
 
     // Without an instance stream nothing transforms the vertex: the
