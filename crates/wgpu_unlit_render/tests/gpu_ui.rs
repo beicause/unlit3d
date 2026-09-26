@@ -506,3 +506,75 @@ fn freeing_a_texture_releases_its_graph_nodes() {
          the second; a leaked texture slot adds one per cycle"
     );
 }
+
+/// Releasing the integration must hand back every node it registered: the
+/// geometry buffers, each texture's view and material, and its samplers. Only
+/// the nodes the test registered itself — the two uniforms and the bind group
+/// binding them — are left in the graph afterwards.
+#[test]
+fn releasing_the_integration_returns_its_graph_nodes() {
+    let ctx = Ctx::headless();
+    let screen = ScreenDescriptor {
+        size_in_pixels: [WIDTH, HEIGHT],
+        pixels_per_point: 1.0,
+    };
+    let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
+    let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
+    let mut graph = ResourceGraph::new();
+    let camera_id = graph
+        .insert_strong(Resource::Buffer(camera.clone()), &[])
+        .expect("an empty dependency list always resolves");
+    let globals_id = graph
+        .insert_strong(Resource::Buffer(globals.clone()), &[])
+        .expect("an empty dependency list always resolves");
+    let mut ui_opts = ui_options(&ctx.device, true);
+    ui_opts.color_target.format = COLOR_FORMAT;
+    let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
+    let global_group_id = graph
+        .insert_strong(
+            Resource::BindGroup(global_group(&ctx.device, &pipeline, &camera, &globals)),
+            &[camera_id, globals_id],
+        )
+        .expect("both dependencies were registered");
+    let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
+    let egui_ctx = egui::Context::default();
+    let viewport = screen.size_in_points();
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("test::encoder"),
+        });
+
+    // One frame that lays out text and an image, so the integration has
+    // geometry buffers, the font atlas texture, a material and a sampler to
+    // hand back.
+    let output = egui_ctx.run_ui(input(viewport, 1.0), &mut |ui: &mut egui::Ui| {
+        ui.label("release me");
+        let texture = load_test_image(ui);
+        draw_test_image(ui, &texture);
+    });
+    ui.update(
+        &mut graph,
+        &ctx.queue,
+        &mut encoder,
+        &egui_ctx,
+        output,
+        screen,
+    );
+
+    let before = graph.len();
+    assert!(
+        before > 3,
+        "the frame above must have registered more than the three \
+         caller-owned nodes; got {before}"
+    );
+
+    ui.release(&mut graph);
+
+    assert_eq!(
+        graph.len(),
+        3,
+        "only the caller's camera, globals and bind group remain; \
+         the integration leaked {before} - 3 nodes"
+    );
+}

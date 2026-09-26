@@ -421,6 +421,10 @@ pub struct EguiIntegration {
     vertices: Option<wgpu::Buffer>,
     /// `Uint32` indices.
     indices: Option<wgpu::Buffer>,
+    /// Graph node of the vertex buffer, replaced in place when it grows.
+    vertex_node: Option<ResourceId>,
+    /// Graph node of the index buffer, replaced in place when it grows.
+    index_node: Option<ResourceId>,
     /// Vertices the vertex buffer holds room for.
     vertex_capacity: usize,
     /// Indices the index buffer holds room for.
@@ -478,6 +482,8 @@ impl EguiIntegration {
             materials: Vec::new(),
             vertices: None,
             indices: None,
+            vertex_node: None,
+            index_node: None,
             vertex_capacity: 0,
             index_capacity: 0,
             frame_vertices: 0,
@@ -549,6 +555,44 @@ impl EguiIntegration {
             };
             self.build_material(graph, texture, options);
         }
+    }
+
+    /// Release every graph node the integration registered, and forget its
+    /// bookkeeping.
+    ///
+    /// Call this when the integration leaves the frame for good, before its
+    /// `EguiIntegration` value is dropped: the nodes it inserted — the two
+    /// geometry buffers, every texture, view, sampler and material — are
+    /// strong nodes the graph cannot collect on its own. Textures go first so
+    /// their views and materials drop as dependents, then the geometry
+    /// buffers, then a cleanup pass for whatever the removals orphaned.
+    ///
+    /// After this the integration is back to its freshly built state and may
+    /// be reused against the same graph.
+    pub fn release(&mut self, graph: &mut ResourceGraph) {
+        for slot in self.textures.values() {
+            graph.remove_drop(slot.texture);
+        }
+        self.textures.clear();
+        self.texture_options.clear();
+        self.materials.clear();
+        for &(_, id) in &self.samplers {
+            graph.remove_drop(id);
+        }
+        self.samplers.clear();
+        if let Some(node) = self.vertex_node.take() {
+            graph.remove_drop(node);
+        }
+        if let Some(node) = self.index_node.take() {
+            graph.remove_drop(node);
+        }
+        self.vertices = None;
+        self.indices = None;
+        self.vertex_capacity = 0;
+        self.index_capacity = 0;
+        self.frame_vertices = 0;
+        self.draws.clear();
+        graph.cleanup_drop();
     }
 
     /// Pack `primitives` into the vertex and index buffers, staging the bytes
@@ -662,9 +706,19 @@ impl EguiIntegration {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            graph
-                .insert_strong(Resource::Buffer(buffer.clone()), &[])
-                .expect("an empty dependency list always resolves");
+            self.vertex_node = Some(match self.vertex_node {
+                // A grow replaces the buffer in its existing node, so no stale
+                // node is left strongly holding the old buffer.
+                Some(node) => {
+                    graph
+                        .replace(node, Resource::Buffer(buffer.clone()))
+                        .expect("the vertex node is still registered");
+                    node
+                }
+                None => graph
+                    .insert_strong(Resource::Buffer(buffer.clone()), &[])
+                    .expect("an empty dependency list always resolves"),
+            });
             self.vertices = Some(buffer);
         }
         if self.indices.is_none() || self.index_capacity < indices {
@@ -675,9 +729,17 @@ impl EguiIntegration {
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            graph
-                .insert_strong(Resource::Buffer(buffer.clone()), &[])
-                .expect("an empty dependency list always resolves");
+            self.index_node = Some(match self.index_node {
+                Some(node) => {
+                    graph
+                        .replace(node, Resource::Buffer(buffer.clone()))
+                        .expect("the index node is still registered");
+                    node
+                }
+                None => graph
+                    .insert_strong(Resource::Buffer(buffer.clone()), &[])
+                    .expect("an empty dependency list always resolves"),
+            });
             self.indices = Some(buffer);
         }
     }
