@@ -28,10 +28,10 @@
 由于`cargo`命令可能运行较慢，要注意：
 - **使用`cargo nextest`，而不是`cargo test`**。
 - **针对特定改动、特定bug时，使用`cargo nextest`时要筛选**。不要总是跑全量`cargo nextest`或`cargo xtask test`测试。
+- **合并整合多次改动后，再跑检查或测试**，不要改一点测一点，减少检查或测试次数。
 - **不要过度跑cargo build**：
-  1. 尽可能少用cargo build，优先用check或clippy。若cargo check或clippy通过了，则大概率cargo build也能通过。
+  1. 尽可能少用cargo build，优先用check或clippy。若cargo check或clippy通过了，则大概率cargo build也能通过。反正有CI兜底。
   2. 如果改动不是平台特定的，如没有用到`#[cfg(...)]`，就无需跑平台特定（如wasm,android）的检查或构建。
-  4. 有CI兜底。若怀疑存在未捕获的错误可以查看最新一次的github action是否通过。
 
 测试日志走 `log` crate，不靠 `println!`/`eprintln!`：
 
