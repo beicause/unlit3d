@@ -21,7 +21,7 @@ progress.
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, the mesh source with pipeline families, input, UI overlay, and winit presentation. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The archetype ECS the high-level layer is written against. Deliberately small: no change detection, hooks, events, relations or scheduler. |
 | [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, and optional SSIMULACRA2 image snapshots. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed unlit cube with an egui overlay — and its own headless capture mode. Also the Android example, packaged as an APK. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes — and its own headless snapshot mode. Also the Android example, packaged as an APK. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. Not a workspace member. |
 
 ## How the pieces fit
@@ -59,23 +59,57 @@ architecture and the implementation plan. It is written in Chinese.
 
 ## Common commands
 
-```text
-cargo xtask check          # clippy over the whole workspace, then `cargo fmt --check`
-cargo xtask test           # nextest over unit and integration tests, then the doctests
-cargo xtask run-wasm       # build the web example and serve it on localhost
-cargo xtask build-android  # build the Android example's library and APK
-```
+Commands follow the `cargo xtask` convention:
 
-`cargo xtask check` and `cargo xtask test` both accept `--release`, as does
-`cargo xtask build-android`, which additionally needs an Android SDK, an NDK
-and a JDK 17 or newer. Lint the TOML with `tombi lint --error-on-warnings` and
-check spelling with `typos`.
+- **`cargo xtask check`** — clippy over the whole workspace, all targets and all
+  features (`-D warnings`), then `cargo fmt --check`. The gate before a commit.
+  `--release` uses the release profile.
+- **`cargo xtask test`** — `cargo nextest run` over the unit and integration
+  tests, then `cargo test --doc` for the doctests nextest does not cover.
+  `--release` uses the release profile.
+- **`cargo xtask run-wasm`** — build the web example and serve it from a built-in
+  static server (WebGPU needs a secure context; `file://` will not do).
+  `--no-serve` only builds it, and `--release` uses the release profile.
+- **`cargo xtask build-android`** — cross-compile the example's shared library
+  with `cargo ndk` into `android/app/src/main/jniLibs`, then run Gradle to build
+  the APK. Debug by default; `--release` builds an unsigned release APK. Needs
+  JDK 17+ and `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
+- **`cargo nextest run`** — use it directly to filter or re-run individual tests
+  (`-p <crate>`, `-E 'test(<name>)'`). nextest does not run doctests, so it is no
+  substitute for `cargo xtask test`.
+- **`typos`** — spell check, over the whole repository.
+- **`tombi lint --error-on-warnings`** and **`tombi format`** — TOML lint and
+  format check. Run them after touching any `Cargo.toml`.
 
-The renderer's GPU tests compare frames against images in
+## Tests
+
+The tests fall into three layers, by how close they sit to the code they check:
+
+- **Unit tests** live inside each crate's `src/` (`#[cfg(test)]`) and cover only
+  that crate's private, pure logic: no GPU, no `LocalWorld`. They run directly
+  under `cargo nextest run`.
+- **Library integration tests** live in each crate's `tests/` and reach the
+  crate through its public API only. `unlit_ecs`'s are plain ECS behaviour;
+  the two rendering crates' are GPU tests that build a headless device with
+  [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md), render a
+  scene offscreen and assert on the pixels that come back — but compare against
+  no stored image.
+- **Snapshot tests** are the subset of integration tests that compare a frame
+  (or a multi-frame sequence) against an image stored in the repository, using
+  the SSIMULACRA2 perceptual metric to freeze the rendering result. The rule is:
+  the **low-level API's snapshots stay in `wgpu_unlit_render`'s tests**
+  (`tests/snapshots` links in the submodule; re-bless with `SNAPSHOT_UPDATE=1`),
+  while the **high-level ECS scenes' snapshots run through
+  [`unlit3d_examples`](unlit3d_examples/README.md)'s headless mode** (`--scene
+  all` verifies them, `--update` re-blesses them), because the example is both
+  the demo and the CI rendering check and those scenes should not be maintained
+  twice.
+
+All snapshot baselines therefore live in
 [`wgpu_unlit_render_asset_files`](wgpu_unlit_render_asset_files/README.md), a
-git submodule linked in as `tests/snapshots` in each test crate. Clone it with
-`git submodule update --init`, and re-bless a snapshot you intentionally
-changed with `SNAPSHOT_UPDATE=1`.
+git submodule. Clone it with `git submodule update --init`. After an
+intentional rendering change, re-bless the affected snapshots the way each layer
+above describes, and review the image diff before committing.
 
 ## Workspace layout
 
@@ -84,7 +118,7 @@ crates/wgpu_unlit_render/   the renderer, its WESL shaders and its GPU tests
 crates/unlit3d/             the ECS-integrated rendering API
 crates/unlit_ecs/           the archetype ECS
 crates/wgpu_unlit_test_util/ the shared GPU test harness
-unlit3d_examples/           the windowed example and its capture mode
+unlit3d_examples/           the windowed example, its scenes and its snapshot runner
 android/                    the Gradle project that packages the example as an APK
 xtask/                      the `cargo xtask` task runner (excluded from the workspace)
 docs/DESIGN.md              the design document

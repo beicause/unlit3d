@@ -2,14 +2,39 @@ English | [简体中文](README.zh-CN.md)
 
 # unlit3d_examples
 
-A windowed unlit cube with an egui overlay, rendered through
+A windowed example with selectable scenes, rendered through
 [`unlit3d::winit::WindowSurface`](../crates/unlit3d/README.md) — or, headlessly,
-into an offscreen target that is read back and compared against a snapshot.
-It is both the workspace's example program and its rendering-regression check
-in CI, and it is also the Android example, packaged as an APK.
+into an offscreen target that is read back and compared against stored
+snapshots. It is both the workspace's example program and its rendering
+regression check in CI, and it is also the Android example, packaged as an APK.
 
 The example is at an **early stage** along with the crates it uses, and it
 exercises parts of them that are still under construction.
+
+## Scenes
+
+The example's scenes are the snapshot scenes the GPU tests used to draw in
+`crates/unlit3d/tests`: every one of them is now a selectable scene, and the
+example's headless path is the check that replaced those tests. The windowed
+loop shows the scene the command line selected and lists every scene in a
+panel, so one can be switched to at runtime. `--list-scenes` prints the table:
+
+```text
+Scenes:
+  cube                   the example's own scene: a textured cube with two panels
+  ui_only                a rich egui panel, no mesh source and no camera
+  mesh_and_ui            a cube with the rich egui panel over it, one pass
+  ecs_animated           a grid of cubes filling, moving and recycling over eight frames
+  ecs_skinned            a cube bent by a two-joint skin over six frames
+  ecs_morphed            a cube blended by two morph targets over six frames
+  instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+```
+
+Each scene reproduces exactly what its test froze: the same world, camera and
+frame sequence, so the stored snapshots in
+[`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md)
+still verify it. The scenes are built with the same public `unlit3d` API any
+caller would use — nothing in the example reaches into the crates' internals.
 
 ## Role in the workspace
 
@@ -39,9 +64,15 @@ windowed loop, so the example only has one frame loop to maintain.
 cargo run -p unlit3d_examples
 ```
 
-A window opens with a spinning, textured cube and two egui panels. `Esc`
-closes it; the panel's button, checkbox and slider drive the spin, and dragging
-with the left button orbits the camera.
+A window opens with the default scene — a spinning, textured cube and two egui
+panels — plus a panel that lists every scene, so one can be switched to at
+runtime. `Esc` closes it; the cube's panel's button, checkbox and slider drive
+the spin, and dragging with the left button orbits the camera. A scene can be
+selected from the command line instead:
+
+```text
+cargo run -p unlit3d_examples -- --scene ecs_skinned
+```
 
 To run the same example in a browser — where WebGPU needs a secure context, so
 `localhost` rather than `file://` — use the task runner:
@@ -56,7 +87,7 @@ Android starts an *activity*, not a process: the activity loads the shared
 library and calls its `android_main` on a thread of its own, which is why this
 crate is a library as well as a binary. `android_main` builds the event loop
 with the activity winit requires on that platform and hands it to the same
-windowed loop the binary drives.
+windowed loop the binary drives, starting with the default scene.
 
 To build the APK, which cross-compiles the library, stages it in the Gradle
 project's `jniLibs` directory and then runs the Gradle wrapper there:
@@ -80,17 +111,17 @@ loop — is this crate's.
 
 ## Headless capture
 
-With the `snapshot` feature, the example is its own capture tool. It renders
-offscreen with no window and no event loop, advancing the scene by a fixed
-timestep so the same command produces the same picture, then reads the frame
-back:
+With the `snapshot` feature, the example is its own snapshot runner. It renders
+a scene offscreen with no window and no event loop, advancing it by a fixed
+timestep so the same command produces the same picture, and compares each frame
+against the scene's stored snapshots:
 
 ```text
-cargo run -p unlit3d_examples --features snapshot -- --headless --snapshot frame.webp
+cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skinned
 ```
 
 `--headless` without the feature reports that the feature is needed and exits
-with code 2.
+with code 2. `--scene all` runs every scene, which is what CI does.
 
 ### Options
 
@@ -99,41 +130,47 @@ Every option is `--name value` or a bare flag; `--name=value` is accepted too.
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `--headless` | off | Render offscreen, read the frame back and exit, without opening a window |
-| `--size <WxH>` | `960x720` | Render target size in pixels; also the window's initial size |
-| `--frames <N>` | `2` | Frames to draw before capturing. The second frame is the first egui has its font metrics for, so at least two are needed for laid-out text |
+| `--scene <ID>` | `cube` | The scene to run; `all` runs every scene (headless only) |
+| `--list-scenes` | off | Print the scene table and exit |
+| `--size <WxH>` | the scene's own | Render target size in pixels; also the window's initial size |
+| `--frames <N>` | the scene's own | Frames to draw before capturing. The scene's own count is what its snapshots were stored at; `--frames` overrides it |
 | `--output <PATH>` | none | Write the captured frame to `PATH` as a lossless WebP |
-| `--snapshot <PATH>` | none | Compare the captured frame against the snapshot at `PATH` |
-| `--update` | off | Store `PATH` instead of comparing against it |
-| `--no-ui` | off | Draw the cube without the UI overlay |
+| `--snapshot <PATH>` | none | Compare the captured frame against the snapshot at `PATH`, instead of the scene's own snapshots |
+| `--update` | off | Store the snapshots being compared instead of comparing them |
+| `--no-ui` | off | Draw the scene without its UI overlay |
 | `--min-score <S>` | `85.0` | Lowest SSIMULACRA2 score that counts as matching |
-| `-h`, `--help` | | Print the usage text |
+| `--snapshot-dir <D>` | the asset submodule's `snapshots` | Where the scene's own snapshots resolve, by name |
+| `-h`, `--help` | | Print the usage text and the scene table |
 
-`--output`, `--snapshot` and `--update` have no meaning in the windowed loop, so
-asking for one without `--headless` is an error rather than a silent no-op.
-`--update` also requires `--snapshot <PATH>`. `--no-ui` is only honoured by the
-headless path; the windowed path always mounts the UI.
+`--output`, `--snapshot`, `--update` and `--scene all` have no meaning in the
+windowed loop, so asking for one without `--headless` is an error rather than a
+silent no-op. `--scene all` cannot be combined with `--output` or `--snapshot`.
+`--no-ui` is only honoured by the headless path; the windowed path always
+mounts the UI.
 
 ### Snapshots
 
-`--snapshot` compares with SSIMULACRA2 and exits non-zero when the score falls
-below `--min-score`. If the snapshot does not exist it refuses to compare and
+Without `--snapshot`, a headless run compares every frame the scene declares a
+snapshot for — a multi-frame scene's whole sequence — against the snapshot
+directory. The comparison uses SSIMULACRA2 and exits non-zero when the score
+falls below `--min-score`. If a snapshot is missing it refuses to compare and
 tells you to generate one with `--update` — writing a missing snapshot would
 let a regression pass CI by creating the very file the check is meant to read.
-When comparing against a snapshot outside the window, pass `--no-ui` if you
-are checking the 3D scene alone.
 
-This is exactly what the CI snapshot job runs, against the submodule's
-committed image:
+A scene's own snapshots only describe a run that reproduces the scene's stored
+settings. Overriding `--size`, `--frames` or `--no-ui` therefore makes a custom
+capture that is written with `--output` but not compared against the scene's
+snapshots; compare it explicitly with `--snapshot <PATH>` instead.
 
 ```text
-cargo run -p unlit3d_examples --features snapshot -- --headless --frames 30 \
-    --snapshot wgpu_unlit_render_asset_files/snapshots/example.webp
+cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 ```
 
-To re-bless it after an intentional rendering change, add `--update`, then
-review the image diff in
+is exactly what the CI snapshot job runs, against the submodule's committed
+images. To re-bless one or all of them after an intentional rendering change,
+add `--update`, then review the image diffs in
 [`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md)
-before committing it. That submodule is checked out with
+before committing them. That submodule is checked out with
 `git submodule update --init`.
 
 ## Tests

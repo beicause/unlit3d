@@ -2,13 +2,35 @@
 
 # unlit3d_examples
 
-一个带 egui 叠加层的窗口化 unlit 立方体，通过
+一个带 egui 叠加层、可切换场景的窗口化示例，通过
 [`unlit3d::winit::WindowSurface`](../crates/unlit3d/README.zh-CN.md) 渲染；也可以
-无头地渲染到一个离屏目标，回读后与快照比较。它既是本工作区的示例程序，也是 CI 中的
+无头地渲染到一个离屏目标，回读后与存储的快照比较。它既是本工作区的示例程序，也是 CI 中的
 渲染回归检查，同时还是 Android 示例，会打包成 APK。
 
 与本示例所用到的那些 crate 一样，示例也处于**早期阶段**，并且会用到其中仍在建设中
 的部分。
+
+## 场景
+
+示例的场景就是原来 `crates/unlit3d/tests` 里 GPU 测试所画的那些快照场景：现在每一个
+都是可选择的场景，而示例的无头路径正是取代那些测试的检查。窗口化循环显示命令行选中的
+场景，并在面板里列出所有场景，运行时即可切换。`--list-scenes` 打印场景表：
+
+```text
+Scenes:
+  cube                   the example's own scene: a textured cube with two panels
+  ui_only                a rich egui panel, no mesh source and no camera
+  mesh_and_ui            a cube with the rich egui panel over it, one pass
+  ecs_animated           a grid of cubes filling, moving and recycling over eight frames
+  ecs_skinned            a cube bent by a two-joint skin over six frames
+  ecs_morphed            a cube blended by two morph targets over six frames
+  instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+```
+
+每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此
+[`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md) 中存储
+的快照仍然能验证它。场景全部用公开的 `unlit3d` API 构建——示例没有任何一处触碰到
+crate 的内部实现。
 
 ## 在工作区中的位置
 
@@ -35,8 +57,13 @@
 cargo run -p unlit3d_examples
 ```
 
-会打开一个窗口，里面是一个旋转的贴图立方体和两个 egui 面板。`Esc` 关闭窗口；面板上
-的按钮、复选框与滑块驱动旋转，按住左键拖动可以环绕相机。
+会打开一个窗口，里面是默认场景——一个旋转的贴图立方体和两个 egui 面板——外加一个列出
+所有场景的面板，运行时即可切换。`Esc` 关闭窗口；立方体面板上的按钮、复选框与滑块驱动
+旋转，按住左键拖动可以环绕相机。也可以从命令行选场景：
+
+```text
+cargo run -p unlit3d_examples -- --scene ecs_skinned
+```
 
 要在浏览器中运行同一个示例——WebGPU 需要安全上下文，因此要用 `localhost` 而不是
 `file://`——请用任务执行器：
@@ -49,7 +76,7 @@ cargo xtask run-wasm
 
 Android 启动的是一个 *activity*，而不是进程：activity 加载动态库，并在线程中调用它的
 `android_main`——这正是本 crate 既是库也是二进制的原因。`android_main` 用该平台要求
-的 activity 构建事件循环，然后交给二进制所驱动的那个同样的窗口化循环。
+的 activity 构建事件循环，然后交给二进制所驱动的那个同样的窗口化循环，从默认场景开始。
 
 构建 APK：先交叉编译动态库，把它放进 Gradle 工程的 `jniLibs` 目录，再在那里运行
 Gradle wrapper：
@@ -70,14 +97,16 @@ activity 位于
 
 ## 无头捕获
 
-开启 `snapshot` feature 后，示例本身就是它自己的捕获工具。它不打开窗口、不跑事件
-循环，而是以固定步长推进场景（因此同一条命令产生同样的画面），然后回读帧：
+开启 `snapshot` feature 后，示例本身就是它自己的快照运行器。它不打开窗口、不跑事件
+循环，而是以固定步长推进场景（因此同一条命令产生同样的画面），并把每一帧与该场景存储
+的快照比较：
 
 ```text
-cargo run -p unlit3d_examples --features snapshot -- --headless --snapshot frame.webp
+cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skinned
 ```
 
 不带该 feature 时使用 `--headless` 会提示需要该 feature，并以退出码 2 结束。
+`--scene all` 运行所有场景，CI 就是这么跑的。
 
 ### 选项
 
@@ -86,34 +115,39 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --snapshot frame
 | 选项 | 默认值 | 含义 |
 |------|--------|------|
 | `--headless` | 关 | 离屏渲染，回读帧后退出，不打开窗口 |
-| `--size <WxH>` | `960x720` | 渲染目标尺寸（像素）；同时作为窗口的初始尺寸 |
-| `--frames <N>` | `2` | 捕获前绘制的帧数。第二帧是 egui 首次拿到字体度量之后的帧，因此要显示排好版的文字至少需要两帧 |
+| `--scene <ID>` | `cube` | 要运行的场景；`all` 运行全部（仅无头模式） |
+| `--list-scenes` | 关 | 打印场景表并退出 |
+| `--size <WxH>` | 场景自己的 | 渲染目标尺寸（像素）；同时作为窗口的初始尺寸 |
+| `--frames <N>` | 场景自己的 | 捕获前绘制的帧数。场景自己的帧数就是快照存储时的帧数；`--frames` 覆盖它 |
 | `--output <PATH>` | 无 | 把捕获到的帧以无损 WebP 写入 `PATH` |
-| `--snapshot <PATH>` | 无 | 把捕获到的帧与 `PATH` 处的快照比较 |
-| `--update` | 关 | 存储 `PATH`，而不是与之比较 |
-| `--no-ui` | 关 | 只画立方体，不画 UI 叠加层 |
+| `--snapshot <PATH>` | 无 | 把捕获到的帧与 `PATH` 处的快照比较，而不是与场景自己的快照比较 |
+| `--update` | 关 | 存储正在比较的快照，而不是与之比较 |
+| `--no-ui` | 关 | 只画场景的 3D 内容，不画它的 UI 叠加层 |
 | `--min-score <S>` | `85.0` | 视为匹配的最低 SSIMULACRA2 分数 |
-| `-h`、`--help` | | 打印用法说明 |
+| `--snapshot-dir <D>` | 资产 submodule 的 `snapshots` | 场景自己的快照按名解析的目录 |
+| `-h`、`--help` | | 打印用法说明与场景表 |
 
-`--output`、`--snapshot` 与 `--update` 在窗口循环中没有意义，因此不带 `--headless`
-使用其中任何一个都算错误，而不是被静默忽略。`--update` 还需要 `--snapshot <PATH>`。
-`--no-ui` 只在无头路径生效；窗口化路径始终挂载 UI。
+`--output`、`--snapshot`、`--update` 与 `--scene all` 在窗口循环中没有意义，因此不带
+`--headless` 使用其中任何一个都算错误，而不是被静默忽略。`--scene all` 不能与
+`--output` 或 `--snapshot` 组合。`--no-ui` 只在无头路径生效；窗口化路径始终挂载 UI。
 
 ### 快照
 
-`--snapshot` 用 SSIMULACRA2 比较，分数低于 `--min-score` 时以非零码退出。若快照不
+不带 `--snapshot` 时，无头运行会把场景声明了快照的每一帧——多帧场景的整个序列——与
+快照目录比较。比较用 SSIMULACRA2，分数低于 `--min-score` 时以非零码退出。若快照不
 存在，它会拒绝比较，并提示用 `--update` 生成一个——写入一个缺失的快照会让回归通过
-CI，因为它创建的正是这项检查要读取的文件。若只想检查 3D 场景本身，配合 `--no-ui`
-在窗口之外比较快照。
+CI，因为它创建的正是这项检查要读取的文件。
 
-这正是 CI 快照任务所跑的、针对 submodule 中已提交图像的命令：
+场景自己的快照只描述“精确重现该场景存储设置”的那一次运行。因此覆盖 `--size`、
+`--frames` 或 `--no-ui` 得到的是一次自定义捕获：它可以用 `--output` 写出，但不会与
+场景自己的快照比较；要比较请显式用 `--snapshot <PATH>`。
 
 ```text
-cargo run -p unlit3d_examples --features snapshot -- --headless --frames 30 \
-    --snapshot wgpu_unlit_render_asset_files/snapshots/example.webp
+cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 ```
 
-确有意改动渲染结果后要重新生成它，加上 `--update`，然后在提交前审查
+这正是 CI 快照任务所跑的、针对 submodule 中已提交图像的命令。确有意改动渲染结果后，
+要重新生成其中一份或全部，加上 `--update`，然后在提交前审查
 [`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md) 中的
 图像差异。该 submodule 用 `git submodule update --init` 检出。
 
