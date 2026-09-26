@@ -6,6 +6,9 @@ description = "The high-level WebGPU rendering API over unlit_wgpu and unlit_ecs
 repository.workspace = true
 license.workspace = true
 keywords = ["ecs", "gamedev", "rendering", "webgpu", "wgpu"]
+# The integration tests build against `unlit_wgpu_test_util`, which is not
+# published, so the tests do not travel in a package either.
+exclude = ["/tests"]
 
 [dependencies]
 arrayvec.workspace = true

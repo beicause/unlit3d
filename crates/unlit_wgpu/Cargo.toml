@@ -6,6 +6,10 @@ description = "A compact, opinionated WebGPU renderer for unlit draws: resource 
 repository.workspace = true
 license.workspace = true
 keywords = ["gamedev", "graphics", "rendering", "webgpu", "wgpu"]
+# The integration tests build against `unlit_wgpu_test_util`, which is not
+# published, and compare against snapshot baselines that live in the asset
+# submodule; neither travels in a package, so the tests do not either.
+exclude = ["/tests"]
 
 [dependencies]
 arrayvec.workspace = true

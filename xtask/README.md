@@ -19,6 +19,7 @@ cargo xtask check          # clippy over the whole workspace, then `cargo fmt --
 cargo xtask test           # nextest over unit and integration tests, then the doctests
 cargo xtask run-wasm       # build the web example and serve it for a browser
 cargo xtask build-android  # build the Android library and the APK around it
+cargo xtask publish        # publish the workspace's crates to crates.io, in dependency order
 ```
 
 ### `cargo xtask check`
@@ -75,6 +76,25 @@ are the whole contract between the Rust and Gradle halves of the build. The
 default build type is debug; `--release` builds a release APK, which is left
 unsigned because the project ships no signing configuration.
 
+### `cargo xtask publish`
+
+Publishes the crates that reach crates.io — `unlit_ecs`, `unlit_wgpu` and
+`unlit3d` — one at a time and in that order. The order is a requirement rather
+than a preference: a crate cannot be packaged until the crates it depends on are
+in the registry, so publishing `unlit3d` first fails with `no matching package
+named unlit_ecs found`. `cargo publish` waits for each uploaded crate to appear
+in the index, which is what makes the next one resolve.
+
+`cargo publish --workspace` would order the crates itself, but its `--dry-run`
+cannot verify the packages (rust-lang/cargo#16525); publishing crate by crate
+keeps the verification pass a release is worth. `--dry-run` runs every check
+without uploading.
+
+The test harness, the example and the task runner are `publish = false`, so they
+are never uploaded. A real publish is not repeatable — cargo refuses a version
+that is already on the registry — so a run that stops partway must be resumed at
+the crate that failed.
+
 ## Layout
 
 ```text
@@ -83,6 +103,7 @@ src/check.rs          `cargo xtask check`
 src/test.rs           `cargo xtask test`
 src/run_wasm.rs       `cargo xtask run-wasm`: the wasm build, bindgen and page
 src/build_android.rs  `cargo xtask build-android`: the cross-build and the APK
+src/publish.rs        `cargo xtask publish`: the crates and their publish order
 src/http.rs           the static file server `run-wasm` serves with
 src/step.rs           running one child command and reporting which step failed
 ```

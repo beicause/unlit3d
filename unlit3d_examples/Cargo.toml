@@ -25,7 +25,7 @@ argh.workspace = true
 glam.workspace = true
 log.workspace = true
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
-unlit3d = { path = "../crates/unlit3d" }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.1" }
 web-time.workspace = true
 wgpu.workspace = true
 winit.workspace = true

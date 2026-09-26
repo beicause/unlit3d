@@ -17,6 +17,7 @@ cargo xtask check          # 对全工作区跑 clippy，随后 cargo fmt --chec
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
 cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
 cargo xtask build-android  # 构建 Android 动态库及其 APK
+cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crates.io
 ```
 
 ### `cargo xtask check`
@@ -62,6 +63,21 @@ activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK �
 构建中 Rust 一半与 Gradle 一半之间的全部契约。默认是 debug 构建类型；`--release`
 构建 release APK，由于本工程不提供签名配置，它保持未签名。
 
+### `cargo xtask publish`
+
+把会发布到 crates.io 的 crate——`unlit_ecs`、`unlit_wgpu`、`unlit3d`——逐个、按上述
+顺序发布。这个顺序是硬性要求而非偏好：一个 crate 在它所依赖的 crate 进入 registry 之前
+无法打包，所以先发布 `unlit3d` 会报 `no matching package named unlit_ecs found`。
+`cargo publish` 会等待每个已上传的 crate 出现在索引里，这正是下一个能解析成功的原因。
+
+`cargo publish --workspace` 本来会自行排序，但它的 `--dry-run` 无法验证包
+（rust-lang/cargo#16525）；逐个发布则保留了发布前值得做的验证步骤。`--dry-run`
+只做全部检查、不上传。
+
+测试骨架、示例与任务执行器都设置了 `publish = false`，因此永远不会被上传。真正发布是
+不可重复的——cargo 会拒绝已在 registry 上的版本——所以中途失败的运行必须从失败的那个
+crate 继续。
+
 ## 结构
 
 ```text
@@ -70,6 +86,7 @@ src/check.rs         cargo xtask check
 src/test.rs          cargo xtask test
 src/run_wasm.rs      cargo xtask run-wasm：wasm 构建、bindgen 与页面
 src/build_android.rs cargo xtask build-android：交叉构建与 APK
+src/publish.rs       cargo xtask publish：要发布的 crate 及其顺序
 src/http.rs          run-wasm 用来提供服务的静态文件服务器
 src/step.rs          运行单个子命令并报告是哪一步失败
 ```

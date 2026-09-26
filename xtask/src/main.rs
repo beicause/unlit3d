@@ -8,6 +8,8 @@
 //! * `cargo xtask run-wasm` — build and serve the web example.
 //! * `cargo xtask build-android` — build the example's Android library and the
 //!   APK that packages it.
+//! * `cargo xtask publish` — upload the publishable crates to crates.io, in
+//!   dependency order.
 //!
 //! The crate is not a workspace member; it is wired up through the `xtask`
 //! alias in `.cargo/config.toml`, so the task runner's dependencies never
@@ -16,6 +18,7 @@
 mod build_android;
 mod check;
 mod http;
+mod publish;
 mod run_wasm;
 mod step;
 mod test;
@@ -36,6 +39,7 @@ fn run() -> Result<(), String> {
         Task::Test(task) => test::run(task.release),
         Task::RunWasm(task) => run_wasm::run(&task),
         Task::BuildAndroid(task) => build_android::run(&task),
+        Task::Publish(task) => publish::run(&task),
     }
 }
 
@@ -62,6 +66,8 @@ enum Task {
     RunWasm(RunWasmArgs),
     /// Build the Android example's shared library and the APK around it.
     BuildAndroid(BuildAndroidArgs),
+    /// Publish the workspace's crates to crates.io, in dependency order.
+    Publish(PublishArgs),
 }
 
 /// Arguments of `cargo xtask check`.
@@ -120,4 +126,17 @@ struct BuildAndroidArgs {
     /// build a release APK instead of a debug one.
     #[argh(switch)]
     release: bool,
+}
+
+/// Arguments of `cargo xtask publish`.
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "publish",
+    description = "publish the workspace's crates to crates.io, in dependency order"
+)]
+struct PublishArgs {
+    /// run every check without uploading anything.
+    #[argh(switch)]
+    dry_run: bool,
 }
