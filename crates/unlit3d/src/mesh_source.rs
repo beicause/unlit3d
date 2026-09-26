@@ -2203,6 +2203,7 @@ mod tests {
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
     use wgpu_unlit_render::render_attachments::{RenderAttachments, create_render_target};
+    use wgpu_unlit_render::scene::DrawRange;
 
     /// The size every test target is built with.
     const TEST_SIZE: u32 = 64;
@@ -3416,6 +3417,113 @@ mod tests {
             "each draw keeps its own slice of the pool"
         );
         assert_eq!(drawn(&h.source).len(), 2, "both entities were drawn");
+    }
+
+    /// Entities that share a mesh and a material are drawn as one instanced
+    /// draw, so their pose state rides the instance stream instead of each
+    /// entity paying for a draw.
+    #[test]
+    fn entities_sharing_a_mesh_are_drawn_as_one_instanced_draw() {
+        let mut h = harness();
+        let mesh = h.tri_mesh();
+        h.world
+            .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+        for i in 0..3 {
+            h.world.spawn((
+                Transform {
+                    translation: glam::Vec3::new(i as f32, 0.0, 0.0),
+                    ..Default::default()
+                },
+                mesh.clone(),
+                UnlitPipeline::new(h.key.clone()),
+            ));
+        }
+
+        let ctx = h.source.context();
+        let mut encoder = h.encoder();
+        h.source.build_scene(&h.world, ctx, &mut encoder);
+
+        assert_eq!(h.source.scene().draws.len(), 1, "one draw for all three");
+        let range = &h.source.scene().draws[0].range;
+        let instances = match range {
+            DrawRange::Indexed { instances, .. } | DrawRange::Vertices { instances, .. } => {
+                instances
+            }
+        };
+        assert_eq!(
+            instances.clone(),
+            0..3,
+            "the draw covers every shared instance, in order"
+        );
+    }
+
+    /// Two entities that share a pipeline but draw different meshes cannot
+    /// share one draw: each keeps its own slice of the vertex pool, so the
+    /// shapes differ even though the buffers do not.
+    #[test]
+    fn entities_drawing_different_meshes_stay_separate_draws() {
+        let mut h = harness();
+        let first = h.tri_mesh();
+        let second = h.tri_mesh();
+        assert_ne!(first.first, second.first, "the meshes own different slices");
+        h.world
+            .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+        let key = h.key.clone();
+        h.world
+            .spawn((Transform::default(), first, UnlitPipeline::new(key.clone())));
+        h.world
+            .spawn((Transform::default(), second, UnlitPipeline::new(key)));
+
+        let ctx = h.source.context();
+        let mut encoder = h.encoder();
+        h.source.build_scene(&h.world, ctx, &mut encoder);
+
+        assert_eq!(
+            h.source.scene().draws.len(),
+            2,
+            "different meshes stay one draw each"
+        );
+    }
+
+    /// A translucent entry never merges, with another translucent entry or with
+    /// an opaque one: its draw order is its blend order, so the source must
+    /// not let the instance stream reorder it.
+    #[test]
+    fn z_sorted_entries_never_merge() {
+        let mut h = harness();
+        let mesh = h.tri_mesh();
+        h.world
+            .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+        // Two translucent copies of the same mesh, drawn back to front.
+        let key = h.key.clone();
+        h.world.spawn((
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.0, 1.0),
+                ..Default::default()
+            },
+            mesh.clone(),
+            UnlitPipeline::new(key.clone()),
+            ZSortedDrawing,
+        ));
+        h.world.spawn((
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.0, 2.0),
+                ..Default::default()
+            },
+            mesh,
+            UnlitPipeline::new(key),
+            ZSortedDrawing,
+        ));
+
+        let ctx = h.source.context();
+        let mut encoder = h.encoder();
+        h.source.build_scene(&h.world, ctx, &mut encoder);
+
+        assert_eq!(
+            h.source.scene().draws.len(),
+            2,
+            "translucent entries keep their own draw order"
+        );
     }
 
     /// Releasing the source removes the nodes it registered, so a program that

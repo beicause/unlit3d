@@ -329,7 +329,10 @@ pub(crate) struct PipelineHandles {
 ///
 /// Resolved once per entry alongside its handles, so assembling the draws
 /// names no [`GpuMesh`] and therefore needs no access to the world.
-#[derive(Clone, Copy)]
+///
+/// Comparable so that two entries drawing the same geometry are recognized as
+/// one instanced draw; see [`assemble_scene`].
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) struct DrawShape {
     /// Whether the draw is indexed; when it is not, `count` is a vertex count.
     pub(crate) indexed: bool,
@@ -363,7 +366,36 @@ pub(crate) struct EntryHandles {
     pub(crate) shape: DrawShape,
 }
 
-/// Append one draw per visible entry to `scene`.
+/// Whether two adjacent entries can be drawn as one instanced draw.
+///
+/// A draw's state is its pipeline, its bind groups, its buffers and its
+/// geometry; when all of those match, the entries differ only in which instance
+/// record they read, and one draw with a wider instance range says the same
+/// thing. The global bind group is the pipeline's, so the pipeline id covers it.
+///
+/// Z-sorted entries never merge, with each other or with anything else: they
+/// are blended back-to-front, so the order they are drawn in is the result, and
+/// a merged draw would rasterize its instances in record order instead. Opaque
+/// draws are depth-tested with blending off, so their order is not observable
+/// and merging them is safe.
+fn same_draw(
+    a: &VisibleEntry,
+    a_handles: &EntryHandles,
+    b: &VisibleEntry,
+    b_handles: &EntryHandles,
+) -> bool {
+    !a.z_sorted
+        && !b.z_sorted
+        && a.pipeline_id == b.pipeline_id
+        && a_handles.shape == b_handles.shape
+        && a_handles.mesh_bg == b_handles.mesh_bg
+        && a_handles.material_bg == b_handles.material_bg
+        && a_handles.index_buffer == b_handles.index_buffer
+        && a_handles.vertex_buffers == b_handles.vertex_buffers
+}
+
+/// Append the frame's draws to `scene`, one per run of entries that share a
+/// draw's state.
 ///
 /// The entries have already been culled, resolved and sorted and their
 /// resource-graph handles already cloned into [`EntryHandles`], so assembling
@@ -372,7 +404,15 @@ pub(crate) struct EntryHandles {
 ///
 /// The draws are appended in `visible` order, so the sort that put neighbours
 /// on the same pipeline and bind groups is what keeps recording's state changes
-/// few.
+/// few. Neighbours that match on every part of a draw's state are then folded
+/// into a single instanced draw: recording costs a command and a state re-bind,
+/// so an entity that shares a mesh with the one before it is nearly free.
+///
+/// The instance range is what keeps a merged draw correct. Instance-stepped
+/// attributes are fetched at the instance's ordinal — `firstInstance` plus its
+/// index within the draw — and the instance buffer is packed in `visible`
+/// order, so instances `a..b` read exactly the records of entries `a..b`, the
+/// same ones the separate draws would have read.
 pub(crate) fn assemble_scene(
     scene: &mut Scene,
     visible: &[VisibleEntry],
@@ -380,18 +420,35 @@ pub(crate) fn assemble_scene(
     handles: &[EntryHandles],
     instance_buffer: &wgpu::Buffer,
 ) {
-    for (draw_idx, entry) in visible.iter().enumerate() {
-        let handle = &handles[draw_idx];
+    let mut start = 0;
+    while start < visible.len() {
+        // Extend the run while each entry matches the one before it, which is
+        // enough to make every entry of the run match every other: the
+        // comparison is an equality on a draw's state.
+        let mut end = start + 1;
+        while end < visible.len()
+            && same_draw(
+                &visible[end - 1],
+                &handles[end - 1],
+                &visible[end],
+                &handles[end],
+            )
+        {
+            end += 1;
+        }
+
+        let entry = &visible[start];
+        let handle = &handles[start];
         let pipeline = &pipelines[entry.pipeline_id.as_usize()];
 
-        let instance_range = (draw_idx as u32)..(draw_idx as u32 + 1);
         let first = handle.shape.first;
         let range = if handle.shape.indexed {
             DrawRange::indexed(first..first + handle.shape.count)
                 .with_base_vertex(handle.shape.base_vertex as i32)
-                .with_instances(instance_range)
+                .with_instances(start as u32..end as u32)
         } else {
-            DrawRange::vertices(first..first + handle.shape.count).with_instances(instance_range)
+            DrawRange::vertices(first..first + handle.shape.count)
+                .with_instances(start as u32..end as u32)
         };
 
         let mut draw = DrawEntry::new(&pipeline.pipeline, range);
@@ -413,5 +470,6 @@ pub(crate) fn assemble_scene(
         draw = draw.with_vertex_buffer(INSTANCE_SLOT, instance_buffer);
 
         scene.push(draw);
+        start = end;
     }
 }
