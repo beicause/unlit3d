@@ -116,7 +116,7 @@ cargo nextest run -p wgpu_unlit_render   # just this crate
 The GPU integration tests render meshes into offscreen textures, read them
 back and compare them against the snapshots under `tests/snapshots` with the
 SSIMULACRA2 perceptual metric. That directory is a symlink into the
-[`wgpu_unlit_render_asset_files`](../../wgpu_unlit_render_asset_files/README.md)
+[`unlit3d_asset_files`](../../unlit3d_asset_files/README.md)
 submodule; clone it with `git submodule update --init`. To re-bless a snapshot
 after an intentional change, run the test with `SNAPSHOT_UPDATE=1` set, then
 review the image diff before committing it.

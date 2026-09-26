@@ -32,7 +32,7 @@ Scenes:
 
 Each scene reproduces exactly what its test froze: the same world, camera and
 frame sequence, so the stored snapshots in
-[`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md)
+[`unlit3d_asset_files`](../unlit3d_asset_files/README.md)
 still verify it. The scenes are built with the same public `unlit3d` API any
 caller would use — nothing in the example reaches into the crates' internals.
 
@@ -183,7 +183,7 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 is exactly what the CI snapshot job runs, against the submodule's committed
 images. To re-bless one or all of them after an intentional rendering change,
 add `--update`, then review the image diffs in
-[`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md)
+[`unlit3d_asset_files`](../unlit3d_asset_files/README.md)
 before committing them. That submodule is checked out with
 `git submodule update --init`.
 

@@ -28,7 +28,7 @@ Scenes:
 ```
 
 每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此
-[`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md) 中存储
+[`unlit3d_asset_files`](../unlit3d_asset_files/README.md) 中存储
 的快照仍然能验证它。场景全部用公开的 `unlit3d` API 构建——示例没有任何一处触碰到
 crate 的内部实现。
 
@@ -156,7 +156,7 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 
 这正是 CI 快照任务所跑的、针对 submodule 中已提交图像的命令。确有意改动渲染结果后，
 要重新生成其中一份或全部，加上 `--update`，然后在提交前审查
-[`wgpu_unlit_render_asset_files`](../wgpu_unlit_render_asset_files/README.md) 中的
+[`unlit3d_asset_files`](../unlit3d_asset_files/README.md) 中的
 图像差异。该 submodule 用 `git submodule update --init` 检出。
 
 ## 测试

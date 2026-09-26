@@ -106,7 +106,7 @@ The tests fall into three layers, by how close they sit to the code they check:
   twice.
 
 All snapshot baselines therefore live in
-[`wgpu_unlit_render_asset_files`](wgpu_unlit_render_asset_files/README.md), a
+[`unlit3d_asset_files`](unlit3d_asset_files/README.md), a
 git submodule. Clone it with `git submodule update --init`. After an
 intentional rendering change, re-bless the affected snapshots the way each layer
 above describes, and review the image diff before committing.

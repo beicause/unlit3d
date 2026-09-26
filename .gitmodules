@@ -1,3 +1,3 @@
-[submodule "wgpu_unlit_render_asset_files"]
-	path = wgpu_unlit_render_asset_files
-	url = https://github.com/beicause/wgpu_unlit_render_asset_files
+[submodule "unlit3d_asset_files"]
+	path = unlit3d_asset_files
+	url = https://github.com/beicause/unlit3d_asset_files

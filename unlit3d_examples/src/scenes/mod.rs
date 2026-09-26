@@ -15,7 +15,7 @@
 //! Every scene here is ported from a GPU snapshot test that used to live in
 //! `crates/unlit3d/tests`, which is why its size, frame count and content are
 //! exactly what that test froze: the stored snapshots in the
-//! `wgpu_unlit_render_asset_files` submodule still verify them.
+//! `unlit3d_asset_files` submodule still verify them.
 
 pub mod animated;
 pub mod cube;

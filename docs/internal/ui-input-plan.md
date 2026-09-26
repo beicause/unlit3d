@@ -1,6 +1,6 @@
 # 实施计划：unlit3d 集成 UI（egui）并接入 winit 输入事件
 
-> 状态：**已实施**。§9 的 12 个步骤全部实现、验证并提交（`main` 上 `0cb66c0..6ce33b7`，17 个提交；快照子模块 `wgpu_unlit_render_asset_files` 为 `a58efeb..70ae7a3`）。本文保留为设计记录，实施结果见 §13。
+> 状态：**已实施**。§9 的 12 个步骤全部实现、验证并提交（`main` 上 `0cb66c0..6ce33b7`，17 个提交；快照子模块 `unlit3d_asset_files` 为 `a58efeb..70ae7a3`）。本文保留为设计记录，实施结果见 §13。
 > 目标 crate：`unlit3d`（主体）、`wgpu_unlit_render`（UI 模块与 `Scene` 基础设施的小幅改进）。
 > 前置阅读：`docs/DESIGN.md`（§高层API、§功能）、`crates/unlit_ecs/tests/behavior.rs`（行为组件范式）。
 >
@@ -1374,7 +1374,7 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 
 ### 提交与验证
 
-- **提交范围**：`main` 上 `0cb66c0..6ce33b7`，共 17 个提交；快照子模块 `wgpu_unlit_render_asset_files` 为 `a58efeb..70ae7a3`。两者均已推送。
+- **提交范围**：`main` 上 `0cb66c0..6ce33b7`，共 17 个提交；快照子模块 `unlit3d_asset_files` 为 `a58efeb..70ae7a3`。两者均已推送。
 - **`cargo xtask check`**（全工作区 clippy `-D warnings` + `cargo fmt --check`）：干净。
 - **`cargo xtask test`**：392 个测试通过（本次工作前的基线是 185），doctest 同样通过。
 - **`cargo nextest run --no-default-features --features winit`**：110 个通过，证明关掉 `ui`（即不编 egui）后 crate 仍可构建。
@@ -1501,7 +1501,7 @@ pub struct UiPanel(Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>);
 
 ```
 cargo run -p unlit3d_examples --features snapshot -- --headless --frames 30 \
-  --snapshot wgpu_unlit_render_asset_files/snapshots/example.webp
+  --snapshot unlit3d_asset_files/snapshots/example.webp
 ```
 
 关键点是这个 job 的 `actions/checkout` 带 **`submodules: true`**。其余 job 不带，而 `crates/*/tests/snapshots` 是指向子模块的快照符号链接——子模块未检出时路径不存在，`assert_image_snapshot` 便退化成「写入并通过」，因此 **CI 此前从未真正校验过任何快照**。这里有意只给这一个 job 开子模块，避免让既有快照去面对 lavapipe 与本地 GPU 的差异。
@@ -1566,7 +1566,7 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --frames 30 \
    GPU 也没装软件驱动。给 `build` job 加了 `mesa-vulkan-drivers`（lavapipe）。
 
 3. **子模块没被检出**（配置问题）。`crates/*/tests/snapshots` 是指向
-   `wgpu_unlit_render_asset_files` 子模块的符号链接，而 checkout 没开 `submodules`。
+   `unlit3d_asset_files` 子模块的符号链接，而 checkout 没开 `submodules`。
    macOS 上它变成**悬空符号链接**，`create_dir_all` 报 `File exists (os error 17)`
    （已用最小 Rust 程序复现：dangling symlink → `EEXIST`）；Windows 上 git 把它检出为
    普通文件，同样 `EEXIST`。现在 `build` job 开 `submodules: true`。

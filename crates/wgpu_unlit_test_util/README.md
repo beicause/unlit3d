@@ -58,7 +58,7 @@ a stored one:
 - Snapshots are looked up under `tests/snapshots`, relative to the process's
   working directory, and stored as lossless WebP. That directory is a symlink
   into the
-  [`wgpu_unlit_render_asset_files`](../../wgpu_unlit_render_asset_files/README.md)
+  [`unlit3d_asset_files`](../../unlit3d_asset_files/README.md)
   submodule; clone it with `git submodule update --init`.
 
 A missing snapshot is *stored* rather than compared, and setting
@@ -71,7 +71,7 @@ To re-bless a snapshot after an intentional rendering change:
 
 ```text
 SNAPSHOT_UPDATE=1 cargo nextest run -p wgpu_unlit_render
-git -C wgpu_unlit_render_asset_files diff   # review before committing
+git -C unlit3d_asset_files diff   # review before committing
 ```
 
 ## Usage

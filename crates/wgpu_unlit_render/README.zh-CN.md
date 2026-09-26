@@ -102,7 +102,7 @@ cargo nextest run -p wgpu_unlit_render   # 只跑本 crate
 
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用
 SSIMULACRA2 感知指标比较。该目录是指向
-[`wgpu_unlit_render_asset_files`](../../wgpu_unlit_render_asset_files/README.md)
+[`unlit3d_asset_files`](../../unlit3d_asset_files/README.md)
 submodule 的软链接；用 `git submodule update --init` 拉取。若确有意改动后要重新生成
 快照，带 `SNAPSHOT_UPDATE=1` 运行对应测试，然后在提交前审查图像差异。
 

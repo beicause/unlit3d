@@ -49,7 +49,7 @@
   调用者使用。
 - 快照以 `name` 在 `tests/snapshots` 下查找（相对于进程的工作目录），并以无损 WebP
   存储。该目录是指向
-  [`wgpu_unlit_render_asset_files`](../../wgpu_unlit_render_asset_files/README.md)
+  [`unlit3d_asset_files`](../../unlit3d_asset_files/README.md)
   submodule 的软链接；用 `git submodule update --init` 拉取。
 
 快照缺失时会被*存储*而不是比较；设置 `SNAPSHOT_UPDATE=1` 会重新存储它触及的每个
@@ -60,7 +60,7 @@
 
 ```text
 SNAPSHOT_UPDATE=1 cargo nextest run -p wgpu_unlit_render
-git -C wgpu_unlit_render_asset_files diff   # 提交前先审查
+git -C unlit3d_asset_files diff   # 提交前先审查
 ```
 
 ## 用法

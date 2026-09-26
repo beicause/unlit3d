@@ -32,7 +32,7 @@ pub const DEFAULT_MIN_SCORE: f64 = 85.0;
 pub fn default_snapshot_dir() -> PathBuf {
     PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../wgpu_unlit_render_asset_files/snapshots"
+        "/../unlit3d_asset_files/snapshots"
     ))
 }
 

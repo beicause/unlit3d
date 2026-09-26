@@ -155,7 +155,7 @@ pixels that come back. The multi-frame snapshot coverage of those scenes now
 lives in [`unlit3d_examples`](../../unlit3d_examples/README.md): its scenes are
 ported from the tests that used to live here, and its headless path compares
 them against the SSIMULACRA2 snapshots under
-[`wgpu_unlit_render_asset_files`](../../wgpu_unlit_render_asset_files/README.md).
+[`unlit3d_asset_files`](../../unlit3d_asset_files/README.md).
 Clone the submodule with `git submodule update --init`; re-bless intentional
 changes with `cargo run -p unlit3d_examples --features snapshot -- --headless
 --scene all --update` and review the image diff.

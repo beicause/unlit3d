@@ -88,7 +88,7 @@ WebGL 与 GLES。它在一个 render pass 内把整个场景——不透明与�
   不再为这些场景维护两处代码。
 
 因此，快照基线都在
-[`wgpu_unlit_render_asset_files`](wgpu_unlit_render_asset_files/README.md) 这个 git
+[`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git
 submodule 中；用 `git submodule update --init` 拉取。改动了渲染结果时，按上面各自的方式
 重新生成对应快照，并审查图像差异后再提交。
 

@@ -131,7 +131,7 @@ cargo nextest run -p unlit3d    # 只跑本 crate
 GPU 集成测试把场景渲染到离屏目标并检查回读的像素。这些场景的多帧快照覆盖现在位于
 [`unlit3d_examples`](../../unlit3d_examples/README.zh-CN.md)：它的场景正是从原来这里的
 测试移植而来，其无头路径用
-[`wgpu_unlit_render_asset_files`](../../wgpu_unlit_render_asset_files/README.md)
+[`unlit3d_asset_files`](../../unlit3d_asset_files/README.md)
 下的 SSIMULACRA2 快照比较。用 `git submodule update --init` 拉取；确有意改动时带
 `--update` 重新生成（`cargo run -p unlit3d_examples --features snapshot --
 --headless --scene all --update`），并审查图像差异。
