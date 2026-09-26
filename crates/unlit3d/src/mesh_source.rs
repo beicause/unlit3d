@@ -2136,13 +2136,12 @@ impl FrameSource for MeshSource {
 
         // Resolve and pack every visible instance's pose before the instance
         // data is written: the packed offsets are part of each instance record,
-        // so the instance stream cannot be uploaded until they are known. A
-        // pose array that grew replaces its buffer, which dirties the global
-        // groups that bind it, so the rebuild comes after both uploads.
+        // so the instance stream cannot be uploaded until they are known. Each
+        // upload rebuilds the global groups itself if it had to replace its
+        // buffer.
         self.pack_poses(world);
         self.upload_joints(world, encoder);
         self.upload_morph_weights(world, encoder);
-        self.rebuild_dirty_global_groups(world);
 
         // Pack instance data into the reused scratch buffer and upload it.
         self.ensure_instance_buffer(world, instance_count);
