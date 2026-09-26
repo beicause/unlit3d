@@ -204,11 +204,11 @@ UI对输入的**捕获**（是否想独占指针/键盘）按egui的语义需要
 - [x] `wgpu`资源管理、基本的pipeline和mesh绘制API、unlit管线。
 - [x] 支持`egui`（`wgpu_unlit_render::ui`的纯后端）。
 - [x] 初步实现`unlit_ecs`。
-- [ ] 设计并实施高层渲染API。
-- [ ] 帧源重构：`Scene`自持句柄、`FrameSource`机制、内置mesh渲染搬进`MeshSource`。
-- [ ] `unlit3d`的UI集成：`UiPanel`行为组件与UI帧源。
-- [ ] 输入：事件类型、`InputState`、行为组件与winit适配。
-- [ ] 支持skinning和morph targets。
+- [x] 设计并实施高层渲染API。
+- [x] 帧源重构：`Scene`自持句柄、`FrameSource`机制、内置mesh渲染搬进`MeshSource`。
+- [x] `unlit3d`的UI集成：`UiPanel`行为组件与UI帧源。
+- [x] 输入：事件类型、`InputState`、行为组件与winit适配。
+- [x] 支持skinning和morph targets。
 
 提示：
 - 字节转换统一用`zerocopy`。

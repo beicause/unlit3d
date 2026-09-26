@@ -7,7 +7,7 @@
 - **不要用字面量硬编码可能会变的常量**，如缓冲大小、顶点属性大小、纹理像素大小、结构体大小、字节数组索引等，可用`size_of`、`VertexFormat::size`、`TextureFormat::block_copy_size`、`ShaderLayout::SIZE`等计算。
 - **减少不必要的内存分配**，例如：遍历迭代器而不是收集到Vec再遍历、返回迭代其而不是Vec、每帧复用Vec/HashMap而不是重新创建。
 - **字节转换统一走 zerocopy**。
-- **文档和注释**：保持文档和注释为最新，更新代码的同时，更新有关注释。文档和注释是面向用户的，不要包含不必要的内部细节、不要包含无关的上下文或显而易见的信息。代码、文档、注释默认全用英文。
+- **文档和注释**：保持文档、注释、README.md等为最新，更新代码的同时，注意更新有关注释。文档和注释是面向用户的，不要包含不必要的内部细节、不要包含无关的上下文或显而易见的信息。代码、文档、注释默认全用英文。
 - **完成任务后cargo检查**：运行`cargo clippy`和`cargo fmt`（或直接 `cargo xtask check`）。
 
 ## Git 工作流
@@ -16,8 +16,9 @@
 
 ## 常用命令
 
+常用命令遵循`cargo xtask`约定，以下是一些常用命令及其具体解释，更新xtask时，注意更新以下列表：
 - **`cargo xtask check`** — clippy（全工作区、全 target、全 feature，`-D warnings`）后接 `cargo fmt --check`。提交前的门槛。加 `--release` 走 release profile。
-- **`cargo xtask test`** — 跑测试：`cargo nextest run` 覆盖单元与集成测试，随后 `cargo test --doc` 补上 nextest 不跑的 doctest。CI 跑的就是这一条命令，本地别自己拼 `cargo test`。加 `--release` 走 release profile。
+- **`cargo xtask test`** — 跑测试：`cargo nextest run` 覆盖单元与集成测试，随后 `cargo test --doc` 补上 nextest 不跑的 doctest。加 `--release` 走 release profile。
 - **`cargo xtask run-wasm`** — 构建 web 示例并用内置静态服务器提供（WebGPU 需要 secure context，`file://` 不行）。`--no-serve` 只构建，`--release` 走 release。
 - **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译示例的动态库放进 `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，`--release` 构建未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`（NDK 由 cargo-ndk 自动探测）。
 - **`cargo nextest run`** — 需要按名筛选或重跑单个测试时直接用（`-p <crate>`、`-E 'test(<name>)'`）。nextest 不跑 doctest，也别用它代替 `cargo xtask test`。
@@ -25,7 +26,8 @@
 - **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。改过任何 `Cargo.toml` 后务必跑。
 
 由于`cargo`命令可能运行较慢，要注意：
-- **若改动较小，cargo测试时要按包或名称筛选**，对于较小的改动不要总是跑全量测试。
+- **使用`cargo nextest`，而不是`cargo test`**。
+- **针对特定改动、特定bug时，使用`cargo nextest`时要筛选**。不要总是跑全量`cargo nextest`或`cargo xtask test`测试。
 - **不要过度跑cargo build**：
   1. 尽可能少用cargo build，优先用check或clippy。若cargo check或clippy通过了，则大概率cargo build也能通过。
   2. 如果改动不是平台特定的，如没有用到`#[cfg(...)]`，就无需跑平台特定（如wasm,android）的检查或构建。
