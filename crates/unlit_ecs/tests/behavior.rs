@@ -16,7 +16,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use unlit_ecs::{Entity, LocalWorld, Resource, SendWorld};
+use unlit_ecs::{Entity, LocalWorld, SendWorld};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -234,7 +234,7 @@ fn a_function_pointer_behaviour_runs_on_the_send_world() {
 #[test]
 fn a_behaviour_can_act_on_the_whole_world() {
     let mut world = LocalWorld::new();
-    let scale = world.spawn((Resource, 10.0f32));
+    let scale = world.spawn((10.0f32,));
     let seen = Rc::new(Cell::new(0.0f32));
     let sink = seen.clone();
 
@@ -254,9 +254,9 @@ fn a_behaviour_can_act_on_the_whole_world() {
 }
 
 #[test]
-fn a_behaviour_reads_a_resource_entity() {
+fn a_behaviour_reads_a_marked_entity() {
     let mut world = LocalWorld::new();
-    let clock = world.spawn((Resource, 0.25f32));
+    let clock = world.spawn((0.25f32,));
     let seen = Rc::new(Cell::new(0.0f32));
     let sink = seen.clone();
 

@@ -1025,7 +1025,7 @@ impl Scene {
     ) -> Self {
         let mut world = LocalWorld::new();
         let context = spawn_context(&mut world, device, queue, ResourceGraph::new());
-        let renderer = world.spawn((Resource, Renderer::new(context)));
+        let renderer = world.spawn((Renderer::new(context),));
         let control = (def.build)(&mut world, context, renderer, size, options);
 
         let input = WinitInput::new(&mut world);

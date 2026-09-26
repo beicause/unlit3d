@@ -32,7 +32,7 @@
 //! # Example
 //!
 //! `````
-//! use unlit_ecs::{LocalWorld, Query, Resource};
+//! use unlit_ecs::{LocalWorld, Query};
 //!
 //! // A behaviour component: data the driver reads and writes every frame.
 //! struct Spin {
@@ -42,7 +42,7 @@
 //!
 //! let mut world = LocalWorld::new();
 //! let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-//! let clock = world.spawn((Resource, 0.016f32));
+//! let clock = world.spawn((0.016f32,));
 //!
 //! // Drive every Spin. The caller picks which entities to touch and in what
 //! // order; the library has no built-in notion of a scene graph.
@@ -75,7 +75,6 @@ pub use bundle::{ArchetypeBuilder, Bundle};
 pub use command::{Command, CommandErase, Commands};
 #[doc(hidden)]
 pub use component::Component;
-pub use component::Resource;
 pub use entity::Entity;
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use mode::{LocalMode, Mode, SendMode};
@@ -95,5 +94,5 @@ pub type SendWorld = World<SendMode>;
 
 /// The types most callers need.
 pub mod prelude {
-    pub use crate::{Entity, LocalWorld, Query, Resource, SendWorld, Without, World};
+    pub use crate::{Entity, LocalWorld, Query, SendWorld, Without, World};
 }

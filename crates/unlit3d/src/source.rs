@@ -18,7 +18,7 @@
 
 use core::any::Any;
 
-use unlit_ecs::{Entity, LocalWorld, Resource};
+use unlit_ecs::{Entity, LocalWorld};
 use wgpu_unlit_render::resources::ResourceGraph;
 use wgpu_unlit_render::scene::Scene;
 use wgpu_unlit_render::specialize::SurfaceKey;
@@ -337,16 +337,16 @@ pub fn spawn_context(
     queue: wgpu::Queue,
     graph: ResourceGraph,
 ) -> RenderContext {
-    let device = world.spawn((Resource, device));
-    let queue = world.spawn((Resource, queue));
-    let graph = world.spawn((Resource, graph));
-    world.spawn((Resource, MountCounter::default()));
+    let device = world.spawn((device,));
+    let queue = world.spawn((queue,));
+    let graph = world.spawn((graph,));
+    world.spawn((MountCounter::default(),));
     // The frame loop writes the target here every frame; until it does, no
     // source may draw.
-    world.spawn((Resource, FrameTargetSlot::default()));
+    world.spawn((FrameTargetSlot::default(),));
     // What the frame's sources claimed of its input, written by whichever
     // source consumes input and read by the caller's own logic.
-    world.spawn((Resource, InputCapture::default()));
+    world.spawn((InputCapture::default(),));
     RenderContext {
         device,
         queue,

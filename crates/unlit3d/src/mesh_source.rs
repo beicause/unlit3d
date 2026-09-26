@@ -1490,8 +1490,7 @@ impl MeshSource {
     /// error the caller has to avoid: nothing detects the stale handle.
     pub fn remove_mesh(&mut self, world: &LocalWorld, mesh: GpuMesh) {
         {
-            let graph = Self::graph(world, self.context);
-            let mut graph = graph;
+            let mut graph = Self::graph(world, self.context);
             graph.remove_drop(mesh.root);
             // The root was the only node built from the parts, so with it gone
             // every part is an orphan.

@@ -291,7 +291,7 @@ fn ui_only_world(world: &mut LocalWorld, ctx: &Ctx) -> TestGpu {
 ///
 /// The UI reads both from it, so this is how a test sets the pixel density.
 fn spawn_input(world: &mut LocalWorld, scale_factor: f32) {
-    let input = world.spawn((Resource, InputState::default()));
+    let input = world.spawn((InputState::default(),));
     let _ = world.with_mut::<InputState, _>(input, |state| {
         state.set_size_px(WIDTH, HEIGHT);
         state.set_scale_factor(scale_factor);
@@ -300,13 +300,10 @@ fn spawn_input(world: &mut LocalWorld, scale_factor: f32) {
 
 /// Spawn the load ops every UI test opens its pass with.
 fn spawn_load_ops(world: &mut LocalWorld) {
-    world.spawn((
-        Resource,
-        RenderLoadOps {
-            color: wgpu::LoadOp::Clear(CLEAR_COLOR),
-            ..RenderLoadOps::default()
-        },
-    ));
+    world.spawn((RenderLoadOps {
+        color: wgpu::LoadOp::Clear(CLEAR_COLOR),
+        ..RenderLoadOps::default()
+    },));
 }
 
 // ---------------------------------------------------------------------------

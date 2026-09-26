@@ -33,7 +33,7 @@
 //! key must not move with the layout. The text the key produced comes from
 //! `KeyEvent::text` instead, as a separate [`TextEvent`].
 
-use unlit_ecs::{Entity, LocalWorld, Resource};
+use unlit_ecs::{Entity, LocalWorld};
 use winit::event::{
     Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase, WindowEvent,
 };
@@ -93,7 +93,7 @@ impl WinitInput {
     /// two of them would split the input stream, and
     /// [`dispatch_input`](super::dispatch_input) reads only the first it finds.
     pub fn new(world: &mut LocalWorld) -> Self {
-        let entity = world.spawn((Resource, InputState::default()));
+        let entity = world.spawn((InputState::default(),));
         Self { entity }
     }
 

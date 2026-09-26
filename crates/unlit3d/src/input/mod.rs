@@ -27,7 +27,7 @@
 //!
 //! let mut world = LocalWorld::new();
 //! // The events of one frame, accumulated by whatever translates them.
-//! let input = world.spawn((Resource, InputState::default()));
+//! let input = world.spawn((InputState::default(),));
 //! // A behaviour that reacts to the keyboard.
 //! world.spawn((
 //!     Presses(0),
@@ -666,7 +666,7 @@ pub enum InputEvent {
 /// struct CtrlPresses(u32);
 ///
 /// let mut world = LocalWorld::new();
-/// let input = world.spawn((Resource, InputState::default()));
+/// let input = world.spawn((InputState::default(),));
 /// let observer = world.spawn((
 ///     CtrlPresses(0),
 ///     OnInput::new(move |world, entity, _event| {
@@ -1064,7 +1064,7 @@ mod tests {
     use core::cell::Cell;
     use std::rc::Rc;
 
-    use unlit_ecs::{Resource, With};
+    use unlit_ecs::With;
 
     use super::*;
 
@@ -1154,7 +1154,7 @@ mod tests {
             seen_ime.set(seen_ime.get() + 1);
         }),));
 
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let events = [
             key_event(Key::W),
             mouse_event(),
@@ -1198,7 +1198,7 @@ mod tests {
             OnKey::new(move |_, _, _| keys.set(keys.get() + 1)),
             OnInput::new(move |_, _, _| all.set(all.get() + 1)),
         ));
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
             state.push(mouse_event());
@@ -1219,7 +1219,7 @@ mod tests {
             world.spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
         }
 
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
         });
@@ -1245,7 +1245,7 @@ mod tests {
         // Another entity of the same kind must not be substituted.
         world.spawn((9u32, OnKey::new(|_, _, _| {})));
 
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
         });
@@ -1260,7 +1260,7 @@ mod tests {
         // The events are copied out before the callbacks run, so the resource
         // is not borrowed while they execute.
         let mut world = LocalWorld::new();
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         world.spawn((OnKey::new(move |world, _, _| {
             let held = world
                 .get::<InputState>(input_entity)
@@ -1298,7 +1298,7 @@ mod tests {
         }),));
         world.spawn((OnKey::new(|_, _, _| {}),));
 
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
         });
@@ -1314,7 +1314,7 @@ mod tests {
         world.spawn((OnKey::new(|world, _, _| {
             world.queue().spawn((42u32,));
         }),));
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
         });
@@ -1332,7 +1332,7 @@ mod tests {
         let doomed = world.spawn((OnKey::new(|world, entity, _| {
             world.queue().despawn(entity);
         }),));
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
             state.push(key_event(Key::B));
@@ -1349,7 +1349,7 @@ mod tests {
         let mut world = LocalWorld::new();
         let (count, seen) = counter();
         world.spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
-        world.spawn((Resource, InputState::default()));
+        world.spawn((InputState::default(),));
 
         assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
@@ -1368,7 +1368,7 @@ mod tests {
     #[test]
     fn events_without_behaviours_are_delivered_to_nobody() {
         let mut world = LocalWorld::new();
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
         });
@@ -1686,7 +1686,7 @@ mod tests {
         // The documented frame loop, end to end: deliver, apply, clear, and
         // the state a later frame reads is still there.
         let mut world = LocalWorld::new();
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.set_size_px(800, 600);
             state.set_scale_factor(1.5);
@@ -1714,7 +1714,7 @@ mod tests {
         world.spawn((OnKey::new(|world, entity, _| {
             let _ = world.get::<OnKey>(entity);
         }),));
-        let input_entity = world.spawn((Resource, InputState::default()));
+        let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
         });

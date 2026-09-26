@@ -8,7 +8,7 @@ pub use wgpu_unlit_test_util::{
 };
 
 use core::ops::DerefMut;
-use unlit_ecs::{Entity, LocalWorld, Resource};
+use unlit_ecs::{Entity, LocalWorld};
 use unlit3d::prelude::*;
 use wgpu_unlit_render::resources::{Resource as GraphResource, ResourceGraph, ResourceId};
 
@@ -59,7 +59,7 @@ impl TestGpu {
             ResourceGraph::new(),
         );
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
-        let renderer = world.spawn((Resource, Renderer::new(context)));
+        let renderer = world.spawn((Renderer::new(context),));
         Self {
             context,
             renderer,

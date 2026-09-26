@@ -24,9 +24,8 @@
 - **实体的组件集合在 spawn 时就固定了。** 组件只能读写，不能增删；要改变集合，
   必须 despawn 该实体再重新 spawn。不可变的原型正是让存储可预测、并消除其他 ECS
   设计中容易泄漏的「组件被移除」记账工作的原因。
-- **没有资源（resource），只有 `Resource` 标记组件。** 资源就是调用者把 `Resource`
-  与数据一起 spawn 出来的实体，对资源的引用就是一个 `Entity` 句柄。资源实体可被任何
-  行为组件访问，没有数据隔离。
+- **没有资源（resource）。** crate 不标记也不追踪任何资源；想被随处访问的实体就是
+  普通实体，调用者自行保存它的句柄，需要时可以用自己的标记组件加以标记。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
@@ -42,7 +41,7 @@
 
 `World`（以及 `LocalWorld` / `SendWorld` 别名）、`Entity`、`Bundle` /
 `ArchetypeBuilder`、`Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、
-用于延迟结构变更的 `Command` / `Commands`、`Resource` 标记、用于直接检视存储的
+用于延迟结构变更的 `Command` / `Commands`、用于直接检视存储的
 `Archetype` / `Archetypes`，以及专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
 
 `Commands` 队列之所以存在，是因为结构变更需要 `&mut World`：只持有共享 world 的回调
@@ -56,7 +55,7 @@
 ## 用法
 
 ```rust
-use unlit_ecs::{LocalWorld, Query, Resource, Without};
+use unlit_ecs::{LocalWorld, Query, Without};
 
 struct Spin {
     radians_per_second: f32,
@@ -65,7 +64,7 @@ struct Spin {
 
 let mut world = LocalWorld::new();
 let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-let clock = world.spawn((Resource, 0.016f32));
+let clock = world.spawn((0.016f32,));
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.

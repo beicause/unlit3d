@@ -61,7 +61,7 @@
 //! mesh_source.register_unlit_family(&world);
 //! let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world)));
 //! let source = spawn_source(&mut world, mesh_source);
-//! let renderer = world.spawn((Resource, Renderer::new(ctx)));
+//! let renderer = world.spawn((Renderer::new(ctx),));
 //!
 //! // 2. Allocate geometry and a material through the mesh source.
 //! let (mesh, material) = world

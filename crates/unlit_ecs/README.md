@@ -28,10 +28,10 @@ crate knows nothing about rendering.
   entity and spawn a new one. Immutable archetypes are what make the storage
   predictable and remove the leak-prone "component removed" bookkeeping other
   ECS designs need.
-- **There are no resources, only the `Resource` marker component.** A resource
-  is an entity the caller spawns with `Resource` alongside the data, and a
-  reference to one is an `Entity` handle. Resource entities are reachable from
-  any behaviour, with no data isolation.
+- **There are no resources.** Nothing in the crate marks or tracks a
+  "resource"; an entity a caller wants to reach from anywhere is an ordinary
+  entity whose handle the caller keeps, optionally marked with a marker
+  component of the caller's own.
 - **There are no systems.** Driving behaviour means the caller reading the
   world and calling the method or closure it wants — or running a *behaviour
   component*, a component that holds a closure and is invoked by whatever
@@ -54,8 +54,8 @@ crate knows nothing about rendering.
 
 `World` (and the `LocalWorld` / `SendWorld` aliases), `Entity`, `Bundle` /
 `ArchetypeBuilder`, `Query` and `QueryFilter` (`With`, `Without`, `Or`,
-tuples), `Command` / `Commands` for queued structural changes, the `Resource`
-marker, `Archetype` / `Archetypes` for direct storage inspection, and the
+tuples), `Command` / `Commands` for queued structural changes,
+`Archetype` / `Archetypes` for direct storage inspection, and the
 specialized hash containers `TypeIdHashMap`, `EntityHashMap` and friends.
 
 A `Commands` queue exists because structural changes need `&mut World`: a
@@ -70,7 +70,7 @@ storage order. Archetypes are created on demand and never removed.
 ## Usage
 
 ```rust
-use unlit_ecs::{LocalWorld, Query, Resource, Without};
+use unlit_ecs::{LocalWorld, Query, Without};
 
 struct Spin {
     radians_per_second: f32,
@@ -79,7 +79,7 @@ struct Spin {
 
 let mut world = LocalWorld::new();
 let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-let clock = world.spawn((Resource, 0.016f32));
+let clock = world.spawn((0.016f32,));
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.

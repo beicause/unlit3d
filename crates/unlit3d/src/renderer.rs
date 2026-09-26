@@ -43,7 +43,7 @@ use crate::source::{
 /// let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
 /// let source = MeshSource::new(&world, ctx);
 /// let mesh = spawn_source(&mut world, source);
-/// let renderer = world.spawn((Resource, Renderer::new(ctx)));
+/// let renderer = world.spawn((Renderer::new(ctx),));
 /// ```
 pub struct Renderer {
     /// The world addresses of the frame's GPU state.

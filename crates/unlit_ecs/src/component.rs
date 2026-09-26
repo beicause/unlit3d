@@ -13,19 +13,3 @@
 pub trait Component: 'static {}
 
 impl<T: 'static> Component for T {}
-
-/// A marker component: its entity is a "resource".
-///
-/// A resource is an ordinary entity that a caller may reach from anywhere, so
-/// the caller marks it and keeps its handle to look the resource up. References
-/// to resources are plain [`Entity`](crate::Entity) handles, or plain
-/// component references.
-///
-/// `````
-/// # use unlit_ecs::{LocalWorld, Resource};
-/// let mut world = LocalWorld::new();
-/// let settings = world.spawn((Resource, 60u32));
-/// assert!(world.has::<Resource>(settings));
-/// `````
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct Resource;

@@ -75,7 +75,7 @@ let mut mesh_source = MeshSource::new(&world, ctx);
 mesh_source.register_unlit_family(&world);
 let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world)));
 let source = spawn_source(&mut world, mesh_source);
-let renderer = world.spawn((Resource, Renderer::new(ctx)));
+let renderer = world.spawn((Renderer::new(ctx),));
 
 // Geometry and materials are allocated through the source, so they land in
 // the frame's resource graph; the returned handles go on the entity.

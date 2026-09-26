@@ -428,13 +428,16 @@ impl FrameSource for UiSource {
     }
 
     /// Remove the UI's own graph nodes: its two uniforms and the bind group
-    /// binding them.
+    /// binding them, plus everything the egui integration registered.
     ///
     /// The pipeline is a `wgpu` handle the graph reaches only through the bind
     /// group, so dropping it with the source is enough. The bind group is
     /// removed before the buffers it depends on, so it does not outlive them.
+    /// The integration's own nodes — textures, samplers, materials and the two
+    /// geometry buffers — are released through [`EguiIntegration::release`],
+    /// since only it knows which nodes it created.
     fn release(&mut self, world: &LocalWorld) {
-        let Some(gpu) = self.gpu.take() else {
+        let Some(mut gpu) = self.gpu.take() else {
             return;
         };
         let Some(context) = self.context else {
@@ -443,6 +446,7 @@ impl FrameSource for UiSource {
         let mut graph = world
             .get_mut::<ResourceGraph>(context.graph)
             .expect("the context's resource graph exists");
+        gpu.integration.release(&mut graph);
         graph.remove_drop(gpu.global_group);
         graph.remove_drop(gpu.camera_id);
         graph.remove_drop(gpu.globals_id);
@@ -665,7 +669,7 @@ mod tests {
                 .borrow_mut()
                 .spawn((UiPanel::new(move |world, _entity, ui| {
                     if world.query::<&Spawned>().next().is_none() {
-                        world.queue().spawn((unlit_ecs::Resource, Spawned));
+                        world.queue().spawn((Spawned,));
                     }
                     ui.label("once");
                 }),));
@@ -809,7 +813,7 @@ mod tests {
         }),));
 
         // The pointer and a typed key arrive in the world's own event types.
-        let input = world.spawn((unlit_ecs::Resource, InputState::default()));
+        let input = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input, |state| {
             state.set_size_px(128, 96);
             state.push(crate::input::InputEvent::Text(crate::input::TextEvent(
@@ -857,7 +861,7 @@ mod tests {
             }
         }),));
 
-        let input = world.spawn((unlit_ecs::Resource, InputState::default()));
+        let input = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input, |state| state.set_size_px(128, 96));
 
         let mut source = UiSource::new();
@@ -913,7 +917,7 @@ mod tests {
             );
         }),));
 
-        let input = world.spawn((unlit_ecs::Resource, InputState::default()));
+        let input = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input, |state| {
             state.set_size_px(128, 96);
             state.push(crate::input::InputEvent::Mouse(

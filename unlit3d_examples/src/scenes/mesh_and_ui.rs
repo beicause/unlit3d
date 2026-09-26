@@ -71,13 +71,10 @@ fn build(
     ));
 
     // The pass opens with this world's load ops.
-    world.spawn((
-        Resource,
-        RenderLoadOps {
-            color: wgpu::LoadOp::Clear(CLEAR_COLOR),
-            ..RenderLoadOps::default()
-        },
-    ));
+    world.spawn((RenderLoadOps {
+        color: wgpu::LoadOp::Clear(CLEAR_COLOR),
+        ..RenderLoadOps::default()
+    },));
 
     if options.ui {
         world.spawn((super::ui_only::rich_panel(),));

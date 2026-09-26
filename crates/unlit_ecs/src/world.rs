@@ -396,20 +396,16 @@ impl<M: Mode> World<M> {
     }
 
     /// Drop the row at `location`, keeping every other location correct.
-    pub(crate) fn remove_row(&mut self, location: Location) -> bool {
+    pub(crate) fn remove_row(&mut self, location: Location) {
         let archetype = self.archetypes.get_mut(location.archetype);
-        match archetype.swap_remove(location.row()) {
-            Some(moved) => {
-                self.entities_write().set_location(
-                    moved,
-                    Location {
-                        archetype: location.archetype,
-                        row: location.row,
-                    },
-                );
-                true
-            }
-            None => false,
+        if let Some(moved) = archetype.swap_remove(location.row()) {
+            self.entities_write().set_location(
+                moved,
+                Location {
+                    archetype: location.archetype,
+                    row: location.row,
+                },
+            );
         }
     }
 
