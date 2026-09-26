@@ -156,8 +156,8 @@ pub fn run() -> ExitCode {
     init_logging();
 
     let args = match cli::parse(std::env::args().skip(1)) {
-        Ok(Parsed::Help) => {
-            stdout(&cli::usage());
+        Ok(Parsed::Help(help)) => {
+            stdout(&help);
             return ExitCode::SUCCESS;
         }
         Ok(Parsed::Run(args)) => args,

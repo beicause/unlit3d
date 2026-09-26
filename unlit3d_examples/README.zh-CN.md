@@ -110,7 +110,8 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 
 ### 选项
 
-每个选项都是 `--name value` 或裸开关；`--name=value` 也接受。
+选项用 [`argh`](https://docs.rs/argh) 声明与解析（与 `xtask` 同一个库），每个选项都是
+`--name value` 或裸开关；值必须作为下一个参数传入，不支持 `--name=value`。
 
 | 选项 | 默认值 | 含义 |
 |------|--------|------|

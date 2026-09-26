@@ -1,12 +1,23 @@
 //! The example's command line.
 //!
-//! The options are few and the example has no argument-parsing dependency, so
-//! the parser is hand-written rather than pulling one in. Everything is
-//! `--name value` or a bare flag; `--name=value` is accepted too.
+//! The flags are declared with [`argh`], which derives the parser and the
+//! `--help` text from the [`Args`] struct. The few values with a shape of their
+//! own — a `WxH` size, a frame count, a score — are parsed by the functions
+//! [`Args`] names through `from_str_fn`, so the rules live next to the options
+//! they constrain.
+//!
+//! [`Args::validate`] holds the checks that span more than one option: a
+//! capture option without `--headless`, a scene the example does not know, and
+//! the combinations that cannot both say what to compare.
 
 use std::path::PathBuf;
 
+use argh::FromArgs;
+
 use crate::scenes;
+
+/// The program name argh puts in its usage and error messages.
+const PROGRAM: &str = "unlit3d_examples";
 
 /// The lowest SSIMULACRA2 score that counts as matching by default.
 ///
@@ -25,42 +36,62 @@ pub fn default_snapshot_dir() -> PathBuf {
     ))
 }
 
-/// What the command line asked the example to do.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Parsed {
-    /// Run with these options.
-    Run(Args),
-    /// `--help` was given: print the usage text.
-    Help,
+/// The scene `--scene` starts from.
+fn default_scene() -> String {
+    scenes::default().id.to_owned()
 }
 
 /// Every option the example accepts.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(FromArgs, Debug, Clone, PartialEq)]
+#[argh(
+    help_triggers("-h", "--help"),
+    description = "a windowed example with selectable scenes and an egui overlay, \
+                   or a headless capture that verifies each scene against its snapshots"
+)]
 pub struct Args {
-    /// Render offscreen, read the frame back and exit, without opening a
-    /// window.
+    /// render offscreen, read the frame back and exit, without opening a window
+    #[argh(switch)]
     pub headless: bool,
-    /// The scene to run, or `"all"` for every scene in a headless run.
+
+    /// the scene to run, or `all` for every scene in a headless run
+    #[argh(option, default = "default_scene()")]
     pub scene: String,
-    /// Print the scene list and exit.
+
+    /// print the scene table and exit
+    #[argh(switch)]
     pub list_scenes: bool,
-    /// The render target size, in pixels; the scene's own size when `None`.
+
+    /// render target size in pixels, as `WxH`; the scene's own when omitted
+    #[argh(option, from_str_fn(parse_size))]
     pub size: Option<(u32, u32)>,
-    /// How many frames to draw before capturing; the scene's own count when
-    /// `None`.
+
+    /// frames to draw before capturing; the scene's own when omitted
+    #[argh(option, from_str_fn(parse_count))]
     pub frames: Option<u32>,
-    /// Write the captured frame to this path as a lossless WebP.
+
+    /// write the captured frame to this path as a lossless WebP
+    #[argh(option)]
     pub output: Option<PathBuf>,
-    /// Compare the captured frame against the snapshot at this path, instead
-    /// of the scene's own snapshots.
+
+    /// compare the captured frame against the snapshot at this path, instead of
+    /// the scene's own snapshots
+    #[argh(option)]
     pub snapshot: Option<PathBuf>,
-    /// Store snapshots instead of comparing against them.
+
+    /// store the snapshots being compared instead of comparing them
+    #[argh(switch)]
     pub update: bool,
-    /// Draw the scene without its UI, so the capture shows the 3D scene alone.
+
+    /// draw the scene without its UI overlay
+    #[argh(switch)]
     pub no_ui: bool,
-    /// The lowest SSIMULACRA2 score that counts as matching.
+
+    /// lowest SSIMULACRA2 score that counts as matching
+    #[argh(option, from_str_fn(parse_score), default = "DEFAULT_MIN_SCORE")]
     pub min_score: f64,
-    /// Where the scene's own snapshots resolve, by name.
+
+    /// where the scene's own snapshots resolve, by name
+    #[argh(option, default = "default_snapshot_dir()")]
     pub snapshot_dir: PathBuf,
 }
 
@@ -68,7 +99,7 @@ impl Default for Args {
     fn default() -> Self {
         Self {
             headless: false,
-            scene: scenes::default().id.to_owned(),
+            scene: default_scene(),
             list_scenes: false,
             size: None,
             frames: None,
@@ -82,40 +113,13 @@ impl Default for Args {
     }
 }
 
-/// The usage text `--help` prints.
-pub fn usage() -> String {
-    format!(
-        "\
-A windowed example with selectable scenes and an egui overlay — or, headlessly,
-an offscreen capture that verifies each scene against its stored snapshots.
-
-Usage: unlit3d_examples [OPTIONS]
-
-Options:
-      --headless          Render offscreen and exit without opening a window
-      --scene <ID>        The scene to run, or `all` for every scene [default: {}]
-      --list-scenes       Print the scene table and exit
-      --size <WxH>        Render target size in pixels [default: the scene's own]
-      --frames <N>        Frames to draw before capturing [default: the scene's own]
-      --output <PATH>     Write the captured frame to PATH as a WebP
-      --snapshot <PATH>   Compare the captured frame against the snapshot at PATH
-      --update            Store the snapshots being compared instead
-      --no-ui             Draw the scene without its UI overlay
-      --min-score <S>     Lowest matching SSIMULACRA2 score [default: {}]
-      --snapshot-dir <D>  Where the scene's own snapshots resolve [default: {}]
-  -h, --help              Print this help
-
-{}
-
-The headless options need the `snapshot` feature, which is what reads frames
-back and scores them:
-    cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skinned
-",
-        scenes::default().id,
-        DEFAULT_MIN_SCORE,
-        default_snapshot_dir().display(),
-        scenes::list_text(),
-    )
+/// What the command line asked the example to do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Parsed {
+    /// Run with these options.
+    Run(Args),
+    /// `--help` was given: print `String`, which argh generated from [`Args`].
+    Help(String),
 }
 
 /// Parse the arguments after the program name.
@@ -124,85 +128,79 @@ where
     I: IntoIterator,
     I::Item: Into<String>,
 {
-    let mut parsed = Args::default();
-    let mut args = args.into_iter().map(Into::into);
+    let args: Vec<String> = args.into_iter().map(Into::into).collect();
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    while let Some(arg) = args.next() {
-        // `--name=value` carries its value on the same argument.
-        let (name, inline) = match arg.split_once('=') {
-            Some((name, value)) if name.starts_with("--") => {
-                (name.to_owned(), Some(value.to_owned()))
-            }
-            _ => (arg, None),
-        };
-
-        match name.as_str() {
-            "-h" | "--help" => return Ok(Parsed::Help),
-            "--headless" => parsed.headless = true,
-            "--update" => parsed.update = true,
-            "--no-ui" => parsed.no_ui = true,
-            "--list-scenes" => parsed.list_scenes = true,
-            "--scene" => parsed.scene = value(&name, inline, &mut args)?,
-            "--size" => parsed.size = Some(parse_size(&value(&name, inline, &mut args)?)?),
-            "--frames" => parsed.frames = Some(parse_count(&value(&name, inline, &mut args)?)?),
-            "--min-score" => parsed.min_score = parse_score(&value(&name, inline, &mut args)?)?,
-            "--output" => parsed.output = Some(PathBuf::from(value(&name, inline, &mut args)?)),
-            "--snapshot" => parsed.snapshot = Some(PathBuf::from(value(&name, inline, &mut args)?)),
-            "--snapshot-dir" => {
-                parsed.snapshot_dir = PathBuf::from(value(&name, inline, &mut args)?);
-            }
-            other => return Err(format!("unknown option `{other}`")),
+    match Args::from_args(&[PROGRAM], &refs) {
+        Ok(parsed) => {
+            parsed.validate()?;
+            Ok(Parsed::Run(parsed))
         }
+        // argh reports `--help` as an early exit whose status is `Ok`, and a
+        // failed parse as one whose status is `Err`; only the message is
+        // useful either way.
+        Err(exit) if exit.status.is_ok() => Ok(Parsed::Help(usage())),
+        Err(exit) => Err(exit.output),
     }
-
-    // The capture options have no meaning in the windowed loop, so asking for
-    // one there is a mistake worth reporting rather than silently ignoring.
-    if !parsed.headless {
-        let capture_option = if parsed.output.is_some() {
-            Some("--output")
-        } else if parsed.snapshot.is_some() {
-            Some("--snapshot")
-        } else if parsed.update {
-            Some("--update")
-        } else {
-            None
-        };
-        if let Some(option) = capture_option {
-            return Err(format!("`{option}` needs `--headless`"));
-        }
-        if parsed.scene == "all" {
-            return Err("`--scene all` needs `--headless`".to_owned());
-        }
-    }
-
-    // A scene the example does not know is a typo worth reporting, whichever
-    // mode it was asked in. `all` is not a scene of its own.
-    if parsed.scene != "all" && scenes::by_id(&parsed.scene).is_none() {
-        return Err(format!(
-            "unknown scene `{}`\n{}",
-            parsed.scene,
-            scenes::list_text()
-        ));
-    }
-
-    // A raw capture against one path and a run over every scene cannot both
-    // say what to compare.
-    if parsed.scene == "all" && (parsed.snapshot.is_some() || parsed.output.is_some()) {
-        return Err("`--scene all` cannot be combined with `--output` or `--snapshot`".to_owned());
-    }
-
-    Ok(Parsed::Run(parsed))
 }
 
-/// The value of the option `name`, from `--name=value` or the next argument.
-fn value(
-    name: &str,
-    inline: Option<String>,
-    args: &mut impl Iterator<Item = String>,
-) -> Result<String, String> {
-    match inline {
-        Some(value) => Ok(value),
-        None => args.next().ok_or_else(|| format!("`{name}` needs a value")),
+/// The `--help` text: argh's option list followed by the scene table.
+///
+/// argh derives the option text from [`Args`] but knows nothing about the
+/// scenes, so the table is appended here rather than restated by hand.
+pub fn usage() -> String {
+    let options = Args::from_args(&[PROGRAM], &["--help"])
+        .expect_err("`--help` exits early")
+        .output;
+    format!("{options}\n{}", scenes::list_text())
+}
+
+impl Args {
+    /// The checks that span more than one option.
+    ///
+    /// argh has already parsed each option on its own; this is the part only
+    /// the combination can decide.
+    fn validate(&self) -> Result<(), String> {
+        // The capture options have no meaning in the windowed loop, so asking
+        // for one there is a mistake worth reporting rather than silently
+        // ignoring.
+        if !self.headless {
+            let capture_option = if self.output.is_some() {
+                Some("--output")
+            } else if self.snapshot.is_some() {
+                Some("--snapshot")
+            } else if self.update {
+                Some("--update")
+            } else {
+                None
+            };
+            if let Some(option) = capture_option {
+                return Err(format!("`{option}` needs `--headless`"));
+            }
+            if self.scene == "all" {
+                return Err("`--scene all` needs `--headless`".to_owned());
+            }
+        }
+
+        // A scene the example does not know is a typo worth reporting,
+        // whichever mode it was asked in. `all` is not a scene of its own.
+        if self.scene != "all" && scenes::by_id(&self.scene).is_none() {
+            return Err(format!(
+                "unknown scene `{}`\n{}",
+                self.scene,
+                scenes::list_text()
+            ));
+        }
+
+        // A raw capture against one path and a run over every scene cannot both
+        // say what to compare.
+        if self.scene == "all" && (self.snapshot.is_some() || self.output.is_some()) {
+            return Err(
+                "`--scene all` cannot be combined with `--output` or `--snapshot`".to_owned(),
+            );
+        }
+
+        Ok(())
     }
 }
 
@@ -238,16 +236,11 @@ fn parse_score(text: &str) -> Result<f64, String> {
 mod tests {
     use super::*;
 
-    /// Parse a shell-like argument list.
-    fn parse_args(args: &[&str]) -> Result<Parsed, String> {
-        parse(args.iter().copied())
-    }
-
     /// The options of a successful parse that was not `--help`.
     fn run(args: &[&str]) -> Result<Args, String> {
-        match parse_args(args)? {
+        match parse(args.iter().copied())? {
             Parsed::Run(parsed) => Ok(parsed),
-            Parsed::Help => panic!("expected options, got --help"),
+            Parsed::Help(_) => panic!("expected options, got --help"),
         }
     }
 
@@ -264,6 +257,7 @@ mod tests {
         assert!(!args.update);
         assert!(!args.no_ui);
         assert_eq!(args.min_score, DEFAULT_MIN_SCORE);
+        assert_eq!(args.snapshot_dir, default_snapshot_dir());
     }
 
     #[test]
@@ -300,16 +294,16 @@ mod tests {
     }
 
     #[test]
-    fn an_equals_sign_carries_the_value() {
-        let args = run(&["--headless", "--size=64x32", "--min-score=70"]).expect("`=` parses");
-        assert_eq!(args.size, Some((64, 32)));
-        assert_eq!(args.min_score, 70.0);
-    }
-
-    #[test]
-    fn help_short_circuits_the_rest_of_the_line() {
-        assert_eq!(parse_args(&["--headless", "--help"]), Ok(Parsed::Help));
-        assert_eq!(parse_args(&["-h"]), Ok(Parsed::Help));
+    fn help_is_reported_as_its_own_outcome() {
+        let help = match parse(["--help"]).expect("`--help` parses") {
+            Parsed::Help(text) => text,
+            Parsed::Run(_) => panic!("`--help` must not run"),
+        };
+        assert!(
+            help.contains("--headless"),
+            "help names the options: {help}"
+        );
+        assert!(parse(["-h"]).is_ok(), "`-h` is a help trigger too");
     }
 
     #[test]

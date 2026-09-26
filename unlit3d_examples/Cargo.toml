@@ -17,6 +17,7 @@ name = "unlit3d_examples"
 path = "src/main.rs"
 
 [dependencies]
+argh.workspace = true
 glam.workspace = true
 log.workspace = true
 unlit3d = { path = "../crates/unlit3d" }

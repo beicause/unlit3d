@@ -125,7 +125,10 @@ with code 2. `--scene all` runs every scene, which is what CI does.
 
 ### Options
 
-Every option is `--name value` or a bare flag; `--name=value` is accepted too.
+The options are declared and parsed with
+[`argh`](https://docs.rs/argh) — the same library `xtask` uses. Every option is
+`--name value` or a bare flag; the value must be the next argument, so
+`--name=value` is not accepted.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
