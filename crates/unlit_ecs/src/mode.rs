@@ -12,7 +12,6 @@
 
 use core::any::Any;
 use core::cell::{Ref, RefCell, RefMut};
-use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -137,16 +136,12 @@ pub trait AnyColumn: 'static {
 /// One component type's values inside one archetype.
 pub struct Column<M: Mode, T: 'static> {
     cells: Vec<M::Cell<T>>,
-    _marker: PhantomData<M>,
 }
 
 impl<M: Mode, T: 'static> Column<M, T> {
     /// An empty column.
     pub(crate) fn new() -> Self {
-        Self {
-            cells: Vec::new(),
-            _marker: PhantomData,
-        }
+        Self { cells: Vec::new() }
     }
 
     /// A function that builds an empty column of this component type.

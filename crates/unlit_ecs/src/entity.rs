@@ -114,43 +114,38 @@ impl Entities {
         meta.location = Some(location);
     }
 
-    /// Hand out a fresh handle and mark the index as reserved.
-    pub(crate) fn reserve(&mut self) -> Entity {
-        let index = match self.free.pop() {
-            Some(index) => index,
+    /// Reuse a freed index, or grow `meta` for a fresh one.
+    fn index(&mut self) -> usize {
+        match self.free.pop() {
+            Some(index) => index as usize,
             None => {
                 self.meta.push(Meta {
                     generation: 0,
                     location: None,
                     reserved: false,
                 });
-                (self.meta.len() - 1) as u32
+                self.meta.len() - 1
             }
-        };
-        self.meta[index as usize].reserved = true;
+        }
+    }
+
+    /// Hand out a fresh handle and mark the index as reserved.
+    pub(crate) fn reserve(&mut self) -> Entity {
+        let index = self.index();
+        self.meta[index].reserved = true;
         self.reserved += 1;
         Entity {
-            index,
-            generation: self.meta[index as usize].generation,
+            index: index as u32,
+            generation: self.meta[index].generation,
         }
     }
 
     /// Hand out a handle for a new entity, reusing a free index when possible.
     pub(crate) fn alloc(&mut self) -> Entity {
-        let index = match self.free.pop() {
-            Some(index) => index,
-            None => {
-                self.meta.push(Meta {
-                    generation: 0,
-                    location: None,
-                    reserved: false,
-                });
-                (self.meta.len() - 1) as u32
-            }
-        };
+        let index = self.index();
         Entity {
-            index,
-            generation: self.meta[index as usize].generation,
+            index: index as u32,
+            generation: self.meta[index].generation,
         }
     }
 
