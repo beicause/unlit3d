@@ -39,9 +39,9 @@ crate 的内部实现。
 
 这是工作区中唯一带二进制的 crate，也是唯一一个把所有其他 crate 组合起来的消费者：它用
 [`unlit3d`](../crates/unlit3d/README.zh-CN.md) 处理帧循环、ECS 组件、输入与 UI，用
-[`wgpu_unlit_render`](../crates/wgpu_unlit_render/README.zh-CN.md) 获取管线选项与
+[`unlit_wgpu`](../crates/unlit_wgpu/README.zh-CN.md) 获取管线选项与
 资源图。它的无头路径在 `snapshot` feature 之后借用
-[`wgpu_unlit_test_util`](../crates/wgpu_unlit_test_util/README.zh-CN.md) 做帧回读与
+[`unlit_wgpu_test_util`](../crates/unlit_wgpu_test_util/README.zh-CN.md) 做帧回读与
 评分。
 
 它既是库也是二进制，因为 Android 既不启动进程也不提供命令行：activity 加载动态库并

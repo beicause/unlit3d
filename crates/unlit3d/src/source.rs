@@ -14,14 +14,14 @@
 //! [`RenderContext`] the sources are handed; that is what lets a source fetch
 //! the graph while the driver only holds a shared borrow of the world.
 //!
-//! [`Scene`]: wgpu_unlit_render::scene::Scene
+//! [`Scene`]: unlit_wgpu::scene::Scene
 
 use core::any::Any;
 
 use unlit_ecs::{Entity, LocalWorld};
-use wgpu_unlit_render::resources::ResourceGraph;
-use wgpu_unlit_render::scene::Scene;
-use wgpu_unlit_render::specialize::SurfaceKey;
+use unlit_wgpu::resources::ResourceGraph;
+use unlit_wgpu::scene::Scene;
+use unlit_wgpu::specialize::SurfaceKey;
 
 /// Where a source records, relative to every other source.
 ///
@@ -1102,7 +1102,7 @@ mod tests {
 #[cfg(test)]
 mod release_tests {
     use super::*;
-    use wgpu_unlit_render::resources::{Resource as GraphResource, ResourceId};
+    use unlit_wgpu::resources::{Resource as GraphResource, ResourceId};
 
     /// A source that registers a node, so releasing has something to remove.
     ///

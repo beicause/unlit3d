@@ -2,7 +2,7 @@
 name = "unlit3d"
 version = "0.1.0-dev.1"
 edition.workspace = true
-description = "The high-level WebGPU rendering API over wgpu_unlit_render and unlit_ecs: ECS components, frame sources, input, UI and winit presentation."
+description = "The high-level WebGPU rendering API over unlit_wgpu and unlit_ecs: ECS components, frame sources, input, UI and winit presentation."
 repository.workspace = true
 license.workspace = true
 keywords = ["ecs", "gamedev", "rendering", "webgpu", "wgpu"]
@@ -18,25 +18,25 @@ log.workspace = true
 petgraph.workspace = true
 smallvec.workspace = true
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.1" }
+unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
 web-time = { workspace = true, optional = true }
 wesl.workspace = true
 wesl-core.workspace = true
 wgpu.workspace = true
-wgpu_unlit_render = { path = "../wgpu_unlit_render", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
 winit = { workspace = true, optional = true }
 zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
 [dev-dependencies]
+unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot"] }
 wgpu = { workspace = true, features = ["noop"] }
-wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
 
 [features]
 default = ["ui", "winit"]
 ## The [`ui`](crate::ui) module: an egui overlay drawn as a frame source, and
-## the [`wgpu_unlit_render`] egui backend it draws with. The UI's frame clock
+## the [`unlit_wgpu`] egui backend it draws with. The UI's frame clock
 ## is the one place that needs a browser-capable `Instant`.
-ui = ["dep:egui", "dep:web-time", "wgpu_unlit_render/egui"]
+ui = ["dep:egui", "dep:web-time", "unlit_wgpu/egui"]
 ## Integration with [winit](https://docs.rs/winit): the [`winit`](crate::winit)
 ## module, which presents a [`Renderer`](crate::Renderer) into a window's swap
 ## chain.

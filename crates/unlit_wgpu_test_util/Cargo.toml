@@ -1,5 +1,5 @@
 [package]
-name = "wgpu_unlit_test_util"
+name = "unlit_wgpu_test_util"
 version = "0.1.0-dev.1"
 edition.workspace = true
 description = "The headless GPU test harness for the unlit3d workspace: device setup, buffer and texture readback, SSIMULACRA2 snapshot assertions."

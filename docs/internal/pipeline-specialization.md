@@ -18,7 +18,7 @@
 
 ## 分层：通用设施与使用者
 
-特化/缓存是**通用设施**，与 unlit 无关，因此放在 `wgpu_unlit_render` 的
+特化/缓存是**通用设施**，与 unlit 无关，因此放在 `unlit_wgpu` 的
 `specialize` 模块，且**不依赖 `unlit` feature**。它不关心"什么是管线"，
 只要求一个类型能：
 

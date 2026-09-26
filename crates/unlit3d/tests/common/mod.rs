@@ -3,16 +3,16 @@
 //! Re-exports general GPU test helpers and adds crate-specific helpers
 //! tailored to the `unlit3d` ECS-based rendering API.
 
-pub use wgpu_unlit_test_util::{
+pub use unlit_wgpu_test_util::{
     Ctx, Frame, assert_image_snapshot, count_pixels_off_background, read_texture_bytes, texel_bytes,
 };
 
 use core::ops::DerefMut;
 use unlit_ecs::{Entity, LocalWorld};
+use unlit_wgpu::resources::{Resource as GraphResource, ResourceGraph, ResourceId};
 use unlit3d::prelude::*;
-use wgpu_unlit_render::resources::{Resource as GraphResource, ResourceGraph, ResourceId};
 
-/// Test constants matching what `wgpu_unlit_render`'s own tests use.
+/// Test constants matching what `unlit_wgpu`'s own tests use.
 pub const WIDTH: u32 = 256;
 pub const HEIGHT: u32 = 192;
 pub const CLEAR: [f64; 3] = [0.05, 0.05, 0.08];
@@ -307,7 +307,7 @@ impl TestGpu {
         samples: u32,
         with_depth: bool,
     ) -> wgpu::Texture {
-        use wgpu_unlit_render::render_attachments::create_render_target;
+        use unlit_wgpu::render_attachments::create_render_target;
         let device = world
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
@@ -321,7 +321,7 @@ impl TestGpu {
                         view: ft
                             .depth
                             .create_view(&wgpu::TextureViewDescriptor::default()),
-                        format: wgpu_unlit_render::render_attachments::default_depth_stencil_format(
+                        format: unlit_wgpu::render_attachments::default_depth_stencil_format(
                             &device,
                         ),
                     },
@@ -376,10 +376,10 @@ impl TestGpu {
 
 /// Unlit options for the ECS tests: vertex colour + instance, no texture,
 /// no MSAA, with reverse-z depth.
-fn unlit_options(device: &wgpu::Device) -> wgpu_unlit_render::pipeline::UnlitOptions {
-    use wgpu_unlit_render::pipeline::UnlitFlags;
-    use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
-    wgpu_unlit_render::pipeline::UnlitOptions {
+fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
+    use unlit_wgpu::pipeline::UnlitFlags;
+    use unlit_wgpu::render_attachments::default_depth_stencil_format;
+    unlit_wgpu::pipeline::UnlitOptions {
         flags: UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
@@ -417,8 +417,8 @@ pub fn deformation_options(
     device: &wgpu::Device,
     joints: bool,
     morphs: bool,
-) -> wgpu_unlit_render::pipeline::UnlitOptions {
-    use wgpu_unlit_render::pipeline::UnlitFlags;
+) -> unlit_wgpu::pipeline::UnlitOptions {
+    use unlit_wgpu::pipeline::UnlitFlags;
     let mut options = unlit_options(device);
     if joints {
         options.flags |= UnlitFlags::VERTEX_JOINTS;
@@ -537,7 +537,7 @@ pub fn cube() -> RawMesh {
 
     // The stream stores colors as `Unorm8x4`, so quantize once here rather
     // than carrying a float copy through the fixture.
-    let colors = wgpu_unlit_render::mesh::quantize_colors(&colors).collect();
+    let colors = unlit_wgpu::mesh::quantize_colors(&colors).collect();
     (positions, uvs, colors, indices)
 }
 

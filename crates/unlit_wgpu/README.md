@@ -1,6 +1,6 @@
 English | [简体中文](README.zh-CN.md)
 
-# wgpu_unlit_render
+# unlit_wgpu
 
 A compact, opinionated renderer for **unlit** draws on WebGPU. It draws a whole
 scene — opaque and transparent instances alike — in a single render pass into
@@ -18,11 +18,11 @@ no dependency on the ECS layer.
 
 ## Role in the workspace
 
-`wgpu_unlit_render` is the foundation of the workspace and depends on nothing
+`unlit_wgpu` is the foundation of the workspace and depends on nothing
 else in it. The ECS-integrated API is
 [`unlit3d`](../unlit3d/README.md), which builds components, frame sources and
 winit presentation on top of this crate. The GPU test harness the tests draw on
-is [`wgpu_unlit_test_util`](../wgpu_unlit_test_util/README.md).
+is [`unlit_wgpu_test_util`](../unlit_wgpu_test_util/README.md).
 
 ## Features
 
@@ -72,9 +72,9 @@ The crate draws by recording a `Scene`; the built-in pipeline is one way to
 fill one. Abbreviated, with the device, bind groups and buffers already built:
 
 ```rust,no_run
-use wgpu_unlit_render::pipeline::{GLOBAL_GROUP, POSITION_SLOT, UnlitOptions, UnlitPipeline};
-use wgpu_unlit_render::render_attachments::{RenderAttachments, color_clear, depth_clear, stencil_clear};
-use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
+use unlit_wgpu::pipeline::{GLOBAL_GROUP, POSITION_SLOT, UnlitOptions, UnlitPipeline};
+use unlit_wgpu::render_attachments::{RenderAttachments, color_clear, depth_clear, stencil_clear};
+use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 
 // A pipeline is only valid for the target its options describe.
 let options = UnlitOptions::standard(&device);
@@ -110,7 +110,7 @@ pipeline uses.
 
 ```text
 cargo xtask test     # the whole workspace, through nextest plus the doctests
-cargo nextest run -p wgpu_unlit_render   # just this crate
+cargo nextest run -p unlit_wgpu   # just this crate
 ```
 
 The GPU integration tests render meshes into offscreen textures, read them
@@ -125,7 +125,7 @@ review the image diff before committing it.
 
 - [`docs/DESIGN.md`](../../docs/DESIGN.md) — the design rationale and architecture
   (in Chinese).
-- Crate-level docs: `cargo doc -p wgpu_unlit_render --open`.
+- Crate-level docs: `cargo doc -p unlit_wgpu --open`.
 
 ## License
 

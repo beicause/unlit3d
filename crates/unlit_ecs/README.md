@@ -18,7 +18,7 @@ workspace, so it can be used on its own.
 
 `unlit_ecs` is the world the high-level layer is written against; the ECS-integrated
 rendering API is [`unlit3d`](../unlit3d/README.md), and the test harness the GPU
-tests use is [`wgpu_unlit_test_util`](../wgpu_unlit_test_util/README.md). This
+tests use is [`unlit_wgpu_test_util`](../unlit_wgpu_test_util/README.md). This
 crate knows nothing about rendering.
 
 ## Model

@@ -1,6 +1,6 @@
 [English](README.md) | 简体中文
 
-# wgpu_unlit_test_util
+# unlit_wgpu_test_util
 
 工作区中渲染相关 crate 共用的 GPU 测试骨架。每个测试都通过真实的 `wgpu::Device`
 驱动 wgpu，并回读缓冲或纹理数据来做断言；本 crate 负责初始化该设备、回读数据，以及
@@ -13,7 +13,7 @@
 
 ## 在工作区中的位置
 
-`wgpu_unlit_test_util` 是 [`wgpu_unlit_render`](../wgpu_unlit_render/README.zh-CN.md)
+`unlit_wgpu_test_util` 是 [`unlit_wgpu`](../unlit_wgpu/README.zh-CN.md)
 与 [`unlit3d`](../unlit3d/README.zh-CN.md) 的 **dev-dependency**，也是
 [`unlit3d_examples`](../../unlit3d_examples/README.zh-CN.md) 在 `snapshot` feature 之后
 的可选依赖。实际发布的渲染路径不依赖它。
@@ -59,22 +59,22 @@
 确有意改动渲染结果后，重新生成快照：
 
 ```text
-SNAPSHOT_UPDATE=1 cargo nextest run -p wgpu_unlit_render
+SNAPSHOT_UPDATE=1 cargo nextest run -p unlit_wgpu
 git -C unlit3d_asset_files diff   # 提交前先审查
 ```
 
 ## 用法
 
 ```rust
-use wgpu_unlit_test_util::{Ctx, read_texture_bytes};
+use unlit_wgpu_test_util::{Ctx, read_texture_bytes};
 
 let ctx = Ctx::headless();
-let target = wgpu_unlit_test_util::ColorTarget::new(&ctx.device, "example", 64, 64);
+let target = unlit_wgpu_test_util::ColorTarget::new(&ctx.device, "example", 64, 64);
 // ... render into target.view ...
 let bytes = read_texture_bytes(&ctx, &target.texture, 64, 64, 4);
 
 #[cfg(feature = "snapshot")]
-wgpu_unlit_test_util::assert_image_snapshot("example.webp", &bytes, 64, 64);
+unlit_wgpu_test_util::assert_image_snapshot("example.webp", &bytes, 64, 64);
 ```
 
 ## 测试

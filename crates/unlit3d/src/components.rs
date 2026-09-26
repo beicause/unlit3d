@@ -6,12 +6,12 @@
 
 use arrayvec::ArrayVec;
 use unlit_ecs::Entity;
-use wgpu_unlit_render::mesh::JointMatrix;
-use wgpu_unlit_render::offset_allocator::Allocation;
-use wgpu_unlit_render::render_attachments::{color_clear, depth_clear, stencil_clear};
-use wgpu_unlit_render::resources::ResourceId;
-use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
-use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
+use unlit_wgpu::mesh::JointMatrix;
+use unlit_wgpu::offset_allocator::Allocation;
+use unlit_wgpu::render_attachments::{color_clear, depth_clear, stencil_clear};
+use unlit_wgpu::resources::ResourceId;
+use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
+use unlit_wgpu::specialize::VertexBufferLayoutDesc;
 
 use crate::bounds::Aabb;
 use crate::mesh_source::UnlitPipelineKey;
@@ -195,7 +195,7 @@ pub struct GpuMesh {
     pub metadata_index: u32,
 
     /// Resource id of the mesh bind group, bound at
-    /// [`MESH_GROUP`](wgpu_unlit_render::pipeline::MESH_GROUP).
+    /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP).
     ///
     /// `None` when the mesh was uploaded without one.
     pub bind_group_id: Option<ResourceId>,
@@ -367,7 +367,7 @@ pub type UnlitPipeline = GpuPipeline<UnlitPipelineKey>;
 pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).
     ///
-    /// [`MATERIAL_GROUP`]: wgpu_unlit_render::pipeline::MATERIAL_GROUP
+    /// [`MATERIAL_GROUP`]: unlit_wgpu::pipeline::MATERIAL_GROUP
     pub bind_group_id: ResourceId,
 }
 

@@ -66,8 +66,8 @@ use unlit3d::winit::WindowSurface;
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
+use unlit_wgpu::resources::ResourceGraph;
 use web_time::Instant;
-use wgpu_unlit_render::resources::ResourceGraph;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
@@ -191,7 +191,7 @@ pub fn run() -> ExitCode {
 /// unless a raw `--snapshot <PATH>` capture was asked for instead.
 #[cfg(feature = "snapshot")]
 fn headless(args: Args) -> ExitCode {
-    use wgpu_unlit_test_util::Ctx;
+    use unlit_wgpu_test_util::Ctx;
 
     let ctx = Ctx::headless();
 
@@ -233,11 +233,11 @@ fn headless(_args: Args) -> ExitCode {
 /// is missing, or a frame that could not be written.
 #[cfg(feature = "snapshot")]
 fn run_headless_scene(
-    ctx: &wgpu_unlit_test_util::Ctx,
+    ctx: &unlit_wgpu_test_util::Ctx,
     def: &'static scenes::SceneDef,
     args: &Args,
 ) -> bool {
-    use wgpu_unlit_test_util::{read_texture_bytes, store_frame_webp};
+    use unlit_wgpu_test_util::{read_texture_bytes, store_frame_webp};
 
     let size = args.size.unwrap_or(def.size);
     let frames = args.frames.unwrap_or(def.frames);
@@ -345,7 +345,7 @@ fn compare_frame(
     update: bool,
     min_score: f64,
 ) -> bool {
-    use wgpu_unlit_test_util::{score_frame_webp, store_frame_webp};
+    use unlit_wgpu_test_util::{score_frame_webp, store_frame_webp};
 
     let label = path.display();
     if update {
@@ -405,8 +405,8 @@ fn bind_offscreen_target(
     samples: u32,
     with_depth: bool,
 ) -> wgpu::Texture {
-    use wgpu_unlit_render::render_attachments::create_render_target;
-    use wgpu_unlit_render::resources::Resource as GraphResource;
+    use unlit_wgpu::render_attachments::create_render_target;
+    use unlit_wgpu::resources::Resource as GraphResource;
 
     let target = create_render_target(device, HEADLESS_FORMAT, size.0, size.1, samples);
     let default_view =

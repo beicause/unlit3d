@@ -1,8 +1,8 @@
-# wgpu_unlit_render 和 unlit3d
+# unlit_wgpu 和 unlit3d
 
-`wgpu_unlit_render`是基于`wgpu`的、紧凑的、有主见的、内置无光照（unlit）管线的3D渲染器。
+`unlit_wgpu`是基于`wgpu`的、紧凑的、有主见的、内置无光照（unlit）管线的3D渲染器。
 
-`unlit3d`是基于`wgpu_unlit_render`和`unlit_ecs`的、完整的、易用的、更高层的渲染API。
+`unlit3d`是基于`unlit_wgpu`和`unlit_ecs`的、完整的、易用的、更高层的渲染API。
 注意：`unlit3d`依然紧密拥抱`wgpu`，并直接使用底层`wgpu`资源。与主流的面向大众用户的游戏引擎不同，
 `unlit3d`主要面向拥有图形渲染知识的开发者和编程智能体，不做高级别的封装，你需要有WebGPU知识才能较好地运用它。
 
@@ -32,7 +32,7 @@
 - 默认管线的顶点缓冲可以有3个：一个用于位置+可选骨骼索引+骨骼权重，一个用于UV+顶点色，一个用于逐实例步进的属性（每实例变换矩阵、基础色，以及姿势基址，因此材质绑定无需基础色）。
 - 自动实例化：解析后状态完全相同的连续条目（同管线、同绑定组、同顶点/索引缓冲与几何段）折叠为一次实例化draw，实例范围按可见顺序覆盖整段。逐实例数据（变换、基础色、姿势基址）都在实例流中，所以合并不改变任何实例读到的数据；不透明实体顺序无关紧要，总是合并；透明（z-sorted）实体的混合顺序即绘制顺序，保持逐条draw。
 - 渲染何时结束是确定性的，便于快照测试。
-- `wgpu_unlit_render`分层：核心不依赖任何内置实现；内置的unlit管线由`unlit` feature（默认开启）提供，基于它构建的`egui`后端由`egui` feature提供；关闭`unlit`时WESL包也不再包含unlit着色器模块。
+- `unlit_wgpu`分层：核心不依赖任何内置实现；内置的unlit管线由`unlit` feature（默认开启）提供，基于它构建的`egui`后端由`egui` feature提供；关闭`unlit`时WESL包也不再包含unlit着色器模块。
 - `unlit3d`同样分层：`egui`与其UI模块由feature门控，不用UI的构建不必编译`egui`；输入与帧源不依赖`egui`，可独立使用。
 - UI与3D在同一帧、同一个render pass内绘制，UI叠在mesh之上。
 
@@ -119,7 +119,7 @@ for pipeline in scene.pipelines {
 
 ### UI：egui作为普通帧源
 
-UI不新建平行体系，而是复用资源图、`Scene`、内置unlit管线、staging与帧循环。`wgpu_unlit_render::ui`提供不依赖ECS、不依赖winit的纯后端；`unlit3d`在其上提供UI帧源。
+UI不新建平行体系，而是复用资源图、`Scene`、内置unlit管线、staging与帧循环。`unlit_wgpu::ui`提供不依赖ECS、不依赖winit的纯后端；`unlit3d`在其上提供UI帧源。
 
 **界面本身是行为组件`UiPanel`，不是源上的闭包字段**。UI源只负责逐一驱动世界里所有`UiPanel`：
 
@@ -176,7 +176,7 @@ UI对输入的**捕获**（是否想独占指针/键盘）按egui的语义需要
 
 ### 高层API
 
-高层API在`unlit3d`包中实现，并且依赖于`wgpu_unlit_render`。
+高层API在`unlit3d`包中实现，并且依赖于`unlit_wgpu`。
 
 基本需求：
 - 拓展性和移植性。要将自身视作游戏引擎一部分，考虑架构、拓展性，便于与其他功能如物理、音频等集成。
@@ -220,7 +220,7 @@ UI对输入的**捕获**（是否想独占指针/键盘）按egui的语义需要
 ## 实施计划
 
 - [x] `wgpu`资源管理、基本的pipeline和mesh绘制API、unlit管线。
-- [x] 支持`egui`（`wgpu_unlit_render::ui`的纯后端）。
+- [x] 支持`egui`（`unlit_wgpu::ui`的纯后端）。
 - [x] 初步实现`unlit_ecs`。
 - [x] 设计并实施高层渲染API。
 - [x] 帧源重构：`Scene`自持句柄、`FrameSource`机制、内置mesh渲染搬进`MeshSource`。

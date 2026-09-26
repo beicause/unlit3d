@@ -2,7 +2,7 @@
 //!
 //! A [`Renderer`] draws nothing itself. It owns the frame's render target and
 //! drives the frame's [`FrameSource`](crate::source::FrameSource)s: every source builds its own
-//! [`Scene`](wgpu_unlit_render::scene::Scene) from the world, then the driver records those scenes in
+//! [`Scene`](unlit_wgpu::scene::Scene) from the world, then the driver records those scenes in
 //! [`FrameOrder`](crate::source::FrameOrder) into one pass, opened over the target's attachments. That is
 //! the whole of it — the built-in mesh rendering is one source
 //! ([`MeshSource`](crate::mesh_source::MeshSource)) and has no more privilege
@@ -15,9 +15,9 @@
 //! context's entity ids so it can reach the device and queue every frame.
 
 use unlit_ecs::LocalWorld;
-use wgpu_unlit_render::render_attachments::RenderAttachments;
-use wgpu_unlit_render::resources::{ResourceGraph, ResourceId};
-use wgpu_unlit_render::specialize::SurfaceKey;
+use unlit_wgpu::render_attachments::RenderAttachments;
+use unlit_wgpu::resources::{ResourceGraph, ResourceId};
+use unlit_wgpu::specialize::SurfaceKey;
 
 use crate::components::RenderLoadOps;
 use crate::source::{
@@ -36,7 +36,7 @@ use crate::source::{
 ///
 /// ```no_run
 /// # use unlit3d::prelude::*;
-/// # use wgpu_unlit_render::resources::ResourceGraph;
+/// # use unlit_wgpu::resources::ResourceGraph;
 /// # let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 /// let mut world = LocalWorld::new();
 /// // The frame's GPU state, the built-in mesh source and the driver itself.

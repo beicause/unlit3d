@@ -15,7 +15,7 @@
 //! [PipelineKey], the entity's request for one family's variant: which
 //! concrete pipeline an entity needs depends on the frame's render target and
 //! on the mesh's vertex layout, neither of which is known when the entity is
-//! spawned. A *family* closes that gap. It pairs a [Variants](wgpu_unlit_render::specialize::Variants) cache with a
+//! spawned. A *family* closes that gap. It pairs a [Variants](unlit_wgpu::specialize::Variants) cache with a
 //! [Specializer] and a [PipelineFactory], queries the world for the entities
 //! that carry its key type, and resolves each to a concrete pipeline. The
 //! renderer registers every family under the [TypeId](core::any::TypeId) of
@@ -26,7 +26,7 @@
 //! The entity, not the renderer, chooses its base descriptor: a
 //! [PipelineKey] reports the blueprint ([PipelineKey::base_descriptor]) its
 //! variants start from, so one family can draw entities whose base options
-//! differ. The blueprint is supplied to [Variants::specialize](wgpu_unlit_render::specialize::Variants::specialize) lazily and only
+//! differ. The blueprint is supplied to [Variants::specialize](unlit_wgpu::specialize::Variants::specialize) lazily and only
 //! on a cache miss.
 //!
 //! Geometry is described by [crate::mesh::MeshDesc], which lists vertex buffers
@@ -39,9 +39,9 @@ use core::hash::Hash;
 use core::marker::PhantomData;
 use std::sync::Arc;
 
-use wgpu_unlit_render::resources::ResourceId;
-use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
-use wgpu_unlit_render::specialize::{
+use unlit_wgpu::resources::ResourceId;
+use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
+use unlit_wgpu::specialize::{
     CachedRenderPipeline, Specializable, Specializer, SpecializerKey, SurfaceKey,
     VertexBufferLayoutDesc,
 };
@@ -91,7 +91,7 @@ pub struct PipelineDesc {
     pub pipeline: wgpu::RenderPipeline,
 
     /// The bind group bound at
-    /// [GLOBAL_GROUP](wgpu_unlit_render::pipeline::GLOBAL_GROUP), together
+    /// [GLOBAL_GROUP](unlit_wgpu::pipeline::GLOBAL_GROUP), together
     /// with how to rebuild it when the source's buffers change.
     ///
     /// None for a pipeline that binds nothing at that index -- a shader
@@ -99,13 +99,13 @@ pub struct PipelineDesc {
     pub global: Option<GlobalBinding>,
 
     /// The layout a material bind group must be built from, bound at
-    /// [MATERIAL_GROUP](wgpu_unlit_render::pipeline::MATERIAL_GROUP).
+    /// [MATERIAL_GROUP](unlit_wgpu::pipeline::MATERIAL_GROUP).
     ///
     /// None for a pipeline whose draws bind no material group.
     pub material_layout: Option<wgpu::BindGroupLayout>,
 
     /// The layout a mesh bind group must be built from, bound at
-    /// [MESH_GROUP](wgpu_unlit_render::pipeline::MESH_GROUP).
+    /// [MESH_GROUP](unlit_wgpu::pipeline::MESH_GROUP).
     ///
     /// None for a pipeline whose draws bind no per-mesh group.
     pub mesh_layout: Option<wgpu::BindGroupLayout>,
@@ -178,7 +178,7 @@ pub trait PipelineKey: Clone + Hash + Eq + 'static {
 /// the entity's own [PipelineKey].
 ///
 /// The mesh layout uses the owned [VertexBufferLayoutDesc] from
-/// [wgpu_unlit_render::specialize] (an owned mirror of a wgpu vertex buffer
+/// [unlit_wgpu::specialize] (an owned mirror of a wgpu vertex buffer
 /// layout), because a borrowed vertex layout cannot be stored in a key.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DrawKey {
@@ -284,7 +284,7 @@ impl<K: Clone + Hash + Eq + 'static, T: Specializable> Specializer<T> for Trivia
 /// [CachedRenderPipeline] with no global, material or mesh group.
 ///
 /// Paired with [TrivialSpecializer] it is the shortest route from a
-/// [RenderPipelineDesc](wgpu_unlit_render::specialize::RenderPipelineDesc) to a
+/// [RenderPipelineDesc](unlit_wgpu::specialize::RenderPipelineDesc) to a
 /// registered family, for a caller whose pipeline reads only its vertex
 /// buffers.
 #[derive(Clone, Copy, Debug, Default)]

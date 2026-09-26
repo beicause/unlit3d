@@ -16,8 +16,8 @@
 //! round and fail the snapshot rather than happening to look right.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at, unlit_options};
+use unlit_wgpu::pipeline::UnlitFlags;
 use unlit3d::prelude::*;
-use wgpu_unlit_render::pipeline::UnlitFlags;
 
 /// How far in front of the panes the camera sits.
 ///

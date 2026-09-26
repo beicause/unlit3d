@@ -20,7 +20,7 @@
 //! #     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 //! #     mapped_at_creation: false,
 //! # });
-//! use wgpu_unlit_render::staging::StagingBuffer;
+//! use unlit_wgpu::staging::StagingBuffer;
 //!
 //! let mut staging = StagingBuffer::new();
 //! let mut encoder = device.create_command_encoder(&Default::default());
@@ -63,7 +63,7 @@ impl Slot {
     /// Allocate a buffer of `size` bytes, mapped and ready to be written.
     fn new(device: &wgpu::Device, size: u64) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("wgpu_unlit_render::staging"),
+            label: Some("unlit_wgpu::staging"),
             size,
             usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: true,

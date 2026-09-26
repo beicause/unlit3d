@@ -1,6 +1,6 @@
 [English](README.md) | 简体中文
 
-# wgpu_unlit_render
+# unlit_wgpu
 
 面向 WebGPU 的、紧凑且有主见的**无光照（unlit）**绘制渲染器。它在一个 render pass
 内把整个场景——不透明与透明实例一视同仁——绘制到调用者指定的一个
@@ -15,10 +15,10 @@
 
 ## 在工作区中的位置
 
-`wgpu_unlit_render` 是工作区的基础，不依赖工作区中的任何其他 crate。与 ECS 集成的
+`unlit_wgpu` 是工作区的基础，不依赖工作区中的任何其他 crate。与 ECS 集成的
 高层 API 是 [`unlit3d`](../unlit3d/README.zh-CN.md)，它在
 本 crate 之上提供组件、帧源与 winit 呈现。测试所用的 GPU 测试骨架是
-[`wgpu_unlit_test_util`](../wgpu_unlit_test_util/README.zh-CN.md)。
+[`unlit_wgpu_test_util`](../unlit_wgpu_test_util/README.zh-CN.md)。
 
 ## Feature
 
@@ -62,9 +62,9 @@
 device、绑定组与缓冲的创建，假设它们已就绪：
 
 ```rust,no_run
-use wgpu_unlit_render::pipeline::{GLOBAL_GROUP, POSITION_SLOT, UnlitOptions, UnlitPipeline};
-use wgpu_unlit_render::render_attachments::{RenderAttachments, color_clear, depth_clear, stencil_clear};
-use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
+use unlit_wgpu::pipeline::{GLOBAL_GROUP, POSITION_SLOT, UnlitOptions, UnlitPipeline};
+use unlit_wgpu::render_attachments::{RenderAttachments, color_clear, depth_clear, stencil_clear};
+use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 
 // A pipeline is only valid for the target its options describe.
 let options = UnlitOptions::standard(&device);
@@ -97,7 +97,7 @@ queue.submit([encoder.finish()]);
 
 ```text
 cargo xtask test     # 整个工作区：nextest 加 doctest
-cargo nextest run -p wgpu_unlit_render   # 只跑本 crate
+cargo nextest run -p unlit_wgpu   # 只跑本 crate
 ```
 
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用
@@ -109,7 +109,7 @@ submodule 的软链接；用 `git submodule update --init` 拉取。若确有意
 ## 文档
 
 - [`docs/DESIGN.md`](../../docs/DESIGN.md) —— 设计取舍与架构。
-- Crate 级文档：`cargo doc -p wgpu_unlit_render --open`。
+- Crate 级文档：`cargo doc -p unlit_wgpu --open`。
 
 ## 许可证
 

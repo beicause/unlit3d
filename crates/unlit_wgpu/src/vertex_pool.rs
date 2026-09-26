@@ -32,8 +32,8 @@
 //! # Example
 //!
 //! ```
-//! use wgpu_unlit_render::specialize::{VertexAttributes, VertexBufferLayoutDesc};
-//! use wgpu_unlit_render::vertex_pool::VertexStreamPool;
+//! use unlit_wgpu::specialize::{VertexAttributes, VertexBufferLayoutDesc};
+//! use unlit_wgpu::vertex_pool::VertexStreamPool;
 //!
 //! let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 //! let layout = VertexBufferLayoutDesc {

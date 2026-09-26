@@ -12,12 +12,10 @@ use core::marker::PhantomData;
 
 use arrayvec::ArrayVec;
 use unlit_ecs::{LocalWorld, TypeIdHashMap};
-use wgpu_unlit_render::specialize::{Specializable, Specializer, SurfaceKey, Variants};
+use unlit_wgpu::specialize::{Specializable, Specializer, SurfaceKey, Variants};
 
-use wgpu_unlit_render::pipeline::{GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP};
-use wgpu_unlit_render::scene::{
-    DrawEntry, DrawRange, MAX_VERTEX_BUFFERS, Scene, VertexBufferBinding,
-};
+use unlit_wgpu::pipeline::{GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP};
+use unlit_wgpu::scene::{DrawEntry, DrawRange, MAX_VERTEX_BUFFERS, Scene, VertexBufferBinding};
 
 use crate::bounds::FrustumPlanes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, GpuPipeline, ZSortedDrawing};

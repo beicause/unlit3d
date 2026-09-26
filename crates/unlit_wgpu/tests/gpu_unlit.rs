@@ -13,21 +13,21 @@
 mod common;
 
 use common::*;
-use wgpu_unlit_render::globals::{Globals, View};
-use wgpu_unlit_render::mesh::{
+use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::mesh::{
     MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions, quantize_colors,
 };
-use wgpu_unlit_render::pipeline::{
+use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
     apply_surface,
 };
-use wgpu_unlit_render::render_attachments::{
+use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
 };
-use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
-use wgpu_unlit_render::specialize::SurfaceKey;
+use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
+use unlit_wgpu::specialize::SurfaceKey;
 use zerocopy::IntoBytes;
 
 const WIDTH: u32 = 256;
@@ -59,7 +59,7 @@ struct GpuMesh {
     /// position stream.
     positions: Option<wgpu::Buffer>,
     /// Slot 1: `Snorm16x2` UVs and/or `Unorm8x4` colors, interleaved by the
-    /// variant's [`wgpu_unlit_render::mesh::MeshVertexStreamWriter`]; `None` when the
+    /// variant's [`unlit_wgpu::mesh::MeshVertexStreamWriter`]; `None` when the
     /// variant declares no channel.
     uv_color: Option<wgpu::Buffer>,
     /// Index buffer and its index count, when the mesh is drawn indexed.
@@ -883,7 +883,7 @@ fn uniform(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
 
 #[test]
 fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
-    use wgpu_unlit_render::resources::{Resource, ResourceGraph};
+    use unlit_wgpu::resources::{Resource, ResourceGraph};
 
     let ctx = Ctx::headless();
     let mut graph = ResourceGraph::new();

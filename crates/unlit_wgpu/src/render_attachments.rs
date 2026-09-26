@@ -18,10 +18,10 @@
 //! handles they hand out.
 //!
 //! ```
-//! # use wgpu_unlit_render::render_attachments::{
+//! # use unlit_wgpu::render_attachments::{
 //! #     RenderAttachments, color_clear, depth_clear, stencil_clear,
 //! # };
-//! # use wgpu_unlit_render::scene::Scene;
+//! # use unlit_wgpu::scene::Scene;
 //! # fn frame(device: &wgpu::Device, color: wgpu::TextureView, depth: wgpu::TextureView, scene: &Scene) {
 //! let attachments = RenderAttachments::from_views(Some(color), Some(depth), None);
 //!
@@ -376,7 +376,7 @@ impl RenderAttachments {
         });
 
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wgpu_unlit_render::pass"),
+            label: Some("unlit_wgpu::pass"),
             color_attachments: &color_attachments,
             depth_stencil_attachment,
             timestamp_writes: None,
@@ -425,7 +425,7 @@ pub fn create_render_target(
     sample_count: u32,
 ) -> FrameTextures {
     let color = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wgpu_unlit_render::color"),
+        label: Some("unlit_wgpu::color"),
         size: wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
@@ -441,7 +441,7 @@ pub fn create_render_target(
     let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
     let depth_format = default_depth_stencil_format(device);
     let depth = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("wgpu_unlit_render::depth"),
+        label: Some("unlit_wgpu::depth"),
         size: wgpu::Extent3d {
             width: width.max(1),
             height: height.max(1),
@@ -457,7 +457,7 @@ pub fn create_render_target(
     let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
     let msaa = (sample_count > 1).then(|| {
         device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgpu_unlit_render::msaa"),
+            label: Some("unlit_wgpu::msaa"),
             size: wgpu::Extent3d {
                 width: width.max(1),
                 height: height.max(1),

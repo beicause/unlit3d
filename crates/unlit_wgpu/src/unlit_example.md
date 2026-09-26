@@ -5,20 +5,20 @@ setup work — device creation, uploading the mesh, building the bind groups
 — happens once; `Example::draw` is what runs every frame.
 
 ```rust
-use wgpu_unlit_render::globals::{Globals, View};
-use wgpu_unlit_render::mesh::{
+use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::mesh::{
     MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
 };
-use wgpu_unlit_render::pipeline::{
+use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
     MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
     UnlitPipeline,
 };
-use wgpu_unlit_render::render_attachments::{
+use unlit_wgpu::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
-use wgpu_unlit_render::scene::{DrawEntry, DrawRange, Scene};
+use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use zerocopy::IntoBytes;
 
 /// Everything one scene needs, built once and reused every frame.

@@ -40,16 +40,16 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 
 | Crate | 职责 |
 |-------|------|
-| [`wgpu_unlit_render`](crates/wgpu_unlit_render/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 管线与 egui 后端。不认识 ECS。 |
+| [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 管线与 egui 后端。不认识 ECS。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。 |
-| [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
+| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例及其无头快照模式；也是打包成 APK 的 Android 示例。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。不是工作区成员。 |
 
 ## 各部分的配合方式
 
-`wgpu_unlit_render` 是基础，不依赖工作区中的任何其他 crate。`unlit3d` 构建在它和
+`unlit_wgpu` 是基础，不依赖工作区中的任何其他 crate。`unlit3d` 构建在它和
 `unlit_ecs` 之上，并把两者保留为直接依赖：`prelude` 重导出大多数调用者需要的条目，
 其余条目仍可通过各自的 crate 路径访问。
 
@@ -95,10 +95,10 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   随 `cargo nextest run` 直接运行。
 - **库集成测试**：在各 crate 的 `tests/` 下，只经公开 API 使用它。`unlit_ecs` 的是纯
   ECS 行为；两个渲染 crate 的是 GPU 测试——用
-  [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.zh-CN.md) 建无头设备，
+  [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) 建无头设备，
   离屏渲染后回读像素断言，但不与存储图像比较。
 - **快照测试**：集成测试的子类，把一帧（或多帧序列）与存储图像做 SSIMULACRA2 感知
-  比较。低层 API 的快照留在 `wgpu_unlit_render` 的测试里（`SNAPSHOT_UPDATE=1`
+  比较。低层 API 的快照留在 `unlit_wgpu` 的测试里（`SNAPSHOT_UPDATE=1`
   重新生成）；高层 ECS 场景的快照由
   [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的无头模式运行
   （`--scene all` 验证、`--update` 重新生成），因为它既是示例也是 CI 的渲染回归检查。
@@ -110,14 +110,14 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 ## 工作区结构
 
 ```text
-crates/wgpu_unlit_render/   渲染器、它的 WESL 着色器与 GPU 测试
-crates/unlit3d/             与 ECS 集成的渲染 API
-crates/unlit_ecs/           archetype ECS
-crates/wgpu_unlit_test_util/ 共享的 GPU 测试骨架
-unlit3d_examples/           窗口化示例、它的场景与快照运行器
-android/                    把示例打包成 APK 的 Gradle 工程
-xtask/                      cargo xtask 任务执行器（不在工作区内）
-docs/DESIGN.md              设计文档
+crates/unlit_wgpu/           渲染器、它的 WESL 着色器与 GPU 测试
+crates/unlit3d/              与 ECS 集成的渲染 API
+crates/unlit_ecs/            archetype ECS
+crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
+unlit3d_examples/            窗口化示例、它的场景与快照运行器
+android/                     把示例打包成 APK 的 Gradle 工程
+xtask/                       cargo xtask 任务执行器（不在工作区内）
+docs/DESIGN.md               设计文档
 ```
 
 ## 许可证

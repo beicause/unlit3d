@@ -5,9 +5,9 @@
 //! default window size, so a rendering regression fails the build.
 
 use super::{SceneControl, SceneDef, SceneOptions};
+use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
-use wgpu_unlit_render::pipeline::UnlitOptions;
 
 /// The number of samples every frame is rendered with.
 pub const SAMPLE_COUNT: u32 = 4;

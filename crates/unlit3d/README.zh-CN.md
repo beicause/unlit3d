@@ -4,7 +4,7 @@
 
 高层渲染 API：与 ECS 集成的层，每帧把一个由携带组件的实体构成的世界转换为 GPU
 绘制命令。它连接 [`unlit_ecs`](../unlit_ecs/README.zh-CN.md) 与
-[`wgpu_unlit_render`](../wgpu_unlit_render/README.zh-CN.md)，并把两者保留为直接
+[`unlit_wgpu`](../unlit_wgpu/README.zh-CN.md)，并把两者保留为直接
 依赖——它们的条目通过各自的路径访问，大多数调用者需要的那些则由 `prelude` 重导出。
 
 与本工作区其他部分一样，本 crate 处于**极早期开发阶段**；API 会自由变动。它紧贴
@@ -12,9 +12,9 @@
 
 ## 在工作区中的位置
 
-`unlit3d` 是高层的那一半。`wgpu_unlit_render` 提供渲染器、资源图与内置 unlit 管线；
+`unlit3d` 是高层的那一半。`unlit_wgpu` 提供渲染器、资源图与内置 unlit 管线；
 `unlit_ecs` 提供 world；本 crate 提供描述可渲染场景的组件、驱动它的帧循环结构，以及
-平台胶水（winit、egui）。`wgpu_unlit_test_util` 是 dev-dependency。
+平台胶水（winit、egui）。`unlit_wgpu_test_util` 是 dev-dependency。
 
 ## 帧模型
 
@@ -52,7 +52,7 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `wgpu_unlit_render` egui 后端 |
+| `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；以及 `input::winit::WinitInput` |
 
 使用 `--no-default-features` 时，本 crate 保留 ECS 组件、帧源、mesh 路径、管线抽象
@@ -65,8 +65,8 @@
 
 ```rust,no_run
 use unlit3d::prelude::*;
-use wgpu_unlit_render::pipeline::UnlitOptions;
-use wgpu_unlit_render::resources::ResourceGraph;
+use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::resources::ResourceGraph;
 
 let mut world = LocalWorld::new();
 let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
@@ -138,7 +138,7 @@ GPU 集成测试把场景渲染到离屏目标并检查回读的像素。这些�
 
 ## 另见
 
-- [`wgpu_unlit_render`](../wgpu_unlit_render/README.zh-CN.md) —— 其下的渲染器。
+- [`unlit_wgpu`](../unlit_wgpu/README.zh-CN.md) —— 其下的渲染器。
 - [`unlit_ecs`](../unlit_ecs/README.zh-CN.md) —— 组件所在的 world。
 - [`unlit3d_examples`](../../unlit3d_examples/README.zh-CN.md) —— 可运行的窗口化示例。
 - [`docs/DESIGN.md`](../../docs/DESIGN.md) —— 设计文档。

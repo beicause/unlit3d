@@ -47,9 +47,9 @@ This is the only crate in the workspace that ships a binary, and the only
 consumer that combines every other crate: it uses
 [`unlit3d`](../crates/unlit3d/README.md) for the frame loop, ECS components,
 input and UI, and
-[`wgpu_unlit_render`](../crates/wgpu_unlit_render/README.md) for the pipeline
+[`unlit_wgpu`](../crates/unlit_wgpu/README.md) for the pipeline
 options and the resource graph. Its headless path borrows
-[`wgpu_unlit_test_util`](../crates/wgpu_unlit_test_util/README.md) for frame
+[`unlit_wgpu_test_util`](../crates/unlit_wgpu_test_util/README.md) for frame
 readback and scoring, behind the `snapshot` feature.
 
 It is a library as well as a binary, because Android starts neither a process

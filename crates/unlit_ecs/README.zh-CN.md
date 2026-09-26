@@ -16,7 +16,7 @@
 
 `unlit_ecs` 是高层所针对的 world；与 ECS 集成的渲染 API 是
 [`unlit3d`](../unlit3d/README.zh-CN.md)，GPU 测试所用的测试骨架是
-[`wgpu_unlit_test_util`](../wgpu_unlit_test_util/README.zh-CN.md)。本 crate 对渲染
+[`unlit_wgpu_test_util`](../unlit_wgpu_test_util/README.zh-CN.md)。本 crate 对渲染
 一无所知。
 
 ## 模型

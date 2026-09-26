@@ -7,7 +7,7 @@
 //!
 //! ```
 //! use unlit3d::prelude::*;
-//! use wgpu_unlit_render::resources::ResourceGraph;
+//! use unlit_wgpu::resources::ResourceGraph;
 //!
 //! let (device, queue) =
 //!     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -32,14 +32,12 @@
 use core::ops::DerefMut;
 
 use unlit_ecs::{Entity, LocalWorld};
-use wgpu_unlit_render::globals::{Globals, View};
-use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
-use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
-use wgpu_unlit_render::scene::Scene;
-use wgpu_unlit_render::specialize::SurfaceKey;
-use wgpu_unlit_render::ui::{
-    EguiIntegration, ScreenDescriptor, screen_view, ui_options_for_surface,
-};
+use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
+use unlit_wgpu::resources::{Resource, ResourceGraph, ResourceId};
+use unlit_wgpu::scene::Scene;
+use unlit_wgpu::specialize::SurfaceKey;
+use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options_for_surface};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.

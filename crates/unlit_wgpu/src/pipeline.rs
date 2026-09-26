@@ -551,7 +551,7 @@ impl UnlitPipeline {
     pub fn new(device: &wgpu::Device, options: &UnlitOptions) -> Self {
         let wgsl = compose_builtin(options).expect("the built-in unlit shader composes");
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("wgpu_unlit_render::unlit"),
+            label: Some("unlit_wgpu::unlit"),
             source: wgpu::ShaderSource::Wgsl(wgsl.into()),
         });
 
@@ -562,7 +562,7 @@ impl UnlitPipeline {
             layouts.mesh.as_ref(),
         ];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("wgpu_unlit_render::unlit::layout"),
+            label: Some("unlit_wgpu::unlit::layout"),
             bind_group_layouts: &layout_refs,
             immediate_size: 0,
         });
@@ -573,7 +573,7 @@ impl UnlitPipeline {
             .map(|layout| layout.as_ref().map(VertexBufferLayoutDesc::as_wgpu))
             .collect();
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("wgpu_unlit_render::unlit"),
+            label: Some("unlit_wgpu::unlit"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &module,
@@ -701,7 +701,7 @@ impl UnlitPipeline {
                 });
                 }
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("wgpu_unlit_render::unlit::globals"),
+                    label: Some("unlit_wgpu::unlit::globals"),
                     entries: &entries,
                 })
             };
@@ -711,7 +711,7 @@ impl UnlitPipeline {
             .contains(UnlitFlags::BASE_COLOR_TEXTURE)
             .then(|| {
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("wgpu_unlit_render::unlit::material"),
+                    label: Some("unlit_wgpu::unlit::material"),
                     entries: &[
                         wgpu::BindGroupLayoutEntry {
                             binding: BASE_COLOR_TEXTURE_BINDING,
@@ -773,7 +773,7 @@ impl UnlitPipeline {
                 });
             }
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("wgpu_unlit_render::unlit::mesh"),
+                label: Some("unlit_wgpu::unlit::mesh"),
                 entries: &entries,
             })
         });
@@ -953,7 +953,7 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
     );
 
     let main_path = wesl::syntax::ModulePath::new(
-        wesl::syntax::PathOrigin::Package("wgpu_unlit_render".to_owned()),
+        wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
         vec!["unlit".to_owned()],
     );
 
@@ -978,13 +978,13 @@ mod tests {
 
     /// A caller composes their own entry shader against the built-in package
     /// with `wesl` directly: [`crate::shader`] is the `StaticPackage` that
-    /// resolves `import wgpu_unlit_render::…`.
+    /// resolves `import unlit_wgpu::…`.
     #[test]
     fn a_caller_composes_against_the_built_in_package() {
         let source = "\
-import wgpu_unlit_render::mesh_compression;
-import wgpu_unlit_render::mesh_metadata::MeshMetadata;
-import wgpu_unlit_render::view::View;
+import unlit_wgpu::mesh_compression;
+import unlit_wgpu::mesh_metadata::MeshMetadata;
+import unlit_wgpu::view::View;
 
 @group(0) @binding(0) var<uniform> camera: View;
 @group(0) @binding(2) var<storage, read> mesh_meta: array<MeshMetadata>;
@@ -998,7 +998,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         // The caller's own module is virtual here; a real one would come from
         // a `FileResolver`. Anything not under the local namespace falls
         // through to the built-in package, which is how
-        // `import wgpu_unlit_render::mesh_compression;` resolves.
+        // `import unlit_wgpu::mesh_compression;` resolves.
         let namespace = wesl::syntax::ModulePath::new(
             wesl::syntax::PathOrigin::Absolute,
             vec!["app".to_owned()],

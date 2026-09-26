@@ -30,7 +30,7 @@
 //! # Example
 //!
 //! ```
-//! use wgpu_unlit_render::buffer_pool::BufferPool;
+//! use unlit_wgpu::buffer_pool::BufferPool;
 //!
 //! let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 //! let mut pool = BufferPool::new(

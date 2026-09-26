@@ -26,8 +26,8 @@ pub mod skinned;
 pub mod transparent;
 pub mod ui_only;
 
+use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::prelude::*;
-use wgpu_unlit_render::pipeline::UnlitOptions;
 
 /// Advances a scene's behaviour by one frame's `delta` seconds.
 ///
@@ -215,7 +215,7 @@ pub fn cube() -> RawMesh {
 
     // The stream stores colors as `Unorm8x4`, so quantize once here rather
     // than carrying a float copy through the scene.
-    let colors = wgpu_unlit_render::mesh::quantize_colors(&colors).collect();
+    let colors = unlit_wgpu::mesh::quantize_colors(&colors).collect();
     (positions, uvs, colors, indices)
 }
 
@@ -252,8 +252,8 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, aspect: f32) -> Ca
 /// The scene's key is built from these — the same options the snapshot tests
 /// the scenes came from were drawn with.
 pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
-    use wgpu_unlit_render::pipeline::UnlitFlags;
-    use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
+    use unlit_wgpu::pipeline::UnlitFlags;
+    use unlit_wgpu::render_attachments::default_depth_stencil_format;
     UnlitOptions {
         flags: UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
         primitive: wgpu::PrimitiveState {
@@ -286,7 +286,7 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
 /// [`unlit_options`], so a deformed scene draws the same cube under the same
 /// camera as an undeformed one.
 pub fn deformation_options(device: &wgpu::Device, joints: bool, morphs: bool) -> UnlitOptions {
-    use wgpu_unlit_render::pipeline::UnlitFlags;
+    use unlit_wgpu::pipeline::UnlitFlags;
     let mut options = unlit_options(device);
     if joints {
         options.flags |= UnlitFlags::VERTEX_JOINTS;

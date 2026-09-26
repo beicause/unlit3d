@@ -56,7 +56,7 @@
 //! same alignment) to make the initial free range representable:
 //!
 //! ```
-//! use wgpu_unlit_render::offset_allocator::{Allocator, min_allocator_size};
+//! use unlit_wgpu::offset_allocator::{Allocator, min_allocator_size};
 //! use core::num::NonZeroU32;
 //!
 //! let alignment = NonZeroU32::new(4).unwrap();

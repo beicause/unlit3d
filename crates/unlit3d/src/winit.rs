@@ -64,8 +64,8 @@
 use std::sync::Arc;
 
 use unlit_ecs::LocalWorld;
-use wgpu_unlit_render::render_attachments::default_depth_stencil_format;
-use wgpu_unlit_render::resources::{Resource, ResourceId};
+use unlit_wgpu::render_attachments::default_depth_stencil_format;
+use unlit_wgpu::resources::{Resource, ResourceId};
 
 use crate::renderer::Renderer;
 
@@ -89,9 +89,9 @@ fn context_device(world: &LocalWorld, renderer: &Renderer) -> wgpu::Device {
 fn context_graph<'w>(
     world: &'w LocalWorld,
     renderer: &Renderer,
-) -> impl core::ops::DerefMut<Target = wgpu_unlit_render::resources::ResourceGraph> + 'w {
+) -> impl core::ops::DerefMut<Target = unlit_wgpu::resources::ResourceGraph> + 'w {
     world
-        .get_mut::<wgpu_unlit_render::resources::ResourceGraph>(renderer.context().graph)
+        .get_mut::<unlit_wgpu::resources::ResourceGraph>(renderer.context().graph)
         .expect("the context's resource graph exists")
 }
 

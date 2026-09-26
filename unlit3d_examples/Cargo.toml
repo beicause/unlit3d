@@ -24,16 +24,16 @@ path = "src/main.rs"
 argh.workspace = true
 glam.workspace = true
 log.workspace = true
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
 unlit3d = { path = "../crates/unlit3d" }
 web-time.workspace = true
 wgpu.workspace = true
-wgpu_unlit_render = { path = "../crates/wgpu_unlit_render", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
 winit.workspace = true
 
 # The headless capture path reads frames back and scores them against
 # snapshots; the harness already does both, so it is an optional dependency
 # rather than a copy. Off by default: the windowed example needs neither.
-wgpu_unlit_test_util = { path = "../crates/wgpu_unlit_test_util", features = ["snapshot"], optional = true }
+unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"], optional = true }
 
 # The logger backend, which differs by platform even though there is only one
 # per target: `env_logger` writes to the terminal a command line runs in.
@@ -67,7 +67,7 @@ winit = { workspace = true, features = ["android-game-activity"] }
 ##
 ## It pulls in the test harness's frame readback and perceptual comparison, so
 ## it is off by default and the wasm and Android builds never see it.
-snapshot = ["dep:wgpu_unlit_test_util"]
+snapshot = ["dep:unlit_wgpu_test_util"]
 
 [lints]
 workspace = true

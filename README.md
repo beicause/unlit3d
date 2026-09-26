@@ -54,16 +54,16 @@ progress.
 
 | Crate | Role |
 |-------|------|
-| [`wgpu_unlit_render`](crates/wgpu_unlit_render/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit pipeline, and an egui backend. Knows nothing about ECS. |
+| [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit pipeline, and an egui backend. Knows nothing about ECS. |
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
-| [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
+| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes and a headless snapshot mode; also the Android example, packaged as an APK. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. Not a workspace member. |
 
 ## How the pieces fit
 
-`wgpu_unlit_render` is the foundation and depends on nothing in the workspace.
+`unlit_wgpu` is the foundation and depends on nothing in the workspace.
 `unlit3d` sits on top of it and on `unlit_ecs`, keeping both as direct
 dependencies: its `prelude` re-exports what most callers need, and everything
 else stays reachable through its own crate path.
@@ -119,12 +119,12 @@ The tests fall into three layers, by how close they sit to the code they check:
 - **Library integration tests** live in each crate's `tests/` and reach the
   crate through its public API only. `unlit_ecs`'s are plain ECS behaviour; the
   two rendering crates' build a headless device with
-  [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md), render a scene
+  [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md), render a scene
   offscreen and assert on the pixels that come back, comparing against no stored
   image.
 - **Snapshot tests** compare a frame (or a multi-frame sequence) against an image
   stored in the repository, using SSIMULACRA2. The low-level API's snapshots stay
-  in `wgpu_unlit_render`'s tests (re-bless with `SNAPSHOT_UPDATE=1`); the
+  in `unlit_wgpu`'s tests (re-bless with `SNAPSHOT_UPDATE=1`); the
   high-level ECS scenes' run through
   [`unlit3d_examples`](unlit3d_examples/README.md)'s headless mode (`--scene all`
   verifies them, `--update` re-blesses them), because the example is both the
@@ -138,14 +138,14 @@ re-bless the affected snapshots and review the image diff before committing.
 ## Workspace layout
 
 ```text
-crates/wgpu_unlit_render/   the renderer, its WESL shaders and its GPU tests
-crates/unlit3d/             the ECS-integrated rendering API
-crates/unlit_ecs/           the archetype ECS
-crates/wgpu_unlit_test_util/ the shared GPU test harness
-unlit3d_examples/           the windowed example, its scenes and its snapshot runner
-android/                    the Gradle project that packages the example as an APK
-xtask/                      the `cargo xtask` task runner (excluded from the workspace)
-docs/DESIGN.md              the design document
+crates/unlit_wgpu/           the renderer, its WESL shaders and its GPU tests
+crates/unlit3d/              the ECS-integrated rendering API
+crates/unlit_ecs/            the archetype ECS
+crates/unlit_wgpu_test_util/ the shared GPU test harness
+unlit3d_examples/            the windowed example, its scenes and its snapshot runner
+android/                     the Gradle project that packages the example as an APK
+xtask/                       the `cargo xtask` task runner (excluded from the workspace)
+docs/DESIGN.md               the design document
 ```
 
 ## License

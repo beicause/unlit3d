@@ -7,7 +7,7 @@
 
 use glam::Affine3A;
 use unlit_ecs::{Entity, LocalWorld};
-use wgpu_unlit_render::mesh::MeshInstance;
+use unlit_wgpu::mesh::MeshInstance;
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
 use crate::components::{GpuMesh, InstanceColor, Transform};
@@ -84,7 +84,7 @@ mod tests {
     use super::*;
     use arrayvec::ArrayVec;
     use glam::Vec3;
-    use wgpu_unlit_render::resources::{Resource, ResourceGraph};
+    use unlit_wgpu::resources::{Resource, ResourceGraph};
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)

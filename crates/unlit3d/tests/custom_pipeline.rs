@@ -9,9 +9,9 @@ pub mod common;
 
 use arrayvec::ArrayVec;
 use common::*;
+use unlit_wgpu::specialize::{CachedRenderPipeline, RenderPipelineDesc};
 use unlit3d::pipeline::{FamilyContext, PipelineFactory};
 use unlit3d::prelude::*;
-use wgpu_unlit_render::specialize::{CachedRenderPipeline, RenderPipelineDesc};
 
 /// An interleaved `position + colour` vertex, matching `VERTEX` in the WGSL
 /// below.
@@ -175,7 +175,7 @@ fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu_unlit_render::render_attachments::default_depth_stencil_format(device),
+            format: unlit_wgpu::render_attachments::default_depth_stencil_format(device),
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Greater),
             stencil: wgpu::StencilState::default(),
@@ -266,7 +266,7 @@ fn tinted_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Ren
         }),
         primitive: wgpu::PrimitiveState::default(),
         depth_stencil: Some(wgpu::DepthStencilState {
-            format: wgpu_unlit_render::render_attachments::default_depth_stencil_format(device),
+            format: unlit_wgpu::render_attachments::default_depth_stencil_format(device),
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::Greater),
             stencil: wgpu::StencilState::default(),
@@ -285,11 +285,11 @@ struct MeshLayoutFactory {
     mesh_layout: wgpu::BindGroupLayout,
 }
 
-impl PipelineFactory<wgpu_unlit_render::specialize::CachedRenderPipeline> for MeshLayoutFactory {
+impl PipelineFactory<unlit_wgpu::specialize::CachedRenderPipeline> for MeshLayoutFactory {
     fn descriptor(
         &self,
         _context: &FamilyContext<'_>,
-        value: &wgpu_unlit_render::specialize::CachedRenderPipeline,
+        value: &unlit_wgpu::specialize::CachedRenderPipeline,
     ) -> PipelineDesc {
         PipelineDesc {
             pipeline: value.pipeline.clone(),

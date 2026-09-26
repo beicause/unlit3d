@@ -9,10 +9,10 @@
 
 | 提交 | 内容 |
 |---|---|
-| `08bfe87` | `crates/wgpu_unlit_render/src/offset_allocator.rs`：vendored MIT port，仅 u32 索引、构造期固定对齐 |
+| `08bfe87` | `crates/unlit_wgpu/src/offset_allocator.rs`：vendored MIT port，仅 u32 索引、构造期固定对齐 |
 | `e9e960d` | 对齐不变量文档 + 10k 次随机 churn 测试 |
 | `a3ca50a` | `Allocator::extend`：尾部追加空闲区（空闲尾节点原地扩大，避免相邻空闲区无法合并） |
-| `2aa5ba4` | `crates/wgpu_unlit_render/src/buffer_pool.rs`：`BufferPool`（单缓冲 + 字节单位 + 对齐 4 + 翻倍扩容拷贝） |
+| `2aa5ba4` | `crates/unlit_wgpu/src/buffer_pool.rs`：`BufferPool`（单缓冲 + 字节单位 + 对齐 4 + 翻倍扩容拷贝） |
 
 现有公开 API（本计划要用到）：
 
@@ -80,7 +80,7 @@ buffer_pool:
 | 跨流的元素下标一致性 | **共用一个「元素分配器」**（单位 = 元素，alignment = 1），不是「每流一个分配器 + 锁步调用」 |
 | 对齐 | 索引池 = 4；顶点池 = 1 元素（字节偏移 = N × stride，stride 是 4 的倍数，自动满足 `COPY_BUFFER_ALIGNMENT`） |
 | 扩容方式 | 单缓冲 + 追加拷贝；`Allocator::extend` 追加，已有 offset 不变 |
-| 池所有权 | 通用池放 `wgpu_unlit_render`；内置 helper `allocate_unlit_mesh` 使用它；`allocate_mesh` 不变 |
+| 池所有权 | 通用池放 `unlit_wgpu`；内置 helper `allocate_unlit_mesh` 使用它；`allocate_mesh` 不变 |
 | 绑定方式 | 绑整缓冲，`setVertexBuffer`/`setIndexBuffer` 不再带 offset（用户明确要求，且能吃到 `scene.rs` 录制期的状态去重） |
 
 ### 3.1 被否决的方案（留档，避免重走）
@@ -151,7 +151,7 @@ vertexIndex = baseVertex + relativeVertexIndex（索引绘制）
 
 ### 6.2 顶点流池（新增类型）
 
-新增 `crates/wgpu_unlit_render/src/vertex_pool.rs`（公开模块），核心是**一个元素分配器 + 每个 layout 一个缓冲**：
+新增 `crates/unlit_wgpu/src/vertex_pool.rs`（公开模块），核心是**一个元素分配器 + 每个 layout 一个缓冲**：
 
 ```
 VertexStreamPool {
@@ -282,7 +282,7 @@ impl BufferRange { pub fn offset(&self)->u32; pub fn size(&self)->u32; pub fn al
 
 ## 8. 测试计划
 
-**新增（`wgpu_unlit_render`）**
+**新增（`unlit_wgpu`）**
 - `vertex_pool`：元素下标跨 stride 一致；释放后区间复用；扩容后旧分配偏移不变；`byte_offset == N × stride`；空 stride 不建缓冲；容量上限断言。
 - 复用性验证：用一个"两流"（stride 8 与 12）场景跑随机分配/释放，断言**两个流拿到的元素区间始终相同**（把之前的一次性模拟固化为回归测试，防未来有人改成按流分配）。
 
@@ -297,7 +297,7 @@ impl BufferRange { pub fn offset(&self)->u32; pub fn size(&self)->u32; pub fn al
 
 **回归关注**
 - `unlit3d_examples` 与快照测试：几何应逐像素不变（池化不改变绘制内容）。若快照变了，说明 `firstVertex`/`baseVertex` 算错。
-- `cargo test -p unlit3d`、`-p wgpu_unlit_render`、workspace 全量。
+- `cargo test -p unlit3d`、`-p unlit_wgpu`、workspace 全量。
 
 ## 9. 风险与未决问题
 
@@ -314,7 +314,7 @@ impl BufferRange { pub fn offset(&self)->u32; pub fn size(&self)->u32; pub fn al
 
 ```bash
 # 单元层
-cargo test -p wgpu_unlit_render --lib
+cargo test -p unlit_wgpu --lib
 # 集成层
 cargo test -p unlit3d
 # 示例 / 快照
@@ -328,21 +328,21 @@ cargo fmt --check
 
 | 文件 | 改动 |
 |---|---|
-| `crates/wgpu_unlit_render/src/vertex_pool.rs` | **新增**：`VertexStreamPool` + `VertexAllocation` + 测试 |
-| `crates/wgpu_unlit_render/src/lib.rs` | 注册 `pub mod vertex_pool;` 并补模块列表文档 |
-| `crates/wgpu_unlit_render/src/buffer_pool.rs` | `BufferRange` 去句柄化（6.6）；如需 `release_allocation` |
+| `crates/unlit_wgpu/src/vertex_pool.rs` | **新增**：`VertexStreamPool` + `VertexAllocation` + 测试 |
+| `crates/unlit_wgpu/src/lib.rs` | 注册 `pub mod vertex_pool;` 并补模块列表文档 |
+| `crates/unlit_wgpu/src/buffer_pool.rs` | `BufferRange` 去句柄化（6.6）；如需 `release_allocation` |
 | `crates/unlit3d/src/renderer.rs` | 池字段；`allocate_unlit_mesh` 改写；`remove_mesh` 归还；绘制路径填 `vertex_offset`/`index_offset`；`DrawShape` 传递；相关测试更新 |
 | `crates/unlit3d/src/components.rs` | `GpuMesh` 新增 `vertex_offset`/`index_offset`/两个 allocation 字段 |
 | `crates/unlit3d/src/scene.rs` | `DrawShape` 加两个 offset 字段；`assemble_scene` 用它们构造 `DrawRange` |
 | `crates/unlit3d/src/mesh.rs` | 预计不改（`MeshDesc` 保持调用方自带缓冲的形状） |
-| `crates/wgpu_unlit_render/src/offset_allocator.rs` | 预计不改（`extend` 已具备） |
+| `crates/unlit_wgpu/src/offset_allocator.rs` | 预计不改（`extend` 已具备） |
 | `docs/DESIGN.md` | **需用户同意后**再补池化说明 |
 
 ## 12. 骨骼属性（joints / weights）对设计的影响
 
-代码现状：`wgpu_unlit_render/src/mesh.rs` 已经定义了 `CompressedJoints = [u16; 4]`
+代码现状：`unlit_wgpu/src/mesh.rs` 已经定义了 `CompressedJoints = [u16; 4]`
 （`Uint16x4`）与 `CompressedWeights = [u16; 4]`（`Unorm16x4`），并有
-`compress_weights` / `joints_as_bytes` / `weights_as_bytes`；`wgpu_unlit_render/src/scene.rs`
+`compress_weights` / `joints_as_bytes` / `weights_as_bytes`；`unlit_wgpu/src/scene.rs`
 里 `DrawEntry` 的注释也已写明 "position, optional joints and weights, UV and vertex
 color, and the per-instance …"，即设计上预留了第四、第五条顶点流。但
 `pipeline.rs` 目前只有 `POSITION_SLOT = 0`、`UV_COLOR_SLOT = 1`、`INSTANCE_SLOT = 2`，

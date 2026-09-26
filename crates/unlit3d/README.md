@@ -5,7 +5,7 @@ English | [简体中文](README.zh-CN.md)
 The high-level rendering API: the ECS-integrated layer that turns a world of
 component-carrying entities into GPU draw commands every frame. It bridges
 [`unlit_ecs`](../unlit_ecs/README.md) and
-[`wgpu_unlit_render`](../wgpu_unlit_render/README.md), and it keeps both as
+[`unlit_wgpu`](../unlit_wgpu/README.md), and it keeps both as
 direct dependencies — their items are reached through their own paths, and the
 ones most callers need are re-exported by `prelude`.
 
@@ -16,11 +16,11 @@ well.
 
 ## Role in the workspace
 
-`unlit3d` is the high-level half. `wgpu_unlit_render` provides the renderer,
+`unlit3d` is the high-level half. `unlit_wgpu` provides the renderer,
 the resource graph and the built-in unlit pipeline; `unlit_ecs` provides the
 world; this crate provides the components that describe a renderable scene, the
 frame-loop structure that drives it, and the platform glue (winit, egui).
-`wgpu_unlit_test_util` is a dev-dependency.
+`unlit_wgpu_test_util` is a dev-dependency.
 
 ## The frame model
 
@@ -67,7 +67,7 @@ interface is an entity — a frame can hold as many panels as entities, and the
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `wgpu_unlit_render` egui backend it draws with |
+| `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a `Renderer` into a window's swap chain, and `input::winit::WinitInput` |
 
 With `--no-default-features` the crate keeps the ECS components, the frame
@@ -82,8 +82,8 @@ mounted as a source, and `Renderer` is the frame driver:
 
 ```rust,no_run
 use unlit3d::prelude::*;
-use wgpu_unlit_render::pipeline::UnlitOptions;
-use wgpu_unlit_render::resources::ResourceGraph;
+use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::resources::ResourceGraph;
 
 let mut world = LocalWorld::new();
 let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
@@ -162,7 +162,7 @@ changes with `cargo run -p unlit3d_examples --features snapshot -- --headless
 
 ## See also
 
-- [`wgpu_unlit_render`](../wgpu_unlit_render/README.md) — the renderer underneath.
+- [`unlit_wgpu`](../unlit_wgpu/README.md) — the renderer underneath.
 - [`unlit_ecs`](../unlit_ecs/README.md) — the world the components live in.
 - [`unlit3d_examples`](../../unlit3d_examples/README.md) — a runnable windowed example.
 - [`docs/DESIGN.md`](../../docs/DESIGN.md) — the design document (in Chinese).

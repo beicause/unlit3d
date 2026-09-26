@@ -1,5 +1,5 @@
 [package]
-name = "wgpu_unlit_render"
+name = "unlit_wgpu"
 version = "0.1.0-dev.1"
 edition.workspace = true
 description = "A compact, opinionated WebGPU renderer for unlit draws: resource graph, vertex compression, pooled buffers and a declarative scene, with a built-in unlit pipeline and an egui backend."
@@ -24,8 +24,8 @@ zerocopy-derive.workspace = true
 
 [dev-dependencies]
 pollster.workspace = true
+unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["noop"] }
-wgpu_unlit_test_util = { path = "../wgpu_unlit_test_util", features = ["snapshot"] }
 
 [build-dependencies]
 wesl = { version = "0.5.0", default-features = false, features = ["package"] }

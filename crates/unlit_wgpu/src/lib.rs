@@ -1,4 +1,4 @@
-//! `wgpu_unlit_render` — a compact, opinionated renderer for unlit draws on
+//! `unlit_wgpu` — a compact, opinionated renderer for unlit draws on
 //! WebGPU.
 //!
 //! The crate targets WebGPU (and the native backends behind it) with a
@@ -57,7 +57,7 @@
 //! A caller who wants their own entry shader composes it directly with
 //! [`wesl`](https://docs.rs/wesl): [`shader`] is a WESL `StaticPackage`, so
 //! `wesl::resolver::PackageResolver` can resolve
-//! `import wgpu_unlit_render::mesh_compression;` against the same modules the
+//! `import unlit_wgpu::mesh_compression;` against the same modules the
 //! built-in pipeline uses.
 
 #![forbid(unsafe_code)]
@@ -77,7 +77,7 @@ wesl_core::wesl_pkg!(
         reason = "the package is generated from `shaders/*.wesl`; its items carry no docs of their own"
     )]
     pub shader,
-    "wgpu_unlit_render.rs"
+    "unlit_wgpu.rs"
 );
 
 pub mod buffer_pool;

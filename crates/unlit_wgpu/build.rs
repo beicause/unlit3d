@@ -1,10 +1,10 @@
 //! Build-time WESL handling: bundle and validate the `shaders/*.wesl` modules
-//! into the `wgpu_unlit_render` WESL package.
+//! into the `unlit_wgpu` WESL package.
 //!
-//! The generated Rust artifact (`OUT_DIR/wgpu_unlit_render.rs`, a `'static`
+//! The generated Rust artifact (`OUT_DIR/unlit_wgpu.rs`, a `'static`
 //! [`wesl::StaticPackage`]) is exposed by the library through
 //! `wesl::wesl_pkg!`, so runtime shader composition can import the built-in
-//! modules (`import wgpu_unlit_render::mesh_compression;`).
+//! modules (`import unlit_wgpu::mesh_compression;`).
 //!
 //! The `unlit` module belongs to the built-in pipeline, so it is bundled only
 //! when that feature is on; everything else the package carries mirrors the
@@ -17,7 +17,7 @@ fn main() {
     // it has to be seen as a change to the inputs.
     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_UNLIT");
 
-    let mut package = wesl::PackageBuilder::new("wgpu_unlit_render")
+    let mut package = wesl::PackageBuilder::new("unlit_wgpu")
         .scan_root("shaders")
         .expect("failed to scan WESL files")
         .validate()

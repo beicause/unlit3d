@@ -7,12 +7,12 @@
 //! egui's clip rectangles become scissor rectangles.
 //!
 //! ```
-//! # use wgpu_unlit_render::globals::Globals;
-//! # use wgpu_unlit_render::pipeline::{
+//! # use unlit_wgpu::globals::Globals;
+//! # use unlit_wgpu::pipeline::{
 //! #     CAMERA_BINDING, FRAME_BINDING, UnlitOptions, UnlitPipeline,
 //! # };
-//! # use wgpu_unlit_render::resources::{Resource, ResourceGraph};
-//! # use wgpu_unlit_render::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
+//! # use unlit_wgpu::resources::{Resource, ResourceGraph};
+//! # use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
 //! #          color_format: wgpu::TextureFormat, multisample: wgpu::MultisampleState) {

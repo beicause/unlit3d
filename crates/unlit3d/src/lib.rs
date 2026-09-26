@@ -1,6 +1,6 @@
-//! `unlit3d` — the high-level rendering API for `wgpu_unlit_render`.
+//! `unlit3d` — the high-level rendering API for `unlit_wgpu`.
 //!
-//! This crate bridges [`unlit_ecs`] and [`wgpu_unlit_render`]: it provides the
+//! This crate bridges [`unlit_ecs`] and [`unlit_wgpu`]: it provides the
 //! component types needed to describe a renderable 3D scene in an ECS world and
 //! a [`Renderer`](crate::renderer::Renderer) component that turns that data into GPU draw commands every
 //! frame. The two foundational crates stay direct dependencies — their items
@@ -47,8 +47,8 @@
 //!
 //! ```
 //! use unlit3d::prelude::*;
-//! use wgpu_unlit_render::pipeline::UnlitOptions;
-//! use wgpu_unlit_render::resources::ResourceGraph;
+//! use unlit_wgpu::pipeline::UnlitOptions;
+//! use unlit_wgpu::resources::ResourceGraph;
 //!
 //! let (device, queue) =
 //!     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -140,7 +140,7 @@
 //! ```
 //!
 //! [`unlit_ecs`]: unlit_ecs
-//! [`wgpu_unlit_render`]: wgpu_unlit_render
+//! [`unlit_wgpu`]: unlit_wgpu
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -194,7 +194,7 @@ pub mod prelude {
         },
     };
     pub use unlit_ecs::prelude::*;
-    pub use wgpu_unlit_render::render_attachments::{
+    pub use unlit_wgpu::render_attachments::{
         color_clear, create_render_target, depth_clear, stencil_clear,
     };
 }

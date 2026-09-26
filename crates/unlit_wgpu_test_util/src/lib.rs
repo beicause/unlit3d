@@ -1,4 +1,4 @@
-//! Shared GPU test harness for wgpu-unlit crates.
+//! Shared GPU test harness for unlit-wgpu crates.
 //!
 //! Every test drives wgpu through a real `wgpu::Device` and reads
 //! buffer/texture data back for assertions.  The harness is deliberately
@@ -81,7 +81,7 @@ impl Ctx {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .expect("no graphics adapter available");
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("wgpu_unlit_test_util"),
+            label: Some("unlit_wgpu_test_util"),
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),

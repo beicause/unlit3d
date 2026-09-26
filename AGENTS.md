@@ -28,7 +28,7 @@
 
 测试日志走 `log` crate，不靠 `println!`/`eprintln!`：
 
-- 日志后端由 `wgpu_unlit_test_util::Ctx::headless`（native 用 `env_logger`，web 用 `console_log`）在首次使用时装好；不建 `Ctx` 的测试（如 ECS 的）需要日志时自行调用 `wgpu_unlit_test_util::init_logging()`。
+- 日志后端由 `unlit_wgpu_test_util::Ctx::headless`（native 用 `env_logger`，web 用 `console_log`）在首次使用时装好；不建 `Ctx` 的测试（如 ECS 的）需要日志时自行调用 `unlit_wgpu_test_util::init_logging()`。
 - 默认级别 `warn`；要看细节用 `RUST_LOG=debug cargo xtask test`。nextest 默认按测试捕获输出，失败时才回显，故 `RUST_LOG` 对失败诊断足够。
 - 因为每个测试跑在独立进程里，一个测试装的后端不影响别的测试。
 

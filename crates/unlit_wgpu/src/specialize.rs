@@ -106,7 +106,7 @@ pub const fn canonical_specializer_key<T>() -> (bool, PhantomData<T>) {
 /// distinct value produces a distinct descriptor, so [Variants] skips the
 /// secondary cache.
 ///
-///     use wgpu_unlit_render::impl_canonical_specializer_key;
+///     use unlit_wgpu::impl_canonical_specializer_key;
 ///
 ///     #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 ///     struct MaterialId(u32);

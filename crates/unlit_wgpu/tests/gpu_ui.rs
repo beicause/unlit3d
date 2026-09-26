@@ -11,11 +11,11 @@
 mod common;
 
 use common::*;
-use wgpu_unlit_render::globals::Globals;
-use wgpu_unlit_render::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
-use wgpu_unlit_render::render_attachments::{create_render_target, depth_clear, stencil_clear};
-use wgpu_unlit_render::resources::{Resource, ResourceGraph};
-use wgpu_unlit_render::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
+use unlit_wgpu::globals::Globals;
+use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
+use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_clear};
+use unlit_wgpu::resources::{Resource, ResourceGraph};
+use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 
 /// The UI's logical layout, in points. The physical target scales with the
 /// pixel density, so this stays fixed across densities.
@@ -199,7 +199,7 @@ fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer
 
 /// Shader size of the camera uniform, straight from its layout.
 fn view_size() -> u64 {
-    <wgpu_unlit_render::globals::View as const_shader_layout::ShaderLayout>::SIZE.get()
+    <unlit_wgpu::globals::View as const_shader_layout::ShaderLayout>::SIZE.get()
 }
 
 /// Shader size of the frame-globals uniform.

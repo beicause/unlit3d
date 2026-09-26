@@ -1,6 +1,6 @@
 English | [简体中文](README.zh-CN.md)
 
-# wgpu_unlit_test_util
+# unlit_wgpu_test_util
 
 The shared GPU test harness for the workspace's rendering crates. Every test
 drives wgpu through a real `wgpu::Device` and reads buffer or texture data back
@@ -16,8 +16,8 @@ not part of the public rendering API.
 
 ## Role in the workspace
 
-`wgpu_unlit_test_util` is a **dev-dependency** of
-[`wgpu_unlit_render`](../wgpu_unlit_render/README.md) and
+`unlit_wgpu_test_util` is a **dev-dependency** of
+[`unlit_wgpu`](../unlit_wgpu/README.md) and
 [`unlit3d`](../unlit3d/README.md), and an optional dependency of
 [`unlit3d_examples`](../../unlit3d_examples/README.md) behind its `snapshot`
 feature. Nothing in the shipped rendering path depends on it.
@@ -70,22 +70,22 @@ to compare against a snapshot that does not exist.
 To re-bless a snapshot after an intentional rendering change:
 
 ```text
-SNAPSHOT_UPDATE=1 cargo nextest run -p wgpu_unlit_render
+SNAPSHOT_UPDATE=1 cargo nextest run -p unlit_wgpu
 git -C unlit3d_asset_files diff   # review before committing
 ```
 
 ## Usage
 
 ```rust
-use wgpu_unlit_test_util::{Ctx, read_texture_bytes};
+use unlit_wgpu_test_util::{Ctx, read_texture_bytes};
 
 let ctx = Ctx::headless();
-let target = wgpu_unlit_test_util::ColorTarget::new(&ctx.device, "example", 64, 64);
+let target = unlit_wgpu_test_util::ColorTarget::new(&ctx.device, "example", 64, 64);
 // ... render into target.view ...
 let bytes = read_texture_bytes(&ctx, &target.texture, 64, 64, 4);
 
 #[cfg(feature = "snapshot")]
-wgpu_unlit_test_util::assert_image_snapshot("example.webp", &bytes, 64, 64);
+unlit_wgpu_test_util::assert_image_snapshot("example.webp", &bytes, 64, 64);
 ```
 
 ## Tests

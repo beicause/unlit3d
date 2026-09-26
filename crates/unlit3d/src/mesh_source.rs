@@ -19,25 +19,25 @@ use hashbrown::HashMap;
 use std::sync::Arc;
 
 use unlit_ecs::{LocalWorld, TypeIdHashMap};
-use wgpu_unlit_render::buffer_pool::BufferPool;
-use wgpu_unlit_render::globals::{Globals, View};
-use wgpu_unlit_render::mesh::{
+use unlit_wgpu::buffer_pool::BufferPool;
+use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::mesh::{
     JointMatrix, MeshInfo, MeshInstance, MeshMetadata, PoseBase, compress_indices, compress_weights,
 };
-use wgpu_unlit_render::pipeline::{
+use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     INSTANCE_SLOT, JOINTS_BINDING, MESH_INFO_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
     MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
     apply_surface,
 };
-use wgpu_unlit_render::resources::{Resource, ResourceGraph, ResourceId};
-use wgpu_unlit_render::scene::{MAX_VERTEX_BUFFERS, Scene};
-use wgpu_unlit_render::specialize::{
+use unlit_wgpu::resources::{Resource, ResourceGraph, ResourceId};
+use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
+use unlit_wgpu::specialize::{
     Specializable, Specializer, SpecializerKey, SurfaceKey, VertexAttributes,
     VertexBufferLayoutDesc,
 };
-use wgpu_unlit_render::staging::StagingBuffer;
-use wgpu_unlit_render::vertex_pool::VertexStreamPool;
+use unlit_wgpu::staging::StagingBuffer;
+use unlit_wgpu::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
 
 use crate::bounds::Aabb;
@@ -1000,7 +1000,7 @@ impl MeshSource {
     ///
     /// This is a convenience over [`MeshSource::allocate_mesh`]: it builds the
     /// same [`MeshDesc`] a caller could build by hand, and shares the
-    /// compression in [wgpu_unlit_render::mesh] with anyone else who wants it.
+    /// compression in [unlit_wgpu::mesh] with anyone else who wants it.
     ///
     /// Which channels are packed is the key's own vertex layout: a slice for a
     /// channel the variant does not declare is left out, so the buffer always
@@ -1009,7 +1009,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the input slices are empty or of mismatched length (see the
-    /// compressors in [wgpu_unlit_render::mesh]); if the key's options read no
+    /// compressors in [unlit_wgpu::mesh]); if the key's options read no
     /// compressed channel and so declare no mesh-metadata group; if the key
     /// declares the joint channel but [`UnlitMeshDesc::joints`] or
     /// [`UnlitMeshDesc::weights`] is `None`; or if the key declares morph
@@ -1440,7 +1440,7 @@ impl MeshSource {
     /// caller's, already in the resource graph and named in `dependencies` so
     /// replacing one marks the group dirty. `layout` is the material layout of
     /// the pipeline the material is for —
-    /// [`UnlitPipeline::bind_group_layouts`](wgpu_unlit_render::pipeline::UnlitPipeline::bind_group_layouts)
+    /// [`UnlitPipeline::bind_group_layouts`](unlit_wgpu::pipeline::UnlitPipeline::bind_group_layouts)
     /// for the built-in shader, or the one a custom pipeline registered.
     ///
     /// # Panics
@@ -2201,8 +2201,8 @@ mod tests {
     use crate::components::{Transform, UnlitPipeline, ZSortedDrawing};
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
-    use wgpu_unlit_render::render_attachments::{RenderAttachments, create_render_target};
-    use wgpu_unlit_render::scene::DrawRange;
+    use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
+    use unlit_wgpu::scene::DrawRange;
 
     /// The size every test target is built with.
     const TEST_SIZE: u32 = 64;
@@ -2354,7 +2354,7 @@ mod tests {
     /// A variant of the standard one that reads no UV — so no base-color
     /// texture either — and therefore packs its vertices differently.
     fn uv_less_options(device: &wgpu::Device) -> UnlitOptions {
-        use wgpu_unlit_render::pipeline::UnlitFlags;
+        use unlit_wgpu::pipeline::UnlitFlags;
         let mut options = UnlitOptions::standard(device);
         options.flags &= !(UnlitFlags::VERTEX_UV | UnlitFlags::BASE_COLOR_TEXTURE);
         options

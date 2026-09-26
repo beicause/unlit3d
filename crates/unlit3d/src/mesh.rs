@@ -16,9 +16,9 @@
 use arrayvec::ArrayVec;
 
 use crate::bounds::Aabb;
-pub use wgpu_unlit_render::mesh::JointMatrix;
-use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
-use wgpu_unlit_render::specialize::VertexAttributes;
+pub use unlit_wgpu::mesh::JointMatrix;
+use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
+use unlit_wgpu::specialize::VertexAttributes;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -60,7 +60,7 @@ pub struct MeshDesc {
     /// Defaults to [`Aabb::ZERO`]: a zero-extent box at the origin.
     pub aabb: Aabb,
     /// A bind group bound at
-    /// [`MESH_GROUP`](wgpu_unlit_render::pipeline::MESH_GROUP), for a
+    /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP), for a
     /// pipeline that reads per-mesh data such as the metadata index.
     ///
     /// `None` for a pipeline that binds nothing at that index.

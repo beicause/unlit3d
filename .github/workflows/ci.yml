@@ -86,7 +86,7 @@ jobs:
       # Without `unlit` this crate compiles down to its general facilities,
       # so the built-in pipeline stays something a caller could have written.
       - name: Clippy (no features)
-        run: cargo clippy -p wgpu_unlit_render --no-default-features --all-targets -- -Dwarnings
+        run: cargo clippy -p unlit_wgpu --no-default-features --all-targets -- -Dwarnings
 
       - name: Clippy (all features)
         run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings
