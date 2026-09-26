@@ -1,8 +1,8 @@
 //! The example's selectable scenes.
 //!
 //! A scene is a [`SceneDef`]: the fixed size and frame count its snapshots
-//! were captured at, what offscreen target it draws into, and a [`build`]
-//! that populates an ECS world. The world it builds is the ordinary one every
+//! were captured at, what offscreen target it draws into, and a
+//! [`build`](SceneDef::build) that populates an ECS world. The world it builds is the ordinary one every
 //! frame loop drives — the frame's context and [`Renderer`] are already in it
 //! — so the windowed and headless paths differ only in what they bind and what
 //! they do with the result.
