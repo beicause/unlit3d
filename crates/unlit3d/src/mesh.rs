@@ -10,6 +10,7 @@ use arrayvec::ArrayVec;
 
 use crate::bounds::Aabb;
 pub use wgpu_unlit_render::mesh::JointMatrix;
+use wgpu_unlit_render::resources::ResourceId;
 use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 use wgpu_unlit_render::specialize::VertexAttributes;
 
@@ -87,7 +88,8 @@ pub struct MeshDesc {
 pub struct MeshPoseDesc {
     /// The mesh's skin, for a pipeline that reads joint matrices.
     pub skin: Option<SkinDesc>,
-    /// The mesh's morph targets, for a pipeline that reads morph positions.
+    /// The mesh's morph displacements, for a pipeline that reads morph
+    /// positions.
     pub morph: Option<MorphDesc>,
 }
 
@@ -100,22 +102,29 @@ pub struct SkinDesc {
     pub joint_count: u32,
 }
 
-/// A mesh's morph targets: the displacements and the weights that blend them.
+/// A mesh's morph displacements.
+///
+/// The weights that blend them are *not* here: they are a
+/// [`MorphWeights`] the caller owns and may share between meshes, so a mesh
+/// names one rather than owning it.
 #[derive(Clone, Debug)]
 pub struct MorphDesc {
     /// Every target's per-vertex position displacement, flat and tightly
     /// packed: for each vertex, `target_count` targets in order, three
     /// components each.
     pub deltas: wgpu::Buffer,
-    /// One weight per target.
-    pub weights: wgpu::Buffer,
+    /// The weights that blend the targets, shared or private.
+    pub weights: MorphWeights,
     /// How many targets follow each vertex.
     pub target_count: u32,
 }
 
-/// How many graph nodes a mesh's pose contributes at most: the joint matrices,
-/// the morph displacements and the morph weights.
-pub const MAX_POSE_PARTS: usize = 3;
+/// How many graph nodes a mesh's pose contributes at most: the joint matrices
+/// and the morph displacements.
+///
+/// The morph weights are not counted: they are a [`MorphWeights`] resource the
+/// mesh reads rather than one it contributes.
+pub const MAX_POSE_PARTS: usize = 2;
 
 /// The channels of one mesh uploaded through
 /// [`MeshSource::allocate_unlit_mesh`](crate::mesh_source::MeshSource::allocate_unlit_mesh).
@@ -137,6 +146,13 @@ pub struct UnlitMeshDesc<'a> {
     pub skin: Option<UnlitSkin<'a>>,
     /// The morph targets that displace the mesh, in target order.
     pub morph_targets: &'a [UnlitMorphTarget<'a>],
+    /// The weights that blend [`Self::morph_targets`].
+    ///
+    /// Required — and required to be as long as the target slice — by a
+    /// variant that reads morph positions, ignored by one that does not. The
+    /// same handle may back several meshes, which then share one pose; see
+    /// [`MorphWeights`].
+    pub morph_weights: Option<MorphWeights>,
 }
 
 /// A mesh's skin: the joints each vertex is bound to, and the pose they deform
@@ -167,11 +183,55 @@ pub struct UnlitSkin<'a> {
 ///
 /// Only positions displace — a morph target carries no normal or tangent —
 /// and a target displaces every vertex of the mesh it belongs to, so
-/// [`Self::positions`] must be as long as the mesh's own vertex list.
+/// [`Self::positions`] must be as long as the mesh's own vertex list. How much
+/// of the displacement applies is the mesh's
+/// [`MorphWeights`], not the target's: the same target can be weighted
+/// differently by two meshes sharing it.
 #[derive(Clone, Copy, Debug)]
 pub struct UnlitMorphTarget<'a> {
     /// Per-vertex position displacement, in the mesh's local space.
     pub positions: &'a [[f32; 3]],
-    /// The weight the displacement is scaled by at upload.
-    pub weight: f32,
+}
+
+/// The weights that blend a mesh's morph targets, as a resource of its own.
+///
+/// The handle names a weight buffer in the resource graph, which makes the
+/// weights *shareable*: allocating several meshes with the same handle binds
+/// them to one buffer, so
+/// [`MeshSource::update_morph_weights`](crate::mesh_source::MeshSource::update_morph_weights)
+/// writes one pose that every one of them draws with. That is what a crowd of
+/// copies of one mesh usually wants, and it costs one buffer instead of one
+/// per mesh.
+///
+/// A mesh whose weights should move on its own needs a handle of its own.
+///
+/// # Sharing rules
+///
+/// Every mesh sharing a handle must carry the same number of morph targets:
+/// the shader loops up to the mesh's own target count, so a longer loop over a
+/// shorter buffer would read out of bounds. Allocation enforces this.
+#[derive(Clone, Debug)]
+pub struct MorphWeights {
+    /// The buffer's node in the resource graph.
+    pub(crate) buffer: ResourceId,
+    /// How many weights the buffer holds, which is the target count a mesh
+    /// sharing it must carry.
+    pub(crate) target_count: u32,
+}
+
+impl MorphWeights {
+    /// How many weights the handle holds.
+    pub fn target_count(&self) -> u32 {
+        self.target_count
+    }
+
+    /// The graph node that holds the weights.
+    ///
+    /// Two handles with the same node name the same weights, and so the same
+    /// pose. The node is useful for inspecting the buffer's lifetime; the
+    /// weights themselves are written through
+    /// [`MeshSource::update_morph_weights`](crate::mesh_source::MeshSource::update_morph_weights).
+    pub fn resource(&self) -> ResourceId {
+        self.buffer
+    }
 }

@@ -12,6 +12,7 @@ use wgpu_unlit_render::scene::MAX_VERTEX_BUFFERS;
 use wgpu_unlit_render::specialize::VertexBufferLayoutDesc;
 
 use crate::bounds::Aabb;
+use crate::mesh::MorphWeights;
 use crate::mesh_source::UnlitPipelineKey;
 
 /// World-space transform (translation, rotation, scale).
@@ -213,6 +214,9 @@ pub struct GpuMesh {
     pub skin: Option<GpuSkin>,
 
     /// The mesh's morph targets, when it was uploaded with any.
+    ///
+    /// The weights it names may be shared with other meshes, so a mesh does
+    /// not own them: update them through the handle, not through the mesh.
     pub morph: Option<GpuMorph>,
 }
 
@@ -229,10 +233,11 @@ pub struct GpuSkin {
 /// The morph targets a mesh blends, as the mesh stores them.
 #[derive(Clone, Debug)]
 pub struct GpuMorph {
-    /// The weights, one per target, bound at the mesh group's morph-weight
-    /// binding.
-    pub weights: wgpu::Buffer,
-    /// How many targets the mesh carries.
+    /// The weights that blend the mesh's targets, which other meshes may
+    /// share.
+    pub weights: MorphWeights,
+    /// How many targets the mesh carries, which is also how many weights the
+    /// handle holds.
     pub target_count: u32,
 }
 

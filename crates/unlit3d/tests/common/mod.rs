@@ -207,7 +207,7 @@ impl TestGpu {
     }
 
     /// Allocate a cube through the source under `key`, deformed by `skin` and
-    /// `morph_targets`.
+    /// the `morph` targets and weights.
     ///
     /// The key must be a variant that declares the matching channels — the
     /// joint stream for a skin, the morph bindings for targets — which is what
@@ -217,9 +217,13 @@ impl TestGpu {
         world: &LocalWorld,
         key: &UnlitPipelineKey,
         skin: Option<UnlitSkin<'_>>,
-        morph_targets: &[UnlitMorphTarget<'_>],
+        morph: Option<(&[UnlitMorphTarget<'_>], &MorphWeights)>,
     ) -> GpuMesh {
         let (positions, uvs, colors, indices) = cube();
+        let (morph_targets, morph_weights) = match morph {
+            Some((targets, weights)) => (targets, Some(weights.clone())),
+            None => (&[][..], None),
+        };
         self.with_mesh_source(world, |source, world| {
             source.allocate_unlit_mesh(
                 world,
@@ -231,6 +235,7 @@ impl TestGpu {
                     indices: Some(&indices),
                     skin,
                     morph_targets,
+                    morph_weights,
                 },
             )
         })
@@ -260,10 +265,30 @@ impl TestGpu {
                     indices: Some(&indices),
                     skin: Some(skin.desc()),
                     morph_targets: &[],
+                    morph_weights: None,
                 },
             )
         });
         (mesh, skin)
+    }
+
+    /// Allocate a cube morphed by `targets`, plus the weight handle that drives
+    /// it.
+    ///
+    /// The handle is returned so a test can share it with a second mesh, or
+    /// update it without naming a mesh at all.
+    pub fn allocate_morphed_cube_mesh(
+        &self,
+        world: &LocalWorld,
+        key: &UnlitPipelineKey,
+        targets: &[UnlitMorphTarget<'_>],
+        weights: &[f32],
+    ) -> (GpuMesh, MorphWeights) {
+        let handle = self.with_mesh_source(world, |source, world| {
+            source.allocate_morph_weights(world, weights)
+        });
+        let mesh = self.allocate_deformed_cube_mesh(world, key, None, Some((targets, &handle)));
+        (mesh, handle)
     }
 
     /// Allocate an offscreen colour target and a matching depth-stencil target,

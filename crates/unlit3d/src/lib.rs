@@ -178,7 +178,7 @@ pub mod prelude {
             TouchPhase, WheelUnit, dispatch_input,
         },
         mesh::{
-            JointMatrix, MeshDesc, MeshPoseDesc, MorphDesc, SkinDesc, UnlitMeshDesc,
+            JointMatrix, MeshDesc, MeshPoseDesc, MorphDesc, MorphWeights, SkinDesc, UnlitMeshDesc,
             UnlitMorphTarget, UnlitSkin, VertexBufferDesc,
         },
         mesh_source::{MeshSource, UnlitPipelineKey},

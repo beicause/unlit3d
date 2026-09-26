@@ -116,5 +116,5 @@ fn skinning_without_skin_data_panics() {
     let mut world = LocalWorld::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
-    gpu.allocate_deformed_cube_mesh(&world, &key, None, &[]);
+    gpu.allocate_deformed_cube_mesh(&world, &key, None, None);
 }

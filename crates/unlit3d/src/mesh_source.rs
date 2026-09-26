@@ -43,7 +43,9 @@ use zerocopy::IntoBytes;
 use crate::bounds::Aabb;
 use crate::components::{Camera, GpuMaterial, GpuMesh, GpuMorph, GpuSkin};
 use crate::culling::VisibleMesh;
-use crate::mesh::{MAX_POSE_PARTS, MeshDesc, MeshPoseDesc, MorphDesc, SkinDesc, UnlitMeshDesc};
+use crate::mesh::{
+    MAX_POSE_PARTS, MeshDesc, MeshPoseDesc, MorphDesc, MorphWeights, SkinDesc, UnlitMeshDesc,
+};
 use crate::pipeline::{
     DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, PipelineDesc, PipelineFactory,
     PipelineId, PipelineKey, RegisteredGlobal, RenderResources,
@@ -65,7 +67,8 @@ fn mesh_group_entries<'a>(
     mesh_info: &'a wgpu::Buffer,
     skin: Option<&'a SkinDesc>,
     morph: Option<&'a MorphDesc>,
-) -> arrayvec::ArrayVec<wgpu::BindGroupEntry<'a>, { MAX_POSE_PARTS + 1 }> {
+    weights_buffer: Option<&'a wgpu::Buffer>,
+) -> arrayvec::ArrayVec<wgpu::BindGroupEntry<'a>, { MAX_POSE_PARTS + 2 }> {
     let mut entries = arrayvec::ArrayVec::new();
     entries.push(wgpu::BindGroupEntry {
         binding: MESH_INFO_BINDING,
@@ -82,9 +85,13 @@ fn mesh_group_entries<'a>(
             binding: MORPH_DELTAS_BINDING,
             resource: morph.deltas.as_entire_binding(),
         });
+        // The weights belong to the handle, not the mesh, so the buffer comes
+        // from the graph rather than from the mesh's own description.
         entries.push(wgpu::BindGroupEntry {
             binding: MORPH_WEIGHTS_BINDING,
-            resource: morph.weights.as_entire_binding(),
+            resource: weights_buffer
+                .expect("a morph variant's weights are in the graph")
+                .as_entire_binding(),
         });
     }
     entries
@@ -92,7 +99,7 @@ fn mesh_group_entries<'a>(
 
 /// The most resources one mesh can be built from: every vertex buffer a pass
 /// can bind, plus the index buffer, the mesh bind group, the mesh-info uniform
-/// and the three pose buffers a skinned, morphed mesh may carry.
+/// and the two pose buffers a skinned, morphed mesh owns.
 const MAX_MESH_PARTS: usize = MAX_VERTEX_BUFFERS + 3 + MAX_POSE_PARTS;
 
 /// The byte size of one index of `format`.
@@ -774,10 +781,14 @@ impl MeshSource {
                 .expect("a mesh-info buffer has no dependencies")
         });
 
-        // The pose buffers — the joint matrices and the morph targets — are
-        // weak nodes like the mesh-info uniform, and like it they are the
-        // bind group's dependencies: an update writes into one rather than
-        // replacing it, so the group survives a pose change.
+        // The pose buffers are weak nodes like the mesh-info uniform, and like
+        // it they are the bind group's dependencies: an update writes into one
+        // rather than replacing it, so the group survives a pose change.
+        //
+        // The morph weights are the exception. They are already a node the
+        // *caller* holds, because one handle may back several meshes, so the
+        // mesh reads that node instead of contributing one of its own: it
+        // becomes a dependency of the bind group but not a part of the mesh.
         let MeshPoseDesc { skin, morph } = pose;
         // The handles a pose update goes through name the buffers directly, so
         // a frame rewrites them in place instead of looking the mesh up again.
@@ -794,15 +805,12 @@ impl MeshSource {
                 .insert_weak(Resource::Buffer(skin.matrices.clone()), &[])
                 .expect("a joint-matrix buffer has no dependencies")
         });
-        let morph_ids = morph.as_ref().map(|morph| {
-            let deltas = Self::graph(world, self.context)
+        let morph_deltas_id = morph.as_ref().map(|morph| {
+            Self::graph(world, self.context)
                 .insert_weak(Resource::Buffer(morph.deltas.clone()), &[])
-                .expect("a morph-delta buffer has no dependencies");
-            let weights = Self::graph(world, self.context)
-                .insert_weak(Resource::Buffer(morph.weights.clone()), &[])
-                .expect("a morph-weight buffer has no dependencies");
-            (deltas, weights)
+                .expect("a morph-delta buffer has no dependencies")
         });
+        let morph_weights_id = morph.as_ref().map(|morph| morph.weights.buffer);
 
         let bind_group_id = bind_group.map(|bind_group| {
             // Only the buffers the group reads, so replacing or removing one
@@ -814,12 +822,8 @@ impl MeshSource {
             let mut dependencies = ArrayVec::<ResourceId, MAX_MESH_PARTS>::new();
             dependencies.extend(mesh_info_id);
             dependencies.extend(skin_id);
-            dependencies.extend(
-                morph_ids
-                    .map(|(deltas, weights)| [deltas, weights])
-                    .into_iter()
-                    .flatten(),
-            );
+            dependencies.extend(morph_deltas_id);
+            dependencies.extend(morph_weights_id);
             Self::graph(world, self.context)
                 .insert_weak(Resource::BindGroup(bind_group), &dependencies)
                 .expect("a mesh bind group's dependencies are in the graph")
@@ -865,12 +869,10 @@ impl MeshSource {
         parts.extend(bind_group_id);
         parts.extend(mesh_info_id);
         parts.extend(skin_id);
-        parts.extend(
-            morph_ids
-                .map(|(deltas, weights)| [deltas, weights])
-                .into_iter()
-                .flatten(),
-        );
+        // The morph weights are deliberately absent: they are the caller's
+        // resource, shared between meshes, so removing one mesh must not free
+        // them. Only the displacements the mesh owns are a part of it.
+        parts.extend(morph_deltas_id);
         let root = Self::graph(world, self.context)
             .insert_strong(Resource::Virtual, &parts)
             .expect("a mesh's parts are in the graph");
@@ -907,9 +909,10 @@ impl MeshSource {
     /// A skinned mesh's joint indices and weights are packed into the *same*
     /// stream as its positions, right after them, and its joint matrices go
     /// into a buffer of its own. A morphed mesh's per-vertex displacements go
-    /// into another pair of buffers. Neither is a vertex attribute, so neither
-    /// changes the draw's geometry; a later pose change rewrites the mesh's
-    /// buffers with [`MeshSource::update_skin`] and
+    /// into one of its own too, but its morph weights are a
+    /// [`MorphWeights`] the caller allocated — so several meshes can share one
+    /// pose, and a later change rewrites the buffers with
+    /// [`MeshSource::update_skin`] and
     /// [`MeshSource::update_morph_weights`] rather than re-uploading the mesh.
     ///
     /// This is a convenience over [`MeshSource::allocate_mesh`]: it builds the
@@ -918,15 +921,18 @@ impl MeshSource {
     ///
     /// Which channels are packed is the key's own vertex layout: a slice for a
     /// channel the variant does not declare is left out, so the buffer always
-    /// matches what the shader reads. Who *deforms* the mesh is the mesh's:
-    /// the key asks for the joint and morph channels, and a mesh without the
-    /// matching data simply draws undeformed.
+    /// matches what the shader reads.
     ///
     /// # Panics
     ///
     /// If the input slices are empty or of mismatched length (see the
-    /// compressors in [wgpu_unlit_render::mesh]), or if the key's options read
-    /// no compressed channel and so declare no mesh-metadata group.
+    /// compressors in [wgpu_unlit_render::mesh]); if the key's options read no
+    /// compressed channel and so declare no mesh-metadata group; if the key
+    /// declares the joint channel but [`UnlitMeshDesc::skin`] is `None`; or if
+    /// the key declares morph positions but
+    /// [`UnlitMeshDesc::morph_targets`] is empty or
+    /// [`UnlitMeshDesc::morph_weights`] does not hold exactly one weight per
+    /// target.
     pub fn allocate_unlit_mesh(
         &mut self,
         world: &LocalWorld,
@@ -943,6 +949,7 @@ impl MeshSource {
             indices,
             skin,
             morph_targets,
+            morph_weights,
         } = desc;
 
         // The key's layouts are derived on the fly: the source keeps no
@@ -1041,6 +1048,13 @@ impl MeshSource {
                 !morph_targets.is_empty(),
                 "a variant that reads morph positions needs the mesh's morph targets"
             );
+            let weights = morph_weights
+                .expect("a variant that reads morph positions needs the mesh's morph weights");
+            assert_eq!(
+                weights.target_count(),
+                morph_targets.len() as u32,
+                "a mesh's morph weights must hold one weight per morph target"
+            );
             let target_count = morph_targets.len() as u32;
             // One vertex's targets are contiguous, so the flat array is a
             // vertex-major, target-minor matrix of three-component
@@ -1056,24 +1070,16 @@ impl MeshSource {
                     deltas.extend_from_slice(&target.positions[vertex]);
                 }
             }
-            let weights: Vec<f32> = morph_targets.iter().map(|target| target.weight).collect();
             let deltas_buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::mesh::morph_deltas"),
                 size: size_of_val(deltas.as_slice()) as u64,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            let weights_buf = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::mesh::morph_weights"),
-                size: size_of_val(weights.as_slice()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
             queue.write_buffer(&deltas_buf, 0, deltas.as_bytes());
-            queue.write_buffer(&weights_buf, 0, weights.as_bytes());
             MorphDesc {
                 deltas: deltas_buf,
-                weights: weights_buf,
+                weights,
                 target_count,
             }
         });
@@ -1088,13 +1094,25 @@ impl MeshSource {
             mapped_at_creation: false,
         });
 
+        // The weights are a node the caller owns, so the group's entry names
+        // the buffer behind the handle rather than one the mesh created.
+        let weights_buffer = morph_desc.as_ref().and_then(|morph| {
+            Self::graph(world, self.context)
+                .get_buffer(morph.weights.buffer)
+                .cloned()
+        });
         let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("unlit3d::mesh::bind_group"),
             layout: &mesh_layout,
             // The entries follow the variant's own layout: the metadata index
             // is always there, and a pose binding exists exactly when the
             // variant reads it and the mesh supplied it.
-            entries: &mesh_group_entries(&mesh_info_buf, skin_desc.as_ref(), morph_desc.as_ref()),
+            entries: &mesh_group_entries(
+                &mesh_info_buf,
+                skin_desc.as_ref(),
+                morph_desc.as_ref(),
+                weights_buffer.as_ref(),
+            ),
         });
 
         // Index buffer (optional): `Uint16` when every index fits, otherwise
@@ -1471,6 +1489,48 @@ impl MeshSource {
 
     // -- poses -----------------------------------------------------------------
 
+    /// Insert `weights` as a morph-weight resource and return its handle.
+    ///
+    /// The handle is the caller's: it is inserted
+    /// [strong](ResourceGraph::insert_strong), so it outlives every mesh that
+    /// reads it and no mesh removal can collect it. Allocating several meshes
+    /// with the same handle binds them to one weight buffer, so one
+    /// [`MeshSource::update_morph_weights`] drives all of them — the usual
+    /// shape of a crowd or a set of props sharing one expression.
+    ///
+    /// A mesh needs a handle of its own only when its weights should move
+    /// independently of every other mesh.
+    ///
+    /// Like a registered texture, the buffer lives as long as the source's
+    /// resource graph: a dependency shared by several consumers cannot be freed
+    /// by any one of them.
+    ///
+    /// # Panics
+    ///
+    /// If `weights` is empty, since a mesh's morph loop is bounded by its own
+    /// target count and an empty buffer could not satisfy one.
+    pub fn allocate_morph_weights(&mut self, world: &LocalWorld, weights: &[f32]) -> MorphWeights {
+        assert!(
+            !weights.is_empty(),
+            "morph weights need at least one target"
+        );
+        let buffer = self.device(world).create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unlit3d::morph::weights"),
+            size: size_of_val(weights) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue(world)
+            .write_buffer(&buffer, 0, weights.as_bytes());
+        let buffer = Self::graph(world, self.context)
+            .insert_strong(Resource::Buffer(buffer), &[])
+            .expect("a morph-weight buffer has no dependencies");
+        MorphWeights {
+            buffer,
+            target_count: weights.len() as u32,
+        }
+    }
+
     /// Replace the bind pose of the skinned `mesh` and upload it.
     ///
     /// The matrices go into the buffer the mesh already binds, so the mesh's
@@ -1494,25 +1554,35 @@ impl MeshSource {
         );
     }
 
-    /// Replace the morph-target weights of `mesh` and upload them.
+    /// Replace the weights `handle` names and upload them.
     ///
-    /// The weights are applied by the vertex shader, so a partially weighted
-    /// pose costs one buffer write and no mesh re-upload. The number of
-    /// weights must match the target count the mesh was uploaded with; a
-    /// weight left at zero skips its target's displacement entirely.
+    /// Every mesh allocated with the handle draws the new pose, which is what
+    /// makes a shared handle worth having. The weights are applied by the
+    /// vertex shader, so a partially weighted pose costs one buffer write and
+    /// no mesh re-upload; a weight left at zero skips its target's
+    /// displacement entirely.
     ///
     /// # Panics
     ///
-    /// If `mesh` has no morph targets, or if `weights` has more entries than
-    /// the mesh's target count.
-    pub fn update_morph_weights(&mut self, world: &LocalWorld, mesh: &GpuMesh, weights: &[f32]) {
-        let morph = mesh
-            .morph
-            .as_ref()
-            .expect("the mesh was uploaded with morph targets");
+    /// If `weights` is not exactly as long as the handle's target count.
+    pub fn update_morph_weights(
+        &mut self,
+        world: &LocalWorld,
+        handle: &MorphWeights,
+        weights: &[f32],
+    ) {
+        assert_eq!(
+            weights.len() as u32,
+            handle.target_count,
+            "a morph-weight update must supply one weight per target"
+        );
+        let buffer = Self::graph(world, self.context)
+            .get_buffer(handle.buffer)
+            .expect("a morph-weight handle's buffer is in the graph")
+            .clone();
         Self::write_pose_buffer(
             &self.queue(world),
-            &morph.weights,
+            &buffer,
             weights.as_bytes(),
             "morph weights",
         );
