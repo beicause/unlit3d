@@ -2,47 +2,69 @@ English | [简体中文](README.zh-CN.md)
 
 # unlit3d
 
-A compact, opinionated 3D renderer for **unlit** draws on WebGPU, plus the ECS
-layer built on top of it. The workspace targets WebGPU (and the native backends
-behind it) with a mobile-first bias; WebGL and GLES are not supported. It draws
-a whole scene — opaque and transparent instances alike — in a single render
-pass into one `wgpu::TextureView`, with CPU frustum culling and a first-class
-headless path for CI snapshot testing.
+A compact, extensible, opinionated 3D renderer for WebGPU, plus the ECS layer
+built on top of it. It ships a built-in **unlit** pipeline, is mobile-first, and
+does not support WebGL or GLES. It uses and exposes `wgpu` resources directly,
+allowing low-level control and extension, with very little high-level
+CPU-side abstraction.
 
 The project is at an **early stage of development**. The APIs change freely, and
 the design document still lists unfinished work; treat every crate as work in
 progress.
+
+## Features
+
+- **Mobile-first, and cross-platform.** One pass per frame, transient depth and
+  multisample textures, compressed vertices, and no pre-pass, compute shader,
+  lighting or shadow path. The same frame loop drives a window, a headless
+  offscreen target, the web example and the Android APK.
+- **A scene the caller composes.** A frame is assembled from frame sources that
+  contribute their own draws and state where in the frame they belong. The
+  built-in mesh rendering, the egui overlay and a caller's own pass have exactly
+  the same standing.
+- **A small ECS.** A renderable entity carries its mesh, material and pipeline
+  as components; borrowing OOP's focus on object state, a behaviour is a
+  component holding a closure rather than a system, so game logic and drawing
+  share one model.
+- **A variant-driven unlit pipeline.** A shader variant contains exactly the
+  channels a mesh uses — position, UV, vertex color, per-instance transform and
+  color, base-color texture, skinning, morph targets — and is specialized for
+  the frame's target.
+- **Persistent, pooled GPU resources.** Draws work with raw `wgpu` resources;
+  they live across frames, are rebuilt only when needed, and share and reuse the
+  buffers uploads go through.
+- **CPU frustum culling and auto instancing.** Off-screen meshes cost nothing,
+  and draws with matching state collapse into one instanced draw.
+- **egui and portable input.** egui can be overlaid on the render or drawn into
+  a texture of its own; input is unified and driven by OOP-style callbacks.
+- **Deterministic and snapshot-tested in CI.** Rendering the same scene offscreen
+  produces the same frame every time. Each desktop platform lints, builds and
+  tests the workspace, then renders every example scene and compares it against
+  its stored image with SSIMULACRA2; the wasm and Android builds are two more
+  jobs.
 
 ## Crates
 
 | Crate | Role |
 |-------|------|
 | [`wgpu_unlit_render`](crates/wgpu_unlit_render/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit pipeline, and an egui backend. Knows nothing about ECS. |
-| [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, the mesh source with pipeline families, input, UI overlay, and winit presentation. |
-| [`unlit_ecs`](crates/unlit_ecs/README.md) | The archetype ECS the high-level layer is written against. Deliberately small: no change detection, hooks, events, relations or scheduler. |
-| [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, and optional SSIMULACRA2 image snapshots. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes — and its own headless snapshot mode. Also the Android example, packaged as an APK. |
+| [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation. |
+| [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
+| [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes and a headless snapshot mode; also the Android example, packaged as an APK. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. Not a workspace member. |
 
 ## How the pieces fit
 
 `wgpu_unlit_render` is the foundation and depends on nothing in the workspace.
-`unlit3d` sits on top of it and on `unlit_ecs`, and keeps both as direct
-dependencies rather than re-exporting them wholesale: its `prelude` re-exports
-the items most callers need, and everything else stays reachable through its
-own crate path. `wgpu_unlit_test_util` is a dev-dependency of the two rendering
-crates; `unlit3d_examples` uses it only behind its `snapshot` feature.
+`unlit3d` sits on top of it and on `unlit_ecs`, keeping both as direct
+dependencies: its `prelude` re-exports what most callers need, and everything
+else stays reachable through its own crate path.
 
-Two principles shape the layering:
-
-- **The built-in pipeline gets no privilege.** Everything the unlit pipeline
-  uses — binding slots, vertex compression, resource tracking, the variant
-  cache — is public, and the pipeline is composed from the same facilities a
-  caller's own pipeline would use.
-- **Frame sources are peers.** A frame is assembled from several
-  `unlit3d::source::FrameSource` implementations that each produce a
-  `wgpu_unlit_render::scene::Scene`; built-in mesh rendering is one source and
-  a caller's own pass is another, with no less privilege.
+Two principles shape the layering: **the built-in pipeline gets no privilege**,
+being composed from the same public facilities a caller's own pipeline uses; and
+**frame sources are peers**, with the built-in mesh source and a caller's own
+pass differing in nothing.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the design rationale, the
 architecture and the implementation plan. It is written in Chinese.
@@ -85,31 +107,26 @@ Commands follow the `cargo xtask` convention:
 
 The tests fall into three layers, by how close they sit to the code they check:
 
-- **Unit tests** live inside each crate's `src/` (`#[cfg(test)]`) and cover only
-  that crate's private, pure logic: no GPU, no `LocalWorld`. They run directly
-  under `cargo nextest run`.
+- **Unit tests** live inside each crate's `src/` (`#[cfg(test)]`), cover only its
+  private pure logic — no GPU — and run directly under `cargo nextest run`.
 - **Library integration tests** live in each crate's `tests/` and reach the
-  crate through its public API only. `unlit_ecs`'s are plain ECS behaviour;
-  the two rendering crates' are GPU tests that build a headless device with
-  [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md), render a
-  scene offscreen and assert on the pixels that come back — but compare against
-  no stored image.
-- **Snapshot tests** are the subset of integration tests that compare a frame
-  (or a multi-frame sequence) against an image stored in the repository, using
-  the SSIMULACRA2 perceptual metric to freeze the rendering result. The rule is:
-  the **low-level API's snapshots stay in `wgpu_unlit_render`'s tests**
-  (`tests/snapshots` links in the submodule; re-bless with `SNAPSHOT_UPDATE=1`),
-  while the **high-level ECS scenes' snapshots run through
-  [`unlit3d_examples`](unlit3d_examples/README.md)'s headless mode** (`--scene
-  all` verifies them, `--update` re-blesses them), because the example is both
-  the demo and the CI rendering check and those scenes should not be maintained
-  twice.
+  crate through its public API only. `unlit_ecs`'s are plain ECS behaviour; the
+  two rendering crates' build a headless device with
+  [`wgpu_unlit_test_util`](crates/wgpu_unlit_test_util/README.md), render a scene
+  offscreen and assert on the pixels that come back, comparing against no stored
+  image.
+- **Snapshot tests** compare a frame (or a multi-frame sequence) against an image
+  stored in the repository, using SSIMULACRA2. The low-level API's snapshots stay
+  in `wgpu_unlit_render`'s tests (re-bless with `SNAPSHOT_UPDATE=1`); the
+  high-level ECS scenes' run through
+  [`unlit3d_examples`](unlit3d_examples/README.md)'s headless mode (`--scene all`
+  verifies them, `--update` re-blesses them), because the example is both the
+  demo and the CI rendering check.
 
 All snapshot baselines therefore live in
-[`unlit3d_asset_files`](unlit3d_asset_files/README.md), a
-git submodule. Clone it with `git submodule update --init`. After an
-intentional rendering change, re-bless the affected snapshots the way each layer
-above describes, and review the image diff before committing.
+[`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule; clone it
+with `git submodule update --init`. After an intentional rendering change,
+re-bless the affected snapshots and review the image diff before committing.
 
 ## Workspace layout
 
