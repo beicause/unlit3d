@@ -23,6 +23,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a cube with the rich egui panel over it, one pass",
     size: TEST_SIZE,
     frames: 2,
+    step_seconds: None,
     samples: 1,
     depth: true,
     ui: true,

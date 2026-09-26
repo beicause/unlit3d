@@ -71,6 +71,14 @@ pub struct SceneDef {
     pub size: (u32, u32),
     /// How many frames the headless path draws before finishing.
     pub frames: u32,
+    /// How long each frame stays on screen in the windowed loop, in seconds,
+    /// or `None` for a scene that animates continuously from the frame delta.
+    ///
+    /// The headless path ignores this and draws the frames back to back, so a
+    /// capture stays reproducible; the windowed path uses it so a scene whose
+    /// frames were frozen as a sequence plays at a watchable pace rather than
+    /// as fast as the display refreshes.
+    pub step_seconds: Option<f32>,
     /// The sample count of the offscreen target the headless path binds.
     pub samples: u32,
     /// Whether that offscreen target carries a depth-stencil attachment.
@@ -135,6 +143,13 @@ pub struct SceneOptions {
     /// Suppress everything egui animates against the clock, so a captured
     /// frame does not depend on when it was drawn.
     pub reproducible: bool,
+    /// Seconds each frame of a fixed-sequence scene stays on screen, or `None`
+    /// to advance the sequence once per drawn frame.
+    ///
+    /// A capture passes `None` so it draws exactly the frames the snapshots
+    /// froze; a windowed run passes the scene's own [`SceneDef::step_seconds`]
+    /// so the sequence plays at a watchable pace.
+    pub sequence_step: Option<f32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +164,14 @@ pub const TEST_SIZE: (u32, u32) = (256, 192);
 
 /// The format the test scenes render into: sRGB, like the example's window.
 pub const TEST_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// Seconds each frame of a fixed-sequence scene stays on screen in the
+/// windowed loop.
+///
+/// The ported test scenes froze an animation as a handful of frames, so
+/// playing them one per displayed frame would flash past in a fraction of a
+/// second. The headless path ignores this and draws the frames back to back.
+pub const SEQUENCE_STEP: f32 = 0.5;
 
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
 pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);

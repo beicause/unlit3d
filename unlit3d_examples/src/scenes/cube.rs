@@ -32,6 +32,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "the example's own scene: a textured cube with two panels",
     size: (960, 720),
     frames: 30,
+    step_seconds: None,
     samples: SAMPLE_COUNT,
     depth: true,
     ui: true,

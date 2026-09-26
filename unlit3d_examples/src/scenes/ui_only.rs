@@ -25,6 +25,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a rich egui panel, no mesh source and no camera",
     size: TEST_SIZE,
     frames: 2,
+    step_seconds: None,
     samples: 1,
     depth: false,
     ui: true,

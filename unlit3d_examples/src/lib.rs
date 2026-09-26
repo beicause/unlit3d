@@ -261,6 +261,9 @@ fn run_headless_scene(
             ui: def.ui && !args.no_ui,
             selector: false,
             reproducible: true,
+            // A capture steps the sequence once per frame, so it draws exactly
+            // the frames the snapshots froze.
+            sequence_step: None,
         },
         def,
     );
@@ -620,8 +623,19 @@ struct Scene {
     size: (u32, u32),
     /// The scene's per-frame behaviour and snapshot table.
     control: SceneControl,
-    /// The frames the scene has drawn.
+    /// The frame index the scene's behaviour is handed.
     frame: u32,
+    /// The interval the index advances at, in seconds, or `None` to advance it
+    /// once per drawn frame.
+    ///
+    /// The headless path advances it every frame so a capture draws exactly the
+    /// frames its snapshots froze; the windowed path hands a scene that froze a
+    /// sequence a longer interval, so the sequence plays at a watchable pace
+    /// instead of one frame per display refresh.
+    sequence_step: Option<f32>,
+    /// Seconds accumulated towards the next advance of `frame`, used only when
+    /// `sequence_step` is set.
+    sequence_clock: f32,
     /// The scene-selector's switch component, read once per frame.
     switch: Entity,
     /// A scene switch requested by the selector, consumed by the frame loop.
@@ -833,6 +847,10 @@ impl App {
                         ui: def.ui,
                         selector: true,
                         reproducible: false,
+                        // The windowed loop holds each frame of a fixed
+                        // sequence for the scene's own step, so it plays at a
+                        // watchable pace.
+                        sequence_step: def.step_seconds,
                     },
                     def,
                 ));
@@ -1043,6 +1061,8 @@ impl Scene {
             size,
             control,
             frame: 0,
+            sequence_step: options.sequence_step,
+            sequence_clock: 0.0,
             switch,
             pending: None,
         }
@@ -1057,10 +1077,19 @@ impl Scene {
         dispatch_input(&self.world);
         self.world.apply();
 
+        // A fixed-sequence scene holds each frame for `sequence_step` seconds;
+        // everything else, and every capture, steps once per drawn frame.
+        let stepped = match self.sequence_step {
+            Some(step) => tick(&mut self.sequence_clock, step, delta_time),
+            None => true,
+        };
+
         // The scene's own per-frame behaviour runs after the input, so the
         // world the renderer reads is this frame's.
-        (self.control.advance)(&mut self.world, self.frame, delta_time);
-        self.frame += 1;
+        if stepped {
+            (self.control.advance)(&mut self.world, self.frame, delta_time);
+            self.frame += 1;
+        }
 
         // The selector's request, read once so the frame loop can act on it.
         self.pending = self
@@ -1118,4 +1147,56 @@ fn mount_selector(world: &mut LocalWorld, switch: Entity, current: &'static scen
                 }
             });
     }),));
+}
+
+/// Accumulate `delta_time` into `clock` and report whether a `step`-long
+/// interval has passed, subtracting it from the clock if so.
+///
+/// At most one interval is consumed per call, so a long stall advances a
+/// fixed-sequence scene by one frame rather than skipping several. The
+/// leftover stays in the clock, so the sequence keeps pace over time.
+fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
+    *clock += delta_time;
+    if *clock >= step {
+        *clock -= step;
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tick;
+
+    #[test]
+    fn a_clock_reaches_its_step_only_after_enough_time() {
+        let mut clock = 0.0;
+        let step = 0.5;
+
+        // Half the interval is not enough.
+        assert!(!tick(&mut clock, step, 0.25));
+        // The interval is reached exactly.
+        assert!(tick(&mut clock, step, 0.25));
+        // The clock keeps the leftover rather than resetting, so the next
+        // interval is reached in the time that is left.
+        assert!(!tick(&mut clock, step, 0.4));
+        assert!(tick(&mut clock, step, 0.1));
+    }
+
+    #[test]
+    fn a_long_stall_advances_one_step_and_keeps_the_rest() {
+        let mut clock = 0.0;
+        // A two-second stall over a half-second step consumes one step and
+        // leaves the surplus for later, rather than skipping frames.
+        assert!(tick(&mut clock, 0.5, 2.0));
+        assert_eq!(clock, 1.5, "the surplus stays in the clock");
+
+        // The surplus is spent over the next three calls, one step each.
+        assert!(tick(&mut clock, 0.5, 0.0));
+        assert!(tick(&mut clock, 0.5, 0.0));
+        assert!(tick(&mut clock, 0.5, 0.0));
+        assert_eq!(clock, 0.0, "the surplus is used up");
+        assert!(!tick(&mut clock, 0.5, 0.0));
+    }
 }

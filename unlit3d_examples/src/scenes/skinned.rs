@@ -5,7 +5,9 @@
 //! live in a [`SkinPose`] component the CPU updates, and each frame is stored
 //! as its own snapshot.
 
-use super::{BendSkin, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options};
+use super::{
+    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
+};
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -21,6 +23,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a cube bent by a two-joint skin over six frames",
     size: TEST_SIZE,
     frames: FRAMES as u32,
+    step_seconds: Some(SEQUENCE_STEP),
     samples: 1,
     depth: true,
     ui: false,

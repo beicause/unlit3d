@@ -132,6 +132,13 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 `--headless` 使用其中任何一个都算错误，而不是被静默忽略。`--scene all` 不能与
 `--output` 或 `--snapshot` 组合。`--no-ui` 只在无头路径生效；窗口化路径始终挂载 UI。
 
+### 播放节奏
+
+无头捕获把多帧场景的每一帧紧挨着画一遍，所以一次运行逐帧匹配快照。窗口化运行则按时间
+播放：把动画冻结成若干帧的场景，每帧停留 `SEQUENCE_STEP`（当前为 0.5 秒），因此肉眼
+可看，而不是随刷新率一闪而过。窗口循环每次最多推进一帧序列，卡顿不会跳帧。连续动画的
+场景（例如自转的立方体）不受影响，它们本来就按帧间隔推进。
+
 ### 快照
 
 不带 `--snapshot` 时，无头运行会把场景声明了快照的每一帧——多帧场景的整个序列——与
@@ -154,7 +161,7 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 
 ## 测试
 
-本 crate 唯一的测试针对手写的命令行解析器（`src/cli.rs`），它自身没有参数解析依赖：
+本 crate 自己的测试覆盖命令行（`src/cli.rs`）与固定步长播放时钟（`src/lib.rs`）：
 
 ```text
 cargo nextest run -p unlit3d_examples

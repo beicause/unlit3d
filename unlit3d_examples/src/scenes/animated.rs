@@ -8,7 +8,7 @@
 //! pooled range, a stale metadata entry or a mispacked instance looks like
 //! from frame to frame.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, unlit_options};
+use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, unlit_options};
 use unlit3d::prelude::*;
 
 /// The grid of cells a cube can occupy, in the XZ plane.
@@ -85,6 +85,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a grid of cubes filling, moving and recycling over eight frames",
     size: TEST_SIZE,
     frames: STEPS.len() as u32,
+    step_seconds: Some(SEQUENCE_STEP),
     samples: 1,
     depth: true,
     ui: false,
@@ -115,8 +116,24 @@ fn build(
 
     SceneControl {
         advance: Box::new(move |world, frame, _delta| {
-            // The sequence loops, so a windowed run keeps animating.
-            let step = &STEPS[frame as usize % STEPS.len()];
+            // The sequence loops, so a windowed run keeps animating. A pass
+            // starts from the state the first one did — every cell empty and
+            // the allocation counter back at zero — so a later pass replays the
+            // first exactly instead of laying new allocations over what the
+            // previous pass left behind. The allocation offset is baked into
+            // the vertices and grows with the counter, so a counter that kept
+            // climbing would drift the cubes out of the view.
+            let step_index = frame as usize % STEPS.len();
+            if step_index == 0 {
+                for entry in cells.iter_mut() {
+                    if let Some((entity, mesh)) = entry.take() {
+                        assert!(world.despawn(entity));
+                        super::remove_mesh(world, source_entity, mesh);
+                    }
+                }
+                allocated = 0;
+            }
+            let step = &STEPS[step_index];
 
             // Retire this frame's cells: the entity goes first, so nothing in
             // the world still names a mesh the renderer is about to free.
@@ -139,7 +156,7 @@ fn build(
                 let offset = glam::Vec3::splat(0.06 * allocated as f32);
                 let mesh = super::allocate_offset_cube_mesh(world, source_entity, &key, offset);
                 let entity = world.spawn((
-                    cell_transform(cell, frame as usize % STEPS.len()),
+                    cell_transform(cell, step_index),
                     InstanceColor::new(TINTS[allocated % TINTS.len()]),
                     mesh.clone(),
                     UnlitPipeline::new(key.clone()),
@@ -152,13 +169,13 @@ fn build(
             // renders is this frame's.
             for (cell, entry) in cells.iter().enumerate() {
                 if let Some((entity, _)) = entry {
-                    let transform = cell_transform(cell, frame as usize % STEPS.len());
+                    let transform = cell_transform(cell, step_index);
                     world
                         .with_mut::<Transform, _>(*entity, |current| *current = transform)
                         .expect("a live mesh carries a transform");
                 }
             }
-            let camera = orbit_camera(frame as usize % STEPS.len());
+            let camera = orbit_camera(step_index);
             world
                 .with_mut::<Camera, _>(camera_entity, |current| *current = camera)
                 .expect("the camera entity carries a camera");

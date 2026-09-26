@@ -151,6 +151,17 @@ silent no-op. `--scene all` cannot be combined with `--output` or `--snapshot`.
 `--no-ui` is only honoured by the headless path; the windowed path always
 mounts the UI.
 
+### Playback pace
+
+A headless capture draws a multi-frame scene's frames back to back, so one run
+matches its snapshots frame by frame. The windowed loop instead plays them over
+time: a scene whose animation was frozen as a few frames holds each one for
+`SEQUENCE_STEP` (currently 0.5 s), so the sequence is watchable rather than
+flashing past at the refresh rate. At most one sequence step is taken per
+windowed frame, so a stall does not skip frames. Continuously animated scenes —
+the spinning cube, say — are unaffected, since they advance from the frame
+delta already.
+
 ### Snapshots
 
 Without `--snapshot`, a headless run compares every frame the scene declares a
@@ -178,8 +189,8 @@ before committing them. That submodule is checked out with
 
 ## Tests
 
-The crate's only tests are for the hand-written command-line parser
-(`src/cli.rs`), which has no argument-parsing dependency of its own:
+The crate's own tests cover the command line (`src/cli.rs`) and the fixed-step
+playback clock (`src/lib.rs`):
 
 ```text
 cargo nextest run -p unlit3d_examples

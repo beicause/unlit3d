@@ -11,8 +11,8 @@
 //! sequence is what proves a merged draw still reads each instance's own pose.
 
 use super::{
-    BendSkin, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options, morph_targets,
-    rest_pose,
+    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
+    morph_targets, rest_pose,
 };
 use unlit3d::prelude::*;
 
@@ -30,6 +30,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "three cubes sharing one mesh, deformed per instance",
     size: TEST_SIZE,
     frames: FRAMES as u32,
+    step_seconds: Some(SEQUENCE_STEP),
     samples: 1,
     depth: true,
     ui: false,

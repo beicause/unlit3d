@@ -6,7 +6,10 @@
 //! animate: the weights live in a [`MorphWeights`] component the CPU updates,
 //! and each frame is stored as its own snapshot.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options, morph_targets};
+use super::{
+    SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
+    morph_targets,
+};
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -20,6 +23,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a cube blended by two morph targets over six frames",
     size: TEST_SIZE,
     frames: FRAMES as u32,
+    step_seconds: Some(SEQUENCE_STEP),
     samples: 1,
     depth: true,
     ui: false,
