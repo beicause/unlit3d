@@ -215,7 +215,9 @@ the lint gates, on every push to `main` and every pull request:
   feature, `cargo build --workspace --all-targets`, `cargo xtask test`,
   `cargo doc` with `-D warnings`, and the example's headless snapshot comparison.
   Linux installs Mesa for `lavapipe`, since the runners have no GPU.
-- **build-wasm** — clippy and a `wasm32-unknown-unknown` build.
+- **build-wasm** — clippy and a `wasm32-unknown-unknown` build. The build
+  excludes `xtask`, a host-only task runner whose HTTP server does not compile
+  for that target.
 - **build-android** — the `aarch64-linux-android` cross-build and the Gradle APK.
 
 The snapshot comparison is the check that makes a rendering regression fail

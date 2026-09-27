@@ -254,6 +254,8 @@ pub struct UnlitOptions {
     /// without one needs `None`. [`SurfaceSpecializer`] therefore follows the
     /// target rather than leaving a stale format behind, so a pipeline always
     /// matches the pass it is recorded into.
+    ///
+    /// [`SurfaceSpecializer`]: crate::specialize::SurfaceSpecializer
     pub depth_stencil: Option<wgpu::DepthStencilState>,
     /// The color target the pipeline writes: its format, blend state and
     /// write mask.
@@ -742,6 +744,7 @@ impl UnlitOptions {
     }
 }
 
+#[cfg(feature = "unlit")]
 impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitOptions {
     /// Compose the built-in `unlit.wesl` for these options and build the
     /// pipeline, so a variant of them compiles through the same
@@ -800,6 +803,7 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitOptions {
     }
 }
 
+#[cfg(feature = "unlit")]
 impl SurfaceTarget for UnlitOptions {
     /// Rewrites exactly the three fields the target reaches: the color format,
     /// the sample count and the depth-stencil format. The shader variant,

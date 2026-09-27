@@ -175,7 +175,8 @@ pull request 上运行上述检查以及各 lint 关卡：
   `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
   `cargo doc`，以及示例的无头快照比较。由于 runner 没有 GPU，Linux 会安装 Mesa 以
   提供 `lavapipe`。
-- **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建。
+- **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建。构建会排除
+  `xtask`：它是只在宿主机上运行的任务运行器，其 HTTP 服务器无法为该目标编译。
 - **build-android** —— `aarch64-linux-android` 交叉构建与 Gradle APK。
 
 快照比较正是让渲染回归会失败而不是悄然通过的那道检查，这也是示例的场景承担它的原因。

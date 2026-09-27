@@ -286,7 +286,7 @@ impl MeshInfo {
 /// own bind group.
 ///
 /// Vertex attributes are addressed by the explicit offsets of
-/// [`crate::pipeline::SpecializedUnlitPipeline::vertex_buffer_layouts`], not by WGSL
+/// [`crate::pipeline::UnlitOptions::vertex_buffer_layouts`], not by WGSL
 /// shader-layout rules, so this type makes no `const_shader_layout` claim;
 /// that the offsets line up is asserted by a test instead.
 ///

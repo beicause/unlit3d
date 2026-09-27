@@ -154,9 +154,13 @@ jobs:
         # filename collision. The binary is what a browser runs; the library
         # exists for Android, so only the targets that never produce it are
         # built here.
+        #
+        # `xtask` is excluded because it is a host-only task runner: its HTTP
+        # server reaches `async-io` and so `errno`, which does not build for
+        # this target. Nothing in the browser or the APK depends on it.
         run: >
-          cargo build --workspace --target wasm32-unknown-unknown
-          --bins --tests --benches --examples
+          cargo build --workspace --exclude xtask
+          --target wasm32-unknown-unknown --bins --tests --benches --examples
 
   build-android:
     name: Build android

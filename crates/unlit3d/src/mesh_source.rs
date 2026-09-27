@@ -297,7 +297,9 @@ impl Specializer<UnlitOptions> for UnlitDrawSpecializer {
     }
 }
 
-/// Describes a specialized [SpecializedUnlitPipeline] the way the source registers it.
+/// Describes a specialized
+/// [SpecializedUnlitPipeline](unlit_wgpu::pipeline::SpecializedUnlitPipeline)
+/// the way the source registers it.
 ///
 /// This is what keeps the built-in pipeline an ordinary client of the family
 /// machinery: it packages the shader's layouts and a closure over the

@@ -21,7 +21,7 @@
 //! concrete pipeline an entity needs depends on the frame's render target and
 //! on the mesh's vertex layout, neither of which is known when the entity is
 //! spawned. A *family* closes that gap. It pairs a [Variants](unlit_wgpu::specialize::Variants) cache with a
-//! [Specializer] and a [RenderPipelineFactory], queries the world for the entities
+//! [Specializer](unlit_wgpu::specialize::Specializer) and a [RenderPipelineFactory], queries the world for the entities
 //! that carry its key type, and resolves each to a concrete pipeline. The
 //! renderer registers every family under the [TypeId](core::any::TypeId) of
 //! its key type; [crate::scene] drives them all once per frame. A family's
@@ -160,7 +160,8 @@ pub struct FamilyContext<'a> {
 ///
 /// A [GpuRenderPipeline](crate::components::GpuRenderPipeline) component carries a key of this type. It selects the family
 /// the entity draws with -- the family registered for this key type -- and
-/// supplies the blueprint that family's [Specializer] rewrites into the
+/// supplies the blueprint that family's
+/// [Specializer](unlit_wgpu::specialize::Specializer) rewrites into the
 /// concrete descriptor. Because the key carries the base, one family can serve
 /// entities that begin from different descriptors; because it is the component
 /// itself, the renderer never hands out a family handle.
