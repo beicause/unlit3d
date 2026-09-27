@@ -31,6 +31,11 @@ It is at an **early stage of development** and its API changes freely.
   "resource"; an entity a caller wants to reach from anywhere is an ordinary
   entity whose handle the caller keeps, optionally marked with a marker
   component of the caller's own.
+- **Every `'static` type is a component.** No derive, no registration: a tuple
+  is a component too. That is what makes a *bundle* a tuple of components rather
+  than a hierarchy of them, so a nested tuple is one component and not a group
+  of them. To flatten nesting, write the bundle with [`bundle!`], which walks
+  the syntax while expanding.
 - **There are no systems.** Driving behaviour means the caller reading the
   world and calling the method or closure it wants — or running a *behaviour
   component*, a component that holds a closure and is invoked by whatever
@@ -46,7 +51,8 @@ It is at an **early stage of development** and its API changes freely.
 
 ## What is in the box
 
-[`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`],
+[`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`] (and the
+[`bundle!`] macro for flattening nested tuples),
 [`Query`] and [`QueryFilter`] ([`With`], [`Without`], [`Or`], tuples),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
 [`Archetypes`] for direct storage inspection, and the specialized hash
@@ -112,6 +118,25 @@ let entity = {
 assert!(!world.contains(entity));
 world.apply();
 assert!(world.contains(entity));
+```
+
+A tuple bundle does not flatten, because a tuple is itself a component. Reach for
+`bundle!` when the components are written nested, or when there are more than
+sixteen of them. Its width is limited by the compiler's recursion limit — about a
+hundred components at the default — and a wider one is built by raising
+`#![recursion_limit]`:
+
+```rust
+use unlit_ecs::{bundle, World};
+
+let mut world = World::new();
+let entity = world.spawn(bundle!((1u32, 2.0f32), (true, ())));
+
+// The macro flattened the nesting: three components, not a nested tuple.
+assert!(world.has::<u32>(entity));
+assert!(world.has::<f32>(entity));
+assert!(world.has::<bool>(entity));
+assert!(!world.has::<(u32, f32)>(entity));
 ```
 
 ## Why the ECS is this small

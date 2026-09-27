@@ -25,6 +25,9 @@
   而不是共享 world。
 - **没有资源（resource）。** crate 不标记也不追踪任何资源；想被随处访问的实体就是
   普通实体，调用者自行保存它的句柄，需要时可以用自己的标记组件加以标记。
+- **任何 `'static` 类型都是组件。** 不需要 derive，也不需要注册；元组同样是组件。
+  正因如此，*bundle* 是「组件的元组」，而不是组件的层级结构——嵌套元组是一个组件，
+  而不是一组组件。要展平嵌套，就用 `bundle!` 写 bundle，它在展开期遍历语法。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
@@ -35,7 +38,8 @@
 
 ## 内容概览
 
-`World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`、
+`World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及用于展平嵌套元组的
+`bundle!` 宏）、
 `Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`，以及
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
@@ -97,6 +101,23 @@ let entity = {
 assert!(!world.contains(entity));
 world.apply();
 assert!(world.contains(entity));
+```
+
+元组 bundle 不会展平，因为元组本身就是一个组件。当组件是嵌套写下的，或者超过
+十六个时，用 `bundle!`。它的宽度受编译器递归上限约束——默认上限下约一百个组件；
+更宽的需要在调用方 crate 里提高 `#![recursion_limit]`：
+
+```rust
+use unlit_ecs::{bundle, World};
+
+let mut world = World::new();
+let entity = world.spawn(bundle!((1u32, 2.0f32), (true, ())));
+
+// 宏展平了嵌套：得到三个组件，而不是一个嵌套元组。
+assert!(world.has::<u32>(entity));
+assert!(world.has::<f32>(entity));
+assert!(world.has::<bool>(entity));
+assert!(!world.has::<(u32, f32)>(entity));
 ```
 
 ## 为什么 ECS 这么小
