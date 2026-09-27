@@ -1125,11 +1125,12 @@ mod release_tests {
             // nothing else refers to.
             self.context = ctx;
             if self.node.is_none() {
-                self.node = world
-                    .get_mut::<ResourceGraph>(ctx.graph)
-                    .expect("the context's graph exists")
-                    .insert_strong(GraphResource::Virtual, &[])
-                    .ok();
+                self.node = Some(
+                    world
+                        .get_mut::<ResourceGraph>(ctx.graph)
+                        .expect("the context's graph exists")
+                        .insert_strong(GraphResource::Virtual),
+                );
             }
         }
 

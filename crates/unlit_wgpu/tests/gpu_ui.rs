@@ -14,7 +14,7 @@ use common::*;
 use unlit_wgpu::globals::Globals;
 use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
 use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_clear};
-use unlit_wgpu::resources::{Resource, ResourceGraph};
+use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 
 /// The UI's logical layout, in points. The physical target scales with the
@@ -100,12 +100,8 @@ fn render_ui_with(
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph
-        .insert_strong(Resource::Buffer(camera.clone()), &[])
-        .expect("an empty dependency list always resolves");
-    let globals_id = graph
-        .insert_strong(Resource::Buffer(globals.clone()), &[])
-        .expect("an empty dependency list always resolves");
+    let camera_id = graph.insert_strong(camera.clone());
+    let globals_id = graph.insert_strong(globals.clone());
     // The test target is sRGB: the UI converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
     // from its layout, and the UI draws with it.
@@ -116,12 +112,10 @@ fn render_ui_with(
         ..Default::default()
     };
     let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
-    let global_group_id = graph
-        .insert_strong(
-            Resource::BindGroup(global_group(&ctx.device, &pipeline, &camera, &globals)),
-            &[camera_id, globals_id],
-        )
-        .expect("both dependencies were registered");
+    let global_group_id =
+        graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
+    graph.add_dependency(global_group_id, camera_id);
+    graph.add_dependency(global_group_id, globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     // egui positions its vertices in points, and the projection maps points
@@ -442,21 +436,15 @@ fn freeing_a_texture_releases_its_graph_nodes() {
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph
-        .insert_strong(Resource::Buffer(camera.clone()), &[])
-        .expect("an empty dependency list always resolves");
-    let globals_id = graph
-        .insert_strong(Resource::Buffer(globals.clone()), &[])
-        .expect("an empty dependency list always resolves");
+    let camera_id = graph.insert_strong(camera.clone());
+    let globals_id = graph.insert_strong(globals.clone());
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
     let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
-    let global_group_id = graph
-        .insert_strong(
-            Resource::BindGroup(global_group(&ctx.device, &pipeline, &camera, &globals)),
-            &[camera_id, globals_id],
-        )
-        .expect("both dependencies were registered");
+    let global_group_id =
+        graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
+    graph.add_dependency(global_group_id, camera_id);
+    graph.add_dependency(global_group_id, globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();
@@ -521,21 +509,15 @@ fn releasing_the_integration_returns_its_graph_nodes() {
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph
-        .insert_strong(Resource::Buffer(camera.clone()), &[])
-        .expect("an empty dependency list always resolves");
-    let globals_id = graph
-        .insert_strong(Resource::Buffer(globals.clone()), &[])
-        .expect("an empty dependency list always resolves");
+    let camera_id = graph.insert_strong(camera.clone());
+    let globals_id = graph.insert_strong(globals.clone());
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
     let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
-    let global_group_id = graph
-        .insert_strong(
-            Resource::BindGroup(global_group(&ctx.device, &pipeline, &camera, &globals)),
-            &[camera_id, globals_id],
-        )
-        .expect("both dependencies were registered");
+    let global_group_id =
+        graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
+    graph.add_dependency(global_group_id, camera_id);
+    graph.add_dependency(global_group_id, globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();

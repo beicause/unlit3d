@@ -145,7 +145,7 @@ fn removing_a_mesh_leaves_no_resource_behind() {
     // The warmed-up mesh and the source's own resources are untouched.
     assert!(
         gpu.graph(&world)
-            .get_buffer(baseline_mesh.vertex_buffers[0].1)
+            .get(baseline_mesh.vertex_buffers[0].1)
             .is_some()
     );
 }

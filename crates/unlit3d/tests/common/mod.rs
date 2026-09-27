@@ -9,7 +9,7 @@ pub use unlit_wgpu_test_util::{
 
 use core::ops::DerefMut;
 use unlit_ecs::{Entity, LocalWorld};
-use unlit_wgpu::resources::{Resource as GraphResource, ResourceGraph, ResourceId};
+use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
 /// Test constants matching what `unlit_wgpu`'s own tests use.
@@ -120,24 +120,17 @@ impl TestGpu {
         &self,
         world: &LocalWorld,
         texture: wgpu::Texture,
-    ) -> (ResourceId, ResourceId) {
+    ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
         let mut graph = self.graph(world);
-        let texture_id = graph
-            .insert_strong(GraphResource::Texture(texture), &[])
-            .expect("a texture has no dependencies");
-        let view = graph
-            .get_texture(texture_id)
-            .expect("the texture was just inserted")
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let view_id = graph
-            .insert_strong(
-                GraphResource::TextureView {
-                    view,
-                    format: COLOR_FORMAT,
-                },
-                &[texture_id],
-            )
-            .expect("the view depends on its texture");
+        let texture_id = graph.insert_strong(texture);
+        let view = TextureExt::create_view(
+            graph
+                .get(texture_id)
+                .expect("the texture was just inserted"),
+            &wgpu::TextureViewDescriptor::default(),
+        );
+        let view_id = graph.insert_strong(view);
+        graph.add_dependency(view_id, texture_id);
         (texture_id, view_id)
     }
 
@@ -315,33 +308,19 @@ impl TestGpu {
         let ft = create_render_target(&device, COLOR_FORMAT, WIDTH, HEIGHT, samples);
         let (_, color_view) = self.register_texture(world, ft.color.clone());
         let depth_view = with_depth.then(|| {
-            self.graph(world)
-                .insert_strong(
-                    GraphResource::TextureView {
-                        view: ft
-                            .depth
-                            .create_view(&wgpu::TextureViewDescriptor::default()),
-                        format: unlit_wgpu::render_attachments::default_depth_stencil_format(
-                            &device,
-                        ),
-                    },
-                    &[],
-                )
-                .expect("depth view has no dependencies")
+            self.graph(world).insert_strong(TextureExt::create_view(
+                &ft.depth,
+                &wgpu::TextureViewDescriptor::default(),
+            ))
         });
         // A multisampled target resolves through its MSAA view, so the pass
         // needs it bound; without it the draws would go straight to the
         // single-sampled color view.
         let msaa_view = ft.msaa.as_ref().map(|msaa| {
-            self.graph(world)
-                .insert_strong(
-                    GraphResource::TextureView {
-                        view: msaa.create_view(&wgpu::TextureViewDescriptor::default()),
-                        format: COLOR_FORMAT,
-                    },
-                    &[],
-                )
-                .expect("msaa view has no dependencies")
+            self.graph(world).insert_strong(TextureExt::create_view(
+                msaa,
+                &wgpu::TextureViewDescriptor::default(),
+            ))
         });
         self.with_renderer(world, |renderer, world| {
             renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);

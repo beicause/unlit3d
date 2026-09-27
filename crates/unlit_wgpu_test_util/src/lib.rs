@@ -136,11 +136,27 @@ pub fn readback_buffer(ctx: &Ctx, source: &wgpu::Buffer, size: u64) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 /// An offscreen RGBA8 colour target plus its default view.
+///
+/// The views are bare wgpu ones: this crate is the layer *below*
+/// `unlit_wgpu` — which depends on it, not the other way round — so
+/// [`unlit_wgpu::resources::TextureView`] is not reachable here. A caller that
+/// registers this target's view in a resource graph pairs it with its format
+/// itself.
+#[expect(
+    clippy::disallowed_types,
+    reason = "this crate sits below unlit_wgpu, which depends on it, so the \
+              wrapper type is not reachable here"
+)]
 pub struct ColorTarget {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "this crate sits below unlit_wgpu, which depends on it, so the \
+              wrapper's constructor is not reachable here"
+)]
 impl ColorTarget {
     /// `Rgba8UnormSrgb` target sized `(width, height)`.
     pub fn new(device: &wgpu::Device, label: &str, width: u32, height: u32) -> Self {

@@ -21,8 +21,9 @@
 //! # use unlit_wgpu::render_attachments::{
 //! #     RenderAttachments, color_clear, depth_clear, stencil_clear,
 //! # };
+//! # use unlit_wgpu::resources::TextureView;
 //! # use unlit_wgpu::scene::Scene;
-//! # fn frame(device: &wgpu::Device, color: wgpu::TextureView, depth: wgpu::TextureView, scene: &Scene) {
+//! # fn frame(device: &wgpu::Device, color: TextureView, depth: TextureView, scene: &Scene) {
 //! let attachments = RenderAttachments::from_views(Some(color), Some(depth), None);
 //!
 //! let mut encoder = device.create_command_encoder(&Default::default());
@@ -35,6 +36,8 @@
 //! scene.record(&mut pass);
 //! # }
 //! ```
+
+use crate::resources::{TextureExt, TextureView};
 
 /// The color load op a frame starts from by default: a clear to black.
 #[must_use]
@@ -89,29 +92,28 @@ pub fn default_depth_stencil_format(device: &wgpu::Device) -> wgpu::TextureForma
 /// [`Self::from_views`].
 pub struct RenderAttachments {
     /// The color attachment, or `None` for a depth-only pass.
-    color_view: Option<wgpu::TextureView>,
+    color_view: Option<TextureView>,
     /// The depth attachment, or `None` for a pass without depth.
-    depth_stencil_view: Option<wgpu::TextureView>,
+    depth_stencil_view: Option<TextureView>,
     /// The multisample attachment the pass draws into, resolved into
     /// [`Self::color_view`]; `None` when multisampling is disabled or the
     /// pass is depth-only.
-    msaa_view: Option<wgpu::TextureView>,
-    /// The format the color attachment is viewed as, when it differs from the
-    /// format of the texture it views.
-    color_format: Option<wgpu::TextureFormat>,
+    msaa_view: Option<TextureView>,
 }
 
 impl RenderAttachments {
     /// Assemble an attachment set entirely from the caller's views: the color
     /// view, the depth-stencil view and an optional multisample view.
     ///
-    /// The formats, size and sample count are read from the views themselves,
-    /// so they must agree across views (the caller's responsibility) — except
-    /// for the color format, which only a view's texture reports; use
-    /// [`Self::with_color_format`] when the color view was created in another
-    /// format. The
-    /// depth attachment's transience is read from its texture's usage: a depth
-    /// texture created with
+    /// A [`TextureView`] carries the format it was created with, so the color
+    /// format is the color view's own even when it reinterprets its texture —
+    /// an sRGB view over a non-sRGB swap-chain image, the only way to get
+    /// correct gamma on the web. Size and sample count are read from the views
+    /// themselves, so they must agree across views (the caller's
+    /// responsibility).
+    ///
+    /// The depth attachment's transience is read from its texture's usage: a
+    /// depth texture created with
     /// [`TextureUsages::TRANSIENT_ATTACHMENT`](wgpu::TextureUsages::TRANSIENT_ATTACHMENT)
     /// is treated as transient (cleared and discarded within a single pass),
     /// any other as persistent (a pass stores into it so a later pass may
@@ -126,9 +128,9 @@ impl RenderAttachments {
     /// If neither the color nor the depth view is present, or if the
     /// multisample view is present without a color view.
     pub fn from_views(
-        color_view: Option<wgpu::TextureView>,
-        depth_stencil_view: Option<wgpu::TextureView>,
-        msaa_view: Option<wgpu::TextureView>,
+        color_view: Option<TextureView>,
+        depth_stencil_view: Option<TextureView>,
+        msaa_view: Option<TextureView>,
     ) -> Self {
         assert!(
             color_view.is_some() || depth_stencil_view.is_some(),
@@ -142,22 +144,7 @@ impl RenderAttachments {
             color_view,
             depth_stencil_view,
             msaa_view,
-            color_format: None,
         }
-    }
-
-    /// State the format the color attachment's view was created with.
-    ///
-    /// [`Self::from_views`] reads the color format from the attachment's
-    /// texture, which is what a default view uses. A view may be created in
-    /// another format instead — an sRGB view over a non-sRGB swap-chain image,
-    /// the only way to get correct gamma on the web — and a pipeline's color
-    /// target must match the *view*, so the caller that created it states it
-    /// here.
-    #[must_use]
-    pub fn with_color_format(mut self, format: wgpu::TextureFormat) -> Self {
-        self.color_format = Some(format);
-        self
     }
 
     /// The color texture the frame is rendered into, for copying or reading
@@ -167,32 +154,28 @@ impl RenderAttachments {
     }
 
     /// The color attachment, or `None` for a depth-only pass.
-    pub fn color_view(&self) -> Option<&wgpu::TextureView> {
+    pub fn color_view(&self) -> Option<&TextureView> {
         self.color_view.as_ref()
     }
 
     /// The depth attachment, if any.
-    pub fn depth_stencil_view(&self) -> Option<&wgpu::TextureView> {
+    pub fn depth_stencil_view(&self) -> Option<&TextureView> {
         self.depth_stencil_view.as_ref()
     }
 
     /// The multisample attachment, if any.
-    pub fn msaa_view(&self) -> Option<&wgpu::TextureView> {
+    pub fn msaa_view(&self) -> Option<&TextureView> {
         self.msaa_view.as_ref()
     }
 
     /// The color format the pass renders into, or `None` for a depth-only
     /// pass.
     ///
-    /// [`Self::with_color_format`]'s when one was given; the attachment's
-    /// texture format otherwise — the MSAA view's when one is set, the color
-    /// view's otherwise.
+    /// The color view's own — the MSAA view's when one is set, since the
+    /// resolve writes into the color view in that view's format.
     pub fn color_format(&self) -> Option<wgpu::TextureFormat> {
-        if let Some(format) = self.color_format {
-            return Some(format);
-        }
         let view = self.msaa_view.as_ref().or(self.color_view.as_ref())?;
-        Some(view.texture().format())
+        Some(view.format())
     }
 
     /// The depth format the pass renders into, or `None` for a pass without
@@ -240,7 +223,7 @@ impl RenderAttachments {
 
     /// The view the attachment dimensions are read from: the MSAA view when
     /// one is set, the color view otherwise, the depth view last.
-    fn attachment_view(&self) -> Option<&wgpu::TextureView> {
+    fn attachment_view(&self) -> Option<&TextureView> {
         self.msaa_view
             .as_ref()
             .or(self.color_view.as_ref())
@@ -315,12 +298,12 @@ impl RenderAttachments {
             .msaa_view
             .as_ref()
             .zip(self.color_view.as_ref())
-            .map(|(_, view)| view.clone());
+            .map(|(_, view)| view.view().clone());
         let attachment_view = self
             .msaa_view
             .as_ref()
             .or(self.color_view.as_ref())
-            .cloned();
+            .map(|view| view.view().clone());
 
         let color_attachments = attachment_view
             .as_ref()
@@ -359,7 +342,7 @@ impl RenderAttachments {
                         store: wgpu::StoreOp::Discard,
                     });
             wgpu::RenderPassDepthStencilAttachment {
-                view,
+                view: view.view(),
                 depth_ops: Some(wgpu::Operations {
                     load: depth_load,
                     // A transient depth texture only accepts `Clear +
@@ -438,7 +421,7 @@ pub fn create_render_target(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());
+    let color_view = TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default());
     let depth_format = default_depth_stencil_format(device);
     let depth = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("unlit_wgpu::depth"),
@@ -454,7 +437,7 @@ pub fn create_render_target(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
         view_formats: &[],
     });
-    let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
+    let depth_view = TextureExt::create_view(&depth, &wgpu::TextureViewDescriptor::default());
     let msaa = (sample_count > 1).then(|| {
         device.create_texture(&wgpu::TextureDescriptor {
             label: Some("unlit_wgpu::msaa"),
@@ -474,7 +457,7 @@ pub fn create_render_target(
     });
     let msaa_view = msaa
         .as_ref()
-        .map(|tex| tex.create_view(&wgpu::TextureViewDescriptor::default()));
+        .map(|tex| TextureExt::create_view(tex, &wgpu::TextureViewDescriptor::default()));
     let attachments = RenderAttachments::from_views(Some(color_view), Some(depth_view), msaa_view);
     FrameTextures {
         color,

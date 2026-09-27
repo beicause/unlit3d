@@ -83,7 +83,7 @@ puts the GPU state in the world, `MeshSource` is mounted as a source, and
 ```rust
 use unlit3d::prelude::*;
 use unlit_wgpu::pipeline::UnlitOptions;
-use unlit_wgpu::resources::ResourceGraph;
+use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 
 let (device, queue) =
     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -158,11 +158,10 @@ let (color_view, depth_view) = world
         let source = source.as_mut::<MeshSource>().unwrap();
         let color_view = source.register_texture_and_default_view(&world, ft.color).1;
         let depth_view = MeshSource::graph(&world, ctx)
-            .insert_strong(
-                ft.depth.create_view(&wgpu::TextureViewDescriptor::default()),
-                &[],
-            )
-            .unwrap();
+            .insert_strong(TextureExt::create_view(
+                &ft.depth,
+                &wgpu::TextureViewDescriptor::default(),
+            ));
         (color_view, depth_view)
     })
     .unwrap();

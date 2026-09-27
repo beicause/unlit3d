@@ -16,7 +16,7 @@
 
 use unlit_ecs::LocalWorld;
 use unlit_wgpu::render_attachments::RenderAttachments;
-use unlit_wgpu::resources::{ResourceGraph, ResourceId};
+use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureView};
 use unlit_wgpu::specialize::SurfaceKey;
 
 use crate::components::RenderLoadOps;
@@ -55,15 +55,15 @@ pub struct Renderer {
     /// The color attachment the frame renders into, as a texture-view resource
     /// in the context's graph, or `None` until [`Self::set_render_target`] binds
     /// one.
-    color_view: Option<ResourceId>,
+    color_view: Option<ResourceId<TextureView>>,
     /// The depth-stencil attachment the frame renders into, as a texture-view
     /// resource in the context's graph, or `None` until
     /// [`Self::set_render_target`] binds one.
-    depth_view: Option<ResourceId>,
+    depth_view: Option<ResourceId<TextureView>>,
     /// The multisample attachment, if any, as a texture-view resource in the
     /// context's graph; `None` for a non-multisampled pass or before
     /// [`Self::set_render_target`] binds one.
-    msaa_view: Option<ResourceId>,
+    msaa_view: Option<ResourceId<TextureView>>,
     /// The [`SurfaceKey`] of the currently bound attachments, cached so the
     /// surface does not have to be re-derived every draw. `None` until
     /// [`Self::set_render_target`] is called.
@@ -130,9 +130,9 @@ impl Renderer {
     pub fn set_render_target(
         &mut self,
         world: &LocalWorld,
-        color_view: Option<ResourceId>,
-        depth_view: Option<ResourceId>,
-        msaa_view: Option<ResourceId>,
+        color_view: Option<ResourceId<TextureView>>,
+        depth_view: Option<ResourceId<TextureView>>,
+        msaa_view: Option<ResourceId<TextureView>>,
     ) {
         // Resolve every view up front so a bad id panics before any field is
         // touched. The handles are cloned out only to derive the surface key;
@@ -140,33 +140,30 @@ impl Renderer {
         let graph = world
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
+        // The views are cloned out together with the formats they were
+        // created with, which wgpu itself cannot report: a view that
+        // reinterprets its texture — an sRGB view over a non-sRGB swap-chain
+        // image — is what a pipeline has to match, so its format wins over the
+        // texture's own.
         let color = color_view.map(|id| {
             graph
-                .get_texture_view(id)
+                .get(id)
                 .expect("color_view is a texture view in the graph")
                 .clone()
         });
         let depth = depth_view.map(|id| {
             graph
-                .get_texture_view(id)
+                .get(id)
                 .expect("depth_view is a texture view in the graph")
                 .clone()
         });
         let msaa = msaa_view.map(|id| {
             graph
-                .get_texture_view(id)
+                .get(id)
                 .expect("msaa_view is a texture view in the graph")
                 .clone()
         });
-        // The graph records the format each view was created with, which wgpu
-        // itself cannot report. A view that reinterprets its texture — an sRGB
-        // view over a non-sRGB swap-chain image — is what a pipeline has to
-        // match, so it wins over the texture's own format.
         let attachments = RenderAttachments::from_views(color, depth, msaa);
-        let attachments = match color_view.and_then(|id| graph.get_texture_view_format(id)) {
-            Some(format) => attachments.with_color_format(format),
-            None => attachments,
-        };
         self.surface = Some(attachments.surface_key());
         self.bound_size = Some((attachments.width(), attachments.height()));
         self.color_view = color_view;
@@ -305,21 +302,15 @@ impl Renderer {
         let graph = world
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
-        let color = self.color_view.map(|id| {
-            graph
-                .get_texture_view(id)
-                .expect("bound color view")
-                .clone()
-        });
-        let depth = self.depth_view.map(|id| {
-            graph
-                .get_texture_view(id)
-                .expect("bound depth view")
-                .clone()
-        });
+        let color = self
+            .color_view
+            .map(|id| graph.get(id).expect("bound color view").clone());
+        let depth = self
+            .depth_view
+            .map(|id| graph.get(id).expect("bound depth view").clone());
         let msaa = self
             .msaa_view
-            .map(|id| graph.get_texture_view(id).expect("bound msaa view").clone());
+            .map(|id| graph.get(id).expect("bound msaa view").clone());
         RenderAttachments::from_views(color, depth, msaa)
     }
 }

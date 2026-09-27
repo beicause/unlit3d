@@ -144,7 +144,7 @@ impl core::fmt::Debug for GlobalBinding {
 #[derive(Clone)]
 pub(crate) struct RegisteredGlobal {
     /// The id in the source's resource graph.
-    pub(crate) id: ResourceId,
+    pub(crate) id: ResourceId<wgpu::BindGroup>,
     /// How to rebuild the group.
     pub(crate) rebuild: GlobalGroupRebuild,
 }

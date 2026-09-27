@@ -360,28 +360,26 @@ fn bind_offscreen_target(
     with_depth: bool,
 ) -> wgpu::Texture {
     use unlit_wgpu::render_attachments::create_render_target;
-    use unlit_wgpu::resources::Resource as GraphResource;
+    use unlit_wgpu::resources::TextureExt;
 
     let target = create_render_target(device, HEADLESS_FORMAT, size.0, size.1, samples);
-    let default_view =
-        |texture: &wgpu::Texture| texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let default_view = |texture: &wgpu::Texture| {
+        TextureExt::create_view(texture, &wgpu::TextureViewDescriptor::default())
+    };
 
     let (color_view, depth_view, msaa_view) = {
         let mut graph = world
             .get_mut::<ResourceGraph>(renderer.context().graph)
             .expect("the context's resource graph exists");
-        let insert = |graph: &mut ResourceGraph, resource: GraphResource| {
-            graph
-                .insert_strong(resource, &[])
-                .expect("a texture view has no dependencies")
+        let insert = |graph: &mut ResourceGraph, view: unlit_wgpu::resources::TextureView| {
+            graph.insert_strong(view)
         };
-        let color = insert(&mut graph, GraphResource::from(default_view(&target.color)));
-        let depth = with_depth
-            .then(|| insert(&mut graph, GraphResource::from(default_view(&target.depth))));
+        let color = insert(&mut graph, default_view(&target.color));
+        let depth = with_depth.then(|| insert(&mut graph, default_view(&target.depth)));
         let msaa = target
             .msaa
             .as_ref()
-            .map(|msaa| insert(&mut graph, GraphResource::from(default_view(msaa))));
+            .map(|msaa| insert(&mut graph, default_view(msaa)));
         (color, depth, msaa)
     };
     renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);

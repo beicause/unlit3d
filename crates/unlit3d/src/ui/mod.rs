@@ -34,7 +34,7 @@ use core::ops::DerefMut;
 use unlit_ecs::{Entity, LocalWorld};
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
-use unlit_wgpu::resources::{Resource, ResourceGraph, ResourceId};
+use unlit_wgpu::resources::{ResourceGraph, ResourceId};
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SurfaceKey;
 use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options_for_surface};
@@ -106,13 +106,13 @@ struct Gpu {
     /// The camera uniform `screen_view` is written into.
     camera: wgpu::Buffer,
     /// The graph node of [`Gpu::camera`], so the source can release it.
-    camera_id: ResourceId,
+    camera_id: ResourceId<wgpu::Buffer>,
     /// The frame-globals uniform.
     globals: wgpu::Buffer,
     /// The graph node of [`Gpu::globals`], so the source can release it.
-    globals_id: ResourceId,
+    globals_id: ResourceId<wgpu::Buffer>,
     /// Graph node of the bind group binding the two uniforms.
-    global_group: ResourceId,
+    global_group: ResourceId<wgpu::BindGroup>,
     /// Uploads egui's textures and geometry and records its draws.
     integration: EguiIntegration,
 }
@@ -235,7 +235,7 @@ impl UiSource {
             Some(gpu) => {
                 let group = global_group(device, &pipeline, &gpu.camera, &gpu.globals);
                 graph
-                    .replace(gpu.global_group, Resource::BindGroup(group))
+                    .replace(gpu.global_group, group)
                     .expect("the global group is registered in the graph");
                 // Same uniforms, same group node, same integration state; the
                 // new pipeline is all that actually changed.
@@ -252,16 +252,12 @@ impl UiSource {
                     "unlit3d::ui::globals",
                     <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
                 );
-                let camera_id = graph
-                    .insert_strong(Resource::Buffer(camera.clone()), &[])
-                    .expect("a uniform buffer has no dependencies");
-                let globals_id = graph
-                    .insert_strong(Resource::Buffer(globals.clone()), &[])
-                    .expect("a uniform buffer has no dependencies");
+                let camera_id = graph.insert_strong(camera.clone());
+                let globals_id = graph.insert_strong(globals.clone());
                 let group = global_group(device, &pipeline, &camera, &globals);
-                let group_id = graph
-                    .insert_strong(Resource::BindGroup(group), &[camera_id, globals_id])
-                    .expect("both uniforms were registered");
+                let group_id = graph.insert_strong(group);
+                graph.add_dependency(group_id, camera_id);
+                graph.add_dependency(group_id, globals_id);
                 self.gpu = Some(Gpu {
                     camera,
                     camera_id,

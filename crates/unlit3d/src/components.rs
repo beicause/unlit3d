@@ -9,7 +9,7 @@ use unlit_ecs::Entity;
 use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::offset_allocator::Allocation;
 use unlit_wgpu::render_attachments::{color_clear, depth_clear, stencil_clear};
-use unlit_wgpu::resources::ResourceId;
+use unlit_wgpu::resources::{ResourceId, Virtual};
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::VertexBufferLayoutDesc;
 
@@ -134,10 +134,10 @@ pub struct GpuMesh {
     /// mesh by removing this one node and collecting the parts it leaves
     /// behind. The other ids below are for the draw path, which reads the
     /// parts directly.
-    pub root: ResourceId,
+    pub root: ResourceId<Virtual>,
 
     /// Vertex buffers, each tagged with its slot index, in slot order.
-    pub vertex_buffers: ArrayVec<(u32, ResourceId), MAX_VERTEX_BUFFERS>,
+    pub vertex_buffers: ArrayVec<(u32, ResourceId<wgpu::Buffer>), MAX_VERTEX_BUFFERS>,
 
     /// The vertex layout of the draw, slot by slot.
     ///
@@ -150,7 +150,7 @@ pub struct GpuMesh {
     pub vertex_layout: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
 
     /// Index buffer, if the mesh is indexed.
-    pub index_buffer: Option<(ResourceId, wgpu::IndexFormat)>,
+    pub index_buffer: Option<(ResourceId<wgpu::Buffer>, wgpu::IndexFormat)>,
 
     /// Number of indices (indexed draw) or vertices (non-indexed draw).
     pub count: u32,
@@ -198,7 +198,7 @@ pub struct GpuMesh {
     /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP).
     ///
     /// `None` when the mesh was uploaded without one.
-    pub bind_group_id: Option<ResourceId>,
+    pub bind_group_id: Option<ResourceId<wgpu::BindGroup>>,
 
     /// How many morph targets the mesh carries, zero when it has none.
     ///
@@ -368,7 +368,7 @@ pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).
     ///
     /// [`MATERIAL_GROUP`]: unlit_wgpu::pipeline::MATERIAL_GROUP
-    pub bind_group_id: ResourceId,
+    pub bind_group_id: ResourceId<wgpu::BindGroup>,
 }
 
 impl GpuMaterial {

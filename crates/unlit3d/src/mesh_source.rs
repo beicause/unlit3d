@@ -30,7 +30,7 @@ use unlit_wgpu::pipeline::{
     MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
     apply_surface,
 };
-use unlit_wgpu::resources::{Resource, ResourceGraph, ResourceId};
+use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView, Virtual};
 use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
 use unlit_wgpu::specialize::{
     Specializable, Specializer, SpecializerKey, SurfaceKey, VertexAttributes,
@@ -84,11 +84,6 @@ fn mesh_group_entries<'a>(
     }
     entries
 }
-
-/// The most resources one mesh can be built from: every vertex buffer a pass
-/// can bind, plus the index buffer, the mesh bind group, the mesh-info uniform
-/// and the morph displacements.
-const MAX_MESH_PARTS: usize = MAX_VERTEX_BUFFERS + 4;
 
 /// The byte size of one index of `format`.
 ///
@@ -192,9 +187,10 @@ fn register_concrete(
             bind_group,
             rebuild,
         } = binding;
-        let id = graph
-            .insert_strong(Resource::BindGroup(bind_group), &buffers.all())
-            .expect("the source's buffers exist");
+        let id = graph.insert_strong(bind_group);
+        for buffer in buffers.all() {
+            graph.add_dependency(id, buffer);
+        }
         RegisteredGlobal { id, rebuild }
     });
 
@@ -358,20 +354,20 @@ struct RegisteredPipeline {
 #[derive(Clone, Copy, Debug)]
 struct GlobalBufferNodes {
     /// The camera uniform.
-    camera: ResourceId,
+    camera: ResourceId<wgpu::Buffer>,
     /// The frame globals uniform.
-    globals: ResourceId,
+    globals: ResourceId<wgpu::Buffer>,
     /// The mesh-metadata storage buffer.
-    metadata: ResourceId,
+    metadata: ResourceId<wgpu::Buffer>,
     /// The frame's joint matrices.
-    joints: ResourceId,
+    joints: ResourceId<wgpu::Buffer>,
     /// The frame's morph weights.
-    morph_weights: ResourceId,
+    morph_weights: ResourceId<wgpu::Buffer>,
 }
 
 impl GlobalBufferNodes {
     /// Every node, in the order a global bind group depends on them.
-    fn all(&self) -> [ResourceId; 5] {
+    fn all(&self) -> [ResourceId<wgpu::Buffer>; 5] {
         [
             self.camera,
             self.globals,
@@ -397,15 +393,15 @@ pub struct MeshSource {
     context: RenderContext,
 
     /// Resource id of the camera uniform buffer.
-    camera_buf: ResourceId,
+    camera_buf: ResourceId<wgpu::Buffer>,
     /// Resource id of the frame-globals uniform buffer.
-    globals_buf: ResourceId,
+    globals_buf: ResourceId<wgpu::Buffer>,
     /// Resource id of the mesh-metadata storage buffer.
-    metadata_buf: ResourceId,
+    metadata_buf: ResourceId<wgpu::Buffer>,
     /// Resource id of the frame's joint-matrix storage buffer.
-    joints_buf: ResourceId,
+    joints_buf: ResourceId<wgpu::Buffer>,
     /// Resource id of the frame's morph-weight storage buffer.
-    morph_weights_buf: ResourceId,
+    morph_weights_buf: ResourceId<wgpu::Buffer>,
     /// Per-frame globals (advanced once per built scene).
     globals: Globals,
     /// Metadata entries, one per live uploaded mesh.
@@ -465,7 +461,7 @@ pub struct MeshSource {
     /// when the pool grows; see [`MeshSource::sync_pool_node`].
     index_pool: BufferPool,
     /// The graph node of [`MeshSource::index_pool`]'s buffer.
-    index_pool_id: ResourceId,
+    index_pool_id: ResourceId<wgpu::Buffer>,
     /// The pool every mesh uploaded through
     /// [`MeshSource::allocate_unlit_mesh`] keeps its vertices in: one large
     /// buffer per vertex layout, so meshes that share a layout share a buffer,
@@ -474,7 +470,7 @@ pub struct MeshSource {
     vertex_pool: VertexStreamPool,
     /// The graph node of each of [`MeshSource::vertex_pool`]'s buffers, by the
     /// layout the buffer is shaped for.
-    vertex_pool_ids: HashMap<VertexBufferLayoutDesc, ResourceId>,
+    vertex_pool_ids: HashMap<VertexBufferLayoutDesc, ResourceId<wgpu::Buffer>>,
 
     /// Every concrete pipeline registered with this source, in registration
     /// order.
@@ -537,80 +533,56 @@ impl MeshSource {
             .expect("the context names the world's resource graph");
 
         // Camera uniform buffer.
-        let camera_buf = graph
-            .insert_strong(
-                Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("unlit3d::camera"),
-                    size: size_of::<View>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })),
-                &[],
-            )
-            .expect("camera buffer has no dependencies");
+        let camera_buf = graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unlit3d::camera"),
+            size: size_of::<View>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
 
         // Globals uniform buffer.
         let globals = Globals::default();
-        let globals_buf = graph
-            .insert_strong(
-                Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("unlit3d::globals"),
-                    size: size_of::<Globals>() as u64,
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })),
-                &[],
-            )
-            .expect("globals buffer has no dependencies");
+        let globals_buf = graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unlit3d::globals"),
+            size: size_of::<Globals>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
 
         // Metadata storage buffer (initially 1 entry).
-        let metadata_buf = graph
-            .insert_strong(
-                Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("unlit3d::mesh_metadata"),
-                    size: size_of::<MeshMetadata>() as u64,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })),
-                &[],
-            )
-            .expect("metadata buffer has no dependencies");
+        let metadata_buf = graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unlit3d::mesh_metadata"),
+            size: size_of::<MeshMetadata>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
 
         // The frame's pose arrays, one storage buffer each, initially holding a
         // single element. They start out too small for any real frame and grow
         // on the first built scene; a buffer cannot be zero-sized, so the
         // smallest one a draw can read is one element.
-        let joints_buf = graph
-            .insert_strong(
-                Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("unlit3d::pose::joints"),
-                    size: <JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })),
-                &[],
-            )
-            .expect("the joint buffer has no dependencies");
-        let morph_weights_buf = graph
-            .insert_strong(
-                Resource::Buffer(device.create_buffer(&wgpu::BufferDescriptor {
-                    label: Some("unlit3d::pose::morph_weights"),
-                    size: size_of::<f32>() as u64,
-                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                    mapped_at_creation: false,
-                })),
-                &[],
-            )
-            .expect("the morph-weight buffer has no dependencies");
+        let joints_buf = graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unlit3d::pose::joints"),
+            size: <JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        let morph_weights_buf =
+            graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("unlit3d::pose::morph_weights"),
+                size: size_of::<f32>() as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
 
         // Initial upload of camera and globals.
         queue.write_buffer(
-            graph.get_buffer(camera_buf).expect("just inserted"),
+            graph.get(camera_buf).expect("just inserted"),
             0,
             View::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO).as_bytes(),
         );
         queue.write_buffer(
-            graph.get_buffer(globals_buf).expect("just inserted"),
+            graph.get(globals_buf).expect("just inserted"),
             0,
             globals.as_bytes(),
         );
@@ -625,9 +597,7 @@ impl MeshSource {
             wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             size_of::<u32>() as u64 * 1024,
         );
-        let index_pool_id = graph
-            .insert_strong(Resource::Buffer(index_pool.buffer().clone()), &[])
-            .expect("an index pool has no dependencies");
+        let index_pool_id = graph.insert_strong(index_pool.buffer().clone());
         let vertex_pool = VertexStreamPool::new(
             &device,
             "unlit3d::mesh::vertices",
@@ -854,16 +824,15 @@ impl MeshSource {
 
         // The parts, capped like the description they come from: a mesh cannot
         // have more vertex buffers than a pass can bind.
-        let mut buffers = ArrayVec::<ResourceId, MAX_VERTEX_BUFFERS>::new();
-        let mut vertex_slots = ArrayVec::<(u32, ResourceId), MAX_VERTEX_BUFFERS>::new();
+        let mut buffers = ArrayVec::<ResourceId<wgpu::Buffer>, MAX_VERTEX_BUFFERS>::new();
+        let mut vertex_slots =
+            ArrayVec::<(u32, ResourceId<wgpu::Buffer>), MAX_VERTEX_BUFFERS>::new();
         let mut vertex_layout =
             ArrayVec::<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>::new();
         for desc in vertex_buffers {
             // A weak node: the mesh's virtual root is built from it, so the
             // buffer lives exactly as long as the root does.
-            let id = Self::graph(world, self.context)
-                .insert_weak(Resource::Buffer(desc.buffer), &[])
-                .expect("a vertex buffer has no dependencies");
+            let id = Self::graph(world, self.context).insert_weak(desc.buffer);
             vertex_slots.push((desc.slot, id));
             // The layout is owned by the mesh so a family can key on it
             // without reading the description again.
@@ -880,20 +849,15 @@ impl MeshSource {
 
         let index_buffer = index_buffer.map(|(buffer, format)| {
             // Weak for the same reason as the vertex buffers.
-            let id = Self::graph(world, self.context)
-                .insert_weak(Resource::Buffer(buffer), &[])
-                .expect("an index buffer has no dependencies");
+            let id = Self::graph(world, self.context).insert_weak(buffer);
             (id, format)
         });
 
         // The uniform the mesh's group reads is a weak node that nothing is
         // built from: the group depends on it, not the other way round. It is
         // the mesh's virtual root that keeps it alive, like every other part.
-        let mesh_info_id = mesh_info_buffer.map(|buffer| {
-            Self::graph(world, self.context)
-                .insert_weak(Resource::Buffer(buffer), &[])
-                .expect("a mesh-info buffer has no dependencies")
-        });
+        let mesh_info_id =
+            mesh_info_buffer.map(|buffer| Self::graph(world, self.context).insert_weak(buffer));
 
         // The morph displacements are a weak node like the mesh-info uniform,
         // and like it they are the bind group's dependency: the mesh owns them,
@@ -903,11 +867,9 @@ impl MeshSource {
         // per-instance pose state: the frame's global group binds them, so two
         // instances of one mesh can deform differently.
         let morph_target_count = morph_deltas.as_ref().map_or(0, |morph| morph.target_count);
-        let morph_deltas_id = morph_deltas.as_ref().map(|morph| {
-            Self::graph(world, self.context)
-                .insert_weak(Resource::Buffer(morph.buffer.clone()), &[])
-                .expect("a morph-delta buffer has no dependencies")
-        });
+        let morph_deltas_id = morph_deltas
+            .as_ref()
+            .map(|morph| Self::graph(world, self.context).insert_weak(morph.buffer.clone()));
 
         let bind_group_id = bind_group.map(|bind_group| {
             // Only the buffers the group reads, so replacing or removing one
@@ -916,12 +878,15 @@ impl MeshSource {
             // none of them, and a pooled buffer changes when the pool grows —
             // a dependency would rebuild every group of every mesh that shares
             // the pool for nothing.
-            let mut dependencies = ArrayVec::<ResourceId, MAX_MESH_PARTS>::new();
-            dependencies.extend(mesh_info_id);
-            dependencies.extend(morph_deltas_id);
-            Self::graph(world, self.context)
-                .insert_weak(Resource::BindGroup(bind_group), &dependencies)
-                .expect("a mesh bind group's dependencies are in the graph")
+            let mut graph = Self::graph(world, self.context);
+            let bind_group_id = graph.insert_weak(bind_group);
+            if let Some(id) = mesh_info_id {
+                graph.add_dependency(bind_group_id, id);
+            }
+            if let Some(id) = morph_deltas_id {
+                graph.add_dependency(bind_group_id, id);
+            }
+            bind_group_id
         });
 
         // The entry is owned whether or not the pipeline reads it: a draw that
@@ -946,7 +911,7 @@ impl MeshSource {
         if let Some(id) = mesh_info_id {
             queue.write_buffer(
                 Self::graph(world, self.context)
-                    .get_buffer(id)
+                    .get(id)
                     .expect("mesh-info buffer exists"),
                 0,
                 MeshInfo::new(metadata_index).as_bytes(),
@@ -958,15 +923,24 @@ impl MeshSource {
         // alive: removing it orphans them for the cleanup in `remove_mesh` to
         // collect. The root is built from the parts, which is also what makes
         // a replaced part mark it dirty.
-        let mut parts = ArrayVec::<ResourceId, MAX_MESH_PARTS>::new();
-        parts.extend(buffers.iter().copied());
-        parts.extend(index_buffer.map(|(id, _format)| id));
-        parts.extend(bind_group_id);
-        parts.extend(mesh_info_id);
-        parts.extend(morph_deltas_id);
-        let root = Self::graph(world, self.context)
-            .insert_strong(Resource::Virtual, &parts)
-            .expect("a mesh's parts are in the graph");
+        let mut graph = Self::graph(world, self.context);
+        let root = graph.insert_strong(Virtual);
+        for id in buffers.iter().copied() {
+            graph.add_dependency(root, id);
+        }
+        if let Some((id, _format)) = index_buffer {
+            graph.add_dependency(root, id);
+        }
+        if let Some(id) = bind_group_id {
+            graph.add_dependency(root, id);
+        }
+        if let Some(id) = mesh_info_id {
+            graph.add_dependency(root, id);
+        }
+        if let Some(id) = morph_deltas_id {
+            graph.add_dependency(root, id);
+        }
+        drop(graph);
 
         GpuMesh {
             root,
@@ -1200,7 +1174,7 @@ impl MeshSource {
                     Self::sync_pool_node(&self.index_pool, self.index_pool_id, &mut graph);
                     queue.write_buffer(
                         graph
-                            .get_buffer(self.index_pool_id)
+                            .get(self.index_pool_id)
                             .expect("the index pool node exists"),
                         u64::from(range.offset()),
                         &padded,
@@ -1258,7 +1232,7 @@ impl MeshSource {
             let id = self.vertex_node(world, layout);
             self.sync_vertex_node(world, id, layout);
             let buffer = Self::graph(world, self.context)
-                .get_buffer(id)
+                .get(id)
                 .expect("the stream's node exists")
                 .clone();
             queue.write_buffer(
@@ -1361,18 +1335,15 @@ impl MeshSource {
         &mut self,
         world: &LocalWorld,
         texture: wgpu::Texture,
-    ) -> (ResourceId, ResourceId) {
+    ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
         let mut graph = Self::graph(world, self.context);
-        let texture_id = graph
-            .insert_strong(Resource::Texture(texture), &[])
-            .expect("a texture has no dependencies");
-        let view = graph
-            .get_texture(texture_id)
-            .expect("texture exists")
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let view_id = graph
-            .insert_strong(view, &[texture_id])
-            .expect("the view depends on its texture");
+        let texture_id = graph.insert_strong(texture);
+        let view = TextureExt::create_view(
+            graph.get(texture_id).expect("texture exists"),
+            &wgpu::TextureViewDescriptor::default(),
+        );
+        let view_id = graph.insert_strong(view);
+        graph.add_dependency(view_id, texture_id);
         (texture_id, view_id)
     }
 
@@ -1382,13 +1353,11 @@ impl MeshSource {
         &mut self,
         world: &LocalWorld,
         descriptor: Option<wgpu::SamplerDescriptor<'_>>,
-    ) -> ResourceId {
+    ) -> ResourceId<wgpu::Sampler> {
         let sampler = self
             .device(world)
             .create_sampler(&descriptor.unwrap_or_default());
-        Self::graph(world, self.context)
-            .insert_strong(Resource::Sampler(sampler), &[])
-            .expect("a sampler has no dependencies")
+        Self::graph(world, self.context).insert_strong(sampler)
     }
 
     /// Allocate the unlit material bind group from an existing base-colour
@@ -1408,8 +1377,8 @@ impl MeshSource {
         &mut self,
         world: &LocalWorld,
         key: &UnlitPipelineKey,
-        view_id: ResourceId,
-        sampler_id: ResourceId,
+        view_id: ResourceId<TextureView>,
+        sampler_id: ResourceId<wgpu::Sampler>,
     ) -> Option<GpuMaterial> {
         if !key.options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) {
             return None;
@@ -1422,11 +1391,12 @@ impl MeshSource {
         // Clone the handles out so the entries borrow nothing from the graph
         // while `allocate_material` mutates it.
         let view = Self::graph(world, self.context)
-            .get_texture_view(view_id)
+            .get(view_id)
             .expect("the view is in the graph")
+            .view()
             .clone();
         let sampler = Self::graph(world, self.context)
-            .get_sampler(sampler_id)
+            .get(sampler_id)
             .expect("the sampler is in the graph")
             .clone();
         let entries = [
@@ -1439,7 +1409,12 @@ impl MeshSource {
                 resource: wgpu::BindingResource::Sampler(&sampler),
             },
         ];
-        Some(self.allocate_material(world, &layout, &entries, &[view_id, sampler_id]))
+        Some(self.allocate_material(
+            world,
+            &layout,
+            &entries,
+            [view_id.erase(), sampler_id.erase()],
+        ))
     }
 
     /// Build a material bind group from `entries` against `layout` and return
@@ -1460,7 +1435,7 @@ impl MeshSource {
         world: &LocalWorld,
         layout: &wgpu::BindGroupLayout,
         entries: &[wgpu::BindGroupEntry<'_>],
-        dependencies: &[ResourceId],
+        dependencies: impl IntoIterator<Item = ResourceId>,
     ) -> GpuMaterial {
         let bind_group = self
             .device(world)
@@ -1469,9 +1444,11 @@ impl MeshSource {
                 layout,
                 entries,
             });
-        let bind_group_id = Self::graph(world, self.context)
-            .insert_strong(Resource::BindGroup(bind_group), dependencies)
-            .expect("a material bind group depends on graph resources");
+        let mut graph = Self::graph(world, self.context);
+        let bind_group_id = graph.insert_strong(bind_group);
+        for dependency in dependencies {
+            graph.add_dependency(bind_group_id, dependency);
+        }
 
         GpuMaterial { bind_group_id }
     }
@@ -1635,14 +1612,14 @@ impl MeshSource {
                 mapped_at_creation: false,
             });
             Self::graph(world, self.context)
-                .replace(self.joints_buf, Resource::Buffer(buf))
+                .replace(self.joints_buf, buf)
                 .expect("the joint buffer exists");
             self.joints_capacity = capacity;
             // A replaced buffer invalidates every global group bound to it.
             self.rebuild_dirty_global_groups(world);
         }
         let buffer = Self::graph(world, self.context)
-            .get_buffer(self.joints_buf)
+            .get(self.joints_buf)
             .expect("the joint buffer exists")
             .clone();
         self.joints_staging.write(
@@ -1667,13 +1644,13 @@ impl MeshSource {
                 mapped_at_creation: false,
             });
             Self::graph(world, self.context)
-                .replace(self.morph_weights_buf, Resource::Buffer(buf))
+                .replace(self.morph_weights_buf, buf)
                 .expect("the morph-weight buffer exists");
             self.morph_weights_capacity = capacity;
             self.rebuild_dirty_global_groups(world);
         }
         let buffer = Self::graph(world, self.context)
-            .get_buffer(self.morph_weights_buf)
+            .get(self.morph_weights_buf)
             .expect("the morph-weight buffer exists")
             .clone();
         self.morph_weights_staging.write(
@@ -1691,24 +1668,12 @@ impl MeshSource {
     fn render_resources(&self, world: &LocalWorld) -> RenderResources {
         let graph = Self::graph(world, self.context);
         RenderResources {
-            camera: graph
-                .get_buffer(self.camera_buf)
-                .expect("camera buf")
-                .clone(),
-            globals: graph
-                .get_buffer(self.globals_buf)
-                .expect("globals buf")
-                .clone(),
-            metadata: graph
-                .get_buffer(self.metadata_buf)
-                .expect("meta buf")
-                .clone(),
-            joints: graph
-                .get_buffer(self.joints_buf)
-                .expect("joints buf")
-                .clone(),
+            camera: graph.get(self.camera_buf).expect("camera buf").clone(),
+            globals: graph.get(self.globals_buf).expect("globals buf").clone(),
+            metadata: graph.get(self.metadata_buf).expect("meta buf").clone(),
+            joints: graph.get(self.joints_buf).expect("joints buf").clone(),
             morph_weights: graph
-                .get_buffer(self.morph_weights_buf)
+                .get(self.morph_weights_buf)
                 .expect("morph weights buf")
                 .clone(),
         }
@@ -1741,9 +1706,7 @@ impl MeshSource {
             let (id, rebuild) = dirty;
             let bind_group = rebuild(&resources);
             let mut graph = Self::graph(world, self.context);
-            graph
-                .replace(id, Resource::BindGroup(bind_group))
-                .expect("global group exists");
+            graph.replace(id, bind_group).expect("global group exists");
             graph.mark_clean(id);
         }
     }
@@ -1757,7 +1720,7 @@ impl MeshSource {
         view: &View,
     ) {
         let buffer = Self::graph(world, self.context)
-            .get_buffer(self.camera_buf)
+            .get(self.camera_buf)
             .expect("camera buffer exists")
             .clone();
         self.camera_staging
@@ -1768,7 +1731,7 @@ impl MeshSource {
     /// encoder.
     fn upload_globals(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
         let buffer = Self::graph(world, self.context)
-            .get_buffer(self.globals_buf)
+            .get(self.globals_buf)
             .expect("globals buffer exists")
             .clone();
         self.globals_staging.write(
@@ -1824,14 +1787,14 @@ impl MeshSource {
                 mapped_at_creation: false,
             });
             Self::graph(world, self.context)
-                .replace(self.metadata_buf, Resource::Buffer(buf))
+                .replace(self.metadata_buf, buf)
                 .expect("metadata buffer exists");
             self.metadata_capacity = capacity;
             // A replaced buffer invalidates every global group bound to it.
             self.rebuild_dirty_global_groups(world);
         }
         let buffer = Self::graph(world, self.context)
-            .get_buffer(self.metadata_buf)
+            .get(self.metadata_buf)
             .expect("metadata buffer exists")
             .clone();
         self.metadata_staging.write(
@@ -1848,25 +1811,32 @@ impl MeshSource {
     ///
     /// The node is strong: the source owns the pool, no mesh does. See
     /// [`MeshSource::sync_pool_node`] for why nothing may depend on it.
-    fn vertex_node(&mut self, world: &LocalWorld, layout: &VertexBufferLayoutDesc) -> ResourceId {
+    fn vertex_node(
+        &mut self,
+        world: &LocalWorld,
+        layout: &VertexBufferLayoutDesc,
+    ) -> ResourceId<wgpu::Buffer> {
         if let Some(&id) = self.vertex_pool_ids.get(layout) {
             return id;
         }
-        let id = Self::graph(world, self.context)
-            .insert_strong(Resource::Virtual, &[])
-            .expect("a new stream node has no dependencies");
+        let buffer = self
+            .vertex_pool
+            .buffer(layout)
+            .expect("the layout was allocated a buffer")
+            .clone();
+        let id = Self::graph(world, self.context).insert_strong(buffer);
         self.vertex_pool_ids.insert(layout.clone(), id);
         id
     }
 
     /// Point the stream node `id` at the vertex pool's buffer for `layout`.
     ///
-    /// A stream node starts as a virtual stand-in, so its first sync swaps in
-    /// the real buffer; later syncs only happen when the pool grew.
+    /// The pool hands out a new buffer when it grows, so the node has to
+    /// follow it.
     fn sync_vertex_node(
         &mut self,
         world: &LocalWorld,
-        id: ResourceId,
+        id: ResourceId<wgpu::Buffer>,
         layout: &VertexBufferLayoutDesc,
     ) {
         let buffer = self
@@ -1874,9 +1844,9 @@ impl MeshSource {
             .buffer(layout)
             .expect("the layout has a buffer");
         let mut graph = Self::graph(world, self.context);
-        if graph.get_buffer(id) != Some(buffer) {
+        if graph.get(id) != Some(buffer) {
             graph
-                .replace(id, Resource::Buffer(buffer.clone()))
+                .replace(id, buffer.clone())
                 .expect("a stream node exists");
         }
     }
@@ -1892,10 +1862,10 @@ impl MeshSource {
     /// mesh-info uniform — so replacing one marks nothing else dirty. A
     /// dependency added onto a pool buffer makes every grow rebuild it, which
     /// is why there must not be one.
-    fn sync_pool_node(pool: &BufferPool, id: ResourceId, graph: &mut ResourceGraph) {
-        if graph.get_buffer(id) != Some(pool.buffer()) {
+    fn sync_pool_node(pool: &BufferPool, id: ResourceId<wgpu::Buffer>, graph: &mut ResourceGraph) {
+        if graph.get(id) != Some(pool.buffer()) {
             graph
-                .replace(id, Resource::Buffer(pool.buffer().clone()))
+                .replace(id, pool.buffer().clone())
                 .expect("a pool node exists");
         }
     }
@@ -1987,16 +1957,13 @@ impl MeshSource {
                     .get::<GpuMesh>(entry.mesh.entity)
                     .expect("visible entity has GpuMesh");
 
-                let mesh_bg = mesh.bind_group_id.map(|id| {
-                    graph
-                        .get_bind_group(id)
-                        .expect("mesh bind group exists")
-                        .clone()
-                });
+                let mesh_bg = mesh
+                    .bind_group_id
+                    .map(|id| graph.get(id).expect("mesh bind group exists").clone());
 
                 let material_bg = world.get::<GpuMaterial>(entry.mesh.entity).map(|material| {
                     graph
-                        .get_bind_group(material.bind_group_id)
+                        .get(material.bind_group_id)
                         .expect("material bind group exists")
                         .clone()
                 });
@@ -2004,7 +1971,7 @@ impl MeshSource {
                 let mut vertex_buffers = ArrayVec::new();
                 for &(slot, buffer) in &mesh.vertex_buffers {
                     let buffer = graph
-                        .get_buffer(buffer)
+                        .get(buffer)
                         .expect("mesh vertex buffer exists")
                         .clone();
                     // A mesh binds its vertex buffers whole; the draw's range
@@ -2014,10 +1981,7 @@ impl MeshSource {
 
                 let index_buffer = mesh.index_buffer.map(|(buffer, format)| {
                     (
-                        graph
-                            .get_buffer(buffer)
-                            .expect("mesh index buffer exists")
-                            .clone(),
+                        graph.get(buffer).expect("mesh index buffer exists").clone(),
                         format,
                     )
                 });
@@ -2048,14 +2012,14 @@ impl MeshSource {
         pipeline_handles.clear();
         {
             let graph = Self::graph(world, self.context);
-            pipeline_handles.extend(self.pipelines.iter().map(|registered| PipelineHandles {
-                pipeline: registered.pipeline.clone(),
-                global: registered.global.as_ref().map(|global| {
-                    graph
-                        .get_bind_group(global.id)
-                        .expect("global group exists")
-                        .clone()
-                }),
+            pipeline_handles.extend(self.pipelines.iter().map(|registered| {
+                PipelineHandles {
+                    pipeline: registered.pipeline.clone(),
+                    global: registered
+                        .global
+                        .as_ref()
+                        .map(|global| graph.get(global.id).expect("global group exists").clone()),
+                }
             }));
         }
 
@@ -2308,23 +2272,17 @@ mod tests {
             let mut graph = world
                 .get_mut::<ResourceGraph>(ctx.graph)
                 .expect("the context's graph");
-            let color = graph
-                .insert_strong(
-                    ft.color
-                        .create_view(&wgpu::TextureViewDescriptor::default()),
-                    &[],
-                )
-                .expect("a color view has no dependencies");
-            let depth = graph
-                .insert_strong(
-                    ft.depth
-                        .create_view(&wgpu::TextureViewDescriptor::default()),
-                    &[],
-                )
-                .expect("a depth view has no dependencies");
+            let color = graph.insert_strong(TextureExt::create_view(
+                &ft.color,
+                &wgpu::TextureViewDescriptor::default(),
+            ));
+            let depth = graph.insert_strong(TextureExt::create_view(
+                &ft.depth,
+                &wgpu::TextureViewDescriptor::default(),
+            ));
             let attachments = RenderAttachments::from_views(
-                graph.get_texture_view(color).cloned(),
-                graph.get_texture_view(depth).cloned(),
+                graph.get(color).cloned(),
+                graph.get(depth).cloned(),
                 None,
             );
             FrameTarget {
@@ -2370,7 +2328,9 @@ mod tests {
 
     /// Register a 2D texture with `source` and return a view id and a sampler
     /// id, ready for [`MeshSource::allocate_unlit_material`].
-    fn test_material_resources(harness: &mut Harness) -> (ResourceId, ResourceId) {
+    fn test_material_resources(
+        harness: &mut Harness,
+    ) -> (ResourceId<TextureView>, ResourceId<wgpu::Sampler>) {
         let texture =
             harness
                 .source
@@ -2523,9 +2483,7 @@ mod tests {
             .collect();
         for (index, &id) in ids.iter().enumerate() {
             assert!(
-                MeshSource::graph(&h.world, ctx)
-                    .get_bind_group(id)
-                    .is_some(),
+                MeshSource::graph(&h.world, ctx).get(id).is_some(),
                 "pipeline {index}'s global group is in the graph"
             );
             // No two pipelines share one: each binds its own layout.
@@ -2562,7 +2520,7 @@ mod tests {
         let ctx = h.source.context();
         assert!(
             MeshSource::graph(&h.world, ctx)
-                .get_bind_group(material.bind_group_id)
+                .get(material.bind_group_id)
                 .is_some()
         );
     }
@@ -2597,7 +2555,7 @@ mod tests {
         let index_pool_free = h.source.index_pool.free_space();
         assert!(matches!(
             MeshSource::graph(&h.world, ctx).get(mesh.root),
-            Some(Resource::Virtual)
+            Some(Virtual)
         ));
         let bind_group = mesh.bind_group_id.expect("the mesh has a group");
         let root = mesh.root;
@@ -2636,12 +2594,12 @@ mod tests {
             .collect();
         let bind_group = mesh.bind_group_id.expect("the mesh has a group");
         assert!(
-            dependencies.contains(&bind_group),
+            dependencies.contains(&bind_group.erase()),
             "the bind group is under the root"
         );
         let pool = h.source.index_pool_id;
         assert!(
-            !dependencies.contains(&pool),
+            !dependencies.contains(&pool.erase()),
             "the index pool is not under the root"
         );
         assert!(
@@ -2758,7 +2716,7 @@ mod tests {
         // pool currently does: a mesh needs no update after a grow.
         assert_eq!(last.index_buffer.map(|(id, _)| id), Some(first_node));
         assert_eq!(
-            MeshSource::graph(&h.world, ctx).get_buffer(first_node),
+            MeshSource::graph(&h.world, ctx).get(first_node),
             Some(h.source.index_pool.buffer()),
             "the node follows the pool's buffer"
         );
@@ -2810,9 +2768,7 @@ mod tests {
         {
             assert_eq!(first_id, second_id, "the streams share a buffer");
             assert!(
-                MeshSource::graph(&h.world, ctx)
-                    .get_buffer(*first_id)
-                    .is_some(),
+                MeshSource::graph(&h.world, ctx).get(*first_id).is_some(),
                 "the stream's node holds a buffer"
             );
         }
@@ -2866,7 +2822,7 @@ mod tests {
                 .buffer(layout)
                 .expect("the layout has a buffer");
             assert_eq!(
-                MeshSource::graph(&h.world, ctx).get_buffer(*node),
+                MeshSource::graph(&h.world, ctx).get(*node),
                 Some(pool_buffer),
                 "the node follows the pool's buffer"
             );
@@ -3271,7 +3227,7 @@ mod tests {
 
         // A fifth entry outgrows four, so the buffer grows again.
         let before = MeshSource::graph(&h.world, ctx)
-            .get_buffer(h.source.metadata_buf)
+            .get(h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
@@ -3281,21 +3237,21 @@ mod tests {
             "growing past four reaches six (4 * 1.5)"
         );
         assert_ne!(
-            MeshSource::graph(&h.world, ctx).get_buffer(h.source.metadata_buf),
+            MeshSource::graph(&h.world, ctx).get(h.source.metadata_buf),
             before.as_ref(),
             "growth replaced the buffer"
         );
 
         // A sixth entry fits in six, so the buffer is left alone.
         let before = MeshSource::graph(&h.world, ctx)
-            .get_buffer(h.source.metadata_buf)
+            .get(h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
         assert_eq!(h.source.metadata_capacity, 6, "six entries fit");
         assert_eq!(
-            MeshSource::graph(&h.world, ctx).get_buffer(h.source.metadata_buf),
+            MeshSource::graph(&h.world, ctx).get(h.source.metadata_buf),
             before.as_ref(),
             "no growth means the same buffer, so no global group is rebuilt"
         );

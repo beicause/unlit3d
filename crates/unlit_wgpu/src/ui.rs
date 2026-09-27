@@ -11,7 +11,7 @@
 //! # use unlit_wgpu::pipeline::{
 //! #     CAMERA_BINDING, FRAME_BINDING, UnlitOptions, UnlitPipeline,
 //! # };
-//! # use unlit_wgpu::resources::{Resource, ResourceGraph};
+//! # use unlit_wgpu::resources::ResourceGraph;
 //! # use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
@@ -41,15 +41,11 @@
 //!
 //! // The UI's per-texture resources join the caller's ledger.
 //! let mut graph = ResourceGraph::new();
-//! let camera_id = graph
-//!     .insert_strong(Resource::Buffer(camera), &[])
-//!     .unwrap();
-//! let globals_id = graph
-//!     .insert_strong(Resource::Buffer(globals), &[])
-//!     .unwrap();
-//! let group_id = graph
-//!     .insert_strong(Resource::BindGroup(global_group), &[camera_id, globals_id])
-//!     .unwrap();
+//! let camera_id = graph.insert_strong(camera);
+//! let globals_id = graph.insert_strong(globals);
+//! let group_id = graph.insert_strong(global_group);
+//! graph.add_dependency(group_id, camera_id);
+//! graph.add_dependency(group_id, globals_id);
 //!
 //! let mut ui = EguiIntegration::new(device, group_id, pipeline);
 //! let mut input = egui::RawInput::default();
@@ -88,7 +84,7 @@ use crate::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, MATERIAL_GROUP,
     POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
 };
-use crate::resources::{Resource, ResourceGraph, ResourceId};
+use crate::resources::{ResourceGraph, ResourceId, TextureExt, TextureView};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
 use crate::specialize::SurfaceKey;
 use crate::staging::StagingBuffer;
@@ -379,9 +375,9 @@ struct UiDraw {
 #[derive(Clone, Copy)]
 struct TextureSlot {
     /// The texture egui's deltas are written into.
-    texture: ResourceId,
+    texture: ResourceId<wgpu::Texture>,
     /// The default view over it, which the material samples.
-    view: ResourceId,
+    view: ResourceId<TextureView>,
 }
 
 /// Draws tessellated egui output with the built-in unlit pipeline.
@@ -398,7 +394,7 @@ pub struct EguiIntegration {
     pipeline: UnlitPipeline,
     /// Graph node of the caller's global bind group: camera and frame
     /// globals, written by the caller.
-    global_group: ResourceId,
+    global_group: ResourceId<wgpu::BindGroup>,
     /// Graph nodes of every allocated texture slot, keyed by egui's own id.
     textures: HashMap<egui::TextureId, TextureSlot>,
     /// The sampling options egui last stated for each texture.
@@ -413,18 +409,18 @@ pub struct EguiIntegration {
     texture_options: HashMap<egui::TextureId, egui::TextureOptions>,
     /// One sampler per distinct set of egui sampling options seen, with its
     /// graph node.
-    samplers: Vec<(egui::TextureOptions, ResourceId)>,
+    samplers: Vec<(egui::TextureOptions, ResourceId<wgpu::Sampler>)>,
     /// One material bind group per (texture, options) pair, with its graph
     /// node; the node depends on the texture's view and the sampler.
-    materials: Vec<(MaterialKey, ResourceId)>,
+    materials: Vec<(MaterialKey, ResourceId<wgpu::BindGroup>)>,
     /// Positions, then interleaved UVs and colors.
     vertices: Option<wgpu::Buffer>,
     /// `Uint32` indices.
     indices: Option<wgpu::Buffer>,
     /// Graph node of the vertex buffer, replaced in place when it grows.
-    vertex_node: Option<ResourceId>,
+    vertex_node: Option<ResourceId<wgpu::Buffer>>,
     /// Graph node of the index buffer, replaced in place when it grows.
-    index_node: Option<ResourceId>,
+    index_node: Option<ResourceId<wgpu::Buffer>>,
     /// Vertices the vertex buffer holds room for.
     vertex_capacity: usize,
     /// Indices the index buffer holds room for.
@@ -471,7 +467,11 @@ impl EguiIntegration {
     /// [`crate::render_attachments::RenderAttachments`] — means those
     /// resources live in the same ledger as the rest of the frame's, with the
     /// same dependency tracking.
-    pub fn new(device: &wgpu::Device, global_group: ResourceId, pipeline: UnlitPipeline) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        global_group: ResourceId<wgpu::BindGroup>,
+        pipeline: UnlitPipeline,
+    ) -> Self {
         Self {
             device: device.clone(),
             pipeline,
@@ -501,10 +501,13 @@ impl EguiIntegration {
     }
 
     /// The bind group behind a graph node that is known to be one.
-    fn bind_group<'a>(&self, graph: &'a ResourceGraph, id: ResourceId) -> &'a wgpu::BindGroup {
+    fn bind_group<'a>(
+        &self,
+        graph: &'a ResourceGraph,
+        id: ResourceId<wgpu::BindGroup>,
+    ) -> &'a wgpu::BindGroup {
         graph
             .get(id)
-            .and_then(Resource::as_bind_group)
             .expect("the node is a bind group the UI created")
     }
 
@@ -731,13 +734,11 @@ impl EguiIntegration {
                 // node is left strongly holding the old buffer.
                 Some(node) => {
                     graph
-                        .replace(node, Resource::Buffer(buffer.clone()))
+                        .replace(node, buffer.clone())
                         .expect("the vertex node is still registered");
                     node
                 }
-                None => graph
-                    .insert_strong(Resource::Buffer(buffer.clone()), &[])
-                    .expect("an empty dependency list always resolves"),
+                None => graph.insert_strong(buffer.clone()),
             });
             self.vertices = Some(buffer);
         }
@@ -754,13 +755,11 @@ impl EguiIntegration {
             self.index_node = Some(match self.index_node {
                 Some(node) => {
                     graph
-                        .replace(node, Resource::Buffer(buffer.clone()))
+                        .replace(node, buffer.clone())
                         .expect("the index node is still registered");
                     node
                 }
-                None => graph
-                    .insert_strong(Resource::Buffer(buffer.clone()), &[])
-                    .expect("an empty dependency list always resolves"),
+                None => graph.insert_strong(buffer.clone()),
             });
             self.indices = Some(buffer);
         }
@@ -778,7 +777,7 @@ impl EguiIntegration {
             options,
         };
         let index = self.materials.iter().position(|(seen, _)| *seen == key)?;
-        graph.get(self.materials[index].1)?.as_bind_group()
+        graph.get(self.materials[index].1)
     }
 
     /// Build the material bind group for (`id`, `options`) if it does not
@@ -804,10 +803,10 @@ impl EguiIntegration {
         let Some(layout) = self.pipeline.material_layout.as_ref() else {
             return;
         };
-        let Some(Resource::TextureView { view, .. }) = graph.get(slot.view) else {
+        let Some(view) = graph.get(slot.view).map(TextureView::view) else {
             return;
         };
-        let Some(Resource::Sampler(sampler)) = graph.get(sampler_id) else {
+        let Some(sampler) = graph.get(sampler_id) else {
             return;
         };
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -824,14 +823,18 @@ impl EguiIntegration {
                 },
             ],
         });
-        let id = graph
-            .insert_strong(Resource::BindGroup(group), &[slot.view, sampler_id])
-            .expect("both dependencies were registered");
+        let id = graph.insert_strong(group);
+        graph.add_dependency(id, slot.view);
+        graph.add_dependency(id, sampler_id);
         self.materials.push((key, id));
     }
 
     /// The sampler for `options`, created and registered on first use.
-    fn sampler(&mut self, graph: &mut ResourceGraph, options: egui::TextureOptions) -> ResourceId {
+    fn sampler(
+        &mut self,
+        graph: &mut ResourceGraph,
+        options: egui::TextureOptions,
+    ) -> ResourceId<wgpu::Sampler> {
         if let Some(&(_, id)) = self.samplers.iter().find(|(seen, _)| *seen == options) {
             return id;
         }
@@ -843,9 +846,7 @@ impl EguiIntegration {
             min_filter: texture_filter(options.minification),
             ..Default::default()
         });
-        let id = graph
-            .insert_strong(Resource::Sampler(sampler), &[])
-            .expect("an empty dependency list always resolves");
+        let id = graph.insert_strong(sampler);
         self.samplers.push((options, id));
         id
     }
@@ -912,7 +913,7 @@ impl EguiIntegration {
                 let Some(slot) = self.textures.get(&id) else {
                     return;
                 };
-                let Some(Resource::Texture(texture)) = graph.get(slot.texture) else {
+                let Some(texture) = graph.get(slot.texture) else {
                     return;
                 };
                 queue.write_texture(
@@ -943,13 +944,11 @@ impl EguiIntegration {
                     view_formats: &[],
                 });
                 queue.write_texture(texture.as_image_copy(), pixels, layout, size);
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                let texture_id = graph
-                    .insert_strong(Resource::Texture(texture), &[])
-                    .expect("an empty dependency list always resolves");
-                let view_id = graph
-                    .insert_strong(view, &[texture_id])
-                    .expect("the texture was just registered");
+                let view =
+                    TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
+                let texture_id = graph.insert_strong(texture);
+                let view_id = graph.insert_strong(view);
+                graph.add_dependency(view_id, texture_id);
                 self.textures.insert(
                     id,
                     TextureSlot {

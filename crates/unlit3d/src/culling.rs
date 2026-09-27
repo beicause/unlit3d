@@ -84,7 +84,7 @@ mod tests {
     use super::*;
     use arrayvec::ArrayVec;
     use glam::Vec3;
-    use unlit_wgpu::resources::{Resource, ResourceGraph};
+    use unlit_wgpu::resources::{ResourceGraph, Virtual};
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
@@ -123,9 +123,7 @@ mod tests {
         // The root is a lifetime entry point this test never removes through,
         // so a bare placeholder node is enough.
         let mut graph = ResourceGraph::new();
-        let root = graph
-            .insert_strong(Resource::Virtual, &[])
-            .expect("a virtual node has no dependencies");
+        let root = graph.insert_strong(Virtual);
         let mesh = GpuMesh {
             root,
             vertex_buffers: ArrayVec::new(),

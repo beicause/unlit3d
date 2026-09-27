@@ -26,6 +26,7 @@ use unlit_wgpu::pipeline::{
 use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
 };
+use unlit_wgpu::resources::{TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::SurfaceKey;
 use zerocopy::IntoBytes;
@@ -236,7 +237,7 @@ fn cube() -> MeshData {
 
 /// A procedurally generated base-color texture plus its sampler.
 struct BaseColorTexture {
-    view: wgpu::TextureView,
+    view: TextureView,
     sampler: wgpu::Sampler,
 }
 
@@ -281,7 +282,7 @@ fn checkerboard_texture(ctx: &Ctx) -> BaseColorTexture {
     );
 
     BaseColorTexture {
-        view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
+        view: TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default()),
         sampler: ctx.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("test::base_color_sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -345,7 +346,7 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
                 entries: &[
                     bg_entry(
                         BASE_COLOR_TEXTURE_BINDING,
-                        wgpu::BindingResource::TextureView(&texture.view),
+                        wgpu::BindingResource::TextureView(texture.view.view()),
                     ),
                     bg_entry(
                         BASE_COLOR_SAMPLER_BINDING,
@@ -888,23 +889,17 @@ fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
     let ctx = Ctx::headless();
     let mut graph = ResourceGraph::new();
 
-    let base = graph
-        .insert_strong(Resource::Buffer(uniform(&ctx.device, "test::base")), &[])
-        .expect("insert base");
+    let base = graph.insert_strong(uniform(&ctx.device, "test::base"));
 
     // A stand-in dependent: rebuilding is driven purely by the graph.
-    let dependent = graph
-        .insert_strong(
-            Resource::Buffer(uniform(&ctx.device, "test::dependent")),
-            &[base],
-        )
-        .expect("insert dependent");
+    let dependent = graph.insert_strong(uniform(&ctx.device, "test::dependent"));
+    graph.add_dependency(dependent, base);
 
     assert!(!graph.is_dirty(dependent));
 
     // Swapping the base must dirty the dependent, which the rebuild pass
     // then refreshes in dependency order.
-    graph.replace(base, Resource::Buffer(uniform(&ctx.device, "test::base2")));
+    graph.replace(base, uniform(&ctx.device, "test::base2"));
     assert!(graph.is_dirty(base));
     assert!(graph.is_dirty(dependent));
 
@@ -913,7 +908,7 @@ fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
         rebuilt.push(id);
         Some(Resource::Buffer(uniform(&ctx.device, "test::rebuilt")))
     });
-    assert_eq!(rebuilt, vec![base, dependent]);
+    assert_eq!(rebuilt, vec![base.erase(), dependent.erase()]);
     assert!(!graph.any_dirty());
 }
 

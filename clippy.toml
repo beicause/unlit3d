@@ -1,4 +1,9 @@
 disallowed-types = [
   { path = "std::collections::HashMap", reason = "use hashbrown::HashMap instead" },
   { path = "std::collections::HashSet", reason = "use hashbrown::HashSet instead" },
+  { path = "wgpu::TextureView", reason = "use unlit_wgpu::resources::TextureView instead" },
+]
+
+disallowed-methods = [
+  { path = "wgpu::Texture::create_view", reason = "use unlit_wgpu::resources::TextureExt::create_view instead" },
 ]

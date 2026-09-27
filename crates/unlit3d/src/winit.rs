@@ -65,7 +65,7 @@ use std::sync::Arc;
 
 use unlit_ecs::LocalWorld;
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
-use unlit_wgpu::resources::{Resource, ResourceId};
+use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
 
 use crate::renderer::Renderer;
 
@@ -125,14 +125,14 @@ pub struct WindowSurface {
     /// surface offers no sRGB format of its own.
     color_format: wgpu::TextureFormat,
     /// The depth-stencil view, in the frame's graph.
-    depth_view: ResourceId,
+    depth_view: ResourceId<TextureView>,
     /// The multisample view, in the frame's graph; `None` when the frames
     /// are not multisampled.
-    msaa_view: Option<ResourceId>,
+    msaa_view: Option<ResourceId<TextureView>>,
     /// The color view of the most recently acquired frame, in the frame's
     /// graph. One id is kept for the surface's whole life; `None` until the
     /// first frame is acquired.
-    color_view: Option<ResourceId>,
+    color_view: Option<ResourceId<TextureView>>,
 }
 
 impl WindowSurface {
@@ -177,14 +177,8 @@ impl WindowSurface {
             sample_count,
         );
         let mut graph = context_graph(world, renderer);
-        let depth_view = graph
-            .insert_strong(view_resource(&depth), &[])
-            .expect("a texture view has no dependencies");
-        let msaa_view = msaa.map(|texture| {
-            graph
-                .insert_strong(view_resource(&texture), &[])
-                .expect("a texture view has no dependencies")
-        });
+        let depth_view = graph.insert_strong(view_resource(&depth));
+        let msaa_view = msaa.map(|texture| graph.insert_strong(view_resource(&texture)));
         drop(graph);
 
         Self {
@@ -326,9 +320,7 @@ impl WindowSurface {
                     .expect("the color view is in the graph");
                 id
             }
-            None => context_graph(world, renderer)
-                .insert_strong(view, &[])
-                .expect("a texture view has no dependencies"),
+            None => context_graph(world, renderer).insert_strong(view),
         };
         self.color_view = Some(color);
         renderer.set_render_target(world, Some(color), Some(self.depth_view), self.msaa_view);
@@ -500,24 +492,26 @@ fn create_attachments(
     (depth, msaa)
 }
 
-/// A graph resource holding a default view of `texture`.
+/// A graph view of `texture` in its own format.
 ///
 /// Used for the depth and multisample attachments, whose views are always in
 /// their texture's own format.
-fn view_resource(texture: &wgpu::Texture) -> Resource {
-    Resource::from(texture.create_view(&wgpu::TextureViewDescriptor::default()))
+fn view_resource(texture: &wgpu::Texture) -> TextureView {
+    TextureExt::create_view(texture, &wgpu::TextureViewDescriptor::default())
 }
 
-/// A graph resource holding a view of `texture` reinterpreted as `format`.
+/// A graph view of `texture` reinterpreted as `format`.
 ///
 /// Used for the swap chain's color image, which the surface configures with a
 /// non-sRGB format on the web: the view is what makes the frame sRGB-encoded.
-fn color_view_resource(texture: &wgpu::Texture, format: wgpu::TextureFormat) -> Resource {
-    Resource::TextureView {
-        view: texture.create_view(&wgpu::TextureViewDescriptor {
+/// The format goes into the descriptor, so the view and the format the graph
+/// records cannot disagree.
+fn color_view_resource(texture: &wgpu::Texture, format: wgpu::TextureFormat) -> TextureView {
+    TextureExt::create_view(
+        texture,
+        &wgpu::TextureViewDescriptor {
             format: Some(format),
             ..Default::default()
-        }),
-        format,
-    }
+        },
+    )
 }
