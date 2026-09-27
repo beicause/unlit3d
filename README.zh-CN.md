@@ -148,7 +148,7 @@ cargo nextest run -E 'test(name)'  # 单个测试
 
 | Crate | 测试覆盖的内容 |
 |-------|----------------|
-| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令。不需要 GPU，因此在任何环境都能运行。 |
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令。 |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。其多帧快照覆盖位于 `unlit3d_examples`。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 自身没有测试：它是其他 crate 的 GPU 测试所使用的骨架。 |

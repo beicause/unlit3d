@@ -170,7 +170,7 @@ cargo nextest run -p unlit_ecs   # 本 crate 的单元与集成测试
 cargo xtask test                 # 整个工作区
 ```
 
-测试覆盖 world 与查询行为、延迟命令。它们都不需要 GPU，因此在任何环境都能运行。测试各层作为整体，以及 CI 所跑的内容，见
+测试覆盖 world 与查询行为、延迟命令。测试各层作为整体，以及 CI 所跑的内容，见
 [根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 
 ## 许可证

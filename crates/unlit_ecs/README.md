@@ -212,8 +212,8 @@ cargo nextest run -p unlit_ecs   # this crate's unit and integration tests
 cargo xtask test                 # the whole workspace
 ```
 
-The tests cover world and query behaviour and deferred commands. None of them
-needs a GPU, so they run anywhere. The test layers as a whole, and what CI runs, are described in the
+The tests cover world and query behaviour and deferred commands. The test
+layers as a whole, and what CI runs, are described in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
 ## License
