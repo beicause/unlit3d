@@ -141,7 +141,7 @@ pub fn readback_buffer(ctx: &Ctx, source: &wgpu::Buffer, size: u64) -> Vec<u8> {
 ///
 /// The views are bare wgpu ones: this crate is the layer *below*
 /// `unlit_wgpu` — which depends on it, not the other way round — so
-/// [`unlit_wgpu::resources::TextureView`] is not reachable here. A caller that
+/// `unlit_wgpu::resources::TextureView` is not reachable here. A caller that
 /// registers this target's view in a resource graph pairs it with its format
 /// itself.
 #[expect(
