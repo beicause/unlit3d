@@ -24,7 +24,15 @@ use smol_hyper::rt::{FuturesIo, SmolTimer};
 /// Binds to loopback, trying the preferred port first and its successors
 /// after, and prints the URL to open once listening.
 pub fn serve(dir: &Path, preferred_port: u16) -> Result<(), String> {
-    let listener = bind(preferred_port)?;
+    serve_listener(bind(preferred_port)?, dir)
+}
+
+/// Serve `dir` on an already-bound `listener` until stopped.
+///
+/// Split from [`serve`] so a caller that has to know the URL — a test whose
+/// client connects to it — can bind first and read the address the listener
+/// actually got, rather than guess which port [`bind`] settled on.
+fn serve_listener(listener: Async<std::net::TcpListener>, dir: &Path) -> Result<(), String> {
     let url = listener
         .get_ref()
         .local_addr()
@@ -177,22 +185,31 @@ mod tests {
     }
 
     /// Start the server on a free port, returning the base URL.
+    ///
+    /// The listener is bound here, on the test's own thread, and the URL is
+    /// read back from it: the port is then whatever the OS gave, and the client
+    /// cannot end up talking to a different test's server because a fixed port
+    /// was already taken.
     fn serve_fixture(dir: PathBuf) -> String {
-        // Port 0 is not usable here: the URL has to be known to the client
-        // before the server is up. A high port keeps collisions unlikely.
-        let port = 8971;
+        // Port 0 asks the OS for a free port, which is the only way to be sure
+        // the client and the server agree on it without racing another test.
+        let listener = bind(0).expect("a free port is available on loopback");
+        let addr = listener
+            .get_ref()
+            .local_addr()
+            .expect("the listener has an address");
         std::thread::spawn(move || {
-            let _ = serve(&dir, port);
+            let _ = serve_listener(listener, &dir);
         });
-        // The listener binds before the accept loop, but not before this
-        // thread returns; retry the first connection until it is up.
+        // The listener is already bound, so the first connection either
+        // succeeds or the server has not reached `accept` yet.
         for _ in 0..100 {
-            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            if TcpStream::connect(addr).is_ok() {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        format!("127.0.0.1:{port}")
+        format!("{addr}")
     }
 
     /// Send one request and return the whole raw response.

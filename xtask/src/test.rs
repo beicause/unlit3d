@@ -8,6 +8,11 @@ use crate::step;
 /// process, so one test's device, logger or panic cannot reach another's.
 /// Nextest does not run doctests, so those get a `cargo test --doc` pass of
 /// their own — the two commands together are what CI runs.
+///
+/// The targets are named one by one rather than with `--all-targets`, which
+/// would also sweep in the benchmarks. A benchmark binary is not a test
+/// binary: it has no test harness and its `main` is the benchmark, so nextest
+/// cannot list it — `cargo bench` is what runs those.
 pub fn run(release: bool) -> Result<(), String> {
     let profile: &[&str] = if release { &["--release"] } else { &[] };
 
@@ -17,7 +22,9 @@ pub fn run(release: bool) -> Result<(), String> {
             "nextest",
             "run",
             "--workspace",
-            "--all-targets",
+            "--lib",
+            "--bins",
+            "--tests",
             "--all-features",
         ])
         .args(profile);
