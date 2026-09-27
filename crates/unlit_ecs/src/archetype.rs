@@ -26,7 +26,9 @@ impl Archetype {
     /// Build an archetype from its component types and their columns.
     ///
     /// `types` must be sorted and unique, and `columns` must line up with
-    /// it.
+    /// it. Sorting is what makes one component set one archetype: the types are
+    /// the key the pool looks an archetype up by, so two spawns of the same set
+    /// have to arrive in the same order.
     pub(crate) fn new(types: Box<[TypeId]>, columns: Box<[Box<dyn AnyColumn>]>) -> Self {
         debug_assert_eq!(types.len(), columns.len());
         debug_assert!(types.windows(2).all(|pair| pair[0] < pair[1]));
@@ -58,8 +60,22 @@ impl Archetype {
     }
 
     /// The position of `type_id` in [`Archetype::types`], if present.
+    ///
+    /// A scan rather than a binary search. An archetype holds the components one
+    /// entity was spawned with, which a scene entity keeps to a handful, and
+    /// over that range a scan wins: comparing is branch-free and vectorizes once
+    /// this is inlined into its caller, while a binary search pays a
+    /// mispredicted branch per probe. A scan only loses on an archetype far
+    /// wider than a tuple spawn reaches, which a hand-written [`Bundle`] can
+    /// still build. The sorted order [`Bundle`] gives the types is what keeps
+    /// archetypes identical across spawn orders; the lookup does not rely on it.
+    ///
+    /// [`Bundle`]: crate::Bundle
+    #[inline]
     pub(crate) fn column_index(&self, type_id: TypeId) -> Option<usize> {
-        self.types.binary_search(&type_id).ok()
+        self.types
+            .iter()
+            .position(|&candidate| candidate == type_id)
     }
 
     /// The storage cell of component `C` at `row`.
