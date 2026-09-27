@@ -43,13 +43,17 @@
 //! specialization dimensions compose as a tuple of keys, for which
 //! [SpecializerKey] is implemented up to arity eight.
 
-use core::hash::Hash;
+use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
+use std::collections::hash_map::DefaultHasher;
+use std::sync::Arc;
 
+use arrayvec::ArrayVec;
 use hashbrown::HashMap;
 use smallvec::SmallVec;
 
 use crate::render_attachments::RenderAttachments;
+use crate::scene::MAX_VERTEX_BUFFERS;
 
 /// A type that can be compiled from a descriptor and cached one-per-key.
 pub trait Specializable: Sized {
@@ -287,6 +291,85 @@ impl VertexBufferLayoutDesc {
             step_mode: self.step_mode,
             attributes: &self.attributes,
         }
+    }
+}
+
+/// A mesh's vertex-buffer layout, slot by slot, shared rather than copied.
+///
+/// The layout is part of the key a family specializes on, and that key is
+/// built and hashed once per visible entity per frame. A mesh's layout never
+/// changes after upload, so the deep clone an inline field would cost on every
+/// key is replaced by a handle to one allocation: cloning a key copies a
+/// pointer, and hashing it writes one word that was computed once at upload
+/// instead of walking every attribute of every buffer.
+///
+/// Equality compares the buffers themselves, so two independently uploaded
+/// meshes with the same layout are one key; equal layouts always carry equal
+/// hashes, which is what lets [Hash] be the stored word.
+#[derive(Clone, Debug)]
+pub struct VertexLayout {
+    inner: Arc<Inner>,
+}
+
+/// The shared body of a [VertexLayout].
+#[derive(Debug)]
+struct Inner {
+    /// The buffers, slot by slot.
+    buffers: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
+    /// The hash of `buffers`, computed once so hashing a key is O(1).
+    hash: u64,
+}
+
+impl VertexLayout {
+    /// Intern `buffers`, slot by slot.
+    ///
+    /// # Panics
+    ///
+    /// If more than [MAX_VERTEX_BUFFERS] buffers are given: a draw cannot bind
+    /// more than that.
+    pub fn new(buffers: impl IntoIterator<Item = (u32, VertexBufferLayoutDesc)>) -> Self {
+        let buffers: ArrayVec<_, MAX_VERTEX_BUFFERS> = buffers.into_iter().collect();
+        let mut hasher = DefaultHasher::new();
+        buffers.hash(&mut hasher);
+        Self {
+            inner: Arc::new(Inner {
+                buffers,
+                hash: hasher.finish(),
+            }),
+        }
+    }
+}
+
+impl Default for VertexLayout {
+    /// A layout naming no buffer.
+    fn default() -> Self {
+        Self::new([])
+    }
+}
+
+impl PartialEq for VertexLayout {
+    fn eq(&self, other: &Self) -> bool {
+        // One mesh's layout is ordinarily compared with itself, so the handle
+        // check settles the common case before the buffers are looked at.
+        Arc::ptr_eq(&self.inner, &other.inner) || self.inner.buffers == other.inner.buffers
+    }
+}
+
+impl Eq for VertexLayout {}
+
+impl Hash for VertexLayout {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Equal layouts share this word, so writing it satisfies the contract
+        // without re-walking the buffers.
+        state.write_u64(self.inner.hash);
+    }
+}
+
+impl core::ops::Deref for VertexLayout {
+    type Target = [(u32, VertexBufferLayoutDesc)];
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner.buffers
     }
 }
 
@@ -899,5 +982,51 @@ fn fs_main() -> @location(0) vec4<f32> {
         let again = variants.specialize(|| descriptor.clone(), ());
         assert_eq!(first, again);
         assert_eq!(variants.len(), 1);
+    }
+
+    fn layout(array_stride: u64) -> VertexBufferLayoutDesc {
+        VertexBufferLayoutDesc {
+            array_stride,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: VertexAttributes::new(),
+        }
+    }
+
+    fn hash_of(layout: &VertexLayout) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        layout.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn layouts_with_equal_buffers_are_equal_and_hash_alike() {
+        let one = VertexLayout::new([(0, layout(12)), (1, layout(24))]);
+        let other = VertexLayout::new([(0, layout(12)), (1, layout(24))]);
+
+        assert_eq!(one, other, "separately built layouts compare equal");
+        assert_eq!(
+            hash_of(&one),
+            hash_of(&other),
+            "equal layouts must hash alike, since the hash is precomputed"
+        );
+    }
+
+    #[test]
+    fn layouts_that_differ_are_not_equal() {
+        let one = VertexLayout::new([(0, layout(12))]);
+        let other = VertexLayout::new([(0, layout(16))]);
+
+        assert_ne!(one, other);
+    }
+
+    /// The hash is stored, so it is only correct if it was computed over the
+    /// buffers: an empty layout must not collide with a populated one by
+    /// construction.
+    #[test]
+    fn an_empty_layout_is_not_equal_to_a_populated_one() {
+        assert_ne!(
+            VertexLayout::default(),
+            VertexLayout::new([(0, layout(12))])
+        );
     }
 }

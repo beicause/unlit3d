@@ -85,6 +85,7 @@ mod tests {
     use arrayvec::ArrayVec;
     use glam::Vec3;
     use unlit_wgpu::resources::{ResourceGraph, Virtual};
+    use unlit_wgpu::specialize::VertexLayout;
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
@@ -127,7 +128,7 @@ mod tests {
         let mesh = GpuMesh {
             root,
             vertex_buffers: ArrayVec::new(),
-            vertex_layout: ArrayVec::new(),
+            vertex_layout: VertexLayout::default(),
             index_buffer: None,
             count: 0,
             first: 0,

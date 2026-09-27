@@ -11,7 +11,7 @@ use unlit_wgpu::offset_allocator::Allocation;
 use unlit_wgpu::render_attachments::{color_clear, depth_clear, stencil_clear};
 use unlit_wgpu::resources::{ResourceId, Virtual};
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
-use unlit_wgpu::specialize::VertexBufferLayoutDesc;
+use unlit_wgpu::specialize::VertexLayout;
 
 use crate::bounds::Aabb;
 use crate::mesh_source::UnlitPipelineKey;
@@ -147,7 +147,12 @@ pub struct GpuMesh {
     /// [`MeshDesc`](crate::mesh::MeshDesc) it was uploaded from. It may name a slot
     /// whose buffer the draw binds from the renderer rather than the mesh —
     /// the per-instance buffer, for one.
-    pub vertex_layout: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
+    ///
+    /// Held as a shared handle rather than inline: the draw path keys on it
+    /// once per visible entity per frame, and a handle makes that a pointer
+    /// copy and one precomputed hash instead of a deep clone and a walk over
+    /// every attribute.
+    pub vertex_layout: VertexLayout,
 
     /// Index buffer, if the mesh is indexed.
     pub index_buffer: Option<(ResourceId<wgpu::Buffer>, wgpu::IndexFormat)>,

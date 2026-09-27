@@ -34,16 +34,13 @@
 //! buffer has. The renderer assumes no vertex layout, so a mesh can carry any
 //! combination of attributes and a family can specialize on it at draw time.
 
-use arrayvec::ArrayVec;
 use core::hash::Hash;
 use core::marker::PhantomData;
 use std::sync::Arc;
 
 use unlit_wgpu::resources::ResourceId;
-use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::{
-    CachedRenderPipeline, Specializable, Specializer, SpecializerKey, SurfaceKey,
-    VertexBufferLayoutDesc,
+    CachedRenderPipeline, Specializable, Specializer, SpecializerKey, SurfaceKey, VertexLayout,
 };
 
 use crate::components::GpuMesh;
@@ -177,15 +174,16 @@ pub trait PipelineKey: Clone + Hash + Eq + 'static {
 /// Everything that can change which concrete pipeline an entity needs beyond
 /// the entity's own [PipelineKey].
 ///
-/// The mesh layout uses the owned [VertexBufferLayoutDesc] from
-/// [unlit_wgpu::specialize] (an owned mirror of a wgpu vertex buffer
-/// layout), because a borrowed vertex layout cannot be stored in a key.
+/// The mesh's vertex layout is held as a [VertexLayout], a shared handle with
+/// its hash precomputed, because this key is rebuilt and hashed once per
+/// visible entity per frame: the inline layout it replaces was the frame's
+/// single largest cost once a scene had many entities sharing few meshes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DrawKey {
     /// The frame's render target.
     pub surface: SurfaceKey,
     /// The mesh's vertex layout, slot by slot.
-    pub vertex_buffers: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
+    pub vertex_buffers: VertexLayout,
 }
 
 impl DrawKey {

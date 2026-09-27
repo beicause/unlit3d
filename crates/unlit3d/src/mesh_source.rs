@@ -34,7 +34,7 @@ use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView, 
 use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
 use unlit_wgpu::specialize::{
     Specializable, Specializer, SpecializerKey, SurfaceKey, VertexAttributes,
-    VertexBufferLayoutDesc,
+    VertexBufferLayoutDesc, VertexLayout,
 };
 use unlit_wgpu::staging::StagingBuffer;
 use unlit_wgpu::vertex_pool::VertexStreamPool;
@@ -210,7 +210,7 @@ fn register_concrete(
 pub(crate) struct UnlitDrawKey {
     options: UnlitOptions,
     surface: SurfaceKey,
-    vertex_buffers: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
+    vertex_buffers: VertexLayout,
 }
 
 impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
@@ -827,8 +827,7 @@ impl MeshSource {
         let mut buffers = ArrayVec::<ResourceId<wgpu::Buffer>, MAX_VERTEX_BUFFERS>::new();
         let mut vertex_slots =
             ArrayVec::<(u32, ResourceId<wgpu::Buffer>), MAX_VERTEX_BUFFERS>::new();
-        let mut vertex_layout =
-            ArrayVec::<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>::new();
+        let mut layouts = Vec::with_capacity(vertex_buffers.len());
         for desc in vertex_buffers {
             // A weak node: the mesh's virtual root is built from it, so the
             // buffer lives exactly as long as the root does.
@@ -836,7 +835,7 @@ impl MeshSource {
             vertex_slots.push((desc.slot, id));
             // The layout is owned by the mesh so a family can key on it
             // without reading the description again.
-            vertex_layout.push((
+            layouts.push((
                 desc.slot,
                 VertexBufferLayoutDesc {
                     array_stride: desc.array_stride,
@@ -846,6 +845,7 @@ impl MeshSource {
             ));
             buffers.push(id);
         }
+        let vertex_layout = VertexLayout::new(layouts);
 
         let index_buffer = index_buffer.map(|(buffer, format)| {
             // Weak for the same reason as the vertex buffers.
@@ -1296,7 +1296,7 @@ impl MeshSource {
         // buffer itself is not uploaded here. Without it the draw's key would
         // imply no [UnlitFlags::VERTEX_INSTANCE] and the pipeline would ignore
         // the instance transform.
-        mesh.vertex_layout.push((INSTANCE_SLOT, instance_layout));
+        let mut layouts = vec![(INSTANCE_SLOT, instance_layout)];
 
         // The mesh's slices of the pools it shares: the draw names its ranges
         // by `first` and `base_vertex`, and the allocations are handed back on
@@ -1309,11 +1309,14 @@ impl MeshSource {
             (UV_COLOR_SLOT, &uv_color_layout),
         ] {
             if layout.array_stride > 0 {
-                mesh.vertex_layout.push((slot, layout.clone()));
+                layouts.push((slot, layout.clone()));
                 mesh.vertex_buffers
                     .push((slot, self.vertex_node(world, layout)));
             }
         }
+        // The pool-backed slots join the layout only here, once the pools have
+        // been allocated; the mesh's handle is replaced with the complete one.
+        mesh.vertex_layout = VertexLayout::new(layouts);
         mesh.index_buffer = index_buffer;
         mesh.first = first_index;
         mesh.base_vertex = vertex_offset;
@@ -3141,7 +3144,7 @@ mod tests {
                 (*slot, layout)
             })
             .collect();
-        other.vertex_layout = ArrayVec::try_from(layout.as_slice()).expect("the layout still fits");
+        other.vertex_layout = VertexLayout::new(layout);
         assert_ne!(draw_key(surface, &other), draw_key(surface, &standard));
 
         h.world.spawn((
@@ -3184,7 +3187,7 @@ mod tests {
                 (*slot, layout)
             })
             .collect();
-        twin.vertex_layout = ArrayVec::try_from(layout.as_slice()).expect("the layout still fits");
+        twin.vertex_layout = VertexLayout::new(layout);
         assert_ne!(draw_key(surface, &twin), draw_key(surface, &base));
 
         h.world.spawn((
