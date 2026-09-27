@@ -137,8 +137,9 @@ Commands follow the `cargo xtask` convention:
   (`-p <crate>`, `-E 'test(<name>)'`). nextest does not run doctests, so it is no
   substitute for `cargo xtask test`.
 - **`cargo bench -p unlit3d_benchmarks`** — time a frame of the rendering path as
-  entities per second. `--bench profile -- <entities> <frames>` with
-  `--features profile-tracing` instead prints one line per frame phase. See
+  entities per second. `--bench ecs` instead measures the ECS's component-access
+  paths on their own, and `--bench profile -- <entities> <frames>` with
+  `--features profile-tracing` prints one line per frame phase. See
   [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) for what each target
   covers.
 - **`typos`** — spell check, over the whole repository.
@@ -197,8 +198,9 @@ implementation.
 
 ## Benchmarks
 
-[`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) holds two targets, `frame`
-for throughput and `profile` for a frame's phase breakdown. It is not part of
+[`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) holds three targets: `frame`
+for throughput, `ecs` for what one component read costs, and `profile` for a
+frame's phase breakdown. It is not part of
 the test run: a benchmark binary has no test harness, so it is excluded from
 `cargo xtask test` and driven by `cargo bench` instead. What each target covers,
 and how to read its output, is in

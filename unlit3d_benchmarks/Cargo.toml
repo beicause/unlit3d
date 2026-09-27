@@ -13,6 +13,12 @@ harness = false
 name = "frame"
 
 [[bench]]
+## Criterion over the ECS's component-access paths: what one entity's components
+## cost to read, and what resolving a whole archetype's columns once saves.
+harness = false
+name = "ecs"
+
+[[bench]]
 ## The same frames under the `profiling` scopes, printing each phase's time.
 ## Plain `main`, not Criterion: a line per phase per frame is what the scopes
 ## are read for, and a benchmark's repeated samples would bury it.

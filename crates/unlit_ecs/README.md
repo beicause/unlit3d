@@ -216,6 +216,15 @@ The tests cover world and query behaviour and deferred commands. The test
 layers as a whole, and what CI runs, are described in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
+This crate's access paths are benchmarked by
+[`unlit3d_benchmarks`](../../unlit3d_benchmarks/README.md)'s `ecs` target, which
+is where the cost of a `World::get` against resolving a whole archetype's
+columns once is measured:
+
+```text
+cargo bench -p unlit3d_benchmarks --bench ecs
+```
+
 ## License
 
 Dual-licensed under MIT or Apache-2.0, at your option.

@@ -106,9 +106,9 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 - **`cargo nextest run`** — 需要按名筛选或重跑单个测试时直接用（`-p <crate>`、
   `-E 'test(<name>)'`）。nextest 不跑 doctest，也别用它代替 `cargo xtask test`。
 - **`cargo bench -p unlit3d_benchmarks`** — 把渲染路径的一帧按每秒实体数计时。
-  加 `--features profile-tracing` 并以 `--bench profile -- <实体数> <帧数>` 运行时，
-  改为每帧每个阶段打印一行。各目标覆盖什么见
-  [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md)。
+  用 `--bench ecs` 则单独测量 ECS 的组件访问路径；加 `--features profile-tracing`
+  并以 `--bench profile -- <实体数> <帧数>` 运行时，改为每帧每个阶段打印一行。各目标
+  覆盖什么见 [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md)。
 - **`typos`** — 拼写检查，扫全仓库。
 - **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。
   改过任何 `Cargo.toml` 后务必跑。
@@ -159,8 +159,9 @@ cargo nextest run -E 'test(name)'  # 单个测试
 
 ## 基准测试
 
-[`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) 下有两个目标：`frame` 测
-吞吐量，`profile` 给出帧内各阶段的分解。它不属于测试运行：基准二进制没有测试 harness，
+[`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) 下有三个目标：`frame` 测
+吞吐量，`ecs` 测一次组件读取的成本，`profile` 给出帧内各阶段的分解。它不属于测试运行：
+基准二进制没有测试 harness，
 因此被排除在 `cargo xtask test` 之外，改由 `cargo bench` 驱动。各目标覆盖什么、如何
 读它的输出，见[该 crate 的 README](unlit3d_benchmarks/README.zh-CN.md)。
 
