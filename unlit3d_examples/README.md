@@ -208,7 +208,9 @@ cargo nextest run -p unlit3d_examples
 ```
 
 The example's rendering output is checked by the CI snapshot job above rather
-than by a `cargo test` target.
+than by a `cargo test` target. Where each test layer sits across the workspace,
+and what CI runs, is in the
+[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
 ## License
 

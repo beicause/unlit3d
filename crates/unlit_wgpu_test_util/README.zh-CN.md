@@ -79,7 +79,9 @@ unlit_wgpu_test_util::assert_image_snapshot("example.webp", &bytes, 64, 64);
 ## 测试
 
 本 crate 自身没有测试；它是其他 crate 的 GPU 测试所使用的骨架。用 `cargo xtask test`
-运行整个工作区的测试套件，并注意它需要一个可用的 WebGPU adapter。
+运行整个工作区的测试套件，并注意它需要一个可用的 WebGPU adapter。测试各层作为整体，
+以及 CI 所跑的内容，见
+[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 
 ## 许可证
 

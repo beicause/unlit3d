@@ -11,8 +11,26 @@
 ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支持 WebGL 与 GLES。
 它直接使用并暴露 `wgpu` 资源，允许底层控制和拓展，带有很少的CPU端的高级封装。
 
-项目处于**极早期开发阶段**。API 会自由变动，设计文档中仍列有未完成的工作；请把
-每个 crate 都视为进行中的产物。
+它主要面向拥有图形渲染知识的开发者和编程智能体。与主流的面向大众用户的游戏引擎不同，
+它不做高级别的封装，你需要有 WebGPU 知识才能较好地运用它。
+
+项目处于**极早期开发阶段**。API 会自由变动；请把每个 crate 都视为进行中的产物。
+
+<details>
+<summary>本项目优化什么，以及有意舍弃什么</summary>
+
+- **轻量、可自定义。** 没有繁重的依赖，较快的编译时间，对 AI Agent 友好。精简 ECS
+  范式并借鉴 OOP，更多地使用行为组件替代系统，将关注点放在对象上。
+- **移动和 Web 优化。** 默认瞬态 MSAA 纹理、瞬态深度纹理，顶点属性压缩，默认无光照
+  材质，单 pass 完成渲染。没有对移动端较为昂贵的 prepass、PBR 光照、阴影，没有使用
+  计算着色器。
+- **底层。** 直接使用 wgpu 资源，允许直接操作缓冲。渲染资源跨帧保留，资源图管理使得
+  资源只在必要时重建。
+- **确定性的渲染。** 一流的无头渲染、CI 自动化快照测试。
+
+不支持：光照与阴影，以及后处理。
+
+</details>
 
 ## 功能一览
 
@@ -46,7 +64,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例及其无头快照模式；也是打包成 APK 的 Android 示例。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
-| [`unlit3d_benchmarks`](unlit3d_benchmarks/Cargo.toml) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
+| [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
 
 ## 各部分的配合方式
 
@@ -57,16 +75,16 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 两条原则决定了这种分层：**内置管线不享有特权**，它由调用者自建管线所用的同一批公开
 设施组合而成；**帧源彼此平等**，内置网格源与调用者自己的绘制趟次没有任何差别。
 
-设计取舍、架构与实施计划见 [`docs/DESIGN.md`](docs/DESIGN.md)。
+各 crate 的 README 记述它自己那部分的设计取舍：
+[`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) 讲资源图、声明式场景、管线特化与
+逐帧上传；[`unlit3d`](crates/unlit3d/README.zh-CN.md) 讲帧模型、unlit 管线、UI 与
+输入；[`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) 讲 ECS 为何如此精简。
 
-## 环境要求
+## 编码原则
 
-- 较新的 stable Rust 工具链（edition 2024）。
-- 一个支持 WebGPU 的设备，用于运行 GPU 测试与示例。在无 GPU 的 CI runner 上，
-  Mesa 的 `lavapipe` 充当软件 Vulkan 实现。
-- [`cargo-nextest`](https://nexte.st)，用于测试套件。
-- [`typos`](https://github.com/crate-ci/typos) 与
-  [`tombi`](https://github.com/tombi-toml/tombi)，用于复现 CI 的 lint 步骤。
+- **尽量采用通用方法而不是给内置功能特权**，要考虑功能的通用性，便于用户使用本库进行
+  自定义和拓展。本库的一些内置实现（如 unlit 渲染）不应该拥有特权和内部专用实现，
+  内部实现应该挪到外部以保证本库的可自定义性和可拓展性。
 
 ## 常用命令
 
@@ -90,16 +108,77 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 - **`cargo bench -p unlit3d_benchmarks`** — 把渲染路径的一帧按每秒实体数计时。
   加 `--features profile-tracing` 并以 `--bench profile -- <实体数> <帧数>` 运行时，
   改为每帧每个阶段打印一行。各目标覆盖什么见
-  [`docs/TESTING.zh-CN.md`](docs/TESTING.zh-CN.md#基准测试)。
+  [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md)。
 - **`typos`** — 拼写检查，扫全仓库。
 - **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。
   改过任何 `Cargo.toml` 后务必跑。
 
 ## 测试与基准
 
-测试按「离被测代码有多近」分三层——单元测试、库集成测试与快照测试；基准测试则有两个
-目标，一个测吞吐量，一个给出帧内各阶段的分解。两者连同 CI 所跑的内容都记在
-[`docs/TESTING.zh-CN.md`](docs/TESTING.zh-CN.md) 中。
+测试按「离被测代码有多近」分三层：
+
+- **单元测试**：在各 crate 的 `src/` 内（`#[cfg(test)]`），只测私有纯逻辑，不碰 GPU，
+  随 `cargo nextest run` 直接运行。
+- **库集成测试**：在各 crate 的 `tests/` 下，只经公开 API 使用它。`unlit_ecs` 的是纯
+  ECS 行为；两个渲染 crate 的是 GPU 测试——用
+  [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) 建无头设备，
+  离屏渲染后回读像素断言，但不与存储图像比较。
+- **快照测试**：把一帧（或多帧序列）与存储图像做 SSIMULACRA2 感知比较。低层 API 的
+  快照留在 `unlit_wgpu` 的测试里（`SNAPSHOT_UPDATE=1` 重新生成）；高层 ECS 场景的
+  快照由 [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的无头模式运行
+  （`--scene all` 验证、`--update` 重新生成），因为它既是示例也是 CI 的渲染回归检查。
+
+快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
+中，用 `git submodule update --init` 拉取；改动渲染结果后重新生成对应快照，并审查
+图像差异再提交。
+
+### 运行
+
+```text
+cargo xtask test                 # 整个工作区：先 nextest，再 doctest
+cargo nextest run -p unlit_wgpu  # 单个 crate
+cargo nextest run -E 'test(name)'  # 单个测试
+```
+
+`nextest` 不跑 doctest，因此 `cargo xtask test` 会在其后追加 `cargo test --doc`。
+用 `cargo nextest run` 筛选只适合迭代时用，它不能替代该任务；CI 跑的就是该任务，
+所以两者不会脱节。
+
+各 crate 的测试覆盖：
+
+| Crate | 测试覆盖的内容 |
+|-------|----------------|
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令，以及 `SendWorld` 能跨线程共享。不需要 GPU，因此在任何环境都能运行。 |
+| [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
+| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。其多帧快照覆盖位于 `unlit3d_examples`。 |
+| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 自身没有测试：它是其他 crate 的 GPU 测试所使用的骨架。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）与固定步长播放时钟（`src/lib.rs`）。其渲染输出由 CI 的快照任务检查，而不是由 `cargo test` 目标检查。 |
+
+渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
+`lavapipe` 作为软件 Vulkan 实现。
+
+## 基准测试
+
+[`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) 下有两个目标：`frame` 测
+吞吐量，`profile` 给出帧内各阶段的分解。它不属于测试运行：基准二进制没有测试 harness，
+因此被排除在 `cargo xtask test` 之外，改由 `cargo bench` 驱动。各目标覆盖什么、如何
+读它的输出，见[该 crate 的 README](unlit3d_benchmarks/README.zh-CN.md)。
+
+## 持续集成
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在每次推送到 `main` 和每个
+pull request 上运行上述检查以及各 lint 关卡：
+
+- **lint** —— 对全部文件跑 `typos`；对 TOML 跑 `tombi lint --error-on-warnings` 与
+  `tombi format --check`；以及 `cargo fmt --all -- --check`。
+- **build**（Linux、macOS、Windows）—— 带与不带 `unlit` feature 的 clippy、
+  `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
+  `cargo doc`，以及示例的无头快照比较。由于 runner 没有 GPU，Linux 会安装 Mesa 以
+  提供 `lavapipe`。
+- **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建。
+- **build-android** —— `aarch64-linux-android` 交叉构建与 Gradle APK。
+
+快照比较正是让渲染回归会失败而不是悄然通过的那道检查，这也是示例的场景承担它的原因。
 
 ## 工作区结构
 
@@ -112,8 +191,6 @@ unlit3d_examples/            窗口化示例、它的场景与快照运行器
 unlit3d_benchmarks/          帧路径基准测试与剖析运行
 android/                     把示例打包成 APK 的 Gradle 工程
 xtask/                       cargo xtask 任务执行器
-docs/DESIGN.md               设计文档
-docs/TESTING.zh-CN.md        测试划分与基准测试
 ```
 
 ## 许可证

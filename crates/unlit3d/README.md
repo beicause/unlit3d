@@ -23,6 +23,20 @@ With `--no-default-features` the crate keeps the ECS components, the frame
 sources, the mesh path, the pipeline abstraction and the portable [`input`]
 module — none of which depend on egui or winit.
 
+## What this layer is for
+
+It treats itself as part of a game engine, so it is built to integrate with
+other features — physics, audio — and to be extended:
+
+- Extensibility and portability come before convenience: public API prefers
+  `dyn trait` over static dispatch, and multi-threading is considered to a
+  degree rather than assumed away.
+- The common path is easy: CPU-side scene data synchronizes into GPU buffers and
+  renders without the caller managing an upload.
+- Low-level control stays available: a caller can bypass the CPU-side data and
+  update GPU buffers directly.
+- Culling is CPU frustum culling.
+
 ## The frame model
 
 A frame is **not** "one main scene plus extras". [`Renderer`](renderer::Renderer) draws nothing
@@ -48,6 +62,67 @@ given, in the order each source declares through
   queues the release before despawning, because the graph cannot notice an
   entity going away.
 
+**Each source carries its own state and its own `Scene`, reusable across
+frames.** egui's `Context`, font atlas and the UI's own UBO belong to the UI
+source; the 3D pipelines, mesh pools, metadata and culling caches belong to the
+mesh source. The "main 3D scene" is just the scene the first recorded source
+produced, not a special case of the renderer.
+
+<details>
+<summary>Why the context and the sources are world members rather than renderer fields</summary>
+
+This is not "taking the renderer apart" but giving frame sources and third-party
+sources exactly equal standing: adding or removing a source is
+spawning/despawning an entity, and a source uses the shared context directly in
+its own build phase without the renderer passing it along.
+
+- A resource reference is an entity reference, used through the `Entity` handle
+  the caller keeps.
+- Frame-level context is therefore passed "by entity reference", not "by
+  threading borrow handles down the stack", so sources do not conflict over
+  borrows just because they share one context.
+- **The reverse trade-off**: were the context private to the renderer, a source
+  wanting to hold both "its own mutable borrow" and "a mutable borrow of the
+  resource graph" would have only two ways out: split the renderer into
+  dedicated entry points, or push the conflict to a runtime panic with interior
+  mutability. The former grows a borrow-checker-dodging function at every call
+  site, and the latter trades convenience for crashes. Making both the context
+  and the sources members of the world means the conflict never arises, so no
+  dedicated entry point is needed for it.
+- **A source releases its own GPU resources explicitly**, which avoids the
+  complexity of releasing resources automatically by reference count. The nodes
+  a source registers in the resource graph are not reclaimed when the entity is
+  destroyed, so removing a source must release them explicitly.
+
+**Building and recording are two phases.** The build phase has exclusive access
+to the resource graph to register resources and to write the data this frame
+will upload; the recording phase only reads each source's own `Scene` and never
+touches the resource graph. Merging them into one phase would force reading the
+resource graph before producing the `Scene`, leaving only interior mutability to
+defer the borrow conflict to runtime — so the two phases stay, in exchange for a
+compile-time guarantee.
+
+</details>
+
+<details>
+<summary>Why a source declares its order instead of relying on creation order</summary>
+
+The order is a required method, and [`FrameOrder`](source::FrameOrder) does not
+implement `Default`. With a default value, "forgot to declare the order" and
+"really meant to keep creation order" become indistinguishable, and the ordering
+intent turns implicit again. Sources with equal order are logged and warned
+about, and a source's order has to be an index the source carries explicitly: it
+cannot borrow an entity's row order within the archetype, because that row order
+is not guaranteed stable and is disturbed when components are removed.
+
+The ordering semantics a [`Scene`](unlit_wgpu::scene::Scene) already has
+internally (non-z-sorted first, then by pipeline and by material/depth) are
+unchanged; the ordering among sources is not a hard constraint forced by
+pass-level state — a scene carries the pass state it needs and resets it while
+recording — but a need of semantics like "UI composites over 3D".
+
+</details>
+
 ## Components
 
 A renderable entity carries a [`GpuMesh`](components::GpuMesh),
@@ -69,10 +144,167 @@ components: [`Transform`](components::Transform), [`Camera`](components::Camera)
 [`InstanceColor`](components::InstanceColor) and the
 [`ZSortedDrawing`](components::ZSortedDrawing) marker.
 
+<details>
+<summary>Why a family sits between the entity and the pipeline cache</summary>
+
+A family connects "what the entity wants" to `unlit_wgpu`'s variant cache:
+
+- [`RenderPipelineKey`](pipeline::RenderPipelineKey) both locates the family
+  (registration and lookup are by key type) and supplies the blueprint
+  (`base_descriptor`). Because the blueprint travels with the component, one
+  family can serve entities that start from different blueprints; and because
+  the key is the component itself, the renderer never has to hand out a family
+  handle.
+- [`DrawKey`](pipeline::DrawKey) carries the dimensions the entity's own key
+  does not express, those tied to this particular draw: the render target and
+  the mesh's vertex layout. It combines with the entity's own key into
+  `Specializer::Key`, and the way they combine (`From`) is the family's own
+  decision. **Which dimensions to specialize on is therefore the family's
+  freedom**: the built-in unlit family specializes on options plus target plus
+  vertex layout, and a custom family can specialize on anything.
+- The blueprint is **lazily evaluated**: it is asked of the key only on a cache
+  miss, when a compilation is actually about to happen.
+- Once the family has compiled a pipeline,
+  [`RenderPipelineFactory`](pipeline::RenderPipelineFactory) turns it into the
+  [`RegisteredRenderPipeline`](pipeline::RegisteredRenderPipeline) the renderer
+  registers — the compiled pipeline, the three bind-group layouts and the global
+  group's rebuild closure. It and `unlit_wgpu`'s
+  [`RenderPipelineDesc`](unlit_wgpu::specialize::RenderPipelineDesc) are an
+  **output/input** pair, with one compilation between them.
+
+`unlit3d` deals only in render pipelines, so its pipeline types all say
+`Render` explicitly ([`GpuRenderPipeline`](components::GpuRenderPipeline),
+[`RenderPipelineKey`](pipeline::RenderPipelineKey),
+[`RenderPipelineId`](pipeline::RenderPipelineId),
+[`RenderPipelineFactory`](pipeline::RenderPipelineFactory),
+[`RegisteredRenderPipeline`](pipeline::RegisteredRenderPipeline)).
+
+</details>
+
+## Automatic instancing
+
+Entries are sorted so that neighbours share a pipeline and bind groups, then each
+run of neighbours whose draw state is exactly equal — pipeline, bind groups,
+buffers and geometry segment — collapses into one instanced draw whose instance
+range covers the whole run in visible order. Recording costs a command and a
+state re-bind, so an entity that shares a mesh with the one before it is nearly
+free.
+
+<details>
+<summary>Why merging is always safe for opaque draws, and never for z-sorted ones</summary>
+
+The instance range is what keeps a merged draw correct: instance-stepped
+attributes are fetched at the instance's ordinal, and the instance buffer is
+packed in visible order, so instances `a..b` read exactly the records the
+separate draws would have read. Per-instance data — the transform, base color
+and pose base — lives in that stream, so merging changes nothing any instance
+reads.
+
+Opaque draws are depth-tested with blending off, so their order is not
+observable and merging them is safe. Z-sorted entries never merge, with each
+other or with anything else: they are blended back-to-front, so the order they
+are drawn in *is* the result, and a merged draw would rasterize its instances in
+record order instead.
+
+</details>
+
+## The unlit pipeline
+
+The built-in unlit pipeline is registered as an ordinary family, and the shader
+variant an entity uses contains exactly the channels its mesh has. Nothing about
+it is privileged: a caller's own family is registered through the same
+[`MeshSource::register_family`](mesh_source::MeshSource::register_family) call.
+
+<details>
+<summary>What the built-in variant supports, and where pose data lives</summary>
+
+- The variant's flags cover position, UV, vertex color, per-instance transform
+  and color, base-color texture, skinning and morph targets. The pipeline is
+  then specialized for the frame's target by `unlit_wgpu`'s
+  [`SurfaceSpecializer`](unlit_wgpu::specialize::SurfaceSpecializer).
+- Joint matrices and morph weights are **not** in the mesh's bind group. Meshes
+  and instances are many-to-one: the same mesh can be drawn by several entities,
+  and each entity's pose usually differs. A bind group is bound per mesh and
+  cannot express per-instance state, and building one bind group per instance is
+  no better — that amounts to rebuilding bind groups per instance per frame.
+  So the pose is split in two, each half going where it belongs:
+  - **The data goes into a frame-wide shared SSBO**, bound in the global group.
+    Every visible instance's joint matrices are packed into one array and its
+    morph weights into another.
+  - **The locating information goes into the instance stream.** Each instance's
+    per-instance record carries a pose base (`Uint32x2`: the joint-matrix base
+    and the weight base), which the shader uses to find its own slice.
+    Per-instance-stepped attributes are addressed by instance index, so merging
+    into an instanced draw changes nothing any instance reads — several
+    instances of one mesh can fold into a single draw while each keeps its own
+    pose, which is exactly what makes automatic instancing possible.
+- At this level the pose is a component on a separate entity, and the mesh
+  entity references it through two separate reference components
+  ([`SkinBinding`](components::SkinBinding) and
+  [`MorphBinding`](components::MorphBinding)). This follows the same line as
+  "a resource reference is an entity reference" and brings two direct benefits:
+  - **Sharing means sharing one entity**: several meshes referencing one pose
+    entity share one pose, and changing it moves them all; to keep them
+    independent, reference different entities. Both are the same mechanism and
+    need no extra handle type.
+  - **Changing a pose is one component write**: no GPU call at all, and the
+    renderer packs and uploads it automatically next frame, consistent with
+    per-frame upload being transparent to the caller.
+- **The cost is that the references must be given**: when a mesh's vertex stream
+  carries joint indices, or carries morph targets, its entity must carry the
+  matching reference components, otherwise rendering panics rather than silently
+  drawing with pose zero — a silent downgrade turns "forgot to associate" into a
+  hard-to-notice visual bug. Another constraint is that the number of weights
+  must match the mesh's target count, because the shader's loop bound is the
+  mesh's own target count and an out-of-bounds storage read is a runtime error
+  rather than a catchable panic.
+
+</details>
+
+## UI
+
 `ui::UiPanel` is itself a behaviour component holding a closure, so
 an interface is an entity — a frame can hold as many panels as entities, and the
 `ui::UiSource` driver runs whatever panels the world carries, in
 query order.
+
+<details>
+<summary>Why the panel is a component, and the unit convention that is easy to get wrong</summary>
+
+**The interface is the behaviour component, not a closure field on the source.**
+This matches the "the caller is the system" convention: the source is the driver
+and decides which panels to call and in what order; a panel that wants to keep
+state puts it in its own sibling components (a behaviour component is borrowed
+while it runs, so it cannot re-enter a borrow of itself); and a panel receives
+`&LocalWorld`, so it can read and write components and can `queue()` structural
+changes. Several panels are therefore several entities, added and removed as
+needed, and third parties can define their own panel-like components for the
+source to select — the source itself need not know which interfaces exist.
+
+**The unit convention is the easiest thing to get wrong in this API**: egui's
+vertices and clip rectangles use logical points while window event coordinates
+are physical pixels. So the projection uses points (the physical size divided by
+the scale factor) while the scissor must multiply by the scale factor — the two
+units are opposite. On top of that, egui calls a panel closure **several times**
+for multi-pass layout, so a panel must be idempotent or decide what to do based
+on the pass number; that is egui's existing semantics, the same in every
+backend.
+
+UI itself needs only a color attachment and no depth attachment, but a
+pipeline's depth state must **exactly match** the pass's attachments (wgpu
+validates strictly by format, ignoring the write and compare settings). In a
+pass that has a depth attachment — UI and meshes sharing one pass is the common
+case — the UI pipeline must still declare the **same** depth format and avoid
+disturbing the meshes' depth only by not writing depth and not depth-testing:
+"needs no depth" is not the same as "declares no depth". "The target has no
+depth attachment" is also legal, which is why a pipeline's depth state is
+optional; that optional depth state serves the case where the target itself has
+no depth attachment, and then every pipeline in the pass must declare no depth,
+which is not specific to UI. This matches egui's official backend: by default it
+carries no depth state, but when given a depth format it still builds a state
+with that same format, no depth writes, and a compare function of `Always`.
+
+</details>
 
 ## Example
 
@@ -201,6 +433,50 @@ windowing library's events lives behind the corresponding feature:
 `input::winit::WinitInput` forwards `WindowEvent`s, and `ui::convert` turns the
 crate's events into egui's.
 
+<details>
+<summary>The naming rule, and why dispatch is explicit</summary>
+
+- **Event types depend on neither winit nor egui**: the core types stand alone,
+  and the winit and egui conversions sit behind their respective features. Game
+  logic and UI thus share one event stream and need no two sets of events.
+- **Event callbacks are behaviour components**, isomorphic to the ECS's existing
+  behaviour-component paradigm: all matching behaviour components are called per
+  event category. `OnInput` receives every event, while
+  `OnKey`/`OnMouse`/`OnPointer`/`OnTouch`/`OnText`/`OnIme` each receive one
+  category. The mouse family is always named `Mouse`
+  (`MouseEvent`/`MouseButton`/`MouseButtons`/`OnMouse`), while `Pointer` means
+  specifically a **device-independent "point input"**: both mouse and touch
+  produce `PointerEvent`, so the same drag behavior works on desktop and
+  touchscreen; `Touch` keeps what is unique to a finger (touch id, pressure).
+  Conversely, touch **does not** set mouse buttons, and the button state in
+  `InputState` is mouse-only.
+- **`InputState` holds "the events that arrived since it was last cleared" plus
+  the state the events left behind** (modifiers, pointer position and the
+  pointers pressed, cursor, buttons pressed, focus, window size and scale). A
+  pointer's pressed state is recorded per "contact point"
+  (`PointerContact`, identified by kind and id), so lifting one finger out of
+  several does not misread as the gesture ending.
+- **Dispatch is called explicitly by the caller in the frame loop**, not done
+  automatically inside `render`. The reason: structural changes queued inside a
+  callback need `&mut world` to land, while `render` only gets `&LocalWorld`;
+  automatic dispatch would defer a callback's queued changes to the next
+  external `apply`, and that delay would be invisible to the user. Explicit
+  dispatch also gives the caller control of the timing and order, consistent
+  with "the caller is the system".
+- Dispatch **traverses** the behaviour components directly without collecting
+  entities first: callbacks borrow different cells of different entities, so
+  they do not conflict. The real limits come from the ECS's own deliberate
+  trade-offs — a callback cannot re-enter a borrow of its own component, nor
+  re-enter a dispatch of the same kind; state is kept in sibling components
+  instead.
+
+UI's **capture** of input (whether it wants to monopolize the pointer/keyboard)
+needs the previous frame's result by egui's semantics: the source writes these
+two flags back into the world, and game logic can read them to decide whether to
+respond. This iteration provides the data only, with no automatic interception.
+
+</details>
+
 ## Tests
 
 ```text
@@ -215,7 +491,9 @@ whose headless path compares them against the SSIMULACRA2 snapshots under
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md).
 Clone the submodule with `git submodule update --init`; re-bless intentional
 changes with `cargo run -p unlit3d_examples --features snapshot -- --headless
---scene all --update` and review the image diff.
+--scene all --update` and review the image diff. Where each test layer sits
+across the workspace, and what CI runs, is in the
+[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
 ## See also
 
@@ -225,8 +503,6 @@ changes with `cargo run -p unlit3d_examples --features snapshot -- --headless
   — the world the components live in.
 - [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md)
   — a runnable windowed program built on this API.
-- [Design document](https://github.com/beicause/unlit3d/blob/main/docs/DESIGN.md)
-  — architecture and rationale (in Chinese).
 
 ## License
 

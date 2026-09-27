@@ -174,7 +174,9 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
 cargo nextest run -p unlit3d_examples
 ```
 
-示例的渲染输出由上面那个 CI 快照任务检查，而不是由 `cargo test` 目标检查。
+示例的渲染输出由上面那个 CI 快照任务检查，而不是由 `cargo test` 目标检查。测试各层在
+整个工作区中的位置，以及 CI 所跑的内容，见
+[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 
 ## 许可证
 

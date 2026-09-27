@@ -90,7 +90,9 @@ unlit_wgpu_test_util::assert_image_snapshot("example.webp", &bytes, 64, 64);
 
 This crate has no tests of its own; it is the harness the other crates' GPU
 tests use. Run the workspace's suite with `cargo xtask test`, and remember that
-it needs a working WebGPU adapter.
+it needs a working WebGPU adapter. The test layers as a whole, and what CI runs,
+are described in the
+[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
 ## License
 

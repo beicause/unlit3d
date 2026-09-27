@@ -418,6 +418,202 @@ A caller who wants their own entry shader composes it directly with
 `import unlit_wgpu::mesh_compression;` against the same modules the built-in
 pipeline uses.
 
+## Design
+
+### Resources: one dependency-tracked graph
+
+The crate embraces `wgpu` and manages its resources directly: no unnecessary
+wrappers, and no high-level API for CPU-side data management and
+synchronization. What it does make convenient is creating *its own* GPU
+resources — UBO and SSBO struct declarations, and mesh quantization and
+compression — rather than hiding `wgpu` itself.
+
+[`resources`] keeps every resource and its dependencies in one directed acyclic
+graph:
+
+- **Acyclicity is an invariant the graph itself guarantees.** A dependency that
+  would close a cycle is rejected where it is declared, so the graph can always
+  be traversed in dependency order.
+- **Handles are typed.** `ResourceId<R>`'s `R` is the resource type itself:
+  `get` returns that resource directly with no variant matching, and `replace`
+  accepts only the same type, so an id cannot come to mean a different kind of
+  resource. Where the type cannot be known at compile time — dependency sets,
+  dirty-resource walks, the return value of a removal — the erased
+  `ResourceId<Resource>` is still used.
+- **Insertion is immediate.** Inserting creates the node and returns its id,
+  dependencies are declared one at a time with `add_dependency`, and there is no
+  intermediate state waiting to be finished. Handles carry a generation, so
+  after a node is removed its slot may be reused but a stale id resolves to
+  nothing rather than coming to mean whatever took the slot. A dependency on an
+  invalid id fails in place rather than returning an error: that is a caller
+  error, and it can only be surfaced where it is declared.
+- **Tracking is precise, updates are lazy.** Replacing a resource marks it
+  dirty, which means the resources depending on it need updating too; removing
+  one removes it and everything depending on it. The user calls a particular API
+  to bring the resource state up to date — updating the bind groups depending on
+  a buffer after growing it, say.
+- **A texture view's format is recorded with the view.** This is the one
+  exception to "no unnecessary wrappers": `wgpu` cannot tell a `TextureView`'s
+  format from the view itself, and when an sRGB view covers a non-sRGB texture,
+  the format a pipeline has to match is the view's rather than the texture's.
+
+![The GPU resources one frame depends on, as a graph](https://raw.githubusercontent.com/beicause/unlit3d/main/crates/unlit_wgpu/assets/webgpu-draw-diagram.svg)
+
+### Drawing: the scene is data
+
+Drawing — the render pass — is data-driven too. [`Scene`](scene::Scene) is a
+declarative list of draws, each naming the pipeline, bind groups, vertex buffers
+and draw range it needs, and
+[`Scene::record`](scene::Scene::record) replays it into a
+[`wgpu::RenderPass`](https://docs.rs/wgpu/latest/wgpu/struct.RenderPass.html):
+
+```rust,ignore
+for draw in scene.draws {
+    pass.set_pipeline(&draw.pipeline);
+    for (index, bind_group) in draw.bind_groups {
+        pass.set_bind_group(index, bind_group);
+    }
+    for (slot, buffer, range) in draw.vertex_buffers {
+        pass.set_vertex_buffer(slot, buffer, range);
+    }
+    if let Some((buffer, range, format)) = draw.index_buffer {
+        pass.set_index_buffer(buffer, range, format);
+    }
+    if let Some(scissor) = draw.scissor {
+        pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+    }
+    pass.set_stencil_reference(draw.stencil_reference);
+
+    match draw.range {
+        DrawRange::Indexed { indices, base_vertex, instances } => {
+            pass.draw_indexed(indices, base_vertex, instances)
+        }
+        DrawRange::Vertices { vertices, instances } => pass.draw(vertices, instances),
+    }
+}
+```
+
+Recording tracks the pass state — pipeline, bind groups, vertex buffers, index
+buffer, scissor and stencil reference — and skips a `set_*` whose target is
+already bound, so a scene whose entries are ordered to keep neighbouring draws
+alike costs one state change per run rather than one per draw. That ordering is
+the higher layer's job, not this crate's: `Scene` records what it is given.
+
+### Pipeline specialization: a key, a specializer, a cached pipeline
+
+<details>
+<summary>Why the cache is shaped this way</summary>
+
+Compiling a pipeline is expensive and the result is valid for one exact
+configuration, yet one **blueprint** derives many concrete pipelines across
+dimensions like the render target, the vertex layout and the blend state.
+Automating "compile once per configuration, then reuse" needs three concepts:
+
+- A **key** (`SpecializerKey`) names one configuration. A key may be
+  **injective** — distinct keys necessarily mean distinct blueprints, as a render
+  target does — or it may not be: a key can carry information the blueprint does
+  not depend on, such as a mesh's raw vertex attributes, of which the shader
+  reads only a few formats. A non-injective key therefore also has a **canonical
+  form** (`Canonical`): two keys with the same canonical form share one pipeline.
+- A **specializer** (`Specializer`) is a pure function that applies a key to a
+  blueprint, rewriting it in place, and reports the key's canonical form.
+- A **cached pipeline** (`Variants`) ties the two together: it caches compiled
+  results by key, storing the variants in creation order and returning their
+  index.
+
+**The blueprint is `PipelineDescriptor<P>`, parameterized over the pipeline it
+compiles into.** Caching a variant has nothing to do with the kind of pipeline,
+so `P` is not fixed: a render pipeline is a
+`PipelineDescriptor<wgpu::RenderPipeline>` and a compute pipeline a
+`PipelineDescriptor<wgpu::ComputePipeline>`, both sharing one cache and one set
+of specializers.
+
+**A specializer takes no `device` parameter**, so it can only be a pure
+"key to blueprint rewrite" and cannot compile anything. This is exactly why a
+blueprint has to be a **semantic description** (such as `UnlitOptions`) rather
+than a mirror of a wgpu descriptor: the latter holds handles like
+`ShaderModule` that need a device to create. WESL composition and the actual
+wgpu calls therefore both stay inside the blueprint's `create`.
+
+**The cache has two levels but no cache of the whole blueprint.** The first
+level maps the caller's key to a variant index, the second maps the canonical
+form to a variant index; when the key is injective the second is never
+consulted. The blueprint itself is not the key because a blueprint cannot be
+hashed (its compilation constants hold `f64`), and because "memoize on a small
+key" is the whole point of these types: a family has finitely many keys, and a
+lookup is cheaper than comparing a whole blueprint field by field. Variants are
+never evicted, matching the bounded-key assumption; as a backstop for the
+two-level cache's correctness, debug builds check that one canonical form always
+yields one blueprint.
+
+**Specializing for a render target is not the built-in shader's private
+business.** A pipeline's color format, sample count and depth format have to
+match the attachments of the pass it is used in. That holds for any pipeline,
+whoever wrote the blueprint. This dimension is therefore a general specializer,
+[`SurfaceSpecializer`](specialize::SurfaceSpecializer), acting on any blueprint
+that implements [`SurfaceTarget`](specialize::SurfaceTarget): the built-in unlit
+pipeline and a custom one each implement that trait, rather than the built-in
+pipeline monopolizing the logic in a private function. "A target with no depth
+attachment" is also legal, so the depth state follows the target optionally: in
+that case the blueprint must carry **no** depth state rather than keeping a
+stale format.
+
+</details>
+
+**A bind-group layout is not pipeline state.** The built-in unlit pipeline's
+three layouts (global, material, mesh) follow entirely from the blueprint, and
+can be used standalone without compiling anything — to describe a material's
+binding interface, say — so they are derived from the blueprint on demand rather
+than stored beside the compiled product, which avoids a second source of truth
+drifting from the blueprint.
+
+**The built-in pipeline has no privileges.** It is an ordinary user of the same
+mechanism: its blueprint `UnlitOptions` implements `PipelineDescriptor`, and
+`SpecializedUnlitPipeline` is nothing more than the alias
+`SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>`. There is no second
+compilation path laid down for the built-in shader. Registering it with the
+higher layer's family mechanism is
+[`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
+business.
+
+### Per-frame uploads: pooled staging buffers
+
+<details>
+<summary>Why not <code>queue.write_buffer</code>, and why not <code>StagingBelt</code></summary>
+
+Data that changes every frame — the camera and globals uniform, per-instance
+data, mesh metadata — is uploaded through staging buffers reused across frames
+rather than by calling `queue.write_buffer` each time:
+
+- Every `queue.write_buffer` call allocates a fresh temporary staging buffer and
+  submits a copy of its own, so it can neither batch with the rest of the
+  frame's work nor avoid an allocation per frame.
+- `wgpu`'s `StagingBelt` is equally unsuitable: growth between frames makes it
+  hold onto a block of every size it has ever seen, forever, and it never
+  releases them.
+- Each destination buffer therefore keeps its own pool of staging buffers: the
+  host writes into a reused mapping, the encoder records the copy, and the
+  mapping goes back to the host for later frames once the copy completes.
+
+The pool's size settles at the number of frames in flight and does not grow with
+the frame count; when a frame grows, an undersized buffer is replaced rather
+than kept alongside; after the size falls for a while it can be reclaimed
+explicitly.
+
+</details>
+
+Per-frame upload is transparent to the caller: the caller maintains only
+CPU-side data, such as allocating or removing meshes, and the changes are
+synchronized to the GPU automatically when the frame renders, with no upload API
+to remember. This differs from the lazy dependency-graph updates in
+[Resources](#resources-one-dependency-tracked-graph), which the user still
+triggers through an API after a buffer or other resource is replaced.
+
+A frame's uploads and the render pass consuming them are recorded into one
+encoder, so a frame is one submission, which keeps rendering's completion
+deterministic; a frame with no content is submitted too, to carry that frame's
+uploads.
+
 ## Tests
 
 ```text
@@ -433,6 +629,11 @@ submodule; clone it with `git submodule update --init`. To re-bless a snapshot
 after an intentional change, run the test with `SNAPSHOT_UPDATE=1` set, then
 review the image diff before committing it.
 
+The unit tests live inside `src/` and cover the private pure logic; the
+integration tests in `tests/` reach the crate through its public API only. Where
+each layer sits across the workspace, and what CI runs, is in the
+[root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
+
 ## See also
 
 - [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)
@@ -441,8 +642,6 @@ review the image diff before committing it.
   — the world that API uses.
 - [`unlit_wgpu_test_util`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu_test_util/README.md)
   — the headless GPU test harness.
-- [Design document](https://github.com/beicause/unlit3d/blob/main/docs/DESIGN.md)
-  — architecture and rationale (in Chinese).
 
 ## License
 

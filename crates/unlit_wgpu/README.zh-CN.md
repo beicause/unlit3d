@@ -397,6 +397,151 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 是一个 WESL `StaticPackage`，因此 `wesl::resolver::PackageResolver` 可以针对内置
 管线所用的同一批模块解析 `import unlit_wgpu::mesh_compression;`。
 
+## 设计
+
+### 资源：一张依赖追踪图
+
+本 crate 拥抱 `wgpu` 并直接管理其资源：不做不必要的包装，也不提供面向 CPU 侧数据
+管理与同步的高层 API。它真正提供便利的是创建**它自己的** GPU 资源——UBO 与 SSBO
+结构体声明、网格量化与压缩——而不是把 `wgpu` 本身藏起来。
+
+`resources` 把每个资源及其依赖放进一张有向无环图：
+
+- **无环是图本身保证的不变量。** 会成环的依赖在声明处即被拒绝，因此依赖图始终可按
+  依赖序遍历。
+- **句柄是带类型的。** `ResourceId<R>` 的 `R` 即资源类型本身：`get` 直接返回该资源，
+  无需按变体匹配；`replace` 只接受同类型资源，故 id 不会改指另一种资源。类型在编译期
+  无从得知处——依赖集合、脏资源遍历、移除的返回值——仍用擦除的 `ResourceId<Resource>`。
+- **插入是即时的。** 插入即建节点并返回 id，依赖由 `add_dependency` 逐个声明，没有待
+  收尾的中间状态。句柄带世代数，节点被移除后槽位虽会被复用，陈旧 id 也只解析为空，
+  不会改指新占用该槽位的资源。依赖 id 失效就地报错而非返回错误：这属于调用方错误，
+  只能在声明处暴露。
+- **追踪精准，更新延迟。** 替换资源会把它标记为脏，这也意味着依赖它的资源需要更新；
+  移除一个资源会连同依赖它的一并移除。用户调用特定 API 来使资源状态更新，比如在
+  buffer 扩容后更新依赖它的绑定组。
+- **纹理视图的格式随视图记录。** 这是「不做不必要的包装」的唯一例外：wgpu 无法从
+  `TextureView` 得知其创建时的格式，而 sRGB 视图覆盖非 sRGB 纹理时，管线要匹配的正是
+  视图格式而非纹理格式。
+
+![一帧所依赖的 GPU 资源图](https://raw.githubusercontent.com/beicause/unlit3d/main/crates/unlit_wgpu/assets/webgpu-draw-diagram.svg)
+
+### 绘制：场景即数据
+
+绘制过程——即 render pass——也遵循数据驱动。`Scene` 是一份声明式的绘制列表，每条
+绘制指明它所需的管线、绑定组、顶点缓冲与绘制范围，`Scene::record` 把它重放进一个
+`wgpu::RenderPass`：
+
+```rust,ignore
+for draw in scene.draws {
+    pass.set_pipeline(&draw.pipeline);
+    for (index, bind_group) in draw.bind_groups {
+        pass.set_bind_group(index, bind_group);
+    }
+    for (slot, buffer, range) in draw.vertex_buffers {
+        pass.set_vertex_buffer(slot, buffer, range);
+    }
+    if let Some((buffer, range, format)) = draw.index_buffer {
+        pass.set_index_buffer(buffer, range, format);
+    }
+    if let Some(scissor) = draw.scissor {
+        pass.set_scissor_rect(scissor.x, scissor.y, scissor.width, scissor.height);
+    }
+    pass.set_stencil_reference(draw.stencil_reference);
+
+    match draw.range {
+        DrawRange::Indexed { indices, base_vertex, instances } => {
+            pass.draw_indexed(indices, base_vertex, instances)
+        }
+        DrawRange::Vertices { vertices, instances } => pass.draw(vertices, instances),
+    }
+}
+```
+
+录制过程会追踪 pass 状态——管线、绑定组、顶点缓冲、索引缓冲、scissor 与模板参考
+值——并跳过目标已绑定的 `set_*`，因此当场景的条目排列得让相邻绘制状态相同时，每段
+状态只需一次切换而不是每条绘制一次。这个排列是更高层的职责，不属于本 crate：
+`Scene` 只按给定顺序录制。
+
+### 管线特化：键、特化器、缓存的管线
+
+<details>
+<summary>为什么缓存是这个形状</summary>
+
+管线的编译昂贵，且只在一种精确配置下有效；同一份**蓝图**却会在渲染目标、顶点布局、
+混合状态等维度上派生出多条具体管线。把「按配置编译一次、之后复用」自动化，只需要
+三个概念：
+
+- **键**（`SpecializerKey`）命名一种配置。键可能是**单射**的——不同键必然对应不同
+  蓝图，如渲染目标；也可能不是——键携带蓝图并不依赖的信息，如网格的原始顶点属性
+  （着色器只关心其中几个格式）。非单射的键因此另有一个**规范形式**（`Canonical`）：
+  规范形式相同的两个键共用一条管线。
+- **特化器**（`Specializer`）是纯函数，把一个键作用到蓝图上就地改写，并回报该键的
+  规范形式。
+- **缓存的管线**（`Variants`）把前两者绑在一起：按键缓存编译结果，变体以创建顺序存为
+  数组并返回其下标。
+
+**蓝图是 `PipelineDescriptor<P>`，以编译出的管线类型 `P` 为参数。** 缓存一条变体与
+管线种类无关，所以 `P` 不该被写死：渲染管线是 `PipelineDescriptor<wgpu::RenderPipeline>`，
+计算管线是 `PipelineDescriptor<wgpu::ComputePipeline>`，两者共用同一个缓存与同一套特化。
+
+**特化器没有 `device` 参数**，因此它只能是「键 → 蓝图改写」的纯函数，不能编译任何
+东西。这正是蓝图必须是**语义描述**（如 `UnlitOptions`）而不能是 wgpu 描述符镜像的
+原因：后者持有 `ShaderModule` 等需要用 device 创建的句柄。WESL 组合与真正的 wgpu
+调用因此都留在蓝图的 `create` 里。
+
+**缓存分两级，但没有「整份蓝图」的缓存。** 一级是调用方的键到变体下标，二级是规范
+形式到变体下标；键为单射时二级永不被查询。不以蓝图本身为键，是因为蓝图不可哈希
+（编译期常量含 `f64`），而且「用一个小键做记忆化」正是这套类型存在的意义——一个
+家族的键有限，查表比逐字段比较整份蓝图便宜。变体永不淘汰，这与「键有限」的前提一致；
+作为两级缓存正确性的兜底，调试构建下会校验「同一规范形式必须产生同一蓝图」。
+
+**针对渲染目标特化不是内置着色器的私事。** 管线的颜色格式、采样数与深度格式必须与
+它所在 pass 的附件匹配，这对任何管线都成立，与蓝图由谁所写无关。这一维度因此是一个
+通用特化器 `SurfaceSpecializer`，作用在实现了 `SurfaceTarget` 的任意蓝图上：内置
+unlit 与自定义管线各自实现该 trait，而不是由内置管线用私有函数独占这份逻辑。「目标
+没有深度附件」也是合法用法，故深度状态随目标可选：此时蓝图必须**不带**深度状态，
+而不是留着一个过期的格式。
+
+</details>
+
+**绑定组的布局不是管线的状态。** 内置 unlit 的三个布局（全局、材质、网格）完全由
+蓝图决定，且能在不编译任何东西的情况下独立使用——比如描述一条材质的绑定接口——因此
+它们按需从蓝图推导，而不是与编译产物并排存一份，避免布局与蓝图两份真相漂移。
+
+**内置管线没有特权。** 它只是同一套机制的一个普通使用者：其蓝图 `UnlitOptions` 实现
+`PipelineDescriptor`，而 `SpecializedUnlitPipeline` 不过是
+`SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>` 的别名。不存在第二条专为
+内置着色器铺设的编译路径。把它注册进更高层的家族机制，是
+[`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
+的事。
+
+### 逐帧上传：池化的 staging buffer
+
+<details>
+<summary>为什么不用 <code>queue.write_buffer</code>，也不用 <code>StagingBelt</code></summary>
+
+逐帧变化的数据——相机与 globals uniform、逐实例数据、mesh 元数据——通过跨帧复用的
+staging buffer 上传，而不是逐次调用 `queue.write_buffer`：
+
+- `queue.write_buffer` 每次调用都新分配一个临时 staging buffer，并自行提交一次 copy，
+  因此既无法与帧内其他工作合批，又每帧都有分配。
+- `wgpu` 的 `StagingBelt` 同样不合适：帧间尺寸增长会让它永久持有每种出现过的尺寸的
+  块，且从不释放。
+- 因此每个目标 buffer 自持一个 staging buffer 池：host 写入复用的映射，encoder 记录
+  copy，复制完成后映射交还 host 供后续帧再次使用。
+
+池的大小稳定在在飞帧数，不随帧数增长；帧变大时替换过小的 buffer 而不是并存；尺寸
+长期回落后可显式回收。
+
+</details>
+
+逐帧上传对调用方透明：调用方只维护 CPU 侧数据，如分配或移除 mesh，渲染帧时自动把
+变更同步到 GPU，无需记住调用上传 API。这不同于[资源](#资源一张依赖追踪图)一节中依赖
+图的延迟更新，后者在 buffer 等资源被替换后仍由用户调用 API 触发。
+
+一帧的上传与消费它们的 render pass 记录进同一个 encoder，因此一帧一次提交，这保持了
+渲染结束的确定性；没有内容的帧也提交，以带上该帧的上传。
+
 ## 测试
 
 ```text
@@ -410,6 +555,10 @@ SSIMULACRA2 感知指标比较。该目录是指向
 submodule 的软链接；用 `git submodule update --init` 拉取。若确有意改动后要重新生成
 快照，带 `SNAPSHOT_UPDATE=1` 运行对应测试，然后在提交前审查图像差异。
 
+单元测试位于 `src/` 内，覆盖私有纯逻辑；`tests/` 下的集成测试只经公开 API 使用本
+crate。各测试层在整个工作区中的位置，以及 CI 所跑的内容，见
+[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
+
 ## 另见
 
 - [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
@@ -418,8 +567,6 @@ submodule 的软链接；用 `git submodule update --init` 拉取。若确有意
   —— 该 API 使用的 world。
 - [`unlit_wgpu_test_util`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_wgpu_test_util/README.zh-CN.md)
   —— 无头 GPU 测试骨架。
-- [设计文档](https://github.com/beicause/unlit3d/blob/main/docs/DESIGN.md)
-  —— 架构与设计取舍。
 
 ## 许可证
 
