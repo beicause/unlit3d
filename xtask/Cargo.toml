@@ -18,5 +18,5 @@ hyper = { version = "1.11.1", features = ["http1", "server"] }
 # Bridges `async-io`'s futures-io types to hyper's runtime traits.
 smol-hyper = "0.1.1"
 
-[lints.rust]
-missing_docs = "deny"
+[lints]
+workspace = true

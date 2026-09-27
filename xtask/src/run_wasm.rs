@@ -144,4 +144,3 @@ fn wasm_path(args: &RunWasmArgs) -> PathBuf {
         .join(if args.release { "release" } else { "debug" })
         .join(format!("{BINARY_NAME}.wasm"))
 }
-

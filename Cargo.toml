@@ -1,10 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "unlit3d_benchmarks", "unlit3d_examples"]
-# Not a member: `cargo xtask` reaches it through the alias in
-# `.cargo/config.toml`, so the task runner's own dependencies never weigh on
-# the workspace the tasks act on.
-exclude = ["xtask"]
+members = ["crates/*", "unlit3d_benchmarks", "unlit3d_examples", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -43,3 +39,6 @@ allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 print_stderr = "warn"
 print_stdout = "warn"
+
+[workspace.lints.rust]
+missing_docs = "deny"

@@ -59,7 +59,7 @@ progress.
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes and a headless snapshot mode; also the Android example, packaged as an APK. |
-| [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. Not a workspace member. |
+| [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/Cargo.toml) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
 
 ## How the pieces fit
@@ -153,7 +153,7 @@ crates/unlit_wgpu_test_util/ the shared GPU test harness
 unlit3d_examples/            the windowed example, its scenes and its snapshot runner
 unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
 android/                     the Gradle project that packages the example as an APK
-xtask/                       the `cargo xtask` task runner (excluded from the workspace)
+xtask/                       the `cargo xtask` task runner
 docs/DESIGN.md               the design document
 ```
 

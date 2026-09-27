@@ -45,7 +45,8 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例及其无头快照模式；也是打包成 APK 的 Android 示例。 |
-| [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。不是工作区成员。 |
+| [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
+| [`unlit3d_benchmarks`](unlit3d_benchmarks/Cargo.toml) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
 
 ## 各部分的配合方式
 
@@ -86,6 +87,9 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   只做全部检查、不上传。
 - **`cargo nextest run`** — 需要按名筛选或重跑单个测试时直接用（`-p <crate>`、
   `-E 'test(<name>)'`）。nextest 不跑 doctest，也别用它代替 `cargo xtask test`。
+- **`cargo bench -p unlit3d_benchmarks`** — 把渲染路径的一帧按每秒实体数计时。
+  加 `--features profile-tracing` 并以 `--bench profile -- <实体数> <帧数>` 运行时，
+  改为每帧每个阶段打印一行。
 - **`typos`** — 拼写检查，扫全仓库。
 - **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。
   改过任何 `Cargo.toml` 后务必跑。
@@ -118,8 +122,9 @@ crates/unlit3d/              与 ECS 集成的渲染 API
 crates/unlit_ecs/            archetype ECS
 crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
 unlit3d_examples/            窗口化示例、它的场景与快照运行器
+unlit3d_benchmarks/          帧路径基准测试与剖析运行
 android/                     把示例打包成 APK 的 Gradle 工程
-xtask/                       cargo xtask 任务执行器（不在工作区内）
+xtask/                       cargo xtask 任务执行器
 docs/DESIGN.md               设计文档
 ```
 

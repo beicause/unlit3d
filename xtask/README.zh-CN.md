@@ -5,10 +5,9 @@
 仓库的任务执行器，由 `cargo xtask` 别名驱动。它包装了贡献者在提交前会运行的命令，
 使 CI 与本地运行不会彼此脱节，同时负责构建示例的 web 与 Android 产物。
 
-这只是本仓库的开发工具。它不是工作区成员——工作区 manifest 把它列在 `exclude` 下，
-`.cargo/config.toml` 以 `xtask = "run --manifest-path xtask/Cargo.toml --"` 把它接进来
-——因此任务执行器自身的依赖永远不会压到任务所作用的工作区上。它设置了
-`publish = false`。
+这只是本仓库的开发工具，并设置了 `publish = false`。它是工作区成员，因此
+`cargo clippy --workspace` 与 `cargo fmt --all` 会连同它所作用的各个 crate 一起覆盖
+它；`.cargo/config.toml` 以 `xtask = "run -p xtask --"` 把它接进来。
 
 ## 任务
 
@@ -94,11 +93,11 @@ src/step.rs          运行单个子命令并报告是哪一步失败
 ## 构建它
 
 ```text
-cargo run --manifest-path xtask/Cargo.toml -- check
+cargo run -p xtask -- check
 ```
 
-由于它被排除在工作区之外，它有自己的 `Cargo.lock` 和自己的 `target/` 目录。在仓库根
-目录执行 `cargo xtask <task>` 是通常的入口。
+作为工作区成员，它共用工作区的 `Cargo.lock` 和 `target/`。在仓库任意位置执行
+`cargo xtask <task>` 是通常的入口。
 
 ## 许可证
 

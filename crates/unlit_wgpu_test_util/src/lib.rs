@@ -47,7 +47,9 @@ pub fn init_logging() {
 
 /// A ready-to-use GPU context.
 pub struct Ctx {
+    /// The device every resource in a test is created on.
     pub device: wgpu::Device,
+    /// The queue a test's writes and submissions go through.
     pub queue: wgpu::Queue,
 }
 
@@ -148,7 +150,9 @@ pub fn readback_buffer(ctx: &Ctx, source: &wgpu::Buffer, size: u64) -> Vec<u8> {
               wrapper type is not reachable here"
 )]
 pub struct ColorTarget {
+    /// The texture the target draws into.
     pub texture: wgpu::Texture,
+    /// The view passes are opened over.
     pub view: wgpu::TextureView,
 }
 
@@ -181,8 +185,11 @@ impl ColorTarget {
 
 /// A read-back frame: tight RGBA8 bytes plus dimensions.
 pub struct Frame {
+    /// The frame's pixels, row-major and tightly packed, four bytes per texel.
     pub rgba: Vec<u8>,
+    /// The frame's width, in texels.
     pub width: u32,
+    /// The frame's height, in texels.
     pub height: u32,
 }
 
@@ -194,6 +201,11 @@ impl core::ops::Deref for Frame {
 }
 
 impl Frame {
+    /// The texel at `(x, y)`, as RGBA8.
+    ///
+    /// # Panics
+    ///
+    /// If the coordinates fall outside the frame.
     pub fn pixel_u8(&self, x: u32, y: u32) -> [u8; 4] {
         let off = ((y as usize * self.width as usize) + x as usize) * 4;
         [
@@ -466,10 +478,21 @@ mod snapshot_impl {
         }
     }
 
+    /// Assert that `rgba` matches the snapshot named `name`, scoring it against
+    /// [`DEFAULT_MIN_SCORE`].
+    ///
+    /// A missing snapshot is written from this frame rather than failed on, so
+    /// the first run of a new test records its baseline; `SNAPSHOT_UPDATE=1`
+    /// rewrites one that exists.
     pub fn assert_image_snapshot(name: &str, rgba: &[u8], width: u32, height: u32) {
         assert_image_snapshot_with_threshold(name, rgba, width, height, DEFAULT_MIN_SCORE);
     }
 
+    /// Assert that `rgba` matches the snapshot named `name` at `min_score` or
+    /// better on SSIMULACRA2's 0–100 scale.
+    ///
+    /// Like [`Self::assert_image_snapshot`], a missing snapshot is written
+    /// rather than failed on.
     pub fn assert_image_snapshot_with_threshold(
         name: &str,
         rgba: &[u8],

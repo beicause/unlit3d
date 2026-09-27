@@ -1,4 +1,12 @@
 #![doc = include_str!("../README.md")]
+// A task runner's output is the point of running it: the child commands it
+// wraps inherit the terminal, and the progress it reports itself goes to
+// stdout and stderr. The workspace lints deny both everywhere else.
+#![expect(
+    clippy::print_stdout,
+    clippy::print_stderr,
+    reason = "reporting to the terminal is this binary's job"
+)]
 
 mod build_android;
 mod check;

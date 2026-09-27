@@ -6,12 +6,10 @@ The repository's task runner, behind the `cargo xtask` alias. It wraps the
 commands a contributor runs before a commit, so CI and a local run cannot drift
 apart, and it builds the example's web and Android artifacts.
 
-This is a development tool for this repository only. It is not a workspace
-member — the workspace manifest lists it under `exclude`, and
-`.cargo/config.toml` wires it up as
-`xtask = "run --manifest-path xtask/Cargo.toml --"` — so the task runner's own
-dependencies never weigh on the workspace the tasks act on. It is
-`publish = false`.
+This is a development tool for this repository only, and `publish = false`. It
+is a workspace member, so `cargo clippy --workspace` and `cargo fmt --all`
+cover it along with the crates it acts on; `.cargo/config.toml` wires it up as
+`xtask = "run -p xtask --"`.
 
 ## Tasks
 
@@ -111,12 +109,11 @@ src/step.rs           running one child command and reporting which step failed
 ## Building it
 
 ```text
-cargo run --manifest-path xtask/Cargo.toml -- check
+cargo run -p xtask -- check
 ```
 
-Because it is excluded from the workspace, it has its own `Cargo.lock` and its
-own `target/` directory. `cargo xtask <task>` from the repository root is the
-normal entry point.
+Being a workspace member, it shares the workspace's `Cargo.lock` and `target/`.
+`cargo xtask <task>` from anywhere in the repository is the normal entry point.
 
 ## License
 

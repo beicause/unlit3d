@@ -12,10 +12,14 @@ use unlit_ecs::{Entity, LocalWorld};
 use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
-/// Test constants matching what `unlit_wgpu`'s own tests use.
+// Test constants matching what `unlit_wgpu`'s own tests use.
+/// Width of every test frame, in texels.
 pub const WIDTH: u32 = 256;
+/// Height of every test frame, in texels.
 pub const HEIGHT: u32 = 192;
+/// The clear colour every test frame is opened with.
 pub const CLEAR: [f64; 3] = [0.05, 0.05, 0.08];
+/// The colour format every test frame is created with.
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// The frame's GPU context, its mesh source and its frame driver, spawned into
