@@ -113,35 +113,18 @@ Commands follow the `cargo xtask` convention:
   substitute for `cargo xtask test`.
 - **`cargo bench -p unlit3d_benchmarks`** — time a frame of the rendering path as
   entities per second. `--bench profile -- <entities> <frames>` with
-  `--features profile-tracing` instead prints one line per frame phase.
+  `--features profile-tracing` instead prints one line per frame phase. See
+  [`docs/TESTING.md`](docs/TESTING.md#benchmarks) for what each target covers.
 - **`typos`** — spell check, over the whole repository.
 - **`tombi lint --error-on-warnings`** and **`tombi format`** — TOML lint and
   format check. Run them after touching any `Cargo.toml`.
 
-## Tests
+## Tests and benchmarks
 
-The tests fall into three layers, by how close they sit to the code they check:
-
-- **Unit tests** live inside each crate's `src/` (`#[cfg(test)]`), cover only its
-  private pure logic — no GPU — and run directly under `cargo nextest run`.
-- **Library integration tests** live in each crate's `tests/` and reach the
-  crate through its public API only. `unlit_ecs`'s are plain ECS behaviour; the
-  two rendering crates' build a headless device with
-  [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md), render a scene
-  offscreen and assert on the pixels that come back, comparing against no stored
-  image.
-- **Snapshot tests** compare a frame (or a multi-frame sequence) against an image
-  stored in the repository, using SSIMULACRA2. The low-level API's snapshots stay
-  in `unlit_wgpu`'s tests (re-bless with `SNAPSHOT_UPDATE=1`); the
-  high-level ECS scenes' run through
-  [`unlit3d_examples`](unlit3d_examples/README.md)'s headless mode (`--scene all`
-  verifies them, `--update` re-blesses them), because the example is both the
-  demo and the CI rendering check.
-
-All snapshot baselines therefore live in
-[`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule; clone it
-with `git submodule update --init`. After an intentional rendering change,
-re-bless the affected snapshots and review the image diff before committing.
+The tests fall into three layers — unit, library integration and snapshot —
+and the benchmarks come in two targets, one for throughput and one for a
+frame's phase breakdown. Both are described in
+[`docs/TESTING.md`](docs/TESTING.md), along with what CI runs.
 
 ## Workspace layout
 
@@ -155,6 +138,7 @@ unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
 android/                     the Gradle project that packages the example as an APK
 xtask/                       the `cargo xtask` task runner
 docs/DESIGN.md               the design document
+docs/TESTING.md              the test layers and the benchmarks
 ```
 
 ## License

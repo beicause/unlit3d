@@ -89,30 +89,17 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   `-E 'test(<name>)'`）。nextest 不跑 doctest，也别用它代替 `cargo xtask test`。
 - **`cargo bench -p unlit3d_benchmarks`** — 把渲染路径的一帧按每秒实体数计时。
   加 `--features profile-tracing` 并以 `--bench profile -- <实体数> <帧数>` 运行时，
-  改为每帧每个阶段打印一行。
+  改为每帧每个阶段打印一行。各目标覆盖什么见
+  [`docs/TESTING.zh-CN.md`](docs/TESTING.zh-CN.md#基准测试)。
 - **`typos`** — 拼写检查，扫全仓库。
 - **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。
   改过任何 `Cargo.toml` 后务必跑。
 
-## 测试划分
+## 测试与基准
 
-测试按「离被测代码有多近」分三层：
-
-- **单元测试**：在各 crate 的 `src/` 内（`#[cfg(test)]`），只测私有纯逻辑，不碰 GPU，
-  随 `cargo nextest run` 直接运行。
-- **库集成测试**：在各 crate 的 `tests/` 下，只经公开 API 使用它。`unlit_ecs` 的是纯
-  ECS 行为；两个渲染 crate 的是 GPU 测试——用
-  [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) 建无头设备，
-  离屏渲染后回读像素断言，但不与存储图像比较。
-- **快照测试**：集成测试的子类，把一帧（或多帧序列）与存储图像做 SSIMULACRA2 感知
-  比较。低层 API 的快照留在 `unlit_wgpu` 的测试里（`SNAPSHOT_UPDATE=1`
-  重新生成）；高层 ECS 场景的快照由
-  [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的无头模式运行
-  （`--scene all` 验证、`--update` 重新生成），因为它既是示例也是 CI 的渲染回归检查。
-
-快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
-中，用 `git submodule update --init` 拉取；改动渲染结果后重新生成对应快照，并审查
-图像差异再提交。
+测试按「离被测代码有多近」分三层——单元测试、库集成测试与快照测试；基准测试则有两个
+目标，一个测吞吐量，一个给出帧内各阶段的分解。两者连同 CI 所跑的内容都记在
+[`docs/TESTING.zh-CN.md`](docs/TESTING.zh-CN.md) 中。
 
 ## 工作区结构
 
@@ -126,6 +113,7 @@ unlit3d_benchmarks/          帧路径基准测试与剖析运行
 android/                     把示例打包成 APK 的 Gradle 工程
 xtask/                       cargo xtask 任务执行器
 docs/DESIGN.md               设计文档
+docs/TESTING.zh-CN.md        测试划分与基准测试
 ```
 
 ## 许可证
