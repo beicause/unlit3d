@@ -64,6 +64,9 @@ checks that combination separately.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, plus the built-in unlit pipeline under the `unlit`
   feature.
+- [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
+  front: hashing it writes the stored word instead of walking the value, which
+  keeps a per-frame key cheap when its members are large.
 - `ui` — the egui backend, under the `egui` feature.
 
 ## Example

@@ -43,9 +43,8 @@
 //! specialization dimensions compose as a tuple of keys, for which
 //! [SpecializerKey] is implemented up to arity eight.
 
-use core::hash::{Hash, Hasher};
+use core::hash::Hash;
 use core::marker::PhantomData;
-use std::collections::hash_map::DefaultHasher;
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
@@ -54,6 +53,7 @@ use smallvec::SmallVec;
 
 use crate::render_attachments::RenderAttachments;
 use crate::scene::MAX_VERTEX_BUFFERS;
+use crate::util::Hashed;
 
 /// A type that can be compiled from a descriptor and cached one-per-key.
 pub trait Specializable: Sized {
@@ -296,28 +296,24 @@ impl VertexBufferLayoutDesc {
 
 /// A mesh's vertex-buffer layout, slot by slot, shared rather than copied.
 ///
-/// The layout is part of the key a family specializes on, and that key is
-/// built and hashed once per visible entity per frame. A mesh's layout never
-/// changes after upload, so the deep clone an inline field would cost on every
-/// key is replaced by a handle to one allocation: cloning a key copies a
-/// pointer, and hashing it writes one word that was computed once at upload
-/// instead of walking every attribute of every buffer.
+/// The layout is part of the key a family specializes on, and that key is built
+/// and hashed once per visible entity per frame. A mesh's layout never changes
+/// after upload, so it is interned behind an [`Arc`] with its hash taken once by
+/// [`Hashed`]: cloning a key copies a pointer, hashing it writes one word, and
+/// comparing two keys settles on that word before it looks at an attribute.
 ///
-/// Equality compares the buffers themselves, so two independently uploaded
-/// meshes with the same layout are one key; equal layouts always carry equal
-/// hashes, which is what lets [Hash] be the stored word.
-#[derive(Clone, Debug)]
+/// Equality is by the buffers themselves — the shared-allocation fast path
+/// aside — so two independently uploaded meshes with the same layout are one
+/// key; equal layouts always carry equal hashes, which is what lets [`Hash`] be
+/// the stored word.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct VertexLayout {
-    inner: Arc<Inner>,
-}
-
-/// The shared body of a [VertexLayout].
-#[derive(Debug)]
-struct Inner {
-    /// The buffers, slot by slot.
-    buffers: ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>,
-    /// The hash of `buffers`, computed once so hashing a key is O(1).
-    hash: u64,
+    /// The interned buffers and their hash.
+    ///
+    /// [`Hashed`] sits inside the [`Arc`] rather than outside it: hashing a
+    /// `Hashed<Arc<_>>` would forward through the `Arc` to the buffers and walk
+    /// every attribute, which is the cost this type exists to avoid.
+    inner: Arc<Hashed<ArrayVec<(u32, VertexBufferLayoutDesc), MAX_VERTEX_BUFFERS>>>,
 }
 
 impl VertexLayout {
@@ -329,13 +325,8 @@ impl VertexLayout {
     /// more than that.
     pub fn new(buffers: impl IntoIterator<Item = (u32, VertexBufferLayoutDesc)>) -> Self {
         let buffers: ArrayVec<_, MAX_VERTEX_BUFFERS> = buffers.into_iter().collect();
-        let mut hasher = DefaultHasher::new();
-        buffers.hash(&mut hasher);
         Self {
-            inner: Arc::new(Inner {
-                buffers,
-                hash: hasher.finish(),
-            }),
+            inner: Arc::new(Hashed::new(buffers)),
         }
     }
 }
@@ -347,29 +338,11 @@ impl Default for VertexLayout {
     }
 }
 
-impl PartialEq for VertexLayout {
-    fn eq(&self, other: &Self) -> bool {
-        // One mesh's layout is ordinarily compared with itself, so the handle
-        // check settles the common case before the buffers are looked at.
-        Arc::ptr_eq(&self.inner, &other.inner) || self.inner.buffers == other.inner.buffers
-    }
-}
-
-impl Eq for VertexLayout {}
-
-impl Hash for VertexLayout {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Equal layouts share this word, so writing it satisfies the contract
-        // without re-walking the buffers.
-        state.write_u64(self.inner.hash);
-    }
-}
-
 impl core::ops::Deref for VertexLayout {
     type Target = [(u32, VertexBufferLayoutDesc)];
 
     fn deref(&self) -> &Self::Target {
-        &self.inner.buffers
+        &self.inner
     }
 }
 
@@ -638,6 +611,9 @@ impl SpecializerKey for SurfaceKey {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+
     use super::*;
 
     /// A blueprint a specializer rewrites.

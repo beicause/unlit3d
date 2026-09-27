@@ -49,6 +49,8 @@
   key 另有一张规范形式映射表。
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位；在
   `unlit` feature 下还包含内置 unlit 管线。
+- `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
+  而不必遍历值本身；当每帧 key 的成员较大时，这让 key 保持廉价。
 - `ui` —— egui 后端，在 `egui` feature 下提供。
 
 ## 示例
