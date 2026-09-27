@@ -24,7 +24,7 @@ use core::any::TypeId;
 use core::cell::{Ref, RefCell, RefMut};
 
 use crate::archetype::{Archetype, Archetypes};
-use crate::bundle::{ArchetypeBuilder, Bundle};
+use crate::bundle::Bundle;
 use crate::column::AnyColumn;
 use crate::column::{CellRef, CellRefMut};
 use crate::command::{Command, Commands};
@@ -173,9 +173,7 @@ impl World {
             !self.entities_read().contains(entity),
             "{entity:?} is already spawned"
         );
-        let mut builder = ArchetypeBuilder::new();
-        bundle.put_into(&mut builder);
-        let (types, values, ctors) = builder.finish();
+        let (types, values, ctors) = bundle.into_builder().finish();
         for (type_id, ctor) in ctors {
             self.ctors.entry(type_id).or_insert(ctor);
         }

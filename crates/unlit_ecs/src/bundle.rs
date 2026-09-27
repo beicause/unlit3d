@@ -62,8 +62,8 @@ impl ArchetypeBuilder {
                 "a bundle cannot contain the same component twice",
             );
         }
-        let types: Vec<TypeId> = values.iter().map(|(type_id, _)| *type_id).collect();
-        (types.into_boxed_slice(), values, ctors)
+        let types: Box<[TypeId]> = values.iter().map(|(type_id, _)| *type_id).collect();
+        (types, values, ctors)
     }
 }
 
@@ -71,21 +71,29 @@ impl ArchetypeBuilder {
 ///
 /// Implemented for the empty tuple and for tuples of one to sixteen components.
 pub trait Bundle {
-    /// Insert the bundle's components into the builder.
-    fn put_into(self, builder: &mut ArchetypeBuilder);
+    /// The builder holding exactly this bundle's components.
+    ///
+    /// The bundle supplies the whole builder, so there is no target to append
+    /// to or overwrite; a caller that wants to gather several bundles calls
+    /// [`ArchetypeBuilder::push`] for each component instead.
+    fn into_builder(self) -> ArchetypeBuilder;
 }
 
 impl Bundle for () {
-    fn put_into(self, _builder: &mut ArchetypeBuilder) {}
+    fn into_builder(self) -> ArchetypeBuilder {
+        ArchetypeBuilder::new()
+    }
 }
 
 macro_rules! impl_bundle {
     ($($name:ident),*) => {
         impl<$($name: 'static),*> Bundle for ($($name,)*) {
             #[expect(non_snake_case, reason = "the macro names bindings after the type parameters")]
-            fn put_into(self, builder: &mut ArchetypeBuilder) {
+            fn into_builder(self) -> ArchetypeBuilder {
                 let ($($name,)*) = self;
+                let mut builder = ArchetypeBuilder::new();
                 $(builder.push::<$name>($name);)*
+                builder
             }
         }
     };
