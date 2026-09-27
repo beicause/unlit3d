@@ -54,14 +54,25 @@ impl Entity {
 }
 
 /// Where an entity's components live.
+///
+/// A location names an archetype and a row in it. Entities of the same
+/// archetype share the archetype, so a caller holding many locations can group
+/// them by [`Location::archetype`] and resolve that archetype's columns once,
+/// then fetch each row through [`Query::fetch`](crate::Query::fetch).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) struct Location {
+pub struct Location {
     pub(crate) archetype: u32,
     pub(crate) row: u32,
 }
 
 impl Location {
-    pub(crate) fn row(self) -> usize {
+    /// The archetype the entity's components live in.
+    pub fn archetype(self) -> u32 {
+        self.archetype
+    }
+
+    /// The entity's row within its archetype.
+    pub fn row(self) -> usize {
         self.row as usize
     }
 }

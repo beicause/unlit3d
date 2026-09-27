@@ -233,3 +233,79 @@ fn entities_sharing_a_component_set_share_an_archetype() {
         "a wider set is its own"
     );
 }
+
+#[test]
+fn a_location_names_the_archetype_and_row_of_a_live_entity() {
+    let mut world = World::new();
+    let first = world.spawn((Position { x: 1.0, y: 0.0 },));
+    let second = world.spawn((Position { x: 2.0, y: 0.0 },));
+    let other = world.spawn((Velocity { dx: 0.0, dy: 0.0 },));
+
+    let location = world.location(first).expect("spawned");
+    let archetype = world
+        .archetype(location.archetype())
+        .expect("the location names an existing archetype");
+    assert_eq!(archetype.entities()[location.row()], first);
+
+    // Entities of one component set share an archetype but not a row.
+    let second_location = world.location(second).expect("spawned");
+    assert_eq!(second_location.archetype(), location.archetype());
+    assert_ne!(second_location.row(), location.row());
+    // A different component set is a different archetype.
+    assert_ne!(
+        world.location(other).expect("spawned").archetype(),
+        location.archetype()
+    );
+
+    assert!(world.archetype(u32::MAX).is_none(), "no such archetype");
+}
+
+#[test]
+fn a_despawned_entity_has_no_location() {
+    let mut world = World::new();
+    let entity = world.spawn((Position { x: 0.0, y: 0.0 },));
+    assert!(world.location(entity).is_some());
+    world.despawn(entity);
+    assert!(world.location(entity).is_none());
+}
+
+#[test]
+fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
+    // This is the access shape the renderer's resolve pass uses: resolve the
+    // columns once per archetype, then fetch every row through that state.
+    use unlit_ecs::Query;
+
+    type Resolve<'a> = (&'a Position, Option<&'a Velocity>);
+
+    let mut world = World::new();
+    let entities: Vec<Entity> = (0..8)
+        .map(|i| {
+            if i % 2 == 0 {
+                world.spawn((Position {
+                    x: i as f32,
+                    y: 0.0,
+                },))
+            } else {
+                world.spawn((
+                    Position {
+                        x: i as f32,
+                        y: 0.0,
+                    },
+                    Velocity { dx: 1.0, dy: 2.0 },
+                ))
+            }
+        })
+        .collect();
+
+    for &entity in &entities {
+        let location = world.location(entity).expect("live");
+        let archetype = world.archetype(location.archetype()).expect("exists");
+        let state = <Resolve<'_> as Query>::fetch_state(archetype);
+        let (position, velocity) = <Resolve<'_> as Query>::fetch(&state, location.row());
+        assert_eq!(position.x, world.get::<Position>(entity).unwrap().x);
+        assert_eq!(velocity.is_some(), world.has::<Velocity>(entity));
+        if let Some(velocity) = velocity {
+            assert_eq!(velocity.dx, world.get::<Velocity>(entity).unwrap().dx);
+        }
+    }
+}

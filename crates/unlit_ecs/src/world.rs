@@ -216,7 +216,7 @@ impl World {
     /// removed; handles to it that the caller kept elsewhere resolve to nothing
     /// afterwards, and it is the caller's job to notice.
     pub fn despawn(&mut self, entity: Entity) -> bool {
-        let Some(location) = self.archetype_of(entity) else {
+        let Some(location) = self.location(entity) else {
             return false;
         };
         self.remove_row(location);
@@ -386,7 +386,20 @@ impl World {
             .register(Archetype::new(types.into(), columns.into_boxed_slice()))
     }
 
-    pub(crate) fn archetype_of(&self, entity: Entity) -> Option<Location> {
+    /// The archetype with this id, or `None` when there is no such archetype.
+    ///
+    /// An id comes from [`Location::archetype`]. Several entities can share
+    /// one, which is what lets a caller holding many entities resolve an
+    /// archetype's columns once for all of them instead of once per entity.
+    pub fn archetype(&self, id: u32) -> Option<&Archetype> {
+        self.archetypes.as_slice().get(id as usize)
+    }
+
+    /// Where a live entity's components live, or `None` when it is not alive.
+    ///
+    /// The location is what [`World::archetype`] and
+    /// [`Archetype::entities`] together turn into a component.
+    pub fn location(&self, entity: Entity) -> Option<Location> {
         self.entities_read().location(entity)
     }
 

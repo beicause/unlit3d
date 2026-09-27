@@ -19,7 +19,7 @@ pub use column::{CellRef, CellRefMut};
 pub use command::{Command, CommandErase, Commands};
 #[doc(hidden)]
 pub use component::Component;
-pub use entity::Entity;
+pub use entity::{Entity, Location};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use query::{Or, Query, QueryFilter, QueryIter, With, Without};
 pub use world::World;

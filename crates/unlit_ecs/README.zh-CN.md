@@ -35,11 +35,16 @@
 
 ## 内容概览
 
-`World`、`Entity`、
-`Bundle` / `ArchetypeBuilder`、`Query` 与 `QueryFilter`（`With`、
-`Without`、`Or`、元组）、用于延迟结构变更的 `Command` / `Commands`、
-用于直接检视存储的 `Archetype` / `Archetypes`，以及专用哈希容器
-`TypeIdHashMap`、`EntityHashMap` 等。
+`World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`、
+`Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、用于延迟结构变更的
+`Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`，以及
+专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
+
+查询会按 archetype 解析一次它需要的列，再通过该状态逐行取值，因此其开销与
+*组件集合*的数量成正比，而不是与实体数量成正比。`World::location` 与
+`World::archetype` 把同样的形态开放给持有大量实体的调用者——比如把场景剔除成
+一个列表的调用者——让它能按 archetype 分组，一次性解析每个 archetype 的列，
+而不必逐实体重新查找。
 
 `Commands` 队列之所以存在，是因为结构变更需要 `&mut World`：只持有共享 world 的
 回调改为把 spawn 或 despawn 排入队列，由驱动器调用 `World::apply` 落盘。

@@ -46,11 +46,19 @@ It is at an **early stage of development** and its API changes freely.
 
 ## What is in the box
 
-[`World`], [`Entity`],
-[`Bundle`] / [`ArchetypeBuilder`], [`Query`] and [`QueryFilter`] ([`With`],
-[`Without`], [`Or`], tuples), [`Command`] / [`Commands`] for queued structural
-changes, [`Archetype`] / [`Archetypes`] for direct storage inspection, and the
-specialized hash containers [`TypeIdHashMap`], [`EntityHashMap`] and friends.
+[`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`],
+[`Query`] and [`QueryFilter`] ([`With`], [`Without`], [`Or`], tuples),
+[`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
+[`Archetypes`] for direct storage inspection, and the specialized hash
+containers [`TypeIdHashMap`], [`EntityHashMap`] and friends.
+
+A query resolves the columns it needs once per archetype and then fetches rows
+through that state, so its cost is proportional to the number of *component
+sets* rather than to the number of entities. [`World::location`] and
+[`World::archetype`] expose the same shape to a caller that holds many entities
+— for instance one that culled a scene into a list — so it can group them by
+archetype and resolve each archetype's columns once for all of them instead of
+re-looking up every entity.
 
 A [`Commands`] queue exists because structural changes need `&mut World`: a
 callback that only holds a shared world queues a spawn or despawn instead, and

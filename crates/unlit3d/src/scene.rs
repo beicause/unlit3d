@@ -12,7 +12,7 @@ use core::marker::PhantomData;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
-use unlit_ecs::{TypeIdHashMap, World};
+use unlit_ecs::{Query, TypeIdHashMap, World};
 use unlit_wgpu::resources::{ResourceId, Virtual};
 use unlit_wgpu::specialize::{PipelineDescriptor, Specializer, SurfaceKey, Variants};
 
@@ -139,6 +139,20 @@ where
     _key: PhantomData<fn() -> K>,
 }
 
+/// What a family reads from one visible entity while resolving it.
+///
+/// Resolving the columns once per archetype rather than once per entity is what
+/// makes the frame's resolve pass proportional to the number of *distinct
+/// component sets* rather than to the number of entities: a `World::get` per
+/// entity would re-read the world's entity table and re-look-up the component
+/// type every time.
+type Resolve<'a, K> = (
+    &'a GpuRenderPipeline<K>,
+    &'a GpuMesh,
+    Option<&'a GpuMaterial>,
+    Option<&'a ZSortedDrawing>,
+);
+
 impl<D, S, F, K> Resolver<'_, '_, D, S, F, K>
 where
     D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
@@ -151,28 +165,66 @@ where
     ///
     /// The frame's meshes were already culled and their placement resolved,
     /// so this only picks out the ones whose pipeline belongs to the family.
+    ///
+    /// Culling walks the archetypes in storage order, so the candidates arrive
+    /// grouped by archetype and the columns below are resolved once per group.
+    /// The caching only helps when they are grouped, but it is correct either
+    /// way: a cache miss just re-resolves.
     fn collect(&mut self) {
         profiling::scope!("scene.resolve.family");
+        // Copied out of `self.frame` so the resolved state borrows the world
+        // rather than `self`, which `push` needs mutably.
+        let world = self.frame.world;
+        let mut cached: Option<u32> = None;
+        let mut state = None;
         for &candidate in self.frame.meshes {
-            let entity = candidate.entity;
-            // An entity from another family carries a different key type, so
-            // it simply is not found here.
-            let Some(pipeline) = self.frame.world.get::<GpuRenderPipeline<K>>(entity) else {
+            let Some(location) = world.location(candidate.entity) else {
                 continue;
             };
-            // The mesh is what a draw key is derived from; a candidate whose
-            // GpuMesh vanished would have no draw.
-            let Some(mesh) = self.frame.world.get::<GpuMesh>(entity) else {
+            if cached != Some(location.archetype()) {
+                cached = Some(location.archetype());
+                let archetype = world
+                    .archetype(location.archetype())
+                    .expect("a live entity's archetype exists");
+                // An entity from another family carries a different key type,
+                // so its archetype does not match and the whole group is
+                // skipped.
+                state = <Resolve<'_, K> as Query>::matches(archetype)
+                    .then(|| <Resolve<'_, K> as Query>::fetch_state(archetype));
+            }
+            let Some(state) = state.as_ref() else {
                 continue;
             };
-            self.push(candidate, &pipeline, &mesh);
+            let (pipeline, gpu_mesh, material, z_sorted) =
+                <Resolve<'_, K> as Query>::fetch(state, location.row());
+            // The material decides both how the draw is grouped and which bind
+            // group it binds, so it is read once and both are taken from it.
+            let (sort_key, material_bg) = match material {
+                Some(material) => (material.sort_key(), Some(material.bind_group_id)),
+                None => (0, None),
+            };
+            self.push(
+                candidate,
+                &pipeline,
+                &gpu_mesh,
+                sort_key,
+                material_bg,
+                z_sorted.is_some(),
+            );
         }
     }
 
     /// Resolve one candidate's variant, registering the pipeline on first
     /// sight, and push its [VisibleEntry].
-    fn push(&mut self, mesh: VisibleMesh, pipeline: &GpuRenderPipeline<K>, gpu_mesh: &GpuMesh) {
-        let entity = mesh.entity;
+    fn push(
+        &mut self,
+        mesh: VisibleMesh,
+        pipeline: &GpuRenderPipeline<K>,
+        gpu_mesh: &GpuMesh,
+        sort_key: u64,
+        material_bg: Option<ResourceId<wgpu::BindGroup>>,
+        z_sorted: bool,
+    ) {
         let instance = mesh.instance;
         let draw = DrawKey::for_mesh(self.frame.surface, gpu_mesh);
         let key = S::Key::from((pipeline.key().clone(), draw));
@@ -198,12 +250,6 @@ where
 
         let centre = glam::Vec3A::from(instance.translation());
         let depth = (centre - glam::Vec3A::from(self.frame.camera.position)).length();
-        // The material decides both how the draw is grouped and which bind
-        // group it binds, so it is read once here and both are taken from it.
-        let (sort_key, material_bg) = match self.frame.world.get::<GpuMaterial>(entity) {
-            Some(material) => (material.sort_key(), Some(material.bind_group_id)),
-            None => (0, None),
-        };
         // The handles a draw binds depend on the mesh, the shape read from it
         // and the material beside it, so the key is filled in here where all
         // three are already in hand.
@@ -222,7 +268,7 @@ where
             pipeline_id,
             sort_key,
             depth,
-            z_sorted: self.frame.world.has::<ZSortedDrawing>(entity),
+            z_sorted,
             handles_key,
         });
     }
