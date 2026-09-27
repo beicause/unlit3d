@@ -51,7 +51,7 @@ use crate::pipeline::{
     PipelineId, PipelineKey, RegisteredGlobal, RenderResources,
 };
 use crate::scene::{
-    AnyFamily, DrawShape, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry,
+    AnyFamily, DrawHandlesKey, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry,
     assemble_scene, collect_and_sort_visible,
 };
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
@@ -497,8 +497,10 @@ pub struct MeshSource {
     packed_instances_cache: Vec<MeshInstance>,
     /// Reused Vec for cloned pipeline handles while the scene is built.
     pipeline_handle_cache: Vec<PipelineHandles>,
-    /// Reused Vec of per-entry handles while the scene is built.
-    entry_handle_cache: Vec<EntryHandles>,
+    /// The frame's interned draw handles, one per distinct
+    /// [`DrawHandlesKey`] the visible set named. Reused between frames, so a
+    /// steady scene allocates nothing.
+    entry_handle_cache: HashMap<DrawHandlesKey, EntryHandles>,
     /// The scene this source built for the frame, whose allocation survives
     /// between frames.
     scene: Scene,
@@ -639,7 +641,7 @@ impl MeshSource {
             visible_cache: Vec::new(),
             packed_instances_cache: Vec::new(),
             pipeline_handle_cache: Vec::new(),
-            entry_handle_cache: Vec::new(),
+            entry_handle_cache: HashMap::new(),
             scene: Scene::new(),
         }
     }
@@ -1948,8 +1950,14 @@ impl MeshSource {
     ///
     /// The handles every draw names — the bind groups, the vertex and index
     /// buffers, the pipeline — are cloned out of the resource graph into reused
-    /// scratch lists first, so assembling touches the graph once per entry and
-    /// the assembled scene owns everything it names.
+    /// scratch tables first, so assembling touches the graph once per distinct
+    /// draw state and the assembled scene owns everything it names.
+    ///
+    /// A scene usually draws many entities per mesh, and every one of them
+    /// names the same handles. The visible set therefore carries a
+    /// [`DrawHandlesKey`] by value rather than the handles themselves, and the
+    /// expensive part — reading the mesh component and cloning its buffers out
+    /// of the graph — happens once per distinct key instead of once per entity.
     fn assemble_frame(&mut self, world: &LocalWorld) {
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
@@ -1957,6 +1965,11 @@ impl MeshSource {
             profiling::scope!("mesh_source.assemble.handles");
             let graph = Self::graph(world, self.context);
             for entry in &self.visible_cache {
+                let key = entry.handles_key;
+                if handles.contains_key(&key) {
+                    continue;
+                }
+
                 let mesh = world
                     .get::<GpuMesh>(entry.mesh.entity)
                     .expect("visible entity has GpuMesh");
@@ -1965,12 +1978,9 @@ impl MeshSource {
                     .bind_group_id
                     .map(|id| graph.get(id).expect("mesh bind group exists").clone());
 
-                let material_bg = world.get::<GpuMaterial>(entry.mesh.entity).map(|material| {
-                    graph
-                        .get(material.bind_group_id)
-                        .expect("material bind group exists")
-                        .clone()
-                });
+                let material_bg = key
+                    .material
+                    .map(|id| graph.get(id).expect("material bind group exists").clone());
 
                 let mut vertex_buffers = ArrayVec::new();
                 for &(slot, buffer) in &mesh.vertex_buffers {
@@ -1990,21 +2000,15 @@ impl MeshSource {
                     )
                 });
 
-                // The mesh is named once here and nowhere else: what a draw
-                // reads is carried alongside its handles, so assembling the
-                // scene needs no lookup per draw.
-                handles.push(EntryHandles {
-                    mesh_bg,
-                    material_bg,
-                    vertex_buffers,
-                    index_buffer,
-                    shape: DrawShape {
-                        indexed: mesh.indexed,
-                        count: mesh.count,
-                        first: mesh.first,
-                        base_vertex: mesh.base_vertex,
+                handles.insert(
+                    key,
+                    EntryHandles {
+                        mesh_bg,
+                        material_bg,
+                        vertex_buffers,
+                        index_buffer,
                     },
-                });
+                );
             }
         }
 
@@ -2198,6 +2202,7 @@ impl FrameSource for MeshSource {
 mod tests {
     use super::*;
     use crate::components::{Transform, UnlitPipeline, ZSortedDrawing};
+    use crate::scene::DrawShape;
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
@@ -3420,11 +3425,20 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source.build_scene(&h.world, ctx, &mut encoder);
-        let handles = &h.source.entry_handle_cache;
-        assert_eq!(handles.len(), 2, "one handle set per drawn entity");
-        assert_eq!(handles[0].shape.first, 0, "the first mesh starts at zero");
+        let shapes: Vec<DrawShape> = h
+            .source
+            .visible_cache
+            .iter()
+            .map(|entry| entry.handles_key.shape)
+            .collect();
+        assert_eq!(
+            h.source.entry_handle_cache.len(),
+            2,
+            "each distinct slice interns its own handles"
+        );
+        assert_eq!(shapes[0].first, 0, "the first mesh starts at zero");
         assert_ne!(
-            handles[0].shape.first, handles[1].shape.first,
+            shapes[0].first, shapes[1].first,
             "each draw keeps its own slice of the pool"
         );
         assert_eq!(drawn(&h.source).len(), 2, "both entities were drawn");
@@ -3465,6 +3479,44 @@ mod tests {
             instances.clone(),
             0..3,
             "the draw covers every shared instance, in order"
+        );
+    }
+
+    /// Many entities sharing one mesh resolve to one handle set, not one per
+    /// entity: the handles are interned per distinct draw state, which is what
+    /// keeps a scene of many entities per mesh from cloning the same bind
+    /// groups and buffers over and over.
+    #[test]
+    fn entities_sharing_a_draw_state_share_one_handle_set() {
+        let mut h = harness();
+        let mesh = h.tri_mesh();
+        h.world
+            .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+        for i in 0..3 {
+            h.world.spawn((
+                Transform {
+                    translation: glam::Vec3::new(i as f32, 0.0, 0.0),
+                    ..Default::default()
+                },
+                mesh.clone(),
+                UnlitPipeline::new(h.key.clone()),
+            ));
+        }
+
+        let ctx = h.source.context();
+        let mut encoder = h.encoder();
+        h.source.build_scene(&h.world, ctx, &mut encoder);
+
+        assert_eq!(h.source.visible_cache.len(), 3, "all three are visible");
+        assert_eq!(
+            h.source.entry_handle_cache.len(),
+            1,
+            "one mesh, one draw state, one handle set"
+        );
+        assert_eq!(
+            h.source.scene().draws.len(),
+            1,
+            "and therefore one merged instanced draw"
         );
     }
 

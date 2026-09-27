@@ -11,7 +11,9 @@ use core::cmp::Ordering;
 use core::marker::PhantomData;
 
 use arrayvec::ArrayVec;
+use hashbrown::HashMap;
 use unlit_ecs::{LocalWorld, TypeIdHashMap};
+use unlit_wgpu::resources::{ResourceId, Virtual};
 use unlit_wgpu::specialize::{Specializable, Specializer, SurfaceKey, Variants};
 
 use unlit_wgpu::pipeline::{GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP};
@@ -87,6 +89,12 @@ pub(crate) struct VisibleEntry {
     pub(crate) depth: f32,
     /// True when the entity carries [ZSortedDrawing].
     pub(crate) z_sorted: bool,
+    /// Everything the draw binds, named by value rather than by handle.
+    ///
+    /// The resolve pass already holds the mesh and material components, so it
+    /// fills this in there and the assembly pass can intern one handle set per
+    /// distinct key instead of resolving one per entity.
+    pub(crate) handles_key: DrawHandlesKey,
 }
 
 /// The inputs a family needs to collect and resolve one frame.
@@ -189,9 +197,24 @@ where
 
         let centre = glam::Vec3A::from(instance.translation());
         let depth = (centre - glam::Vec3A::from(self.frame.camera.position)).length();
-        let sort_key = match self.frame.world.get::<GpuMaterial>(entity) {
-            Some(material) => material.sort_key(),
-            None => 0,
+        // The material decides both how the draw is grouped and which bind
+        // group it binds, so it is read once here and both are taken from it.
+        let (sort_key, material_bg) = match self.frame.world.get::<GpuMaterial>(entity) {
+            Some(material) => (material.sort_key(), Some(material.bind_group_id)),
+            None => (0, None),
+        };
+        // The handles a draw binds depend on the mesh, the shape read from it
+        // and the material beside it, so the key is filled in here where all
+        // three are already in hand.
+        let handles_key = DrawHandlesKey {
+            mesh: gpu_mesh.root,
+            shape: DrawShape {
+                indexed: gpu_mesh.indexed,
+                count: gpu_mesh.count,
+                first: gpu_mesh.first,
+                base_vertex: gpu_mesh.base_vertex,
+            },
+            material: material_bg,
         };
         self.visible.push(VisibleEntry {
             mesh,
@@ -199,6 +222,7 @@ where
             sort_key,
             depth,
             z_sorted: self.frame.world.has::<ZSortedDrawing>(entity),
+            handles_key,
         });
     }
 }
@@ -323,6 +347,27 @@ pub(crate) fn collect_and_sort_visible(
     });
 }
 
+/// Identifies the resource-graph handles one draw names.
+///
+/// Everything a draw binds is determined by the mesh it reads, the shape it
+/// reads from that mesh, and the material bound beside it. Two entries with the
+/// same key therefore name the same buffers and bind groups, so the handle set
+/// is resolved once per key rather than once per entry.
+///
+/// This is what the visible set carries instead of the handles themselves: a
+/// scene of many entities sharing a few meshes would otherwise deep-clone a
+/// handful of wgpu handles per entity per frame, and clone them into a set it
+/// immediately drops again.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct DrawHandlesKey {
+    /// The mesh's root node, which names its buffers and bind group.
+    pub(crate) mesh: ResourceId<Virtual>,
+    /// What the draw reads from the mesh.
+    pub(crate) shape: DrawShape,
+    /// The material's bind group, when the entity carries a material.
+    pub(crate) material: Option<ResourceId<wgpu::BindGroup>>,
+}
+
 /// A registered pipeline's GPU handles, indexed by [`PipelineId`].
 pub(crate) struct PipelineHandles {
     /// The compiled pipeline.
@@ -338,7 +383,7 @@ pub(crate) struct PipelineHandles {
 ///
 /// Comparable so that two entries drawing the same geometry are recognized as
 /// one instanced draw; see [`assemble_scene`].
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DrawShape {
     /// Whether the draw is indexed; when it is not, `count` is a vertex count.
     pub(crate) indexed: bool,
@@ -352,12 +397,10 @@ pub(crate) struct DrawShape {
     pub(crate) base_vertex: u32,
 }
 
-/// One visible entry's resource-graph handles, resolved before the scene is
-/// assembled.
+/// The resource-graph handles one interned key resolves to.
 ///
-/// The handles are cloned out of the graph once per entry and owned here, so
-/// assembling the draws touches neither the graph nor the world — and the
-/// assembled [`Scene`] borrows nothing.
+/// These are the concrete wgpu handles a draw binds, cloned out of the graph
+/// once per distinct [`DrawHandlesKey`] per frame rather than once per entry.
 pub(crate) struct EntryHandles {
     /// The mesh's bind group, if it has one.
     pub(crate) mesh_bg: Option<wgpu::BindGroup>,
@@ -367,46 +410,34 @@ pub(crate) struct EntryHandles {
     pub(crate) vertex_buffers: ArrayVec<VertexBufferBinding, MAX_VERTEX_BUFFERS>,
     /// The index buffer and its format, when the mesh is indexed.
     pub(crate) index_buffer: Option<(wgpu::Buffer, wgpu::IndexFormat)>,
-    /// What the draw reads: whether it is indexed and how many indices or
-    /// vertices.
-    pub(crate) shape: DrawShape,
 }
 
 /// Whether two adjacent entries can be drawn as one instanced draw.
 ///
 /// A draw's state is its pipeline, its bind groups, its buffers and its
-/// geometry; when all of those match, the entries differ only in which instance
-/// record they read, and one draw with a wider instance range says the same
-/// thing. The global bind group is the pipeline's, so the pipeline id covers it.
+/// geometry; the interned handle key names all of those but the pipeline, so
+/// two entries with equal keys and equal pipelines differ only in which
+/// instance record they read, and one draw with a wider instance range says the
+/// same thing. The global bind group is the pipeline's, so the pipeline id
+/// covers it.
 ///
 /// Z-sorted entries never merge, with each other or with anything else: they
 /// are blended back-to-front, so the order they are drawn in is the result, and
 /// a merged draw would rasterize its instances in record order instead. Opaque
 /// draws are depth-tested with blending off, so their order is not observable
 /// and merging them is safe.
-fn same_draw(
-    a: &VisibleEntry,
-    a_handles: &EntryHandles,
-    b: &VisibleEntry,
-    b_handles: &EntryHandles,
-) -> bool {
-    !a.z_sorted
-        && !b.z_sorted
-        && a.pipeline_id == b.pipeline_id
-        && a_handles.shape == b_handles.shape
-        && a_handles.mesh_bg == b_handles.mesh_bg
-        && a_handles.material_bg == b_handles.material_bg
-        && a_handles.index_buffer == b_handles.index_buffer
-        && a_handles.vertex_buffers == b_handles.vertex_buffers
+fn same_draw(a: &VisibleEntry, b: &VisibleEntry) -> bool {
+    !a.z_sorted && !b.z_sorted && a.pipeline_id == b.pipeline_id && a.handles_key == b.handles_key
 }
 
 /// Append the frame's draws to `scene`, one per run of entries that share a
 /// draw's state.
 ///
-/// The entries have already been culled, resolved and sorted and their
-/// resource-graph handles already cloned into [`EntryHandles`], so assembling
-/// the draws is a linear pass over slices that names nothing the world or the
-/// graph owns.
+/// The entries have already been culled, resolved and sorted, and each names
+/// its resources by [`DrawHandlesKey`]; `handles` maps a key to the handles
+/// resolved for it, one entry per distinct key. Assembling is therefore a
+/// linear pass over slices that names nothing the world or the graph owns, and
+/// it resolves no handle of its own.
 ///
 /// The draws are appended in `visible` order, so the sort that put neighbours
 /// on the same pipeline and bind groups is what keeps recording's state changes
@@ -419,11 +450,16 @@ fn same_draw(
 /// index within the draw — and the instance buffer is packed in `visible`
 /// order, so instances `a..b` read exactly the records of entries `a..b`, the
 /// same ones the separate draws would have read.
+///
+/// # Panics
+///
+/// If an entry's key has no handles in `handles`: every key the visible set
+/// carries is interned before this is called.
 pub(crate) fn assemble_scene(
     scene: &mut Scene,
     visible: &[VisibleEntry],
     pipelines: &[PipelineHandles],
-    handles: &[EntryHandles],
+    handles: &HashMap<DrawHandlesKey, EntryHandles>,
     instance_buffer: &wgpu::Buffer,
 ) {
     let mut start = 0;
@@ -432,29 +468,24 @@ pub(crate) fn assemble_scene(
         // enough to make every entry of the run match every other: the
         // comparison is an equality on a draw's state.
         let mut end = start + 1;
-        while end < visible.len()
-            && same_draw(
-                &visible[end - 1],
-                &handles[end - 1],
-                &visible[end],
-                &handles[end],
-            )
-        {
+        while end < visible.len() && same_draw(&visible[end - 1], &visible[end]) {
             end += 1;
         }
 
         let entry = &visible[start];
-        let handle = &handles[start];
+        let shape = entry.handles_key.shape;
+        let handle = handles
+            .get(&entry.handles_key)
+            .expect("every visible entry's handles were interned");
         let pipeline = &pipelines[entry.pipeline_id.as_usize()];
 
-        let first = handle.shape.first;
-        let range = if handle.shape.indexed {
-            DrawRange::indexed(first..first + handle.shape.count)
-                .with_base_vertex(handle.shape.base_vertex as i32)
+        let first = shape.first;
+        let range = if shape.indexed {
+            DrawRange::indexed(first..first + shape.count)
+                .with_base_vertex(shape.base_vertex as i32)
                 .with_instances(start as u32..end as u32)
         } else {
-            DrawRange::vertices(first..first + handle.shape.count)
-                .with_instances(start as u32..end as u32)
+            DrawRange::vertices(first..first + shape.count).with_instances(start as u32..end as u32)
         };
 
         let mut draw = DrawEntry::new(&pipeline.pipeline, range);
