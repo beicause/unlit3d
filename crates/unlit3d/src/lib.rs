@@ -23,8 +23,9 @@ pub mod prelude {
     pub use crate::{
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
-            Camera, GpuMaterial, GpuMesh, GpuPipeline, InstanceColor, MorphBinding, MorphWeights,
-            RenderLoadOps, SkinBinding, SkinPose, Transform, UnlitPipeline, ZSortedDrawing,
+            Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceColor, MorphBinding,
+            MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform, UnlitPipeline,
+            ZSortedDrawing,
         },
         culling::is_culled,
         input::{
@@ -38,9 +39,8 @@ pub mod prelude {
         },
         mesh_source::{MeshSource, UnlitPipelineKey},
         pipeline::{
-            DrawKey, FamilyContext, FamilyKey, GlobalBinding, GlobalGroupRebuild, PipelineDesc,
-            PipelineFactory, PipelineKey, RenderPipelineFactory, RenderResources,
-            TrivialSpecializer,
+            DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, RegisteredRenderPipeline,
+            RenderPipelineFactory, RenderPipelineKey, RenderResources,
         },
         renderer::Renderer,
         source::{

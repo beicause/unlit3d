@@ -8,10 +8,9 @@
 //!
 //! ```
 //! # use unlit_wgpu::globals::Globals;
-//! # use unlit_wgpu::pipeline::{
-//! #     CAMERA_BINDING, FRAME_BINDING, UnlitOptions, UnlitPipeline,
-//! # };
+//! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitOptions};
 //! # use unlit_wgpu::resources::ResourceGraph;
+//! # use unlit_wgpu::specialize::SpecializedPipeline;
 //! # use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
@@ -21,12 +20,12 @@
 //! let mut options = ui_options(device, /* the target encodes sRGB: */ true);
 //! options.color_target.format = color_format;
 //! options.multisample = multisample;
-//! let pipeline = UnlitPipeline::new(device, &options);
+//! let pipeline = SpecializedPipeline::create(device, options);
 //! let camera = uniform_buffer(device, "ui::camera");
 //! let globals = uniform_buffer(device, "ui::globals");
 //! let global_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
 //!     label: Some("ui::globals"),
-//!     layout: &pipeline.global_layout,
+//!     layout: &pipeline.descriptor().bind_group_layouts(device).global,
 //!     entries: &[
 //!         wgpu::BindGroupEntry {
 //!             binding: CAMERA_BINDING,
@@ -82,7 +81,7 @@
 use crate::globals::View;
 use crate::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, MATERIAL_GROUP,
-    POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
+    POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
 };
 use crate::resources::{ResourceGraph, ResourceId, TextureExt, TextureView};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
@@ -178,18 +177,20 @@ pub fn ui_options(device: &wgpu::Device, srgb_to_linear_output: bool) -> UnlitOp
 /// The UI variant's options for a frame that draws into `surface`.
 ///
 /// Equivalent to [`ui_options`] followed by
-/// [`apply_surface`](crate::pipeline::apply_surface), which is what makes the
-/// result usable as-is: the color format, the sample count and the depth state
-/// all match the target, so a caller never has to remember to specialize. The
-/// sRGB flag is still the caller's call, since it describes the fragment's own
-/// encoding rather than the attachment's format.
+/// [`SurfaceSpecializer`](crate::specialize::SurfaceSpecializer), which is what
+/// makes the result usable as-is: the color format, the sample count and the
+/// depth state all match the target, so a caller never has to remember to
+/// specialize. The sRGB flag is still the caller's call, since it describes the
+/// fragment's own encoding rather than the attachment's format.
 pub fn ui_options_for_surface(
     device: &wgpu::Device,
     srgb_to_linear_output: bool,
     surface: SurfaceKey,
 ) -> UnlitOptions {
+    use crate::specialize::{Specializer as _, SurfaceSpecializer};
+
     let mut options = ui_options(device, srgb_to_linear_output);
-    crate::pipeline::apply_surface(&mut options, surface);
+    SurfaceSpecializer.specialize(surface, &mut options);
     options
 }
 
@@ -228,7 +229,7 @@ fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
         },
     });
     // The UI overlays whatever the pass holds, so it neither tests nor writes
-    // depth. `apply_surface` later decides whether the target has a depth
+    // depth. `SurfaceSpecializer` later decides whether the target has a depth
     // attachment at all; a state left here is the overlaid one, and a target
     // without depth drops it.
     if let Some(depth_stencil) = &mut options.depth_stencil {
@@ -391,7 +392,7 @@ struct TextureSlot {
 pub struct EguiIntegration {
     /// Kept to build the resources a frame turns out to need.
     device: wgpu::Device,
-    pipeline: UnlitPipeline,
+    pipeline: SpecializedUnlitPipeline,
     /// Graph node of the caller's global bind group: camera and frame
     /// globals, written by the caller.
     global_group: ResourceId<wgpu::BindGroup>,
@@ -470,7 +471,7 @@ impl EguiIntegration {
     pub fn new(
         device: &wgpu::Device,
         global_group: ResourceId<wgpu::BindGroup>,
-        pipeline: UnlitPipeline,
+        pipeline: SpecializedUnlitPipeline,
     ) -> Self {
         Self {
             device: device.clone(),
@@ -496,7 +497,7 @@ impl EguiIntegration {
     }
 
     /// The pipeline the UI draws with.
-    pub fn pipeline(&self) -> &UnlitPipeline {
+    pub fn pipeline(&self) -> &SpecializedUnlitPipeline {
         &self.pipeline
     }
 
@@ -607,7 +608,7 @@ impl EguiIntegration {
     /// its font atlas after a rebuild, so discarding them would both leak the
     /// old nodes and leave the new integration unable to draw text. The next
     /// [`Self::update`] rebuilds each missing material from the new layout.
-    pub fn retarget(&mut self, graph: &mut ResourceGraph, pipeline: UnlitPipeline) {
+    pub fn retarget(&mut self, graph: &mut ResourceGraph, pipeline: SpecializedUnlitPipeline) {
         for &(_, id) in &self.materials {
             graph.remove_drop(id);
         }
@@ -800,7 +801,12 @@ impl EguiIntegration {
             return;
         };
         let sampler_id = self.sampler(graph, options);
-        let Some(layout) = self.pipeline.material_layout.as_ref() else {
+        let Some(layout) = self
+            .pipeline
+            .descriptor()
+            .bind_group_layouts(&self.device)
+            .material
+        else {
             return;
         };
         let Some(view) = graph.get(slot.view).map(TextureView::view) else {
@@ -811,7 +817,7 @@ impl EguiIntegration {
         };
         let group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ui::material"),
-            layout,
+            layout: &layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: BASE_COLOR_TEXTURE_BINDING,

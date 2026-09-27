@@ -12,9 +12,10 @@ mod common;
 
 use common::*;
 use unlit_wgpu::globals::Globals;
-use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitPipeline};
+use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline};
 use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_clear};
 use unlit_wgpu::resources::ResourceGraph;
+use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
 
 /// The UI's logical layout, in points. The physical target scales with the
@@ -111,7 +112,7 @@ fn render_ui_with(
         count: SAMPLES,
         ..Default::default()
     };
-    let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
+    let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id =
         graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
     graph.add_dependency(global_group_id, camera_id);
@@ -207,13 +208,13 @@ fn globals_size() -> u64 {
 /// is created from the shared pipeline ahead of the UI that draws with it.
 fn global_group(
     device: &wgpu::Device,
-    pipeline: &UnlitPipeline,
+    pipeline: &SpecializedUnlitPipeline,
     camera: &wgpu::Buffer,
     globals: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("ui::globals"),
-        layout: &pipeline.global_layout,
+        layout: &pipeline.descriptor().bind_group_layouts(device).global,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: CAMERA_BINDING,
@@ -440,7 +441,7 @@ fn freeing_a_texture_releases_its_graph_nodes() {
     let globals_id = graph.insert_strong(globals.clone());
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
-    let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
+    let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id =
         graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
     graph.add_dependency(global_group_id, camera_id);
@@ -513,7 +514,7 @@ fn releasing_the_integration_returns_its_graph_nodes() {
     let globals_id = graph.insert_strong(globals.clone());
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
-    let pipeline = UnlitPipeline::new(&ctx.device, &ui_opts);
+    let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id =
         graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
     graph.add_dependency(global_group_id, camera_id);

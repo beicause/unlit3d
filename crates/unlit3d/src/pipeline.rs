@@ -1,6 +1,11 @@
-//! The frame's pipeline abstraction.
+//! The frame's render-pipeline abstraction.
 //!
-//! A [PipelineDesc] is everything the renderer needs to draw with a
+//! Every type here names a *render* pipeline rather than the compute kind, and
+//! says so: [RegisteredRenderPipeline], [RenderPipelineKey],
+//! [RenderPipelineId], [RenderPipelineFactory] and
+//! [GpuRenderPipeline](crate::components::GpuRenderPipeline).
+//!
+//! A [RegisteredRenderPipeline] is everything the renderer needs to draw with a
 //! wgpu render pipeline: the pipeline itself, the bind-group layouts its
 //! draws agree with, and -- for a pipeline that reads the source's own
 //! camera, globals or metadata buffers -- a way to rebuild its global bind
@@ -9,14 +14,14 @@
 //! [MeshSource::register_family](crate::mesh_source::MeshSource::register_family) a caller's
 //! own family uses, and supplies its own factory like anyone else.
 //!
-//! # Pipeline keys and families
+//! # Render pipeline keys and families
 //!
-//! A [GpuPipeline](crate::components::GpuPipeline) component does not name a compiled pipeline. It carries a
-//! [PipelineKey], the entity's request for one family's variant: which
+//! A [GpuRenderPipeline](crate::components::GpuRenderPipeline) component does not name a compiled pipeline. It carries a
+//! [RenderPipelineKey], the entity's request for one family's variant: which
 //! concrete pipeline an entity needs depends on the frame's render target and
 //! on the mesh's vertex layout, neither of which is known when the entity is
 //! spawned. A *family* closes that gap. It pairs a [Variants](unlit_wgpu::specialize::Variants) cache with a
-//! [Specializer] and a [PipelineFactory], queries the world for the entities
+//! [Specializer] and a [RenderPipelineFactory], queries the world for the entities
 //! that carry its key type, and resolves each to a concrete pipeline. The
 //! renderer registers every family under the [TypeId](core::any::TypeId) of
 //! its key type; [crate::scene] drives them all once per frame. A family's
@@ -24,7 +29,7 @@
 //! frames reuse it.
 //!
 //! The entity, not the renderer, chooses its base descriptor: a
-//! [PipelineKey] reports the blueprint ([PipelineKey::base_descriptor]) its
+//! [RenderPipelineKey] reports the blueprint ([RenderPipelineKey::base_descriptor]) its
 //! variants start from, so one family can draw entities whose base options
 //! differ. The blueprint is supplied to [Variants::specialize](unlit_wgpu::specialize::Variants::specialize) lazily and only
 //! on a cache miss.
@@ -35,13 +40,10 @@
 //! combination of attributes and a family can specialize on it at draw time.
 
 use core::hash::Hash;
-use core::marker::PhantomData;
 use std::sync::Arc;
 
 use unlit_wgpu::resources::ResourceId;
-use unlit_wgpu::specialize::{
-    CachedRenderPipeline, Specializable, Specializer, SpecializerKey, SurfaceKey, VertexLayout,
-};
+use unlit_wgpu::specialize::{PipelineDescriptor, SpecializedPipeline, SurfaceKey, VertexLayout};
 
 use crate::components::GpuMesh;
 
@@ -80,10 +82,10 @@ pub struct RenderResources {
 
 /// A pipeline and the layouts its draws agree with.
 ///
-/// This is what a [PipelineFactory] returns and what the renderer registers.
+/// This is what a [RenderPipelineFactory] returns and what the renderer registers.
 /// Every concrete pipeline in the renderer is described this way, the built-in
 /// unlit ones included.
-pub struct PipelineDesc {
+pub struct RegisteredRenderPipeline {
     /// The compiled render pipeline.
     pub pipeline: wgpu::RenderPipeline,
 
@@ -108,9 +110,9 @@ pub struct PipelineDesc {
     pub mesh_layout: Option<wgpu::BindGroupLayout>,
 }
 
-impl core::fmt::Debug for PipelineDesc {
+impl core::fmt::Debug for RegisteredRenderPipeline {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("PipelineDesc")
+        f.debug_struct("RegisteredRenderPipeline")
             .field("pipeline", &self.pipeline)
             .field("global", &self.global)
             .field("material_layout", &self.material_layout)
@@ -146,7 +148,7 @@ pub(crate) struct RegisteredGlobal {
     pub(crate) rebuild: GlobalGroupRebuild,
 }
 
-/// What a [PipelineFactory] may read from the source.
+/// What a [RenderPipelineFactory] may read from the source.
 pub struct FamilyContext<'a> {
     /// The device the pipeline is compiled on.
     pub device: &'a wgpu::Device,
@@ -156,23 +158,23 @@ pub struct FamilyContext<'a> {
 
 /// The base descriptor an entity's pipeline variants start from.
 ///
-/// A [GpuPipeline](crate::components::GpuPipeline) component carries a key of this type. It selects the family
+/// A [GpuRenderPipeline](crate::components::GpuRenderPipeline) component carries a key of this type. It selects the family
 /// the entity draws with -- the family registered for this key type -- and
 /// supplies the blueprint that family's [Specializer] rewrites into the
 /// concrete descriptor. Because the key carries the base, one family can serve
 /// entities that begin from different descriptors; because it is the component
 /// itself, the renderer never hands out a family handle.
-pub trait PipelineKey: Clone + Hash + Eq + 'static {
-    /// The specializable pipeline this key selects.
-    type Pipeline: Specializable;
+pub trait RenderPipelineKey: Clone + Hash + Eq + 'static {
+    /// The descriptor this key's variants are specialized from.
+    type Descriptor: PipelineDescriptor<wgpu::RenderPipeline>;
 
     /// The blueprint this key's variant is specialized from. Called only when
     /// the key's variant is compiled for the first time.
-    fn base_descriptor(&self) -> <Self::Pipeline as Specializable>::Descriptor;
+    fn base_descriptor(&self) -> Self::Descriptor;
 }
 
 /// Everything that can change which concrete pipeline an entity needs beyond
-/// the entity's own [PipelineKey].
+/// the entity's own [RenderPipelineKey].
 ///
 /// The mesh's vertex layout is held as a [VertexLayout], a shared handle with
 /// its hash precomputed, because this key is rebuilt and hashed once per
@@ -199,11 +201,11 @@ impl DrawKey {
 /// A concrete pipeline's position in a source's own pipeline list.
 ///
 /// A lower value draws before a higher one. Opaque so the index is only ever
-/// compared with another [PipelineId], never a plain integer.
+/// compared with another [RenderPipelineId], never a plain integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PipelineId(u32);
+pub struct RenderPipelineId(u32);
 
-impl PipelineId {
+impl RenderPipelineId {
     /// The id for the pipeline registered at `index`.
     pub(crate) fn new(index: u32) -> Self {
         Self(index)
@@ -215,97 +217,18 @@ impl PipelineId {
     }
 }
 
-/// A [SpecializerKey] a family that rewrites nothing uses.
+/// Turns a specialized pipeline into the [RegisteredRenderPipeline] the renderer
+/// registers.
 ///
-/// It pairs the entity's [PipelineKey] with the [DrawKey] the draw resolved to.
-/// Distinct keys always produce distinct descriptors, so the secondary cache is
-/// skipped and every distinct key compiles its own variant.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FamilyKey<K> {
-    /// The entity's pipeline key, which supplied the base descriptor.
-    pub(crate) key: K,
-    /// The resolved draw.
-    pub(crate) draw: DrawKey,
-}
-
-impl<K: Clone + Hash + Eq + 'static> SpecializerKey for FamilyKey<K> {
-    // Every part of the key reaches the descriptor through the base, so
-    // distinct keys are distinct descriptors.
-    const IS_CANONICAL: bool = true;
-    type Canonical = Self;
-}
-
-impl<K> From<(K, DrawKey)> for FamilyKey<K> {
-    fn from((key, draw): (K, DrawKey)) -> Self {
-        Self { key, draw }
-    }
-}
-
-/// A [Specializer] that rewrites nothing: every key compiles the descriptor its
-/// [PipelineKey] reported.
-///
-/// It is the specializer a one-off custom pipeline uses, where nothing about
-/// the draw can change the pipeline. The key type parameter names the
-/// [PipelineKey] the family is registered for.
-pub struct TrivialSpecializer<K>(PhantomData<fn() -> K>);
-
-impl<K> Default for TrivialSpecializer<K> {
-    fn default() -> Self {
-        Self(PhantomData)
-    }
-}
-
-impl<K> Clone for TrivialSpecializer<K> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<K> Copy for TrivialSpecializer<K> {}
-
-impl<K> core::fmt::Debug for TrivialSpecializer<K> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TrivialSpecializer").finish_non_exhaustive()
-    }
-}
-
-impl<K: Clone + Hash + Eq + 'static, T: Specializable> Specializer<T> for TrivialSpecializer<K> {
-    type Key = FamilyKey<K>;
-
-    fn specialize(&self, key: FamilyKey<K>, _descriptor: &mut T::Descriptor) -> FamilyKey<K> {
-        key
-    }
-}
-
-/// A [PipelineFactory] for a pipeline that binds nothing beyond what a
-/// [PipelineDesc] already carries: it registers the compiled
-/// [CachedRenderPipeline] with no global, material or mesh group.
-///
-/// Paired with [TrivialSpecializer] it is the shortest route from a
-/// [RenderPipelineDesc](unlit_wgpu::specialize::RenderPipelineDesc) to a
-/// registered family, for a caller whose pipeline reads only its vertex
-/// buffers.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct RenderPipelineFactory;
-
-impl PipelineFactory<CachedRenderPipeline> for RenderPipelineFactory {
-    fn descriptor(
-        &self,
-        _context: &FamilyContext<'_>,
-        value: &CachedRenderPipeline,
-    ) -> PipelineDesc {
-        PipelineDesc {
-            pipeline: value.pipeline.clone(),
-            global: None,
-            material_layout: None,
-            mesh_layout: None,
-        }
-    }
-}
-
-/// Turns a specialized value into the [PipelineDesc] the renderer registers.
-pub trait PipelineFactory<T: Specializable> {
+/// The type parameter is the descriptor the family specializes, so a factory
+/// reads the layouts a variant declares from the descriptor the pipeline was
+/// compiled from.
+pub trait RenderPipelineFactory<D> {
     /// The description of the pipeline for `value`, as the renderer should
     /// register it.
-    fn descriptor(&self, context: &FamilyContext<'_>, value: &T) -> PipelineDesc;
+    fn descriptor(
+        &self,
+        context: &FamilyContext<'_>,
+        value: &SpecializedPipeline<wgpu::RenderPipeline, D>,
+    ) -> RegisteredRenderPipeline;
 }

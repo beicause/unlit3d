@@ -19,7 +19,7 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `unlit` | 是 | `pipeline::UnlitPipeline`、`pipeline::UnlitOptions`、`UnlitFlags` 变体位，以及它们所组合的 WESL 模块 |
+| `unlit` | 是 | `pipeline::SpecializedUnlitPipeline`、`pipeline::UnlitOptions`、`UnlitFlags` 变体位，以及它们所组合的 WESL 模块 |
 | `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端。隐含 `unlit` |
 
 使用 `--no-default-features` 时，本 crate 保留其通用设施——资源图、网格压缩、偏移
@@ -45,8 +45,9 @@
   区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏
   帧的 `create_render_target`。
-- `specialize` —— 变体缓存：`Specializable` 值按 key 编译一次并复用；对非单射的
-  key 另有一张规范形式映射表。
+- `specialize` —— 变体缓存：`Specializer` 按 key 改写
+  `PipelineDescriptor`，`Variants` 则为每个 key 编译并复用一个
+  `SpecializedPipeline`；对非单射的 key 另有一张规范形式映射表。
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位；在
   `unlit` feature 下还包含内置 unlit 管线。
 - `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
@@ -68,8 +69,9 @@ use unlit_wgpu::mesh::{
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitPipeline,
+    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, SpecializedUnlitPipeline,
 };
+use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
@@ -80,7 +82,7 @@ use zerocopy::IntoBytes;
 struct Example {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: UnlitPipeline,
+    pipeline: SpecializedUnlitPipeline,
     globals: wgpu::BindGroup,
     material: wgpu::BindGroup,
     mesh: wgpu::BindGroup,
@@ -100,7 +102,7 @@ impl Example {
         //    built for `standard`'s target: an `Rgba8UnormSrgb` color format
         //    with 4x MSAA, which is what the render target uses below.
         let options = UnlitOptions::standard(device);
-        let pipeline = UnlitPipeline::new(device, &options);
+        let pipeline = SpecializedPipeline::create(device, options.clone());
 
         // 2. Compress the mesh. Positions and UVs become 16-bit normalized
         //    integers relative to a bounding box; the decode parameters go
@@ -179,7 +181,7 @@ impl Example {
         );
         let globals_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
-            layout: &pipeline.global_layout,
+            layout: &pipeline.descriptor().bind_group_layouts(device).global,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: CAMERA_BINDING,
@@ -201,7 +203,7 @@ impl Example {
         let (texture_view, sampler) = checkerboard(device, queue);
         let material = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material"),
-            layout: pipeline.material_layout.as_ref().unwrap(),
+            layout: &pipeline.descriptor().bind_group_layouts(device).material.unwrap(),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: BASE_COLOR_TEXTURE_BINDING,
@@ -224,7 +226,7 @@ impl Example {
         );
         let mesh = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mesh"),
-            layout: pipeline.mesh_layout.as_ref().expect("a compressed mesh"),
+            layout: &pipeline.descriptor().bind_group_layouts(device).mesh.expect("a compressed mesh"),
             entries: &[wgpu::BindGroupEntry {
                 binding: MESH_INFO_BINDING,
                 resource: mesh_info.as_entire_binding(),
@@ -389,7 +391,7 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
 调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata` 与
 `mesh_compression` 解码函数）；`unlit` feature 额外加入内置入口着色器，由
-`pipeline::UnlitPipeline` 组合成 `pipeline::UnlitOptions` 所选的变体。
+`pipeline::SpecializedUnlitPipeline` 组合成 `pipeline::UnlitOptions` 所选的变体。
 
 若要编写自己的入口着色器，请直接用 [`wesl`](https://docs.rs/wesl) 组合它：`shader`
 是一个 WESL `StaticPackage`，因此 `wesl::resolver::PackageResolver` 可以针对内置

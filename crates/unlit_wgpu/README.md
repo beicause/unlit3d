@@ -23,7 +23,7 @@ dependency on the ECS layer; the ECS-integrated API built on it is
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `unlit` | yes | [`pipeline`] — `UnlitPipeline`, `UnlitOptions`, the `UnlitFlags` variant bits, and the WESL module they compose |
+| `unlit` | yes | [`pipeline`] — `SpecializedUnlitPipeline`, `UnlitOptions`, the `UnlitFlags` variant bits, and the WESL module they compose |
 | `egui` | no | the `ui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws. Implies `unlit` |
 
 With `--no-default-features` the crate keeps its general facilities — the
@@ -58,9 +58,11 @@ checks that combination separately.
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening
   entry point, and [`create_render_target`](render_attachments::create_render_target) for an offscreen frame.
-- [`specialize`] — variant caching: a [`Specializable`](specialize::Specializable)
-  value is compiled once per key and reused, with a canonical map for keys that
-  are not injective.
+- [`specialize`] — variant caching: a [`Specializer`](specialize::Specializer)
+  rewrites a [`PipelineDescriptor`](specialize::PipelineDescriptor) for a key,
+  and [`Variants`](specialize::Variants) compiles and reuses one
+  [`SpecializedPipeline`](specialize::SpecializedPipeline) per key, with a
+  canonical map for keys that are not injective.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, plus the built-in unlit pipeline under the `unlit`
   feature.
@@ -85,8 +87,9 @@ use unlit_wgpu::mesh::{
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitPipeline,
+    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, SpecializedUnlitPipeline,
 };
+use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
@@ -97,7 +100,7 @@ use zerocopy::IntoBytes;
 struct Example {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: UnlitPipeline,
+    pipeline: SpecializedUnlitPipeline,
     globals: wgpu::BindGroup,
     material: wgpu::BindGroup,
     mesh: wgpu::BindGroup,
@@ -117,7 +120,7 @@ impl Example {
         //    built for `standard`'s target: an `Rgba8UnormSrgb` color format
         //    with 4x MSAA, which is what the render target uses below.
         let options = UnlitOptions::standard(device);
-        let pipeline = UnlitPipeline::new(device, &options);
+        let pipeline = SpecializedPipeline::create(device, options.clone());
 
         // 2. Compress the mesh. Positions and UVs become 16-bit normalized
         //    integers relative to a bounding box; the decode parameters go
@@ -196,7 +199,7 @@ impl Example {
         );
         let globals_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("globals"),
-            layout: &pipeline.global_layout,
+            layout: &pipeline.descriptor().bind_group_layouts(device).global,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: CAMERA_BINDING,
@@ -218,7 +221,7 @@ impl Example {
         let (texture_view, sampler) = checkerboard(device, queue);
         let material = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material"),
-            layout: pipeline.material_layout.as_ref().unwrap(),
+            layout: &pipeline.descriptor().bind_group_layouts(device).material.unwrap(),
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: BASE_COLOR_TEXTURE_BINDING,
@@ -241,7 +244,7 @@ impl Example {
         );
         let mesh = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mesh"),
-            layout: pipeline.mesh_layout.as_ref().expect("a compressed mesh"),
+            layout: &pipeline.descriptor().bind_group_layouts(device).mesh.expect("a compressed mesh"),
             entries: &[wgpu::BindGroupEntry {
                 binding: MESH_INFO_BINDING,
                 resource: mesh_info.as_entire_binding(),
@@ -407,7 +410,7 @@ The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
 caller binds (`globals`, `view`, `mesh_metadata` and the `mesh_compression`
 decode functions); the `unlit` feature adds the built-in entry shader, which
-`UnlitPipeline` composes into the variant `UnlitOptions` selects.
+`SpecializedUnlitPipeline` composes into the variant `UnlitOptions` selects.
 
 A caller who wants their own entry shader composes it directly with
 [`wesl`](https://docs.rs/wesl): [`shader`] is a WESL `StaticPackage`, so

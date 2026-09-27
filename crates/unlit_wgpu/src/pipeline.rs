@@ -1,6 +1,6 @@
 //! The built-in unlit pipeline and the WESL composition behind it.
 //!
-//! [`UnlitPipeline`] composes the built-in `unlit.wesl` with a variant
+//! [`SpecializedUnlitPipeline`] composes the built-in `unlit.wesl` with a variant
 //! selected by [`UnlitOptions`], builds the layouts the shader expects, and
 //! exposes the vertex-buffer layouts the caller declares when creating meshes.
 //! Each variant contains exactly the bindings and attributes the selected
@@ -14,9 +14,7 @@ use crate::mesh::{
 #[cfg(feature = "unlit")]
 use crate::render_attachments::default_depth_stencil_format;
 #[cfg(feature = "unlit")]
-use crate::specialize::{
-    Canonical, Specializable, Specializer, SurfaceKey, VertexBufferLayoutDesc,
-};
+use crate::specialize::{PipelineDescriptor, SurfaceKey, SurfaceTarget, VertexBufferLayoutDesc};
 
 /// Binding slot of the camera uniform in the global bind group.
 pub const CAMERA_BINDING: u32 = 0;
@@ -253,7 +251,7 @@ pub struct UnlitOptions {
     ///
     /// `wgpu` requires this to agree with the render pass: a pass with a depth
     /// attachment needs a state naming that attachment's format, and a pass
-    /// without one needs `None`. [`apply_surface`] therefore follows the
+    /// without one needs `None`. [`SurfaceSpecializer`] therefore follows the
     /// target rather than leaving a stale format behind, so a pipeline always
     /// matches the pass it is recorded into.
     pub depth_stencil: Option<wgpu::DepthStencilState>,
@@ -494,9 +492,9 @@ impl core::fmt::Display for ComposeError {
 #[cfg(feature = "unlit")]
 impl std::error::Error for ComposeError {}
 
-/// The bind-group layouts an [`UnlitPipeline`] variant declares.
+/// The bind-group layouts an [`SpecializedUnlitPipeline`] variant declares.
 ///
-/// Built by [`UnlitPipeline::bind_group_layouts`] from the same options a
+/// Built by [`UnlitOptions::bind_group_layouts`] from the same options a
 /// pipeline is built from, so the two agree: the global group always exists,
 /// the material group only for a variant that samples a base-color texture,
 /// and the mesh group only for one that reads a compressed channel.
@@ -513,112 +511,27 @@ pub struct UnlitBindGroupLayouts {
     pub mesh: Option<wgpu::BindGroupLayout>,
 }
 
-/// The built-in unlit pipeline, its layouts and its vertex-buffer
-/// declarations.
+/// The built-in unlit pipeline: a compiled [wgpu::RenderPipeline] together
+/// with the [UnlitOptions] it was built from.
 ///
-/// Created once and reused for every draw that shares the variant; the
-/// resources it owns can be registered with a [`crate::resources::ResourceGraph`]
-/// so a render-target change rebuilds it.
+/// A variant of [UnlitOptions] is a [PipelineDescriptor], so the built-in
+/// shader compiles through the same cache a caller's own descriptor does, and
+/// the layouts a variant declares are derived from those options rather than
+/// stored beside the pipeline.
 #[cfg(feature = "unlit")]
-pub struct UnlitPipeline {
-    /// The render pipeline.
-    pub pipeline: wgpu::RenderPipeline,
-    /// Layout of the global bind group (index 0).
-    pub global_layout: wgpu::BindGroupLayout,
-    /// Layout of the material bind group (index 1), present only when the
-    /// variant samples a base-color texture.
-    pub material_layout: Option<wgpu::BindGroupLayout>,
-    /// Layout of the mesh bind group (index 2), present only when the variant
-    /// reads a compressed channel and therefore decodes mesh metadata.
-    pub mesh_layout: Option<wgpu::BindGroupLayout>,
-    /// The variant this pipeline was built for.
-    pub options: UnlitOptions,
-}
+pub type SpecializedUnlitPipeline =
+    crate::specialize::SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>;
 
 #[cfg(feature = "unlit")]
-impl UnlitPipeline {
-    /// Compose the built-in `unlit.wesl` for `options` and build the
-    /// pipeline.
-    ///
-    /// `options` carries everything the pipeline is built from: the shader
-    /// variant, the color target (its format, blend state and write mask),
-    /// the depth state (including its format) and the multisample state, so a
-    /// pipeline is only ever valid for the target those options describe.
-    ///
-    /// The fragment entry point follows [`UnlitFlags::SRGB_TO_LINEAR_OUTPUT`]:
-    /// set it when the fragment's color values are sRGB-encoded and the
-    /// target expects linear values, as an sRGB target does.
-    pub fn new(device: &wgpu::Device, options: &UnlitOptions) -> Self {
-        let wgsl = compose_builtin(options).expect("the built-in unlit shader composes");
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("unlit_wgpu::unlit"),
-            source: wgpu::ShaderSource::Wgsl(wgsl.into()),
-        });
-
-        let layouts = Self::bind_group_layouts(device, options);
-        let layout_refs = [
-            Some(&layouts.global),
-            layouts.material.as_ref(),
-            layouts.mesh.as_ref(),
-        ];
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("unlit_wgpu::unlit::layout"),
-            bind_group_layouts: &layout_refs,
-            immediate_size: 0,
-        });
-
-        let vertex_buffers = Self::vertex_buffer_layouts(options);
-        let vertex_buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = vertex_buffers
-            .iter()
-            .map(|layout| layout.as_ref().map(VertexBufferLayoutDesc::as_wgpu))
-            .collect();
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("unlit_wgpu::unlit"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some(VS_MAIN),
-                compilation_options: Default::default(),
-                buffers: &vertex_buffers,
-            },
-            // The primitive state — including `strip_index_format` for strip
-            // topologies — is the caller's, so it is used as given.
-            primitive: options.primitive,
-            // A pass with a depth attachment requires every pipeline it uses
-            // to declare a matching state; `standard` sets this to the
-            // device's default depth-stencil format, and `apply_surface`
-            // follows the target so the two cannot disagree.
-            depth_stencil: options.depth_stencil.clone(),
-            multisample: options.multisample,
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some(FS_MAIN),
-                compilation_options: Default::default(),
-                targets: &[Some(options.color_target.clone())],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-
-        Self {
-            pipeline,
-            global_layout: layouts.global,
-            material_layout: layouts.material,
-            mesh_layout: layouts.mesh,
-            options: options.clone(),
-        }
-    }
-
+impl UnlitOptions {
     /// Build the bind-group layouts the built-in shader's `options` variant
     /// declares, without compiling the pipeline.
     ///
-    /// Splitting the layouts out of [Self::new] lets a caller describe a
-    /// pipeline's binding interface without compiling anything, and keeps the
-    /// two in step: [Self::new] builds the pipeline from this same result.
-    pub fn bind_group_layouts(
-        device: &wgpu::Device,
-        options: &UnlitOptions,
-    ) -> UnlitBindGroupLayouts {
+    /// Splitting the layouts out of the descriptor's [PipelineDescriptor::create]
+    /// lets a caller describe a pipeline's binding interface without compiling
+    /// anything, and keeps the two in step: `create` builds the pipeline from
+    /// this same result.
+    pub fn bind_group_layouts(&self, device: &wgpu::Device) -> UnlitBindGroupLayouts {
         let global =
             {
                 // The group holds the frame's shared inputs: the camera, the frame
@@ -650,7 +563,7 @@ impl UnlitPipeline {
                     },
                     count: None,
                 });
-                if options.needs_metadata() {
+                if self.needs_metadata() {
                     entries.push(wgpu::BindGroupLayoutEntry {
                     binding: MESH_METADATA_BINDING,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -666,7 +579,7 @@ impl UnlitPipeline {
                     count: None,
                 });
                 }
-                if options.needs_joints() {
+                if self.needs_joints() {
                     entries.push(wgpu::BindGroupLayoutEntry {
                     binding: JOINTS_BINDING,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -682,7 +595,7 @@ impl UnlitPipeline {
                     count: None,
                 });
                 }
-                if options.needs_morphs() {
+                if self.needs_morphs() {
                     entries.push(wgpu::BindGroupLayoutEntry {
                     binding: MORPH_WEIGHTS_BINDING,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -706,7 +619,7 @@ impl UnlitPipeline {
                 })
             };
 
-        let material = options
+        let material = self
             .flags
             .contains(UnlitFlags::BASE_COLOR_TEXTURE)
             .then(|| {
@@ -733,7 +646,7 @@ impl UnlitPipeline {
                 })
             });
 
-        let mesh = options.needs_mesh_group().then(|| {
+        let mesh = self.needs_mesh_group().then(|| {
             // The mesh group is the draw's own addressing: the metadata
             // index it decodes through and, for a morphed variant, the
             // displacements it reads. The pose is not here — a mesh may be
@@ -750,7 +663,7 @@ impl UnlitPipeline {
                 },
                 count: None,
             });
-            if options.needs_morphs() {
+            if self.needs_morphs() {
                 // One position component of one target: the buffer is sized by
                 // the mesh, and like the other storage entries its binding
                 // minimum is a single element so growing the mesh never
@@ -792,8 +705,8 @@ impl UnlitPipeline {
     /// without either channel, or the instance slot without
     /// [`UnlitFlags::VERTEX_INSTANCE`] — is reported as `None`, so a variant
     /// never binds a buffer the shader does not declare.
-    pub fn vertex_buffer_layouts(options: &UnlitOptions) -> [Option<VertexBufferLayoutDesc>; 3] {
-        let flags = options.flags;
+    pub fn vertex_buffer_layouts(&self) -> [Option<VertexBufferLayoutDesc>; 3] {
+        let flags = self.flags;
 
         const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
             location::MODEL_0 => Float32x4,
@@ -806,8 +719,8 @@ impl UnlitPipeline {
         // Each stream describes its own layout, so the attributes a pipeline
         // declares and the bytes a packed mesh writes come from one
         // description and cannot drift apart.
-        let position = options.position_stream().channels.channels();
-        let uv_color = options.uv_color_stream().channels();
+        let position = self.position_stream().channels.channels();
+        let uv_color = self.uv_color_stream().channels();
         [
             (!position.is_empty()).then(|| position.layout()),
             (!uv_color.is_empty()).then(|| uv_color.layout()),
@@ -829,71 +742,91 @@ impl UnlitPipeline {
     }
 }
 
-#[cfg(feature = "unlit")]
-impl Specializable for UnlitPipeline {
-    type Descriptor = UnlitOptions;
+impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitOptions {
+    /// Compose the built-in `unlit.wesl` for these options and build the
+    /// pipeline, so a variant of them compiles through the same
+    /// [PipelineDescriptor] mechanism a caller's own descriptor does.
+    fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
+        let wgsl = compose_builtin(self).expect("the built-in unlit shader composes");
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("unlit_wgpu::unlit"),
+            source: wgpu::ShaderSource::Wgsl(wgsl.into()),
+        });
 
-    fn create(device: &wgpu::Device, options: &UnlitOptions) -> Self {
-        Self::new(device, options)
-    }
+        let layouts = self.bind_group_layouts(device);
+        let layout_refs = [
+            Some(&layouts.global),
+            layouts.material.as_ref(),
+            layouts.mesh.as_ref(),
+        ];
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("unlit_wgpu::unlit::layout"),
+            bind_group_layouts: &layout_refs,
+            immediate_size: 0,
+        });
 
-    fn descriptor(&self) -> &UnlitOptions {
-        &self.options
+        let vertex_buffers = Self::vertex_buffer_layouts(self);
+        let vertex_buffers: Vec<Option<wgpu::VertexBufferLayout<'_>>> = vertex_buffers
+            .iter()
+            .map(|layout| layout.as_ref().map(VertexBufferLayoutDesc::as_wgpu))
+            .collect();
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("unlit_wgpu::unlit"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some(VS_MAIN),
+                compilation_options: Default::default(),
+                buffers: &vertex_buffers,
+            },
+            // The primitive state — including `strip_index_format` for strip
+            // topologies — is the caller's, so it is used as given.
+            primitive: self.primitive,
+            // A pass with a depth attachment requires every pipeline it uses
+            // to declare a matching state; `standard` sets this to the
+            // device's default depth-stencil format, and `SurfaceSpecializer`
+            // follows the target so the two cannot disagree.
+            depth_stencil: self.depth_stencil.clone(),
+            multisample: self.multisample,
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some(FS_MAIN),
+                compilation_options: Default::default(),
+                targets: &[Some(self.color_target.clone())],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
     }
 }
 
-/// Adapts [`UnlitOptions`] to a render target.
-///
-/// A pipeline is only valid for the target its descriptor describes, so one
-/// set of options cannot serve two targets that differ in color format, depth
-/// format or sample count. This specializer rewrites exactly those three
-/// fields; the shader variant, primitive state, blend state and write mask
-/// stay the caller's.
-///
-/// Width and height are not part of the key: a pipeline does not depend on
-/// the size of the target it draws into.
-#[cfg(feature = "unlit")]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct UnlitSurfaceSpecializer;
-
-#[cfg(feature = "unlit")]
-impl Specializer<UnlitPipeline> for UnlitSurfaceSpecializer {
-    type Key = SurfaceKey;
-
-    fn specialize(&self, key: SurfaceKey, options: &mut UnlitOptions) -> Canonical<SurfaceKey> {
-        apply_surface(options, key);
-        key
-    }
-}
-
-/// Rewrite the target-dependent fields of `options` for `surface`.
-///
-/// Shared by every unlit specializer so the three fields can never drift: a
-/// family that also specializes on the mesh's vertex layout calls this same
-/// function for its surface dimension.
-///
-/// The [`UnlitFlags::SRGB_TO_LINEAR_OUTPUT`] flag is deliberately left
-/// alone: it describes the fragment's input encoding, not the target format.
-///
-/// The depth-stencil state follows the target. `wgpu` compares it against the
-/// pass's attachment format when a pipeline is bound and rejects a mismatch, so
-/// a target without a depth attachment must yield a pipeline without a depth
-/// state rather than one still naming the base options' format. A surface that
-/// has one keeps the base state — the reverse-z comparison, the write mask —
-/// and only takes the attachment's format.
-#[cfg(feature = "unlit")]
-pub fn apply_surface(options: &mut UnlitOptions, surface: SurfaceKey) {
-    options.color_target.format = surface.color_format;
-    match surface.depth_stencil_format {
-        Some(format) => {
-            options
-                .depth_stencil
-                .get_or_insert_with(default_depth_stencil_state)
-                .format = format;
+impl SurfaceTarget for UnlitOptions {
+    /// Rewrites exactly the three fields the target reaches: the color format,
+    /// the sample count and the depth-stencil format. The shader variant,
+    /// primitive state, blend state and write mask stay the caller's.
+    ///
+    /// The [`UnlitFlags::SRGB_TO_LINEAR_OUTPUT`] flag is deliberately left
+    /// alone: it describes the fragment's input encoding, not the target
+    /// format.
+    ///
+    /// The depth-stencil state follows the target. `wgpu` compares it against
+    /// the pass's attachment format when a pipeline is bound and rejects a
+    /// mismatch, so a target without a depth attachment must yield a pipeline
+    /// without a depth state rather than one still naming the base options'
+    /// format. A target that has one keeps the base state — the reverse-z
+    /// comparison, the write mask — and only takes the attachment's format.
+    fn set_surface(&mut self, surface: SurfaceKey) {
+        self.color_target.format = surface.color_format;
+        match surface.depth_stencil_format {
+            Some(format) => {
+                self.depth_stencil
+                    .get_or_insert_with(default_depth_stencil_state)
+                    .format = format;
+            }
+            None => self.depth_stencil = None,
         }
-        None => options.depth_stencil = None,
+        self.multisample.count = surface.sample_count;
     }
-    options.multisample.count = surface.sample_count;
 }
 
 /// The depth-stencil state a target with a depth attachment starts from: the
@@ -975,6 +908,7 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
 #[cfg(all(test, feature = "unlit"))]
 mod tests {
     use super::*;
+    use crate::specialize::{Specializer as _, SurfaceSpecializer, Variants};
 
     /// A caller composes their own entry shader against the built-in package
     /// with `wesl` directly: [`crate::shader`] is the `StaticPackage` that
@@ -1143,8 +1077,13 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         assert!(!converted.contains("srgb_to_linear(color.a)"));
     }
 
+    /// Specialize `options` for `surface` the way a family does.
+    fn specialize(options: &mut UnlitOptions, surface: SurfaceKey) -> SurfaceKey {
+        SurfaceSpecializer.specialize(surface, options)
+    }
+
     #[test]
-    fn apply_surface_rewrites_only_the_target() {
+    fn surface_specializer_rewrites_only_the_target() {
         let surface = SurfaceKey {
             color_format: wgpu::TextureFormat::Bgra8Unorm,
             depth_stencil_format: Some(wgpu::TextureFormat::Depth24Plus),
@@ -1155,7 +1094,11 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let primitive = options.primitive;
         let blend = options.color_target.blend;
 
-        apply_surface(&mut options, surface);
+        assert_eq!(
+            specialize(&mut options, surface),
+            surface,
+            "the key is its own canonical form"
+        );
 
         assert_eq!(options.color_target.format, surface.color_format);
         assert_eq!(
@@ -1177,14 +1120,14 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// a pass with no depth attachment rejects any pipeline that declares one,
     /// regardless of what that state compares or writes.
     #[test]
-    fn apply_surface_without_a_depth_attachment_clears_the_base() {
+    fn a_target_without_a_depth_attachment_clears_the_base() {
         let mut options = UnlitOptions::standard_shape();
         assert!(
             options.depth_stencil.is_some(),
             "the base options start with a depth state"
         );
 
-        apply_surface(
+        specialize(
             &mut options,
             SurfaceKey {
                 color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -1202,9 +1145,9 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// A target that gains a depth attachment after the state was dropped
     /// gets the reverse-z convention back, so specialization is not one-way.
     #[test]
-    fn apply_surface_restores_a_depth_state_when_the_target_has_one() {
+    fn a_target_with_a_depth_attachment_restores_the_state() {
         let mut options = UnlitOptions::standard_shape();
-        apply_surface(
+        specialize(
             &mut options,
             SurfaceKey {
                 color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -1214,7 +1157,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
         assert!(options.depth_stencil.is_none());
 
-        apply_surface(
+        specialize(
             &mut options,
             SurfaceKey {
                 color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
@@ -1229,6 +1172,39 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         assert_eq!(state.format, wgpu::TextureFormat::Depth32Float);
         assert_eq!(state.depth_write_enabled, Some(true));
         assert_eq!(state.depth_compare, Some(wgpu::CompareFunction::Greater));
+    }
+
+    /// The specializer is a cache key like any other: one variant per target,
+    /// reused when the same target comes back.
+    #[test]
+    fn a_surface_specializer_caches_one_variant_per_target() {
+        let (device, _queue) = crate::util::test::noop_device();
+        let surface = SurfaceKey {
+            color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            depth_stencil_format: Some(wgpu::TextureFormat::Depth24Plus),
+            sample_count: 4,
+        };
+        let mut variants = Variants::new(&device, SurfaceSpecializer);
+        let base = || UnlitOptions::standard(&device);
+
+        let first = variants.specialize(base, surface);
+        assert_eq!(
+            variants.specialize(base, surface),
+            first,
+            "the same target reuses its pipeline"
+        );
+
+        // A different color format is a different target, so it compiles its
+        // own variant rather than reusing the first one.
+        let other_format = SurfaceKey {
+            color_format: wgpu::TextureFormat::Bgra8Unorm,
+            ..surface
+        };
+        assert_ne!(variants.specialize(base, other_format), first);
+        assert_eq!(
+            variants.get(first).descriptor().color_target.format,
+            surface.color_format
+        );
     }
 
     #[test]
@@ -1432,12 +1408,13 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
     #[test]
     fn vertex_strides_follow_the_attribute_formats() {
-        let layouts = UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+        let layouts = UnlitOptions {
             flags: UnlitFlags::VERTEX_POSITION
                 | UnlitFlags::VERTEX_UV
                 | UnlitFlags::VERTEX_INSTANCE,
             ..UnlitOptions::standard_shape()
-        });
+        }
+        .vertex_buffer_layouts();
         let position = layouts[POSITION_SLOT as usize]
             .as_ref()
             .expect("position slot");
@@ -1477,7 +1454,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         };
         assert!(!options.needs_metadata());
 
-        let layouts = UnlitPipeline::vertex_buffer_layouts(&options);
+        let layouts = options.vertex_buffer_layouts();
         let position = layouts[POSITION_SLOT as usize]
             .as_ref()
             .expect("position slot");
@@ -1497,10 +1474,11 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn uv_color_slot_follows_its_channels() {
         let stride = |flags: UnlitFlags| {
-            UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+            (UnlitOptions {
                 flags,
                 ..UnlitOptions::standard_shape()
-            })[UV_COLOR_SLOT as usize]
+            })
+            .vertex_buffer_layouts()[UV_COLOR_SLOT as usize]
                 .as_ref()
                 .map(|layout| layout.array_stride)
         };
@@ -1533,10 +1511,11 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     fn position_slot_follows_its_flag() {
         let position = |flags: UnlitFlags| {
-            UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+            (UnlitOptions {
                 flags,
                 ..UnlitOptions::standard_shape()
-            })[POSITION_SLOT as usize]
+            })
+            .vertex_buffer_layouts()[POSITION_SLOT as usize]
                 .as_ref()
                 .map(|layout| (layout.array_stride, layout.step_mode))
         };
@@ -1572,10 +1551,11 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         use crate::mesh::MeshInstance;
         use core::mem::{offset_of, size_of};
 
-        let layouts = UnlitPipeline::vertex_buffer_layouts(&UnlitOptions {
+        let layouts = UnlitOptions {
             flags: UnlitFlags::VERTEX_INSTANCE,
             ..UnlitOptions::standard_shape()
-        });
+        }
+        .vertex_buffer_layouts();
         let instance = layouts[INSTANCE_SLOT as usize]
             .as_ref()
             .expect("instance slot");

@@ -37,10 +37,10 @@
 
 ## 组件
 
-一个可渲染实体携带 `GpuMesh`、`GpuMaterial` 与 `GpuPipeline`。`GpuPipeline` 携带的
+一个可渲染实体携带 `GpuMesh`、`GpuMaterial` 与 `GpuRenderPipeline`。`GpuRenderPipeline` 携带的
 是 *key* 而不是已编译的管线：某个实体需要哪条具体管线，取决于该帧的渲染目标与网格的
 顶点布局，而这两者在生成实体时都不知道。*家族（family）* 弥合了这个缺口——它把
-`Variants` 缓存与 `Specializer`、`PipelineFactory` 配在一起，每帧把一个 key 解析为
+`Variants` 缓存与 `Specializer`、`RenderPipelineFactory` 配在一起，每帧把一个 key 解析为
 一条具体管线。
 
 `MeshSource::register_unlit_family` 注册内置的 unlit 家族；`MeshSource::register_family`

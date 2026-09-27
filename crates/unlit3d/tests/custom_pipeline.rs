@@ -9,8 +9,10 @@ pub mod common;
 
 use arrayvec::ArrayVec;
 use common::*;
-use unlit_wgpu::specialize::{CachedRenderPipeline, RenderPipelineDesc};
-use unlit3d::pipeline::{FamilyContext, PipelineFactory};
+use unlit_wgpu::specialize::{
+    RenderPipelineDesc, SpecializedPipeline, Specializer, SpecializerKey,
+};
+use unlit3d::pipeline::{FamilyContext, RenderPipelineFactory};
 use unlit3d::prelude::*;
 
 /// An interleaved `position + colour` vertex, matching `VERTEX` in the WGSL
@@ -95,7 +97,7 @@ fn vertex_buffer(buffer: wgpu::Buffer) -> VertexBufferDesc {
 /// The pipeline key a custom family draws with: one shared
 /// [RenderPipelineDesc], identified by that shared descriptor.
 ///
-/// [PipelineKey] requires [Hash] and [Eq], neither of which a
+/// [RenderPipelineKey] requires [Hash] and [Eq], neither of which a
 /// [RenderPipelineDesc] can offer -- it carries a shader module and a pipeline
 /// layout -- so two keys are the same exactly when they share one descriptor.
 #[derive(Clone)]
@@ -125,11 +127,56 @@ impl core::hash::Hash for CustomPipelineKey {
     }
 }
 
-impl PipelineKey for CustomPipelineKey {
-    type Pipeline = CachedRenderPipeline;
+impl RenderPipelineKey for CustomPipelineKey {
+    type Descriptor = RenderPipelineDesc;
 
     fn base_descriptor(&self) -> RenderPipelineDesc {
         self.descriptor.as_ref().clone()
+    }
+}
+
+/// The variant key of a family that rewrites nothing.
+///
+/// It pairs the entity's [CustomPipelineKey] -- which supplied the base
+/// descriptor -- with the [DrawKey] the draw resolved to, so two entities
+/// needing the same concrete pipeline share a variant.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct DrawOnlyKey {
+    key: CustomPipelineKey,
+    draw: DrawKey,
+}
+
+impl core::fmt::Debug for DrawOnlyKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DrawOnlyKey").finish_non_exhaustive()
+    }
+}
+
+impl From<(CustomPipelineKey, DrawKey)> for DrawOnlyKey {
+    fn from((key, draw): (CustomPipelineKey, DrawKey)) -> Self {
+        Self { key, draw }
+    }
+}
+
+impl SpecializerKey for DrawOnlyKey {
+    // The base descriptor already carries everything that distinguishes this
+    // family's pipelines, so distinct keys are distinct descriptors and the
+    // secondary cache is never consulted.
+    const IS_CANONICAL: bool = true;
+    type Canonical = Self;
+}
+
+/// A specializer that rewrites nothing: every key compiles the descriptor its
+/// [CustomPipelineKey] reported, because nothing about the draw can change
+/// this pipeline.
+#[derive(Clone, Copy, Debug, Default)]
+struct DrawOnlySpecializer;
+
+impl Specializer<RenderPipelineDesc> for DrawOnlySpecializer {
+    type Key = DrawOnlyKey;
+
+    fn specialize(&self, key: DrawOnlyKey, _descriptor: &mut RenderPipelineDesc) -> DrawOnlyKey {
+        key
     }
 }
 
@@ -138,7 +185,7 @@ impl PipelineKey for CustomPipelineKey {
 ///
 /// Returning the owned [RenderPipelineDesc] rather than the compiled pipeline
 /// is what lets it be registered as a family: the family compiles it lazily
-/// through [RenderPipelineFactory].
+/// through a [RenderPipelineFactory].
 fn custom_pipeline(device: &wgpu::Device) -> RenderPipelineDesc {
     // The renderer's attachments are multisampled and carry a stencil aspect,
     // so a pipeline that draws into them has to declare both.
@@ -279,19 +326,37 @@ fn tinted_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> Ren
     RenderPipelineDesc::from_wgpu(&descriptor)
 }
 
+/// A factory for a pipeline that binds no group beyond its vertex buffers.
+struct NoBindingFactory;
+
+impl RenderPipelineFactory<RenderPipelineDesc> for NoBindingFactory {
+    fn descriptor(
+        &self,
+        _context: &FamilyContext<'_>,
+        value: &SpecializedPipeline<wgpu::RenderPipeline, RenderPipelineDesc>,
+    ) -> RegisteredRenderPipeline {
+        RegisteredRenderPipeline {
+            pipeline: value.pipeline.clone(),
+            global: None,
+            material_layout: None,
+            mesh_layout: None,
+        }
+    }
+}
+
 /// A factory that attaches a mesh bind-group layout to the pipelines it
 /// describes, for a family whose specializer changes nothing else.
 struct MeshLayoutFactory {
     mesh_layout: wgpu::BindGroupLayout,
 }
 
-impl PipelineFactory<unlit_wgpu::specialize::CachedRenderPipeline> for MeshLayoutFactory {
+impl RenderPipelineFactory<RenderPipelineDesc> for MeshLayoutFactory {
     fn descriptor(
         &self,
         _context: &FamilyContext<'_>,
-        value: &unlit_wgpu::specialize::CachedRenderPipeline,
-    ) -> PipelineDesc {
-        PipelineDesc {
+        value: &SpecializedPipeline<wgpu::RenderPipeline, RenderPipelineDesc>,
+    ) -> RegisteredRenderPipeline {
+        RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
             global: None,
             material_layout: None,
@@ -321,10 +386,10 @@ fn a_custom_pipeline_draws_through_the_ecs() {
         let key = CustomPipelineKey::new(custom_pipeline(&device));
         source.register_family::<CustomPipelineKey, _, _, _>(
             world,
-            TrivialSpecializer::default(),
-            RenderPipelineFactory,
+            DrawOnlySpecializer,
+            NoBindingFactory,
         );
-        let pipeline = GpuPipeline::new(key);
+        let pipeline = GpuRenderPipeline::new(key);
 
         // Upload the triangle as one interleaved vertex buffer in slot 0.
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -421,12 +486,8 @@ fn one_pipeline_draws_many_meshes() {
             mesh_layout: layout.clone(),
         };
         let key = CustomPipelineKey::new(desc);
-        source.register_family::<CustomPipelineKey, _, _, _>(
-            world,
-            TrivialSpecializer::default(),
-            factory,
-        );
-        let pipeline = GpuPipeline::new(key);
+        source.register_family::<CustomPipelineKey, _, _, _>(world, DrawOnlySpecializer, factory);
+        let pipeline = GpuRenderPipeline::new(key);
 
         // The two meshes upload identical geometry and differ only in the
         // tint their mesh bind group carries.

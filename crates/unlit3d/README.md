@@ -52,12 +52,12 @@ given, in the order each source declares through
 
 A renderable entity carries a [`GpuMesh`](components::GpuMesh),
 [`GpuMaterial`](components::GpuMaterial) and
-[`GpuPipeline`](components::GpuPipeline). A
-[`GpuPipeline`](components::GpuPipeline) carries a *key*, not a compiled
+[`GpuRenderPipeline`](components::GpuRenderPipeline). A
+[`GpuRenderPipeline`](components::GpuRenderPipeline) carries a *key*, not a compiled
 pipeline: which concrete pipeline an entity needs depends on the frame's render
 target and the mesh's vertex layout, neither known at spawn time. A *family*
 closes that gap — it pairs a `Variants` cache with a `Specializer` and a
-[`PipelineFactory`](pipeline::PipelineFactory), and resolves one key to a
+[`RenderPipelineFactory`](pipeline::RenderPipelineFactory), and resolves one key to a
 concrete pipeline per frame.
 
 [`MeshSource::register_unlit_family`](mesh_source::MeshSource::register_unlit_family)

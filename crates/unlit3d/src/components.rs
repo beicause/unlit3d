@@ -285,7 +285,7 @@ impl MorphWeights {
 /// Names the [`SkinPose`] entity a mesh is drawn with.
 ///
 /// Put this on the mesh's own entity, alongside its [`GpuMesh`] and
-/// [`GpuPipeline`]: the pose itself lives on the entity this names, so two
+/// [`GpuRenderPipeline`]: the pose itself lives on the entity this names, so two
 /// meshes may share one pose by naming the same entity, or deform independently
 /// by naming different ones.
 ///
@@ -325,7 +325,7 @@ impl MorphBinding {
 
 /// The per-entity request for one family's variant.
 ///
-/// It carries a [PipelineKey](crate::pipeline::PipelineKey) rather than a compiled pipeline: which concrete
+/// It carries a [RenderPipelineKey](crate::pipeline::RenderPipelineKey) rather than a compiled pipeline: which concrete
 /// pipeline an entity needs depends on the frame's render target and on the
 /// entity's vertex layout, neither of which is known when the component is
 /// created. The family the key belongs to is found from the key's type, and
@@ -336,12 +336,12 @@ impl MorphBinding {
 /// not drawn at all. The key selects the family, so an entity whose key type
 /// no registered family uses is silently skipped.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct GpuPipeline<Key> {
+pub struct GpuRenderPipeline<Key> {
     /// The entity's pipeline key.
     pub(crate) key: Key,
 }
 
-impl<Key> GpuPipeline<Key> {
+impl<Key> GpuRenderPipeline<Key> {
     /// A pipeline component carrying `key`.
     pub fn new(key: Key) -> Self {
         Self { key }
@@ -357,7 +357,7 @@ impl<Key> GpuPipeline<Key> {
 ///
 /// It carries an [UnlitPipelineKey], which names the built-in unlit family and
 /// supplies the options the entity's variants are specialized from.
-pub type UnlitPipeline = GpuPipeline<UnlitPipelineKey>;
+pub type UnlitPipeline = GpuRenderPipeline<UnlitPipelineKey>;
 
 /// A handle to a material bind group in the source's GPU resource graph.
 ///

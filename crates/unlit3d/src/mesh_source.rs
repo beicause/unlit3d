@@ -27,14 +27,13 @@ use unlit_wgpu::mesh::{
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     INSTANCE_SLOT, JOINTS_BINDING, MESH_INFO_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
-    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
-    apply_surface,
+    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
 };
 use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView, Virtual};
 use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
 use unlit_wgpu::specialize::{
-    Specializable, Specializer, SpecializerKey, SurfaceKey, VertexAttributes,
-    VertexBufferLayoutDesc, VertexLayout,
+    PipelineDescriptor, SpecializedPipeline, Specializer, SpecializerKey, SurfaceKey,
+    SurfaceSpecializer, VertexAttributes, VertexBufferLayoutDesc, VertexLayout,
 };
 use unlit_wgpu::staging::StagingBuffer;
 use unlit_wgpu::vertex_pool::VertexStreamPool;
@@ -47,12 +46,13 @@ use crate::components::{
 use crate::culling::VisibleMesh;
 use crate::mesh::{MeshDesc, MorphDeltas, UnlitMeshDesc};
 use crate::pipeline::{
-    DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, PipelineDesc, PipelineFactory,
-    PipelineId, PipelineKey, RegisteredGlobal, RenderResources,
+    DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, RegisteredGlobal,
+    RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
+    RenderResources,
 };
 use crate::scene::{
-    AnyFamily, DrawHandlesKey, EntryHandles, Family, PipelineHandles, SceneFrame, VisibleEntry,
-    assemble_scene, collect_and_sort_visible,
+    AnyFamily, DrawHandlesKey, EntryHandles, Family, RenderPipelineHandles, SceneFrame,
+    VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
 
@@ -168,13 +168,13 @@ fn register_concrete(
     pipelines: &mut Vec<RegisteredPipeline>,
     graph: &mut ResourceGraph,
     buffers: GlobalBufferNodes,
-    desc: PipelineDesc,
-) -> PipelineId {
+    desc: RegisteredRenderPipeline,
+) -> RenderPipelineId {
     // The material and mesh layouts describe a pipeline's binding interface,
     // but they do not outlive registration: the source builds those groups
     // from the family it registered, and wgpu already holds the pipeline's own
     // layout internally.
-    let PipelineDesc {
+    let RegisteredRenderPipeline {
         pipeline, global, ..
     } = desc;
 
@@ -196,7 +196,7 @@ fn register_concrete(
 
     pipelines.push(RegisteredPipeline { pipeline, global });
     // The length before the push is the index the pipeline landed on.
-    PipelineId::new((pipelines.len() - 1) as u32)
+    RenderPipelineId::new((pipelines.len() - 1) as u32)
 }
 
 /// The full specialization key of the built-in unlit family: the entity's
@@ -261,8 +261,8 @@ impl UnlitPipelineKey {
     }
 }
 
-impl PipelineKey for UnlitPipelineKey {
-    type Pipeline = UnlitPipeline;
+impl RenderPipelineKey for UnlitPipelineKey {
+    type Descriptor = UnlitOptions;
 
     fn base_descriptor(&self) -> UnlitOptions {
         self.options.clone()
@@ -274,27 +274,30 @@ impl PipelineKey for UnlitPipelineKey {
 ///
 /// The descriptor starts from the entity's own options, so one family serves
 /// entities that differ in material or target policy. The target-dependent
-/// fields are rewritten through [apply_surface], the same helper the core
-/// crate's own specializer uses, and only the mesh-derived bits of
+/// fields are rewritten by [SurfaceSpecializer], the same specializer the core
+/// crate uses for that dimension, and only the mesh-derived bits of
 /// [UnlitFlags::MESH_MASK] are replaced. The canonical key the cache indexes
 /// on is the resulting options: two draws whose specialized options agree
 /// share one compiled pipeline.
 #[derive(Clone, Copy, Debug, Default)]
 struct UnlitDrawSpecializer;
 
-impl Specializer<UnlitPipeline> for UnlitDrawSpecializer {
+impl Specializer<UnlitOptions> for UnlitDrawSpecializer {
     type Key = UnlitDrawKey;
 
     fn specialize(&self, key: UnlitDrawKey, options: &mut UnlitOptions) -> UnlitOptions {
         *options = key.options;
-        apply_surface(options, key.surface);
+        // The target dimension is the core crate's specializer, applied to the
+        // same options rather than reimplemented, so the three fields it owns
+        // cannot drift from the ones a surface-only family would write.
+        SurfaceSpecializer.specialize(key.surface, options);
         options.flags =
             (options.flags & !UnlitFlags::MESH_MASK) | unlit_flags_for_layout(&key.vertex_buffers);
         options.clone()
     }
 }
 
-/// Describes a specialized [UnlitPipeline] the way the source registers it.
+/// Describes a specialized [SpecializedUnlitPipeline] the way the source registers it.
 ///
 /// This is what keeps the built-in pipeline an ordinary client of the family
 /// machinery: it packages the shader's layouts and a closure over the
@@ -302,10 +305,17 @@ impl Specializer<UnlitPipeline> for UnlitDrawSpecializer {
 /// a compressed channel, the metadata buffer.
 struct UnlitFactory;
 
-impl PipelineFactory<UnlitPipeline> for UnlitFactory {
-    fn descriptor(&self, context: &FamilyContext<'_>, value: &UnlitPipeline) -> PipelineDesc {
-        let layout = value.global_layout.clone();
-        let options = &value.options;
+impl RenderPipelineFactory<UnlitOptions> for UnlitFactory {
+    fn descriptor(
+        &self,
+        context: &FamilyContext<'_>,
+        value: &SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>,
+    ) -> RegisteredRenderPipeline {
+        // The layouts are a function of the options the variant was compiled
+        // from, so they are derived here rather than stored with the pipeline.
+        let layouts = value.descriptor().bind_group_layouts(context.device);
+        let layout = layouts.global;
+        let options = value.descriptor();
         let needs_metadata = options.needs_metadata();
         let needs_joints = options.needs_joints();
         let needs_morphs = options.needs_morphs();
@@ -324,14 +334,14 @@ impl PipelineFactory<UnlitPipeline> for UnlitFactory {
         });
 
         let bind_group = rebuild(context.resources);
-        PipelineDesc {
+        RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
             global: Some(GlobalBinding {
                 bind_group,
                 rebuild,
             }),
-            material_layout: value.material_layout.clone(),
-            mesh_layout: value.mesh_layout.clone(),
+            material_layout: layouts.material,
+            mesh_layout: layouts.mesh,
         }
     }
 }
@@ -496,7 +506,7 @@ pub struct MeshSource {
     /// Reused Vec for packed instance data.
     packed_instances_cache: Vec<MeshInstance>,
     /// Reused Vec for cloned pipeline handles while the scene is built.
-    pipeline_handle_cache: Vec<PipelineHandles>,
+    pipeline_handle_cache: Vec<RenderPipelineHandles>,
     /// The frame's interned draw handles, one per distinct
     /// [`DrawHandlesKey`] the visible set named. Reused between frames, so a
     /// steady scene allocates nothing.
@@ -704,7 +714,7 @@ impl MeshSource {
     /// This is the only way a pipeline enters the source, for the built-in
     /// unlit shader and a caller's own alike. The key type is the family's
     /// identity: entities draw with it when they carry a
-    /// [GpuPipeline](crate::components::GpuPipeline) of that type, and registering a
+    /// [GpuRenderPipeline](crate::components::GpuRenderPipeline) of that type, and registering a
     /// second family for the same key type is a programming error.
     ///
     /// A family compiles nothing on registration: its concrete pipelines are
@@ -712,20 +722,22 @@ impl MeshSource {
     /// appended to the source's pipeline list in resolution order.
     ///
     /// [`MeshSource::register_unlit_family`] is the built-in unlit family; a
-    /// pipeline with nothing to specialize on is registered with the
-    /// [`TrivialSpecializer`](crate::pipeline::TrivialSpecializer) and
-    /// [`RenderPipelineFactory`](crate::pipeline::RenderPipelineFactory) helpers.
+    /// caller registers their own by supplying the [Specializer] that rewrites
+    /// its descriptors and the [RenderPipelineFactory] that describes the
+    /// compiled result. A pipeline with nothing to specialize on supplies a
+    /// specializer that rewrites nothing and a key that carries its base
+    /// descriptor.
     ///
     /// # Panics
     ///
     /// If a family is already registered for `K`.
-    pub fn register_family<K, T, S, F>(&mut self, world: &LocalWorld, specializer: S, factory: F)
+    pub fn register_family<K, D, S, F>(&mut self, world: &LocalWorld, specializer: S, factory: F)
     where
-        K: PipelineKey<Pipeline = T> + 'static,
-        T: Specializable + 'static,
-        S: Specializer<T> + 'static,
+        K: RenderPipelineKey<Descriptor = D> + 'static,
+        D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
+        S: Specializer<D> + 'static,
         S::Key: From<(K, DrawKey)>,
-        F: PipelineFactory<T> + 'static,
+        F: RenderPipelineFactory<D> + 'static,
     {
         let key = TypeId::of::<K>();
         assert!(
@@ -734,7 +746,7 @@ impl MeshSource {
         );
         self.families.insert(
             key,
-            Box::new(Family::<T, S, F, K>::new(
+            Box::new(Family::<D, S, F, K>::new(
                 &self.device(world),
                 specializer,
                 factory,
@@ -1022,7 +1034,7 @@ impl MeshSource {
         // per-family state, and the pure layout builder is the same one the
         // family's factory uses, so the two cannot drift.
         let options = &key.options;
-        let layouts = UnlitPipeline::bind_group_layouts(&device, options);
+        let layouts = options.bind_group_layouts(&device);
         let mesh_layout = layouts
             .mesh
             .clone()
@@ -1197,7 +1209,7 @@ impl MeshSource {
         // The vertex layout the key's options declare, slot for slot. An empty
         // stream still gets a buffer entry — the pipeline simply declares no
         // attributes for that slot — so the mesh's layout matches the key's.
-        let vertex_layouts = UnlitPipeline::vertex_buffer_layouts(options);
+        let vertex_layouts = options.vertex_buffer_layouts();
         let layout_of = |slot: u32| -> VertexBufferLayoutDesc {
             vertex_layouts
                 .get(slot as usize)
@@ -1388,7 +1400,9 @@ impl MeshSource {
         if !key.options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) {
             return None;
         }
-        let layout = UnlitPipeline::bind_group_layouts(&self.device(world), &key.options)
+        let layout = key
+            .options
+            .bind_group_layouts(&self.device(world))
             .material
             .clone()
             .expect("the base-color variant declares a material group");
@@ -1429,7 +1443,7 @@ impl MeshSource {
     /// caller's, already in the resource graph and named in `dependencies` so
     /// replacing one marks the group dirty. `layout` is the material layout of
     /// the pipeline the material is for —
-    /// [`UnlitPipeline::bind_group_layouts`](unlit_wgpu::pipeline::UnlitPipeline::bind_group_layouts)
+    /// [`UnlitOptions::bind_group_layouts`](unlit_wgpu::pipeline::UnlitOptions::bind_group_layouts)
     /// for the built-in shader, or the one a custom pipeline registered.
     ///
     /// # Panics
@@ -2021,7 +2035,7 @@ impl MeshSource {
         {
             let graph = Self::graph(world, self.context);
             pipeline_handles.extend(self.pipelines.iter().map(|registered| {
-                PipelineHandles {
+                RenderPipelineHandles {
                     pipeline: registered.pipeline.clone(),
                     global: registered
                         .global
@@ -2260,7 +2274,7 @@ mod tests {
         source: &mut MeshSource,
         world: &LocalWorld,
         surface: SurfaceKey,
-    ) -> PipelineId {
+    ) -> RenderPipelineId {
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         source.collect_and_sort_visible(world, &camera, surface);
         source
@@ -3209,7 +3223,7 @@ mod tests {
     fn an_entity_without_a_pipeline_is_not_drawn() {
         let mut h = harness();
         let mesh = h.tri_mesh();
-        // No GpuPipeline: the query filters it out.
+        // No GpuRenderPipeline: the query filters it out.
         let _unpipelined = h.world.spawn((Transform::default(), mesh.clone()));
         let drawn_entity = h.world.spawn((
             Transform::default(),

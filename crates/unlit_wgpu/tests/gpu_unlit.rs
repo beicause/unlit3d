@@ -1,7 +1,7 @@
 //! End-to-end GPU tests for the built-in unlit pipeline.
 //!
 //! Every test builds real resources through the library's public API — the
-//! vertex compressors, the built-in [`UnlitPipeline`] and the single-pass
+//! vertex compressors, the built-in [`SpecializedUnlitPipeline`] and the single-pass
 //! [`Renderer`] — renders offscreen, and inspects the pixels that come back.
 //! The snapshot tests additionally compare frames against stored references
 //! with the SSIMULACRA2 perceptual metric.
@@ -20,15 +20,17 @@ use unlit_wgpu::mesh::{
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitPipeline,
-    apply_surface,
+    MESH_METADATA_BINDING, POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags,
+    UnlitOptions,
 };
 use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
 };
 use unlit_wgpu::resources::{TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
-use unlit_wgpu::specialize::SurfaceKey;
+use unlit_wgpu::specialize::{
+    SpecializedPipeline, Specializer as _, SurfaceKey, SurfaceSpecializer,
+};
 use zerocopy::IntoBytes;
 
 const WIDTH: u32 = 256;
@@ -300,7 +302,7 @@ struct SceneFixture {
     /// Whether the pipeline declares a depth-stencil state, which the render
     /// pass must then match: `wgpu` rejects a mismatch when binding it.
     has_depth: bool,
-    pipeline: UnlitPipeline,
+    pipeline: SpecializedUnlitPipeline,
     mesh: GpuMesh,
     material: Option<wgpu::BindGroup>,
     /// Multisample state the pipeline was compiled for; the render pass's
@@ -319,7 +321,7 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
         count: sample_count,
         ..Default::default()
     };
-    let pipeline = UnlitPipeline::new(&ctx.device, &options);
+    let pipeline = SpecializedPipeline::create(&ctx.device, options.clone());
 
     let (positions, uvs, colors, indices) = cube();
     let mesh = GpuMesh::upload(
@@ -339,9 +341,10 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
             let texture = checkerboard_texture(ctx);
             ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("test::material"),
-                layout: pipeline
-                    .material_layout
-                    .as_ref()
+                layout: &pipeline
+                    .descriptor()
+                    .bind_group_layouts(&ctx.device)
+                    .material
                     .expect("a textured variant has a material layout"),
                 entries: &[
                     bg_entry(
@@ -415,7 +418,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     );
     // The metadata bindings (and the mesh group that indexes them) exist only
     // while a channel is compressed.
-    let metadata = fixture.pipeline.options.needs_metadata();
+    let metadata = fixture.pipeline.descriptor().needs_metadata();
     let metadata_buffer = upload_buffer(
         ctx,
         "test::mesh_meta",
@@ -434,7 +437,11 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     }
     let global_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("test::globals"),
-        layout: &fixture.pipeline.global_layout,
+        layout: &fixture
+            .pipeline
+            .descriptor()
+            .bind_group_layouts(&ctx.device)
+            .global,
         entries: &global_entries,
     });
 
@@ -448,10 +455,11 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     let mesh_group = metadata.then(|| {
         ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("test::mesh"),
-            layout: fixture
+            layout: &fixture
                 .pipeline
-                .mesh_layout
-                .as_ref()
+                .descriptor()
+                .bind_group_layouts(&ctx.device)
+                .mesh
                 .expect("a variant that needs metadata has a mesh layout"),
             entries: &[bg_entry(MESH_INFO_BINDING, info_buffer.as_entire_binding())],
         })
@@ -466,7 +474,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     let instance_count = instances.len() as u32;
     let instanced = fixture
         .pipeline
-        .options
+        .descriptor()
         .flags
         .contains(UnlitFlags::VERTEX_INSTANCE);
     let range = match &fixture.mesh.indices {
@@ -925,13 +933,13 @@ fn a_color_only_target_draws_a_cube() {
     // Specialize for the depth-less target the same way a caller would, then
     // build the pipeline from the result.
     let mut options = vertex_color_options(&ctx.device);
-    apply_surface(
-        &mut options,
+    SurfaceSpecializer.specialize(
         SurfaceKey {
             color_format: COLOR_FORMAT,
             depth_stencil_format: None,
             sample_count: 4,
         },
+        &mut options,
     );
     assert!(
         options.depth_stencil.is_none(),
