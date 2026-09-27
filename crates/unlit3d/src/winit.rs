@@ -21,7 +21,7 @@
 //! use winit::window::Window;
 //!
 //! # fn setup(
-//! #     world: &LocalWorld,
+//! #     world: &World,
 //! #     renderer: Entity,
 //! #     instance: &wgpu::Instance,
 //! #     adapter: &wgpu::Adapter,
@@ -43,7 +43,7 @@
 //! # use unlit3d::prelude::*;
 //! # use unlit3d::winit::WindowSurface;
 //! # fn frame(
-//! #     world: &LocalWorld,
+//! #     world: &World,
 //! #     queue: &wgpu::Queue,
 //! #     renderer_entity: Entity,
 //! #     window_surface: &mut WindowSurface,
@@ -63,7 +63,7 @@
 
 use std::sync::Arc;
 
-use unlit_ecs::LocalWorld;
+use unlit_ecs::World;
 use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
 
@@ -74,7 +74,7 @@ use crate::renderer::Renderer;
 /// # Panics
 ///
 /// If the context's device resource is gone.
-fn context_device(world: &LocalWorld, renderer: &Renderer) -> wgpu::Device {
+fn context_device(world: &World, renderer: &Renderer) -> wgpu::Device {
     world
         .get::<wgpu::Device>(renderer.context().device)
         .expect("the context's device resource exists")
@@ -87,7 +87,7 @@ fn context_device(world: &LocalWorld, renderer: &Renderer) -> wgpu::Device {
 ///
 /// If the context's graph resource is gone.
 fn context_graph<'w>(
-    world: &'w LocalWorld,
+    world: &'w World,
     renderer: &Renderer,
 ) -> impl core::ops::DerefMut<Target = unlit_wgpu::resources::ResourceGraph> + 'w {
     world
@@ -155,7 +155,7 @@ impl WindowSurface {
     ///
     /// If `adapter` cannot present to `surface`.
     pub fn new(
-        world: &LocalWorld,
+        world: &World,
         renderer: &mut Renderer,
         instance: &wgpu::Instance,
         adapter: &wgpu::Adapter,
@@ -227,7 +227,7 @@ impl WindowSurface {
     /// A zero width or height — a minimized window — is ignored: a surface
     /// cannot be configured with a zero dimension, and there is nothing to
     /// draw.
-    pub fn resize(&mut self, world: &LocalWorld, renderer: &mut Renderer, width: u32, height: u32) {
+    pub fn resize(&mut self, world: &World, renderer: &mut Renderer, width: u32, height: u32) {
         if width == 0 || height == 0 {
             return;
         }
@@ -263,7 +263,7 @@ impl WindowSurface {
     /// This is what a suspension needs. Android invalidates the native surface
     /// for as long as the app is not in the foreground, which outlives the swap
     /// chain but not the window, the scene or the GPU context.
-    pub fn release(self, world: &LocalWorld, renderer: &mut Renderer) {
+    pub fn release(self, world: &World, renderer: &mut Renderer) {
         // The swap chain's image is the bound render target, so it is unset
         // before its view goes: an id left naming a removed view is not merely
         // dangling, because the graph recycles its slot — the renderer would
@@ -290,7 +290,7 @@ impl WindowSurface {
     /// The frame's image replaces the previous one in the resource graph, so
     /// at most the frame just presented is still referenced — never a longer
     /// history of swap-chain images.
-    pub fn acquire(&mut self, world: &LocalWorld, renderer: &mut Renderer) -> Option<Frame> {
+    pub fn acquire(&mut self, world: &World, renderer: &mut Renderer) -> Option<Frame> {
         let device = context_device(world, renderer);
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)

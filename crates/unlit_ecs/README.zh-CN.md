@@ -20,9 +20,9 @@
   设计中容易泄漏的「组件被移除」记账工作的原因。
 - **读写只需要 `&World`。** 结构变更——spawn 与 despawn——需要 `&mut World`，或者
   由驱动器应用的 `Commands` 队列。
-- **两个 world 只在 cell 上不同。** `LocalWorld` 把组件存在 `RefCell` 里，是
-  `!Send` 的，因此留在创建它的线程——渲染器和其他与线程绑定的状态属于这里。
-  `SendWorld` 把它们存在 `RwLock` 里，是 `Send + Sync` 的。其余全是共享代码。
+- **world 是 `!Send` 的。** 组件存在 `RefCell` 里，因此 world 留在创建它的线程——
+  渲染器和其他与线程绑定的状态属于这里。并行是调用者的事，办法是把工作切分到纯数据上，
+  而不是共享 world。
 - **没有资源（resource）。** crate 不标记也不追踪任何资源；想被随处访问的实体就是
   普通实体，调用者自行保存它的句柄，需要时可以用自己的标记组件加以标记。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
@@ -35,7 +35,7 @@
 
 ## 内容概览
 
-`World`（以及 `LocalWorld` / `SendWorld` 别名）、`Entity`、
+`World`、`Entity`、
 `Bundle` / `ArchetypeBuilder`、`Query` 与 `QueryFilter`（`With`、
 `Without`、`Or`、元组）、用于延迟结构变更的 `Command` / `Commands`、
 用于直接检视存储的 `Archetype` / `Archetypes`，以及专用哈希容器
@@ -52,14 +52,14 @@
 ## 用法
 
 ```rust
-use unlit_ecs::{LocalWorld, Query, Without};
+use unlit_ecs::{Query, Without, World};
 
 struct Spin {
     radians_per_second: f32,
     angle: f32,
 }
 
-let mut world = LocalWorld::new();
+let mut world = World::new();
 let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
 let clock = world.spawn((0.016f32,));
 
@@ -81,9 +81,9 @@ let _ = world
 spawn 与 despawn 需要 `&mut World`，或者排入队列的命令：
 
 ```rust
-use unlit_ecs::LocalWorld;
+use unlit_ecs::World;
 
-let mut world = LocalWorld::new();
+let mut world = World::new();
 let entity = {
     let commands = world.queue();
     commands.spawn(("entity",))
@@ -115,9 +115,9 @@ assert!(world.contains(entity));
 - **没有系统**（借鉴自 [`hecs`](https://docs.rs/hecs)）。系统只是外部调用者对世界的
   访问，或是包含行为（闭包函数）的组件。因此不用做复杂的系统并行性（依赖、访问冲突
   等）分析、多线程调度器：让外部调用者自行决定运行的线程。
-- **`!Send` 世界和 `Send` 世界分离**，两者用 channel 传递数据。只有 `Send` 世界的
-  组件才是 `Send`，`!Send` 世界只能在主线程运行。GPU 资源和渲染器是 `!Send` 组件，
-  为了兼容 `wasm32`。
+- **world 是 `!Send` 的。** GPU 资源和渲染器是 `!Send` 组件，在 `wasm32` 上即使开启
+  特性开关也不是 `Send`，所以一个能跨线程的 world 在那里毫无收益。`Send` 世界曾存在过
+  又被删除：world 所共享的存储，并不是让它上面的工作可切分的东西。
 - **没有用到的功能绝不添加。**
 
 </details>
@@ -165,8 +165,7 @@ cargo nextest run -p unlit_ecs   # 本 crate 的单元与集成测试
 cargo xtask test                 # 整个工作区
 ```
 
-测试覆盖 world 与查询行为、延迟命令，以及 `SendWorld` 能跨线程共享。它们都不需要
-GPU，因此在任何环境都能运行。测试各层作为整体，以及 CI 所跑的内容，见
+测试覆盖 world 与查询行为、延迟命令。它们都不需要 GPU，因此在任何环境都能运行。测试各层作为整体，以及 CI 所跑的内容，见
 [根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 
 ## 许可证

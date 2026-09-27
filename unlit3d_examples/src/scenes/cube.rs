@@ -42,7 +42,7 @@ pub static SCENE: SceneDef = SceneDef {
 
 /// Build the cube scene's world content.
 fn build(
-    world: &mut LocalWorld,
+    world: &mut World,
     context: RenderContext,
     _renderer: Entity,
     size: (u32, u32),

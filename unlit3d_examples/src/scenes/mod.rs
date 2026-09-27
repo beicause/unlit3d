@@ -34,7 +34,7 @@ use unlit3d::prelude::*;
 /// `frame` counts the frames the scene has drawn; the scenes that animate
 /// through a fixed sequence loop it, so a windowed scene keeps moving after
 /// the sequence that produced its snapshots ends.
-pub type Advance = Box<dyn FnMut(&mut LocalWorld, u32, f32)>;
+pub type Advance = Box<dyn FnMut(&mut World, u32, f32)>;
 
 /// Names the snapshot a frame verifies against, if it has one.
 pub type Snapshot = Box<dyn Fn(u32) -> Option<String>>;
@@ -100,7 +100,7 @@ pub struct SceneDef {
     ///
     /// The world already holds the frame's context and the renderer resource
     /// entity; the scene spawns its sources, meshes, camera and entities.
-    pub build: fn(&mut LocalWorld, RenderContext, Entity, (u32, u32), SceneOptions) -> SceneControl,
+    pub build: fn(&mut World, RenderContext, Entity, (u32, u32), SceneOptions) -> SceneControl,
 }
 
 /// Every selectable scene, in the order the GUI lists and `--scene all` runs
@@ -390,12 +390,12 @@ pub fn morph_targets(positions: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
 
 /// Run `f` on the world's `MeshSource`, which lives on the source entity.
 ///
-/// A shared-world entry point, so the scene's own `&mut LocalWorld` can
+/// A shared-world entry point, so the scene's own `&mut World` can
 /// reborrow it next to the mutable borrow of the source.
 pub fn with_mesh_source<R>(
-    world: &LocalWorld,
+    world: &World,
     source_entity: Entity,
-    f: impl FnOnce(&mut MeshSource, &LocalWorld) -> R,
+    f: impl FnOnce(&mut MeshSource, &World) -> R,
 ) -> R {
     let mut source = world
         .get_mut::<Source>(source_entity)
@@ -413,7 +413,7 @@ pub fn with_mesh_source<R>(
 /// different offsets draw differently even at the same transform — which is
 /// what tells a mesh apart from the one whose pool range it sits next to.
 pub fn allocate_offset_cube_mesh(
-    world: &LocalWorld,
+    world: &World,
     source_entity: Entity,
     key: &UnlitPipelineKey,
     offset: glam::Vec3,
@@ -445,7 +445,7 @@ pub fn allocate_offset_cube_mesh(
 }
 
 /// Free `mesh` through the source, releasing its pool ranges.
-pub fn remove_mesh(world: &LocalWorld, source_entity: Entity, mesh: GpuMesh) {
+pub fn remove_mesh(world: &World, source_entity: Entity, mesh: GpuMesh) {
     with_mesh_source(world, source_entity, |source, world| {
         source.remove_mesh(world, mesh)
     });

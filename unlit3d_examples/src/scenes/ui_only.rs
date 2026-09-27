@@ -35,7 +35,7 @@ pub static SCENE: SceneDef = SceneDef {
 
 /// Build the UI-only scene's world content.
 fn build(
-    world: &mut LocalWorld,
+    world: &mut World,
     _context: RenderContext,
     _renderer: Entity,
     _size: (u32, u32),

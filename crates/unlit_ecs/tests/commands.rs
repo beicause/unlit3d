@@ -1,6 +1,6 @@
 //! Deferred structural changes, from a callback that only has `&World`.
 
-use unlit_ecs::{Commands, Entity, LocalWorld, World};
+use unlit_ecs::{Commands, Entity, World};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Spawned;
@@ -11,17 +11,14 @@ struct Marker(u32);
 /// The shape a driver uses: a behaviour runs with a shared world, reads what
 /// it needs from it, queues what it needs through `Commands`, and the driver
 /// applies the queue afterwards.
-fn run_behaviour(
-    world: &World<unlit_ecs::LocalMode>,
-    commands: Commands<'_, unlit_ecs::LocalMode>,
-) -> Entity {
+fn run_behaviour(world: &World, commands: Commands<'_>) -> Entity {
     let template = world.query::<&Spawned>().count();
     commands.spawn((Marker(template as u32), Spawned))
 }
 
 #[test]
 fn a_queued_spawn_does_nothing_until_apply() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let behavior_ran = std::cell::Cell::new(false);
 
     let child = {
@@ -46,7 +43,7 @@ fn a_queued_spawn_does_nothing_until_apply() {
 
 #[test]
 fn a_queued_handle_is_usable_before_apply() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
 
     // The handle comes back immediately, so it can be stored in a component
     // on another entity before the queue is applied.
@@ -61,7 +58,7 @@ fn a_queued_handle_is_usable_before_apply() {
 
 #[test]
 fn a_queued_despawn_only_takes_effect_on_apply() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Marker(1),));
 
     world.queue().despawn(entity);
@@ -73,7 +70,7 @@ fn a_queued_despawn_only_takes_effect_on_apply() {
 
 #[test]
 fn commands_apply_in_the_order_they_were_queued() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let first = world.queue().spawn((Marker(1),));
     let second = world.queue().spawn((Marker(2),));
 
@@ -87,7 +84,7 @@ fn commands_apply_in_the_order_they_were_queued() {
 
 #[test]
 fn commands_queued_while_applying_are_applied_too() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
 
     let seed = {
         let commands = world.queue();
@@ -108,7 +105,7 @@ fn commands_queued_while_applying_are_applied_too() {
 
 #[test]
 fn applying_an_empty_queue_changes_nothing() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     world.apply();
     assert!(world.is_empty());
 
@@ -120,13 +117,13 @@ fn applying_an_empty_queue_changes_nothing() {
 
 #[test]
 fn a_custom_command_can_be_queued() {
-    use unlit_ecs::{Command, Mode, World as WorldType};
+    use unlit_ecs::Command;
 
     /// Despawns every entity that has a `Marker` below a threshold.
     struct DespawnBelow(u32);
 
-    impl<M: Mode> Command<M> for DespawnBelow {
-        fn apply(self: Box<Self>, world: &mut WorldType<M>) {
+    impl Command for DespawnBelow {
+        fn apply(self: Box<Self>, world: &mut World) {
             let doomed: Vec<Entity> = world
                 .query::<&Marker>()
                 .filter(|(_, marker)| marker.0 < self.0)
@@ -138,7 +135,7 @@ fn a_custom_command_can_be_queued() {
         }
     }
 
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let low = world.spawn((Marker(1),));
     let high = world.spawn((Marker(9),));
 
@@ -152,7 +149,7 @@ fn a_custom_command_can_be_queued() {
 
 #[test]
 fn many_commands_apply_without_losing_any() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let handles: Vec<Entity> = {
         let commands = world.queue();
         (0..256u32)

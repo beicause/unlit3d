@@ -95,7 +95,7 @@ pub static SCENE: SceneDef = SceneDef {
 
 /// Build the animated-grid scene's world content.
 fn build(
-    world: &mut LocalWorld,
+    world: &mut World,
     context: RenderContext,
     _renderer: Entity,
     _size: (u32, u32),

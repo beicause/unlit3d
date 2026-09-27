@@ -352,7 +352,7 @@ fn compare_frame(
 /// matching how its snapshots were captured.
 #[cfg(feature = "snapshot")]
 fn bind_offscreen_target(
-    world: &LocalWorld,
+    world: &World,
     renderer: &mut Renderer,
     device: &wgpu::Device,
     size: (u32, u32),
@@ -564,7 +564,7 @@ impl GpuState {
 /// with the result. The scene itself is a [`scenes::SceneDef`] whose build
 /// populated the world and returned the [`SceneControl`] this drives.
 struct Scene {
-    world: LocalWorld,
+    world: World,
     /// The renderer resource entity: the handle every renderer access goes
     /// through.
     renderer: Entity,
@@ -975,7 +975,7 @@ impl Scene {
         options: scenes::SceneOptions,
         def: &'static scenes::SceneDef,
     ) -> Self {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let context = spawn_context(&mut world, device, queue, ResourceGraph::new());
         let renderer = world.spawn((Renderer::new(context),));
         let control = (def.build)(&mut world, context, renderer, size, options);
@@ -1084,7 +1084,7 @@ impl Scene {
 ///
 /// The panel lists every scene and writes its choice into the [`SceneSwitch`]
 /// component, which the frame loop reads once after the frame's advance.
-fn mount_selector(world: &mut LocalWorld, switch: Entity, current: &'static scenes::SceneDef) {
+fn mount_selector(world: &mut World, switch: Entity, current: &'static scenes::SceneDef) {
     world.spawn((UiPanel::new(move |world, _entity, ui| {
         egui::Window::new("scenes")
             .default_pos([16.0, 430.0])

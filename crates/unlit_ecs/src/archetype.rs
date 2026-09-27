@@ -12,22 +12,22 @@ use core::any::{Any, TypeId};
 
 use hashbrown::HashMap;
 
+use crate::column::{AnyColumn, Column};
 use crate::entity::Entity;
-use crate::mode::{AnyColumn, Column, Mode};
 
 /// One archetype: the entities that share a component set.
-pub struct Archetype<M: Mode> {
+pub struct Archetype {
     types: Box<[TypeId]>,
-    columns: Box<[Box<M::ErasedColumn>]>,
+    columns: Box<[Box<dyn AnyColumn>]>,
     entities: Vec<Entity>,
 }
 
-impl<M: Mode> Archetype<M> {
+impl Archetype {
     /// Build an archetype from its component types and their columns.
     ///
     /// `types` must be sorted and unique, and `columns` must line up with
     /// it.
-    pub(crate) fn new(types: Box<[TypeId]>, columns: Box<[Box<M::ErasedColumn>]>) -> Self {
+    pub(crate) fn new(types: Box<[TypeId]>, columns: Box<[Box<dyn AnyColumn>]>) -> Self {
         debug_assert_eq!(types.len(), columns.len());
         debug_assert!(types.windows(2).all(|pair| pair[0] < pair[1]));
         Self {
@@ -63,7 +63,7 @@ impl<M: Mode> Archetype<M> {
     }
 
     /// The storage cell of component `C` at `row`.
-    pub(crate) fn cell<C: 'static>(&self, row: usize) -> Option<&M::Cell<C>> {
+    pub(crate) fn cell<C: 'static>(&self, row: usize) -> Option<&core::cell::RefCell<C>> {
         self.column::<C>()?.cell(row)
     }
 
@@ -71,9 +71,9 @@ impl<M: Mode> Archetype<M> {
     ///
     /// A query resolves this once per archetype instead of doing the lookup per
     /// row; see [`Query::Fetch`](crate::Query::Fetch).
-    pub(crate) fn column<C: 'static>(&self) -> Option<&Column<M, C>> {
+    pub(crate) fn column<C: 'static>(&self) -> Option<&Column<C>> {
         let index = self.column_index(TypeId::of::<C>())?;
-        self.columns[index].as_any().downcast_ref::<Column<M, C>>()
+        self.columns[index].as_any().downcast_ref::<Column<C>>()
     }
 
     /// Append an already erased component value.
@@ -107,12 +107,12 @@ impl<M: Mode> Archetype<M> {
 }
 
 /// Every archetype of a world.
-pub struct Archetypes<M: Mode> {
-    archetypes: Vec<Archetype<M>>,
+pub struct Archetypes {
+    archetypes: Vec<Archetype>,
     by_types: HashMap<Box<[TypeId]>, u32>,
 }
 
-impl<M: Mode> Archetypes<M> {
+impl Archetypes {
     /// A pool containing only the empty archetype.
     pub(crate) fn new() -> Self {
         let mut pool = Self {
@@ -129,7 +129,7 @@ impl<M: Mode> Archetypes<M> {
     }
 
     /// Register a freshly built archetype and return its id.
-    pub(crate) fn register(&mut self, archetype: Archetype<M>) -> u32 {
+    pub(crate) fn register(&mut self, archetype: Archetype) -> u32 {
         let id = self.archetypes.len() as u32;
         self.by_types.insert(archetype.types().into(), id);
         self.archetypes.push(archetype);
@@ -137,12 +137,12 @@ impl<M: Mode> Archetypes<M> {
     }
 
     /// The archetype with this id.
-    pub(crate) fn get(&self, id: u32) -> &Archetype<M> {
+    pub(crate) fn get(&self, id: u32) -> &Archetype {
         &self.archetypes[id as usize]
     }
 
     /// The archetype with this id.
-    pub(crate) fn get_mut(&mut self, id: u32) -> &mut Archetype<M> {
+    pub(crate) fn get_mut(&mut self, id: u32) -> &mut Archetype {
         &mut self.archetypes[id as usize]
     }
 
@@ -152,23 +152,23 @@ impl<M: Mode> Archetypes<M> {
     }
 
     /// Every archetype.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Archetype<M>> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Archetype> {
         self.archetypes.iter()
     }
 
     /// Every archetype, as a slice.
-    pub(crate) fn as_slice(&self) -> &[Archetype<M>] {
+    pub(crate) fn as_slice(&self) -> &[Archetype] {
         &self.archetypes
     }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mode::{Cell, ColumnErase, LocalMode};
+    use crate::column::{AnyColumn, Column};
 
     #[test]
     fn the_empty_archetype_exists_first() {
-        let archetypes: Archetypes<LocalMode> = Archetypes::new();
+        let archetypes: Archetypes = Archetypes::new();
         assert!(archetypes.get(0).is_empty());
         assert!(archetypes.get(0).types().is_empty());
     }
@@ -182,13 +182,13 @@ mod tests {
             .iter()
             .map(|type_id| {
                 if *type_id == TypeId::of::<u32>() {
-                    Column::<LocalMode, u32>::new().erase()
+                    Column::<u32>::new().erase()
                 } else {
-                    Column::<LocalMode, bool>::new().erase()
+                    Column::<bool>::new().erase()
                 }
             })
             .collect();
-        let mut archetypes: Archetypes<LocalMode> = Archetypes::new();
+        let mut archetypes: Archetypes = Archetypes::new();
         let id = archetypes.register(Archetype::new(types.into(), columns.into_boxed_slice()));
         assert_eq!(archetypes.find(&types), Some(id));
         assert_eq!(archetypes.len(), 2);
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn swap_remove_reports_the_entity_moved_into_the_hole() {
-        let mut archetype = Archetype::<LocalMode>::new(Box::new([]), Box::new([]));
+        let mut archetype = Archetype::new(Box::new([]), Box::new([]));
         let a = Entity::from_raw(0, 0);
         let b = Entity::from_raw(1, 0);
         let c = Entity::from_raw(2, 0);
@@ -214,12 +214,11 @@ mod tests {
     #[test]
     fn component_values_are_stored_and_read_back() {
         let types = [TypeId::of::<u32>()];
-        let columns: Vec<Box<dyn AnyColumn>> = vec![Column::<LocalMode, u32>::new().erase()];
-        let mut archetype: Archetype<LocalMode> =
-            Archetype::new(types.into(), columns.into_boxed_slice());
+        let columns: Vec<Box<dyn AnyColumn>> = vec![Column::<u32>::new().erase()];
+        let mut archetype: Archetype = Archetype::new(types.into(), columns.into_boxed_slice());
         archetype.push_erased(TypeId::of::<u32>(), Box::new(7u32));
         archetype.push_entity(Entity::from_raw(0, 0));
-        let value = archetype.cell::<u32>(0).unwrap().try_read().unwrap();
+        let value = archetype.cell::<u32>(0).unwrap().try_borrow().unwrap();
         assert_eq!(*value, 7);
     }
 }

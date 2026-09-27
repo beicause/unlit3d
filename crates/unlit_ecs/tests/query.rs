@@ -1,6 +1,6 @@
 //! Querying entities through the public API.
 
-use unlit_ecs::{Entity, LocalWorld, Or, With, Without};
+use unlit_ecs::{Entity, Or, With, Without, World};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -20,8 +20,8 @@ struct Visible;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Hidden;
 
-fn scene() -> (LocalWorld, Entity, Entity, Entity) {
-    let mut world = LocalWorld::new();
+fn scene() -> (World, Entity, Entity, Entity) {
+    let mut world = World::new();
     // Moving and visible.
     let mover = world.spawn((
         Position { x: 0.0, y: 0.0 },
@@ -241,7 +241,7 @@ fn iteration_is_deterministic_between_runs() {
 
 #[test]
 fn a_query_skips_an_empty_archetype() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     // Creating and emptying an archetype must not confuse iteration.
     let entity = world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 1.0 }));
     world.despawn(entity);
@@ -255,7 +255,7 @@ fn a_query_skips_an_empty_archetype() {
 #[test]
 #[should_panic(expected = "already borrowed")]
 fn asking_for_the_same_component_twice_panics() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     world.spawn((Position { x: 0.0, y: 0.0 },));
 
     // Both items stay alive, so the second exclusive borrow must fail.
@@ -266,7 +266,7 @@ fn asking_for_the_same_component_twice_panics() {
 #[test]
 #[should_panic(expected = "already borrowed")]
 fn reading_a_component_while_it_is_written_panics() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Position { x: 0.0, y: 0.0 },));
 
     let _writing = world.get_mut::<Position>(entity).unwrap();

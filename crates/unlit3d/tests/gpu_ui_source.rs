@@ -281,7 +281,7 @@ fn count_in(frame: &Frame, x0: u32, x1: u32, color: egui::Color32, tolerance: u8
 
 /// A UI-only world: a frame context, a renderer and a `UiSource`, with no
 /// `MeshSource` and no camera.
-fn ui_only_world(world: &mut LocalWorld, ctx: &Ctx) -> TestGpu {
+fn ui_only_world(world: &mut World, ctx: &Ctx) -> TestGpu {
     let gpu = TestGpu::frame_only(world, ctx);
     spawn_source(world, UiSource::new());
     gpu
@@ -290,7 +290,7 @@ fn ui_only_world(world: &mut LocalWorld, ctx: &Ctx) -> TestGpu {
 /// Spawn an `InputState` stating the window's size and density.
 ///
 /// The UI reads both from it, so this is how a test sets the pixel density.
-fn spawn_input(world: &mut LocalWorld, scale_factor: f32) {
+fn spawn_input(world: &mut World, scale_factor: f32) {
     let input = world.spawn((InputState::default(),));
     let _ = world.with_mut::<InputState, _>(input, |state| {
         state.set_size_px(WIDTH, HEIGHT);
@@ -299,7 +299,7 @@ fn spawn_input(world: &mut LocalWorld, scale_factor: f32) {
 }
 
 /// Spawn the load ops every UI test opens its pass with.
-fn spawn_load_ops(world: &mut LocalWorld) {
+fn spawn_load_ops(world: &mut World) {
     world.spawn((RenderLoadOps {
         color: wgpu::LoadOp::Clear(CLEAR_COLOR),
         ..RenderLoadOps::default()
@@ -317,7 +317,7 @@ fn spawn_load_ops(world: &mut LocalWorld) {
 #[test]
 fn ui_only_with_two_panels() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
 
@@ -365,7 +365,7 @@ fn ui_only_with_two_panels() {
 #[test]
 fn ui_only_clears_to_load_ops() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
 
@@ -399,7 +399,7 @@ fn ui_only_clears_to_load_ops() {
 fn ui_only_multisampled_and_srgb() {
     const SAMPLES: u32 = 4;
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
 
@@ -435,7 +435,7 @@ fn ui_only_multisampled_and_srgb() {
 fn ui_only_at_high_pixel_density() {
     const PPP: f32 = 2.0;
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
     spawn_input(&mut world, PPP);
@@ -484,7 +484,7 @@ fn ui_only_at_high_pixel_density() {
 // ---------------------------------------------------------------------------
 
 /// A world with a cube drawn through the mesh source.
-fn mesh_world(ctx: &Ctx, world: &mut LocalWorld) -> TestGpu {
+fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
     let gpu = TestGpu::new(world, ctx);
     let key = gpu.key.clone();
     let mesh = gpu.allocate_cube_mesh(world);
@@ -505,7 +505,7 @@ fn mesh_world(ctx: &Ctx, world: &mut LocalWorld) -> TestGpu {
 ///
 /// The `panel` is the UI, and `ui_first` decides whether it is recorded before
 /// or after the mesh.
-fn mesh_and_ui_frame(ctx: &Ctx, world: &mut LocalWorld, ui_first: bool, panel: UiPanel) -> Frame {
+fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPanel) -> Frame {
     let gpu = mesh_world(ctx, world);
     spawn_load_ops(world);
 
@@ -540,10 +540,10 @@ fn mesh_and_ui_respects_source_order() {
     const OPAQUE_BLUE: egui::Color32 = egui::Color32::from_rgb(0, 0, 255);
 
     let ctx = Ctx::headless();
-    let mut ui_last = LocalWorld::new();
+    let mut ui_last = World::new();
     let ui_on_top = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE));
 
-    let mut ui_first = LocalWorld::new();
+    let mut ui_first = World::new();
     let mesh_on_top = mesh_and_ui_frame(&ctx, &mut ui_first, true, band_panel(OPAQUE_BLUE));
 
     // The overlap lies over the cube, so whichever source records last wins.
@@ -588,7 +588,7 @@ fn ui_does_not_clip_the_mesh() {
     /// A clip region in one corner, far from the cube.
     const CLIP: f32 = 32.0;
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
 
@@ -635,7 +635,7 @@ fn ui_does_not_clip_the_mesh() {
 #[test]
 fn mesh_and_ui_survive_a_second_frame() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
 
@@ -695,7 +695,7 @@ fn burst_panel(extra: Entity) -> UiPanel {
 /// room to spare. How much geometry a frame holds must not change where its
 /// vertices are read from.
 fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = ui_only_world(&mut world, ctx);
     spawn_load_ops(&mut world);
 
@@ -810,7 +810,7 @@ fn patched_texture() -> UiPanel {
 #[test]
 fn a_patched_texture_shows_the_patch() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
 

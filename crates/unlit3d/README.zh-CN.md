@@ -185,7 +185,7 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 
 **界面本身就是行为组件，不是源上的闭包字段。** 这与「调用者即系统」的约定一致：源是
 驱动器，它决定调用哪些面板、以什么顺序；面板要记状态就放在它自己的兄弟组件里（行为
-组件运行期间被借用，不能重入借用自己）；面板拿到 `&LocalWorld`，可以读写组件、也可以
+组件运行期间被借用，不能重入借用自己）；面板拿到 `&World`，可以读写组件、也可以
 `queue()` 结构变更。因此多个面板就是多个实体，可以按需增删，第三方也能定义自己的
 面板类组件由源筛选——源本身不需要知道有哪些界面。
 
@@ -217,7 +217,7 @@ use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 
 let (device, queue) =
     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-let mut world = LocalWorld::new();
+let mut world = World::new();
 
 // 1. Spawn the frame's GPU context, the built-in mesh source and the
 //    frame driver, and register the built-in unlit family.
@@ -310,7 +310,7 @@ UI 面板是行为组件，所以挂载一个界面就是一次普通的 spawn�
 # {
 use unlit3d::prelude::*;
 
-let mut world = LocalWorld::new();
+let mut world = World::new();
 world.spawn((UiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),));
@@ -343,7 +343,7 @@ egui 的事件。
   「接触点」逐个记录（`PointerContact`，由种类与 id 标识），因此多指同时按下时抬起
   一根不会误判为手势结束。
 - **分发由调用方在帧循环里显式调用**，不由 `render` 内部自动进行。原因：回调内排队的
-  结构变更需要 `&mut world` 才能落地，而 `render` 只拿得到 `&LocalWorld`；自动分发会
+  结构变更需要 `&mut world` 才能落地，而 `render` 只拿得到 `&World`；自动分发会
   让回调排队的变更延迟到下一次外部 `apply`，且这个延迟对用户不可见。显式调用也让调用
   方掌控分发时机与顺序，与「调用者即系统」一致。
 - 分发**直接遍历**行为组件即可，不需要先收集实体：回调借用的是不同实体的不同 cell，

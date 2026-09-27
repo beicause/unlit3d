@@ -25,7 +25,7 @@
 //! // borrowed while it runs, so it cannot keep state in itself.
 //! struct Presses(u32);
 //!
-//! let mut world = LocalWorld::new();
+//! let mut world = World::new();
 //! // The events of one frame, accumulated by whatever translates them.
 //! let input = world.spawn((InputState::default(),));
 //! // A behaviour that reacts to the keyboard.
@@ -67,7 +67,7 @@
 use core::ops::Deref;
 
 use bitflags::bitflags;
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{Entity, World};
 
 #[cfg(feature = "winit")]
 pub mod winit;
@@ -665,7 +665,7 @@ pub enum InputEvent {
 /// // that borrow legal.
 /// struct CtrlPresses(u32);
 ///
-/// let mut world = LocalWorld::new();
+/// let mut world = World::new();
 /// let input = world.spawn((InputState::default(),));
 /// let observer = world.spawn((
 ///     CtrlPresses(0),
@@ -900,7 +900,7 @@ impl InputState {
 
 /// A callback that may read and write the world, and receives the entity it
 /// runs for together with one event.
-type EventCallback<E> = Box<dyn FnMut(&LocalWorld, Entity, &E)>;
+type EventCallback<E> = Box<dyn FnMut(&World, Entity, &E)>;
 
 /// Declares one behaviour component over an event type.
 ///
@@ -919,12 +919,12 @@ macro_rules! behaviour {
 
         impl $name {
             #[doc = concat!("Wrap `f` as an [`", stringify!($name), "`].")]
-            pub fn new(f: impl FnMut(&LocalWorld, Entity, &$event) + 'static) -> Self {
+            pub fn new(f: impl FnMut(&World, Entity, &$event) + 'static) -> Self {
                 Self(Box::new(f))
             }
 
             #[doc = concat!("Run this behaviour for `entity` with `event`.")]
-            pub fn run(&mut self, world: &LocalWorld, entity: Entity, event: &$event) {
+            pub fn run(&mut self, world: &World, entity: Entity, event: &$event) {
                 (self.0)(world, entity, event);
             }
         }
@@ -957,7 +957,7 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// Run the world's behaviour components once for each event of the frame.
 ///
 /// Returns whether any event was delivered, so a caller can skip the
-/// [`LocalWorld::apply`] that would otherwise follow an empty dispatch. With
+/// [`World::apply`] that would otherwise follow an empty dispatch. With
 /// no [`InputState`] resource in the world this does nothing and returns
 /// `false`: a world that never asked for input has nothing to deliver, and
 /// that is not an error.
@@ -990,7 +990,7 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 ///   different cells.
 /// - A callback must not re-enter this function for the same component type.
 ///
-/// Structural changes queue through [`LocalWorld::queue`] and land when the
+/// Structural changes queue through [`World::queue`] and land when the
 /// caller applies them. The caller applies **once**, after the whole dispatch,
 /// not between callbacks: the behaviour components are iterated directly, so
 /// the world is borrowed for the duration and cannot be applied to. Typically
@@ -998,12 +998,12 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 ///
 /// ```
 /// # use unlit3d::prelude::*;
-/// # let mut world = LocalWorld::new();
+/// # let mut world = World::new();
 /// if dispatch_input(&world) {
 ///     world.apply();
 /// }
 /// ```
-pub fn dispatch_input(world: &LocalWorld) -> bool {
+pub fn dispatch_input(world: &World) -> bool {
     let Some(events) = world
         .query::<&InputState>()
         .next()
@@ -1123,7 +1123,7 @@ mod tests {
 
     #[test]
     fn each_event_reaches_its_category_and_every_on_input() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let (seen_input, input) = counter();
         let (seen_key, key) = counter();
         let (seen_mouse, mouse) = counter();
@@ -1190,7 +1190,7 @@ mod tests {
     fn one_entity_carries_on_key_and_on_input_together() {
         // The two components are different cells, so a single entity may have
         // both and both run in the same dispatch.
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let (keys, key_count) = counter();
         let (all, all_count) = counter();
 
@@ -1212,7 +1212,7 @@ mod tests {
 
     #[test]
     fn one_behaviour_serves_every_entity_carrying_it() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let (count, seen) = counter();
         for _ in 0..3 {
             let count = count.clone();
@@ -1233,7 +1233,7 @@ mod tests {
     fn a_callback_sees_the_entity_it_sits_on() {
         // The entity a behaviour is passed is the one the component sits on, so
         // a callback can reach its own sibling components.
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let (matches, seen) = counter();
         world.spawn((
             7u32,
@@ -1259,7 +1259,7 @@ mod tests {
     fn a_callback_may_read_and_write_the_input_state() {
         // The events are copied out before the callbacks run, so the resource
         // is not borrowed while they execute.
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let input_entity = world.spawn((InputState::default(),));
         world.spawn((OnKey::new(move |world, _, _| {
             let held = world
@@ -1290,7 +1290,7 @@ mod tests {
     fn a_callback_may_filter_its_siblings_without_disturbing_the_dispatch() {
         // `With` borrows no cell, so a callback may enumerate the entities of
         // its own component type even though one of them is borrowed.
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let (count, seen) = counter();
         world.spawn((OnKey::new(move |world, _, _| {
             let siblings = world.query_filtered::<Entity, With<OnKey>>().count();
@@ -1310,7 +1310,7 @@ mod tests {
 
     #[test]
     fn a_queued_spawn_lands_after_apply() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         world.spawn((OnKey::new(|world, _, _| {
             world.queue().spawn((42u32,));
         }),));
@@ -1328,7 +1328,7 @@ mod tests {
 
     #[test]
     fn a_callback_may_queue_its_own_despawn() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let doomed = world.spawn((OnKey::new(|world, entity, _| {
             world.queue().despawn(entity);
         }),));
@@ -1346,7 +1346,7 @@ mod tests {
 
     #[test]
     fn an_empty_event_list_delivers_nothing() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let (count, seen) = counter();
         world.spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
         world.spawn((InputState::default(),));
@@ -1357,7 +1357,7 @@ mod tests {
 
     #[test]
     fn no_input_state_resource_is_not_an_error() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let (count, seen) = counter();
         world.spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
 
@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn events_without_behaviours_are_delivered_to_nobody() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.push(key_event(Key::A));
@@ -1685,7 +1685,7 @@ mod tests {
     fn a_seeded_state_survives_a_dispatch_and_a_clear() {
         // The documented frame loop, end to end: deliver, apply, clear, and
         // the state a later frame reads is still there.
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let input_entity = world.spawn((InputState::default(),));
         let _ = world.with_mut::<InputState, _>(input_entity, |state| {
             state.set_size_px(800, 600);
@@ -1710,7 +1710,7 @@ mod tests {
     fn a_behaviour_cannot_reborrow_its_own_component() {
         // The boundary a callback has to stay inside, pinned here so it cannot
         // regress into a silently different failure.
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         world.spawn((OnKey::new(|world, entity, _| {
             let _ = world.get::<OnKey>(entity);
         }),));

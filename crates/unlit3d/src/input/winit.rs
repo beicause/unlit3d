@@ -33,7 +33,7 @@
 //! key must not move with the layout. The text the key produced comes from
 //! `KeyEvent::text` instead, as a separate [`TextEvent`].
 
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{Entity, World};
 use winit::event::{
     Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase, WindowEvent,
 };
@@ -92,7 +92,7 @@ impl WinitInput {
     /// The world must not already carry an [`InputState`] from somewhere else:
     /// two of them would split the input stream, and
     /// [`dispatch_input`](super::dispatch_input) reads only the first it finds.
-    pub fn new(world: &mut LocalWorld) -> Self {
+    pub fn new(world: &mut World) -> Self {
         let entity = world.spawn((InputState::default(),));
         Self { entity }
     }
@@ -114,7 +114,7 @@ impl WinitInput {
     /// a touch is a [`TouchEvent`] *and* a [`PointerEvent`]. That is what lets
     /// a device-agnostic drag and a mouse-only one both be written against the
     /// same frame.
-    pub fn on_window_event(&self, world: &LocalWorld, event: &WindowEvent) -> bool {
+    pub fn on_window_event(&self, world: &World, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput { event, .. } => self.on_key(
                 world,
@@ -283,7 +283,7 @@ impl WinitInput {
     /// directly.
     fn on_key(
         &self,
-        world: &LocalWorld,
+        world: &World,
         physical_key: PhysicalKey,
         pressed: bool,
         repeat: bool,
@@ -314,7 +314,7 @@ impl WinitInput {
     /// an [`InnerSizeWriter`](winit::event::InnerSizeWriter) that no other
     /// crate can build. The window size that changes with the factor arrives as
     /// its own [`WindowEvent::Resized`].
-    fn on_scale_factor(&self, world: &LocalWorld, scale_factor: f64) -> bool {
+    fn on_scale_factor(&self, world: &World, scale_factor: f64) -> bool {
         let _ = world.with_mut::<InputState, _>(self.entity, |state| {
             state.set_scale_factor(scale_factor as f32);
         });
@@ -322,7 +322,7 @@ impl WinitInput {
     }
 
     /// Push one event and report that something was pushed.
-    fn emit(&self, world: &LocalWorld, event: InputEvent) -> bool {
+    fn emit(&self, world: &World, event: InputEvent) -> bool {
         world
             .with_mut::<InputState, _>(self.entity, |state| state.push(event))
             .is_some()
@@ -333,7 +333,7 @@ impl WinitInput {
     /// The events keep the order they are given in, which is what lets a
     /// device-specific event precede the device-agnostic one describing the
     /// same action.
-    fn push_all(&self, world: &LocalWorld, events: impl IntoIterator<Item = InputEvent>) -> bool {
+    fn push_all(&self, world: &World, events: impl IntoIterator<Item = InputEvent>) -> bool {
         let mut pushed = false;
         let any = world
             .with_mut::<InputState, _>(self.entity, |state| {
@@ -348,7 +348,7 @@ impl WinitInput {
 
     /// The modifier keys held right now, for an event that does not carry its
     /// own.
-    fn modifiers(&self, world: &LocalWorld) -> Modifiers {
+    fn modifiers(&self, world: &World) -> Modifiers {
         world
             .get::<InputState>(self.entity)
             .map_or_else(Modifiers::default, |state| state.modifiers)
@@ -604,15 +604,15 @@ mod tests {
         PhysicalPosition::new(f64::from(CURSOR[0]), f64::from(CURSOR[1]))
     }
 
-    fn input() -> (LocalWorld, WinitInput) {
-        let mut world = LocalWorld::new();
+    fn input() -> (World, WinitInput) {
+        let mut world = World::new();
         let input = WinitInput::new(&mut world);
         (world, input)
     }
 
     /// The frame's events, copied out so a test can compare them after further
     /// events have been fed in.
-    fn events(world: &LocalWorld, input: &WinitInput) -> Vec<InputEvent> {
+    fn events(world: &World, input: &WinitInput) -> Vec<InputEvent> {
         world
             .get::<InputState>(input.state())
             .unwrap()
@@ -621,7 +621,7 @@ mod tests {
     }
 
     /// Run `f` over the state the adapter feeds.
-    fn state<R>(world: &LocalWorld, input: &WinitInput, f: impl FnOnce(&InputState) -> R) -> R {
+    fn state<R>(world: &World, input: &WinitInput, f: impl FnOnce(&InputState) -> R) -> R {
         let state = world.get::<InputState>(input.state()).unwrap();
         f(&state)
     }

@@ -9,30 +9,30 @@
 
 use core::any::{Any, TypeId};
 
-use crate::mode::{Column, ColumnErase, Mode};
+use crate::column::{AnyColumn, Column};
 
 /// One component of a bundle, erased into the value box the archetype takes.
 pub(crate) type ErasedValue = (TypeId, Box<dyn Any>);
 
 /// A column constructor, keyed by the component type it builds for.
-pub(crate) type ColumnCtor<M> = (TypeId, fn() -> Box<<M as Mode>::ErasedColumn>);
+pub(crate) type ColumnCtor = (TypeId, fn() -> Box<dyn AnyColumn>);
 
 /// The component types, values and column constructors of one completed bundle.
-pub(crate) type FinishedColumns<M> = (Box<[TypeId]>, Vec<ErasedValue>, Vec<ColumnCtor<M>>);
+pub(crate) type FinishedColumns = (Box<[TypeId]>, Vec<ErasedValue>, Vec<ColumnCtor>);
 
 /// Builds the components of one spawn; only [`Bundle`] implementations use it.
-pub struct ArchetypeBuilder<M: Mode> {
+pub struct ArchetypeBuilder {
     values: Vec<ErasedValue>,
-    ctors: Vec<ColumnCtor<M>>,
+    ctors: Vec<ColumnCtor>,
 }
 
-impl<M: Mode> Default for ArchetypeBuilder<M> {
+impl Default for ArchetypeBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<M: Mode> ArchetypeBuilder<M> {
+impl ArchetypeBuilder {
     /// An empty builder.
     pub fn new() -> Self {
         Self {
@@ -42,18 +42,14 @@ impl<M: Mode> ArchetypeBuilder<M> {
     }
 
     /// Add one component.
-    pub fn push<C: 'static>(&mut self, value: C)
-    where
-        Column<M, C>: ColumnErase<M>,
-    {
+    pub fn push<C: 'static>(&mut self, value: C) {
         self.values.push((TypeId::of::<C>(), Box::new(value)));
-        self.ctors
-            .push((TypeId::of::<C>(), Column::<M, C>::eraser()));
+        self.ctors.push((TypeId::of::<C>(), Column::<C>::eraser()));
     }
 
     /// Sorted component types, the component values in the same order, and one
     /// column constructor per type.
-    pub(crate) fn finish(self) -> FinishedColumns<M> {
+    pub(crate) fn finish(self) -> FinishedColumns {
         let Self {
             mut values,
             mut ctors,
@@ -74,23 +70,20 @@ impl<M: Mode> ArchetypeBuilder<M> {
 /// A set of components to spawn an entity with.
 ///
 /// Implemented for the empty tuple and for tuples of one to sixteen components.
-pub trait Bundle<M: Mode> {
+pub trait Bundle {
     /// Insert the bundle's components into the builder.
-    fn put_into(self, builder: &mut ArchetypeBuilder<M>);
+    fn put_into(self, builder: &mut ArchetypeBuilder);
 }
 
-impl<M: Mode> Bundle<M> for () {
-    fn put_into(self, _builder: &mut ArchetypeBuilder<M>) {}
+impl Bundle for () {
+    fn put_into(self, _builder: &mut ArchetypeBuilder) {}
 }
 
 macro_rules! impl_bundle {
     ($($name:ident),*) => {
-        impl<M: Mode, $($name: 'static),*> Bundle<M> for ($($name,)*)
-        where
-            $(Column<M, $name>: ColumnErase<M>,)*
-        {
+        impl<$($name: 'static),*> Bundle for ($($name,)*) {
             #[expect(non_snake_case, reason = "the macro names bindings after the type parameters")]
-            fn put_into(self, builder: &mut ArchetypeBuilder<M>) {
+            fn put_into(self, builder: &mut ArchetypeBuilder) {
                 let ($($name,)*) = self;
                 $(builder.push::<$name>($name);)*
             }

@@ -6,7 +6,7 @@
 //! needs to be drawn.
 
 use glam::Affine3A;
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::mesh::MeshInstance;
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
@@ -53,11 +53,7 @@ pub(crate) struct VisibleMesh {
 /// packed the poses of the meshes that passed culling, so
 /// [`MeshSource::pack_poses`](crate::mesh_source::MeshSource::pack_poses) fills
 /// it in.
-pub(crate) fn collect_visible(
-    world: &LocalWorld,
-    frustum: &FrustumPlanes,
-    out: &mut Vec<VisibleMesh>,
-) {
+pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut Vec<VisibleMesh>) {
     out.clear();
     for (entity, (mesh, transform, color)) in
         world.query::<(&GpuMesh, Option<&Transform>, Option<&InstanceColor>)>()
@@ -120,7 +116,7 @@ mod tests {
 
     #[test]
     fn collect_visible_keeps_only_the_visible_meshes() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         // The root is a lifetime entry point this test never removes through,
         // so a bare placeholder node is enough.
         let mut graph = ResourceGraph::new();

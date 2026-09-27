@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{Entity, World};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -22,7 +22,7 @@ struct Name(&'static str);
 
 #[test]
 fn a_spawned_entity_reads_back_its_components() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Position { x: 1.0, y: 2.0 }, Name("cube")));
 
     assert!(world.contains(entity));
@@ -38,14 +38,14 @@ fn a_spawned_entity_reads_back_its_components() {
 
 #[test]
 fn a_fresh_world_is_empty() {
-    let world = LocalWorld::new();
+    let world = World::new();
     assert!(world.is_empty());
     assert_eq!(world.len(), 0);
 }
 
 #[test]
 fn an_empty_entity_has_no_components() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn_empty();
 
     assert!(world.contains(entity));
@@ -55,7 +55,7 @@ fn an_empty_entity_has_no_components() {
 
 #[test]
 fn components_are_written_through_a_scoped_borrow() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 2.0 }));
 
     // A behaviour reads the entity's own velocity while writing its position.
@@ -73,7 +73,7 @@ fn components_are_written_through_a_scoped_borrow() {
 
 #[test]
 fn get_mut_holds_an_exclusive_borrow() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Position { x: 0.0, y: 0.0 },));
 
     {
@@ -86,14 +86,14 @@ fn get_mut_holds_an_exclusive_borrow() {
 
 #[test]
 fn with_mut_is_none_without_the_component() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Position { x: 0.0, y: 0.0 },));
     assert!(world.with_mut::<Velocity, _>(entity, |_| ()).is_none());
 }
 
 #[test]
 fn a_despawned_handle_never_resolves_to_the_next_entity() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let first = world.spawn((Name("first"),));
 
     assert!(world.despawn(first));
@@ -121,7 +121,7 @@ fn despawning_drops_the_component_values() {
     }
 
     let drops = Rc::new(Cell::new(0));
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Tracked(drops.clone()),));
     assert_eq!(drops.get(), 0);
 
@@ -131,7 +131,7 @@ fn despawning_drops_the_component_values() {
 
 #[test]
 fn a_reserved_handle_becomes_live_only_when_spawned() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.reserve_entity();
 
     assert!(!world.contains(entity));
@@ -145,7 +145,7 @@ fn a_reserved_handle_becomes_live_only_when_spawned() {
 
 #[test]
 fn a_reserved_handle_can_be_released_without_spawning() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let reserved = world.reserve_entity();
 
     assert!(world.release_entity(reserved));
@@ -159,7 +159,7 @@ fn a_reserved_handle_can_be_released_without_spawning() {
 #[test]
 #[should_panic(expected = "already spawned")]
 fn spawning_twice_on_one_handle_panics() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn_empty();
     world.spawn_at(entity, (Name("again"),));
 }
@@ -167,13 +167,13 @@ fn spawning_twice_on_one_handle_panics() {
 #[test]
 #[should_panic(expected = "same component twice")]
 fn a_bundle_cannot_repeat_a_component() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     world.spawn((1u32, 2u32));
 }
 
 #[test]
 fn the_placeholder_handle_refers_to_nothing() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     world.spawn((Name("real"),));
 
     assert!(!world.contains(Entity::PLACEHOLDER));
@@ -191,7 +191,7 @@ fn a_handle_round_trips_through_its_bits() {
 
 #[test]
 fn a_wide_bundle_spawns_every_component() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((
         1u8,
         2u16,
@@ -219,7 +219,7 @@ fn a_wide_bundle_spawns_every_component() {
 
 #[test]
 fn entities_sharing_a_component_set_share_an_archetype() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     world.spawn((Position { x: 0.0, y: 0.0 }, Name("a")));
     let before = world.archetype_count();
 

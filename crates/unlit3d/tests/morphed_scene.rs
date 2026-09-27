@@ -52,7 +52,7 @@ fn camera() -> Camera {
 #[should_panic(expected = "a variant that reads morph positions needs the mesh's morph targets")]
 fn morphing_without_targets_panics() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &[]);
@@ -64,7 +64,7 @@ fn morphing_without_targets_panics() {
 #[should_panic(expected = "a mesh's morph weights must hold one weight per morph target")]
 fn mismatched_morph_weight_count_panics() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     let (positions, _uvs, _colors, _indices) = cube();
@@ -93,7 +93,7 @@ fn mismatched_morph_weight_count_panics() {
 #[should_panic(expected = "a mesh with morph targets needs a `MorphBinding`")]
 fn morphing_without_a_weight_binding_panics() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     let (positions, _uvs, _colors, _indices) = cube();
@@ -114,7 +114,7 @@ fn morphing_without_a_weight_binding_panics() {
 #[test]
 fn meshes_can_share_one_morph_weights() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     let (positions, _uvs, _colors, _indices) = cube();

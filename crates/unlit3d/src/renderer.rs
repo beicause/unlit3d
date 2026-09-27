@@ -14,7 +14,7 @@
 //! [`spawn_context`](crate::source::spawn_context); the renderer keeps the
 //! context's entity ids so it can reach the device and queue every frame.
 
-use unlit_ecs::LocalWorld;
+use unlit_ecs::World;
 use unlit_wgpu::render_attachments::RenderAttachments;
 use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureView};
 use unlit_wgpu::specialize::SurfaceKey;
@@ -38,7 +38,7 @@ use crate::source::{
 /// # use unlit3d::prelude::*;
 /// # use unlit_wgpu::resources::ResourceGraph;
 /// # let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-/// let mut world = LocalWorld::new();
+/// let mut world = World::new();
 /// // The frame's GPU state, the built-in mesh source and the driver itself.
 /// let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
 /// let source = MeshSource::new(&world, ctx);
@@ -129,7 +129,7 @@ impl Renderer {
     /// color view.
     pub fn set_render_target(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         color_view: Option<ResourceId<TextureView>>,
         depth_view: Option<ResourceId<TextureView>>,
         msaa_view: Option<ResourceId<TextureView>>,
@@ -187,7 +187,7 @@ impl Renderer {
     /// The attachments themselves are not touched: this only forgets them, so
     /// the caller removes them from the graph. It is named for the setter it
     /// inverts rather than for *releasing* anything, which the caller does.
-    pub fn unset_render_target(&mut self, world: &LocalWorld) {
+    pub fn unset_render_target(&mut self, world: &World) {
         self.color_view = None;
         self.depth_view = None;
         self.msaa_view = None;
@@ -235,7 +235,7 @@ impl Renderer {
     ///
     /// If no render target is bound, or if the context's device, queue or graph
     /// resource is gone.
-    pub fn render(&mut self, world: &LocalWorld) {
+    pub fn render(&mut self, world: &World) {
         profiling::scope!("renderer.frame");
         let load_ops = frame_load_ops(world);
 
@@ -309,7 +309,7 @@ impl Renderer {
     /// The views are cloned out of the graph, so the returned set borrows
     /// nothing from the renderer. No texture is allocated here: the caller owns
     /// every attachment through the graph.
-    fn attachments(&self, world: &LocalWorld) -> RenderAttachments {
+    fn attachments(&self, world: &World) -> RenderAttachments {
         let graph = world
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
@@ -331,7 +331,7 @@ impl Renderer {
 ///
 /// Load ops are their own component, so they need no particular entity: any
 /// one may carry them, and the renderer reads only the first.
-fn frame_load_ops(world: &LocalWorld) -> RenderLoadOps {
+fn frame_load_ops(world: &World) -> RenderLoadOps {
     world
         .query::<&RenderLoadOps>()
         .next()
@@ -344,14 +344,14 @@ mod tests {
 
     #[test]
     fn a_world_without_load_ops_clears_with_the_defaults() {
-        let world = LocalWorld::new();
+        let world = World::new();
 
         assert_eq!(frame_load_ops(&world), RenderLoadOps::default());
     }
 
     #[test]
     fn load_ops_are_read_from_any_entity() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         // The entity carries load ops and nothing else: the component needs
         // no camera, no transform and no mesh to take effect.
         world.spawn((RenderLoadOps {
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn the_first_load_ops_entity_wins() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let first = world.spawn((RenderLoadOps {
             depth: wgpu::LoadOp::Load,
             ..Default::default()

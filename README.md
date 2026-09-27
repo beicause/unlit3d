@@ -185,7 +185,7 @@ Per-crate notes:
 
 | Crate | What its tests cover |
 |-------|----------------------|
-| [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour, deferred commands, and that `SendWorld` can be shared across threads. No GPU, so it runs anywhere. |
+| [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour and deferred commands. No GPU, so it runs anywhere. |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | Unit tests plus GPU integration tests that render meshes into offscreen textures and compare them against the snapshots under `tests/snapshots` (a symlink into the asset submodule). |
 | [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | Nothing of its own: it is the harness the other crates' GPU tests use. |

@@ -18,8 +18,8 @@
 //! way.
 //!
 //! `````
-//! # use unlit_ecs::LocalWorld;
-//! let mut world = LocalWorld::new();
+//! # use unlit_ecs::World;
+//! let mut world = World::new();
 //!
 //! let entity = {
 //!     let commands = world.queue();
@@ -33,37 +33,22 @@
 
 use crate::bundle::Bundle;
 use crate::entity::Entity;
-use crate::mode::{LocalMode, Mode, SendMode};
 use crate::world::World;
 
 /// A structural change that can be applied later.
-///
-/// The `Send + Sync` bound belongs to [`CommandErase`]'s `SendMode`
-/// implementation rather than to this trait, so a `!Send` world may queue a
-/// command that carries `!Send` state.
-pub trait Command<M: Mode>: 'static {
+pub trait Command: 'static {
     /// Apply the change to the world.
-    fn apply(self: Box<Self>, world: &mut World<M>);
+    fn apply(self: Box<Self>, world: &mut World);
 }
 
-/// Erases a command into a mode's command storage.
-///
-/// The `Send` implementation is only available for commands that are
-/// `Send + Sync`, which is what keeps [`SendWorld`](crate::SendWorld) `Send`
-/// and `Sync`.
-pub trait CommandErase<M: Mode>: Command<M> {
+/// Erases a command into the world's command storage.
+pub trait CommandErase: Command {
     /// Erase the command.
-    fn erase(self) -> Box<M::ErasedCommand>;
+    fn erase(self) -> Box<dyn Command>;
 }
 
-impl<C: Command<LocalMode>> CommandErase<LocalMode> for C {
-    fn erase(self) -> Box<dyn Command<LocalMode>> {
-        Box::new(self)
-    }
-}
-
-impl<C: Command<SendMode> + Send + Sync> CommandErase<SendMode> for C {
-    fn erase(self) -> Box<dyn Command<SendMode> + Send + Sync> {
+impl<C: Command> CommandErase for C {
+    fn erase(self) -> Box<dyn Command> {
         Box::new(self)
     }
 }
@@ -72,12 +57,12 @@ impl<C: Command<SendMode> + Send + Sync> CommandErase<SendMode> for C {
 ///
 /// The queue lives in the world, so deferring a spawn from a callback to the
 /// driver needs no channel.
-pub struct Commands<'w, M: Mode> {
-    world: &'w World<M>,
+pub struct Commands<'w> {
+    world: &'w World,
 }
 
-impl<'w, M: Mode> Commands<'w, M> {
-    pub(crate) fn new(world: &'w World<M>) -> Self {
+impl<'w> Commands<'w> {
+    pub(crate) fn new(world: &'w World) -> Self {
         Self { world }
     }
 
@@ -86,13 +71,7 @@ impl<'w, M: Mode> Commands<'w, M> {
     /// The handle is reserved now and refers to a live entity once the queue is
     /// applied.
     ///
-    /// The bundled components must be [`CommandErase`]-able for this mode:
-    /// `Send + Sync` for a [`SendWorld`](crate::SendWorld), unconstrained for
-    /// a [`LocalWorld`](crate::LocalWorld).
-    pub fn spawn<B: Bundle<M> + 'static>(&self, bundle: B) -> Entity
-    where
-        Spawn<B>: CommandErase<M>,
-    {
+    pub fn spawn<B: Bundle + 'static>(&self, bundle: B) -> Entity {
         let entity = self.world.reserve_entity();
         self.push(Spawn {
             entity,
@@ -102,15 +81,12 @@ impl<'w, M: Mode> Commands<'w, M> {
     }
 
     /// Queue the despawn of `entity`.
-    pub fn despawn(&self, entity: Entity)
-    where
-        Despawn: CommandErase<M>,
-    {
+    pub fn despawn(&self, entity: Entity) {
         self.push(Despawn { entity });
     }
 
     /// Queue a command.
-    pub fn push<C: Command<M> + CommandErase<M>>(&self, command: C) {
+    pub fn push<C: Command + CommandErase>(&self, command: C) {
         self.world.push_command(command.erase());
     }
 }
@@ -122,8 +98,8 @@ pub struct Spawn<B> {
     bundle: Option<B>,
 }
 
-impl<M: Mode, B: Bundle<M> + 'static> Command<M> for Spawn<B> {
-    fn apply(mut self: Box<Self>, world: &mut World<M>) {
+impl<B: Bundle + 'static> Command for Spawn<B> {
+    fn apply(mut self: Box<Self>, world: &mut World) {
         let bundle = self.bundle.take().expect("a command is applied only once");
         world.spawn_at(self.entity, bundle);
     }
@@ -135,20 +111,20 @@ pub struct Despawn {
     pub entity: Entity,
 }
 
-impl<M: Mode> Command<M> for Despawn {
-    fn apply(self: Box<Self>, world: &mut World<M>) {
+impl Command for Despawn {
+    fn apply(self: Box<Self>, world: &mut World) {
         world.despawn(self.entity);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::LocalWorld;
+    use crate::World;
     use crate::tests_common::Marker;
 
     #[test]
     fn a_queued_spawn_only_happens_on_apply() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let entity = {
             let commands = world.queue();
             commands.spawn((Marker(1),))
@@ -161,7 +137,7 @@ mod tests {
 
     #[test]
     fn a_queued_despawn_happens_on_apply() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let entity = world.spawn((Marker(1),));
         world.queue().despawn(entity);
         assert!(world.contains(entity));
@@ -171,7 +147,7 @@ mod tests {
 
     #[test]
     fn commands_queued_while_applying_are_applied_too() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         world.spawn(("first",));
         let second = {
             let commands = world.queue();
@@ -192,7 +168,7 @@ mod tests {
 
     #[test]
     fn applying_an_empty_queue_does_nothing() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         world.apply();
         assert!(world.is_empty());
     }

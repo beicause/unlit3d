@@ -28,7 +28,7 @@ fn camera() -> Camera {
 #[should_panic(expected = "a variant that reads joints needs the mesh's joints")]
 fn skinning_without_skin_data_panics() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
     gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &[]);
@@ -40,7 +40,7 @@ fn skinning_without_skin_data_panics() {
 #[should_panic(expected = "a skinned mesh needs a `SkinBinding`")]
 fn skinning_without_a_pose_binding_panics() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
     let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
@@ -55,7 +55,7 @@ fn skinning_without_a_pose_binding_panics() {
 #[test]
 fn meshes_can_share_one_skin_pose() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
     let (first, skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);

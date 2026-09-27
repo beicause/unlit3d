@@ -25,7 +25,7 @@ pub const SURFACE: SurfaceKey = SurfaceKey {
 
 /// A world of cubes and the source that draws them.
 pub struct Frame {
-    world: LocalWorld,
+    world: World,
     context: RenderContext,
     source: MeshSource,
 }
@@ -44,7 +44,7 @@ impl Frame {
 
     fn new(count: u32, spread: f32) -> Self {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let context = spawn_context(&mut world, device, queue, ResourceGraph::new());
         let mut source = MeshSource::new(&world, context);
 

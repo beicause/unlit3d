@@ -9,7 +9,7 @@
 //!
 //! The GPU state it draws with lives in the world, addressed by the
 //! [`RenderContext`] it was created with: every setup-time method takes
-//! `&LocalWorld` and fetches the device, the queue and the resource graph
+//! `&World` and fetches the device, the queue and the resource graph
 //! itself, so the source never holds a borrow of them between calls.
 
 use arrayvec::ArrayVec;
@@ -18,7 +18,7 @@ use core::ops::DerefMut;
 use hashbrown::HashMap;
 use std::sync::Arc;
 
-use unlit_ecs::{LocalWorld, TypeIdHashMap};
+use unlit_ecs::{TypeIdHashMap, World};
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
@@ -533,7 +533,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If `ctx` does not name the world's device, queue and resource graph.
-    pub fn new(world: &LocalWorld, ctx: RenderContext) -> Self {
+    pub fn new(world: &World, ctx: RenderContext) -> Self {
         let device = world
             .get::<wgpu::Device>(ctx.device)
             .expect("the context names the world's device")
@@ -672,7 +672,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's device resource is gone.
-    pub fn device(&self, world: &LocalWorld) -> wgpu::Device {
+    pub fn device(&self, world: &World) -> wgpu::Device {
         world
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
@@ -684,7 +684,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's queue resource is gone.
-    pub fn queue(&self, world: &LocalWorld) -> wgpu::Queue {
+    pub fn queue(&self, world: &World) -> wgpu::Queue {
         world
             .get::<wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
@@ -701,7 +701,7 @@ impl MeshSource {
     ///
     /// If the context's graph resource is gone.
     pub fn graph<'w>(
-        world: &'w LocalWorld,
+        world: &'w World,
         ctx: RenderContext,
     ) -> impl DerefMut<Target = ResourceGraph> + 'w {
         world
@@ -733,7 +733,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If a family is already registered for `K`.
-    pub fn register_family<K, D, S, F>(&mut self, world: &LocalWorld, specializer: S, factory: F)
+    pub fn register_family<K, D, S, F>(&mut self, world: &World, specializer: S, factory: F)
     where
         K: RenderPipelineKey<Descriptor = D> + 'static,
         D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
@@ -772,7 +772,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the unlit family is already registered.
-    pub fn register_unlit_family(&mut self, world: &LocalWorld) {
+    pub fn register_unlit_family(&mut self, world: &World) {
         self.register_family::<UnlitPipelineKey, _, _, _>(
             world,
             UnlitDrawSpecializer,
@@ -799,7 +799,7 @@ impl MeshSource {
     ///
     /// If `count` is zero for a non-empty draw, or if the index format does
     /// not match the packed data.
-    pub fn allocate_mesh(&mut self, world: &LocalWorld, desc: MeshDesc) -> GpuMesh {
+    pub fn allocate_mesh(&mut self, world: &World, desc: MeshDesc) -> GpuMesh {
         let metadata = MeshMetadata {
             aabb_center: desc.aabb.center,
             aabb_half_extents: desc.aabb.half_extents,
@@ -820,7 +820,7 @@ impl MeshSource {
     /// a skinned draw can be required to name the pose entity it deforms by.
     fn allocate_mesh_with_metadata(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         desc: MeshDesc,
         metadata: MeshMetadata,
         skinned: bool,
@@ -1015,7 +1015,7 @@ impl MeshSource {
     /// positions but [`UnlitMeshDesc::morph_targets`] is empty.
     pub fn allocate_unlit_mesh(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         key: &UnlitPipelineKey,
         desc: UnlitMeshDesc<'_>,
     ) -> GpuMesh {
@@ -1352,7 +1352,7 @@ impl MeshSource {
     /// graph holds it.
     pub fn register_texture_and_default_view(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         texture: wgpu::Texture,
     ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
         let mut graph = Self::graph(world, self.context);
@@ -1370,7 +1370,7 @@ impl MeshSource {
     /// insert it into the resource graph and return its id.
     pub fn register_sampler(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         descriptor: Option<wgpu::SamplerDescriptor<'_>>,
     ) -> ResourceId<wgpu::Sampler> {
         let sampler = self
@@ -1394,7 +1394,7 @@ impl MeshSource {
     /// graph.
     pub fn allocate_unlit_material(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         key: &UnlitPipelineKey,
         view_id: ResourceId<TextureView>,
         sampler_id: ResourceId<wgpu::Sampler>,
@@ -1453,7 +1453,7 @@ impl MeshSource {
     /// If a resource named in `entries` is not in the graph.
     pub fn allocate_material(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         layout: &wgpu::BindGroupLayout,
         entries: &[wgpu::BindGroupEntry<'_>],
         dependencies: impl IntoIterator<Item = ResourceId>,
@@ -1495,7 +1495,7 @@ impl MeshSource {
     ///
     /// Removing a mesh while the world still holds its handle is a programming
     /// error the caller has to avoid: nothing detects the stale handle.
-    pub fn remove_mesh(&mut self, world: &LocalWorld, mesh: GpuMesh) {
+    pub fn remove_mesh(&mut self, world: &World, mesh: GpuMesh) {
         {
             let mut graph = Self::graph(world, self.context);
             graph.remove_drop(mesh.root);
@@ -1526,7 +1526,7 @@ impl MeshSource {
     /// built from — are the caller's and stay in the graph: remove them
     /// separately if nothing else reads them. The [`GpuMaterial`] handle must
     /// not be used afterwards.
-    pub fn remove_material(&mut self, world: &LocalWorld, material: GpuMaterial) {
+    pub fn remove_material(&mut self, world: &World, material: GpuMaterial) {
         let mut graph = Self::graph(world, self.context);
         graph.remove_drop(material.bind_group_id);
         // A resource that only fed this material's bind group is an orphan now.
@@ -1552,7 +1552,7 @@ impl MeshSource {
     /// If a visible mesh deforms but names no pose entity, if that entity
     /// carries no pose component, or if a pose's weight count does not match
     /// the mesh's target count.
-    fn pack_poses(&mut self, world: &LocalWorld) {
+    fn pack_poses(&mut self, world: &World) {
         // Split the borrows: the packed arrays grow while the visible entries
         // are written.
         let Self {
@@ -1621,7 +1621,7 @@ impl MeshSource {
     ///
     /// Like the metadata array the buffer is recreated only when it is too
     /// small, so a steady frame rewrites in place and rebuilds no bind group.
-    fn upload_joints(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_joints(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
         let needed = self.packed_joints.len().max(1) as u32;
         if needed > self.joints_capacity {
             let capacity = grown_capacity(self.joints_capacity, needed);
@@ -1654,7 +1654,7 @@ impl MeshSource {
 
     /// Grow the frame's morph-weight buffer if the packed array outgrew it, and
     /// upload the array through the frame's encoder.
-    fn upload_morph_weights(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_morph_weights(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
         let needed = self.packed_morph_weights.len().max(1) as u32;
         if needed > self.morph_weights_capacity {
             let capacity = grown_capacity(self.morph_weights_capacity, needed);
@@ -1686,7 +1686,7 @@ impl MeshSource {
     // -- internal helpers ------------------------------------------------------
 
     /// The source's global buffers, cloned out of the resource graph.
-    fn render_resources(&self, world: &LocalWorld) -> RenderResources {
+    fn render_resources(&self, world: &World) -> RenderResources {
         let graph = Self::graph(world, self.context);
         RenderResources {
             camera: graph.get(self.camera_buf).expect("camera buf").clone(),
@@ -1706,7 +1706,7 @@ impl MeshSource {
     /// Each pipeline supplies its own rebuild closure, so a replacement of the
     /// camera, globals or metadata buffer refreshes the built-in unlit
     /// pipeline and any custom one that binds those buffers alike.
-    fn rebuild_dirty_global_groups(&mut self, world: &LocalWorld) {
+    fn rebuild_dirty_global_groups(&mut self, world: &World) {
         let resources = self.render_resources(world);
         // Walked by index rather than collected into a `Vec` first: this runs
         // on the frame path, and the replacement below needs the graph
@@ -1734,12 +1734,7 @@ impl MeshSource {
 
     /// Upload the camera uniform, staging the bytes through the frame's
     /// encoder.
-    fn upload_camera(
-        &mut self,
-        world: &LocalWorld,
-        encoder: &mut wgpu::CommandEncoder,
-        view: &View,
-    ) {
+    fn upload_camera(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder, view: &View) {
         let buffer = Self::graph(world, self.context)
             .get(self.camera_buf)
             .expect("camera buffer exists")
@@ -1750,7 +1745,7 @@ impl MeshSource {
 
     /// Upload the frame-globals uniform, staging the bytes through the frame's
     /// encoder.
-    fn upload_globals(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_globals(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
         let buffer = Self::graph(world, self.context)
             .get(self.globals_buf)
             .expect("globals buffer exists")
@@ -1766,7 +1761,7 @@ impl MeshSource {
 
     /// Pack and upload the frame's instance data, staging the bytes through
     /// the frame's encoder.
-    fn upload_instances(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_instances(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
         self.packed_instances_cache.clear();
         self.packed_instances_cache
             .extend(self.visible_cache.iter().map(|entry| entry.mesh.instance));
@@ -1791,7 +1786,7 @@ impl MeshSource {
     /// in the next frame together with the draws that read it. The storage
     /// buffer is recreated only when the array outgrows it, so a steady scene
     /// rewrites in place and rebuilds no bind group.
-    fn upload_metadata(&mut self, world: &LocalWorld, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_metadata(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
         if !self.metadata_dirty {
             return;
         }
@@ -1834,7 +1829,7 @@ impl MeshSource {
     /// [`MeshSource::sync_pool_node`] for why nothing may depend on it.
     fn vertex_node(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         layout: &VertexBufferLayoutDesc,
     ) -> ResourceId<wgpu::Buffer> {
         if let Some(&id) = self.vertex_pool_ids.get(layout) {
@@ -1856,7 +1851,7 @@ impl MeshSource {
     /// follow it.
     fn sync_vertex_node(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         id: ResourceId<wgpu::Buffer>,
         layout: &VertexBufferLayoutDesc,
     ) {
@@ -1892,7 +1887,7 @@ impl MeshSource {
     }
 
     /// Grow the per-instance buffer geometrically when needed.
-    fn ensure_instance_buffer(&mut self, world: &LocalWorld, count: u32) {
+    fn ensure_instance_buffer(&mut self, world: &World, count: u32) {
         if count <= self.instance_capacity {
             return;
         }
@@ -1916,12 +1911,7 @@ impl MeshSource {
     /// `surface` is the render target this frame draws into; it is threaded
     /// into every entity's pipeline resolution, so each entry's `pipeline_id`
     /// is a concrete pipeline valid for that target.
-    fn collect_and_sort_visible(
-        &mut self,
-        world: &LocalWorld,
-        camera: &Camera,
-        surface: SurfaceKey,
-    ) {
+    fn collect_and_sort_visible(&mut self, world: &World, camera: &Camera, surface: SurfaceKey) {
         let resources = self.render_resources(world);
         let device = self.device(world);
 
@@ -1974,7 +1964,7 @@ impl MeshSource {
     /// [`DrawHandlesKey`] by value rather than the handles themselves, and the
     /// expensive part — reading the mesh component and cloning its buffers out
     /// of the graph — happens once per distinct key instead of once per entity.
-    fn assemble_frame(&mut self, world: &LocalWorld) {
+    fn assemble_frame(&mut self, world: &World) {
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
         {
@@ -2073,7 +2063,7 @@ impl MeshSource {
 impl FrameSource for MeshSource {
     fn build_scene(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         _ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -2184,7 +2174,7 @@ impl FrameSource for MeshSource {
     /// still holds a handle for is released first by
     /// [`MeshSource::remove_mesh`]/[`MeshSource::remove_material`], and the
     /// handles must not be used after this.
-    fn release(&mut self, world: &LocalWorld) {
+    fn release(&mut self, world: &World) {
         let mut graph = Self::graph(world, self.context);
 
         // The pipelines' global groups are strong nodes in their own right, so
@@ -2238,7 +2228,7 @@ mod tests {
     /// itself. The world holds only the frame's context and target; the source
     /// stays outside it and reaches the world through its `RenderContext`.
     struct Harness {
-        world: LocalWorld,
+        world: World,
         source: MeshSource,
         key: UnlitPipelineKey,
         target: FrameTarget,
@@ -2274,7 +2264,7 @@ mod tests {
     /// pipeline the last one was drawn with.
     fn resolve_draw(
         source: &mut MeshSource,
-        world: &LocalWorld,
+        world: &World,
         surface: SurfaceKey,
     ) -> RenderPipelineId {
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
@@ -2288,7 +2278,7 @@ mod tests {
 
     fn harness() -> Harness {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
         let mut source = MeshSource::new(&world, ctx);
         source.register_unlit_family(&world);
@@ -2304,7 +2294,7 @@ mod tests {
 
     /// Register a color texture and a matching depth texture in the context's
     /// graph and state them as the frame's target.
-    fn bind_test_target(world: &mut LocalWorld, ctx: RenderContext) -> FrameTarget {
+    fn bind_test_target(world: &mut World, ctx: RenderContext) -> FrameTarget {
         let device = world
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device")
@@ -2428,7 +2418,7 @@ mod tests {
     #[test]
     fn registering_a_family_compiles_nothing() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
         let mut source = MeshSource::new(&world, ctx);
 
@@ -2443,7 +2433,7 @@ mod tests {
     #[test]
     fn a_source_starts_with_no_pipelines() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
         let source = MeshSource::new(&world, ctx);
 

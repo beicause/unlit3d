@@ -17,7 +17,7 @@ use unlit3d::prelude::*;
 #[test]
 fn ecs_cube_covers_the_frame() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
 
@@ -61,7 +61,7 @@ fn ecs_cube_covers_the_frame() {
 #[test]
 fn ecs_depth_ordering_hides_the_far_instance() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
 
@@ -120,7 +120,7 @@ fn ecs_depth_ordering_hides_the_far_instance() {
 #[test]
 fn removing_a_mesh_leaves_no_resource_behind() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
 
     // A first mesh warms up any lazily created global state, so the second
@@ -165,7 +165,7 @@ fn removing_a_mesh_leaves_no_resource_behind() {
 #[test]
 fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
@@ -267,7 +267,7 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 #[test]
 fn meshes_allocated_across_frames_survive_pool_growth() {
     let ctx = Ctx::headless();
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
     world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));

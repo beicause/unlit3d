@@ -11,7 +11,7 @@
 //!
 //! let (device, queue) =
 //!     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-//! let mut world = LocalWorld::new();
+//! let mut world = World::new();
 //! let _ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
 //!
 //! // The source, and one interface held as a behaviour component. More
@@ -31,7 +31,7 @@
 
 use core::ops::DerefMut;
 
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline};
 use unlit_wgpu::resources::{ResourceGraph, ResourceId};
@@ -61,7 +61,7 @@ pub mod convert;
 
 /// A callback that may read and write the world, and receives the entity it
 /// runs for together with the UI surface its interface is built in.
-type PanelCallback = Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>;
+type PanelCallback = Box<dyn FnMut(&World, Entity, &mut egui::Ui)>;
 
 /// A UI panel: one interface, held as a behaviour component.
 ///
@@ -82,18 +82,18 @@ type PanelCallback = Box<dyn FnMut(&LocalWorld, Entity, &mut egui::Ui)>;
 /// [`UiPanel`] — that is a borrow panic, not a compile error.
 ///
 /// A panel may otherwise read and write the world freely through the
-/// `&LocalWorld` it is handed: `get`, `query` and structural changes queued for
+/// `&World` it is handed: `get`, `query` and structural changes queued for
 /// the frame loop to apply are all available while it runs.
 pub struct UiPanel(pub PanelCallback);
 
 impl UiPanel {
     /// Wrap `f` as a [`UiPanel`].
-    pub fn new(f: impl FnMut(&LocalWorld, Entity, &mut egui::Ui) + 'static) -> Self {
+    pub fn new(f: impl FnMut(&World, Entity, &mut egui::Ui) + 'static) -> Self {
         Self(Box::new(f))
     }
 
     /// Run this panel for `entity`, building its interface in `ui`.
-    pub fn run(&mut self, world: &LocalWorld, entity: Entity, ui: &mut egui::Ui) {
+    pub fn run(&mut self, world: &World, entity: Entity, ui: &mut egui::Ui) {
         (self.0)(world, entity, ui)
     }
 }
@@ -199,7 +199,7 @@ impl UiSource {
     ///
     /// If the context's graph resource is gone.
     fn graph<'w>(
-        world: &'w LocalWorld,
+        world: &'w World,
         ctx: RenderContext,
     ) -> impl DerefMut<Target = ResourceGraph> + 'w {
         world
@@ -211,7 +211,7 @@ impl UiSource {
     ///
     /// The query is rebuilt from scratch on every pass egui runs, which is what
     /// a multi-pass layout needs.
-    fn run_panels(&self, world: &LocalWorld, input: egui::RawInput) -> egui::FullOutput {
+    fn run_panels(&self, world: &World, input: egui::RawInput) -> egui::FullOutput {
         self.ctx.run_ui(input, |ui| {
             for (entity, mut panel) in world.query::<&mut UiPanel>() {
                 panel.run(world, entity, ui);
@@ -282,7 +282,7 @@ impl Default for UiSource {
 impl FrameSource for UiSource {
     fn build_scene(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -433,7 +433,7 @@ impl FrameSource for UiSource {
     /// The integration's own nodes — textures, samplers, materials and the two
     /// geometry buffers — are released through [`EguiIntegration::release`],
     /// since only it knows which nodes it created.
-    fn release(&mut self, world: &LocalWorld) {
+    fn release(&mut self, world: &World) {
         let Some(mut gpu) = self.gpu.take() else {
             return;
         };
@@ -457,7 +457,7 @@ impl FrameSource for UiSource {
 /// — the frame's own setup — and a caller never has to create it. A world
 /// without one is not an error: the UI still draws, and there is simply
 /// nowhere to report what it claimed.
-fn publish_capture(world: &LocalWorld, ctx: &egui::Context) {
+fn publish_capture(world: &World, ctx: &egui::Context) {
     let capture = InputCapture {
         pointer: ctx.egui_wants_pointer_input(),
         keyboard: ctx.egui_wants_keyboard_input(),
@@ -533,15 +533,15 @@ mod tests {
     }
 
     /// A world holding the frame's context, and that context.
-    fn test_world() -> (LocalWorld, RenderContext) {
-        let mut world = LocalWorld::new();
+    fn test_world() -> (World, RenderContext) {
+        let mut world = World::new();
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
         (world, ctx)
     }
 
     /// An encoder to record the frame's uploads into.
-    fn encoder(world: &LocalWorld, ctx: RenderContext) -> wgpu::CommandEncoder {
+    fn encoder(world: &World, ctx: RenderContext) -> wgpu::CommandEncoder {
         world
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device")
@@ -554,7 +554,7 @@ mod tests {
     /// sibling component while it does.
     #[test]
     fn each_panel_runs_once_and_may_write_a_sibling() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let runs = Rc::new(Cell::new(0u32));
         for _ in 0..2 {
             let runs = Rc::clone(&runs);
@@ -657,7 +657,7 @@ mod tests {
         /// The entity a panel asks for.
         struct Spawned;
 
-        let world = LocalWorld::new();
+        let world = World::new();
         let source = UiSource::new();
         let world = Rc::new(RefCell::new(world));
         {
@@ -716,7 +716,7 @@ mod tests {
     /// the entities up front would make the second pass see nothing.
     #[test]
     fn every_pass_drives_every_panel() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let runs = Rc::new(Cell::new(0u32));
         for _ in 0..2 {
             let runs = Rc::clone(&runs);
@@ -762,7 +762,7 @@ mod tests {
         /// Marks a panel as belonging to one layer.
         struct Foreground;
 
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         world.spawn((Foreground, UiPanel::new(|_world, _entity, _ui| {})));
         world.spawn((UiPanel::new(|_world, _entity, _ui| {}),));
 

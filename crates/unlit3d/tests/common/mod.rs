@@ -8,7 +8,7 @@ pub use unlit_wgpu_test_util::{
 };
 
 use core::ops::DerefMut;
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
@@ -25,7 +25,7 @@ pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrg
 /// The frame's GPU context, its mesh source and its frame driver, spawned into
 /// a world the caller owns.
 ///
-/// Keeping the handles apart from the [`LocalWorld`] is what lets a test spawn
+/// Keeping the handles apart from the [`World`] is what lets a test spawn
 /// entities and allocate meshes in the same scope: the helpers borrow the world
 /// shared, so a `&mut world` stays free for structural changes.
 pub struct TestGpu {
@@ -43,7 +43,7 @@ pub struct TestGpu {
 impl TestGpu {
     /// Spawn the frame's context, a mesh source with the built-in unlit family
     /// registered, and the frame driver into `world`.
-    pub fn new(world: &mut LocalWorld, ctx: &Ctx) -> Self {
+    pub fn new(world: &mut World, ctx: &Ctx) -> Self {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(world, test.context);
         source.register_unlit_family(world);
@@ -55,7 +55,7 @@ impl TestGpu {
     ///
     /// What a UI-only test needs: the frame must draw without the 3D path
     /// being present at all.
-    pub fn frame_only(world: &mut LocalWorld, ctx: &Ctx) -> Self {
+    pub fn frame_only(world: &mut World, ctx: &Ctx) -> Self {
         let context = spawn_context(
             world,
             ctx.device.clone(),
@@ -84,8 +84,8 @@ impl TestGpu {
     /// Run `f` on the mesh source.
     pub fn with_mesh_source<R>(
         &self,
-        world: &LocalWorld,
-        f: impl FnOnce(&mut MeshSource, &LocalWorld) -> R,
+        world: &World,
+        f: impl FnOnce(&mut MeshSource, &World) -> R,
     ) -> R {
         let entity = self.mesh_source();
         let mut source = world
@@ -98,18 +98,14 @@ impl TestGpu {
     }
 
     /// Run `f` on the frame driver.
-    pub fn with_renderer<R>(
-        &self,
-        world: &LocalWorld,
-        f: impl FnOnce(&mut Renderer, &LocalWorld) -> R,
-    ) -> R {
+    pub fn with_renderer<R>(&self, world: &World, f: impl FnOnce(&mut Renderer, &World) -> R) -> R {
         world
             .with_mut::<Renderer, _>(self.renderer, |renderer| f(renderer, world))
             .expect("the renderer entity exists")
     }
 
     /// The frame's resource graph.
-    pub fn graph<'w>(&self, world: &'w LocalWorld) -> impl DerefMut<Target = ResourceGraph> + 'w {
+    pub fn graph<'w>(&self, world: &'w World) -> impl DerefMut<Target = ResourceGraph> + 'w {
         world
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's graph exists")
@@ -122,7 +118,7 @@ impl TestGpu {
     /// target: nothing here belongs to the 3D path.
     pub fn register_texture(
         &self,
-        world: &LocalWorld,
+        world: &World,
         texture: wgpu::Texture,
     ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
         let mut graph = self.graph(world);
@@ -139,7 +135,7 @@ impl TestGpu {
     }
 
     /// Allocate a cube mesh through the source.
-    pub fn allocate_cube_mesh(&self, world: &LocalWorld) -> GpuMesh {
+    pub fn allocate_cube_mesh(&self, world: &World) -> GpuMesh {
         self.allocate_offset_cube_mesh(world, glam::Vec3::ZERO)
     }
 
@@ -149,7 +145,7 @@ impl TestGpu {
     /// The offset is baked into the vertices, so two cubes allocated from
     /// different offsets draw differently even at the same transform — which is
     /// what tells a mesh apart from the one whose pool range it sits next to.
-    pub fn allocate_offset_cube_mesh(&self, world: &LocalWorld, offset: glam::Vec3) -> GpuMesh {
+    pub fn allocate_offset_cube_mesh(&self, world: &World, offset: glam::Vec3) -> GpuMesh {
         let (positions, uvs, colors, indices) = cube();
         let positions = positions
             .into_iter()
@@ -181,7 +177,7 @@ impl TestGpu {
     ///
     /// `steps` cubes per axis means `steps³` cubes, which is what makes a pool
     /// grow inside a test.
-    pub fn allocate_grid_cube_mesh(&self, world: &LocalWorld, steps: u32) -> GpuMesh {
+    pub fn allocate_grid_cube_mesh(&self, world: &World, steps: u32) -> GpuMesh {
         let (positions, uvs, colors, indices) = grid_cube(steps);
         self.with_mesh_source(world, |source, world| {
             source.allocate_unlit_mesh(
@@ -199,7 +195,7 @@ impl TestGpu {
     }
 
     /// Free `mesh` through the source.
-    pub fn remove_mesh(&self, world: &LocalWorld, mesh: GpuMesh) {
+    pub fn remove_mesh(&self, world: &World, mesh: GpuMesh) {
         self.with_mesh_source(world, |source, world| source.remove_mesh(world, mesh));
     }
 
@@ -216,7 +212,7 @@ impl TestGpu {
     /// entities.
     pub fn allocate_deformed_cube_mesh(
         &self,
-        world: &LocalWorld,
+        world: &World,
         key: &UnlitPipelineKey,
         joints: Option<&[[u16; 4]]>,
         weights: Option<&[[f32; 4]]>,
@@ -247,7 +243,7 @@ impl TestGpu {
     /// its per-vertex blend cannot drift from the geometry it deforms.
     pub fn allocate_bent_cube_mesh(
         &self,
-        world: &LocalWorld,
+        world: &World,
         key: &UnlitPipelineKey,
         angle: f32,
     ) -> (GpuMesh, BendSkin) {
@@ -278,7 +274,7 @@ impl TestGpu {
     /// with a [`MorphBinding`].
     pub fn allocate_morphed_cube_mesh(
         &self,
-        world: &LocalWorld,
+        world: &World,
         key: &UnlitPipelineKey,
         targets: &[UnlitMorphTarget<'_>],
     ) -> GpuMesh {
@@ -288,7 +284,7 @@ impl TestGpu {
     /// Allocate an offscreen colour target and a matching depth-stencil target,
     /// register their views in the frame's resource graph, and bind them as the
     /// renderer's render target. Returns the colour texture (for readback).
-    pub fn bind_offscreen_target(&self, world: &LocalWorld, _label: &str) -> wgpu::Texture {
+    pub fn bind_offscreen_target(&self, world: &World, _label: &str) -> wgpu::Texture {
         self.bind_offscreen_target_with(world, 1, true)
     }
 
@@ -300,7 +296,7 @@ impl TestGpu {
     /// attachment — `wgpu` rejects the pass otherwise.
     pub fn bind_offscreen_target_with(
         &self,
-        world: &LocalWorld,
+        world: &World,
         samples: u32,
         with_depth: bool,
     ) -> wgpu::Texture {
@@ -335,14 +331,14 @@ impl TestGpu {
     /// Bind the offscreen target for `label` and render one frame.
     ///
     /// Returns the colour texture the frame was drawn into, ready to read back.
-    pub fn render_to_offscreen(&self, world: &LocalWorld, label: &str) -> wgpu::Texture {
+    pub fn render_to_offscreen(&self, world: &World, label: &str) -> wgpu::Texture {
         let target = self.bind_offscreen_target(world, label);
         self.render(world);
         target
     }
 
     /// Render one frame from the world.
-    pub fn render(&self, world: &LocalWorld) {
+    pub fn render(&self, world: &World) {
         self.with_renderer(world, |renderer, world| renderer.render(world));
     }
 
@@ -350,7 +346,7 @@ impl TestGpu {
     ///
     /// A UI test needs two: egui only learns its font metrics on the second,
     /// so the first is drawn and discarded.
-    pub fn render_frames(&self, world: &LocalWorld, count: u32) {
+    pub fn render_frames(&self, world: &World, count: u32) {
         for _ in 0..count {
             self.render(world);
         }

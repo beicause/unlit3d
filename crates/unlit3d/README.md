@@ -276,7 +276,7 @@ This matches the "the caller is the system" convention: the source is the driver
 and decides which panels to call and in what order; a panel that wants to keep
 state puts it in its own sibling components (a behaviour component is borrowed
 while it runs, so it cannot re-enter a borrow of itself); and a panel receives
-`&LocalWorld`, so it can read and write components and can `queue()` structural
+`&World`, so it can read and write components and can `queue()` structural
 changes. Several panels are therefore several entities, added and removed as
 needed, and third parties can define their own panel-like components for the
 source to select — the source itself need not know which interfaces exist.
@@ -319,7 +319,7 @@ use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 
 let (device, queue) =
     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-let mut world = LocalWorld::new();
+let mut world = World::new();
 
 // 1. Spawn the frame's GPU context, the built-in mesh source and the
 //    frame driver, and register the built-in unlit family.
@@ -413,7 +413,7 @@ spawn:
 # {
 use unlit3d::prelude::*;
 
-let mut world = LocalWorld::new();
+let mut world = World::new();
 world.spawn((UiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),));
@@ -458,7 +458,7 @@ crate's events into egui's.
   several does not misread as the gesture ending.
 - **Dispatch is called explicitly by the caller in the frame loop**, not done
   automatically inside `render`. The reason: structural changes queued inside a
-  callback need `&mut world` to land, while `render` only gets `&LocalWorld`;
+  callback need `&mut world` to land, while `render` only gets `&World`;
   automatic dispatch would defer a callback's queued changes to the next
   external `apply`, and that delay would be invisible to the user. Explicit
   dispatch also gives the caller control of the timing and order, consistent

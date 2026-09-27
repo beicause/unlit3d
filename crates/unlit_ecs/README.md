@@ -23,11 +23,10 @@ It is at an **early stage of development** and its API changes freely.
   ECS designs need.
 - **Reading and writing need only `&World`.** Structural changes — spawning and
   despawning — need `&mut World`, or a [`Commands`] queue applied by the driver.
-- **The two worlds differ only in their cells.** [`LocalWorld`] stores
-  components in `RefCell`s and is `!Send`, so it stays on the thread that
-  created it — this is where a renderer and other thread-bound state belong.
-  [`SendWorld`] stores them in `RwLock`s and is `Send + Sync`. Everything else
-  is shared code.
+- **The world is `!Send`.** Components live in `RefCell`s, so the world stays on
+  the thread that created it — this is where a renderer and other thread-bound
+  state belong. Parallelism is the caller's to arrange, by splitting work over
+  plain data rather than by sharing the world.
 - **There are no resources.** Nothing in the crate marks or tracks a
   "resource"; an entity a caller wants to reach from anywhere is an ordinary
   entity whose handle the caller keeps, optionally marked with a marker
@@ -47,7 +46,7 @@ It is at an **early stage of development** and its API changes freely.
 
 ## What is in the box
 
-[`World`] (and the [`LocalWorld`] / [`SendWorld`] aliases), [`Entity`],
+[`World`], [`Entity`],
 [`Bundle`] / [`ArchetypeBuilder`], [`Query`] and [`QueryFilter`] ([`With`],
 [`Without`], [`Or`], tuples), [`Command`] / [`Commands`] for queued structural
 changes, [`Archetype`] / [`Archetypes`] for direct storage inspection, and the
@@ -65,14 +64,14 @@ storage order. Archetypes are created on demand and never removed.
 ## Usage
 
 ```rust
-use unlit_ecs::{LocalWorld, Query, Without};
+use unlit_ecs::{Query, Without, World};
 
 struct Spin {
     radians_per_second: f32,
     angle: f32,
 }
 
-let mut world = LocalWorld::new();
+let mut world = World::new();
 let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
 let clock = world.spawn((0.016f32,));
 
@@ -94,9 +93,9 @@ let _ = world
 Spawning and despawning need `&mut World`, or a queued command:
 
 ```rust
-use unlit_ecs::LocalWorld;
+use unlit_ecs::World;
 
-let mut world = LocalWorld::new();
+let mut world = World::new();
 let entity = {
     let commands = world.queue();
     commands.spawn(("entity",))
@@ -137,10 +136,11 @@ assert!(world.contains(entity));
   (a closure). So there is no need for complex analysis of system parallelism —
   dependencies, access conflicts — or a multi-threaded scheduler: the external
   caller decides which thread to run on.
-- **A `!Send` world and a `Send` world are separate**, passing data between them
-  over a channel. Only the `Send` world's components are `Send`, and the `!Send`
-  world can only run on the main thread. GPU resources and the renderer are
-  `!Send` components, for `wasm32` compatibility.
+- **The world is `!Send`.** GPU resources and the renderer are `!Send`, and on
+  `wasm32` they are not even `Send` behind a feature flag, so a world that could
+  cross threads would buy nothing there. A `Send` world was tried and removed;
+  the storage a world shares is not the thing that makes its work
+  partitionable.
 - **Nothing is added until something uses it.** A feature that is not currently
   needed does not go in.
 
@@ -204,9 +204,8 @@ cargo nextest run -p unlit_ecs   # this crate's unit and integration tests
 cargo xtask test                 # the whole workspace
 ```
 
-The tests cover world and query behaviour, deferred commands, and that
-[`SendWorld`] can be shared across threads. None of them needs a GPU, so they
-run anywhere. The test layers as a whole, and what CI runs, are described in the
+The tests cover world and query behaviour and deferred commands. None of them
+needs a GPU, so they run anywhere. The test layers as a whole, and what CI runs, are described in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
 ## License

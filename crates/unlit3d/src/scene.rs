@@ -12,7 +12,7 @@ use core::marker::PhantomData;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
-use unlit_ecs::{LocalWorld, TypeIdHashMap};
+use unlit_ecs::{TypeIdHashMap, World};
 use unlit_wgpu::resources::{ResourceId, Virtual};
 use unlit_wgpu::specialize::{PipelineDescriptor, Specializer, SurfaceKey, Variants};
 
@@ -104,7 +104,7 @@ pub(crate) struct VisibleEntry {
 /// [FamilyContext] its factory sees without borrowing the source again.
 pub(crate) struct FamilyFrame<'a> {
     /// The world the entities live in.
-    pub(crate) world: &'a LocalWorld,
+    pub(crate) world: &'a World,
     /// The visible meshes culled this frame, with placement resolved.
     pub(crate) meshes: &'a [VisibleMesh],
     /// The frame's camera, for the z-sorted sort.
@@ -294,7 +294,7 @@ pub(crate) struct SceneFrame<'a> {
 /// by camera distance so blending is order-independent.
 pub(crate) fn collect_and_sort_visible(
     frame: SceneFrame<'_>,
-    world: &LocalWorld,
+    world: &World,
     camera: &Camera,
     surface: SurfaceKey,
     device: &wgpu::Device,

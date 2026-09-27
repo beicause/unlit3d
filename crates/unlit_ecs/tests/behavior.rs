@@ -16,7 +16,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use unlit_ecs::{Entity, LocalWorld, SendWorld};
+use unlit_ecs::{Entity, World};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -34,17 +34,17 @@ enum Key {
 }
 
 /// A callback that may read and write the world.
-type WorldCallback = Box<dyn FnMut(&LocalWorld, Entity)>;
+type WorldCallback = Box<dyn FnMut(&World, Entity)>;
 
 /// The per-frame update, held as a closure.
 struct OnFrame(WorldCallback);
 
 impl OnFrame {
-    fn new(f: impl FnMut(&LocalWorld, Entity) + 'static) -> Self {
+    fn new(f: impl FnMut(&World, Entity) + 'static) -> Self {
         Self(Box::new(f))
     }
 
-    fn run(&mut self, world: &LocalWorld, entity: Entity) {
+    fn run(&mut self, world: &World, entity: Entity) {
         (self.0)(world, entity)
     }
 }
@@ -55,10 +55,10 @@ impl OnFrame {
 /// field. It captures nothing, so it is `Copy`, pointer-sized, and `Send +
 /// Sync`.
 #[derive(Clone, Copy)]
-struct OnFrameFn(fn(&LocalWorld, Entity));
+struct OnFrameFn(fn(&World, Entity));
 
 impl OnFrameFn {
-    fn run(&mut self, world: &LocalWorld, entity: Entity) {
+    fn run(&mut self, world: &World, entity: Entity) {
         (self.0)(world, entity)
     }
 }
@@ -68,11 +68,11 @@ impl OnFrameFn {
 struct OnFixedStep(WorldCallback);
 
 impl OnFixedStep {
-    fn new(f: impl FnMut(&LocalWorld, Entity) + 'static) -> Self {
+    fn new(f: impl FnMut(&World, Entity) + 'static) -> Self {
         Self(Box::new(f))
     }
 
-    fn run(&mut self, world: &LocalWorld, entity: Entity) {
+    fn run(&mut self, world: &World, entity: Entity) {
         (self.0)(world, entity)
     }
 }
@@ -85,17 +85,17 @@ struct StepState {
 }
 
 /// An input callback: it receives the key the caller collected.
-type InputCallback = Box<dyn FnMut(Key, &LocalWorld, Entity)>;
+type InputCallback = Box<dyn FnMut(Key, &World, Entity)>;
 
 /// The input callback, held as a closure.
 struct OnInput(InputCallback);
 
 impl OnInput {
-    fn new(f: impl FnMut(Key, &LocalWorld, Entity) + 'static) -> Self {
+    fn new(f: impl FnMut(Key, &World, Entity) + 'static) -> Self {
         Self(Box::new(f))
     }
 
-    fn run(&mut self, world: &LocalWorld, entity: Entity, key: Key) {
+    fn run(&mut self, world: &World, entity: Entity, key: Key) {
         (self.0)(key, world, entity)
     }
 }
@@ -104,7 +104,7 @@ impl OnInput {
 
 /// Advance a fixed-step behaviour by `delta_seconds`, running its callback once
 /// per elapsed interval.
-fn drive_fixed_step(world: &LocalWorld, entity: Entity, delta_seconds: f32) {
+fn drive_fixed_step(world: &World, entity: Entity, delta_seconds: f32) {
     let fired = world
         .with_mut::<StepState, _>(entity, |state| {
             state.accumulator += delta_seconds;
@@ -125,7 +125,7 @@ fn drive_fixed_step(world: &LocalWorld, entity: Entity, delta_seconds: f32) {
 
 #[test]
 fn a_closure_behaviour_runs_and_reaches_the_world() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((
         Position { x: 0.0, y: 0.0 },
         OnFrame::new(|world, entity| {
@@ -142,11 +142,11 @@ fn a_closure_behaviour_runs_and_reaches_the_world() {
 
 #[test]
 fn a_function_pointer_behaviour_runs() {
-    fn advance(world: &LocalWorld, entity: Entity) {
+    fn advance(world: &World, entity: Entity) {
         let _ = world.with_mut::<Position, _>(entity, |position| position.x += 2.0);
     }
 
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((Position { x: 0.0, y: 0.0 }, OnFrameFn(advance)));
 
     let _ = world.with_mut::<OnFrameFn, _>(entity, |behaviour| behaviour.run(&world, entity));
@@ -157,11 +157,11 @@ fn a_function_pointer_behaviour_runs() {
 
 #[test]
 fn a_function_pointer_field_is_copy_so_one_callback_serves_many_entities() {
-    fn advance(world: &LocalWorld, entity: Entity) {
+    fn advance(world: &World, entity: Entity) {
         let _ = world.with_mut::<Position, _>(entity, |position| position.x += 2.0);
     }
 
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let handler = OnFrameFn(advance);
 
     // `Copy`: the same callback goes onto several entities, and the code is
@@ -190,11 +190,11 @@ fn a_function_pointer_field_is_send_and_sync() {
 fn one_named_function_serves_both_component_shapes() {
     // A `fn` pointer implements `FnMut`, which is why the design names "a
     // function pointer or a closure" as one category.
-    fn advance(world: &LocalWorld, entity: Entity) {
+    fn advance(world: &World, entity: Entity) {
         let _ = world.with_mut::<Position, _>(entity, |position| position.x += 2.0);
     }
 
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((
         Position { x: 0.0, y: 0.0 },
         OnFrameFn(advance),
@@ -208,32 +208,8 @@ fn one_named_function_serves_both_component_shapes() {
 }
 
 #[test]
-fn a_function_pointer_behaviour_runs_on_the_send_world() {
-    /// A callback that needs only the `Send` world.
-    #[derive(Clone, Copy)]
-    struct Bump(fn(&SendWorld, Entity));
-
-    fn bump(world: &SendWorld, entity: Entity) {
-        let _ = world.with_mut::<u32, _>(entity, |value| *value += 1);
-    }
-
-    let mut world = SendWorld::new();
-    let entity = world.spawn((0u32, Bump(bump)));
-    let world_ref = &world;
-
-    std::thread::scope(|scope| {
-        scope.spawn(move || {
-            let _ =
-                world_ref.with_mut::<Bump, _>(entity, |behaviour| (behaviour.0)(world_ref, entity));
-        });
-    });
-
-    assert_eq!(*world.get::<u32>(entity).unwrap(), 1);
-}
-
-#[test]
 fn a_behaviour_can_act_on_the_whole_world() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let scale = world.spawn((10.0f32,));
     let seen = Rc::new(Cell::new(0.0f32));
     let sink = seen.clone();
@@ -255,7 +231,7 @@ fn a_behaviour_can_act_on_the_whole_world() {
 
 #[test]
 fn a_behaviour_reads_a_marked_entity() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let clock = world.spawn((0.25f32,));
     let seen = Rc::new(Cell::new(0.0f32));
     let sink = seen.clone();
@@ -277,7 +253,7 @@ fn a_behaviour_keeps_state_itself() {
     let frames = Rc::new(Cell::new(0u32));
     let seen = frames.clone();
 
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((OnFrame::new(move |_world, _entity| {
         seen.set(seen.get() + 1);
     }),));
@@ -291,7 +267,7 @@ fn a_behaviour_keeps_state_itself() {
 
 #[test]
 fn a_behaviour_can_queue_structural_changes() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((OnFrame::new(|world, _entity| {
         world.queue().spawn((1u32,));
     }),));
@@ -308,7 +284,7 @@ fn a_behaviour_can_queue_structural_changes() {
 fn a_behaviour_cannot_reborrow_its_own_component() {
     // The behaviour is borrowed while it runs, so reaching for itself is a
     // borrow conflict. That is the boundary the caller has to stay inside.
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((OnFrame::new(|world, entity| {
         let _ = world.get::<OnFrame>(entity);
     }),));
@@ -318,7 +294,7 @@ fn a_behaviour_cannot_reborrow_its_own_component() {
 
 #[test]
 fn a_fixed_interval_callback_runs_once_per_interval() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let ticks = Rc::new(Cell::new(0u32));
     let seen = ticks.clone();
 
@@ -351,7 +327,7 @@ fn a_fixed_interval_callback_runs_once_per_interval() {
 
 #[test]
 fn an_input_callback_reacts_to_a_key() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((
         Position { x: 0.0, y: 0.0 },
         Speed(4.0),
@@ -377,7 +353,7 @@ fn an_input_callback_reacts_to_a_key() {
 fn callbacks_compose_as_separate_components() {
     // The Godot-style callbacks are just behaviour components: an entity takes
     // the ones it needs, and the caller drives each of them.
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let entity = world.spawn((
         Position { x: 0.0, y: 0.0 },
         StepState {
@@ -415,7 +391,7 @@ fn callbacks_compose_as_separate_components() {
 
 #[test]
 fn the_caller_chooses_which_behaviours_run() {
-    let mut world = LocalWorld::new();
+    let mut world = World::new();
     let ran = Rc::new(Cell::new(0u32));
     let mut driven = Vec::new();
 

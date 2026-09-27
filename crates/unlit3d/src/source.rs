@@ -18,7 +18,7 @@
 
 use core::any::Any;
 
-use unlit_ecs::{Entity, LocalWorld};
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -119,7 +119,7 @@ impl InputCapture {
 /// stated what the frame draws into, which is a programming error on its part —
 /// a source cannot invent a target — so a source that needs it should refuse to
 /// draw rather than fall back.
-pub fn frame_target(world: &LocalWorld) -> Option<FrameTarget> {
+pub fn frame_target(world: &World) -> Option<FrameTarget> {
     world
         .query::<&FrameTargetSlot>()
         .next()
@@ -131,7 +131,7 @@ pub fn frame_target(world: &LocalWorld) -> Option<FrameTarget> {
 /// The frame loop calls this before it renders — [`Renderer::set_render_target`](crate::renderer::Renderer::set_render_target)
 /// does it for the built-in path. Returns whether a slot existed to write; a
 /// world only gets one from [`spawn_context`].
-pub fn set_frame_target(world: &LocalWorld, target: FrameTarget) -> bool {
+pub fn set_frame_target(world: &World, target: FrameTarget) -> bool {
     let Some(entity) = world.query::<&FrameTargetSlot>().next().map(|(e, _)| e) else {
         return false;
     };
@@ -149,7 +149,7 @@ pub fn set_frame_target(world: &LocalWorld, target: FrameTarget) -> bool {
 /// Internal: this is how [`Renderer::unset_render_target`](crate::renderer::Renderer::unset_render_target)
 /// stops the world claiming a target whose attachments it released, so a
 /// caller states a target again by setting one rather than by unsetting one.
-pub(crate) fn unset_frame_target(world: &LocalWorld) -> bool {
+pub(crate) fn unset_frame_target(world: &World) -> bool {
     let Some(entity) = world.query::<&FrameTargetSlot>().next().map(|(e, _)| e) else {
         return false;
     };
@@ -176,7 +176,7 @@ pub trait FrameSource: 'static {
     /// frame still records, and still applies its load ops.
     fn build_scene(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     );
@@ -208,7 +208,7 @@ pub trait FrameSource: 'static {
     /// whose nodes a caller still holds handles for — a mesh not yet passed to
     /// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh)
     /// — leaves those handles dangling, so remove them first.
-    fn release(&mut self, world: &LocalWorld) {
+    fn release(&mut self, world: &World) {
         let _ = world;
     }
 }
@@ -291,7 +291,7 @@ impl Source {
     /// Assemble this source's scene for the frame.
     pub fn build_scene(
         &mut self,
-        world: &LocalWorld,
+        world: &World,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -304,7 +304,7 @@ impl Source {
     }
 
     /// Release the graph nodes the source registered.
-    pub fn release(&mut self, world: &LocalWorld) {
+    pub fn release(&mut self, world: &World) {
         self.source.release(world);
     }
 }
@@ -332,7 +332,7 @@ struct MountCounter(u64);
 /// holds its own reference to each; the graph is not `Sync` and moves into the
 /// world whole. Call this once per world.
 pub fn spawn_context(
-    world: &mut LocalWorld,
+    world: &mut World,
     device: wgpu::Device,
     queue: wgpu::Queue,
     graph: ResourceGraph,
@@ -355,18 +355,14 @@ pub fn spawn_context(
 }
 
 /// Mount `source`, taking its order from [`FrameSource::order`].
-pub fn spawn_source(world: &mut LocalWorld, source: impl FrameSource) -> Entity {
+pub fn spawn_source(world: &mut World, source: impl FrameSource) -> Entity {
     let source = Source::new(source);
     let index = next_mount_index(world);
     world.spawn((bump_mount(source, index),))
 }
 
 /// Mount `source`, recording it at `order`.
-pub fn spawn_source_at(
-    world: &mut LocalWorld,
-    order: FrameOrder,
-    source: impl FrameSource,
-) -> Entity {
+pub fn spawn_source_at(world: &mut World, order: FrameOrder, source: impl FrameSource) -> Entity {
     let source = Source::new(source).with_order(order);
     let index = next_mount_index(world);
     world.spawn((bump_mount(source, index),))
@@ -382,7 +378,7 @@ pub fn spawn_source_at(
 ///
 /// A source that owns per-entity resources a caller still holds handles for is
 /// the caller's to clean up first; see [`FrameSource::release`].
-pub fn despawn_source(world: &LocalWorld, entity: Entity) {
+pub fn despawn_source(world: &World, entity: Entity) {
     world.queue().push(DespawnSource { entity });
 }
 
@@ -391,8 +387,8 @@ struct DespawnSource {
     entity: Entity,
 }
 
-impl unlit_ecs::Command<unlit_ecs::LocalMode> for DespawnSource {
-    fn apply(self: Box<Self>, world: &mut LocalWorld) {
+impl unlit_ecs::Command for DespawnSource {
+    fn apply(self: Box<Self>, world: &mut World) {
         // Releasing first, so the source is still reachable and still knows
         // its own nodes. It needs only a shared world, so the source borrow
         // does not conflict with it.
@@ -404,7 +400,7 @@ impl unlit_ecs::Command<unlit_ecs::LocalMode> for DespawnSource {
 }
 
 /// Take the next mount index from the world's counter.
-fn next_mount_index(world: &LocalWorld) -> u64 {
+fn next_mount_index(world: &World) -> u64 {
     let Some(counter) = world.query::<&MountCounter>().next().map(|(e, _)| e) else {
         return 0;
     };
@@ -448,7 +444,7 @@ impl SourceOrder {
     ///
     /// Sorted by `(order, mount_index)`, so equal orders keep their mount
     /// order; every run of more than one equal order is an ambiguity.
-    pub fn resolve(&mut self, world: &LocalWorld) {
+    pub fn resolve(&mut self, world: &World) {
         self.keys.clear();
         self.keys.extend(
             world
@@ -543,7 +539,7 @@ mod tests {
     /// A noop device and queue, enough to spawn a context: the tests here
     /// exercise the ordering and mounting bookkeeping, which never touches the
     /// GPU.
-    fn test_context(world: &mut LocalWorld) -> RenderContext {
+    fn test_context(world: &mut World) -> RenderContext {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         spawn_context(world, device, queue, ResourceGraph::new())
     }
@@ -568,7 +564,7 @@ mod tests {
     impl FrameSource for RecordingSource {
         fn build_scene(
             &mut self,
-            _world: &LocalWorld,
+            _world: &World,
             _ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
@@ -590,7 +586,7 @@ mod tests {
     /// Resolve `world`'s order in one shot, as the tests want it: the entities
     /// and the ambiguous groups, both owned so an assertion can hold them while
     /// the world changes.
-    fn record_order(world: &LocalWorld) -> (Vec<Entity>, Vec<AmbiguousGroup>) {
+    fn record_order(world: &World) -> (Vec<Entity>, Vec<AmbiguousGroup>) {
         let mut resolved = SourceOrder::default();
         resolved.resolve(world);
         (resolved.entities().to_vec(), resolved.ambiguous().to_vec())
@@ -600,7 +596,7 @@ mod tests {
     /// mounted in — the whole point of an explicit order.
     #[test]
     fn explicit_order_wins_over_mount_order() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         spawn_context(
             &mut world,
             wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0,
@@ -622,7 +618,7 @@ mod tests {
     /// order.
     #[test]
     fn equal_orders_keep_mount_order_across_a_despawn() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
 
         let first = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
@@ -644,7 +640,7 @@ mod tests {
     /// says, and `set_order` can change it later.
     #[test]
     fn an_explicit_order_overrides_the_one_the_source_declares() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
 
         let a = spawn_source_at(
@@ -675,7 +671,7 @@ mod tests {
         impl FrameSource for OtherSource {
             fn build_scene(
                 &mut self,
-                _world: &LocalWorld,
+                _world: &World,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -688,7 +684,7 @@ mod tests {
             }
         }
 
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
 
         let recording = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
@@ -725,7 +721,7 @@ mod tests {
         impl FrameSource for CountingSource {
             fn build_scene(
                 &mut self,
-                _world: &LocalWorld,
+                _world: &World,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -739,7 +735,7 @@ mod tests {
             }
         }
 
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let ctx = test_context(&mut world);
         spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
         spawn_source(&mut world, CountingSource(0, Scene::new()));
@@ -762,7 +758,7 @@ mod tests {
     /// any scene is recorded.
     #[test]
     fn every_source_is_built_before_any_is_recorded() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let ctx = test_context(&mut world);
 
         let order = Rc::new(RefCell::new(Vec::new()));
@@ -774,7 +770,7 @@ mod tests {
         impl FrameSource for PhasedSource {
             fn build_scene(
                 &mut self,
-                _world: &LocalWorld,
+                _world: &World,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -838,7 +834,7 @@ mod tests {
     /// frame must not flood the log.
     #[test]
     fn an_ambiguity_is_reported_once_and_again_only_when_it_changes() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
 
         let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
@@ -875,7 +871,7 @@ mod tests {
     /// largest capacity it has ever needed.
     #[test]
     fn resolving_the_order_reuses_its_buffers() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
         for _ in 0..4 {
             spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
@@ -909,7 +905,7 @@ mod tests {
     /// Distinct orders produce no ambiguity at all.
     #[test]
     fn distinct_orders_are_never_ambiguous() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
         spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
         spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
@@ -962,7 +958,7 @@ mod tests {
     /// reader can tell which sources are ambiguous without guessing.
     #[test]
     fn the_ambiguity_warning_names_the_group_order_and_entities() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
         let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
         let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
@@ -992,7 +988,7 @@ mod tests {
     /// Distinct orders log nothing at all, so a correct frame is silent.
     #[test]
     fn distinct_orders_log_nothing() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
         spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
         spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
@@ -1008,7 +1004,7 @@ mod tests {
     /// stops it: the log reports a change, not a condition that persists.
     #[test]
     fn a_steady_frame_repeats_nothing_in_the_log() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
         let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
         let _b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
@@ -1040,7 +1036,7 @@ mod tests {
     /// ambiguity bookkeeping, so a caller may set an order every frame.
     #[test]
     fn re_applying_the_same_order_keeps_the_log_quiet() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
         let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
         let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
@@ -1068,7 +1064,7 @@ mod tests {
     /// group lists every entity.
     #[test]
     fn a_three_way_ambiguity_is_one_group_of_three() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
 
         let ids: Vec<Entity> = (0..3)
@@ -1084,7 +1080,7 @@ mod tests {
     /// after one mounted earlier.
     #[test]
     fn mount_indices_are_monotonic() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         test_context(&mut world);
 
         let indices: Vec<u64> = (0..3)
@@ -1117,7 +1113,7 @@ mod release_tests {
     impl FrameSource for OwningSource {
         fn build_scene(
             &mut self,
-            world: &LocalWorld,
+            world: &World,
             ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
@@ -1142,7 +1138,7 @@ mod release_tests {
             FrameOrder::OVERLAY
         }
 
-        fn release(&mut self, world: &LocalWorld) {
+        fn release(&mut self, world: &World) {
             let Some(node) = self.node.take() else {
                 return;
             };
@@ -1153,7 +1149,7 @@ mod release_tests {
         }
     }
 
-    fn noop_context(world: &mut LocalWorld) -> RenderContext {
+    fn noop_context(world: &mut World) -> RenderContext {
         spawn_context(
             world,
             wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0,
@@ -1170,7 +1166,7 @@ mod release_tests {
     /// plain despawn.
     #[test]
     fn removing_a_source_releases_the_nodes_it_owns() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let ctx = noop_context(&mut world);
         let entity = spawn_source(
             &mut world,
@@ -1229,7 +1225,7 @@ mod release_tests {
     /// every source.
     #[test]
     fn removing_a_source_that_owns_nothing_still_removes_it() {
-        let mut world = LocalWorld::new();
+        let mut world = World::new();
         let ctx = noop_context(&mut world);
         let entity = spawn_source(
             &mut world,
