@@ -55,22 +55,22 @@ impl Aabb {
 
     /// Place this box in world space with `world_from_local`.
     ///
-    /// A non-uniform scale makes the result an oriented box: the local axes
-    /// keep their direction but the extents scale with them, which is exactly
-    /// the box the transformed corners bound.
+    /// A non-uniform scale makes the result an oriented box: each local axis
+    /// becomes the world-space vector that carries this box's extent along it,
+    /// which is exactly the box the transformed corners bound. Normalizing
+    /// those vectors is what the frustum test would otherwise divide out again,
+    /// so they are kept un-normalized and the per-entity square roots are never
+    /// taken; see [`Obb`].
     pub fn transformed(&self, world_from_local: &Affine3A) -> Obb {
         let linear = world_from_local.matrix3;
-        let mut axes = [Vec3::ZERO; 3];
-        let mut half_extents = Vec3::ZERO;
-        for axis in 0..3 {
-            let transformed = linear.col(axis);
-            half_extents[axis] = self.half_extents[axis] * transformed.length();
-            axes[axis] = transformed.normalize_or_zero().into();
-        }
+        let extents = [
+            (linear.col(0) * self.half_extents.x).into(),
+            (linear.col(1) * self.half_extents.y).into(),
+            (linear.col(2) * self.half_extents.z).into(),
+        ];
         Obb {
             center: world_from_local.transform_point3(self.center),
-            half_extents,
-            axes,
+            extents,
         }
     }
 }
@@ -79,14 +79,21 @@ impl Aabb {
 ///
 /// Built from an [`Aabb`] and a model matrix; the culler tests it against the
 /// camera frustum before drawing.
+///
+/// Each local axis is stored as the world-space vector that carries the box's
+/// half-extent along it — the model matrix's column scaled by the local
+/// half-extent — rather than as a unit axis plus a scalar extent. The frustum
+/// test only ever needs that whole vector projected onto a plane normal, so
+/// keeping it folded this way costs one dot product per axis and skips the
+/// per-entity normalization entirely.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Obb {
     /// Center of the box in world space.
     pub center: Vec3,
-    /// Half-extents along each axis.
-    pub half_extents: Vec3,
-    /// World-space, unit-length axes, one per local axis.
-    pub axes: [Vec3; 3],
+    /// The world-space vector carrying each local axis's half-extent, one per
+    /// local axis. Not unit length: its length is the half-extent along that
+    /// axis, and it is zero for a degenerate axis.
+    pub extents: [Vec3; 3],
 }
 
 impl Obb {
@@ -136,16 +143,17 @@ impl FrustumPlanes {
     /// Whether `obb` is at least partly inside the frustum.
     ///
     /// A box is outside a plane when its center is beyond it by more than the
-    /// box's own extent along the plane normal: the support radius is the sum
-    /// of each axis's projected half-extent.
+    /// box's own extent along the plane normal. That extent is the sum of each
+    /// axis vector's projection onto the normal in absolute value, which reads
+    /// the half-extent and the direction off [`Obb::extents`] in one dot
+    /// product.
     pub fn test_obb(&self, obb: &Obb) -> bool {
         self.planes.iter().all(|&plane| {
             let normal = Vec3::new(plane.x, plane.y, plane.z);
             let radius = obb
-                .axes
+                .extents
                 .iter()
-                .zip(obb.half_extents.to_array())
-                .map(|(axis, half_extent)| normal.dot(*axis).abs() * half_extent)
+                .map(|extent| normal.dot(*extent).abs())
                 .sum::<f32>();
             plane.dot(obb.center.extend(1.0)) >= -radius
         })
@@ -170,8 +178,7 @@ mod tests {
         let aabb = Aabb::new(Vec3::ZERO, Vec3::splat(1.0));
         let obb = aabb.transformed(&Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0)));
         assert_eq!(obb.center, Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(obb.half_extents, Vec3::splat(1.0));
-        assert_eq!(obb.axes, [Vec3::X, Vec3::Y, Vec3::Z]);
+        assert_eq!(obb.extents, [Vec3::X, Vec3::Y, Vec3::Z]);
     }
 
     #[test]
@@ -179,17 +186,30 @@ mod tests {
         let aabb = Aabb::new(Vec3::ZERO, Vec3::splat(1.0));
         let rotation = Affine3A::from_rotation_z(core::f32::consts::FRAC_PI_2);
         let obb = aabb.transformed(&rotation);
-        assert!((obb.axes[0] - Vec3::Y).length() < 1e-6);
-        assert!((obb.axes[1] + Vec3::X).length() < 1e-6);
-        assert_eq!(obb.half_extents, Vec3::splat(1.0));
+        assert!((obb.extents[0] - Vec3::Y).length() < 1e-6);
+        assert!((obb.extents[1] + Vec3::X).length() < 1e-6);
+        assert!((obb.extents[2] - Vec3::Z).length() < 1e-6);
     }
 
+    /// Each axis vector carries its own half-extent, so a non-uniform scale
+    /// shows up as the vector's length rather than as a separate scalar.
     #[test]
     fn non_uniform_scale_stretches_the_extents() {
         let aabb = Aabb::new(Vec3::ZERO, Vec3::splat(1.0));
         let obb = aabb.transformed(&Affine3A::from_scale(Vec3::new(2.0, 3.0, 4.0)));
-        assert_eq!(obb.half_extents, Vec3::new(2.0, 3.0, 4.0));
-        assert_eq!(obb.axes, [Vec3::X, Vec3::Y, Vec3::Z]);
+        assert_eq!(obb.extents, [Vec3::X * 2.0, Vec3::Y * 3.0, Vec3::Z * 4.0]);
+    }
+
+    /// A collapsed axis contributes nothing to the support radius instead of
+    /// becoming an un-normalizable direction, which the old unit-axis form
+    /// would have had to special-case.
+    #[test]
+    fn a_collapsed_axis_bounds_nothing() {
+        let aabb = Aabb::new(Vec3::ZERO, Vec3::splat(1.0));
+        let obb = aabb.transformed(&Affine3A::from_scale(Vec3::new(1.0, 0.0, 1.0)));
+        assert_eq!(obb.extents[1], Vec3::ZERO);
+        let planes = FrustumPlanes::from_clip_from_world(glam::Mat4::IDENTITY);
+        assert!(planes.test_obb(&obb));
     }
 
     /// An axis-aligned unit box at the origin.
