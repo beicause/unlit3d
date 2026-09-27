@@ -63,6 +63,7 @@ impl Archetype {
     }
 
     /// The storage cell of component `C` at `row`.
+    #[inline]
     pub(crate) fn cell<C: 'static>(&self, row: usize) -> Option<&core::cell::RefCell<C>> {
         self.column::<C>()?.cell(row)
     }
@@ -71,6 +72,7 @@ impl Archetype {
     ///
     /// A query resolves this once per archetype instead of doing the lookup per
     /// row; see [`Query::Fetch`](crate::Query::Fetch).
+    #[inline]
     pub(crate) fn column<C: 'static>(&self) -> Option<&Column<C>> {
         let index = self.column_index(TypeId::of::<C>())?;
         self.columns[index].as_any().downcast_ref::<Column<C>>()
@@ -137,6 +139,7 @@ impl Archetypes {
     }
 
     /// The archetype with this id.
+    #[inline]
     pub(crate) fn get(&self, id: u32) -> &Archetype {
         &self.archetypes[id as usize]
     }

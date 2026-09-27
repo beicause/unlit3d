@@ -67,11 +67,13 @@ pub struct Location {
 
 impl Location {
     /// The archetype the entity's components live in.
+    #[inline]
     pub fn archetype(self) -> u32 {
         self.archetype
     }
 
     /// The entity's row within its archetype.
+    #[inline]
     pub fn row(self) -> usize {
         self.row as usize
     }
@@ -111,6 +113,7 @@ impl Entities {
     }
 
     /// Where the entity lives, if it is live.
+    #[inline]
     pub(crate) fn location(&self, entity: Entity) -> Option<Location> {
         let meta = self.meta.get(entity.index as usize)?;
         (meta.generation == entity.generation)

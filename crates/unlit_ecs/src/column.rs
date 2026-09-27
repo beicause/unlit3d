@@ -58,6 +58,7 @@ impl<T: 'static> Column<T> {
     }
 
     /// The cell at `row`.
+    #[inline]
     pub(crate) fn cell(&self, row: usize) -> Option<&RefCell<T>> {
         self.cells.get(row)
     }

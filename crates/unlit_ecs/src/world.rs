@@ -88,6 +88,7 @@ impl World {
     ///
     /// Panics when the component is already exclusively borrowed.
     #[must_use]
+    #[inline]
     pub fn get<C: 'static>(&self, entity: Entity) -> Option<CellRef<'_, C>> {
         let location = self.entities_read().location(entity)?;
         let cell = self
@@ -104,6 +105,7 @@ impl World {
     ///
     /// Panics when the component is already borrowed, shared or exclusive.
     #[must_use]
+    #[inline]
     pub fn get_mut<C: 'static>(&self, entity: Entity) -> Option<CellRefMut<'_, C>> {
         let location = self.entities_read().location(entity)?;
         let cell = self
@@ -343,6 +345,7 @@ impl World {
 
     // -- internals ---------------------------------------------------------
 
+    #[inline]
     pub(crate) fn entities_read(&self) -> Ref<'_, Entities> {
         self.entities
             .try_borrow()
@@ -391,6 +394,7 @@ impl World {
     /// An id comes from [`Location::archetype`]. Several entities can share
     /// one, which is what lets a caller holding many entities resolve an
     /// archetype's columns once for all of them instead of once per entity.
+    #[inline]
     pub fn archetype(&self, id: u32) -> Option<&Archetype> {
         self.archetypes.as_slice().get(id as usize)
     }
@@ -399,6 +403,7 @@ impl World {
     ///
     /// The location is what [`World::archetype`] and
     /// [`Archetype::entities`] together turn into a component.
+    #[inline]
     pub fn location(&self, entity: Entity) -> Option<Location> {
         self.entities_read().location(entity)
     }
