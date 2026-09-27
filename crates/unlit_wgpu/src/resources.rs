@@ -66,8 +66,8 @@
 //! Insertion is immediate: `insert_strong` adds the node and returns its id,
 //! and [`add_dependency`](ResourceGraph::add_dependency) records an edge.
 //! Nothing defers, so there is no insertion state to finish and no failure to
-//! report — a dependency id that no longer resolves is a bug in the caller and
-//! panics where it is declared.
+//! report — a dependency id that no longer resolves, or an edge that would
+//! close a cycle, is a bug in the caller and panics where it is declared.
 //!
 //! A [`Virtual`] node commonly serves as an *aggregation root* for a group of
 //! resources: its parts are inserted weak and with no dependencies, and the
@@ -81,9 +81,7 @@
 
 use smallvec::SmallVec;
 
-use petgraph::graph::NodeIndex;
-use petgraph::stable_graph::StableDiGraph;
-use petgraph::visit::{Dfs, DfsPostOrder, NodeIndexable, Reversed, Topo};
+use crate::dag::{Dag, EdgeError, NodeId};
 
 /// A kind of resource that can live in a [`ResourceGraph`], and the resource an
 /// id of that kind resolves to.
@@ -363,14 +361,13 @@ into_resource! {
 /// [`ResourceGraph::dirty`] and [`ResourceGraph::dependencies`] hand out.
 ///
 /// While the resource lives, its id resolves through every accessor.
-/// Removing the resource invalidates every id to it, but the graph recycles
-/// the freed slots: a resource inserted later may answer an id that
-/// previously referred to a removed one. Callers that hold ids across
-/// removals must drop them themselves — an id can be confirmed dead with
-/// [`ResourceGraph::get`] at one point in time, but never assumed to stay
-/// dead afterwards.
+/// Removing the resource invalidates every id to it: a later resource reuses
+/// the freed slot, but the id records the generation it was handed out with,
+/// so an id to a removed resource resolves to nothing rather than to whatever
+/// took its place. Callers may therefore hold an id across removals and simply
+/// see it stop resolving — an id is never confirmed dead and then revived.
 pub struct ResourceId<R = Resource> {
-    index: NodeIndex,
+    node: NodeId,
     kind: core::marker::PhantomData<fn() -> R>,
 }
 
@@ -382,7 +379,7 @@ impl<R> ResourceId<R> {
     /// so consecutive ones share a bind group, for example) without holding
     /// a borrow.
     pub fn index(&self) -> usize {
-        self.index.index()
+        self.node.index()
     }
 
     /// Forget the kind, yielding an id to the same resource that claims none.
@@ -393,7 +390,7 @@ impl<R> ResourceId<R> {
     /// or a stored field a caller only ever passes back to the graph.
     pub fn erase(self) -> ResourceId {
         ResourceId {
-            index: self.index,
+            node: self.node,
             kind: core::marker::PhantomData,
         }
     }
@@ -401,7 +398,7 @@ impl<R> ResourceId<R> {
 
 // The trait impls are written out rather than derived: a derived bound would
 // ask `R` to be comparable, hashable or cloneable, none of which a kind has to
-// be. An id is an index, and only the index takes part in any of them.
+// be. An id is a node handle, and only the handle takes part in any of them.
 impl<R> Clone for ResourceId<R> {
     fn clone(&self) -> Self {
         *self
@@ -412,7 +409,7 @@ impl<R> Copy for ResourceId<R> {}
 
 impl<R> PartialEq for ResourceId<R> {
     fn eq(&self, other: &Self) -> bool {
-        self.index == other.index
+        self.node == other.node
     }
 }
 
@@ -426,19 +423,19 @@ impl<R> PartialOrd for ResourceId<R> {
 
 impl<R> Ord for ResourceId<R> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
-        self.index.cmp(&other.index)
+        self.node.cmp(&other.node)
     }
 }
 
 impl<R> core::hash::Hash for ResourceId<R> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        self.index.hash(state);
+        self.node.hash(state);
     }
 }
 
 impl<R> core::fmt::Debug for ResourceId<R> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ResourceId({})", self.index.index())
+        write!(f, "ResourceId({})", self.node.index())
     }
 }
 
@@ -450,9 +447,6 @@ struct Node {
     /// Whether the resource survives cleanup on its own rather than only
     /// through the resources built from it. See [Retention](self).
     strong: bool,
-    /// Scratch liveness mark [`ResourceGraph::cleanup`] recomputes on every
-    /// run, so the pass needs no per-run set allocation.
-    alive: bool,
 }
 
 /// Direct dependencies a rebuild keeps on the stack; beyond this, they spill
@@ -463,10 +457,13 @@ const MAX_INLINED_DIRECT_DEPENDENCIES: usize = 8;
 /// A directed acyclic graph of wgpu resources.
 ///
 /// Every edge points from a dependency to a resource built from it, so the
-/// dependents of a node are exactly the nodes reachable from it.
+/// dependents of a node are exactly the nodes reachable from it. The graph
+/// refuses an edge that would close a cycle, which is what lets
+/// [`Self::dirty`] and [`Self::rebuild_dirty`] visit every node in dependency
+/// order.
 #[derive(Debug, Default)]
 pub struct ResourceGraph {
-    graph: StableDiGraph<Node, ()>,
+    graph: Dag<Node>,
 }
 
 impl ResourceGraph {
@@ -477,12 +474,12 @@ impl ResourceGraph {
 
     /// Number of resources in the graph.
     pub fn len(&self) -> usize {
-        self.graph.node_count()
+        self.graph.len()
     }
 
     /// Whether the graph holds no resources.
     pub fn is_empty(&self) -> bool {
-        self.graph.node_count() == 0
+        self.graph.is_empty()
     }
 
     /// Add `resource` as a *strong* node that [`Self::cleanup`] keeps whether
@@ -515,14 +512,13 @@ impl ResourceGraph {
     }
 
     fn insert<R: ResourceKind>(&mut self, resource: R, strong: bool) -> ResourceId<R> {
-        let index = self.graph.add_node(Node {
+        let node = self.graph.insert(Node {
             resource: resource.into_resource(),
             dirty: false,
             strong,
-            alive: false,
         });
         ResourceId {
-            index,
+            node,
             kind: core::marker::PhantomData,
         }
     }
@@ -533,7 +529,8 @@ impl ResourceGraph {
     ///
     /// The dependency may be of any kind: one bind group is built from buffers,
     /// a view and a sampler all at once. Call this once per input; declaring
-    /// the same pair twice records two edges.
+    /// the same pair twice records one edge, since a node depends on another
+    /// once or not at all.
     ///
     /// An optional input is the caller's to skip — `if let Some(id) = ...`
     /// around the call, which reads the way the id itself does — rather than
@@ -542,26 +539,32 @@ impl ResourceGraph {
     ///
     /// # Panics
     ///
-    /// Panics if either id does not resolve, or if `dependency` is `dependent`
-    /// itself. Both mean the caller kept an id past the removal of the resource
-    /// it named — the graph recycles freed slots, so such an id may by then
-    /// name an unrelated resource — and recording the edge would corrupt the
-    /// graph rather than express an intent.
+    /// Panics if either id does not resolve, or if the edge would close a
+    /// cycle. A non-resolving id means the caller kept one past the removal of
+    /// the resource it named; a cycle means the declared dependencies are not
+    /// a build order at all. Either way the graph would stop being a graph of
+    /// resources in dependency order, so the offending edge is refused where
+    /// it is declared rather than corrupting a later walk.
     pub fn add_dependency<D, R>(&mut self, dependent: ResourceId<R>, dependency: ResourceId<D>) {
-        assert!(
-            self.graph.node_weight(dependent.index).is_some(),
-            "add_dependency: the dependent {dependent:?} is not in the graph"
-        );
-        assert_ne!(
-            dependent.index, dependency.index,
-            "add_dependency: {dependent:?} cannot depend on itself"
-        );
-        assert!(
-            self.graph.node_weight(dependency.index).is_some(),
-            "add_dependency: the dependency {dependency:?} of {dependent:?} is not in the graph"
-        );
-        // dependency -> dependent
-        self.graph.add_edge(dependency.index, dependent.index, ());
+        match self.graph.add_edge(dependency.node, dependent.node) {
+            Ok(()) => {}
+            Err(EdgeError::NoSuchNode(node)) if node == dependent.node => panic!(
+                "add_dependency: the dependent {dependent:?} is not in the graph, \
+                 so nothing can depend on {dependency:?}"
+            ),
+            Err(EdgeError::NoSuchNode(_)) => panic!(
+                "add_dependency: the dependency {dependency:?} of {dependent:?} \
+                 is not in the graph"
+            ),
+            Err(EdgeError::SelfLoop) => panic!(
+                "add_dependency: {dependent:?} cannot depend on itself \
+                 (the dependency {dependency:?} no longer resolves and its slot was reused)"
+            ),
+            Err(EdgeError::Cycle) => panic!(
+                "add_dependency: {dependent:?} cannot depend on {dependency:?}, \
+                 which would close a cycle"
+            ),
+        }
     }
 
     /// Borrow the resource behind `id`.
@@ -573,7 +576,7 @@ impl ResourceGraph {
     /// fail, since an id only ever names a resource of its own kind.
     pub fn get<R: ResourceKind>(&self, id: ResourceId<R>) -> Option<&R> {
         self.graph
-            .node_weight(id.index)
+            .get(id.node)
             .and_then(|node| R::borrow_from(&node.resource))
     }
 
@@ -589,16 +592,18 @@ impl ResourceGraph {
         id: ResourceId<R>,
         resource: impl Into<R>,
     ) -> Option<R> {
-        R::take_from(self.replace_resource(id.index, resource.into().into_resource())?)
+        R::take_from(self.replace_resource(id.node, resource.into().into_resource())?)
     }
 
-    /// Swap the resource stored at `index`, marking it and its dependents
+    /// Swap the resource stored at `node`, marking it and its dependents
     /// dirty, and hand back what was there.
-    fn replace_resource(&mut self, index: NodeIndex, resource: Resource) -> Option<Resource> {
-        let node = self.graph.node_weight_mut(index)?;
-        let previous = core::mem::replace(&mut node.resource, resource);
-        node.dirty = true;
-        self.mark_dependents_dirty(index);
+    fn replace_resource(&mut self, node: NodeId, resource: Resource) -> Option<Resource> {
+        let previous = {
+            let slot = self.graph.get_mut(node)?;
+            slot.dirty = true;
+            core::mem::replace(&mut slot.resource, resource)
+        };
+        self.mark_dependents_dirty(node);
         Some(previous)
     }
 
@@ -611,20 +616,11 @@ impl ResourceGraph {
     /// When the dropped resources are not needed, prefer [`Self::remove_drop`],
     /// which skips building the return vector.
     pub fn remove<R>(&mut self, id: ResourceId<R>) -> Vec<Resource> {
-        // A post-order DFS yields a node before the nodes it was built from —
-        // dependents first, `id` last. Reversing puts the returned list in
-        // dependency order, matching [`Self::rebuild_dirty`]. The order the
-        // nodes are dropped in is itself irrelevant: a stable graph removes
-        // edges together with their node.
-        let mut dfs = DfsPostOrder::new(&self.graph, id.index);
-        let mut removed = Vec::new();
-        while let Some(node) = dfs.next(&self.graph) {
-            if let Some(node_weight) = self.graph.remove_node(node) {
-                removed.push(node_weight.resource);
-            }
-        }
-        removed.reverse();
-        removed
+        self.graph
+            .remove_dependents(id.node)
+            .into_iter()
+            .map(|node| node.resource)
+            .collect()
     }
 
     /// Remove `id` together with every resource transitively built from it,
@@ -633,12 +629,7 @@ impl ResourceGraph {
     /// This is [`Self::remove`] for callers that do not need the dropped
     /// resources: it avoids allocating the return vector.
     pub fn remove_drop<R>(&mut self, id: ResourceId<R>) {
-        // Same post-order walk as [`Self::remove`], but the nodes are dropped
-        // in place instead of collected.
-        let mut dfs = DfsPostOrder::new(&self.graph, id.index);
-        while let Some(node) = dfs.next(&self.graph) {
-            self.graph.remove_node(node);
-        }
+        self.graph.remove_dependents_drop(id.node);
     }
 
     /// Collect and return every resource nothing alive is built from.
@@ -660,26 +651,12 @@ impl ResourceGraph {
     /// When the dropped resources are not needed, prefer
     /// [`Self::cleanup_drop`], which skips building the return vector.
     pub fn cleanup(&mut self) -> Vec<Resource> {
-        // See [`Self::mark_alive`] for the liveness walk.
-        self.mark_alive();
-
-        // Indices are visited by number instead of through an iterator because
-        // the body mutates the graph; stable indices never shift, so a single
-        // bound covers every node.
-        let bound = self.graph.node_bound();
-        let mut removed = Vec::new();
-        for i in 0..bound {
-            let index = NodeIndex::new(i);
-            if self
-                .graph
-                .node_weight(index)
-                .is_some_and(|node| !node.alive)
-                && let Some(node) = self.graph.remove_node(index)
-            {
-                removed.push(node.resource);
-            }
-        }
-        removed
+        let stamp = self.mark_alive();
+        self.graph
+            .remove_unmarked(stamp)
+            .into_iter()
+            .map(|node| node.resource)
+            .collect()
     }
 
     /// Drop every resource nothing alive is built from, without returning it.
@@ -687,54 +664,24 @@ impl ResourceGraph {
     /// This is [`Self::cleanup`] for callers that do not need the dropped
     /// resources: it avoids allocating the return vector.
     pub fn cleanup_drop(&mut self) {
-        // See [`Self::mark_alive`] for the liveness walk.
-        self.mark_alive();
-
-        let bound = self.graph.node_bound();
-        for i in 0..bound {
-            let index = NodeIndex::new(i);
-            if self
-                .graph
-                .node_weight(index)
-                .is_some_and(|node| !node.alive)
-            {
-                self.graph.remove_node(index);
-            }
-        }
+        let stamp = self.mark_alive();
+        self.graph.remove_unmarked_drop(stamp);
     }
 
-    /// Recompute the per-node liveness flag: a node is alive when it is strong
-    /// or when something alive was built from it.
+    /// Mark every node that is strong or that a strong node was built from,
+    /// and return the stamp the marks carry.
     ///
     /// Aliveness propagates from a dependent to what it was built from, so the
     /// walk goes against the edges — from each strong node to its dependencies.
-    /// Liveness lives in a per-node flag rather than a set, so the walk
-    /// allocates nothing.
-    fn mark_alive(&mut self) {
-        for node in self.graph.node_weights_mut() {
-            node.alive = false;
-        }
-        let bound = self.graph.node_bound();
-        for i in 0..bound {
-            let index = NodeIndex::new(i);
-            if self
-                .graph
-                .node_weight(index)
-                .is_some_and(|node| node.strong)
-            {
-                let mut dfs = Dfs::new(Reversed(&self.graph), index);
-                while let Some(node) = dfs.next(Reversed(&self.graph)) {
-                    self.graph[node].alive = true;
-                }
-            }
-        }
+    /// The walk allocates nothing per strong node: the marks live in the
+    /// graph's own per-slot stamps, which a single pass fills.
+    fn mark_alive(&mut self) -> u32 {
+        self.graph.mark_dependencies_where(|node| node.strong)
     }
 
     /// Whether `id` needs to be rebuilt before it can be used again.
     pub fn is_dirty<R>(&self, id: ResourceId<R>) -> bool {
-        self.graph
-            .node_weight(id.index)
-            .is_some_and(|node| node.dirty)
+        self.graph.get(id.node).is_some_and(|node| node.dirty)
     }
 
     /// Whether any resource in the graph is dirty.
@@ -745,7 +692,7 @@ impl ResourceGraph {
     /// Mark `id` clean, for example after rebuilding it outside
     /// [`Self::rebuild_dirty`].
     pub fn mark_clean<R>(&mut self, id: ResourceId<R>) {
-        if let Some(node) = self.graph.node_weight_mut(id.index) {
+        if let Some(node) = self.graph.get_mut(id.node) {
             node.dirty = false;
         }
     }
@@ -755,33 +702,26 @@ impl ResourceGraph {
     /// A node's inputs may be of any kind, so the ids come back
     /// [erased](ResourceId::erase).
     pub fn dependencies<R>(&self, id: ResourceId<R>) -> impl Iterator<Item = ResourceId> + '_ {
-        self.graph
-            .neighbors_directed(id.index, petgraph::Direction::Incoming)
-            .map(|index| ResourceId {
-                index,
-                kind: core::marker::PhantomData,
-            })
+        self.graph.dependencies(id.node).map(|node| ResourceId {
+            node,
+            kind: core::marker::PhantomData,
+        })
     }
 
     /// Every dirty resource, [erased](ResourceId::erase) like
     /// [`Self::dependencies`], in dependency order (a resource always follows
     /// the resources it was built from).
     pub fn dirty(&self) -> impl Iterator<Item = ResourceId> + '_ {
-        let graph = &self.graph;
-        // The graph is acyclic by construction, so the traversal visits
-        // every node and the order is a true topological order.
-        let mut topo = Topo::new(graph);
-        core::iter::from_fn(move || {
-            loop {
-                let node = topo.next(graph)?;
-                if graph.node_weight(node).is_some_and(|node| node.dirty) {
-                    return Some(ResourceId {
-                        index: node,
-                        kind: core::marker::PhantomData,
-                    });
-                }
-            }
-        })
+        // The graph is acyclic by construction, so its topological order is a
+        // true dependency order and this visits every node.
+        self.graph
+            .topological_order()
+            .into_iter()
+            .filter(|&node| self.graph.get(node).is_some_and(|node| node.dirty))
+            .map(|node| ResourceId {
+                node,
+                kind: core::marker::PhantomData,
+            })
     }
 
     /// Rebuild every dirty resource by calling `rebuild` in dependency order.
@@ -801,21 +741,20 @@ impl ResourceGraph {
     where
         F: FnMut(ResourceId, &Resource, &[Resource]) -> Option<Resource>,
     {
-        // Drive the topological traversal by hand: `Topo` borrows the graph
-        // per step, so node weights can be updated between steps without
-        // materializing the dirty list. `rebuild` cannot touch the graph —
-        // it receives only ids and handles — so the traversal stays valid.
-        let mut topo = Topo::new(&self.graph);
-        while let Some(node) = topo.next(&self.graph) {
-            if !self.graph.node_weight(node).is_some_and(|node| node.dirty) {
+        // The order is fixed up front, so the rebuilds cannot disturb the walk
+        // they are part of even though `rebuild` runs between its steps.
+        // `rebuild` cannot touch the graph — it receives only ids and handles
+        // — so the nodes it names are all still there.
+        for node in self.graph.topological_order() {
+            if !self.graph.get(node).is_some_and(|node| node.dirty) {
                 continue;
             }
-            // Dependency handles are cheap reference-counted clones, so the
-            // common case — a handful of dependencies — stays on the stack.
             let id = ResourceId {
-                index: node,
+                node,
                 kind: core::marker::PhantomData,
             };
+            // Dependency handles are cheap reference-counted clones, so the
+            // common case — a handful of dependencies — stays on the stack.
             let dependencies: SmallVec<[Resource; MAX_INLINED_DIRECT_DEPENDENCIES]> = self
                 .dependencies(id)
                 .filter_map(|dependency| self.get(dependency).cloned())
@@ -830,22 +769,18 @@ impl ResourceGraph {
                 current.same_kind(&rebuilt),
                 "a rebuilt resource must be of the same kind as the one it replaces"
             );
-            if let Some(node_weight) = self.graph.node_weight_mut(node) {
-                node_weight.resource = rebuilt;
-                node_weight.dirty = false;
+            if let Some(node) = self.graph.get_mut(node) {
+                node.resource = rebuilt;
+                node.dirty = false;
             }
         }
     }
 
-    fn mark_dependents_dirty(&mut self, index: NodeIndex) {
-        let mut dfs = Dfs::new(&self.graph, index);
-        while let Some(node) = dfs.next(&self.graph) {
-            if node != index
-                && let Some(node_weight) = self.graph.node_weight_mut(node)
-            {
-                node_weight.dirty = true;
-            }
-        }
+    /// Mark `node` and every node built from it dirty.
+    fn mark_dependents_dirty(&mut self, node: NodeId) {
+        self.graph.for_each_dependent_mut(node, |slot| {
+            slot.dirty = true;
+        });
     }
 }
 
@@ -1009,18 +944,45 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cannot depend on itself")]
+    #[should_panic(expected = "is not in the graph")]
     fn add_dependency_rejects_a_dependency_whose_slot_it_reused() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let id = strong_buffer(&mut graph, &device, "a");
         graph.remove_drop(id);
-        // The freed slot is handed straight back to the next node, so the
-        // dangling `id` now shares its index with the dependent. A bare
-        // existence check would take that node for a live dependency and
-        // record a self-edge — a cycle — instead of rejecting the id.
+        // The freed slot is handed straight back to the next node, so a stale
+        // handle and the live one share an index. The id also records the
+        // generation it was handed out with, so the two are still told apart:
+        // the stale id resolves to nothing rather than to the node that took
+        // its slot.
         let dependent = graph.insert_strong(buffer(&device, "b"));
+        assert_eq!(dependent.index(), id.index(), "the slot is reused");
         graph.add_dependency(dependent, id);
+    }
+
+    /// An id that outlives its resource never comes back to life: the freed
+    /// slot is reused, but the handle records the generation it was handed out
+    /// with, so an id to a removed resource stays dead.
+    #[test]
+    fn a_stale_id_never_names_the_resource_that_reuses_its_slot() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let stale = strong_buffer(&mut graph, &device, "stale");
+        graph.remove_drop(stale);
+
+        let fresh = strong_buffer(&mut graph, &device, "fresh");
+        assert_eq!(fresh.index(), stale.index(), "the slot is reused");
+        assert!(graph.get(fresh).is_some());
+        assert!(
+            graph.get(stale).is_none(),
+            "the stale id resolves to nothing"
+        );
+        assert!(!graph.is_dirty(stale));
+        assert!(
+            graph
+                .replace(stale, buffer(&device, "replacement"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1033,6 +995,21 @@ mod tests {
         graph.remove_drop(dependent);
 
         graph.add_dependency(dependent, dependency);
+    }
+
+    /// A cycle is refused where it is declared. Without that, a length-2 or
+    /// longer cycle would make the topological order silently drop the nodes
+    /// in it, and a walk would stop rebuilding them without saying so.
+    #[test]
+    #[should_panic(expected = "would close a cycle")]
+    fn add_dependency_rejects_a_cycle() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let a = strong_buffer(&mut graph, &device, "a");
+        let b = graph.insert_strong(buffer(&device, "b"));
+        graph.add_dependency(b, a);
+        // `a` already reaches `b`, so the reverse edge would close a cycle.
+        graph.add_dependency(a, b);
     }
 
     #[test]

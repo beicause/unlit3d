@@ -18,7 +18,6 @@ const_shader_layout.workspace = true
 egui = { workspace = true, optional = true }
 glam.workspace = true
 hashbrown.workspace = true
-petgraph.workspace = true
 smallvec.workspace = true
 wesl = { workspace = true, optional = true }
 wesl-core.workspace = true

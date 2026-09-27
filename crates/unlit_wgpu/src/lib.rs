@@ -16,6 +16,7 @@ wesl_core::wesl_pkg!(
 );
 
 pub mod buffer_pool;
+mod dag;
 pub mod globals;
 pub mod mesh;
 pub mod offset_allocator;
