@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "unlit3d_examples"]
+members = ["crates/*", "unlit3d_benchmarks", "unlit3d_examples"]
 # Not a member: `cargo xtask` reaches it through the alias in
 # `.cargo/config.toml`, so the task runner's own dependencies never weigh on
 # the workspace the tasks act on.
@@ -25,6 +25,7 @@ glam = { version = "0.33", default-features = false, features = ["std", "zerocop
 hashbrown = { version = "0.17.1", default-features = false, features = ["default"] }
 log = { version = "0.4", default-features = false, features = ["alloc", "std"] }
 pollster = { version = "0.4.0", default-features = false }
+profiling = { version = "1.0.18", default-features = false }
 smallvec = { version = "1.16.1", default-features = false, features = ["const_generics", "const_new", "union"] }
 wasm-bindgen-futures = "0.4.78"
 # `std::time::Instant` panics on `wasm32-unknown-unknown`; this reads the

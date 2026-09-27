@@ -60,6 +60,7 @@ progress.
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes and a headless snapshot mode; also the Android example, packaged as an APK. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. Not a workspace member. |
+| [`unlit3d_benchmarks`](unlit3d_benchmarks/Cargo.toml) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
 
 ## How the pieces fit
 
@@ -110,6 +111,9 @@ Commands follow the `cargo xtask` convention:
 - **`cargo nextest run`** — use it directly to filter or re-run individual tests
   (`-p <crate>`, `-E 'test(<name>)'`). nextest does not run doctests, so it is no
   substitute for `cargo xtask test`.
+- **`cargo bench -p unlit3d_benchmarks`** — time a frame of the rendering path as
+  entities per second. `--bench profile -- <entities> <frames>` with
+  `--features profile-tracing` instead prints one line per frame phase.
 - **`typos`** — spell check, over the whole repository.
 - **`tombi lint --error-on-warnings`** and **`tombi format`** — TOML lint and
   format check. Run them after touching any `Cargo.toml`.
@@ -147,6 +151,7 @@ crates/unlit3d/              the ECS-integrated rendering API
 crates/unlit_ecs/            the archetype ECS
 crates/unlit_wgpu_test_util/ the shared GPU test harness
 unlit3d_examples/            the windowed example, its scenes and its snapshot runner
+unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
 android/                     the Gradle project that packages the example as an APK
 xtask/                       the `cargo xtask` task runner (excluded from the workspace)
 docs/DESIGN.md               the design document

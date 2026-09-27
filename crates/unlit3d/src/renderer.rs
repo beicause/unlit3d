@@ -236,6 +236,7 @@ impl Renderer {
     /// If no render target is bound, or if the context's device, queue or graph
     /// resource is gone.
     pub fn render(&mut self, world: &LocalWorld) {
+        profiling::scope!("renderer.frame");
         let load_ops = frame_load_ops(world);
 
         let device = world
@@ -265,17 +266,24 @@ impl Renderer {
         // Each source is fetched and dropped before the next one, so no list of
         // entities is built: `build_scene` only needs a shared borrow of the
         // world, which is what `for_each` gives alongside the `&mut Source`.
-        world.for_each::<&mut Source, _>(|mut source| {
-            source.build_scene(world, self.context, &mut encoder);
-        });
+        {
+            profiling::scope!("renderer.frame.build_sources");
+            world.for_each::<&mut Source, _>(|mut source| {
+                source.build_scene(world, self.context, &mut encoder);
+            });
+        }
 
         // Record phase: the scenes, in declared order. The order is resolved
         // into a buffer the renderer keeps, so a steady scene reorders nothing.
-        self.order.resolve(world);
-        self.warnings.check(self.order.ambiguous());
+        {
+            profiling::scope!("renderer.frame.resolve_order");
+            self.order.resolve(world);
+            self.warnings.check(self.order.ambiguous());
+        }
 
         let attachments = self.attachments(world);
         {
+            profiling::scope!("renderer.frame.record_passes");
             let mut pass = attachments.begin_pass(
                 &mut encoder,
                 load_ops.color,
@@ -289,7 +297,10 @@ impl Renderer {
             }
         }
 
-        queue.submit([encoder.finish()]);
+        {
+            profiling::scope!("renderer.frame.submit");
+            queue.submit([encoder.finish()]);
+        }
     }
 
     /// Build the one-frame attachment set from the views bound with

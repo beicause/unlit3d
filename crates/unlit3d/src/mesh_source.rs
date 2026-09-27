@@ -1951,6 +1951,7 @@ impl MeshSource {
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
         {
+            profiling::scope!("mesh_source.assemble.handles");
             let graph = Self::graph(world, self.context);
             for entry in &self.visible_cache {
                 let mesh = world
@@ -2032,6 +2033,7 @@ impl MeshSource {
         // The scene keeps its allocation across frames: `clear` drops the
         // draws but not the buffer behind them.
         self.scene.clear();
+        profiling::scope!("mesh_source.assemble.draws");
         assemble_scene(
             &mut self.scene,
             &self.visible_cache,
@@ -2052,6 +2054,7 @@ impl FrameSource for MeshSource {
         _ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        profiling::scope!("mesh_source.build");
         // The scene is cleared on every path: a frame that records it must
         // never replay the previous frame's draws, and a source with nothing
         // to draw leaves it empty rather than absent.
@@ -2059,7 +2062,10 @@ impl FrameSource for MeshSource {
 
         // A frame that draws still has to publish a changed metadata array, but
         // one that does not draw can leave it for the next frame.
-        self.upload_metadata(world, encoder);
+        {
+            profiling::scope!("mesh_source.metadata.upload");
+            self.upload_metadata(world, encoder);
+        }
 
         // The frame is drawn from the first camera in `world`, copied out of
         // its cell so the borrow does not block the world accesses below.
@@ -2086,16 +2092,22 @@ impl FrameSource for MeshSource {
         let surface = target.surface;
 
         // Update global uniforms.
-        self.globals.time += self.globals.delta_time;
-        self.globals.frame_count += 1;
-        self.upload_globals(world, encoder);
+        {
+            profiling::scope!("mesh_source.uniforms.upload");
+            self.globals.time += self.globals.delta_time;
+            self.globals.frame_count += 1;
+            self.upload_globals(world, encoder);
 
-        let view = View::new(camera.clip_from_world, camera.position);
-        self.upload_camera(world, encoder, &view);
+            let view = View::new(camera.clip_from_world, camera.position);
+            self.upload_camera(world, encoder, &view);
+        }
 
         // A rebuild has to happen before the global groups are read, and the
         // metadata upload above may have replaced the buffer one of them binds.
-        self.rebuild_dirty_global_groups(world);
+        {
+            profiling::scope!("mesh_source.global_groups.rebuild");
+            self.rebuild_dirty_global_groups(world);
+        }
 
         // Collect, cull and sort the visible set in one pass. The cache keeps
         // its allocation between frames, so a steady scene allocates nothing.
@@ -2110,15 +2122,27 @@ impl FrameSource for MeshSource {
         // so the instance stream cannot be uploaded until they are known. Each
         // upload rebuilds the global groups itself if it had to replace its
         // buffer.
-        self.pack_poses(world);
-        self.upload_joints(world, encoder);
-        self.upload_morph_weights(world, encoder);
+        {
+            profiling::scope!("mesh_source.poses.pack");
+            self.pack_poses(world);
+        }
+        {
+            profiling::scope!("mesh_source.poses.upload");
+            self.upload_joints(world, encoder);
+            self.upload_morph_weights(world, encoder);
+        }
 
         // Pack instance data into the reused scratch buffer and upload it.
-        self.ensure_instance_buffer(world, instance_count);
-        self.upload_instances(world, encoder);
+        {
+            profiling::scope!("mesh_source.instances.upload");
+            self.ensure_instance_buffer(world, instance_count);
+            self.upload_instances(world, encoder);
+        }
 
-        self.assemble_frame(world);
+        {
+            profiling::scope!("mesh_source.assemble");
+            self.assemble_frame(world);
+        }
     }
 
     fn scene(&self) -> &Scene {

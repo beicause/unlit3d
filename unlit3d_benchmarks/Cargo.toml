@@ -1,0 +1,47 @@
+[package]
+name = "unlit3d_benchmarks"
+version = "0.1.0-dev.1"
+edition.workspace = true
+description = "The workspace's benchmark suite."
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[[bench]]
+## Criterion over the frame path: throughput and regression numbers.
+harness = false
+name = "frame"
+
+[[bench]]
+## The same frames under the `profiling` scopes, printing each phase's time.
+## Plain `main`, not Criterion: a line per phase per frame is what the scopes
+## are read for, and a benchmark's repeated samples would bury it.
+harness = false
+name = "profile"
+
+[dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+glam.workspace = true
+pollster.workspace = true
+# The backend the `profile` target's scopes are recorded through; the switch
+# that selects it lives in the `profile-tracing` feature above.
+profiling = { workspace = true, default-features = false }
+tracing = { version = "0.1.44", default-features = false, features = ["std"], optional = true }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "registry", "std"], optional = true }
+unlit_ecs = { path = "../crates/unlit_ecs" }
+unlit_wgpu = { path = "../crates/unlit_wgpu", default-features = false, features = ["unlit"] }
+unlit3d = { path = "../crates/unlit3d" }
+wgpu = { workspace = true, features = ["noop"] }
+
+[features]
+## Record the frame path's `profiling::scope!` spans with `tracing` and print
+## each phase's time. Off by default: without a backend the scopes compile
+## away, so the benchmark measures only the code under test.
+profile-tracing = [
+  "dep:tracing",
+  "dep:tracing-subscriber",
+  "profiling/profile-with-tracing",
+]
+
+[lints]
+workspace = true

@@ -143,6 +143,7 @@ where
     /// The frame's meshes were already culled and their placement resolved,
     /// so this only picks out the ones whose pipeline belongs to the family.
     fn collect(&mut self) {
+        profiling::scope!("scene.resolve.family");
         for &candidate in self.frame.meshes {
             let entity = candidate.entity;
             // An entity from another family carries a different key type, so
@@ -282,7 +283,10 @@ pub(crate) fn collect_and_sort_visible(
     } = frame;
     let frustum = FrustumPlanes::from_clip_from_world(camera.clip_from_world);
 
-    collect_visible(world, &frustum, meshes);
+    {
+        profiling::scope!("scene.cull");
+        collect_visible(world, &frustum, meshes);
+    }
     visible.clear();
     let frame = FamilyFrame {
         world,
@@ -292,14 +296,18 @@ pub(crate) fn collect_and_sort_visible(
         device,
         resources,
     };
-    for family in families.values_mut() {
-        family.collect_and_resolve(&frame, visible, register);
+    {
+        profiling::scope!("scene.resolve");
+        for family in families.values_mut() {
+            family.collect_and_resolve(&frame, visible, register);
+        }
     }
 
     // Sort: not z-sorted before z-sorted, then by pipeline, then by the key that
     // matters for that kind. Opaque draws are keyed by material so neighbours
     // share a bind group; z-sorted ones by camera distance so they are
     // composited back-to-front.
+    profiling::scope!("scene.sort");
     visible.sort_unstable_by(|a, b| {
         a.z_sorted
             .cmp(&b.z_sorted)
