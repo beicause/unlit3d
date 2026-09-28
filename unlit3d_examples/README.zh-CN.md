@@ -136,10 +136,12 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 | `--no-ui` | 关 | 不画场景的 UI 叠加层 |
 | `--min-score <S>` | `85.0` | 视为匹配的最低 SSIMULACRA2 分数 |
 | `--snapshot-dir <D>` | 资产 submodule 的 `snapshots` | 场景自己的快照按名解析的目录 |
+| `--mismatch-dir <D>` | 无 | 把每个与其快照不匹配的帧以无损 WebP 写入 `D`，沿用快照自身的名字 |
 
-`--output`、`--snapshot`、`--update` 与 `--scene all` 在窗口循环中没有意义，因此不带
-`--headless` 使用其中任何一个都算错误，而不是被静默忽略。`--scene all` 不能与
-`--output` 或 `--snapshot` 组合。`--no-ui` 只在无头路径生效；窗口化路径始终挂载 UI。
+`--output`、`--snapshot`、`--update`、`--mismatch-dir` 与 `--scene all` 在窗口循环中
+没有意义，因此不带 `--headless` 使用其中任何一个都算错误，而不是被静默忽略。
+`--scene all` 不能与 `--output` 或 `--snapshot` 组合。`--no-ui` 只在无头路径生效；
+窗口化路径始终挂载 UI。
 
 ### 播放节奏
 
@@ -177,6 +179,12 @@ SSIMULACRA2，分数低于 `--min-score` 时以非零码退出。若快照不存
 场景自己的快照只描述"精确重现该场景存储设置"的那一次运行。因此覆盖 `--size`、
 `--frames` 或 `--no-ui` 得到的是一次自定义捕获：它可以用 `--output` 写出，但不会与
 场景自己的快照比较；要比较请显式用 `--snapshot <PATH>`。
+
+不匹配往往反映的是平台差异而非回归：存储图像来自某一套 GPU 栈，另一个驱动的舍入就足以
+让某个场景低于 `--min-score`，而并没有任何东西出错。为此 `--mismatch-dir <D>` 会把每个
+不匹配的帧按其快照的名字写进 `D`，供人直接查看而不是只凭日志里的分数去猜。CI 快照任务
+正是这样做的：比对失败时会把 `D` 作为 artifact 上传。`--scene all` 无论中途是否有失败
+都会比较每个场景、每一帧，因此一次运行能报告出所有不匹配。
 
 ```text
 cargo run -p unlit3d_examples --features snapshot -- --headless --scene all

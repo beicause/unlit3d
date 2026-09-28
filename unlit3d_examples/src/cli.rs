@@ -93,6 +93,11 @@ pub struct Args {
     /// where the scene's own snapshots resolve, by name
     #[argh(option, default = "default_snapshot_dir()")]
     pub snapshot_dir: PathBuf,
+
+    /// write each frame that does not match its snapshot to this directory, as
+    /// a lossless WebP, mirroring the snapshot's name
+    #[argh(option)]
+    pub mismatch_dir: Option<PathBuf>,
 }
 
 impl Default for Args {
@@ -109,6 +114,7 @@ impl Default for Args {
             no_ui: false,
             min_score: DEFAULT_MIN_SCORE,
             snapshot_dir: default_snapshot_dir(),
+            mismatch_dir: None,
         }
     }
 }
@@ -169,6 +175,8 @@ impl Args {
                 Some("--output")
             } else if self.snapshot.is_some() {
                 Some("--snapshot")
+            } else if self.mismatch_dir.is_some() {
+                Some("--mismatch-dir")
             } else if self.update {
                 Some("--update")
             } else {
@@ -258,6 +266,7 @@ mod tests {
         assert!(!args.no_ui);
         assert_eq!(args.min_score, DEFAULT_MIN_SCORE);
         assert_eq!(args.snapshot_dir, default_snapshot_dir());
+        assert_eq!(args.mismatch_dir, None);
     }
 
     #[test]
@@ -279,6 +288,8 @@ mod tests {
             "90.5",
             "--snapshot-dir",
             "snaps",
+            "--mismatch-dir",
+            "mismatches",
         ])
         .expect("the capture options parse");
 
@@ -291,6 +302,7 @@ mod tests {
         assert!(args.update);
         assert_eq!(args.min_score, 90.5);
         assert_eq!(args.snapshot_dir, PathBuf::from("snaps"));
+        assert_eq!(args.mismatch_dir, Some(PathBuf::from("mismatches")));
     }
 
     #[test]
@@ -319,6 +331,10 @@ mod tests {
         assert_eq!(
             run(&["--update"]),
             Err("`--update` needs `--headless`".to_owned())
+        );
+        assert_eq!(
+            run(&["--mismatch-dir", "mismatches"]),
+            Err("`--mismatch-dir` needs `--headless`".to_owned())
         );
     }
 

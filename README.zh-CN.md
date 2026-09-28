@@ -135,7 +135,9 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 
 快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
 中，用 `git submodule update --init` 拉取；改动渲染结果后重新生成对应快照，并审查
-图像差异再提交。
+图像差异再提交。由于基线来自同一套 GPU 栈，换一个平台的驱动就可能让某个场景低于阈值
+而并没有出错；CI 因此传入 `--mismatch-dir`，把每个不匹配的帧作为 artifact 上传，且
+默认档位失败后 WebGL2 档位仍会继续运行。
 
 ### 运行
 

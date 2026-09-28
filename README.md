@@ -177,6 +177,10 @@ All snapshot baselines therefore live in
 [`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule; clone it
 with `git submodule update --init`. After an intentional rendering change,
 re-bless the affected snapshots and review the image diff before committing.
+Because the baselines come from one GPU stack, another platform's driver can
+score a scene below the threshold with nothing wrong; CI passes `--mismatch-dir`
+so every frame that does not match is uploaded as an artifact, and the WebGL2
+tier still runs after the default one fails.
 
 ### Running them
 

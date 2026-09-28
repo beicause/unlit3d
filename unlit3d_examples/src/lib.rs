@@ -249,7 +249,19 @@ fn run_headless_scene(
         {
             let bytes = read_texture_bytes(ctx, &target, width, height, bytes_per_pixel);
             let path = args.snapshot_dir.join(&name);
-            failed |= compare_frame(&path, &bytes, width, height, args.update, args.min_score);
+            // The mismatch mirrors the snapshot's own name, so a run over every
+            // scene keeps each frame under the scene it belongs to instead of
+            // colliding on the file name.
+            let mismatch = args.mismatch_dir.as_ref().map(|dir| dir.join(&name));
+            failed |= compare_frame(
+                &path,
+                &bytes,
+                width,
+                height,
+                args.update,
+                args.min_score,
+                mismatch.as_deref(),
+            );
         }
     }
     log::info!(
@@ -281,16 +293,40 @@ fn run_headless_scene(
             height,
             args.update,
             args.min_score,
+            args.mismatch_dir
+                .as_ref()
+                .map(|dir| dir.join(mismatch_name(path)))
+                .as_deref(),
         );
     }
 
     failed
 }
 
+/// The name a raw `--snapshot <PATH>` capture's mismatched frame is written
+/// under, inside the mismatch directory.
+///
+/// A raw capture names its own path rather than a snapshot directory, so it
+/// has no scene-relative name to mirror; the file name alone keeps the
+/// extension and stays clear of the subdirectories a scene's snapshots use.
+#[cfg(feature = "snapshot")]
+fn mismatch_name(snapshot: &std::path::Path) -> &std::path::Path {
+    snapshot
+        .file_name()
+        .map(std::path::Path::new)
+        .unwrap_or(snapshot)
+}
+
 /// Store or score `rgba` against the snapshot at `path`.
 ///
 /// `update` stores the frame; otherwise a missing snapshot is an error rather
 /// than a cue to write one, and a present one is scored on SSIMULACRA2.
+///
+/// When the snapshot does not match and `mismatch` names a path, the frame is
+/// written there as well. A mismatch is often the platform showing through —
+/// the stored images come from one GPU stack, and another driver's rounding
+/// can put a scene below the threshold without anything being wrong — so the
+/// frame is kept for a human to look at rather than left as a score in a log.
 #[cfg(feature = "snapshot")]
 fn compare_frame(
     path: &std::path::Path,
@@ -299,8 +335,23 @@ fn compare_frame(
     height: u32,
     update: bool,
     min_score: f64,
+    mismatch: Option<&std::path::Path>,
 ) -> bool {
     use unlit_wgpu_test_util::{score_frame_webp, store_frame_webp};
+
+    // Writing the frame is a courtesy to whoever reads the result: a failure to
+    // write it must not turn a passing snapshot into a failing run, nor hide
+    // the mismatch that made it worth writing. So it is reported and dropped.
+    let store_mismatch = |rgba: &[u8]| {
+        if let Some(mismatch) = mismatch
+            && let Err(error) = store_frame_webp(mismatch, rgba, width, height)
+        {
+            stderr(&format!(
+                "warning: writing the mismatched frame to {}: {error}\n",
+                mismatch.display()
+            ));
+        }
+    };
 
     let label = path.display();
     if update {
@@ -333,10 +384,12 @@ fn compare_frame(
                     "error: the frame does not match {label}: \
                      SSIMULACRA2 score {score:.2} < {min_score:.2}\n"
                 ));
+                store_mismatch(rgba);
                 true
             }
             Err(error) => {
                 stderr(&format!("error: comparing against {label}: {error}\n"));
+                store_mismatch(rgba);
                 true
             }
         }

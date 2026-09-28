@@ -119,10 +119,26 @@ jobs:
       # The device is the default tier — the WebGPU baseline's limits, which
       # every implementation guarantees. `--update` regenerates the snapshots;
       # review their diff before committing it.
+      #
+      # The snapshots were captured on one GPU stack (Linux's lavapipe), and
+      # another driver's rounding is enough to put a scene below the threshold
+      # without anything being wrong. A mismatch therefore writes the frame it
+      # scored under `target/`, and the step after this one uploads those
+      # frames when this one fails, so a platform difference can be looked at
+      # instead of guessed at from a score.
       - name: Compare the example's scenes against their snapshots
         run: >
           cargo run -p unlit3d_examples --features snapshot
           -- --headless --scene all
+          --mismatch-dir target/snapshot-mismatches
+
+      - name: Upload the mismatched frames
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: snapshot-mismatches-${{ matrix.os }}
+          path: target/snapshot-mismatches
+          if-no-files-found: ignore
 
       # The same scenes again, with every headless device narrowed to what
       # WebGL2 offers: no storage buffers, no `base_vertex`, none of the other
@@ -130,13 +146,29 @@ jobs:
       # textures and bakes a mesh's pool offset into its indices, so a scene
       # that only works on the storage path fails here. It is a rendering
       # comparison rather than a capability probe: the frames have to come back
-      # the same as the stored ones.
+      # the same as the stored ones. The mismatches go to a directory of their
+      # own so a run that fails both steps keeps the two tiers apart.
+      #
+      # `!cancelled()` rather than the implicit `success()`: a mismatch in the
+      # default tier must not hide what the WebGL2 tier would have reported, so
+      # one run shows every scene that fails under either tier. A cancelled run
+      # is the exception, since there is nothing left to report.
       - name: Compare the example's scenes under the WebGL2 device tier
+        if: ${{ !cancelled() }}
         run: >
           cargo run -p unlit3d_examples --features snapshot
           -- --headless --scene all
+          --mismatch-dir target/snapshot-mismatches-webgl2
         env:
           UNLIT3D_DEVICE_TIER: webgl2
+
+      - name: Upload the mismatched frames under the WebGL2 device tier
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: snapshot-mismatches-webgl2-${{ matrix.os }}
+          path: target/snapshot-mismatches-webgl2
+          if-no-files-found: ignore
 
   build-wasm:
     name: Build wasm

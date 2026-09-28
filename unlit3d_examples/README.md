@@ -159,12 +159,13 @@ the value must be the next argument, so `--name=value` is not accepted.
 | `--no-ui` | off | Draw the scene without its UI overlay |
 | `--min-score <S>` | `85.0` | Lowest SSIMULACRA2 score that counts as matching |
 | `--snapshot-dir <D>` | the asset submodule's `snapshots` | Where the scene's own snapshots resolve, by name |
+| `--mismatch-dir <D>` | none | Write every frame that does not match its snapshot to `D` as a lossless WebP, mirroring the snapshot's name |
 
-`--output`, `--snapshot`, `--update` and `--scene all` have no meaning in the
-windowed loop, so asking for one without `--headless` is an error rather than a
-silent no-op. `--scene all` cannot be combined with `--output` or `--snapshot`.
-`--no-ui` is only honoured by the headless path; the windowed path always mounts
-the UI.
+`--output`, `--snapshot`, `--update`, `--mismatch-dir` and `--scene all` have no
+meaning in the windowed loop, so asking for one without `--headless` is an error
+rather than a silent no-op. `--scene all` cannot be combined with `--output` or
+`--snapshot`. `--no-ui` is only honoured by the headless path; the windowed path
+always mounts the UI.
 
 ### Playback pace
 
@@ -214,6 +215,15 @@ A scene's own snapshots only describe a run that reproduces the scene's stored
 settings, so overriding `--size`, `--frames` or `--no-ui` makes a custom capture
 that is written with `--output` but not compared against the scene's snapshots;
 compare it explicitly with `--snapshot <PATH>` instead.
+
+A mismatch is frequently the platform showing through rather than a regression:
+the stored images come from one GPU stack, and another driver's rounding can put
+a scene below `--min-score` with nothing wrong. `--mismatch-dir <D>` therefore
+writes every frame that does not match, under its snapshot's name in `D`, so the
+frame can be looked at instead of guessed at from a score. This is what the CI
+snapshot job does, and it uploads `D` as an artifact when the comparison fails.
+A run over `--scene all` compares every scene and every frame regardless, so one
+pass reports each mismatch.
 
 ```text
 cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
