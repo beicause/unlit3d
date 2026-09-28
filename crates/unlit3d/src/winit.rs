@@ -358,10 +358,6 @@ impl Frame {
 
 /// The configuration to present `surface` with on `adapter`.
 ///
-/// The format is the surface's first sRGB one; when it supports none, the
-/// configuration advertises an sRGB view of a non-sRGB format instead (see
-/// [`color_format`]).
-///
 /// # Panics
 ///
 /// If `adapter` cannot present to `surface`.
@@ -372,23 +368,11 @@ fn surface_config(
     height: u32,
 ) -> wgpu::SurfaceConfiguration {
     let caps = surface.get_capabilities(adapter);
-    let format = srgb_format(&caps.formats).or_else(|| {
-        // A format that has an sRGB counterpart, so the frames can still be
-        // encoded by hardware; the surface's own preference comes first.
-        caps.formats
-            .iter()
-            .copied()
-            .find(|format| format.add_srgb_suffix() != *format)
-    });
-    let format = format.unwrap_or_else(|| {
-        // Neither sRGB nor viewable as one, as an fp16 surface might be. The
-        // frames are then rendered in this format itself.
-        *caps
-            .formats
-            .first()
-            .expect("the adapter can present to the surface")
-    });
-    let srgb = format.add_srgb_suffix();
+    let view_formats_supported = adapter
+        .get_downlevel_capabilities()
+        .flags
+        .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS);
+    let (format, view_formats) = surface_format(&caps.formats, view_formats_supported);
     wgpu::SurfaceConfiguration {
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         format,
@@ -406,16 +390,61 @@ fn surface_config(
             .first()
             .copied()
             .unwrap_or(wgpu::CompositeAlphaMode::Auto),
-        // Only the sRGB counterpart of the configured format is ever viewed
-        // through; anything else would need a view descriptor of its own.
-        view_formats: (srgb != format).then_some(srgb).into_iter().collect(),
+        view_formats,
         desired_maximum_frame_latency: 2,
     }
 }
 
-/// The surface's first sRGB format.
-fn srgb_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
-    formats.iter().copied().find(wgpu::TextureFormat::is_srgb)
+/// The format to configure a surface whose capabilities offer `formats` with,
+/// together with the view formats to advertise alongside it.
+///
+/// The format is the first sRGB one. When the surface offers none, a format
+/// with an sRGB counterpart is configured and that counterpart advertised as a
+/// view — so the hardware still encodes the shader's output on write and the
+/// display sees what an sRGB surface would have shown it.
+///
+/// Advertising that view needs
+/// [`wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS`], which the GLES and WebGL2
+/// backends lack, so `view_formats_supported` gates it. Without it the frame is
+/// rendered into the presented format itself: the built-in shaders write
+/// sRGB-encoded colors, and a non-sRGB target passes them through unconverted,
+/// which is the same result by a different route. A surface that is neither
+/// sRGB nor has an sRGB counterpart — an fp16 one, say — is presented as it is.
+///
+/// # Panics
+///
+/// If `formats` is empty, which means the adapter cannot present to the
+/// surface at all.
+fn surface_format(
+    formats: &[wgpu::TextureFormat],
+    view_formats_supported: bool,
+) -> (wgpu::TextureFormat, Vec<wgpu::TextureFormat>) {
+    let srgb = formats.iter().copied().find(wgpu::TextureFormat::is_srgb);
+    let format = srgb
+        .or_else(|| {
+            // A format that has an sRGB counterpart, so the frames can still be
+            // encoded by hardware; the surface's own preference comes first.
+            formats
+                .iter()
+                .copied()
+                .find(|format| format.add_srgb_suffix() != *format)
+        })
+        .unwrap_or_else(|| {
+            // Neither sRGB nor viewable as one. The frames are then rendered in
+            // this format itself.
+            *formats
+                .first()
+                .expect("the adapter can present to the surface")
+        });
+    // A format that already encodes sRGB needs no view, nor does one whose
+    // backend cannot be given a view at all. `add_srgb_suffix` returns the
+    // format itself when it has no counterpart, which the filter drops.
+    let view_formats = (view_formats_supported && !format.is_srgb())
+        .then(|| format.add_srgb_suffix())
+        .filter(|srgb| *srgb != format)
+        .into_iter()
+        .collect();
+    (format, view_formats)
 }
 
 /// The format a frame's color attachment is viewed as, for a surface
@@ -427,10 +456,11 @@ fn srgb_format(formats: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
 /// format, so the hardware encodes the shader's linear output on write and the
 /// display sees exactly what an sRGB swap chain would have shown it.
 ///
-/// # Panics
-///
-/// If `config.format` is neither sRGB nor listed among its own
-/// `view_formats`.
+/// A backend that cannot be given that view has none to pick, so the frame is
+/// rendered in the presented format and the shader's own values reach the
+/// display unconverted — which is the right thing for the sRGB-encoded colors
+/// the built-in shaders write, and why this falls back to `config.format`
+/// rather than refusing to pick one.
 fn color_format(config: &wgpu::SurfaceConfiguration) -> wgpu::TextureFormat {
     if config.format.is_srgb() {
         return config.format;
@@ -514,4 +544,84 @@ fn color_view_resource(texture: &wgpu::Texture, format: wgpu::TextureFormat) -> 
             ..Default::default()
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The formats a GLES or WebGL2 surface offers: the non-sRGB pair, with
+    /// the sRGB one added only when the platform's frame buffer can encode.
+    const GLES_FORMATS: &[wgpu::TextureFormat] = &[
+        wgpu::TextureFormat::Rgba8Unorm,
+        wgpu::TextureFormat::Bgra8Unorm,
+    ];
+
+    /// A configuration with every field but the format at a harmless value, so
+    /// a test can vary only what it is about.
+    fn surface_configuration(format: wgpu::TextureFormat) -> wgpu::SurfaceConfiguration {
+        wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width: 1,
+            height: 1,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: Vec::new(),
+            desired_maximum_frame_latency: 2,
+        }
+    }
+
+    #[test]
+    fn an_srgb_surface_format_is_used_as_it_is() {
+        let formats = [
+            wgpu::TextureFormat::Bgra8Unorm,
+            wgpu::TextureFormat::Bgra8UnormSrgb,
+        ];
+
+        // Already sRGB, so there is nothing to view it as, on either backend.
+        for supported in [true, false] {
+            let (format, views) = surface_format(&formats, supported);
+            assert_eq!(format, wgpu::TextureFormat::Bgra8UnormSrgb);
+            assert!(views.is_empty(), "an sRGB format needs no view");
+        }
+    }
+
+    #[test]
+    fn a_surface_without_srgb_is_viewed_as_srgb_where_views_are_supported() {
+        let (format, views) = surface_format(GLES_FORMATS, true);
+
+        assert_eq!(format, wgpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(views, vec![wgpu::TextureFormat::Rgba8UnormSrgb]);
+    }
+
+    #[test]
+    fn a_surface_without_srgb_advertises_no_view_where_they_are_unsupported() {
+        // GLES and WebGL2 have no `SURFACE_VIEW_FORMATS`, so configuring one
+        // with a view is rejected outright. The frame is then rendered into the
+        // presented format, which `color_format` follows.
+        let (format, views) = surface_format(GLES_FORMATS, false);
+
+        assert_eq!(format, wgpu::TextureFormat::Rgba8Unorm);
+        assert!(views.is_empty());
+        let config = wgpu::SurfaceConfiguration {
+            format,
+            view_formats: views,
+            ..surface_configuration(format)
+        };
+        assert_eq!(color_format(&config), wgpu::TextureFormat::Rgba8Unorm);
+    }
+
+    #[test]
+    fn a_surface_with_no_srgb_counterpart_is_presented_as_it_is() {
+        // An fp16 surface: neither sRGB nor viewable as one.
+        let formats = [wgpu::TextureFormat::Rgba16Float];
+
+        for supported in [true, false] {
+            let (format, views) = surface_format(&formats, supported);
+            assert_eq!(format, wgpu::TextureFormat::Rgba16Float);
+            assert!(views.is_empty(), "there is no sRGB view of an fp16 format");
+        }
+    }
 }
