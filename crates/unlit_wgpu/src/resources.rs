@@ -197,6 +197,21 @@ impl From<TextureView> for wgpu::TextureView {
     }
 }
 
+/// Two views are equal when they are the same view of the same texture.
+///
+/// Written out rather than derived because the derive expands to a comparison
+/// of the bare [`wgpu::TextureView`] in generated code the struct's own
+/// `#[expect]` does not cover. Going through [`TextureView::view`] and
+/// [`TextureView::format`] keeps the bare type named only in the wrapper, which
+/// is the whole point of it.
+impl PartialEq for TextureView {
+    fn eq(&self, other: &Self) -> bool {
+        self.format == other.format && self.view() == other.view()
+    }
+}
+
+impl Eq for TextureView {}
+
 /// Creating texture views whose format the graph can track.
 ///
 /// wgpu's own [`wgpu::Texture::create_view`] returns a bare
@@ -248,6 +263,14 @@ pub enum Resource {
     TextureView(TextureView),
     /// A sampler.
     Sampler(wgpu::Sampler),
+    /// A flat array of fixed-size elements, held either in a storage buffer or
+    /// in a texture.
+    ///
+    /// The two are one kind rather than two because they are one thing to a
+    /// caller: which of them an array lives in follows from the device, not
+    /// from what the array holds. See
+    /// [`ArrayHandle`](crate::texel_array::ArrayHandle).
+    Array(crate::texel_array::ArrayHandle),
     /// A bind group.
     BindGroup(wgpu::BindGroup),
     /// A virtual node: no wgpu handle, purely a graph citizen.
@@ -326,6 +349,7 @@ stored_kind! {
     wgpu::Texture => Texture,
     TextureView => TextureView,
     wgpu::Sampler => Sampler,
+    crate::texel_array::ArrayHandle => Array,
     wgpu::BindGroup => BindGroup,
 }
 
@@ -348,6 +372,7 @@ into_resource! {
     wgpu::Texture => Texture,
     TextureView => TextureView,
     wgpu::Sampler => Sampler,
+    crate::texel_array::ArrayHandle => Array,
     wgpu::BindGroup => BindGroup,
 }
 

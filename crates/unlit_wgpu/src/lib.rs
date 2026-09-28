@@ -25,6 +25,7 @@ pub mod resources;
 pub mod scene;
 pub mod specialize;
 pub mod staging;
+pub mod texel_array;
 #[cfg(feature = "egui")]
 pub mod ui;
 pub mod util;

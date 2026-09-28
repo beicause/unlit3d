@@ -151,6 +151,19 @@ bitflags::bitflags! {
         /// the mesh's morph weights, so a target with a zero weight costs
         /// nothing but a multiply. Requires [`Self::VERTEX_POSITION`].
         const MORPH_POSITIONS = 1 << 9;
+        /// Read the arrays that would otherwise be `var<storage, read>` from
+        /// 2D textures instead.
+        ///
+        /// A device without storage buffers — WebGL2 has none, and rejects a
+        /// bind-group layout naming one — can still read a flat array through
+        /// `textureLoad`, so the same variant is available there with its
+        /// arrays in textures. The arrays keep their binding numbers and their
+        /// byte layout; only the resource type and the read change.
+        ///
+        /// This is a property of the device rather than of a draw, so it is
+        /// deliberately outside [`Self::MESH_MASK`]: specializing a draw by its
+        /// vertex layout must not clear it.
+        const TEXEL_ARRAY = 1 << 10;
     }
 }
 
@@ -292,6 +305,9 @@ impl UnlitOptions {
             depth_stencil.format = default_depth_stencil_format(device);
         }
         options
+            .flags
+            .set(UnlitFlags::TEXEL_ARRAY, !supports_storage_buffers(device));
+        options
     }
 
     /// The standard variant's device-independent fields: the flags, primitive
@@ -336,7 +352,7 @@ impl UnlitOptions {
     ///
     /// Every name appears, so the composed variant never sees a name it does
     /// not know.
-    pub fn features(&self) -> [(&'static str, bool); 10] {
+    pub fn features(&self) -> [(&'static str, bool); 11] {
         [
             (
                 "VERTEX_POSITION",
@@ -375,6 +391,7 @@ impl UnlitOptions {
                 "MORPH_POSITIONS",
                 self.flags.contains(UnlitFlags::MORPH_POSITIONS),
             ),
+            ("TEXEL_ARRAY", self.flags.contains(UnlitFlags::TEXEL_ARRAY)),
         ]
     }
 
@@ -391,6 +408,68 @@ impl UnlitOptions {
     /// reads the global group's array of them.
     pub fn needs_joints(&self) -> bool {
         self.flags.contains(UnlitFlags::VERTEX_JOINTS)
+    }
+
+    /// Whether this variant reads the arrays through
+    /// [`UnlitFlags::TEXEL_ARRAY`] instead of storage buffers.
+    ///
+    /// A device with no storage buffers cannot bind one at all, so this is what
+    /// decides whether the four array bindings are storage buffers or textures.
+    /// [`UnlitOptions::standard`] sets it from the device; a caller that builds
+    /// its options by hand may set it either way, and only the combination that
+    /// asks for a storage buffer on a device without them is rejected.
+    pub fn uses_texel_arrays(&self) -> bool {
+        self.flags.contains(UnlitFlags::TEXEL_ARRAY)
+    }
+
+    /// Reject options whose array path the device cannot serve.
+    ///
+    /// The texel path works on every device — a texture read is universal — so
+    /// forcing it on a device that also has storage buffers is allowed, which
+    /// is what lets a test exercise it anywhere. The reverse is not: a
+    /// bind-group layout naming a storage buffer is rejected outright by a
+    /// device without them, so the failure is caught here with the reason
+    /// rather than left to wgpu's validation.
+    ///
+    /// # Panics
+    ///
+    /// If the variant reads storage buffers on a device that has none.
+    fn assert_device_supports_arrays(&self, device: &wgpu::Device) {
+        assert!(
+            self.uses_texel_arrays() || supports_storage_buffers(device),
+            "this variant reads its arrays from storage buffers, but the device has none \
+             (its `max_storage_buffers_per_shader_stage` is 0, as WebGL2's is): set \
+             `UnlitFlags::TEXEL_ARRAY`, or start from `UnlitOptions::standard`, which does it \
+             from the device"
+        );
+    }
+
+    /// The layout entry binding an array of `element_size`-byte elements.
+    ///
+    /// On the storage path it is a read-only storage buffer whose binding
+    /// minimum is one element, so the array may grow without invalidating the
+    /// layout. On the texel path it is a non-filterable float texture, which is
+    /// what `textureLoad` reads.
+    fn array_entry(&self, binding: u32, element_size: u64) -> wgpu::BindGroupLayoutEntry {
+        if self.uses_texel_arrays() {
+            return crate::texel_array::TexelArrayLayout::binding(
+                binding,
+                wgpu::ShaderStages::VERTEX,
+            );
+        }
+        wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: Some(
+                    core::num::NonZeroU64::new(element_size)
+                        .expect("an element has a non-zero size, which is a valid binding minimum"),
+                ),
+            },
+            count: None,
+        }
     }
 
     /// Whether this variant reads the mesh group's morph deltas and the global
@@ -524,6 +603,21 @@ pub struct UnlitBindGroupLayouts {
 pub type SpecializedUnlitPipeline =
     crate::specialize::SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>;
 
+/// Whether `device` can read a storage buffer from a shader.
+///
+/// WebGL2 cannot: it has no storage buffers at all, and a bind-group layout
+/// naming one is rejected outright. Such a device reports a limit of zero,
+/// which is the only signal available — [`wgpu::Device`] exposes its limits and
+/// features but not the downlevel capabilities that would say so directly.
+///
+/// A device that can bind storage buffers reports a non-zero limit, so this is
+/// what decides between the built-in shader's buffer and texel array paths.
+#[cfg(feature = "unlit")]
+pub fn supports_storage_buffers(device: &wgpu::Device) -> bool {
+    let limits = device.limits();
+    limits.max_storage_buffers_per_shader_stage > 0 && limits.max_storage_buffer_binding_size > 0
+}
+
 #[cfg(feature = "unlit")]
 impl UnlitOptions {
     /// Build the bind-group layouts the built-in shader's `options` variant
@@ -534,92 +628,60 @@ impl UnlitOptions {
     /// anything, and keeps the two in step: `create` builds the pipeline from
     /// this same result.
     pub fn bind_group_layouts(&self, device: &wgpu::Device) -> UnlitBindGroupLayouts {
-        let global =
-            {
-                // The group holds the frame's shared inputs: the camera, the frame
-                // globals, the mesh-metadata decode parameters and the pose arrays
-                // every instance slices into. A variant that reads none of the
-                // optional ones declares no binding for them.
-                let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 5>::new();
-                entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: CAMERA_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
-                        ),
-                    },
-                    count: None,
-                });
-                entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: FRAME_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
-                        ),
-                    },
-                    count: None,
-                });
-                if self.needs_metadata() {
-                    entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: MESH_METADATA_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        // The element stride, not a capacity multiple: the
-                        // buffer may grow without invalidating the layout.
-                        min_binding_size: Some(
-                            <crate::mesh::MeshMetadata as const_shader_layout::ShaderLayout>::SIZE,
-                        ),
-                    },
-                    count: None,
-                });
-                }
-                if self.needs_joints() {
-                    entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: JOINTS_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        // A lone matrix element: the array grows with the
-                        // frame's visible set without invalidating the layout.
-                        min_binding_size: Some(
-                            <crate::mesh::JointMatrix as const_shader_layout::ShaderLayout>::SIZE,
-                        ),
-                    },
-                    count: None,
-                });
-                }
-                if self.needs_morphs() {
-                    entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: MORPH_WEIGHTS_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        // One weight: like the other storage entries this is an
-                        // element stride, so the frame's array may grow.
-                        min_binding_size: Some(
-                            wgpu::BufferAddress::from(size_of::<f32>() as u64).try_into().expect(
-                                "a float is non-zero, so its size is a valid binding minimum",
-                            ),
-                        ),
-                    },
-                    count: None,
-                });
-                }
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("unlit_wgpu::unlit::globals"),
-                    entries: &entries,
-                })
-            };
+        self.assert_device_supports_arrays(device);
+        let global = {
+            // The group holds the frame's shared inputs: the camera, the frame
+            // globals, the mesh-metadata decode parameters and the pose arrays
+            // every instance slices into. A variant that reads none of the
+            // optional ones declares no binding for them.
+            let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 5>::new();
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: CAMERA_BINDING,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
+                    ),
+                },
+                count: None,
+            });
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: FRAME_BINDING,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: Some(
+                        <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
+                    ),
+                },
+                count: None,
+            });
+            if self.needs_metadata() {
+                entries.push(self.array_entry(
+                    MESH_METADATA_BINDING,
+                    <crate::mesh::MeshMetadata as const_shader_layout::ShaderLayout>::SIZE.get(),
+                ));
+            }
+            if self.needs_joints() {
+                entries.push(self.array_entry(
+                    JOINTS_BINDING,
+                    <crate::mesh::JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
+                ));
+            }
+            if self.needs_morphs() {
+                entries.push(self.array_entry(
+                    MORPH_WEIGHTS_BINDING,
+                    wgpu::BufferAddress::from(size_of::<f32>() as u64),
+                ));
+            }
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("unlit_wgpu::unlit::globals"),
+                entries: &entries,
+            })
+        };
 
         let material = self
             .flags
@@ -666,26 +728,14 @@ impl UnlitOptions {
                 count: None,
             });
             if self.needs_morphs() {
-                // One position component of one target: the buffer is sized by
-                // the mesh, and like the other storage entries its binding
-                // minimum is a single element so growing the mesh never
+                // One position component of one target: the array is sized by
+                // the mesh, and like the other array entries its storage
+                // binding minimum is a single element so growing the mesh never
                 // invalidates the layout.
-                entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: MORPH_DELTAS_BINDING,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: Some(
-                            wgpu::BufferAddress::from(size_of::<f32>() as u64)
-                                .try_into()
-                                .expect(
-                                    "a float is non-zero, so its size is a valid binding minimum",
-                                ),
-                        ),
-                    },
-                    count: None,
-                });
+                entries.push(self.array_entry(
+                    MORPH_DELTAS_BINDING,
+                    wgpu::BufferAddress::from(size_of::<f32>() as u64),
+                ));
             }
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("unlit_wgpu::unlit::mesh"),
@@ -981,65 +1031,80 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// they deform, so the invalid combinations are skipped.
     fn all_variants() -> Vec<UnlitOptions> {
         let mut variants = Vec::new();
-        for vertex_position in [false, true] {
-            for uncompressed_position in [false, true] {
-                for vertex_uv in [false, true] {
-                    for uncompressed_uv in [false, true] {
-                        for vertex_color in [false, true] {
-                            for vertex_instance in [false, true] {
-                                for base_color_texture in [false, true] {
-                                    for vertex_joints in [false, true] {
-                                        for morph_positions in [false, true] {
-                                            let mut flags = UnlitFlags::empty();
-                                            flags.set(UnlitFlags::VERTEX_POSITION, vertex_position);
-                                            flags.set(
-                                                UnlitFlags::UNCOMPRESSED_POSITION,
-                                                uncompressed_position,
-                                            );
-                                            flags.set(UnlitFlags::VERTEX_UV, vertex_uv);
-                                            flags.set(UnlitFlags::UNCOMPRESSED_UV, uncompressed_uv);
-                                            flags.set(UnlitFlags::VERTEX_COLOR, vertex_color);
-                                            flags.set(UnlitFlags::VERTEX_INSTANCE, vertex_instance);
-                                            flags.set(
-                                                UnlitFlags::BASE_COLOR_TEXTURE,
-                                                base_color_texture,
-                                            );
-                                            flags.set(UnlitFlags::VERTEX_JOINTS, vertex_joints);
-                                            flags.set(UnlitFlags::MORPH_POSITIONS, morph_positions);
-                                            if base_color_texture && !vertex_uv {
-                                                continue;
+        for texel_array in [false, true] {
+            for vertex_position in [false, true] {
+                for uncompressed_position in [false, true] {
+                    for vertex_uv in [false, true] {
+                        for uncompressed_uv in [false, true] {
+                            for vertex_color in [false, true] {
+                                for vertex_instance in [false, true] {
+                                    for base_color_texture in [false, true] {
+                                        for vertex_joints in [false, true] {
+                                            for morph_positions in [false, true] {
+                                                let mut flags = UnlitFlags::empty();
+                                                flags.set(
+                                                    UnlitFlags::VERTEX_POSITION,
+                                                    vertex_position,
+                                                );
+                                                flags.set(
+                                                    UnlitFlags::UNCOMPRESSED_POSITION,
+                                                    uncompressed_position,
+                                                );
+                                                flags.set(UnlitFlags::VERTEX_UV, vertex_uv);
+                                                flags.set(
+                                                    UnlitFlags::UNCOMPRESSED_UV,
+                                                    uncompressed_uv,
+                                                );
+                                                flags.set(UnlitFlags::VERTEX_COLOR, vertex_color);
+                                                flags.set(
+                                                    UnlitFlags::VERTEX_INSTANCE,
+                                                    vertex_instance,
+                                                );
+                                                flags.set(
+                                                    UnlitFlags::BASE_COLOR_TEXTURE,
+                                                    base_color_texture,
+                                                );
+                                                flags.set(UnlitFlags::VERTEX_JOINTS, vertex_joints);
+                                                flags.set(
+                                                    UnlitFlags::MORPH_POSITIONS,
+                                                    morph_positions,
+                                                );
+                                                flags.set(UnlitFlags::TEXEL_ARRAY, texel_array);
+                                                if base_color_texture && !vertex_uv {
+                                                    continue;
+                                                }
+                                                if uncompressed_position && !vertex_position {
+                                                    continue;
+                                                }
+                                                if uncompressed_uv && !vertex_uv {
+                                                    continue;
+                                                }
+                                                // The joint stream is part of the position
+                                                // stream, and a morph target displaces the
+                                                // position.
+                                                if (vertex_joints || morph_positions)
+                                                    && !vertex_position
+                                                {
+                                                    continue;
+                                                }
+                                                // A deforming draw reads its pose base
+                                                // from the instance stream, so it needs
+                                                // one.
+                                                if (vertex_joints || morph_positions)
+                                                    && !vertex_instance
+                                                {
+                                                    continue;
+                                                }
+                                                // A variant reading nothing composes an
+                                                // empty vertex-input struct.
+                                                if flags.is_empty() {
+                                                    continue;
+                                                }
+                                                variants.push(UnlitOptions {
+                                                    flags,
+                                                    ..UnlitOptions::standard_shape()
+                                                });
                                             }
-                                            if uncompressed_position && !vertex_position {
-                                                continue;
-                                            }
-                                            if uncompressed_uv && !vertex_uv {
-                                                continue;
-                                            }
-                                            // The joint stream is part of the position
-                                            // stream, and a morph target displaces the
-                                            // position.
-                                            if (vertex_joints || morph_positions)
-                                                && !vertex_position
-                                            {
-                                                continue;
-                                            }
-                                            // A deforming draw reads its pose base
-                                            // from the instance stream, so it needs
-                                            // one.
-                                            if (vertex_joints || morph_positions)
-                                                && !vertex_instance
-                                            {
-                                                continue;
-                                            }
-                                            // A variant reading nothing composes an
-                                            // empty vertex-input struct.
-                                            if flags.is_empty() {
-                                                continue;
-                                            }
-                                            variants.push(UnlitOptions {
-                                                flags,
-                                                ..UnlitOptions::standard_shape()
-                                            });
                                         }
                                     }
                                 }
@@ -1323,11 +1388,12 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 compressed_position,
                 "variant {options:?}"
             );
-            // The metadata bindings exist only while a channel is compressed.
-            // The declarations are matched rather than the bare names, which
-            // also occur inside `mesh_metadata::MeshInfo`.
+            // Every array read goes through an accessor, whose name survives
+            // assembly unmangled as a suffix: the binding it reads is mangled
+            // with its module path, so the accessor is what a variant can be
+            // checked against.
             assert_eq!(
-                wgsl.contains("var<storage, read> mesh_meta"),
+                wgsl.contains("load_mesh_metadata"),
                 options.needs_metadata(),
                 "variant {options:?}"
             );
@@ -1342,18 +1408,34 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             // The pose arrays are the frame's, so they live in the global
             // group alongside the camera and the metadata.
             assert_eq!(
-                wgsl.contains("var<storage, read> joint_matrices"),
+                wgsl.contains("load_joint_matrix"),
                 options.needs_joints(),
                 "variant {options:?}"
             );
             assert_eq!(
-                wgsl.contains("var<storage, read> morph_weights"),
+                wgsl.contains("load_morph_weight"),
                 options.needs_morphs(),
                 "variant {options:?}"
             );
             assert_eq!(
-                wgsl.contains("var<storage, read> morph_deltas"),
+                wgsl.contains("load_morph_delta"),
                 options.needs_morphs(),
+                "variant {options:?}"
+            );
+            // The path decides the resource type: storage buffers when the
+            // device has them, textures when it does not. Neither path ever
+            // leaves the other's declarations behind.
+            let reads_an_array = options.needs_metadata() || options.needs_pose();
+            if options.uses_texel_arrays() {
+                assert_eq!(
+                    wgsl.matches("var<storage, read>").count(),
+                    0,
+                    "variant {options:?} kept a storage array"
+                );
+            }
+            assert_eq!(
+                wgsl.contains("texel_of"),
+                options.uses_texel_arrays() && reads_an_array,
                 "variant {options:?}"
             );
             // Without a position stream the vertex input declares no

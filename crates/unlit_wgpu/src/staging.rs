@@ -3,14 +3,21 @@
 //! Data that changes every frame cannot be written straight into the buffer
 //! the GPU reads from: a buffer is either mapped by the host or read by a
 //! submission, never both. The usual shortcut, [`wgpu::Queue::write_buffer`],
-//! hides that by allocating a temporary staging buffer per call and
-//! submitting the copy itself — a fresh allocation every frame, plus a
-//! submission the caller cannot batch with the rest of the frame's work.
+//! hides that by allocating a fresh staging buffer per call and freeing it only
+//! after a later submission has finished, so a scene that uploads every frame
+//! allocates every frame.
 //!
 //! [`StagingBuffer`] keeps those staging buffers instead: one per destination
 //! buffer, written through a mapping carried across frames, with the copy
 //! recorded into an encoder the caller already owns. A steady scene then
-//! uploads without allocating and without an extra submission.
+//! uploads without allocating.
+//!
+//! Both routes reach the GPU the same way — the copy joins the next
+//! [`wgpu::Queue::submit`] either way — so what a staging buffer buys is the
+//! allocation, which is worth most where the allocation is largest. On WebGL2
+//! it is host memory: buffer mapping is emulated there, so a staging buffer is
+//! a plain byte buffer the copy is uploaded from. See
+//! [the section below](#what-a-staging-buffer-is-on-webgl2).
 //!
 //! ```
 //! # let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -146,6 +153,81 @@ impl StagingBuffer {
             // A failed mapping leaves the buffer marked unwritable: it is
             // never written again, which is safer than reusing memory the
             // device never handed back.
+            if result.is_ok() {
+                writable.store(true, Ordering::Release);
+            }
+        });
+    }
+
+    /// Upload `data` into `texture`, recording the copy into `encoder`.
+    ///
+    /// The image is `layout`-described and spans `size`, exactly as
+    /// [`wgpu::Queue::write_texture`] takes them, but reaches the texture
+    /// through a reused staging buffer rather than a fresh one per call. The
+    /// texture needs [`wgpu::TextureUsages::COPY_DST`].
+    ///
+    /// `layout.bytes_per_row` must be a multiple of
+    /// [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`]: a buffer-to-texture copy
+    /// requires it, unlike [`wgpu::Queue::write_texture`], which re-aligns the
+    /// rows itself. Only `layout.offset` into the staging buffer is always
+    /// zero — the data starts there — so a non-zero `layout.offset` is
+    /// rejected rather than silently reading from the wrong place. An empty
+    /// image records no copy.
+    ///
+    /// # Panics
+    ///
+    /// If `layout.offset` is non-zero, if `layout.bytes_per_row` is set and not
+    /// a multiple of [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`], or if `data` is
+    /// not a multiple of [`wgpu::COPY_BUFFER_ALIGNMENT`] long.
+    pub fn write_texture(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        layout: wgpu::TexelCopyBufferLayout,
+        size: wgpu::Extent3d,
+        data: &[u8],
+    ) {
+        if data.is_empty() {
+            return;
+        }
+        assert_eq!(
+            layout.offset, 0,
+            "a staged texture upload starts at the staging buffer's own start"
+        );
+        if let Some(bytes_per_row) = layout.bytes_per_row {
+            assert!(
+                bytes_per_row.is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT),
+                "a texture upload row of {bytes_per_row} bytes is not a multiple of \
+                 `COPY_BYTES_PER_ROW_ALIGNMENT`"
+            );
+        }
+
+        let slot = self.writable_slot(device, data.len() as u64);
+        slot.buffer
+            .slice(..data.len() as u64)
+            .get_mapped_range_mut()
+            .expect("a staging buffer is mapped while the host owns it")
+            .copy_from_slice(data);
+        // Unmapping ends the host's access, which the copy below needs; the
+        // mapping is asked for again so the buffer outlives the copy.
+        slot.buffer.unmap();
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer: &slot.buffer,
+                layout,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            size,
+        );
+
+        let writable = Arc::clone(&slot.writable);
+        encoder.map_buffer_on_submit(&slot.buffer, wgpu::MapMode::Write, .., move |result| {
             if result.is_ok() {
                 writable.store(true, Ordering::Release);
             }

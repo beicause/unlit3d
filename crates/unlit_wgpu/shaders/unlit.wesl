@@ -30,6 +30,10 @@
 //                        stream and deform the vertex by the joint matrices
 //   MORPH_POSITIONS      read a per-vertex morph position offset and add it
 //                        to the deformed position
+//   TEXEL_ARRAY          the arrays that would otherwise be `var<storage,
+//                        read>` are read from 2D textures instead, one `f32`
+//                        lane per texel component; for devices with no storage
+//                        buffers at all, WebGL2 in particular
 //
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
@@ -56,7 +60,14 @@
 // displacements. The pose lives in the global group rather than a mesh's own
 // because it is per-instance state: one array serves every draw of the frame,
 // and each instance slices into it at the base its own record carries.
+//
+// The four arrays under [TEXEL_ARRAY] keep their binding numbers but change
+// resource type: a `texture_2d<f32>` replaces the `var<storage, read>`, holding
+// the same bytes a row at a time. Every read goes through one of the
+// `load_*` accessors below, so the rest of the shader is written once and does
+// not know which of the two it is running on.
 
+import package::array_access;
 import package::globals;
 import package::mesh_compression;
 import package::mesh_metadata;
@@ -65,41 +76,11 @@ import package::view;
 @group(0) @binding(0) var<uniform> camera: view::View;
 @group(0) @binding(1) var<uniform> frame: globals::Globals;
 
-@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
-@group(0) @binding(2) var<storage, read> mesh_meta: array<mesh_metadata::MeshMetadata>;
-
-/// This frame's joint matrices, indexed by the joint pair in the position
-/// stream. Each one is a joint's animated transform times its inverse bind
-/// pose, applied in the mesh's own space.
-///
-/// The array holds the pose of every visible instance, and an instance reads
-/// its own joints from `in.pose.x`; that is what lets two instances of one mesh
-/// deform differently.
-@if(VERTEX_JOINTS)
-@group(0) @binding(3) var<storage, read> joint_matrices: array<mat4x4<f32>>;
-
-/// This frame's morph weights, one per target of every morphed instance.
-///
-/// Like the joint matrices this is per-instance data in one frame-wide array,
-/// and an instance reads its own weights from `in.pose.y`.
-@if(MORPH_POSITIONS)
-@group(0) @binding(4) var<storage, read> morph_weights: array<f32>;
-
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
 
 @if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS)
 @group(2) @binding(0) var<uniform> mesh_info: mesh_metadata::MeshInfo;
-
-/// Every morph target's per-vertex position displacement, flat and tightly
-/// packed: for each vertex, `MeshInfo::morph_count` targets in order, three
-/// components each.
-///
-/// A target's displacement is geometry, not pose: every vertex of the mesh has
-/// its own, so this stays a buffer of the mesh's own rather than one the whole
-/// frame shares.
-@if(MORPH_POSITIONS)
-@group(2) @binding(1) var<storage, read> morph_deltas: array<f32>;
 
 struct VertexInput {
     /// Per-vertex position: full precision, or compressed to Snorm16x4
@@ -154,10 +135,9 @@ public fn transform_point(m0: vec4<f32>, m1: vec4<f32>, m2: vec4<f32>, p: vec3<f
 /// are a partition of unity, so the weighted sum needs no division.
 ///
 /// `joint_base` is the offset of this instance's matrices in the frame's shared
-/// array. The matrices are read from the module-scope binding rather than
-/// passed in: WGSL forbids passing a pointer to storage space into a function.
-/// Four lanes are unrolled rather than looped, because indexing the array with
-/// a variable would need one, and the attribute is fixed at four joints.
+/// array, which the accessors read from whichever resource holds it. Four lanes
+/// are unrolled rather than looped, because indexing the array with a variable
+/// would need one, and the attribute is fixed at four joints.
 @if(VERTEX_JOINTS)
 fn skin_position(
     position: vec3<f32>,
@@ -167,10 +147,10 @@ fn skin_position(
 ) -> vec3<f32> {
     let point = vec4<f32>(position, 1.0);
     var skinned = vec3<f32>(0.0, 0.0, 0.0);
-    skinned += weights.x * (joint_matrices[joint_base + indices.x] * point).xyz;
-    skinned += weights.y * (joint_matrices[joint_base + indices.y] * point).xyz;
-    skinned += weights.z * (joint_matrices[joint_base + indices.z] * point).xyz;
-    skinned += weights.w * (joint_matrices[joint_base + indices.w] * point).xyz;
+    skinned += weights.x * (array_access::load_joint_matrix(joint_base + indices.x) * point).xyz;
+    skinned += weights.y * (array_access::load_joint_matrix(joint_base + indices.y) * point).xyz;
+    skinned += weights.z * (array_access::load_joint_matrix(joint_base + indices.z) * point).xyz;
+    skinned += weights.w * (array_access::load_joint_matrix(joint_base + indices.w) * point).xyz;
     return skinned;
 }
 
@@ -192,15 +172,15 @@ fn morph_position(position: vec3<f32>, delta_base: u32, weight_base: u32) -> vec
         if morph >= mesh_info.morph_count {
             break;
         }
-        let weight = morph_weights[weight_base + morph];
+        let weight = array_access::load_morph_weight(weight_base + morph);
         // An inactive target is the common case: it costs a load and a compare
         // rather than three more loads.
         if weight != 0.0 {
             let base = delta_base + morph * 3u;
             morphed += weight * vec3<f32>(
-                morph_deltas[base],
-                morph_deltas[base + 1u],
-                morph_deltas[base + 2u],
+                array_access::load_morph_delta(base),
+                array_access::load_morph_delta(base + 1u),
+                array_access::load_morph_delta(base + 2u),
             );
         }
         morph += 1u;
@@ -213,7 +193,7 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     // The block form would scope `metadata` to the block, so the declaration
     // itself carries the condition.
     @if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
-    let metadata = mesh_meta[mesh_info.metadata_index];
+    let metadata = array_access::load_mesh_metadata(mesh_info.metadata_index);
 
     // Without a position stream the geometry is a single point at the
     // instance origin, so the vertex position is the model matrix's
