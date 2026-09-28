@@ -27,10 +27,17 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 
 ### `cargo xtask test`
 
-依次运行 `cargo nextest run --workspace --all-targets --all-features` 与
+依次运行 `cargo nextest run --workspace --lib --bins --tests --all-features` 与
 `cargo test --workspace --all-features --doc`。nextest 让每个测试跑在独立进程中，
 因此一个测试的设备、日志后端或 panic 不会影响到别的测试；它不跑 doctest，所以需要
-第二趟。这两条命令合起来就是 CI 所跑的内容。接受 `--release`。
+第二趟。目标是一个个点名的，而不是用 `--all-targets` 一把扫进来，因为基准测试并非
+测试二进制。
+
+nextest 那一趟会跑两次：一次用机器自身的适配器，一次带
+`UNLIT3D_DEVICE_TIER=webgl2`，把所有无头设备收窄到 WebGL2 的 limits 与缺失的
+downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 的机器上触达浏览器
+所走路径（着色器的数组用纹理而非 storage buffer 读取、网格的顶点偏移被烘焙进索引）
+的那一趟。接受 `--release`，两趟都生效。
 
 ### `cargo xtask run-wasm`
 

@@ -13,13 +13,13 @@ glam.workspace = true
 log.workspace = true
 # Drives wgpu's async adapter/device requests from the synchronous harness.
 pollster.workspace = true
-wgpu = { workspace = true, default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
 # For `DeviceTier`/`DeviceCapabilities`: a test that narrows the device to
 # WebGL2's shape has to record the capabilities that go with it, and they have
 # to be the same type the renderer reads. This is a dev-dependency cycle
 # (`unlit_wgpu` dev-depends on this crate for its own tests), which Cargo
 # resolves by building `unlit_wgpu` without its dev-dependencies here.
 unlit_wgpu = { path = "../unlit_wgpu" }
+wgpu = { workspace = true, default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
 
 [dependencies.fast-ssim2]
 version = "0.8"

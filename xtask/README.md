@@ -30,11 +30,19 @@ word. Accepts `--release`.
 
 ### `cargo xtask test`
 
-Runs `cargo nextest run --workspace --all-targets --all-features`, then
+Runs `cargo nextest run --workspace --lib --bins --tests --all-features`, then
 `cargo test --workspace --all-features --doc`. Nextest gives every test its own
 process, so one test's device, logger or panic cannot reach another's; it does
-not run doctests, hence the second pass. The two commands together are what CI
-runs. Accepts `--release`.
+not run doctests, hence the second pass. The targets are named rather than swept
+in with `--all-targets` because the benchmarks are not test binaries.
+
+The nextest pass runs twice: once against the adapter the machine has, and once
+with `UNLIT3D_DEVICE_TIER=webgl2`, which narrows every headless device to
+WebGL2's limits and missing downlevel capabilities. The second pass is what
+exercises the paths a browser takes — the shader's arrays read through textures
+instead of storage buffers, and a mesh's vertex offset baked into its indices —
+on a machine whose own adapter is Vulkan, Metal or DX12. Accepts `--release`,
+which applies to both passes.
 
 ### `cargo xtask run-wasm`
 

@@ -26,6 +26,11 @@ behind its `snapshot` feature.
 - [`Ctx::headless`] — a ready-to-use headless [`wgpu::Device`] and
   [`wgpu::Queue`], with the adapter and device requests driven synchronously by
   `pollster`. It installs the logger backend on first use.
+- [`Ctx::headless_for`] — the same for a named [`DeviceTier`]. A tier narrows
+  the device to what a less capable platform offers, so a test can reach the
+  paths that platform takes on hardware that is not that platform.
+  [`Ctx::headless`] reads the tier from `UNLIT3D_DEVICE_TIER`, which is how the
+  suite is run a second time against WebGL2's shape.
 - [`init_logging`] — the logger backend on its own, for tests that never build a
   [`Ctx`]. Natively it is `env_logger` reading `RUST_LOG`; on the web,
   `console_log` forwards to the browser console. The default level is `warn`.
