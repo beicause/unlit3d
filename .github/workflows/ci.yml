@@ -47,8 +47,12 @@ jobs:
 
   build:
     name: Build ${{matrix.os}}
-    # runtime is normally 2 minutes
-    timeout-minutes: 8
+    # runtime is normally 2 minutes. The install of nextest is what sets the
+    # ceiling: when the release lookup is rate-limited it falls back to a source
+    # build, which is several hundred crates and takes minutes of its own, so
+    # the timeout leaves room for that run rather than assuming the prebuilt
+    # binary is always there.
+    timeout-minutes: 20
     runs-on: ${{matrix.os}}
     strategy:
       fail-fast: false
@@ -100,13 +104,33 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.23.0
 
+      # The install is the one step a failure in which can take the test step
+      # with it: without nextest there is nothing for `cargo xtask test` to run,
+      # so that step's implicit `success()` skips it. The doc build and the
+      # snapshot comparison below are independent of it and carry on.
+      #
+      # `GITHUB_TOKEN` keeps cargo-binstall on its prebuilt-binary path: without
+      # it the release lookup is unauthenticated and can be rate-limited into a
+      # `403`, which sends cargo-binstall to its next source for the crate.
+      #
+      # That next source is a source build, and `--locked` is what lets it
+      # succeed: nextest refuses to be installed without a lockfile
+      # (`locked-tripwire` fails the build on purpose), so the flag is passed
+      # through to the `cargo install` cargo-binstall falls back to.
       - name: Install cargo-nextest
-        run: cargo binstall --no-confirm cargo-nextest
+        run: cargo binstall --no-confirm --locked cargo-nextest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test ${{matrix.os}}
         run: cargo xtask test
 
+      # `!cancelled()` rather than the implicit `success()`: the checks below
+      # are independent of the ones above, so a failure in any of them still
+      # gets to report its own result in the same run. Only a cancelled run
+      # stops early, since there is nothing left to report.
       - name: Doc
+        if: ${{ !cancelled() }}
         run: cargo doc --workspace --no-deps --document-private-items --keep-going
         env:
           RUSTDOCFLAGS: -D warnings
@@ -124,16 +148,20 @@ jobs:
       # another driver's rounding is enough to put a scene below the threshold
       # without anything being wrong. A mismatch therefore writes the frame it
       # scored under `target/`, and the step after this one uploads those
-      # frames when this one fails, so a platform difference can be looked at
-      # instead of guessed at from a score.
+      # frames, so a platform difference can be looked at instead of guessed at
+      # from a score. The upload waits on this step's own outcome rather than on
+      # the job's, so a failure elsewhere — a tool that would not install, say —
+      # does not turn into an upload of frames this step never wrote.
       - name: Compare the example's scenes against their snapshots
+        id: snapshots
+        if: ${{ !cancelled() }}
         run: >
           cargo run -p unlit3d_examples --features snapshot
           -- --headless --scene all
           --mismatch-dir target/snapshot-mismatches
 
       - name: Upload the mismatched frames
-        if: failure()
+        if: ${{ steps.snapshots.outcome == 'failure' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: snapshot-mismatches-${{ matrix.os }}
@@ -154,6 +182,7 @@ jobs:
       # one run shows every scene that fails under either tier. A cancelled run
       # is the exception, since there is nothing left to report.
       - name: Compare the example's scenes under the WebGL2 device tier
+        id: snapshots-webgl2
         if: ${{ !cancelled() }}
         run: >
           cargo run -p unlit3d_examples --features snapshot
@@ -163,7 +192,7 @@ jobs:
           UNLIT3D_DEVICE_TIER: webgl2
 
       - name: Upload the mismatched frames under the WebGL2 device tier
-        if: failure()
+        if: ${{ steps.snapshots-webgl2.outcome == 'failure' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: snapshot-mismatches-webgl2-${{ matrix.os }}
