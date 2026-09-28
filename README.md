@@ -46,6 +46,14 @@ Not supported: lighting and shadows, and post-processing.
   multisample textures, compressed vertices, and no pre-pass, compute shader,
   lighting or shadow path. The same frame loop drives a window, a headless
   offscreen target, the web example and the Android APK.
+- **Runs on WebGL2 and on WebGPU-baseline devices.** The adapter is picked at
+  runtime, WebGPU first and WebGL2 when that is all the platform has. WebGL2
+  lacks parts of the WebGPU baseline — no storage buffers, no `base_vertex` — so
+  the shader reads the frame's arrays through `textureLoad` and a mesh's vertex
+  offset is baked into its indices; a device that has the baseline keeps the
+  storage buffers and the whole-buffer bindings, which cost no extra pass state.
+  Which path is taken follows the adapter's own downlevel capabilities, not a
+  build feature.
 - **A scene the caller composes.** A frame is assembled from frame sources that
   contribute their own draws and state where in the frame they belong. The
   built-in mesh rendering, the egui overlay and a caller's own pass have exactly
@@ -60,13 +68,6 @@ Not supported: lighting and shadows, and post-processing.
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
   the frame's target.
-- **Runs on WebGPU and on WebGL2.** The adapter is picked at runtime, WebGPU
-  first and WebGL2 when that is all the platform has. WebGL2 lacks parts of the
-  WebGPU baseline — no storage buffers, no `base_vertex` — so the shader reads
-  the frame's arrays through `textureLoad` and a mesh's vertex offset is baked
-  into its indices; a device that has the baseline keeps the storage buffers and
-  the whole-buffer bindings, which cost no extra pass state. Which path is taken
-  follows the adapter's own downlevel capabilities, not a build feature.
 - **Persistent, pooled GPU resources.** Draws work with raw `wgpu` resources;
   they live across frames, are rebuilt only when needed, and share and reuse the
   buffers uploads go through.
