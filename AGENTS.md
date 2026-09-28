@@ -13,7 +13,7 @@
 ## Git 工作流
 
 - **主分支（`main`）保持线性历史，不要有 merge commit**。合入改动用 `git cherry-pick`、`git rebase` 或 squash，不要用 `git merge`。
-- **提交信息格式**：若该提交有明显针对的作用域，写 `scope: Xxx xxxx`；否则直接写 `Xxx xxxx`。scope 取主要受影响的 crate 名（如 `unlit_wgpu`、`unlit3d`、`xtask`），跨 crate 时取改动量最大的那个。标题行（subject）用英文、首字母大写、不加句号；正文用英文，说明动机与影响。
+- **提交信息格式**：若该提交有明显针对的作用域，写 `scope: Xxx xxxx`；否则直接写 `Xxx xxxx`。scope 取主要受影响的 crate 名（如 `unlit_wgpu`、`unlit3d`、`xtask`）或作用域名（如`docs`、`ci`），跨 crate 时取改动量最大的那个。标题行（subject）用英文、首字母大写、不加句号；正文用英文，说明动机与影响。
 
 ## 常用命令
 
