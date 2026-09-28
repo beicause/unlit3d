@@ -194,6 +194,17 @@ pub struct DrawKey {
     pub surface: SurfaceKey,
     /// The mesh's vertex layout, slot by slot.
     pub vertex_buffers: VertexLayout,
+    /// The format of the mesh's index buffer, or `None` when the mesh draws
+    /// its vertices in order without one.
+    ///
+    /// A strip topology's pipeline has to declare the index width its draw
+    /// binds, and only the mesh knows it: the source picks the narrowest
+    /// format the mesh's vertex count fits, and on a device without
+    /// `base_vertex` it can widen a mesh's indices while baking in the pool
+    /// offset. Carrying the resolved format here is what lets a family derive
+    /// the pipeline's `strip_index_format` from the draw rather than ask the
+    /// caller to predict it.
+    pub index_format: Option<wgpu::IndexFormat>,
 }
 
 impl DrawKey {
@@ -202,6 +213,7 @@ impl DrawKey {
         Self {
             surface,
             vertex_buffers: mesh.vertex_layout.clone(),
+            index_format: mesh.parts.index_buffer.map(|(_, format)| format),
         }
     }
 }

@@ -134,7 +134,9 @@ A renderable entity carries a [`GpuMesh`](components::GpuMesh),
 [`GpuRenderPipeline`](components::GpuRenderPipeline). A
 [`GpuRenderPipeline`](components::GpuRenderPipeline) carries a *key*, not a compiled
 pipeline: which concrete pipeline an entity needs depends on the frame's render
-target and the mesh's vertex layout, neither known at spawn time. A *family*
+target, the mesh's vertex layout and — for a strip topology, whose pipeline
+must declare the width of the index buffer it binds — the mesh's index format,
+none of them known at spawn time. A *family*
 closes that gap — it pairs a `Variants` cache with a `Specializer` and a
 [`RenderPipelineFactory`](pipeline::RenderPipelineFactory), and resolves one key to a
 concrete pipeline per frame.
@@ -169,12 +171,17 @@ A family connects "what the entity wants" to `unlit_wgpu`'s variant cache:
   the key is the component itself, the renderer never has to hand out a family
   handle.
 - [`DrawKey`](pipeline::DrawKey) carries the dimensions the entity's own key
-  does not express, those tied to this particular draw: the render target and
-  the mesh's vertex layout. It combines with the entity's own key into
-  `Specializer::Key`, and the way they combine (`From`) is the family's own
-  decision. **Which dimensions to specialize on is therefore the family's
-  freedom**: the built-in unlit family specializes on options plus target plus
-  vertex layout, and a custom family can specialize on anything.
+  does not express, those tied to this particular draw: the render target, the
+  mesh's vertex layout and the format of the mesh's index buffer. The index
+  format is there because a strip topology's pipeline has to declare the width
+  its draw binds, and only the mesh knows it — the source picks the narrowest
+  format a mesh's vertex count fits, and widens it while baking in a pool
+  offset on a device without `base_vertex`. It combines with the entity's own
+  key into `Specializer::Key`, and the way they combine (`From`) is the
+  family's own decision. **Which dimensions to specialize on is therefore the
+  family's freedom**: the built-in unlit family specializes on options plus
+  target plus vertex layout plus index format, and a custom family can
+  specialize on anything.
 - The blueprint is **lazily evaluated**: it is asked of the key only on a cache
   miss, when a compilation is actually about to happen.
 - Once the family has compiled a pipeline,

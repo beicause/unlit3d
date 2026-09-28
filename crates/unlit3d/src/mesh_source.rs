@@ -246,7 +246,8 @@ fn register_concrete(
 }
 
 /// The full specialization key of the built-in unlit family: the entity's
-/// options, the frame's target and the mesh's vertex layout.
+/// options, the frame's target, the mesh's vertex layout and the format of
+/// the mesh's index buffer.
 ///
 /// The mesh layout is not injective — two meshes whose raw attributes differ
 /// but imply the same [UnlitFlags] rewrite the options to the same thing — so
@@ -257,6 +258,7 @@ pub(crate) struct UnlitDrawKey {
     options: UnlitOptions,
     surface: SurfaceKey,
     vertex_buffers: VertexLayout,
+    index_format: Option<wgpu::IndexFormat>,
 }
 
 impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
@@ -265,6 +267,7 @@ impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
             options: key.options,
             surface: draw.surface,
             vertex_buffers: draw.vertex_buffers,
+            index_format: draw.index_format,
         }
     }
 }
@@ -315,8 +318,21 @@ impl RenderPipelineKey for UnlitPipelineKey {
     }
 }
 
-/// Specializes the built-in unlit pipeline per entity options, frame target
-/// and mesh layout.
+/// The strip index format a draw's pipeline has to declare.
+///
+/// Only a strip topology reads one, and there it has to equal the format of
+/// the index buffer the draw binds, so a mesh's format is passed through for a
+/// strip and dropped for every other topology — a pipeline that declared one
+/// for a non-strip topology is invalid.
+fn strip_index_format(
+    topology: wgpu::PrimitiveTopology,
+    index_format: Option<wgpu::IndexFormat>,
+) -> Option<wgpu::IndexFormat> {
+    index_format.filter(|_| topology.is_strip())
+}
+
+/// Specializes the built-in unlit pipeline per entity options, frame target,
+/// mesh layout and index format.
 ///
 /// The descriptor starts from the entity's own options, so one family serves
 /// entities that differ in material or target policy. The target-dependent
@@ -339,6 +355,12 @@ impl Specializer<UnlitOptions> for UnlitDrawSpecializer {
         SurfaceSpecializer.specialize(key.surface, options);
         options.flags =
             (options.flags & !UnlitFlags::MESH_MASK) | unlit_flags_for_layout(&key.vertex_buffers);
+        // The index width comes from the mesh rather than from the caller's
+        // options: the source picks the narrowest format a mesh's vertex count
+        // fits, and widens it while baking in a pool offset on a device
+        // without `base_vertex`, so only the resolved mesh knows it.
+        options.primitive.strip_index_format =
+            strip_index_format(options.primitive.topology, key.index_format);
         options.clone()
     }
 }
@@ -2523,6 +2545,45 @@ mod tests {
     /// A raw-layout key for `mesh` on `surface`.
     fn draw_key(surface: SurfaceKey, mesh: &GpuMesh) -> DrawKey {
         DrawKey::for_mesh(surface, mesh)
+    }
+
+    #[test]
+    fn a_strip_pipeline_declares_the_mesh_index_width() {
+        use wgpu::{IndexFormat, PrimitiveTopology as Topology};
+        // A strip's pipeline must declare the width its draw binds, so the
+        // mesh's format reaches it whichever width the source picked.
+        assert_eq!(
+            strip_index_format(Topology::LineStrip, Some(IndexFormat::Uint16)),
+            Some(IndexFormat::Uint16)
+        );
+        assert_eq!(
+            strip_index_format(Topology::TriangleStrip, Some(IndexFormat::Uint32)),
+            Some(IndexFormat::Uint32)
+        );
+        // A non-indexed strip binds no index buffer, so it declares none.
+        assert_eq!(strip_index_format(Topology::LineStrip, None), None);
+        assert_eq!(strip_index_format(Topology::TriangleStrip, None), None);
+    }
+
+    #[test]
+    fn a_non_strip_pipeline_declares_no_index_width() {
+        use wgpu::{IndexFormat, PrimitiveTopology as Topology};
+        // `wgpu` rejects a strip index format on a non-strip topology, so an
+        // indexed mesh of one must not leak its format into the pipeline.
+        for topology in [
+            Topology::PointList,
+            Topology::LineList,
+            Topology::TriangleList,
+        ] {
+            assert_eq!(
+                strip_index_format(topology, Some(IndexFormat::Uint16)),
+                None
+            );
+            assert_eq!(
+                strip_index_format(topology, Some(IndexFormat::Uint32)),
+                None
+            );
+        }
     }
 
     #[test]

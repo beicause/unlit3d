@@ -257,9 +257,10 @@ pub struct UnlitOptions {
     /// How the pipeline assembles and culls primitives, including the strip
     /// index format a strip topology requires.
     ///
-    /// [`Self::standard`] leaves `strip_index_format` at its default, so a
-    /// caller drawing strips must set it to the width of the index buffer the
-    /// draw uses.
+    /// [`Self::standard`] leaves `strip_index_format` at its default, and the
+    /// built-in unlit family fills it from the mesh's index buffer, so the
+    /// field is a caller's concern only for a pipeline a mesh does not
+    /// describe.
     pub primitive: wgpu::PrimitiveState,
     /// The pipeline's depth-stencil state, or `None` for a pass with no depth
     /// attachment.
