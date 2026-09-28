@@ -44,6 +44,7 @@ use std::sync::Arc;
 
 use unlit_wgpu::resources::ResourceId;
 use unlit_wgpu::specialize::{PipelineDescriptor, SpecializedPipeline, SurfaceKey, VertexLayout};
+use unlit_wgpu::texel_array::ArrayHandle;
 
 use crate::components::GpuMesh;
 
@@ -59,25 +60,31 @@ use crate::components::GpuMesh;
 /// the world lives on, so no cross-thread bound is needed.
 pub type GlobalGroupRebuild = Arc<dyn Fn(&RenderResources) -> wgpu::BindGroup>;
 
-/// The source's global buffers, as a rebuild closure sees them.
+/// The source's global arrays and buffers, as a rebuild closure sees them.
 ///
-/// These are the buffers every pipeline can rely on the renderer keeping
-/// up to date: the camera uniform, the frame globals, the mesh-metadata
-/// storage buffer and the frame's two pose arrays.
+/// These are the resources every pipeline can rely on the renderer keeping up
+/// to date: the camera uniform, the frame globals, the mesh-metadata array and
+/// the frame's two pose arrays.
+///
+/// The three arrays are [`ArrayHandle`]s rather than buffers because which
+/// resource holds them follows from the device: a device with storage buffers
+/// holds each in one, a device without them — WebGL2 — holds the same bytes in
+/// a texture. A pipeline that binds them asks the handle for its binding
+/// resource and never has to know which it is.
 #[derive(Clone, Debug)]
 pub struct RenderResources {
     /// The camera uniform buffer.
     pub camera: wgpu::Buffer,
     /// The frame-globals uniform buffer.
     pub globals: wgpu::Buffer,
-    /// The mesh-metadata storage buffer.
-    pub metadata: wgpu::Buffer,
+    /// The mesh-metadata array.
+    pub metadata: ArrayHandle,
     /// The frame's joint matrices: every visible skinned instance's joints,
     /// one array for the whole frame.
-    pub joints: wgpu::Buffer,
+    pub joints: ArrayHandle,
     /// The frame's morph weights: every visible morphed instance's weights, one
     /// array for the whole frame.
-    pub morph_weights: wgpu::Buffer,
+    pub morph_weights: ArrayHandle,
 }
 
 /// A pipeline and the layouts its draws agree with.

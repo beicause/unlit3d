@@ -19,6 +19,7 @@ use crate::bounds::Aabb;
 pub use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::VertexAttributes;
+use unlit_wgpu::texel_array::ArrayHandle;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -94,7 +95,15 @@ pub struct MorphDeltas {
     /// Every target's per-vertex position displacement, flat and tightly
     /// packed: for each vertex, `target_count` targets in order, three
     /// components each.
-    pub buffer: wgpu::Buffer,
+    ///
+    /// A device with storage buffers holds the displacements in one; a device
+    /// without them — WebGL2 — holds the same bytes in a texture the shader
+    /// reads with `textureLoad`. Which it is, is the caller's choice here,
+    /// because only the caller knows what its device can read; build one with
+    /// [`Array::new`](unlit_wgpu::texel_array::Array::new) passing
+    /// [`supports_storage_buffers`](unlit_wgpu::pipeline::supports_storage_buffers)
+    /// as the limit.
+    pub array: ArrayHandle,
     /// How many targets follow each vertex.
     pub target_count: u32,
 }

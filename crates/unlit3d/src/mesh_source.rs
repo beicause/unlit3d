@@ -28,6 +28,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     INSTANCE_SLOT, JOINTS_BINDING, MESH_INFO_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
     MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
+    supports_storage_buffers,
 };
 use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView, Virtual};
 use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
@@ -36,6 +37,7 @@ use unlit_wgpu::specialize::{
     SurfaceSpecializer, VertexAttributes, VertexBufferLayoutDesc, VertexLayout,
 };
 use unlit_wgpu::staging::StagingBuffer;
+use unlit_wgpu::texel_array::{Array, ArrayHandle};
 use unlit_wgpu::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
 
@@ -69,7 +71,7 @@ use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
 /// mesh can deform differently.
 fn mesh_group_entries<'a>(
     mesh_info: &'a wgpu::Buffer,
-    morph_deltas: Option<&'a wgpu::Buffer>,
+    morph_deltas: Option<&'a ArrayHandle>,
 ) -> arrayvec::ArrayVec<wgpu::BindGroupEntry<'a>, 2> {
     let mut entries = arrayvec::ArrayVec::new();
     entries.push(wgpu::BindGroupEntry {
@@ -79,7 +81,7 @@ fn mesh_group_entries<'a>(
     if let Some(deltas) = morph_deltas {
         entries.push(wgpu::BindGroupEntry {
             binding: MORPH_DELTAS_BINDING,
-            resource: deltas.as_entire_binding(),
+            resource: deltas.binding_resource(),
         });
     }
     entries
@@ -133,7 +135,7 @@ fn create_unlit_global_group(
     if needs_metadata {
         entries.push(wgpu::BindGroupEntry {
             binding: MESH_METADATA_BINDING,
-            resource: resources.metadata.as_entire_binding(),
+            resource: resources.metadata.binding_resource(),
         });
     }
     // The pose arrays are the frame's, not a mesh's: binding them here rather
@@ -142,13 +144,13 @@ fn create_unlit_global_group(
     if needs_joints {
         entries.push(wgpu::BindGroupEntry {
             binding: JOINTS_BINDING,
-            resource: resources.joints.as_entire_binding(),
+            resource: resources.joints.binding_resource(),
         });
     }
     if needs_morphs {
         entries.push(wgpu::BindGroupEntry {
             binding: MORPH_WEIGHTS_BINDING,
-            resource: resources.morph_weights.as_entire_binding(),
+            resource: resources.morph_weights.binding_resource(),
         });
     }
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -188,9 +190,7 @@ fn register_concrete(
             rebuild,
         } = binding;
         let id = graph.insert_strong(bind_group);
-        for buffer in buffers.all() {
-            graph.add_dependency(id, buffer);
-        }
+        buffers.declare_dependencies(graph, id);
         RegisteredGlobal { id, rebuild }
     });
 
@@ -369,24 +369,27 @@ struct GlobalBufferNodes {
     camera: ResourceId<wgpu::Buffer>,
     /// The frame globals uniform.
     globals: ResourceId<wgpu::Buffer>,
-    /// The mesh-metadata storage buffer.
-    metadata: ResourceId<wgpu::Buffer>,
+    /// The mesh-metadata array.
+    metadata: ResourceId<ArrayHandle>,
     /// The frame's joint matrices.
-    joints: ResourceId<wgpu::Buffer>,
+    joints: ResourceId<ArrayHandle>,
     /// The frame's morph weights.
-    morph_weights: ResourceId<wgpu::Buffer>,
+    morph_weights: ResourceId<ArrayHandle>,
 }
 
 impl GlobalBufferNodes {
-    /// Every node, in the order a global bind group depends on them.
-    fn all(&self) -> [ResourceId<wgpu::Buffer>; 5] {
-        [
-            self.camera,
-            self.globals,
-            self.metadata,
-            self.joints,
-            self.morph_weights,
-        ]
+    /// Declare that `group` was built from every one of these resources.
+    ///
+    /// A global bind group reads all of them, so a replacement of any marks it
+    /// dirty. They are added one kind at a time because the uniforms and the
+    /// arrays are different kinds — the arrays are whichever resource the
+    /// device can read, which is not known here.
+    fn declare_dependencies(&self, graph: &mut ResourceGraph, group: ResourceId<wgpu::BindGroup>) {
+        graph.add_dependency(group, self.camera);
+        graph.add_dependency(group, self.globals);
+        graph.add_dependency(group, self.metadata);
+        graph.add_dependency(group, self.joints);
+        graph.add_dependency(group, self.morph_weights);
     }
 }
 
@@ -408,12 +411,27 @@ pub struct MeshSource {
     camera_buf: ResourceId<wgpu::Buffer>,
     /// Resource id of the frame-globals uniform buffer.
     globals_buf: ResourceId<wgpu::Buffer>,
-    /// Resource id of the mesh-metadata storage buffer.
-    metadata_buf: ResourceId<wgpu::Buffer>,
-    /// Resource id of the frame's joint-matrix storage buffer.
-    joints_buf: ResourceId<wgpu::Buffer>,
-    /// Resource id of the frame's morph-weight storage buffer.
-    morph_weights_buf: ResourceId<wgpu::Buffer>,
+    /// The texture limit to hold an array in a texture, or `None` to hold it
+    /// in a storage buffer.
+    ///
+    /// A device without storage buffers — WebGL2 — reads its arrays from
+    /// textures, and this is where that choice is made once and reused for
+    /// every array the source owns and every one it grows.
+    array_max_dimension: Option<u32>,
+    /// The mesh-metadata array, held in whichever resource the device reads.
+    metadata_array: Array,
+    /// Resource id of the mesh-metadata array.
+    metadata_buf: ResourceId<ArrayHandle>,
+    /// The frame's joint-matrix array, held in whichever resource the device
+    /// reads.
+    joints_array: Array,
+    /// Resource id of the frame's joint-matrix array.
+    joints_buf: ResourceId<ArrayHandle>,
+    /// The frame's morph-weight array, held in whichever resource the device
+    /// reads.
+    morph_weights_array: Array,
+    /// Resource id of the frame's morph-weight array.
+    morph_weights_buf: ResourceId<ArrayHandle>,
     /// Per-frame globals (advanced once per built scene).
     globals: Globals,
     /// Metadata entries, one per live uploaded mesh.
@@ -421,8 +439,6 @@ pub struct MeshSource {
     /// Metadata slots whose mesh was removed and whose index is free to hand
     /// out again.
     free_metadata: Vec<u32>,
-    /// How many metadata entries the current storage buffer can hold.
-    metadata_capacity: u32,
     /// Whether the metadata array changed since it was last uploaded.
     ///
     /// Allocating or removing a mesh marks it; the next
@@ -442,27 +458,12 @@ pub struct MeshSource {
     /// The frame's morph weights, packed in visible-instance order.
     packed_morph_weights: Vec<f32>,
 
-    /// A reused buffer holding the frame's joint matrices, grown as needed.
-    ///
-    /// One array serves every visible skinned instance: an instance's own
-    /// matrices start where its [`MeshInstance::pose`] says. The buffer is a
-    /// global binding, so it is uploaded whenever the pose changed.
-    joints_capacity: u32,
-    /// A reused buffer holding the frame's morph weights, grown as needed.
-    ///
-    /// Like the joint matrices this is one array for the whole frame, and an
-    /// instance's own weights start where its [`MeshInstance::pose`] says.
-    morph_weights_capacity: u32,
-
     /// Reused staging buffers, one per buffer uploaded to every frame, so a
     /// steady frame reaches the GPU without a per-frame allocation or
     /// submission.
     camera_staging: StagingBuffer,
     globals_staging: StagingBuffer,
-    metadata_staging: StagingBuffer,
     instance_staging: StagingBuffer,
-    joints_staging: StagingBuffer,
-    morph_weights_staging: StagingBuffer,
 
     /// The pool every mesh uploaded through
     /// [`MeshSource::allocate_unlit_mesh`] keeps its indices in, as one large
@@ -563,31 +564,38 @@ impl MeshSource {
             mapped_at_creation: false,
         }));
 
-        // Metadata storage buffer (initially 1 entry).
-        let metadata_buf = graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::mesh_metadata"),
-            size: size_of::<MeshMetadata>() as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-
-        // The frame's pose arrays, one storage buffer each, initially holding a
-        // single element. They start out too small for any real frame and grow
-        // on the first built scene; a buffer cannot be zero-sized, so the
-        // smallest one a draw can read is one element.
-        let joints_buf = graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::pose::joints"),
-            size: <JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        }));
-        let morph_weights_buf =
-            graph.insert_strong(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::pose::morph_weights"),
-                size: size_of::<f32>() as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }));
+        // The arrays the frame's shaders read, each in whichever resource the
+        // device can read: a storage buffer where it has them, a texture where
+        // it does not. Metadata starts with room for one entry and the pose
+        // arrays with room for one element — the smallest a shader can read,
+        // since neither resource can be empty — and all three grow on the first
+        // built scene that needs more.
+        let array_max_dimension =
+            (!supports_storage_buffers(&device)).then(|| device.limits().max_texture_dimension_2d);
+        let metadata_array = Array::new(
+            &device,
+            Some("unlit3d::mesh_metadata"),
+            <MeshMetadata as const_shader_layout::ShaderLayout>::SIZE.get(),
+            1,
+            array_max_dimension,
+        );
+        let metadata_buf = graph.insert_strong(metadata_array.handle());
+        let joints_array = Array::new(
+            &device,
+            Some("unlit3d::pose::joints"),
+            <JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
+            1,
+            array_max_dimension,
+        );
+        let joints_buf = graph.insert_strong(joints_array.handle());
+        let morph_weights_array = Array::new(
+            &device,
+            Some("unlit3d::pose::morph_weights"),
+            size_of::<f32>() as u64,
+            1,
+            array_max_dimension,
+        );
+        let morph_weights_buf = graph.insert_strong(morph_weights_array.handle());
 
         // Initial upload of camera and globals.
         queue.write_buffer(
@@ -623,26 +631,24 @@ impl MeshSource {
             context: ctx,
             camera_buf,
             globals_buf,
+            array_max_dimension,
+            metadata_array,
             metadata_buf,
+            joints_array,
             joints_buf,
+            morph_weights_array,
             morph_weights_buf,
             globals,
             metadata: Vec::new(),
             free_metadata: Vec::new(),
-            metadata_capacity: 1,
             metadata_dirty: false,
             instance_buffer: None,
             instance_capacity: 0,
             packed_joints: Vec::new(),
             packed_morph_weights: Vec::new(),
-            joints_capacity: 0,
-            morph_weights_capacity: 0,
             camera_staging: StagingBuffer::new(),
             globals_staging: StagingBuffer::new(),
-            metadata_staging: StagingBuffer::new(),
             instance_staging: StagingBuffer::new(),
-            joints_staging: StagingBuffer::new(),
-            morph_weights_staging: StagingBuffer::new(),
             index_pool,
             index_pool_id,
             vertex_pool,
@@ -885,7 +891,7 @@ impl MeshSource {
         let morph_target_count = morph_deltas.as_ref().map_or(0, |morph| morph.target_count);
         let morph_deltas_id = morph_deltas
             .as_ref()
-            .map(|morph| Self::graph(world, self.context).insert_weak(morph.buffer.clone()));
+            .map(|morph| Self::graph(world, self.context).insert_weak(morph.array.clone()));
 
         let bind_group_id = bind_group.map(|bind_group| {
             // Only the buffers the group reads, so replacing or removing one
@@ -1123,15 +1129,18 @@ impl MeshSource {
                     deltas.extend_from_slice(&target.positions[vertex]);
                 }
             }
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::mesh::morph_deltas"),
-                size: size_of_val(deltas.as_slice()) as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            queue.write_buffer(&buffer, 0, deltas.as_bytes());
+            // Written once rather than every frame, so it goes straight to the
+            // queue instead of through a staging buffer and the frame encoder.
+            let mut array = Array::new(
+                &device,
+                Some("unlit3d::mesh::morph_deltas"),
+                size_of::<f32>() as u64,
+                deltas.len() as u64,
+                self.array_max_dimension,
+            );
+            array.write(&queue, deltas.as_bytes());
             MorphDeltas {
-                buffer,
+                array: array.handle(),
                 target_count,
             }
         });
@@ -1154,7 +1163,7 @@ impl MeshSource {
             // the variant reads them and the mesh supplied them.
             entries: &mesh_group_entries(
                 &mesh_info_buf,
-                morph_deltas.as_ref().map(|morph| &morph.buffer),
+                morph_deltas.as_ref().map(|morph| &morph.array),
             ),
         });
 
@@ -1627,71 +1636,47 @@ impl MeshSource {
         }
     }
 
-    /// Grow the frame's joint-matrix buffer if the packed array outgrew it, and
-    /// upload the array through the frame's encoder.
+    /// Grow the frame's joint-matrix array if the packed data outgrew it, and
+    /// upload it through the frame's encoder.
     ///
-    /// Like the metadata array the buffer is recreated only when it is too
+    /// Like the metadata array the resource is replaced only when it is too
     /// small, so a steady frame rewrites in place and rebuilds no bind group.
     fn upload_joints(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
-        let needed = self.packed_joints.len().max(1) as u32;
-        if needed > self.joints_capacity {
-            let capacity = grown_capacity(self.joints_capacity, needed);
-            let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::pose::joints"),
-                size: capacity as u64
-                    * <JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            Self::graph(world, self.context)
-                .replace(self.joints_buf, buf)
-                .expect("the joint buffer exists");
-            self.joints_capacity = capacity;
-            // A replaced buffer invalidates every global group bound to it.
+        let device = self.device(world);
+        let needed = self.packed_joints.len().max(1) as u64;
+        if Self::grow_array_to_fit(
+            world,
+            self.context,
+            "unlit3d::pose::joints",
+            &mut self.joints_array,
+            self.joints_buf,
+            &device,
+            needed,
+        ) {
             self.rebuild_dirty_global_groups(world);
         }
-        let buffer = Self::graph(world, self.context)
-            .get(self.joints_buf)
-            .expect("the joint buffer exists")
-            .clone();
-        self.joints_staging.write(
-            &self.device(world),
-            encoder,
-            &buffer,
-            0,
-            self.packed_joints.as_bytes(),
-        );
+        self.joints_array
+            .upload(&device, encoder, self.packed_joints.as_bytes());
     }
 
-    /// Grow the frame's morph-weight buffer if the packed array outgrew it, and
-    /// upload the array through the frame's encoder.
+    /// Grow the frame's morph-weight array if the packed data outgrew it, and
+    /// upload it through the frame's encoder.
     fn upload_morph_weights(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
-        let needed = self.packed_morph_weights.len().max(1) as u32;
-        if needed > self.morph_weights_capacity {
-            let capacity = grown_capacity(self.morph_weights_capacity, needed);
-            let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::pose::morph_weights"),
-                size: capacity as u64 * size_of::<f32>() as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            Self::graph(world, self.context)
-                .replace(self.morph_weights_buf, buf)
-                .expect("the morph-weight buffer exists");
-            self.morph_weights_capacity = capacity;
+        let device = self.device(world);
+        let needed = self.packed_morph_weights.len().max(1) as u64;
+        if Self::grow_array_to_fit(
+            world,
+            self.context,
+            "unlit3d::pose::morph_weights",
+            &mut self.morph_weights_array,
+            self.morph_weights_buf,
+            &device,
+            needed,
+        ) {
             self.rebuild_dirty_global_groups(world);
         }
-        let buffer = Self::graph(world, self.context)
-            .get(self.morph_weights_buf)
-            .expect("the morph-weight buffer exists")
-            .clone();
-        self.morph_weights_staging.write(
-            &self.device(world),
-            encoder,
-            &buffer,
-            0,
-            self.packed_morph_weights.as_bytes(),
-        );
+        self.morph_weights_array
+            .upload(&device, encoder, self.packed_morph_weights.as_bytes());
     }
 
     // -- internal helpers ------------------------------------------------------
@@ -1702,13 +1687,47 @@ impl MeshSource {
         RenderResources {
             camera: graph.get(self.camera_buf).expect("camera buf").clone(),
             globals: graph.get(self.globals_buf).expect("globals buf").clone(),
-            metadata: graph.get(self.metadata_buf).expect("meta buf").clone(),
-            joints: graph.get(self.joints_buf).expect("joints buf").clone(),
+            // Read from the graph rather than from the arrays so a replacement
+            // is visible here the moment it lands, which is what a rebuild
+            // depends on.
+            metadata: graph.get(self.metadata_buf).expect("meta array").clone(),
+            joints: graph.get(self.joints_buf).expect("joints array").clone(),
             morph_weights: graph
                 .get(self.morph_weights_buf)
-                .expect("morph weights buf")
+                .expect("morph weights array")
                 .clone(),
         }
+    }
+
+    /// Grow `array` to hold at least `capacity` elements, publishing the new
+    /// resource into the graph when it had to be replaced.
+    ///
+    /// Returns whether the resource changed, which is what a caller has to act
+    /// on: a replaced array leaves every bind group built from the old one
+    /// stale, so the caller rebuilds them. A no-op when the array already has
+    /// the room.
+    fn grow_array_to_fit(
+        world: &World,
+        ctx: RenderContext,
+        label: &str,
+        array: &mut Array,
+        node: ResourceId<ArrayHandle>,
+        device: &wgpu::Device,
+        needed: u64,
+    ) -> bool {
+        // Grow only when the array is genuinely too small: growing by a factor
+        // on every call would inflate the capacity without bound.
+        if needed <= array.capacity() {
+            return false;
+        }
+        let capacity = u64::from(grown_capacity(array.capacity() as u32, needed as u32));
+        if !array.grow_to(device, Some(label), capacity) {
+            return false;
+        }
+        Self::graph(world, ctx)
+            .replace(node, array.handle())
+            .expect("the array's node exists");
+        true
     }
 
     /// Rebuild the global bind group of every registered pipeline whose
@@ -1803,34 +1822,24 @@ impl MeshSource {
         }
         self.metadata_dirty = false;
 
-        let needed = self.metadata.len().max(1) as u32;
-        if needed > self.metadata_capacity {
-            // Recreate rather than resize: a buffer has a fixed size.
-            let capacity = grown_capacity(self.metadata_capacity, needed);
-            let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
-                label: Some("unlit3d::mesh_metadata"),
-                size: capacity as u64 * size_of::<MeshMetadata>() as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            Self::graph(world, self.context)
-                .replace(self.metadata_buf, buf)
-                .expect("metadata buffer exists");
-            self.metadata_capacity = capacity;
-            // A replaced buffer invalidates every global group bound to it.
+        let device = self.device(world);
+        let needed = self.metadata.len().max(1) as u64;
+        // Replace rather than resize: neither a buffer nor a texture has a size
+        // that can change.
+        if Self::grow_array_to_fit(
+            world,
+            self.context,
+            "unlit3d::mesh_metadata",
+            &mut self.metadata_array,
+            self.metadata_buf,
+            &device,
+            needed,
+        ) {
+            // A replaced array invalidates every global group bound to it.
             self.rebuild_dirty_global_groups(world);
         }
-        let buffer = Self::graph(world, self.context)
-            .get(self.metadata_buf)
-            .expect("metadata buffer exists")
-            .clone();
-        self.metadata_staging.write(
-            &self.device(world),
-            encoder,
-            &buffer,
-            0,
-            self.metadata.as_bytes(),
-        );
+        self.metadata_array
+            .upload(&device, encoder, self.metadata.as_bytes());
     }
 
     /// The graph node of the vertex pool's buffer for `layout`, creating it if
@@ -3256,18 +3265,23 @@ mod tests {
         let mut h = harness();
         let ctx = h.source.context();
         // The source starts with room for one entry and grows by 1.5x.
-        assert_eq!(h.source.metadata_capacity, 1);
-
-        h.tri_mesh();
-        let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
-        assert_eq!(h.source.metadata_capacity, 1, "one entry fills the room");
+        assert_eq!(h.source.metadata_array.capacity(), 1);
 
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
         assert_eq!(
-            h.source.metadata_capacity, 2,
+            h.source.metadata_array.capacity(),
+            1,
+            "one entry fills the room"
+        );
+
+        h.tri_mesh();
+        let encoder = h.encoder();
+        h.source.upload_metadata(&h.world, &mut { encoder });
+        assert_eq!(
+            h.source.metadata_array.capacity(),
+            2,
             "a second entry outgrows room for one"
         );
 
@@ -3275,12 +3289,12 @@ mod tests {
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
-        assert_eq!(h.source.metadata_capacity, 3);
+        assert_eq!(h.source.metadata_array.capacity(), 3);
 
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
-        assert_eq!(h.source.metadata_capacity, 4);
+        assert_eq!(h.source.metadata_array.capacity(), 4);
 
         // A fifth entry outgrows four, so the buffer grows again.
         let before = MeshSource::graph(&h.world, ctx)
@@ -3290,7 +3304,8 @@ mod tests {
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
         assert_eq!(
-            h.source.metadata_capacity, 6,
+            h.source.metadata_array.capacity(),
+            6,
             "growing past four reaches six (4 * 1.5)"
         );
         assert_ne!(
@@ -3306,7 +3321,7 @@ mod tests {
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
-        assert_eq!(h.source.metadata_capacity, 6, "six entries fit");
+        assert_eq!(h.source.metadata_array.capacity(), 6, "six entries fit");
         assert_eq!(
             MeshSource::graph(&h.world, ctx).get(h.source.metadata_buf),
             before.as_ref(),

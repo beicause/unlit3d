@@ -356,10 +356,15 @@ impl TestGpu {
 /// Unlit options for the ECS tests: vertex colour + instance, no texture,
 /// no MSAA, with reverse-z depth.
 fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
-    use unlit_wgpu::pipeline::UnlitFlags;
+    use unlit_wgpu::pipeline::{UnlitFlags, supports_storage_buffers};
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
+    let mut flags =
+        UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE;
+    // A device without storage buffers — WebGL2 — reads the shader's arrays
+    // from textures instead, so the variant has to say which it is.
+    flags.set(UnlitFlags::TEXEL_ARRAY, !supports_storage_buffers(device));
     unlit_wgpu::pipeline::UnlitOptions {
-        flags: UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
+        flags,
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()
