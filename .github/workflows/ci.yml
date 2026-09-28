@@ -96,6 +96,7 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -Dwarnings
 
       - name: Build ${{matrix.os}}
+        id: build
         run: cargo build --workspace --all-targets
 
       # `cargo xtask test` runs nextest over the unit and integration tests,
@@ -125,12 +126,14 @@ jobs:
       - name: Test ${{matrix.os}}
         run: cargo xtask test
 
-      # `!cancelled()` rather than the implicit `success()`: the checks below
-      # are independent of the ones above, so a failure in any of them still
-      # gets to report its own result in the same run. Only a cancelled run
-      # stops early, since there is nothing left to report.
+      # What the checks below need is a workspace that compiles, which is what
+      # `steps.build` records — not a green run of everything above them. A
+      # nextest that would not install is no reason to drop them, while a failed
+      # clippy or build is one: they would only fail again on the same code, so
+      # they wait on that step and on nothing else. `!cancelled()` keeps a
+      # cancelled run from starting them at all.
       - name: Doc
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: cargo doc --workspace --no-deps --document-private-items --keep-going
         env:
           RUSTDOCFLAGS: -D warnings
@@ -154,14 +157,17 @@ jobs:
       # does not turn into an upload of frames this step never wrote.
       - name: Compare the example's scenes against their snapshots
         id: snapshots
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: >
           cargo run -p unlit3d_examples --features snapshot
           -- --headless --scene all
           --mismatch-dir target/snapshot-mismatches
 
+      # `failure()` is not redundant with the outcome check: an `if` that names
+      # no status function gets an implicit `success()`, which is false by the
+      # time this step runs, so the comparison alone would never be reached.
       - name: Upload the mismatched frames
-        if: ${{ steps.snapshots.outcome == 'failure' }}
+        if: ${{ failure() && steps.snapshots.outcome == 'failure' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: snapshot-mismatches-${{ matrix.os }}
@@ -179,11 +185,13 @@ jobs:
       #
       # `!cancelled()` rather than the implicit `success()`: a mismatch in the
       # default tier must not hide what the WebGL2 tier would have reported, so
-      # one run shows every scene that fails under either tier. A cancelled run
-      # is the exception, since there is nothing left to report.
+      # one run shows every scene that fails under either tier. It still waits
+      # on the build, since a workspace that does not compile has no frame to
+      # compare, and a cancelled run is the other exception: there is nothing
+      # left to report.
       - name: Compare the example's scenes under the WebGL2 device tier
         id: snapshots-webgl2
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: >
           cargo run -p unlit3d_examples --features snapshot
           -- --headless --scene all
@@ -192,7 +200,7 @@ jobs:
           UNLIT3D_DEVICE_TIER: webgl2
 
       - name: Upload the mismatched frames under the WebGL2 device tier
-        if: ${{ steps.snapshots-webgl2.outcome == 'failure' }}
+        if: ${{ failure() && steps.snapshots-webgl2.outcome == 'failure' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: snapshot-mismatches-webgl2-${{ matrix.os }}
