@@ -9,7 +9,7 @@
 //! `a` and `b`. Every `'static` type is a component, tuples included, which is
 //! what keeps a blanket `Bundle` impl for single components and a recursive one
 //! for tuples from coexisting. To flatten nesting, build the bundle with the
-//! [`bundle!`] macro.
+//! [`crate::bundle!`] macro.
 //!
 //! The same component cannot appear twice in a bundle; spawning with duplicates
 //! panics.
@@ -77,7 +77,7 @@ impl ArchetypeBuilder {
 /// A set of components to spawn an entity with.
 ///
 /// Implemented for the empty tuple, for tuples of one to sixteen components,
-/// and for an [`ArchetypeBuilder`] the [`bundle!`] macro produced.
+/// and for an [`ArchetypeBuilder`] the [`crate::bundle!`] macro produced.
 pub trait Bundle {
     /// The builder holding exactly this bundle's components.
     ///
