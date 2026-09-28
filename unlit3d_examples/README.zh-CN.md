@@ -18,7 +18,7 @@
 
 ```text
 Scenes:
-  cube                   the example's own scene: a textured cube with two panels
+  spin_cube              the example's own scene: a textured cube with two panels
   ui_only                a rich egui panel, no mesh source and no camera
   mesh_and_ui            a cube with the rich egui panel over it, one pass
   ecs_animated           a grid of cubes filling, moving and recycling over eight frames
@@ -125,7 +125,7 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 | 选项 | 默认值 | 含义 |
 |------|--------|------|
 | `--headless` | 关 | 离屏渲染，回读帧后退出，不打开窗口 |
-| `--scene <ID>` | `cube` | 要运行的场景；`all` 运行全部（仅无头模式） |
+| `--scene <ID>` | `spin_cube` | 要运行的场景；`all` 运行全部（仅无头模式） |
 | `--list-scenes` | 关 | 打印场景表并退出 |
 | `--size <WxH>` | 场景自己的 | 渲染目标尺寸（像素）；同时作为窗口的初始尺寸 |
 | `--frames <N>` | 场景自己的 | 捕获前绘制的帧数 |

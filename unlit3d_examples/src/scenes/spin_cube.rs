@@ -1,7 +1,7 @@
 //! The example's own scene: a spinning, textured cube with two egui panels.
 //!
 //! This is the scene the windowed example always showed. Its headless capture
-//! is the workspace's CI check against `example.webp`: 30 frames at the
+//! is the workspace's CI check against `spin_cube.webp`: 30 frames at the
 //! default window size, so a rendering regression fails the build.
 
 use super::{SceneControl, SceneDef, SceneOptions};
@@ -25,9 +25,9 @@ const ORBIT_ELEVATION: f32 = 0.5;
 const ORBIT_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.0, 0.0);
 
 /// The scene: a spinning cube at the example's default window size, whose
-/// headless capture verifies `example.webp`.
+/// headless capture verifies `spin_cube.webp`.
 pub static SCENE: SceneDef = SceneDef {
-    id: "cube",
+    id: "spin_cube",
     title: "Spinning cube",
     description: "the example's own scene: a textured cube with two panels",
     size: (960, 720),
@@ -262,7 +262,7 @@ fn build(
                 *camera = orbit_camera(aspect, orbit.azimuth, orbit.elevation);
             }
         }),
-        snapshot: Box::new(|frame| (frame == 29).then(|| "example.webp".to_owned())),
+        snapshot: Box::new(|frame| (frame == 29).then(|| "spin_cube.webp".to_owned())),
     }
 }
 

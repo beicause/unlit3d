@@ -22,7 +22,7 @@ panel, so one can be switched to at runtime. `--list-scenes` prints the table:
 
 ```text
 Scenes:
-  cube                   the example's own scene: a textured cube with two panels
+  spin_cube              the example's own scene: a textured cube with two panels
   ui_only                a rich egui panel, no mesh source and no camera
   mesh_and_ui            a cube with the rich egui panel over it, one pass
   ecs_animated           a grid of cubes filling, moving and recycling over eight frames
@@ -147,7 +147,7 @@ the value must be the next argument, so `--name=value` is not accepted.
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `--headless` | off | Render offscreen, read the frame back and exit, without opening a window |
-| `--scene <ID>` | `cube` | The scene to run; `all` runs every scene (headless only) |
+| `--scene <ID>` | `spin_cube` | The scene to run; `all` runs every scene (headless only) |
 | `--list-scenes` | off | Print the scene table and exit |
 | `--size <WxH>` | the scene's own | Render target size in pixels; also the window's initial size |
 | `--frames <N>` | the scene's own | Frames to draw before capturing |

@@ -29,7 +29,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 /// The number of samples the windowed loop presents every frame with.
-const SAMPLE_COUNT: u32 = scenes::cube::SAMPLE_COUNT;
+const SAMPLE_COUNT: u32 = scenes::spin_cube::SAMPLE_COUNT;
 
 /// The timestep the headless path advances the scene by, in seconds, so a
 /// captured frame does not depend on how long the frame took to draw.

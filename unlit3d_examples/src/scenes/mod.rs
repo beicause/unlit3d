@@ -18,11 +18,11 @@
 //! `unlit3d_asset_files` submodule still verify them.
 
 pub mod animated;
-pub mod cube;
-pub mod instanced;
+pub mod instanced_skinned_morph;
 pub mod mesh_and_ui;
 pub mod morphed;
 pub mod skinned;
+pub mod spin_cube;
 pub mod transparent;
 pub mod ui_only;
 
@@ -106,13 +106,13 @@ pub struct SceneDef {
 /// Every selectable scene, in the order the GUI lists and `--scene all` runs
 /// them.
 pub static SCENES: &[&SceneDef] = &[
-    &cube::SCENE,
+    &spin_cube::SCENE,
     &ui_only::SCENE,
     &mesh_and_ui::SCENE,
     &animated::SCENE,
     &skinned::SCENE,
     &morphed::SCENE,
-    &instanced::SCENE,
+    &instanced_skinned_morph::SCENE,
     &transparent::SCENE,
 ];
 
@@ -123,7 +123,7 @@ pub fn by_id(id: &str) -> Option<&'static SceneDef> {
 
 /// The scene the example runs when none is asked for.
 pub fn default() -> &'static SceneDef {
-    &cube::SCENE
+    &spin_cube::SCENE
 }
 
 /// A table of every scene, for `--list-scenes` and `--help`.
