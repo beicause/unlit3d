@@ -29,14 +29,16 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+  mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
 
 Each scene reproduces exactly what its test froze: the same world, camera and
-frame sequence, so the stored snapshots still verify it. `transparent_zsorted`
-is the exception: it is not ported from a test but adds the coverage the ported
-scenes lack — overlapping translucent draws, whose composite depends on both the
-z-sort and the blend state, neither of which the opaque scenes exercise.
+frame sequence, so the stored snapshots still verify it. `mesh_topologies` and
+`transparent_zsorted` are the exceptions: they are not ported from a test but
+add the coverage the ported scenes lack — every primitive topology drawn both
+indexed and non-indexed, and overlapping translucent draws whose composite
+depends on both the z-sort and the blend state.
 
 Every scene is built with the same public `unlit3d` API any caller would use —
 nothing in the example reaches into the crates' internals.

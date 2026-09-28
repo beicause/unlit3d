@@ -20,6 +20,7 @@
 pub mod animated;
 pub mod instanced_skinned_morph;
 pub mod mesh_and_ui;
+pub mod mesh_topologies;
 pub mod morphed;
 pub mod skinned;
 pub mod spin_cube;
@@ -113,6 +114,7 @@ pub static SCENES: &[&SceneDef] = &[
     &skinned::SCENE,
     &morphed::SCENE,
     &instanced_skinned_morph::SCENE,
+    &mesh_topologies::SCENE,
     &transparent::SCENE,
 ];
 

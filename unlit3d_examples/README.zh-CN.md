@@ -25,14 +25,15 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+  mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
 
 每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此存储的快照仍然
-能验证它。`transparent_zsorted` 是个例外：它并非从测试移植而来，而是补上移植场景所缺
-的覆盖——重叠的半透明绘制，其合成结果同时取决于 z 排序与混合状态，这两者都是不透明
-场景不会触及的。场景全部用公开的 `unlit3d` API 构建——示例没有任何一处触碰到 crate
-的内部实现。
+能验证它。`mesh_topologies` 与 `transparent_zsorted` 是两个例外：它们并非从测试移植而
+来，而是补上移植场景所缺的覆盖——每种图元拓扑各画一次索引与非索引，以及重叠的半透明
+绘制，其合成结果同时取决于 z 排序与混合状态。场景全部用公开的 `unlit3d` API 构建——
+示例没有任何一处触碰到 crate 的内部实现。
 
 ## 运行方式
 
