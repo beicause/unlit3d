@@ -50,6 +50,24 @@
 //! still in flight — a frame or two ahead of the GPU — gets one of its own.
 //! The pool therefore settles at as many buffers as there are frames in
 //! flight, rather than growing per frame.
+//!
+//! # What a staging buffer is on WebGL2
+//!
+//! WebGL2 has no `glMapBufferRange`, so wgpu emulates mapping in software: a
+//! buffer created with [`wgpu::BufferUsages::MAP_WRITE`] is given no GL buffer
+//! at all and holds its bytes in a host-side `Vec<u8>`, which a copy out of it
+//! uploads with `bufferSubData` when the submission runs.
+//!
+//! A staging buffer is worth even more there than on a native backend, because
+//! the allocation it saves is a host one. [`wgpu::Queue::write_buffer`] on
+//! WebGL2 allocates such a `Vec` per call and keeps it alive until a later
+//! submission has finished with it, so a scene uploading every frame churns
+//! host memory every frame. The pool replaces that with a fixed set of buffers
+//! that the host keeps writing into.
+//!
+//! The recycling scheme is unchanged: the platform supplies
+//! [`wgpu::CommandEncoder::map_buffer_on_submit`] like any other, so nothing
+//! here branches on the backend.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

@@ -63,7 +63,7 @@ pub struct RenderContext {
     /// The device cannot report this itself — it is a property of the adapter,
     /// which is normally gone by the time frames are drawn — so it is captured
     /// once and carried here. See
-    /// [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities).
+    /// [`DeviceCapabilities`].
     pub capabilities: Entity,
 }
 

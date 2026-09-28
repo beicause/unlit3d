@@ -702,7 +702,7 @@ impl MeshSource {
     ///
     /// Captured from the adapter when the context was spawned, because the
     /// device cannot report it; see
-    /// [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities).
+    /// [`DeviceCapabilities`].
     ///
     /// # Panics
     ///

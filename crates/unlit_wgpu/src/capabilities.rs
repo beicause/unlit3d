@@ -60,9 +60,10 @@ impl DeviceCapabilities {
     ///
     /// Where this is missing, a mesh cannot name its vertices through the
     /// draw's `base_vertex` — the backend would have to call a GL entry point
-    /// that does not exist — so its indices are offset at upload instead. See
-    /// [`MeshSource`](crate::mesh_source::MeshSource) and
-    /// [`MeshInfo`](crate::mesh::MeshInfo).
+    /// that does not exist — so its indices are offset at upload instead. The
+    /// mesh source is what decides which of the two a mesh's indices get; see
+    /// [`MeshInfo`](crate::mesh::MeshInfo) for the addressing the draw then
+    /// reads.
     pub fn base_vertex(&self) -> bool {
         self.base_vertex
     }
@@ -96,17 +97,36 @@ pub enum DeviceTier {
 }
 
 impl DeviceTier {
+    /// Every tier, for a caller that has to enumerate them.
+    ///
+    /// [`Display`](core::fmt::Display) and [`FromStr`](core::str::FromStr) are inverses over exactly
+    /// these, and a test asserts it, so the set cannot grow without the
+    /// environment variable learning the new name.
+    pub const ALL: &[Self] = &[Self::Native, Self::WebGl2];
+
     /// The tier named by `UNLIT3D_DEVICE_TIER`, or [`Self::Native`] when it is
     /// unset.
     ///
-    /// `native` (or any unrecognized value) selects [`Self::Native`];
-    /// `webgl2` selects [`Self::WebGl2`]. An unrecognized value is treated as
-    /// native rather than refused: a typo in a test run should not be the thing
-    /// that decides whether the run happens.
+    /// The value is parsed by [`FromStr`](core::str::FromStr), so an unrecognized one — a
+    /// typo like `webgl` — panics rather than silently selecting
+    /// [`Self::Native`]. Running the native tier when WebGL2 was asked for is
+    /// the failure this variable exists to prevent: it would pass while
+    /// exercising none of the paths under test, which is worse than not running.
+    ///
+    /// # Panics
+    ///
+    /// If the variable is set to a value that names no tier.
     pub fn from_env() -> Self {
         match std::env::var(TIER_ENV) {
-            Ok(value) if value.eq_ignore_ascii_case("webgl2") => Self::WebGl2,
-            _ => Self::Native,
+            Ok(value) => value.parse().unwrap_or_else(|()| {
+                let names: Vec<_> = Self::ALL.iter().map(Self::to_string).collect();
+                panic!(
+                    "{TIER_ENV}={value:?} names no device tier; unset it for the adapter's own \
+                     limits, or set it to one of {}",
+                    names.join(", ")
+                )
+            }),
+            Err(_) => Self::Native,
         }
     }
 
@@ -158,6 +178,23 @@ impl fmt::Display for DeviceTier {
             Self::Native => "native",
             Self::WebGl2 => "webgl2",
         })
+    }
+}
+
+impl core::str::FromStr for DeviceTier {
+    type Err = ();
+
+    /// Parse a tier name, case-insensitively.
+    ///
+    /// This is the inverse of [`Display`](core::fmt::Display), and the two are written
+    /// against the same names so a value printed by one is accepted by the
+    /// other.
+    fn from_str(name: &str) -> Result<Self, ()> {
+        match name {
+            _ if name.eq_ignore_ascii_case("native") => Ok(Self::Native),
+            _ if name.eq_ignore_ascii_case("webgl2") => Ok(Self::WebGl2),
+            _ => Err(()),
+        }
     }
 }
 
@@ -238,5 +275,31 @@ mod tests {
     fn the_tier_prints_as_the_name_the_environment_variable_takes() {
         assert_eq!(DeviceTier::Native.to_string(), "native");
         assert_eq!(DeviceTier::WebGl2.to_string(), "webgl2");
+    }
+
+    #[test]
+    fn every_tier_name_round_trips() {
+        for &tier in DeviceTier::ALL {
+            let name = tier.to_string();
+            assert_eq!(name.parse(), Ok(tier), "{name} parses back to its tier");
+            assert_eq!(
+                name.to_uppercase().parse(),
+                Ok(tier),
+                "{name} is case-insensitive"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_that_is_no_tier_is_refused() {
+        // `webgl` is the typo this exists for: accepting it as the native tier
+        // would run every test against the wrong device and still pass.
+        for name in ["webgl", "webgl3", "", "native ", "gles"] {
+            assert_eq!(
+                name.parse::<DeviceTier>(),
+                Err(()),
+                "{name:?} names no tier"
+            );
+        }
     }
 }
