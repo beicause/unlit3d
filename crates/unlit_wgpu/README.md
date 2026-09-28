@@ -611,6 +611,15 @@ of its own sets its flags through
 device's answer — assigning `flags` outright would drop it and ask a
 storage-less device for a binding it rejects.
 
+Every buffer binding states its `min_binding_size`, and a uniform one states a
+size that is a multiple of 16. A device without
+`BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED` — WebGL2, and ANGLE's GLES — rejects a
+pipeline whose uniform binding is not, which is why the uniform types derive
+[`const_shader_layout::ShaderLayoutCompat`]: it rounds each struct's size up to
+16, so the layout cannot drift from the rule. Storage bindings have no such
+requirement, and their minimum is the size of one element, which is what lets
+an array grow without invalidating the layout.
+
 <details>
 <summary>Why the row width is read back rather than declared</summary>
 

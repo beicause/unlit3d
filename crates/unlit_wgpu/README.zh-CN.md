@@ -542,6 +542,13 @@ WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
 设备给出的答案——直接赋值 `flags` 会把它丢掉，进而向没有 storage buffer 的设备索要
 一个会被拒绝的绑定。
 
+每个 buffer 绑定都写明 `min_binding_size`，其中 uniform 的大小必须是 16 的整数倍。
+缺少 `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED` 的设备——WebGL2 与 ANGLE 的 GLES——会
+拒绝 uniform 绑定不满足该条件的管线，这也是 uniform 类型都派生
+[`const_shader_layout::ShaderLayoutCompat`] 的原因：它把结构体大小向上取整到 16，
+使布局无从偏离该规则。storage 绑定没有这一要求，其最小值是一个元素的大小，这也正是
+数组增长不会让布局失效的原因。
+
 <details>
 <summary>为什么行宽是读回来的而不是写死的</summary>
 

@@ -470,7 +470,9 @@ fn one_pipeline_draws_many_meshes() {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,
+                    min_binding_size: wgpu::BufferSize::new(
+                        core::mem::size_of::<[f32; 4]>() as wgpu::BufferAddress
+                    ),
                 },
                 count: None,
             }],

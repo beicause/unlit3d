@@ -772,7 +772,7 @@ fn fs_main() -> @location(0) vec4<f32> {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: None,
+                    min_binding_size: wgpu::BufferSize::new(buffer.size()),
                 },
                 count: None,
             }],
