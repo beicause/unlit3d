@@ -332,7 +332,16 @@ let mut world = World::new();
 
 // 1. Spawn the frame's GPU context, the built-in mesh source and the
 //    frame driver, and register the built-in unlit family.
-let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
+// `DeviceCapabilities` carries what the device cannot report about itself
+// (its `base_vertex` support). Derive it from the adapter when one is at
+// hand; `default()` is the WebGPU baseline, which is also what `noop` is.
+let ctx = spawn_context(
+    &mut world,
+    device,
+    queue,
+    ResourceGraph::new(),
+    DeviceCapabilities::default(),
+);
 let mut mesh_source = MeshSource::new(&world, ctx);
 mesh_source.register_unlit_family(&world);
 let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world)));

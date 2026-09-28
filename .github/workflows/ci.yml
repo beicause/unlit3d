@@ -111,7 +111,6 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-      # The example renders headlessly and compares the frame against its
       # The example renders every scene headlessly and compares each frame
       # against its stored snapshot, so a rendering regression fails here
       # rather than passing unnoticed. This is the check that replaced the
@@ -123,6 +122,20 @@ jobs:
         run: >
           cargo run -p unlit3d_examples --features snapshot
           -- --headless --scene all
+
+      # The same scenes again, with every headless device narrowed to what
+      # WebGL2 offers: no storage buffers, no `base_vertex`, none of the other
+      # downlevel capabilities. This is what draws the shader's arrays from
+      # textures and bakes a mesh's pool offset into its indices, so a scene
+      # that only works on the storage path fails here. It is a rendering
+      # comparison rather than a capability probe: the frames have to come back
+      # the same as the stored ones.
+      - name: Compare the example's scenes under the WebGL2 device tier
+        run: >
+          cargo run -p unlit3d_examples --features snapshot
+          -- --headless --scene all
+        env:
+          UNLIT3D_DEVICE_TIER: webgl2
 
   build-wasm:
     name: Build wasm
