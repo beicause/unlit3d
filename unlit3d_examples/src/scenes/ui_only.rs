@@ -30,6 +30,7 @@ pub static SCENE: SceneDef = SceneDef {
     depth: false,
     ui: true,
     reproducible_ui: false,
+    min_score: None,
     build,
 };
 

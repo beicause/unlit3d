@@ -37,6 +37,7 @@ pub static SCENE: SceneDef = SceneDef {
     depth: true,
     ui: true,
     reproducible_ui: true,
+    min_score: None,
     build,
 };
 

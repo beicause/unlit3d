@@ -97,6 +97,27 @@ pub struct SceneDef {
     /// the headless path zeroes egui's animation time for it. The ported test
     /// scenes were captured with the clock live, and declare `false`.
     pub reproducible_ui: bool,
+    /// The SSIMULACRA2 score this scene's snapshots accept, when the default is
+    /// not the right bar for it.
+    ///
+    /// The default suits a scene whose frame covers whole surfaces: a
+    /// regression changes large regions of it, so its score falls far below the
+    /// line, while two implementations of the same drawing land close together.
+    /// A scene of thin primitives is different, because its pixels are edges —
+    /// and which triangle an edge pixel belongs to is a rasterizer's
+    /// tie-breaking rule to decide, one the API leaves to each implementation.
+    /// A handful of such pixels is worth tens of points there, so the default
+    /// would reject a frame that is right in every way that matters.
+    ///
+    /// A scene that declares one should put it in the gap its platform
+    /// differences and its real regressions leave: above every score a correct
+    /// frame has been seen to reach on any backend, below every score a broken
+    /// one has. [`mesh_topologies`] is the scene that needs one, and its
+    /// definition carries the measurements.
+    ///
+    /// `--min-score` overrides it, since a caller asking for a specific bar
+    /// means that bar.
+    pub min_score: Option<f64>,
     /// Build the scene's world content and return its per-frame behaviour.
     ///
     /// The world already holds the frame's context and the renderer resource
@@ -135,6 +156,14 @@ pub fn list_text() -> String {
         text.push_str(&format!("  {:<22} {}\n", scene.id, scene.description));
     }
     text
+}
+
+impl SceneDef {
+    /// The score this scene's snapshots have to reach, or the example's default
+    /// when the scene does not say.
+    pub fn min_score(&self) -> f64 {
+        self.min_score.unwrap_or(crate::cli::DEFAULT_MIN_SCORE)
+    }
 }
 
 /// What a scene is built with.
@@ -454,4 +483,39 @@ pub fn remove_mesh(world: &World, source_entity: Entity, mesh: GpuMesh) {
     with_mesh_source(world, source_entity, |source, world| {
         source.remove_mesh(world, mesh)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scene_without_a_threshold_uses_the_default() {
+        let scene = by_id("spin_cube").expect("the default scene exists");
+        assert_eq!(scene.min_score, None);
+        assert_eq!(scene.min_score(), crate::cli::DEFAULT_MIN_SCORE);
+    }
+
+    #[test]
+    fn a_scene_with_a_threshold_uses_its_own() {
+        let scene = by_id("mesh_topologies").expect("the topology scene exists");
+        assert_eq!(scene.min_score, Some(75.0));
+        assert_eq!(scene.min_score(), 75.0);
+    }
+
+    /// A declared threshold has to be below the default, since the default is
+    /// the bar a scene is held to when its pixels are not in question; one at
+    /// or above it would say nothing.
+    #[test]
+    fn a_declared_threshold_is_below_the_default() {
+        for scene in SCENES {
+            if let Some(min_score) = scene.min_score {
+                assert!(
+                    (0.0..crate::cli::DEFAULT_MIN_SCORE).contains(&min_score),
+                    "`{}` declares {min_score}, which the default already covers",
+                    scene.id
+                );
+            }
+        }
+    }
 }

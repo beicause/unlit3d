@@ -115,6 +115,34 @@ const PATCH_HALF_HEIGHT: f32 = 0.62;
 /// stays even on screen.
 const CAMERA_DISTANCE: f32 = 3.0;
 
+/// The score this scene's snapshots accept, below the example's default.
+///
+/// The frame is edges rather than surfaces: every patch is a triangle, a line
+/// or a point, so most of its pixels sit on a patch outline and the rest are
+/// flat colour. Which of two triangles an outline pixel belongs to is the
+/// rasterizer's tie-breaking rule to decide, and the API leaves that to each
+/// implementation, so one correct frame differs between backends by a scatter
+/// of single pixels along the outlines.
+///
+/// Those pixels cost far more here than they would on a shaded surface, which
+/// is what the measurements below show, taken against the stored snapshot:
+///
+/// | frame | SSIMULACRA2 |
+/// |-------|-------------|
+/// | lavapipe (Linux, where the snapshot was captured) | 100.00 |
+/// | Metal (macOS) | 77.14 |
+/// | DX12 (Windows) | 77.14 |
+/// | the same frame with its 14 differing outline pixels corrected | 98.20 |
+/// | a real regression: the triangle strip's cell shifted one pixel | 63.82 |
+/// | a real regression: that cell drawn as a triangle list | -56.92 |
+///
+/// 75 leaves the least room above the noise floor while staying clear of real
+/// regressions: it sits just under the 77 both other backends reached, and far
+/// above the mildest regression measured. The default 85 would fail two
+/// platforms over 14 pixels, while 75 still fails every change that alters what
+/// the scene draws.
+const MIN_SCORE: f64 = 75.0;
+
 /// The scene: one patch per topology, indexed and non-indexed.
 pub static SCENE: SceneDef = SceneDef {
     id: "mesh_topologies",
@@ -127,6 +155,7 @@ pub static SCENE: SceneDef = SceneDef {
     depth: true,
     ui: false,
     reproducible_ui: false,
+    min_score: Some(MIN_SCORE),
     build,
 };
 

@@ -195,6 +195,10 @@ fn run_headless_scene(
 
     let size = args.size.unwrap_or(def.size);
     let frames = args.frames.unwrap_or(def.frames);
+    // An explicit `--min-score` means that bar; otherwise the scene's own, so a
+    // scene whose pixels a backend may legitimately place differently can set a
+    // threshold that matches what it draws.
+    let min_score = args.min_score.unwrap_or_else(|| def.min_score());
     // A scene's own snapshots only describe a run that reproduces the scene's
     // stored settings. Overriding the size, the frame count or the UI makes a
     // custom capture instead, which compares against `--snapshot <PATH>`.
@@ -259,7 +263,7 @@ fn run_headless_scene(
                 width,
                 height,
                 args.update,
-                args.min_score,
+                min_score,
                 mismatch.as_deref(),
             );
         }
@@ -292,7 +296,7 @@ fn run_headless_scene(
             width,
             height,
             args.update,
-            args.min_score,
+            min_score,
             args.mismatch_dir
                 .as_ref()
                 .map(|dir| dir.join(mismatch_name(path)))

@@ -21,15 +21,15 @@ pollster.workspace = true
 unlit_wgpu = { path = "../unlit_wgpu" }
 wgpu.workspace = true
 
-[dependencies.ssimulacra2]
-version = "0.5"
-default-features = false
-optional = true
-
 [dependencies.image]
 version = "0.25"
 default-features = false
 features = ["webp"]
+optional = true
+
+[dependencies.ssimulacra2]
+version = "0.5"
+default-features = false
 optional = true
 
 # The logger backend `init_logging` installs: `env_logger` reads `RUST_LOG`
@@ -41,7 +41,7 @@ env_logger.workspace = true
 console_log.workspace = true
 
 [features]
-snapshot = ["dep:ssimulacra2", "dep:image"]
+snapshot = ["dep:image", "dep:ssimulacra2"]
 
 [lints]
 workspace = true

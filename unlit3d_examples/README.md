@@ -157,7 +157,7 @@ the value must be the next argument, so `--name=value` is not accepted.
 | `--snapshot <PATH>` | none | Compare the captured frame against the snapshot at `PATH`, instead of the scene's own snapshots |
 | `--update` | off | Store the snapshots being compared instead of comparing them |
 | `--no-ui` | off | Draw the scene without its UI overlay |
-| `--min-score <S>` | `85.0` | Lowest SSIMULACRA2 score that counts as matching |
+| `--min-score <S>` | the scene's own, else `85.0` | Lowest SSIMULACRA2 score that counts as matching |
 | `--snapshot-dir <D>` | the asset submodule's `snapshots` | Where the scene's own snapshots resolve, by name |
 | `--mismatch-dir <D>` | none | Write every frame that does not match its snapshot to `D` as a lossless WebP, mirroring the snapshot's name |
 
@@ -206,10 +206,21 @@ even where the GL context is not.
 
 Without `--snapshot`, a headless run compares every frame the scene declares a
 snapshot for against the snapshot directory. The comparison uses SSIMULACRA2 and
-exits non-zero when the score falls below `--min-score`. If a snapshot is
+exits non-zero when the score falls below the threshold, which is `--min-score`
+when given, otherwise the scene's own, otherwise `85.0`. If a snapshot is
 missing it refuses to compare and tells you to generate one with `--update` —
 writing a missing snapshot would let a regression pass CI by creating the very
 file the check is meant to read.
+
+A scene declares a threshold of its own through `SceneDef::min_score`, and only
+when the default is the wrong bar for what it draws. The default suits a frame
+of whole surfaces, where a regression moves large regions and so lands far below
+the line. A frame of thin primitives is different: its pixels are outlines, and
+which triangle an outline pixel belongs to is a rasterizer's tie-breaking rule
+to decide — one the API leaves to each implementation. A scatter of such pixels
+is worth tens of points there, so `mesh_topologies` accepts 75 rather than 85
+and says in its definition which measurements put 75 above every correct frame
+and below every broken one.
 
 A scene's own snapshots only describe a run that reproduces the scene's stored
 settings, so overriding `--size`, `--frames` or `--no-ui` makes a custom capture

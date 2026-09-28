@@ -86,9 +86,10 @@ pub struct Args {
     #[argh(switch)]
     pub no_ui: bool,
 
-    /// lowest SSIMULACRA2 score that counts as matching
-    #[argh(option, from_str_fn(parse_score), default = "DEFAULT_MIN_SCORE")]
-    pub min_score: f64,
+    /// lowest SSIMULACRA2 score that counts as matching; the scene's own when
+    /// it declares one, the example's default otherwise
+    #[argh(option, from_str_fn(parse_score))]
+    pub min_score: Option<f64>,
 
     /// where the scene's own snapshots resolve, by name
     #[argh(option, default = "default_snapshot_dir()")]
@@ -112,7 +113,7 @@ impl Default for Args {
             snapshot: None,
             update: false,
             no_ui: false,
-            min_score: DEFAULT_MIN_SCORE,
+            min_score: None,
             snapshot_dir: default_snapshot_dir(),
             mismatch_dir: None,
         }
@@ -264,7 +265,9 @@ mod tests {
         assert_eq!(args.snapshot, None);
         assert!(!args.update);
         assert!(!args.no_ui);
-        assert_eq!(args.min_score, DEFAULT_MIN_SCORE);
+        // Not the default score: an omitted `--min-score` leaves the choice to
+        // the scene, which may declare a threshold of its own.
+        assert_eq!(args.min_score, None);
         assert_eq!(args.snapshot_dir, default_snapshot_dir());
         assert_eq!(args.mismatch_dir, None);
     }
@@ -300,7 +303,7 @@ mod tests {
         assert_eq!(args.output.as_deref(), Some("frame.webp".as_ref()));
         assert_eq!(args.snapshot.as_deref(), Some("snap.webp".as_ref()));
         assert!(args.update);
-        assert_eq!(args.min_score, 90.5);
+        assert_eq!(args.min_score, Some(90.5));
         assert_eq!(args.snapshot_dir, PathBuf::from("snaps"));
         assert_eq!(args.mismatch_dir, Some(PathBuf::from("mismatches")));
     }
