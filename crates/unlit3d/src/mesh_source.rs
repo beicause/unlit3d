@@ -22,7 +22,7 @@ use unlit_ecs::{TypeIdHashMap, World};
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    JointMatrix, MeshInfo, MeshInstance, MeshMetadata, PoseBase, compress_indices, compress_weights,
+    JointMatrix, MeshInfo, MeshInstance, MeshMetadata, PoseBase, compress_weights, index_fits_u16,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
@@ -138,10 +138,49 @@ impl IndexOffset {
         }
     }
 
-    /// The offset the indices are uploaded with, or `None` when they are
-    /// uploaded as they were given.
-    fn bake(self, indices: &[u32]) -> Option<Vec<u32>> {
-        (self.baked != 0).then(|| indices.iter().map(|&index| index + self.baked).collect())
+    /// `indices` with the pool offset applied, in the narrowest format they
+    /// fit, as the bytes to upload.
+    ///
+    /// An offset carried by the draw leaves the indices mesh-local, so they
+    /// stay as narrow as the mesh's own vertex count allows; an offset baked in
+    /// here can push an index past `u16::MAX`, which widens *every* index of
+    /// the mesh to `Uint32`. Either way the offset is applied as the bytes are
+    /// written, so no intermediate index buffer exists.
+    ///
+    /// The bytes are padded to [`wgpu::COPY_BUFFER_ALIGNMENT`], which is the
+    /// alignment an index pool hands its ranges out at, so the result is
+    /// written whole and its length is the size to allocate.
+    ///
+    /// The slice must not be empty: an empty mesh has no index buffer at all.
+    fn pack(self, indices: &[u32]) -> (wgpu::IndexFormat, Vec<u8>) {
+        let widened = indices
+            .iter()
+            .any(|&index| !index_fits_u16(index + self.baked));
+        let element = if widened {
+            size_of::<u32>()
+        } else {
+            size_of::<u16>()
+        };
+        let padded_len =
+            (indices.len() * element).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
+        // Sized up front so padding extends into reserved space rather than
+        // growing the allocation.
+        let mut data = Vec::with_capacity(padded_len);
+        for &index in indices {
+            let index = index + self.baked;
+            if widened {
+                data.extend_from_slice(index.as_bytes());
+            } else {
+                data.extend_from_slice((index as u16).as_bytes());
+            }
+        }
+        data.resize(padded_len, 0);
+        let format = if widened {
+            wgpu::IndexFormat::Uint32
+        } else {
+            wgpu::IndexFormat::Uint16
+        };
+        (format, data)
     }
 }
 
@@ -1337,31 +1376,15 @@ impl MeshSource {
         let (index_buffer, count, indexed, index_allocation, first) = match indices {
             Some(indices) if !indices.is_empty() => {
                 let index_count = indices.len() as u32;
-                // The indices as the draw will read them: mesh-local when the
-                // draw's `base_vertex` carries the pool offset, pool-global when
-                // the offset was baked in here. The compression is decided on
-                // these values, since an offset that pushes an index past
-                // `u16::MAX` has to widen the buffer it is written into.
-                let baked = offset.bake(indices);
-                let source: &[u32] = baked.as_deref().unwrap_or(indices);
-                let (format, data): (wgpu::IndexFormat, Vec<u8>) = match compress_indices(source) {
-                    Ok(compressed) => {
-                        let mut data = Vec::with_capacity(index_count as usize * size_of::<u16>());
-                        for index in compressed {
-                            data.extend_from_slice(&index.to_ne_bytes());
-                        }
-                        (wgpu::IndexFormat::Uint16, data)
-                    }
-                    Err(_) => (wgpu::IndexFormat::Uint32, source.as_bytes().to_vec()),
-                };
-                let padded_len = data
-                    .len()
-                    .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
-                let mut padded = data;
-                padded.resize(padded_len, 0);
+                // The bytes the draw will read, offset where the device
+                // requires and sized for the pool's own alignment. An offset
+                // that pushes an index past `u16::MAX` has to widen the buffer
+                // it is written into, so the format and the bytes are decided
+                // together.
+                let (format, data) = offset.pack(indices);
                 let range = self
                     .index_pool
-                    .allocate(&device, &queue, padded_len as u32)
+                    .allocate(&device, &queue, data.len() as u32)
                     .expect("the index pool grows with the mesh");
                 {
                     let mut graph = Self::graph(world, self.context);
@@ -1371,7 +1394,7 @@ impl MeshSource {
                             .get(self.index_pool_id)
                             .expect("the index pool node exists"),
                         u64::from(range.offset()),
-                        &padded,
+                        &data,
                     );
                 }
                 let first = range.offset() / index_format_size(format);
@@ -3021,11 +3044,13 @@ mod tests {
         let offset = IndexOffset::new(true, 7);
 
         assert_eq!(offset.draw_base_vertex, 7, "the draw carries the offset");
+        let (format, data) = offset.pack(&[0, 1, 2]);
         assert_eq!(
-            offset.bake(&[0, 1, 2]),
-            None,
+            format,
+            wgpu::IndexFormat::Uint16,
             "the indices stay mesh-local, so they keep their width"
         );
+        assert_eq!(packed_indices(format, &data, 3), vec![0, 1, 2]);
     }
 
     #[test]
@@ -3035,7 +3060,9 @@ mod tests {
         let offset = IndexOffset::new(false, 7);
 
         assert_eq!(offset.draw_base_vertex, 0, "the draw must not name one");
-        assert_eq!(offset.bake(&[0, 1, 2]), Some(vec![7, 8, 9]));
+        let (format, data) = offset.pack(&[0, 1, 2]);
+        assert_eq!(format, wgpu::IndexFormat::Uint16);
+        assert_eq!(packed_indices(format, &data, 3), vec![7, 8, 9]);
     }
 
     #[test]
@@ -3046,7 +3073,9 @@ mod tests {
             let offset = IndexOffset::new(supports_base_vertex, 0);
             assert_eq!(offset.baked, 0);
             assert_eq!(offset.draw_base_vertex, 0);
-            assert_eq!(offset.bake(&[0, 1, 2]), None);
+            let (format, data) = offset.pack(&[0, 1, 2]);
+            assert_eq!(format, wgpu::IndexFormat::Uint16);
+            assert_eq!(packed_indices(format, &data, 3), vec![0, 1, 2]);
         }
     }
 
@@ -3056,14 +3085,65 @@ mod tests {
         // before the offset may not after it, and the compression is decided on
         // the baked values.
         let indices = [0u32, 1, 2];
-        let baked = IndexOffset::new(false, u32::from(u16::MAX))
-            .bake(&indices)
-            .expect("the offset is baked");
-        assert_eq!(baked, vec![65535, 65536, 65537]);
-        assert!(
-            compress_indices(&baked).is_err(),
+        let offset = IndexOffset::new(false, u32::from(u16::MAX));
+        let (format, data) = offset.pack(&indices);
+        assert_eq!(
+            format,
+            wgpu::IndexFormat::Uint32,
             "an index past `u16::MAX` cannot be narrowed"
         );
+        assert_eq!(packed_indices(format, &data, 3), vec![65535, 65536, 65537]);
+    }
+
+    #[test]
+    fn packed_indices_are_padded_to_the_pool_alignment() {
+        // The pool hands ranges out at `COPY_BUFFER_ALIGNMENT`, so `pack` pads
+        // what it writes and its length is the size the pool is asked for.
+        let offset = IndexOffset::new(true, 0);
+
+        // Three `Uint16` indices are 6 bytes, rounded up to the alignment.
+        let (format, data) = offset.pack(&[0, 1, 2]);
+        assert_eq!(format, wgpu::IndexFormat::Uint16);
+        assert_eq!(
+            data.len(),
+            (3 * size_of::<u16>()).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize)
+        );
+        assert!(
+            data[3 * size_of::<u16>()..].iter().all(|&byte| byte == 0),
+            "the padding is zeroed"
+        );
+
+        // Many indices round up by that alignment without a whole extra block
+        // when they already land on one.
+        let indices: Vec<u32> = (0..(u16::MAX as u32 - 1)).collect();
+        let (format, data) = offset.pack(&indices);
+        assert_eq!(format, wgpu::IndexFormat::Uint16);
+        assert_eq!(
+            data.len(),
+            (indices.len() * size_of::<u16>())
+                .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize)
+        );
+    }
+
+    /// The first `count` indices [`IndexOffset::pack`] wrote, as `u32`s.
+    ///
+    /// The bytes past them are the pool-alignment padding, which the caller
+    /// sizes to but does not read.
+    fn packed_indices(format: wgpu::IndexFormat, bytes: &[u8], count: usize) -> Vec<u32> {
+        match format {
+            wgpu::IndexFormat::Uint16 => bytes[..count * size_of::<u16>()]
+                .as_chunks::<{ size_of::<u16>() }>()
+                .0
+                .iter()
+                .map(|index| u32::from(u16::from_ne_bytes(*index)))
+                .collect(),
+            wgpu::IndexFormat::Uint32 => bytes[..count * size_of::<u32>()]
+                .as_chunks::<{ size_of::<u32>() }>()
+                .0
+                .iter()
+                .map(|index| u32::from_ne_bytes(*index))
+                .collect(),
+        }
     }
 
     #[test]

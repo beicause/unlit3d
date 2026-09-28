@@ -581,19 +581,26 @@ pub fn compress_weights(weights: &[[f32; 4]]) -> impl Iterator<Item = Compressed
     weights.iter().map(|weight| weight.map(f32_to_unorm16))
 }
 
+/// Whether a vertex index can be named by a `Uint16` index buffer.
+///
+/// `0xFFFF` is the primitive-restart value rather than a vertex index, so a
+/// `Uint16` buffer can name at most `0xFFFE` and an index at or above
+/// `u16::MAX` needs a `Uint32` one.
+pub const fn index_fits_u16(index: u32) -> bool {
+    index < u16::MAX as u32
+}
+
 /// Narrow `u32` indices to `u16`.
 ///
-/// `0xFFFF` is the primitive-restart value, so a valid vertex index must stay
-/// strictly below it (the largest usable index is `0xFFFE`).
-///
-/// Unlike the vertex-attribute compressors this returns a [`Result`], because
-/// the input can genuinely be too large for the output format; the check runs
-/// over the whole input before any value is produced.
+/// Which indices can be narrowed is [`index_fits_u16`]'s rule. Unlike the
+/// vertex-attribute compressors this returns a [`Result`], because the input
+/// can genuinely be too large for the output format; the check runs over the
+/// whole input before any value is produced.
 pub fn compress_indices(indices: &[u32]) -> Result<impl Iterator<Item = u16> + '_, CompressError> {
     if indices.is_empty() {
         return Err(CompressError::EmptyInput);
     }
-    if let Some(&index) = indices.iter().find(|&&index| index >= u16::MAX as u32) {
+    if let Some(&index) = indices.iter().find(|&&index| !index_fits_u16(index)) {
         return Err(CompressError::TooManyVertices(index));
     }
     Ok(indices.iter().map(|&index| index as u16))
