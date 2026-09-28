@@ -19,7 +19,7 @@ pollster.workspace = true
 # (`unlit_wgpu` dev-depends on this crate for its own tests), which Cargo
 # resolves by building `unlit_wgpu` without its dev-dependencies here.
 unlit_wgpu = { path = "../unlit_wgpu" }
-wgpu = { workspace = true, default-features = false, features = ["dx12", "metal", "std", "vulkan", "web", "webgpu", "wgsl"] }
+wgpu.workspace = true
 
 [dependencies.fast-ssim2]
 version = "0.8"
