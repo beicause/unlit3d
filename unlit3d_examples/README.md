@@ -173,6 +173,27 @@ time: a scene whose animation was frozen as a few frames holds each one for
 flashing past at the refresh rate. At most one sequence step is taken per
 windowed frame, so a stall does not skip frames.
 
+### Choosing a device tier
+
+`UNLIT3D_DEVICE_TIER` narrows every headless device this example builds. Unset,
+a device is asked for the adapter's own limits and capabilities, which on a
+desktop is Vulkan, Metal or DX12. Set to `webgl2`, the device is asked for
+WebGL2's limits instead — no storage buffers — and the frame is recorded as
+WebGL2 would record it, with the shader's arrays read through `textureLoad` and
+each mesh's vertex offset baked into its indices. Any other value is refused
+rather than guessed at, since running the native tier when WebGL2 was asked for
+would pass while testing nothing.
+
+```text
+UNLIT3D_DEVICE_TIER=webgl2 \
+  cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
+```
+
+`WGPU_BACKEND` selects the backend in the usual `wgpu` way and is independent of
+the tier; `WGPU_BACKEND=gles` together with the tier is the closest a desktop
+machine comes to a browser's WebGL2, since the limits and flags are WebGL2's
+even where the GL context is not.
+
 ### Snapshots
 
 Without `--snapshot`, a headless run compares every frame the scene declares a

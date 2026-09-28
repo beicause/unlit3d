@@ -54,6 +54,10 @@ given, in the order each source declares through
   [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph) — lives in the world as
   resource components, addressed by a [`RenderContext`](source::RenderContext).
   [`spawn_context`](source::spawn_context) spawns it and returns the addresses.
+  It also takes the frame's
+  [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities), which
+  the caller derives from the adapter — what the device cannot report about
+  itself travels with the frame rather than being rediscovered per source.
 - **Build and record are two phases.** A source registers resources in the graph
   and stages uploads during `build_scene`; recording only reads the scenes it
   already produced, so no borrow conflict ever arises between a source's own

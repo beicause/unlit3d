@@ -60,6 +60,13 @@ Not supported: lighting and shadows, and post-processing.
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
   the frame's target.
+- **Runs on WebGPU and on WebGL2.** The adapter is picked at runtime, WebGPU
+  first and WebGL2 when that is all the platform has. WebGL2 lacks parts of the
+  WebGPU baseline — no storage buffers, no `base_vertex` — so the shader reads
+  the frame's arrays through `textureLoad` and a mesh's vertex offset is baked
+  into its indices; a device that has the baseline keeps the storage buffers and
+  the whole-buffer bindings, which cost no extra pass state. Which path is taken
+  follows the adapter's own downlevel capabilities, not a build feature.
 - **Persistent, pooled GPU resources.** Draws work with raw `wgpu` resources;
   they live across frames, are rebuilt only when needed, and share and reuse the
   buffers uploads go through.
@@ -215,15 +222,20 @@ the lint gates, on every push to `main` and every pull request:
   --check` over the TOML, and `cargo fmt --all -- --check`.
 - **build** (Linux, macOS, Windows) — clippy with and without the `unlit`
   feature, `cargo build --workspace --all-targets`, `cargo xtask test`,
-  `cargo doc` with `-D warnings`, and the example's headless snapshot comparison.
-  Linux installs Mesa for `lavapipe`, since the runners have no GPU.
+  `cargo doc` with `-D warnings`, and the example's headless snapshot comparison
+  twice: once against the runner's adapter, once with every headless device
+  narrowed to WebGL2's shape. Linux installs Mesa for `lavapipe`, since the
+  runners have no GPU.
 - **build-wasm** — clippy and a `wasm32-unknown-unknown` build. The build
   excludes `xtask`, a host-only task runner whose HTTP server does not compile
   for that target.
 - **build-android** — the `aarch64-linux-android` cross-build and the Gradle APK.
 
 The snapshot comparison is the check that makes a rendering regression fail
-rather than pass unnoticed, which is why the example's scenes carry it.
+rather than pass unnoticed, which is why the example's scenes carry it. Its
+second run is what reaches the WebGL2 paths on a runner whose own adapter has
+storage buffers and `base_vertex`, by setting `UNLIT3D_DEVICE_TIER=webgl2`
+rather than by building for the web.
 
 ## Workspace layout
 

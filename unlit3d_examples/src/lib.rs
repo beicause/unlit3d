@@ -672,30 +672,43 @@ impl ApplicationHandler<UserEvent> for App {
         if matches!(self.context, GpuState::Idle) {
             self.context = GpuState::Requested;
             let window = self.window.clone().expect("the window was just opened");
-            // The surface comes first and here, on the thread that owns the
-            // window, so the adapter can be required to present to it.
-            //
-            // The instance is built from the event loop's *owned* display
-            // handle rather than a bare one, and through the environment-aware
-            // descriptor, so `WGPU_BACKEND` and friends select the backend —
-            // and so the GLES/WebGL2 one can be asked for by name. A display
-            // handle is what those backends need to reach the platform's
-            // display connection, and owning it lets the instance outlive the
-            // borrow of the event loop that produced it.
-            let instance =
-                wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
-                    Box::new(event_loop.owned_display_handle()),
-                ));
-            let surface = instance
-                .create_surface(window)
-                .expect("the window presents to a surface");
 
-            // The async tail — the adapter and device requests — runs off the
-            // event loop's thread (native) or in the browser's task queue
-            // (web). The context it produces comes back through `user_event`,
-            // where the scene is built on the thread that owns it.
+            // The display handle is taken here, on the thread that owns the
+            // event loop, and *owned* so the instance can outlive this borrow.
+            // It is what the GLES and WebGL2 backends use to reach the
+            // platform's display connection, and it is passed through the
+            // environment-aware descriptor, so `WGPU_BACKEND` and friends still
+            // select the backend by name.
+            let display = event_loop.owned_display_handle();
             let proxy = self.proxy.clone();
+
+            // Everything else runs off the event loop's thread (native) or in
+            // the browser's task queue (web): the adapter and device requests
+            // are asynchronous on both, and so is finding out whether the
+            // browser really has WebGPU.
+            //
+            // `new_instance_with_webgpu_detection` is what makes that choice.
+            // WebGPU support has to be settled when the instance is created —
+            // the `navigator.gpu` object alone is not enough, since a browser
+            // may expose it and still fail to produce an adapter — so this asks
+            // for one before committing and drops the WebGPU backend if there
+            // is none. The WebGL2 backend then serves the frame. Building the
+            // instance with `Instance::new` instead would commit to WebGPU on
+            // the strength of the property alone.
+            //
+            // The surface is created here rather than on the event loop's
+            // thread for the same reason: it needs the instance, and the
+            // adapter is required to be able to present to it. It is a *probe*,
+            // dropped again by `Gpu::request`; whoever presents builds one for
+            // the window it has at that moment.
             spawn(async move {
+                let instance = wgpu::util::new_instance_with_webgpu_detection(
+                    wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
+                )
+                .await;
+                let surface = instance
+                    .create_surface(window)
+                    .expect("the window presents to a surface");
                 match Gpu::request(instance, surface).await {
                     Ok(gpu) => {
                         let _ = proxy.send_event(UserEvent::Ready(gpu));

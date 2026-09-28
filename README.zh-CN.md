@@ -44,6 +44,11 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   可渲染实体把网格、材质与管线作为组件携带，游戏逻辑与绘制共用同一套模型。
 - **按变体组合的 unlit 管线。** 着色器变体只含网格实际使用的通道——位置、UV、顶点色、
   逐实例变换与颜色、基础色纹理、蒙皮、形变目标——并针对本帧的渲染目标特化。
+- **同时跑在 WebGPU 与 WebGL2 上。** 适配器在运行时挑选：优先 WebGPU，平台只有
+  WebGL2 时回退过去。WebGL2 缺少 WebGPU 基线的若干部分——没有 storage buffer、没有
+  `base_vertex`——于是着色器用 `textureLoad` 读取本帧的数组，网格的顶点偏移被烘焙进
+  索引；而具备完整基线的设备仍走 storage buffer 与整缓冲绑定，不额外增加 pass 状态
+  切换。走哪条路由适配器自身的 downlevel 能力决定，而非编译期 feature。
 - **常驻且池化的 GPU 资源。** 直接使用 `wgpu` 资源；跨帧保留，按需重建，并共享复用
   上传所经过的缓冲。
 - **CPU 视锥剔除与自动实例化。** 屏幕外的网格不产生开销，状态相同的绘制折叠为一次
@@ -174,13 +179,16 @@ pull request 上运行上述检查以及各 lint 关卡：
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
 - **build**（Linux、macOS、Windows）—— 带与不带 `unlit` feature 的 clippy、
   `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
-  `cargo doc`，以及示例的无头快照比较。由于 runner 没有 GPU，Linux 会安装 Mesa 以
-  提供 `lavapipe`。
+  `cargo doc`，以及示例的无头快照比较——该比较跑两遍：一遍用 runner 自身的适配器，
+  一遍把所有无头设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa
+  以提供 `lavapipe`。
 - **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建。构建会排除
   `xtask`：它是只在宿主机上运行的任务运行器，其 HTTP 服务器无法为该目标编译。
 - **build-android** —— `aarch64-linux-android` 交叉构建与 Gradle APK。
 
 快照比较正是让渲染回归会失败而不是悄然通过的那道检查，这也是示例的场景承担它的原因。
+它的第二遍通过设置 `UNLIT3D_DEVICE_TIER=webgl2`（而不是为 Web 构建）来触达 WebGL2
+路径，即便 runner 自身的适配器有 storage buffer 与 `base_vertex`。
 
 ## 工作区结构
 

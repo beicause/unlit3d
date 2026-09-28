@@ -41,6 +41,12 @@
   按种类或按顶点布局共享同一个缓冲。
 - `staging` —— 跨帧复用的 host 可见 staging 缓冲，而不是每次上传都让
   `queue.write_buffer` 新分配一个。
+- `texel_array` —— 定长元素的平坦数组，既可以绑定为一个 storage buffer，也可以在
+  设备没有 storage buffer 时绑定为纹理、由着色器用 `textureLoad` 读取。两条路径
+  保持相同的字节与相同的绑定编号，因此调用者只需选一种句柄，无需按设备分支。
+- `capabilities` —— 适配器在 WebGPU 基线之外还能做什么；在适配器仍存活时采集，
+  随帧走到录制绘制之处。`DeviceCapabilities` 只装 `base_vertex`，是否具备 storage
+  buffer 已在设备自身的 limits 上。
 - `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制
   区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏
@@ -514,6 +520,37 @@ unlit 与自定义管线各自实现该 trait，而不是由内置管线用私�
 内置着色器铺设的编译路径。把它注册进更高层的家族机制，是
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
 的事。
+
+### 读取本帧的数组：storage buffer 还是 texel
+
+内置着色器要读四个帧级数组：逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重，
+以及某个网格自身的形变位移。最直接的绑定方式是只读 storage buffer，凡满足 WebGPU
+基线的设备都走这条。
+
+WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
+`max_storage_buffers_per_shader_stage` 为 0，声明 storage buffer 的绑定组布局会被
+直接拒绝。因此同一批数组也提供纹理形式——把每个元素的字节当作 `Rgba32Float` 或
+`R32Float` 二维纹理的 `f32` 通道，用 `textureLoad` 读取。[`texel_array`] 负责这套
+布局与上传；[`shader`] 的 `array_access.wesl` 负责所有调用者都经过的取值函数，
+于是着色器主体只写一遍，只有那个模块知道到达的是哪种资源。
+
+两条路径保持相同的绑定编号、字节布局与元素顺序，差异因此被限制在资源类型上。
+用哪条由设备决定：[`UnlitOptions::standard`](pipeline::UnlitOptions::standard) 依据
+设备 limits 设置 `UnlitFlags::TEXEL_ARRAY`。自建变体的调用者应通过
+[`UnlitOptions::with_flags`](pipeline::UnlitOptions::with_flags) 设置 flags，它会保留
+设备给出的答案——直接赋值 `flags` 会把它丢掉，进而向没有 storage buffer 的设备索要
+一个会被拒绝的绑定。
+
+<details>
+<summary>为什么行宽是读回来的而不是写死的</summary>
+
+`COPY_BYTES_PER_ROW_ALIGNMENT` 是 256 字节，所以被拷贝纹理的一行必须跨越整数个该
+对齐，窄于它的元素要与其他元素共处一行。与其把由此得到的宽度写进着色器，不如让 CPU
+挑一个同时满足拷贝对齐与纹理上限的行宽，着色器再用 `textureDimensions` 把宽度读回来。
+这样着色器既不依赖元素大小，也不依赖设备的纹理上限；而元素永不跨越行边界，数组增长
+也就永远不会把一个元素切开。
+
+</details>
 
 ### 逐帧上传：池化的 staging buffer
 

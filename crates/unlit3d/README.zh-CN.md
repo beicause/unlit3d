@@ -39,7 +39,9 @@
 - 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权。
   渲染器里没有任何 mesh 专用的字段或绘制路径。
 - GPU 状态——`wgpu::Device`、`wgpu::Queue` 与 `ResourceGraph`——作为资源组件存在于
-  world 中，通过 `RenderContext` 寻址。`spawn_context` 负责生成它们并返回地址。
+  world 中，通过 `RenderContext` 寻址。`spawn_context` 负责生成它们并返回地址；
+  它还接收本帧的 `DeviceCapabilities`，由调用者从适配器推导——设备无法自述的信息
+  随帧一起传递，而不是让每个源各自重新发现。
 - **构建与录制是两个阶段。** 源在 `build_scene` 期间往图里注册资源并暂存上传；录制
   阶段只读取已经产出的场景，因此源自身状态与资源图之间永远不会产生借用冲突。
 - 源自己的 GPU 资源由源释放；`despawn_source` 会在销毁实体前把释放排队，因为资源图

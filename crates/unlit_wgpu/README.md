@@ -54,6 +54,14 @@ checks that combination separately.
   owning its own.
 - [`staging`] — host-visible staging buffers reused across frames instead of a
   fresh `queue.write_buffer` allocation per upload.
+- [`texel_array`] — a flat array of fixed-size elements bound either as one
+  storage buffer or, where the device has none, as a texture the shader reads
+  with `textureLoad`. Both paths keep the same bytes and the same binding
+  numbers, so a caller picks one handle type and never branches on the device.
+- [`capabilities`] — what an adapter can do beyond the WebGPU baseline, captured
+  while the adapter is still alive and carried to where a frame is recorded.
+  `DeviceCapabilities` holds `base_vertex`; whether storage buffers exist is
+  already on the device's own limits.
 - [`scene`] — the declarative description of a frame: pipelines, their bind
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening
@@ -575,6 +583,44 @@ compilation path laid down for the built-in shader. Registering it with the
 higher layer's family mechanism is
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
 business.
+
+### Reading the frame's arrays: storage buffers or texels
+
+The built-in shader reads four frame-wide arrays: the per-mesh decode
+parameters, the frame's joint matrices, its morph weights and a mesh's own morph
+displacements. The straightforward binding for each is a read-only storage
+buffer, and every device that meets the WebGPU baseline takes it.
+
+WebGL2 does not meet that baseline here: GLES 3.0 has no SSBO at all, `wgpu`
+reports `max_storage_buffers_per_shader_stage` as zero, and a bind-group layout
+naming one is rejected outright. The same arrays are therefore also available as
+textures — each element's bytes become `f32` lanes of an `Rgba32Float` or
+`R32Float` 2D texture, read with `textureLoad`. [`texel_array`] owns that layout
+and its upload; [`shader`]'s `array_access.wesl` owns the accessors every caller
+goes through, so the shader body is written once and only that module knows
+which resource arrived.
+
+Both paths keep the binding numbers, the byte layout and the element order, so
+the difference stays confined to the resource type. Which one is used follows
+the device: [`UnlitOptions::standard`](pipeline::UnlitOptions::standard) sets
+`UnlitFlags::TEXEL_ARRAY` from the device's limits. A caller building a variant
+of its own sets its flags through
+[`UnlitOptions::with_flags`](pipeline::UnlitOptions::with_flags), which keeps the
+device's answer — assigning `flags` outright would drop it and ask a
+storage-less device for a binding it rejects.
+
+<details>
+<summary>Why the row width is read back rather than declared</summary>
+
+`COPY_BYTES_PER_ROW_ALIGNMENT` is 256 bytes, so a row of a copied texture has to
+span a whole number of those, and an element narrower than that shares its row
+with others. Rather than bake the resulting width into the shader, the CPU picks
+a row that satisfies both the copy alignment and the texture limit, and the
+shader recovers the width with `textureDimensions`. The shader then depends on
+neither the element size nor the device's resolution limit, and an element never
+straddles a row, so growing the array never splits one.
+
+</details>
 
 ### Per-frame uploads: pooled staging buffers
 

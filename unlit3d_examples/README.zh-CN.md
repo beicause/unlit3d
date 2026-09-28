@@ -146,6 +146,23 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 播放：把动画冻结成若干帧的场景，每帧停留 `SEQUENCE_STEP`（当前为 0.5 秒），因此肉眼
 可看，而不是随刷新率一闪而过。窗口循环每次最多推进一帧序列，卡顿不会跳帧。
 
+### 选择设备档位
+
+`UNLIT3D_DEVICE_TIER` 会收窄该示例创建的每个无头设备。不设置时，向设备请求适配器
+自身的 limits 与能力，在桌面上即 Vulkan、Metal 或 DX12。设为 `webgl2` 时改为请求
+WebGL2 的 limits——没有 storage buffer——并按 WebGL2 的方式录制帧：着色器的数组用
+`textureLoad` 读取，每个网格的顶点偏移被烘焙进索引。其他取值会被拒绝而不是被猜测，
+因为当要求 WebGL2 时却跑在本机档位上，会「测试通过」而实际上什么都没测。
+
+```text
+UNLIT3D_DEVICE_TIER=webgl2 \
+  cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
+```
+
+`WGPU_BACKEND` 按 `wgpu` 的惯例选择后端，与档位相互独立；`WGPU_BACKEND=gles`
+配合该档位是桌面机器最接近浏览器 WebGL2 的组合——即便 GL 上下文并非 WebGL2，其
+limits 与能力标志也是 WebGL2 的。
+
 ### 快照
 
 不带 `--snapshot` 时，无头运行会把场景声明了快照的每一帧与快照目录比较。比较用
