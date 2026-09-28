@@ -100,6 +100,51 @@ fn index_format_size(format: wgpu::IndexFormat) -> u32 {
     }
 }
 
+/// Where a mesh's vertex-pool offset goes, given whether the device has
+/// `base_vertex`.
+///
+/// A mesh's vertices sit somewhere inside the pool its streams share, so a draw
+/// has to be offset to reach them. A device with `base_vertex` names the offset
+/// on the draw, which leaves the indices mesh-local and keeps them narrow; a
+/// device without it — WebGL2, whose GLES 3.0 has no such draw — has to add the
+/// offset to the indices at upload, where the draw's own stays zero. The two
+/// are complementary, and exactly one is non-zero.
+///
+/// Baking can widen the indices when the offset pushes one past `u16::MAX`,
+/// which is the cost of binding the whole pool instead of rebinding a vertex
+/// buffer per mesh. A draw's `base_vertex` has no such cost, but is a signed
+/// 32-bit integer, so the offset has to fit one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IndexOffset {
+    /// Added to every index at upload.
+    baked: u32,
+    /// Carried by the draw as its `base_vertex`.
+    draw_base_vertex: u32,
+}
+
+impl IndexOffset {
+    /// Split `vertex_offset` between the indices and the draw.
+    fn new(supports_base_vertex: bool, vertex_offset: u32) -> Self {
+        if supports_base_vertex {
+            Self {
+                baked: 0,
+                draw_base_vertex: vertex_offset,
+            }
+        } else {
+            Self {
+                baked: vertex_offset,
+                draw_base_vertex: 0,
+            }
+        }
+    }
+
+    /// The offset the indices are uploaded with, or `None` when they are
+    /// uploaded as they were given.
+    fn bake(self, indices: &[u32]) -> Option<Vec<u32>> {
+        (self.baked != 0).then(|| indices.iter().map(|&index| index + self.baked).collect())
+    }
+}
+
 /// The capacity that covers `needed` after growing from `current`.
 ///
 /// Growing by 1.5x amortizes repeated growth, and the `max` keeps the buffer
@@ -1265,16 +1310,8 @@ impl MeshSource {
         // indices mesh-local and lets the draw add the offset; one without has
         // to bake it into the indices and keep the draw's at zero. The two are
         // complementary, and exactly one of them is non-zero.
-        let baked_offset = if supports_base_vertex {
-            0
-        } else {
-            vertex_offset
-        };
-        let draw_base_vertex = if supports_base_vertex {
-            vertex_offset
-        } else {
-            0
-        };
+        let offset = IndexOffset::new(supports_base_vertex, vertex_offset);
+        let draw_base_vertex = offset.draw_base_vertex;
         let (index_buffer, count, indexed, index_allocation, first) = match indices {
             Some(indices) if !indices.is_empty() => {
                 let index_count = indices.len() as u32;
@@ -1283,8 +1320,7 @@ impl MeshSource {
                 // the offset was baked in here. The compression is decided on
                 // these values, since an offset that pushes an index past
                 // `u16::MAX` has to widen the buffer it is written into.
-                let baked: Option<Vec<u32>> = (baked_offset != 0)
-                    .then(|| indices.iter().map(|&index| index + baked_offset).collect());
+                let baked = offset.bake(indices);
                 let source: &[u32] = baked.as_deref().unwrap_or(indices);
                 let (format, data): (wgpu::IndexFormat, Vec<u8>) = match compress_indices(source) {
                     Ok(compressed) => {
@@ -2917,6 +2953,56 @@ mod tests {
         // is what makes a single `base_vertex` address them all.
         assert_eq!(first.base_vertex, 0);
         assert_ne!(second.base_vertex, first.base_vertex);
+    }
+
+    #[test]
+    fn a_device_with_base_vertex_puts_the_offset_on_the_draw() {
+        let offset = IndexOffset::new(true, 7);
+
+        assert_eq!(offset.draw_base_vertex, 7, "the draw carries the offset");
+        assert_eq!(
+            offset.bake(&[0, 1, 2]),
+            None,
+            "the indices stay mesh-local, so they keep their width"
+        );
+    }
+
+    #[test]
+    fn a_device_without_base_vertex_bakes_the_offset_into_the_indices() {
+        // WebGL2's GLES 3.0 has no `base_vertex`, and the backend would panic
+        // rather than emulate it, so the offset has to be in the indices.
+        let offset = IndexOffset::new(false, 7);
+
+        assert_eq!(offset.draw_base_vertex, 0, "the draw must not name one");
+        assert_eq!(offset.bake(&[0, 1, 2]), Some(vec![7, 8, 9]));
+    }
+
+    #[test]
+    fn a_mesh_at_the_start_of_the_pool_needs_no_offset_either_way() {
+        // The common case, and the one where both paths agree: nothing is
+        // baked and the draw's `base_vertex` is zero.
+        for supports_base_vertex in [true, false] {
+            let offset = IndexOffset::new(supports_base_vertex, 0);
+            assert_eq!(offset.baked, 0);
+            assert_eq!(offset.draw_base_vertex, 0);
+            assert_eq!(offset.bake(&[0, 1, 2]), None);
+        }
+    }
+
+    #[test]
+    fn a_baked_offset_can_widen_the_indices() {
+        // Baking is what forces the wider format: an index that fitted `u16`
+        // before the offset may not after it, and the compression is decided on
+        // the baked values.
+        let indices = [0u32, 1, 2];
+        let baked = IndexOffset::new(false, u32::from(u16::MAX))
+            .bake(&indices)
+            .expect("the offset is baked");
+        assert_eq!(baked, vec![65535, 65536, 65537]);
+        assert!(
+            compress_indices(&baked).is_err(),
+            "an index past `u16::MAX` cannot be narrowed"
+        );
     }
 
     #[test]
