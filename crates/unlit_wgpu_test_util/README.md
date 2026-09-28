@@ -30,7 +30,8 @@ behind its `snapshot` feature.
   the device to what a less capable platform offers, so a test can reach the
   paths that platform takes on hardware that is not that platform.
   [`Ctx::headless`] reads the tier from `UNLIT3D_DEVICE_TIER`, which is how the
-  suite is run a second time against WebGL2's shape.
+  suite is run a second time against WebGL2's shape; unset, it asks for the
+  WebGPU baseline rather than the adapter's own limits.
 - [`init_logging`] — the logger backend on its own, for tests that never build a
   [`Ctx`]. Natively it is `env_logger` reading `RUST_LOG`; on the web,
   `console_log` forwards to the browser console. The default level is `warn`.

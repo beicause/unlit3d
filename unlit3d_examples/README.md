@@ -175,14 +175,19 @@ windowed frame, so a stall does not skip frames.
 
 ### Choosing a device tier
 
-`UNLIT3D_DEVICE_TIER` narrows every headless device this example builds. Unset,
-a device is asked for the adapter's own limits and capabilities, which on a
-desktop is Vulkan, Metal or DX12. Set to `webgl2`, the device is asked for
-WebGL2's limits instead — no storage buffers — and the frame is recorded as
-WebGL2 would record it, with the shader's arrays read through `textureLoad` and
-each mesh's vertex offset baked into its indices. Any other value is refused
-rather than guessed at, since running the native tier when WebGL2 was asked for
-would pass while testing nothing.
+`UNLIT3D_DEVICE_TIER` sets how much of the WebGPU baseline every headless device
+this example builds is asked for. Unset, it is `webgpu`: the guaranteed baseline
+limits, so the device is no larger than the API promises and the frame runs
+wherever WebGPU does. Only the texture resolution is taken from the adapter, so
+the device is never smaller than the machine allows. `native` asks for the
+adapter's own limits instead, which on a desktop is its full Vulkan, Metal or
+DX12 capabilities.
+
+`webgl2` asks for WebGL2's limits — no storage buffers — and the frame is
+recorded as WebGL2 would record it, with the shader's arrays read through
+`textureLoad` and each mesh's vertex offset baked into its indices. Any other
+value is refused rather than guessed at, since running the wrong tier would pass
+while testing nothing.
 
 ```text
 UNLIT3D_DEVICE_TIER=webgl2 \

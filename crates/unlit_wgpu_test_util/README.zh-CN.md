@@ -24,7 +24,7 @@
 - `Ctx::headless_for()` —— 同上，但用于指定的 `DeviceTier`。档位把设备收窄到能力
   较弱的平台所能提供的样子，于是测试可以在并非该平台的硬件上触达该平台所走的路径。
   `Ctx::headless()` 从 `UNLIT3D_DEVICE_TIER` 读取档位，测试套件正是借此再跑一遍
-  WebGL2 的形态。
+  WebGL2 的形态；不设置时请求的是 WebGPU 基线，而不是适配器自身的 limits。
 - `init_logging()` —— 单独的日志后端，供从不创建 `Ctx` 的测试使用。原生平台上是读取
   `RUST_LOG` 的 `env_logger`；web 上是转发到浏览器控制台的 `console_log`。默认级别
   为 `warn`。

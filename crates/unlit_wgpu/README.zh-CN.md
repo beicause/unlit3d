@@ -46,7 +46,8 @@
   保持相同的字节与相同的绑定编号，因此调用者只需选一种句柄，无需按设备分支。
 - `capabilities` —— 适配器在 WebGPU 基线之外还能做什么；在适配器仍存活时采集，
   随帧走到录制绘制之处。`DeviceCapabilities` 只装 `base_vertex`，是否具备 storage
-  buffer 已在设备自身的 limits 上。
+  buffer 已在设备自身的 limits 上。`DeviceTier` 是另一半——请求多少基线能力：从
+  WebGPU 基线（默认），到适配器自身的 limits，再到 WebGL2 的形态。
 - `scene` —— 一帧的声明式描述：管线、它们的绑定组、材质、网格、顶点缓冲与绘制
   区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏

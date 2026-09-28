@@ -75,7 +75,8 @@ impl Ctx {
     /// are recorded beside the device, so a test can exercise the paths a
     /// WebGL2 browser takes — no storage buffers, no `base_vertex` — on
     /// hardware that has both. The adapter's own limits and capabilities are
-    /// what [`DeviceTier::Native`] asks for.
+    /// what [`DeviceTier::Native`] asks for; the WebGPU baseline's, which is
+    /// what [`Ctx::headless`] uses, are what [`DeviceTier::WebGpu`] asks for.
     pub fn headless_for(tier: DeviceTier) -> Ctx {
         init_logging();
         // From the environment, so `WGPU_BACKEND` selects the backend the same

@@ -527,7 +527,8 @@ impl Gpu {
 
         // The tier is what decides how much of the WebGPU baseline the device
         // is asked for, and so which paths it takes. `UNLIT3D_DEVICE_TIER`
-        // narrows it to WebGL2's shape; see [`DeviceTier`].
+        // selects it — the WebGPU baseline by default, WebGL2's shape when
+        // asked for; see [`DeviceTier`].
         let tier = DeviceTier::from_env();
         let capabilities = tier.capabilities_of(&adapter);
         let (device, queue) = adapter

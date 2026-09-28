@@ -179,7 +179,7 @@ pull request 上运行上述检查以及各 lint 关卡：
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
 - **build**（Linux、macOS、Windows）—— 带与不带 `unlit` feature 的 clippy、
   `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
-  `cargo doc`，以及示例的无头快照比较——该比较跑两遍：一遍用 runner 自身的适配器，
+  `cargo doc`，以及示例的无头快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，
   一遍把所有无头设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa
   以提供 `lavapipe`。
 - **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建。构建会排除

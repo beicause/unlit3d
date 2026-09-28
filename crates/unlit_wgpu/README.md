@@ -61,7 +61,9 @@ checks that combination separately.
 - [`capabilities`] — what an adapter can do beyond the WebGPU baseline, captured
   while the adapter is still alive and carried to where a frame is recorded.
   `DeviceCapabilities` holds `base_vertex`; whether storage buffers exist is
-  already on the device's own limits.
+  already on the device's own limits. `DeviceTier` is the other half — how much
+  of the baseline to request, from the WebGPU baseline (the default) through
+  the adapter's own limits to WebGL2's shape.
 - [`scene`] — the declarative description of a frame: pipelines, their bind
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening

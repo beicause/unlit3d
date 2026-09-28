@@ -33,11 +33,12 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 第二趟。目标是一个个点名的，而不是用 `--all-targets` 一把扫进来，因为基准测试并非
 测试二进制。
 
-nextest 那一趟会跑两次：一次用机器自身的适配器，一次带
+nextest 那一趟会跑两次：一次用默认档位（WebGPU 基线的 limits），一次带
 `UNLIT3D_DEVICE_TIER=webgl2`，把所有无头设备收窄到 WebGL2 的 limits 与缺失的
 downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 的机器上触达浏览器
 所走路径（着色器的数组用纹理而非 storage buffer 读取、网格的顶点偏移被烘焙进索引）
-的那一趟。接受 `--release`，两趟都生效。
+的那一趟。把该变量设为 `native` 可改为按适配器自身的 limits 运行，而非基线。接受
+`--release`，两趟都生效。
 
 ### `cargo xtask run-wasm`
 

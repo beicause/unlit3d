@@ -36,13 +36,14 @@ process, so one test's device, logger or panic cannot reach another's; it does
 not run doctests, hence the second pass. The targets are named rather than swept
 in with `--all-targets` because the benchmarks are not test binaries.
 
-The nextest pass runs twice: once against the adapter the machine has, and once
-with `UNLIT3D_DEVICE_TIER=webgl2`, which narrows every headless device to
-WebGL2's limits and missing downlevel capabilities. The second pass is what
-exercises the paths a browser takes — the shader's arrays read through textures
-instead of storage buffers, and a mesh's vertex offset baked into its indices —
-on a machine whose own adapter is Vulkan, Metal or DX12. Accepts `--release`,
-which applies to both passes.
+The nextest pass runs twice: once with the default tier — the WebGPU baseline's
+limits — and once with `UNLIT3D_DEVICE_TIER=webgl2`, which narrows every headless
+device to WebGL2's limits and missing downlevel capabilities. The second pass is
+what exercises the paths a browser takes — the shader's arrays read through
+textures instead of storage buffers, and a mesh's vertex offset baked into its
+indices — on a machine whose own adapter is Vulkan, Metal or DX12. Set the
+variable to `native` to run against the adapter's own limits instead of the
+baseline. Accepts `--release`, which applies to both passes.
 
 ### `cargo xtask run-wasm`
 

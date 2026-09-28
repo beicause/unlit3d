@@ -223,7 +223,7 @@ the lint gates, on every push to `main` and every pull request:
 - **build** (Linux, macOS, Windows) — clippy with and without the `unlit`
   feature, `cargo build --workspace --all-targets`, `cargo xtask test`,
   `cargo doc` with `-D warnings`, and the example's headless snapshot comparison
-  twice: once against the runner's adapter, once with every headless device
+  twice: once at the WebGPU baseline's limits, once with every headless device
   narrowed to WebGL2's shape. Linux installs Mesa for `lavapipe`, since the
   runners have no GPU.
 - **build-wasm** — clippy and a `wasm32-unknown-unknown` build. The build

@@ -148,11 +148,14 @@ cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skin
 
 ### 选择设备档位
 
-`UNLIT3D_DEVICE_TIER` 会收窄该示例创建的每个无头设备。不设置时，向设备请求适配器
-自身的 limits 与能力，在桌面上即 Vulkan、Metal 或 DX12。设为 `webgl2` 时改为请求
-WebGL2 的 limits——没有 storage buffer——并按 WebGL2 的方式录制帧：着色器的数组用
-`textureLoad` 读取，每个网格的顶点偏移被烘焙进索引。其他取值会被拒绝而不是被猜测，
-因为当要求 WebGL2 时却跑在本机档位上，会「测试通过」而实际上什么都没测。
+`UNLIT3D_DEVICE_TIER` 决定该示例创建的每个无头设备请求多少 WebGPU 基线能力。不设置
+时为 `webgpu`：请求有保证的基线 limits，于是设备不会超出该 API 的承诺，帧在任何支持
+WebGPU 之处都能跑；只有纹理分辨率取自适配器，设备因此不会比机器所能提供的更小。
+`native` 改为请求适配器自身的 limits，在桌面上即其完整的 Vulkan、Metal 或 DX12 能力。
+
+`webgl2` 请求 WebGL2 的 limits——没有 storage buffer——并按 WebGL2 的方式录制帧：
+着色器的数组用 `textureLoad` 读取，每个网格的顶点偏移被烘焙进索引。其他取值会被拒绝
+而不是被猜测，因为跑错档位会「测试通过」而实际上什么都没测。
 
 ```text
 UNLIT3D_DEVICE_TIER=webgl2 \

@@ -116,8 +116,9 @@ jobs:
       # rather than passing unnoticed. This is the check that replaced the
       # snapshot tests that used to live in `crates/unlit3d/tests`; the
       # scenes and their snapshots are described in `unlit3d_examples`.
-      # `--update` regenerates the snapshots; review their diff before
-      # committing it.
+      # The device is the default tier — the WebGPU baseline's limits, which
+      # every implementation guarantees. `--update` regenerates the snapshots;
+      # review their diff before committing it.
       - name: Compare the example's scenes against their snapshots
         run: >
           cargo run -p unlit3d_examples --features snapshot

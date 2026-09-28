@@ -2,7 +2,7 @@
 
 use crate::step;
 
-/// The environment variable that narrows a test device to WebGL2's shape.
+/// The environment variable that selects a test device's tier.
 ///
 /// Defined by `unlit_wgpu::capabilities::DeviceTier`, and repeated here as a
 /// literal because this is a separate crate that does not depend on it.
@@ -23,15 +23,15 @@ const WEBGL2_TIER: &str = "webgl2";
 /// binary: it has no test harness and its `main` is the benchmark, so nextest
 /// cannot list it — `cargo bench` is what runs those.
 ///
-/// The suite runs twice: once against whatever the machine's adapter offers,
-/// and once with `UNLIT3D_DEVICE_TIER=webgl2`, which narrows every headless
-/// device to the limits and missing downlevel capabilities WebGL2 has. That
-/// second pass is what exercises the paths a browser takes — the shader's
-/// arrays read through textures instead of storage buffers, and a draw's
-/// vertex offset baked into its indices instead of carried in `base_vertex` —
-/// on a machine whose native backend is Vulkan, Metal or DX12. A real WebGL2
-/// device is not required for it, and cannot be, since none is reachable from
-/// a headless test.
+/// The suite runs twice: once with the default tier — the WebGPU baseline's
+/// limits, which every implementation guarantees — and once with
+/// `UNLIT3D_DEVICE_TIER=webgl2`, which narrows every headless device to the
+/// limits and missing downlevel capabilities WebGL2 has. That second pass is
+/// what exercises the paths a browser takes — the shader's arrays read through
+/// textures instead of storage buffers, and a draw's vertex offset baked into
+/// its indices instead of carried in `base_vertex` — on a machine whose native
+/// backend is Vulkan, Metal or DX12. A real WebGL2 device is not required for
+/// it, and cannot be, since none is reachable from a headless test.
 pub fn run(release: bool) -> Result<(), String> {
     let profile: &[&str] = if release { &["--release"] } else { &[] };
 
