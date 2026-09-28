@@ -61,6 +61,7 @@ impl TestGpu {
             ctx.device.clone(),
             ctx.queue.clone(),
             ResourceGraph::new(),
+            ctx.capabilities,
         );
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
         let renderer = world.spawn((Renderer::new(context),));

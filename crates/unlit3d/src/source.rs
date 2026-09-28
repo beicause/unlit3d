@@ -19,6 +19,7 @@
 use core::any::Any;
 
 use unlit_ecs::{Entity, World};
+use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -56,6 +57,14 @@ pub struct RenderContext {
     /// The [`ResourceGraph`] holding the frame's resources, as a resource
     /// entity.
     pub graph: Entity,
+    /// What the device can do beyond the WebGPU baseline, as a resource
+    /// entity.
+    ///
+    /// The device cannot report this itself — it is a property of the adapter,
+    /// which is normally gone by the time frames are drawn — so it is captured
+    /// once and carried here. See
+    /// [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities).
+    pub capabilities: Entity,
 }
 
 /// The render target the frame currently draws into.
@@ -336,10 +345,12 @@ pub fn spawn_context(
     device: wgpu::Device,
     queue: wgpu::Queue,
     graph: ResourceGraph,
+    capabilities: DeviceCapabilities,
 ) -> RenderContext {
     let device = world.spawn((device,));
     let queue = world.spawn((queue,));
     let graph = world.spawn((graph,));
+    let capabilities = world.spawn((capabilities,));
     world.spawn((MountCounter::default(),));
     // The frame loop writes the target here every frame; until it does, no
     // source may draw.
@@ -351,6 +362,7 @@ pub fn spawn_context(
         device,
         queue,
         graph,
+        capabilities,
     }
 }
 
@@ -541,7 +553,13 @@ mod tests {
     /// GPU.
     fn test_context(world: &mut World) -> RenderContext {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        spawn_context(world, device, queue, ResourceGraph::new())
+        spawn_context(
+            world,
+            device,
+            queue,
+            ResourceGraph::new(),
+            DeviceCapabilities::default(),
+        )
     }
 
     /// A source that records how many times it was built and what it saw.
@@ -602,6 +620,7 @@ mod tests {
             wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0,
             wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).1,
             ResourceGraph::new(),
+            DeviceCapabilities::default(),
         );
 
         // Mounted overlay-first, so mount order is the opposite of draw order.
@@ -1155,6 +1174,7 @@ mod release_tests {
             wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).0,
             wgpu::Device::noop(&wgpu::DeviceDescriptor::default()).1,
             ResourceGraph::new(),
+            DeviceCapabilities::default(),
         )
     }
 

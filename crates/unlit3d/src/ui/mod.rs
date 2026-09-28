@@ -12,7 +12,13 @@
 //! let (device, queue) =
 //!     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 //! let mut world = World::new();
-//! let _ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
+//! let _ctx = spawn_context(
+//!     &mut world,
+//!     device,
+//!     queue,
+//!     ResourceGraph::new(),
+//!     DeviceCapabilities::default(),
+//! );
 //!
 //! // The source, and one interface held as a behaviour component. More
 //! // panels are more entities, each with its own sibling state.
@@ -509,6 +515,7 @@ mod tests {
     use super::*;
     use core::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use unlit_wgpu::capabilities::DeviceCapabilities;
 
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
 
@@ -536,7 +543,13 @@ mod tests {
     fn test_world() -> (World, RenderContext) {
         let mut world = World::new();
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
+        let ctx = spawn_context(
+            &mut world,
+            device,
+            queue,
+            ResourceGraph::new(),
+            DeviceCapabilities::default(),
+        );
         (world, ctx)
     }
 

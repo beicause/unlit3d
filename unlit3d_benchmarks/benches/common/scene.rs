@@ -11,6 +11,7 @@
 //! lookup and a handle set, not a mesh.
 
 use glam::{Quat, Vec3};
+use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -45,7 +46,13 @@ impl Frame {
     fn new(count: u32, spread: f32) -> Self {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let mut world = World::new();
-        let context = spawn_context(&mut world, device, queue, ResourceGraph::new());
+        let context = spawn_context(
+            &mut world,
+            device,
+            queue,
+            ResourceGraph::new(),
+            DeviceCapabilities::default(),
+        );
         let mut source = MeshSource::new(&world, context);
 
         // The smallest variant the built-in shader has: no material group, no

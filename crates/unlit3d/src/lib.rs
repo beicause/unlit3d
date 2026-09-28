@@ -50,6 +50,7 @@ pub mod prelude {
         },
     };
     pub use unlit_ecs::prelude::*;
+    pub use unlit_wgpu::capabilities::DeviceCapabilities;
     pub use unlit_wgpu::render_attachments::{
         color_clear, create_render_target, depth_clear, stencil_clear,
     };

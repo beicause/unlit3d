@@ -15,6 +15,7 @@ wesl_core::wesl_pkg!(
 );
 
 pub mod buffer_pool;
+pub mod capabilities;
 mod dag;
 pub mod globals;
 pub mod mesh;

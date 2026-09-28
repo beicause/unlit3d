@@ -331,12 +331,18 @@ fn pack_geometry(
             .iter_mut()
             .zip(&mesh.indices)
         {
-            slot.copy_from_slice(index.as_bytes());
+            // The primitive's indices are local to its own vertices, and the
+            // draw addresses both streams by a pool-global ordinal, so the
+            // primitive's first vertex is added here. Baking it into the
+            // indices rather than passing it as the draw's `base_vertex` costs
+            // nothing — the indices are rewritten every frame either way — and
+            // it is the only form a device without `base_vertex` (WebGL2)
+            // accepts.
+            slot.copy_from_slice((index + first_vertex).as_bytes());
         }
         index_cursor += mesh.indices.len();
 
         draws.push(UiDraw {
-            first_vertex,
             indices: first_index..index_cursor as u32,
             texture: mesh.texture_id,
             // The texture's own sampling options, not a default: a texture egui
@@ -352,14 +358,14 @@ fn pack_geometry(
     }
 }
 
-/// One uploaded primitive: where its vertices and indices sit, what it samples
-/// and how it is clipped.
+/// One uploaded primitive: where its indices sit, what it samples and how it
+/// is clipped.
 struct UiDraw {
-    /// Index of the primitive's first vertex, which indexes both vertex
-    /// streams at once: the two slots carry one vertex each at the same
-    /// stride, so one number addresses the position, the UV and the color.
-    first_vertex: u32,
     /// Index range into the index buffer, counting indices.
+    ///
+    /// The indices themselves already name the primitive's vertices in the
+    /// pool, so a draw needs no `base_vertex` to address them; see
+    /// [`pack_geometry`].
     indices: Range<u32>,
     texture: egui::TextureId,
     options: egui::TextureOptions,
@@ -691,24 +697,21 @@ impl EguiIntegration {
                 // to sample, so it is skipped rather than bound to a stale view.
                 continue;
             };
-            // Both slots cover their whole stream: every vertex of the frame
-            // sits at the same ordinal in each, so one base vertex addresses
-            // the position, the UV and the color together. Offsetting the
-            // ranges instead would double the base vertex.
-            let entry = DrawEntry::new(
-                pipeline,
-                DrawRange::indexed(draw.indices.clone()).with_base_vertex(draw.first_vertex as i32),
-            )
-            .with_bind_group(GLOBAL_GROUP, global)
-            .with_bind_group(MATERIAL_GROUP, material)
-            .with_vertex_buffer_range(POSITION_SLOT, vertices, 0..positions_size)
-            .with_vertex_buffer_range(
-                UV_COLOR_SLOT,
-                vertices,
-                positions_size..positions_size + uv_colors_size,
-            )
-            .with_index_buffer(indices, wgpu::IndexFormat::Uint32)
-            .with_scissor(draw.scissor);
+            // Both slots cover their whole stream, and the primitive's indices
+            // already name its vertices pool-globally, so the draw needs no
+            // base vertex: one range addresses the position, the UV and the
+            // color together.
+            let entry = DrawEntry::new(pipeline, DrawRange::indexed(draw.indices.clone()))
+                .with_bind_group(GLOBAL_GROUP, global)
+                .with_bind_group(MATERIAL_GROUP, material)
+                .with_vertex_buffer_range(POSITION_SLOT, vertices, 0..positions_size)
+                .with_vertex_buffer_range(
+                    UV_COLOR_SLOT,
+                    vertices,
+                    positions_size..positions_size + uv_colors_size,
+                )
+                .with_index_buffer(indices, wgpu::IndexFormat::Uint32)
+                .with_scissor(draw.scissor);
             scene.push(entry);
         }
         scene
@@ -1245,8 +1248,14 @@ mod tests {
 
         assert_eq!(draws.len(), 1, "one mesh is one draw");
         let draw = &draws[0];
-        assert_eq!(draw.first_vertex, 0);
         assert_eq!(draw.indices, 0..6, "four vertices make two triangles");
+        // This primitive starts at the pool's first vertex, so baking its
+        // offset in leaves the indices as egui wrote them.
+        assert_eq!(
+            packed_indices(&indices),
+            vec![0, 1, 2, 1, 2, 3],
+            "the indices address the pool without an offset"
+        );
 
         // The vertex buffer holds the position stream then the interleaved
         // UV-and-color stream, each entry one stride wide.
@@ -1305,11 +1314,25 @@ mod tests {
 
         assert_eq!(draws.len(), 2);
         assert_eq!(draws[0].indices, 0..3);
-        assert_eq!(
-            draws[1].first_vertex, 3,
-            "the second mesh starts after the first"
-        );
         assert_eq!(draws[1].indices, 3..6);
+        // The second primitive's vertices start at ordinal 3, so its local
+        // indices are shifted by 3 — the offset a device without `base_vertex`
+        // could not take from the draw.
+        assert_eq!(
+            packed_indices(&indices),
+            vec![0, 1, 2, 3, 4, 5],
+            "the second primitive's indices are offset to the pool"
+        );
+    }
+
+    /// The indices `pack_geometry` wrote, as `u32`s.
+    fn packed_indices(bytes: &[u8]) -> Vec<u32> {
+        bytes
+            .as_chunks::<{ size_of::<u32>() }>()
+            .0
+            .iter()
+            .map(|word| u32::from_le_bytes(*word))
+            .collect()
     }
 
     /// The byte buffers are cleared and refilled, not reallocated, so a caller

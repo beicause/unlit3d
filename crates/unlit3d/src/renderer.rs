@@ -40,7 +40,13 @@ use crate::source::{
 /// # let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 /// let mut world = World::new();
 /// // The frame's GPU state, the built-in mesh source and the driver itself.
-/// let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
+/// let ctx = spawn_context(
+///     &mut world,
+///     device,
+///     queue,
+///     ResourceGraph::new(),
+///     DeviceCapabilities::default(),
+/// );
 /// let source = MeshSource::new(&world, ctx);
 /// let mesh = spawn_source(&mut world, source);
 /// let renderer = world.spawn((Renderer::new(ctx),));

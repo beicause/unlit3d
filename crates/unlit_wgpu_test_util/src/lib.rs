@@ -3,6 +3,8 @@
 
 use std::sync::Once;
 
+pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
+
 /// The logging facade the tests record through, re-exported so a test crate
 /// needs no `log` dependency of its own.
 ///
@@ -51,26 +53,50 @@ pub struct Ctx {
     pub device: wgpu::Device,
     /// The queue a test's writes and submissions go through.
     pub queue: wgpu::Queue,
+    /// What the device can do beyond the WebGPU baseline.
+    ///
+    /// A [`DeviceCapabilities`] rather than the adapter it was read from: the
+    /// adapter is dropped once the device exists, and the renderer needs the
+    /// capabilities, not the adapter.
+    pub capabilities: DeviceCapabilities,
 }
 
 impl Ctx {
     /// Create a headless GPU context with the default adapter.
+    ///
+    /// `UNLIT3D_DEVICE_TIER` narrows the device; see [`Ctx::headless_for`].
     pub fn headless() -> Ctx {
+        Ctx::headless_for(DeviceTier::from_env())
+    }
+
+    /// Create a headless GPU context restricted to `tier`.
+    ///
+    /// The tier's limits are requested from the adapter and its capabilities
+    /// are recorded beside the device, so a test can exercise the paths a
+    /// WebGL2 browser takes — no storage buffers, no `base_vertex` — on
+    /// hardware that has both. The adapter's own limits and capabilities are
+    /// what [`DeviceTier::Native`] asks for.
+    pub fn headless_for(tier: DeviceTier) -> Ctx {
         init_logging();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .expect("no graphics adapter available");
+        let capabilities = tier.capabilities_of(&adapter);
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("unlit_wgpu_test_util"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: tier.limits(&adapter.limits()),
             experimental_features: wgpu::ExperimentalFeatures::disabled(),
             memory_hints: wgpu::MemoryHints::Performance,
             trace: wgpu::Trace::Off,
         }))
         .expect("failed to request device");
-        Ctx { device, queue }
+        Ctx {
+            device,
+            queue,
+            capabilities,
+        }
     }
 }
 

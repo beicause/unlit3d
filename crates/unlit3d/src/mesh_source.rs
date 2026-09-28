@@ -57,6 +57,7 @@ use crate::scene::{
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
+use unlit_wgpu::capabilities::DeviceCapabilities;
 
 /// The entries of an unlit mesh's bind group, in the order the variant's mesh
 /// layout declares them.
@@ -697,6 +698,28 @@ impl MeshSource {
             .clone()
     }
 
+    /// What the device can do beyond the WebGPU baseline.
+    ///
+    /// Captured from the adapter when the context was spawned, because the
+    /// device cannot report it; see
+    /// [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities).
+    ///
+    /// # Panics
+    ///
+    /// If the context's capabilities resource is gone.
+    pub fn capabilities(&self, world: &World) -> DeviceCapabilities {
+        *world
+            .get::<DeviceCapabilities>(self.context.capabilities)
+            .expect("the context's capabilities resource exists")
+    }
+
+    /// Whether the device supports a non-zero `base_vertex` on an indexed draw.
+    ///
+    /// Shorthand for the one capability the mesh upload asks about.
+    fn base_vertex(&self, world: &World) -> bool {
+        self.capabilities(world).base_vertex()
+    }
+
     /// The resource graph `ctx` addresses in `world`.
     ///
     /// An associated function rather than a method so the borrow it takes is
@@ -1167,58 +1190,6 @@ impl MeshSource {
             ),
         });
 
-        // Index buffer (optional): `Uint16` when every index fits, otherwise
-        // `Uint32` — the same choice the compressor makes. The indices go into
-        // the index pool, so every indexed mesh draws out of one shared buffer
-        // and names its own slice through `GpuMesh::first`.
-        let (index_buffer, count, indexed, index_allocation, first_index) = match indices {
-            Some(indices) if !indices.is_empty() => {
-                let index_count = indices.len() as u32;
-                // Build the index bytes in one pass over the input: `Uint16`
-                // when every index fits, otherwise `Uint32` — the same choice
-                // the compressor makes.
-                let (format, data): (wgpu::IndexFormat, Vec<u8>) = match compress_indices(indices) {
-                    Ok(compressed) => {
-                        let mut data = Vec::with_capacity(index_count as usize * size_of::<u16>());
-                        for index in compressed {
-                            data.extend_from_slice(&index.to_ne_bytes());
-                        }
-                        (wgpu::IndexFormat::Uint16, data)
-                    }
-                    Err(_) => (wgpu::IndexFormat::Uint32, indices.as_bytes().to_vec()),
-                };
-                let padded_len = data
-                    .len()
-                    .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
-                let mut padded = data;
-                padded.resize(padded_len, 0);
-                let range = self
-                    .index_pool
-                    .allocate(&device, &queue, padded_len as u32)
-                    .expect("the index pool grows with the mesh");
-                {
-                    let mut graph = Self::graph(world, self.context);
-                    Self::sync_pool_node(&self.index_pool, self.index_pool_id, &mut graph);
-                    queue.write_buffer(
-                        graph
-                            .get(self.index_pool_id)
-                            .expect("the index pool node exists"),
-                        u64::from(range.offset()),
-                        &padded,
-                    );
-                }
-                let first = range.offset() / index_format_size(format);
-                (
-                    Some((self.index_pool_id, format)),
-                    index_count,
-                    true,
-                    Some(range.allocation()),
-                    first,
-                )
-            }
-            _ => (None, vertex_count as u32, false, None, 0),
-        };
-
         // The vertex layout the key's options declare, slot for slot. An empty
         // stream still gets a buffer entry — the pipeline simply declares no
         // attributes for that slot — so the mesh's layout matches the key's.
@@ -1268,10 +1239,88 @@ impl MeshSource {
                 data,
             );
         }
+
+        // Index buffer (optional): `Uint16` when every index fits, otherwise
+        // `Uint32` — the same choice the compressor makes. The indices go into
+        // the index pool, so every indexed mesh draws out of one shared buffer
+        // and names its own slice through `GpuMesh::first`.
+        //
+        // A mesh's vertices are somewhere inside the pool its streams share, so
+        // a draw has to be offset by `vertex_offset` to reach them. How it is
+        // offset is the one thing that depends on the device: a draw's
+        // `base_vertex` is the direct way, but WebGL2 has no `base_vertex`, so
+        // there the offset is added to the indices themselves at upload and the
+        // draw's stays zero. Baking widens the indices if they no longer fit
+        // `u16`, which is the cost of binding the whole pool instead of
+        // rebinding a vertex buffer per mesh.
+        // A draw's `base_vertex` is a signed 32-bit integer, so an offset the
+        // draw has to carry must fit one. A baked offset is a `u32` index like
+        // any other and has no such limit.
+        let supports_base_vertex = self.base_vertex(world);
         assert!(
-            vertex_offset <= i32::MAX as u32,
+            !supports_base_vertex || vertex_offset <= i32::MAX as u32,
             "a vertex offset has to fit the i32 a draw's base vertex is"
         );
+        let base_index = if supports_base_vertex {
+            0
+        } else {
+            vertex_offset
+        };
+        let (index_buffer, count, indexed, index_allocation, first) = match indices {
+            Some(indices) if !indices.is_empty() => {
+                let index_count = indices.len() as u32;
+                // The indices as the draw will read them: mesh-local when the
+                // draw's `base_vertex` carries the pool offset, pool-global when
+                // the offset was baked in here. The compression is decided on
+                // these values, since an offset that pushes an index past
+                // `u16::MAX` has to widen the buffer it is written into.
+                let baked: Option<Vec<u32>> = (base_index != 0)
+                    .then(|| indices.iter().map(|&index| index + base_index).collect());
+                let source: &[u32] = baked.as_deref().unwrap_or(indices);
+                let (format, data): (wgpu::IndexFormat, Vec<u8>) = match compress_indices(source) {
+                    Ok(compressed) => {
+                        let mut data = Vec::with_capacity(index_count as usize * size_of::<u16>());
+                        for index in compressed {
+                            data.extend_from_slice(&index.to_ne_bytes());
+                        }
+                        (wgpu::IndexFormat::Uint16, data)
+                    }
+                    Err(_) => (wgpu::IndexFormat::Uint32, source.as_bytes().to_vec()),
+                };
+                let padded_len = data
+                    .len()
+                    .next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
+                let mut padded = data;
+                padded.resize(padded_len, 0);
+                let range = self
+                    .index_pool
+                    .allocate(&device, &queue, padded_len as u32)
+                    .expect("the index pool grows with the mesh");
+                {
+                    let mut graph = Self::graph(world, self.context);
+                    Self::sync_pool_node(&self.index_pool, self.index_pool_id, &mut graph);
+                    queue.write_buffer(
+                        graph
+                            .get(self.index_pool_id)
+                            .expect("the index pool node exists"),
+                        u64::from(range.offset()),
+                        &padded,
+                    );
+                }
+                let first = range.offset() / index_format_size(format);
+                (
+                    Some((self.index_pool_id, format)),
+                    index_count,
+                    true,
+                    Some(range.allocation()),
+                    first,
+                )
+            }
+            // A non-indexed draw names its first vertex directly, so the pool
+            // offset goes on the draw's range. A non-zero `base_vertex` is
+            // ignored for a non-indexed draw, so it cannot carry the offset.
+            _ => (None, vertex_count as u32, false, None, vertex_offset),
+        };
 
         // The mesh owns the metadata entry `meta` — the same AABB and UV
         // decode parameters the compression just derived.
@@ -1355,8 +1404,12 @@ impl MeshSource {
         parts.index_allocation = index_allocation;
         parts.vertex_allocation = Some(vertices.allocation());
         mesh.vertex_layout = VertexLayout::new(layouts);
-        mesh.first = first_index;
-        mesh.base_vertex = vertex_offset;
+        mesh.first = first;
+        // Zero whenever the offset was baked into the indices instead, which is
+        // what a draw on a device without `base_vertex` requires. The
+        // `MeshInfo` uniform carries `vertex_offset` either way: the shader
+        // reads pool-global vertex ordinals on both paths.
+        mesh.base_vertex = base_index;
         mesh
     }
 
@@ -2300,7 +2353,13 @@ mod tests {
     fn harness() -> Harness {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let mut world = World::new();
-        let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
+        let ctx = spawn_context(
+            &mut world,
+            device,
+            queue,
+            ResourceGraph::new(),
+            DeviceCapabilities::default(),
+        );
         let mut source = MeshSource::new(&world, ctx);
         source.register_unlit_family(&world);
         let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world)));
@@ -2440,7 +2499,13 @@ mod tests {
     fn registering_a_family_compiles_nothing() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let mut world = World::new();
-        let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
+        let ctx = spawn_context(
+            &mut world,
+            device,
+            queue,
+            ResourceGraph::new(),
+            DeviceCapabilities::default(),
+        );
         let mut source = MeshSource::new(&world, ctx);
 
         source.register_unlit_family(&world);
@@ -2455,7 +2520,13 @@ mod tests {
     fn a_source_starts_with_no_pipelines() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let mut world = World::new();
-        let ctx = spawn_context(&mut world, device, queue, ResourceGraph::new());
+        let ctx = spawn_context(
+            &mut world,
+            device,
+            queue,
+            ResourceGraph::new(),
+            DeviceCapabilities::default(),
+        );
         let source = MeshSource::new(&world, ctx);
 
         // Nothing is privileged: pipelines arrive only through registration.
