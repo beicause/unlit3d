@@ -254,7 +254,7 @@ where
         // and the material beside it, so the key is filled in here where all
         // three are already in hand.
         let handles_key = DrawHandlesKey {
-            mesh: gpu_mesh.root,
+            mesh: gpu_mesh.parts.root,
             shape: DrawShape {
                 indexed: gpu_mesh.indexed,
                 count: gpu_mesh.count,

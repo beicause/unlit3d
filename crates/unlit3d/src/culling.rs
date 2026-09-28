@@ -80,8 +80,11 @@ mod tests {
     use super::*;
     use arrayvec::ArrayVec;
     use glam::Vec3;
+    use std::sync::Arc;
     use unlit_wgpu::resources::{ResourceGraph, Virtual};
     use unlit_wgpu::specialize::VertexLayout;
+
+    use crate::components::MeshParts;
 
     fn test_perspective() -> glam::Mat4 {
         glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0)
@@ -122,21 +125,23 @@ mod tests {
         let mut graph = ResourceGraph::new();
         let root = graph.insert_strong(Virtual);
         let mesh = GpuMesh {
-            root,
-            vertex_buffers: ArrayVec::new(),
+            parts: Arc::new(MeshParts {
+                root,
+                vertex_buffers: ArrayVec::new(),
+                index_buffer: None,
+                bind_group_id: None,
+                vertex_allocation: None,
+                index_allocation: None,
+                metadata_index: 0,
+            }),
             vertex_layout: VertexLayout::default(),
-            index_buffer: None,
             count: 0,
             first: 0,
             base_vertex: 0,
             indexed: false,
             aabb: Aabb::new(Vec3::ZERO, Vec3::splat(0.5)),
-            metadata_index: 0,
-            bind_group_id: None,
             morph_targets: 0,
             skinned: false,
-            vertex_allocation: None,
-            index_allocation: None,
         };
         let near = world.spawn((mesh.clone(), Transform::default()));
         let far = world.spawn((

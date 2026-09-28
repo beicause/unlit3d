@@ -23,9 +23,9 @@ pub mod prelude {
     pub use crate::{
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
-            Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceColor, MorphBinding,
-            MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform, UnlitPipeline,
-            ZSortedDrawing,
+            Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceColor, MeshParts,
+            MorphBinding, MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform,
+            UnlitPipeline, ZSortedDrawing,
         },
         culling::is_culled,
         input::{

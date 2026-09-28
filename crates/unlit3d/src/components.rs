@@ -4,6 +4,8 @@
 //! [`MeshSource`](crate::mesh_source::MeshSource) each frame to build the
 //! draw commands.
 
+use std::sync::Arc;
+
 use arrayvec::ArrayVec;
 use unlit_ecs::Entity;
 use unlit_wgpu::mesh::JointMatrix;
@@ -117,14 +119,17 @@ impl Default for RenderLoadOps {
     }
 }
 
-/// A handle to a mesh stored in the source's GPU resource graph.
+/// The parts of a [`GpuMesh`] that only drawing reads.
 ///
-/// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
-/// [`MeshSource::allocate_unlit_mesh`](crate::mesh_source::MeshSource::allocate_unlit_mesh).
-/// The mesh is ready to draw immediately and the handle stays valid until
-/// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) is called with it.
+/// These are resolved once per distinct mesh per frame while assembling the
+/// draw list, never once per entity: no per-entity walk on the frame path
+/// touches them. Keeping them out of [`GpuMesh`] is what keeps a mesh column
+/// cheap to walk, since the culling and resolve walks visit every entity.
+///
+/// Cloning a [`GpuMesh`] shares these parts rather than copying them, which is
+/// what makes one mesh cheap to give to many entities.
 #[derive(Clone, Debug)]
-pub struct GpuMesh {
+pub struct MeshParts {
     /// The mesh's virtual root node in the resource graph.
     ///
     /// It holds no GPU resource of its own and is the mesh's only lifetime
@@ -132,12 +137,68 @@ pub struct GpuMesh {
     /// mesh-info uniform are all weak nodes registered under it, so
     /// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) frees the whole
     /// mesh by removing this one node and collecting the parts it leaves
-    /// behind. The other ids below are for the draw path, which reads the
-    /// parts directly.
+    /// behind.
     pub root: ResourceId<Virtual>,
 
     /// Vertex buffers, each tagged with its slot index, in slot order.
     pub vertex_buffers: ArrayVec<(u32, ResourceId<wgpu::Buffer>), MAX_VERTEX_BUFFERS>,
+
+    /// Index buffer, if the mesh is indexed.
+    pub index_buffer: Option<(ResourceId<wgpu::Buffer>, wgpu::IndexFormat)>,
+
+    /// Resource id of the mesh bind group, bound at
+    /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP).
+    ///
+    /// `None` when the mesh was uploaded without one.
+    pub bind_group_id: Option<ResourceId<wgpu::BindGroup>>,
+
+    /// The mesh's vertex range in the pool it was allocated from, to hand back
+    /// when the mesh is removed.
+    ///
+    /// `None` when the mesh owns its vertex buffers whole.
+    pub(crate) vertex_allocation: Option<Allocation>,
+
+    /// The mesh's index range in the pool it was allocated from, to hand back
+    /// when the mesh is removed.
+    ///
+    /// `None` when the mesh owns its index buffer whole.
+    pub(crate) index_allocation: Option<Allocation>,
+
+    /// Index of the mesh's entry in the source's mesh-metadata array.
+    ///
+    /// Every mesh owns an entry, whether or not the pipeline that draws it
+    /// reads one.
+    pub metadata_index: u32,
+}
+
+/// A handle to a mesh stored in the source's GPU resource graph.
+///
+/// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
+/// [`MeshSource::allocate_unlit_mesh`](crate::mesh_source::MeshSource::allocate_unlit_mesh).
+/// The mesh is ready to draw immediately and the handle stays valid until
+/// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) is called with it.
+///
+/// The fields here are the ones a per-entity walk reads while culling and
+/// resolving the visible set. Everything only drawing reads lives in
+/// [`MeshParts`] behind the [`Self::parts`] handle.
+///
+/// The frame path borrows a mesh rather than copying it, so what a mesh's size
+/// costs is cache traffic, not a value being moved: a column is contiguous, and
+/// walking it pulls whole cache lines through the cache while only the cull and
+/// resolve fields are used. A mesh that carried its buffers inline would drag
+/// them through every walk for the sake of a few bytes of bounds. Keep new
+/// fields on the side of that line that reads them: a per-entity field belongs
+/// inline, a per-mesh one belongs in [`MeshParts`].
+#[derive(Clone, Debug)]
+pub struct GpuMesh {
+    /// The buffers and allocations the draw names, shared between every clone.
+    ///
+    /// Shared rather than owned because one mesh is usually given to many
+    /// entities: a clone is then a handle copy, where an owned copy would
+    /// duplicate every buffer id per entity and give each its own set of
+    /// resources to free. The parts are immutable once the mesh is uploaded, so
+    /// sharing them costs no synchronization on the frame path.
+    pub parts: Arc<MeshParts>,
 
     /// The vertex layout of the draw, slot by slot.
     ///
@@ -153,9 +214,6 @@ pub struct GpuMesh {
     /// copy and one precomputed hash instead of a deep clone and a walk over
     /// every attribute.
     pub vertex_layout: VertexLayout,
-
-    /// Index buffer, if the mesh is indexed.
-    pub index_buffer: Option<(ResourceId<wgpu::Buffer>, wgpu::IndexFormat)>,
 
     /// Number of indices (indexed draw) or vertices (non-indexed draw).
     pub count: u32,
@@ -180,30 +238,6 @@ pub struct GpuMesh {
 
     /// The mesh's local-space bounding box, used for CPU frustum culling.
     pub aabb: Aabb,
-
-    /// The mesh's vertex range in the pool it was allocated from, to hand back
-    /// when the mesh is removed.
-    ///
-    /// `None` when the mesh owns its vertex buffers whole.
-    pub(crate) vertex_allocation: Option<Allocation>,
-
-    /// The mesh's index range in the pool it was allocated from, to hand back
-    /// when the mesh is removed.
-    ///
-    /// `None` when the mesh owns its index buffer whole.
-    pub(crate) index_allocation: Option<Allocation>,
-
-    /// Index of the mesh's entry in the source's mesh-metadata array.
-    ///
-    /// Every mesh owns an entry, whether or not the pipeline that draws it
-    /// reads one.
-    pub metadata_index: u32,
-
-    /// Resource id of the mesh bind group, bound at
-    /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP).
-    ///
-    /// `None` when the mesh was uploaded without one.
-    pub bind_group_id: Option<ResourceId<wgpu::BindGroup>>,
 
     /// How many morph targets the mesh carries, zero when it has none.
     ///
@@ -466,5 +500,31 @@ mod tests {
             position: glam::Vec3::new(0.0, 5.0, 10.0),
         };
         assert_eq!(c.position, glam::Vec3::new(0.0, 5.0, 10.0));
+    }
+}
+
+#[cfg(test)]
+mod size_tests {
+    use super::*;
+
+    /// The culling and resolve walks visit every entity, so a mesh column is
+    /// pulled through the cache whole and its per-entity size is a cost the
+    /// whole scene pays. This fails if a field no per-entity walk reads is
+    /// added back inline.
+    ///
+    /// The unit is the column cell, not the mesh: a cell is a `RefCell`, whose
+    /// borrow counter costs a word on top of the mesh. The bound is relative
+    /// rather than a byte count, so it stays meaningful on any target: what
+    /// matters is that the fields every walk reads stay a fraction of the mesh,
+    /// with the per-mesh bulk in [`MeshParts`].
+    #[test]
+    fn a_mesh_cell_stays_small_beside_the_parts_it_excludes() {
+        let cell = size_of::<core::cell::RefCell<GpuMesh>>();
+        let parts = size_of::<MeshParts>();
+        assert!(
+            cell * 2 <= parts,
+            "a mesh cell is {cell} bytes against {parts} of parts; every per-entity \
+             walk pays for the cell, so move per-mesh fields into MeshParts",
+        );
     }
 }

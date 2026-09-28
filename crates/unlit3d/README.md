@@ -135,6 +135,15 @@ closes that gap — it pairs a `Variants` cache with a `Specializer` and a
 [`RenderPipelineFactory`](pipeline::RenderPipelineFactory), and resolves one key to a
 concrete pipeline per frame.
 
+[`GpuMesh`](components::GpuMesh) is deliberately small: it holds only the fields
+a per-entity walk reads while culling and resolving, with the buffers a draw
+binds behind a shared [`MeshParts`](components::MeshParts) handle. Culling and
+resolving visit every entity, and a column is contiguous, so walking it pulls
+whole cache lines through the cache while only the cull and resolve fields are
+used; a mesh carrying its buffers inline would drag them through every walk for
+the sake of a few bytes of bounds. The split is by read frequency, not by kind,
+so a new field belongs on the side that reads it.
+
 [`MeshSource::register_unlit_family`](mesh_source::MeshSource::register_unlit_family)
 registers the built-in unlit family;
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family)

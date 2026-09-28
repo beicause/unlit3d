@@ -94,6 +94,12 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 `Variants` 缓存与 `Specializer`、`RenderPipelineFactory` 配在一起，每帧把一个 key 解析为
 一条具体管线。
 
+`GpuMesh` 刻意做得很小：它只保留剔除与解析时逐实体遍历会读的字段，绘制要绑定的缓冲区
+则放在共享的 `MeshParts` 句柄之后。剔除与解析会访问每个实体，而列是连续内存，遍历时会把
+整条 cache line 拖进缓存，可实际只用到剔除与解析的那几个字段；若把缓冲区内联，就等于为了
+几个字节的包围盒而让每次遍历都把它们拖一遍。拆分的依据是读取频率而不是字段类别，所以新增
+字段应放在读取它的那一侧。
+
 `MeshSource::register_unlit_family` 注册内置的 unlit 家族；`MeshSource::register_family`
 注册调用者自己的家族，这与内置家族走的是同一条路。其他组件包括 `Transform`、
 `Camera`、`RenderLoadOps`、`InstanceColor` 以及 `ZSortedDrawing` 标记。

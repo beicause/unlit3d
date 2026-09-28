@@ -41,7 +41,7 @@ use zerocopy::IntoBytes;
 
 use crate::bounds::Aabb;
 use crate::components::{
-    Camera, GpuMaterial, GpuMesh, MorphBinding, MorphWeights, SkinBinding, SkinPose,
+    Camera, GpuMaterial, GpuMesh, MeshParts, MorphBinding, MorphWeights, SkinBinding, SkinPose,
 };
 use crate::culling::VisibleMesh;
 use crate::mesh::{MeshDesc, MorphDeltas, UnlitMeshDesc};
@@ -468,7 +468,7 @@ pub struct MeshSource {
     /// [`MeshSource::allocate_unlit_mesh`] keeps its indices in, as one large
     /// buffer shared by every indexed mesh.
     ///
-    /// A mesh names it through [`GpuMesh::index_buffer`], which is why the
+    /// A mesh names it through [`MeshParts::index_buffer`], which is why the
     /// buffer is a node in the resource graph and has to be replaced there
     /// when the pool grows; see [`MeshSource::sync_pool_node`].
     index_pool: BufferPool,
@@ -959,21 +959,23 @@ impl MeshSource {
         drop(graph);
 
         GpuMesh {
-            root,
-            vertex_buffers: vertex_slots,
+            parts: Arc::new(MeshParts {
+                root,
+                vertex_buffers: vertex_slots,
+                index_buffer,
+                bind_group_id,
+                vertex_allocation: None,
+                index_allocation: None,
+                metadata_index,
+            }),
             vertex_layout,
-            index_buffer,
             count,
             first: 0,
             base_vertex: 0,
             indexed,
             aabb,
-            metadata_index,
-            bind_group_id,
             morph_targets: morph_target_count,
             skinned,
-            vertex_allocation: None,
-            index_allocation: None,
         }
     }
 
@@ -1299,13 +1301,19 @@ impl MeshSource {
             &mesh_info_buf,
             0,
             MeshInfo {
-                metadata_index: mesh.metadata_index,
+                metadata_index: mesh.parts.metadata_index,
                 vertex_offset,
                 morph_count: mesh.morph_targets,
                 pad0: 0,
             }
             .as_bytes(),
         );
+
+        // The mesh's parts are complete only now: the pool-backed slots and
+        // ranges are known once the pools have been allocated above. The handle
+        // is freshly built and shared with nothing, so it is uniquely owned
+        // here and can be patched in place.
+        let parts = Arc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
 
         // The source binds the per-instance buffer at [INSTANCE_SLOT] for
         // every draw, so the mesh's layout declares that slot even though the
@@ -1326,18 +1334,20 @@ impl MeshSource {
         ] {
             if layout.array_stride > 0 {
                 layouts.push((slot, layout.clone()));
-                mesh.vertex_buffers
-                    .push((slot, self.vertex_node(world, layout)));
+                // Resolved before the parts are borrowed mutably below: the
+                // lookup needs the source, which the borrow would rule out.
+                let node = self.vertex_node(world, layout);
+                parts.vertex_buffers.push((slot, node));
             }
         }
         // The pool-backed slots join the layout only here, once the pools have
         // been allocated; the mesh's handle is replaced with the complete one.
+        parts.index_buffer = index_buffer;
+        parts.index_allocation = index_allocation;
+        parts.vertex_allocation = Some(vertices.allocation());
         mesh.vertex_layout = VertexLayout::new(layouts);
-        mesh.index_buffer = index_buffer;
         mesh.first = first_index;
         mesh.base_vertex = vertex_offset;
-        mesh.index_allocation = index_allocation;
-        mesh.vertex_allocation = Some(vertices.allocation());
         mesh
     }
 
@@ -1498,23 +1508,24 @@ impl MeshSource {
     pub fn remove_mesh(&mut self, world: &World, mesh: GpuMesh) {
         {
             let mut graph = Self::graph(world, self.context);
-            graph.remove_drop(mesh.root);
+            graph.remove_drop(mesh.parts.root);
             // The root was the only node built from the parts, so with it gone
             // every part is an orphan.
             graph.cleanup_drop();
         }
 
-        if let Some(vertex) = mesh.vertex_allocation {
+        if let Some(vertex) = mesh.parts.vertex_allocation {
             self.vertex_pool.release(vertex);
         }
-        if let Some(index) = mesh.index_allocation {
+        if let Some(index) = mesh.parts.index_allocation {
             self.index_pool.release(index);
         }
 
-        let emptied = self.metadata.get_mut(mesh.metadata_index as usize);
+        let metadata_index = mesh.parts.metadata_index;
+        let emptied = self.metadata.get_mut(metadata_index as usize);
         if let Some(entry) = emptied {
             *entry = MeshMetadata::default();
-            self.free_metadata.push(mesh.metadata_index);
+            self.free_metadata.push(metadata_index);
             self.metadata_dirty = true;
         }
     }
@@ -1981,6 +1992,7 @@ impl MeshSource {
                     .expect("visible entity has GpuMesh");
 
                 let mesh_bg = mesh
+                    .parts
                     .bind_group_id
                     .map(|id| graph.get(id).expect("mesh bind group exists").clone());
 
@@ -1989,7 +2001,7 @@ impl MeshSource {
                     .map(|id| graph.get(id).expect("material bind group exists").clone());
 
                 let mut vertex_buffers = ArrayVec::new();
-                for &(slot, buffer) in &mesh.vertex_buffers {
+                for &(slot, buffer) in &mesh.parts.vertex_buffers {
                     let buffer = graph
                         .get(buffer)
                         .expect("mesh vertex buffer exists")
@@ -1999,7 +2011,7 @@ impl MeshSource {
                     vertex_buffers.push((slot, buffer.clone(), 0..buffer.size()));
                 }
 
-                let index_buffer = mesh.index_buffer.map(|(buffer, format)| {
+                let index_buffer = mesh.parts.index_buffer.map(|(buffer, format)| {
                     (
                         graph.get(buffer).expect("mesh index buffer exists").clone(),
                         format,
@@ -2592,11 +2604,11 @@ mod tests {
         let before = MeshSource::graph(&h.world, ctx).len();
         let index_pool_free = h.source.index_pool.free_space();
         assert!(matches!(
-            MeshSource::graph(&h.world, ctx).get(mesh.root),
+            MeshSource::graph(&h.world, ctx).get(mesh.parts.root),
             Some(Virtual)
         ));
-        let bind_group = mesh.bind_group_id.expect("the mesh has a group");
-        let root = mesh.root;
+        let bind_group = mesh.parts.bind_group_id.expect("the mesh has a group");
+        let root = mesh.parts.root;
 
         h.source.remove_mesh(&h.world, mesh);
 
@@ -2628,9 +2640,9 @@ mod tests {
         // must not take the shared buffers with it, so they sit outside the
         // root and the root holds only what is the mesh's own.
         let dependencies: Vec<_> = MeshSource::graph(&h.world, ctx)
-            .dependencies(mesh.root)
+            .dependencies(mesh.parts.root)
             .collect();
-        let bind_group = mesh.bind_group_id.expect("the mesh has a group");
+        let bind_group = mesh.parts.bind_group_id.expect("the mesh has a group");
         assert!(
             dependencies.contains(&bind_group.erase()),
             "the bind group is under the root"
@@ -2651,17 +2663,17 @@ mod tests {
         let mut h = harness();
         let first = h.tri_mesh();
         let second = h.tri_mesh();
-        let first_index = first.metadata_index;
-        assert_ne!(first_index, second.metadata_index);
+        let first_index = first.parts.metadata_index;
+        assert_ne!(first_index, second.parts.metadata_index);
 
         h.source.remove_mesh(&h.world, first);
         let reused = h.tri_mesh();
 
         assert_eq!(
-            reused.metadata_index, first_index,
+            reused.parts.metadata_index, first_index,
             "the slot the removed mesh held is handed out again"
         );
-        assert_ne!(reused.metadata_index, second.metadata_index);
+        assert_ne!(reused.parts.metadata_index, second.parts.metadata_index);
     }
 
     #[test]
@@ -2704,13 +2716,14 @@ mod tests {
 
         // Both name the pool's node, and each names its own slice of it.
         let pool = h.source.index_pool_id;
-        assert_eq!(first.index_buffer.map(|(id, _)| id), Some(pool));
-        assert_eq!(second.index_buffer.map(|(id, _)| id), Some(pool));
+        assert_eq!(first.parts.index_buffer.map(|(id, _)| id), Some(pool));
+        assert_eq!(second.parts.index_buffer.map(|(id, _)| id), Some(pool));
         assert_ne!(first.first, second.first, "the slices do not overlap");
 
         // The ranges tile the pool in allocation order.
         let first_range = h.source.index_pool.allocation_size(
             first
+                .parts
                 .index_allocation
                 .expect("the mesh holds an allocation"),
         );
@@ -2740,7 +2753,7 @@ mod tests {
         let mut h = harness();
         let ctx = h.source.context();
         let first = h.tri_mesh();
-        let first_node = first.index_buffer.expect("the mesh is indexed").0;
+        let first_node = first.parts.index_buffer.expect("the mesh is indexed").0;
         let first_offset = first.first;
 
         // Enough meshes to push the pool past its starting size.
@@ -2752,7 +2765,7 @@ mod tests {
 
         // The node still names the pool, and the graph holds the buffer the
         // pool currently does: a mesh needs no update after a grow.
-        assert_eq!(last.index_buffer.map(|(id, _)| id), Some(first_node));
+        assert_eq!(last.parts.index_buffer.map(|(id, _)| id), Some(first_node));
         assert_eq!(
             MeshSource::graph(&h.world, ctx).get(first_node),
             Some(h.source.index_pool.buffer()),
@@ -2785,8 +2798,8 @@ mod tests {
         );
 
         assert!(!mesh.indexed);
-        assert!(mesh.index_buffer.is_none());
-        assert!(mesh.index_allocation.is_none());
+        assert!(mesh.parts.index_buffer.is_none());
+        assert!(mesh.parts.index_allocation.is_none());
         assert_eq!(mesh.first, 0);
     }
 
@@ -2800,9 +2813,10 @@ mod tests {
         // Every stream of a mesh names its pool's node, and both meshes name
         // the same node per slot.
         for ((_, first_id), (_, second_id)) in first
+            .parts
             .vertex_buffers
             .iter()
-            .zip(second.vertex_buffers.iter())
+            .zip(second.parts.vertex_buffers.iter())
         {
             assert_eq!(first_id, second_id, "the streams share a buffer");
             assert!(
@@ -2835,7 +2849,12 @@ mod tests {
         let mut h = harness();
         let ctx = h.source.context();
         let first = h.tri_mesh();
-        let nodes: Vec<_> = first.vertex_buffers.iter().map(|(_, id)| *id).collect();
+        let nodes: Vec<_> = first
+            .parts
+            .vertex_buffers
+            .iter()
+            .map(|(_, id)| *id)
+            .collect();
         let base_vertex = first.base_vertex;
 
         // Enough meshes to push the pool past its starting capacity.
