@@ -337,8 +337,8 @@ pub fn count_pixels_off_background(px: &[u8], background: [f64; 3], tolerance: u
 
 #[cfg(feature = "snapshot")]
 mod snapshot_impl {
-    use fast_ssim2::{LinearRgbImage, ToLinearRgb, compute_ssimulacra2, srgb_u8_to_linear};
     use image::ImageEncoder;
+    use ssimulacra2::{ColorPrimaries, Rgb, TransferCharacteristic, compute_frame_ssimulacra2};
 
     /// Where [`assert_image_snapshot`] looks a snapshot up by name, relative to
     /// the process's working directory.
@@ -372,7 +372,7 @@ mod snapshot_impl {
             frame: (u32, u32),
         },
         /// The two images could not be scored.
-        Score(fast_ssim2::Ssimulacra2Error),
+        Score(ssimulacra2::Ssimulacra2Error),
     }
 
     impl core::fmt::Display for SnapshotError {
@@ -404,29 +404,33 @@ mod snapshot_impl {
         }
     }
 
-    struct RgbaFrame<'a> {
-        pixels: &'a [u8],
-        width: usize,
-        height: usize,
-    }
-
-    impl ToLinearRgb for RgbaFrame<'_> {
-        fn to_linear_rgb(&self) -> LinearRgbImage {
-            let data: Vec<[f32; 3]> = self
-                .pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .map(|px| {
-                    [
-                        srgb_u8_to_linear(px[0]),
-                        srgb_u8_to_linear(px[1]),
-                        srgb_u8_to_linear(px[2]),
-                    ]
-                })
-                .collect();
-            LinearRgbImage::new(data, self.width, self.height)
-        }
+    /// Turn an RGBA8 frame into the RGB the metric reads.
+    ///
+    /// The metric works in XYB, which it derives from *linear* RGB, so the
+    /// values handed over are the sRGB ones the frame holds: the transfer
+    /// characteristic named here is what linearizes them, and naming it is also
+    /// what says the frame is sRGB rather than something else.
+    fn rgb_frame(rgba: &[u8], width: u32, height: u32) -> Rgb {
+        let data: Vec<[f32; 3]> = rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| {
+                [
+                    f32::from(px[0]) / 255.0,
+                    f32::from(px[1]) / 255.0,
+                    f32::from(px[2]) / 255.0,
+                ]
+            })
+            .collect();
+        Rgb::new(
+            data,
+            width as usize,
+            height as usize,
+            TransferCharacteristic::SRGB,
+            ColorPrimaries::BT709,
+        )
+        .expect("the frame's dimensions and pixel count agree")
     }
 
     /// Encode `rgba` as a lossless WebP.
@@ -482,17 +486,9 @@ mod snapshot_impl {
             });
         }
 
-        let reference_frame = RgbaFrame {
-            pixels: reference.as_raw(),
-            width: width as usize,
-            height: height as usize,
-        };
-        let current_frame = RgbaFrame {
-            pixels: rgba,
-            width: width as usize,
-            height: height as usize,
-        };
-        compute_ssimulacra2(reference_frame, current_frame).map_err(SnapshotError::Score)
+        let reference_frame = rgb_frame(reference.as_raw(), width, height);
+        let current_frame = rgb_frame(rgba, width, height);
+        compute_frame_ssimulacra2(reference_frame, current_frame).map_err(SnapshotError::Score)
     }
 
     /// Reject a frame whose bytes do not describe `width` x `height` RGBA

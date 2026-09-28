@@ -21,8 +21,8 @@ pollster.workspace = true
 unlit_wgpu = { path = "../unlit_wgpu" }
 wgpu.workspace = true
 
-[dependencies.fast-ssim2]
-version = "0.8"
+[dependencies.ssimulacra2]
+version = "0.5"
 default-features = false
 optional = true
 
@@ -41,7 +41,7 @@ env_logger.workspace = true
 console_log.workspace = true
 
 [features]
-snapshot = ["dep:fast-ssim2", "dep:image"]
+snapshot = ["dep:ssimulacra2", "dep:image"]
 
 [lints]
 workspace = true
