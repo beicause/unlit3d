@@ -252,15 +252,11 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, aspect: f32) -> Ca
 /// The scene's key is built from these — the same options the snapshot tests
 /// the scenes came from were drawn with.
 pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
-    use unlit_wgpu::pipeline::{UnlitFlags, supports_storage_buffers};
+    use unlit_wgpu::pipeline::UnlitFlags;
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
-    let mut flags =
+    let flags =
         UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE;
-    // A device without storage buffers — WebGL2 — reads the shader's arrays
-    // from textures instead, so the variant has to say which it is.
-    flags.set(UnlitFlags::TEXEL_ARRAY, !supports_storage_buffers(device));
     UnlitOptions {
-        flags,
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
             ..Default::default()
@@ -281,6 +277,8 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
             count: 1,
             ..Default::default()
         },
+        // The device's own array path survives the variant's flags.
+        ..UnlitOptions::standard(device).with_flags(flags)
     }
 }
 

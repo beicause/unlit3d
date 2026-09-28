@@ -111,8 +111,9 @@ fn build(
         depth.depth_write_enabled = Some(false);
     }
     // The translucent variant reads no per-vertex colour: each pane's tint is
-    // its own instance colour, so one mesh serves all of them.
-    translucent.flags = UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_INSTANCE;
+    // its own instance colour, so one mesh serves all of them. The flags go in
+    // through the setter, which keeps the array path the device needs.
+    translucent = translucent.with_flags(UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_INSTANCE);
     let translucent_key = UnlitPipelineKey::new(translucent);
 
     let source_entity = spawn_source(world, source);

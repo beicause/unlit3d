@@ -78,7 +78,11 @@ impl Ctx {
     /// what [`DeviceTier::Native`] asks for.
     pub fn headless_for(tier: DeviceTier) -> Ctx {
         init_logging();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        // From the environment, so `WGPU_BACKEND` selects the backend the same
+        // way it does in an application — which is how the GLES and WebGL2
+        // paths are reached on a machine whose default is Vulkan.
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter =
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
                 .expect("no graphics adapter available");

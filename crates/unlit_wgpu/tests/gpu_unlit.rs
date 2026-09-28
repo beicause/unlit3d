@@ -31,6 +31,7 @@ use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
     SpecializedPipeline, Specializer as _, SurfaceKey, SurfaceSpecializer,
 };
+use unlit_wgpu::texel_array::Array;
 use zerocopy::IntoBytes;
 
 const WIDTH: u32 = 256;
@@ -419,20 +420,32 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     // The metadata bindings (and the mesh group that indexes them) exist only
     // while a channel is compressed.
     let metadata = fixture.pipeline.descriptor().needs_metadata();
-    let metadata_buffer = upload_buffer(
-        ctx,
-        "test::mesh_meta",
-        fixture.mesh.metadata.as_bytes(),
-        wgpu::BufferUsages::STORAGE,
+    // Held in whichever resource the pipeline's layout declares — a storage
+    // buffer, or a texel array on a device without storage buffers — so the
+    // fixture follows the variant rather than assuming a buffer. The
+    // descriptor's own answer decides, which is what keeps the resource and
+    // the layout it is bound through in agreement.
+    let mut metadata_array = Array::new(
+        &ctx.device,
+        Some("test::mesh_meta"),
+        size_of::<MeshMetadata>() as u64,
+        1,
+        fixture
+            .pipeline
+            .descriptor()
+            .uses_texel_arrays()
+            .then(|| ctx.device.limits().max_texture_dimension_2d),
     );
+    metadata_array.write(&ctx.queue, fixture.mesh.metadata.as_bytes());
     let mut global_entries = vec![
         bg_entry(CAMERA_BINDING, camera_buffer.as_entire_binding()),
         bg_entry(FRAME_BINDING, globals_buffer.as_entire_binding()),
     ];
+    let metadata_handle = metadata_array.handle();
     if metadata {
         global_entries.push(bg_entry(
             MESH_METADATA_BINDING,
-            metadata_buffer.as_entire_binding(),
+            metadata_handle.binding_resource(),
         ));
     }
     let global_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -548,10 +561,9 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 
 /// The vertex-color variant the pixel tests use.
 fn vertex_color_options(device: &wgpu::Device) -> UnlitOptions {
-    UnlitOptions {
-        flags: UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
-        ..UnlitOptions::standard(device)
-    }
+    UnlitOptions::standard(device).with_flags(
+        UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
+    )
 }
 
 #[test]
@@ -745,10 +757,7 @@ fn instanced_cubes_match_snapshot() {
 #[test]
 fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless();
-    let options = UnlitOptions {
-        flags: UnlitFlags::VERTEX_INSTANCE,
-        ..UnlitOptions::standard(&ctx.device)
-    };
+    let options = UnlitOptions::standard(&ctx.device).with_flags(UnlitFlags::VERTEX_INSTANCE);
     let fixture = fixture(&ctx, &options, 1);
     assert!(
         fixture.mesh.positions.is_none(),

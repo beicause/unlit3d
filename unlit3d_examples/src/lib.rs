@@ -210,6 +210,7 @@ fn run_headless_scene(
     let mut scene = Scene::new(
         ctx.device.clone(),
         ctx.queue.clone(),
+        ctx.capabilities,
         size,
         scenes::SceneOptions {
             ui: def.ui && !args.no_ui,
@@ -489,6 +490,13 @@ struct Gpu {
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// What the device can do beyond the WebGPU baseline, captured while the
+    /// adapter is still here to report it.
+    ///
+    /// `wgpu::Device` exposes its limits and features but not the downlevel
+    /// flags, and the adapter is not kept once the device exists, so this is
+    /// read once and carried; see [`DeviceCapabilities`].
+    capabilities: DeviceCapabilities,
 }
 
 impl Gpu {
@@ -516,14 +524,24 @@ impl Gpu {
             })
             .await?;
         drop(surface);
+
+        // The tier is what decides how much of the WebGPU baseline the device
+        // is asked for, and so which paths it takes. `UNLIT3D_DEVICE_TIER`
+        // narrows it to WebGL2's shape; see [`DeviceTier`].
+        let tier = DeviceTier::from_env();
+        let capabilities = tier.capabilities_of(&adapter);
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits: tier.limits(&adapter.limits()),
+                ..Default::default()
+            })
             .await?;
         Ok(Self {
             instance,
             adapter,
             device,
             queue,
+            capabilities,
         })
     }
 }
@@ -656,8 +674,18 @@ impl ApplicationHandler<UserEvent> for App {
             let window = self.window.clone().expect("the window was just opened");
             // The surface comes first and here, on the thread that owns the
             // window, so the adapter can be required to present to it.
+            //
+            // The instance is built from the event loop's *owned* display
+            // handle rather than a bare one, and through the environment-aware
+            // descriptor, so `WGPU_BACKEND` and friends select the backend —
+            // and so the GLES/WebGL2 one can be asked for by name. A display
+            // handle is what those backends need to reach the platform's
+            // display connection, and owning it lets the instance outlive the
+            // borrow of the event loop that produced it.
             let instance =
-                wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+                wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
+                    Box::new(event_loop.owned_display_handle()),
+                ));
             let surface = instance
                 .create_surface(window)
                 .expect("the window presents to a surface");
@@ -794,6 +822,7 @@ impl App {
                 self.scene = Some(Scene::new(
                     context.device.clone(),
                     context.queue.clone(),
+                    context.capabilities,
                     size,
                     scenes::SceneOptions {
                         ui: def.ui,
@@ -971,12 +1000,19 @@ impl Scene {
     fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
+        capabilities: DeviceCapabilities,
         size: (u32, u32),
         options: scenes::SceneOptions,
         def: &'static scenes::SceneDef,
     ) -> Self {
         let mut world = World::new();
-        let context = spawn_context(&mut world, device, queue, ResourceGraph::new());
+        let context = spawn_context(
+            &mut world,
+            device,
+            queue,
+            ResourceGraph::new(),
+            capabilities,
+        );
         let renderer = world.spawn((Renderer::new(context),));
         let control = (def.build)(&mut world, context, renderer, size, options);
 

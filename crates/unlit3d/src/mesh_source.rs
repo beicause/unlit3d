@@ -1261,10 +1261,19 @@ impl MeshSource {
             !supports_base_vertex || vertex_offset <= i32::MAX as u32,
             "a vertex offset has to fit the i32 a draw's base vertex is"
         );
-        let base_index = if supports_base_vertex {
+        // Where the pool offset goes. A device with `base_vertex` leaves the
+        // indices mesh-local and lets the draw add the offset; one without has
+        // to bake it into the indices and keep the draw's at zero. The two are
+        // complementary, and exactly one of them is non-zero.
+        let baked_offset = if supports_base_vertex {
             0
         } else {
             vertex_offset
+        };
+        let draw_base_vertex = if supports_base_vertex {
+            vertex_offset
+        } else {
+            0
         };
         let (index_buffer, count, indexed, index_allocation, first) = match indices {
             Some(indices) if !indices.is_empty() => {
@@ -1274,8 +1283,8 @@ impl MeshSource {
                 // the offset was baked in here. The compression is decided on
                 // these values, since an offset that pushes an index past
                 // `u16::MAX` has to widen the buffer it is written into.
-                let baked: Option<Vec<u32>> = (base_index != 0)
-                    .then(|| indices.iter().map(|&index| index + base_index).collect());
+                let baked: Option<Vec<u32>> = (baked_offset != 0)
+                    .then(|| indices.iter().map(|&index| index + baked_offset).collect());
                 let source: &[u32] = baked.as_deref().unwrap_or(indices);
                 let (format, data): (wgpu::IndexFormat, Vec<u8>) = match compress_indices(source) {
                     Ok(compressed) => {
@@ -1409,7 +1418,7 @@ impl MeshSource {
         // what a draw on a device without `base_vertex` requires. The
         // `MeshInfo` uniform carries `vertex_offset` either way: the shader
         // reads pool-global vertex ordinals on both paths.
-        mesh.base_vertex = base_index;
+        mesh.base_vertex = draw_base_vertex;
         mesh
     }
 

@@ -169,6 +169,14 @@ bitflags::bitflags! {
 
 #[cfg(feature = "unlit")]
 impl UnlitFlags {
+    /// The flags that describe the *device* rather than the variant.
+    ///
+    /// A caller building a variant of its own replaces every other flag, but
+    /// these have to survive: they say how the device can be read from, and
+    /// clearing one asks a device for something it may reject outright. Use
+    /// [`UnlitOptions::with_flags`] to assign flags without losing them.
+    pub const DEVICE_MASK: UnlitFlags = UnlitFlags::TEXEL_ARRAY;
+
     /// The flags the built-in pipeline derives from a mesh's vertex layout.
     ///
     /// Exactly the bits in this mask are replaced when a mesh is
@@ -310,6 +318,21 @@ impl UnlitOptions {
         options
     }
 
+    /// Replace this variant's flags, keeping the ones the *device* decides.
+    ///
+    /// Most flags describe the variant — the channels it reads, its material,
+    /// its output — and a caller building a different one wants to say so
+    /// outright. [`UnlitFlags::TEXEL_ARRAY`] is not like the rest: it says how
+    /// the device can be read from, not what the variant is, and a caller that
+    /// cleared it would ask a storage-less device for a binding it rejects.
+    /// Assigning `flags` directly is therefore easy to get wrong, and this is
+    /// the setter that cannot.
+    #[must_use]
+    pub fn with_flags(mut self, flags: UnlitFlags) -> Self {
+        self.flags = (self.flags & UnlitFlags::DEVICE_MASK) | (flags & !UnlitFlags::DEVICE_MASK);
+        self
+    }
+
     /// The standard variant's device-independent fields: the flags, primitive
     /// state, color target and multisample state, with a placeholder
     /// depth-stencil format that [`Self::standard`] replaces with the device's
@@ -431,12 +454,17 @@ impl UnlitOptions {
     /// device without them, so the failure is caught here with the reason
     /// rather than left to wgpu's validation.
     ///
+    /// A variant that declares no array binding at all — the UI's, which reads
+    /// only full-precision vertex attributes — has nothing to serve either way,
+    /// so it is not asked to pick a path.
+    ///
     /// # Panics
     ///
     /// If the variant reads storage buffers on a device that has none.
     fn assert_device_supports_arrays(&self, device: &wgpu::Device) {
+        let reads_an_array = self.needs_metadata() || self.needs_pose() || self.needs_morphs();
         assert!(
-            self.uses_texel_arrays() || supports_storage_buffers(device),
+            !reads_an_array || self.uses_texel_arrays() || supports_storage_buffers(device),
             "this variant reads its arrays from storage buffers, but the device has none \
              (its `max_storage_buffers_per_shader_stage` is 0, as WebGL2's is): set \
              `UnlitFlags::TEXEL_ARRAY`, or start from `UnlitOptions::standard`, which does it \

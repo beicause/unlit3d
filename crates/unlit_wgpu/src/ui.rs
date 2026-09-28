@@ -199,16 +199,20 @@ pub fn ui_options_for_surface(
 fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
     // Full-precision screen-space vertices carrying a premultiplied color and
     // a texture coordinate: no compression, no per-instance stream.
-    let mut flags = UnlitFlags::VERTEX_POSITION
+    //
+    // The flags are assigned through the device mask, so the ones the device
+    // decides survive: the UI reads no array, but which resource an array
+    // *would* come from is the device's answer rather than the UI's.
+    let flags = UnlitFlags::VERTEX_POSITION
         | UnlitFlags::UNCOMPRESSED_POSITION
         | UnlitFlags::VERTEX_UV
         | UnlitFlags::UNCOMPRESSED_UV
         | UnlitFlags::VERTEX_COLOR
         | UnlitFlags::BASE_COLOR_TEXTURE;
+    options.flags = (options.flags & UnlitFlags::DEVICE_MASK) | flags;
     if srgb_to_linear_output {
-        flags |= UnlitFlags::SRGB_TO_LINEAR_OUTPUT;
+        options.flags |= UnlitFlags::SRGB_TO_LINEAR_OUTPUT;
     }
-    options.flags = flags;
     // No culling: egui does not guarantee a consistent winding order across
     // the primitives it emits, so neither face can be discarded safely.
     // (`UnlitOptions::standard` culls back faces for closed meshes; the UI is
