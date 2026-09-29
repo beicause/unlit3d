@@ -86,6 +86,12 @@ pub struct Args {
     #[argh(switch)]
     pub no_ui: bool,
 
+    /// fit the content to the render target the way the window does: keep the
+    /// scene's baseline aspect, drawing into the largest region of that aspect
+    /// the target holds, and leave the rest clear
+    #[argh(switch)]
+    pub letterbox: bool,
+
     /// lowest SSIMULACRA2 score that counts as matching; the scene's own when
     /// it declares one, the example's default otherwise
     #[argh(option, from_str_fn(parse_score))]
@@ -113,6 +119,7 @@ impl Default for Args {
             snapshot: None,
             update: false,
             no_ui: false,
+            letterbox: false,
             min_score: None,
             snapshot_dir: default_snapshot_dir(),
             mismatch_dir: None,
@@ -265,6 +272,7 @@ mod tests {
         assert_eq!(args.snapshot, None);
         assert!(!args.update);
         assert!(!args.no_ui);
+        assert!(!args.letterbox);
         // Not the default score: an omitted `--min-score` leaves the choice to
         // the scene, which may declare a threshold of its own.
         assert_eq!(args.min_score, None);

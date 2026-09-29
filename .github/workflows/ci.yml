@@ -207,6 +207,32 @@ jobs:
           path: target/snapshot-mismatches-webgl2
           if-no-files-found: ignore
 
+      # The default scene again, at a target narrower than its baseline, with
+      # the content fitted the way a window fits it. This is the letterbox
+      # checked against a stored frame: the picture has to land inside the
+      # fitted region with the rest left clear, so a change that stretched the
+      # content to the target, dropped the region, or let a scene's content
+      # leak outside it fails here rather than only in a unit test of the
+      # arithmetic. The scene's own snapshots are all at its baseline shape,
+      # which has no bars to check.
+      - name: Compare the letterboxed capture of the default scene
+        id: snapshot-narrow
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: >
+          cargo run -p unlit3d_examples --features snapshot
+          -- --headless --scene spin_cube
+          --size 480x720 --letterbox
+          --snapshot unlit3d_asset_files/snapshots/spin_cube_narrow.webp
+          --mismatch-dir target/snapshot-mismatches-narrow
+
+      - name: Upload the mismatched letterboxed frame
+        if: ${{ failure() && steps.snapshot-narrow.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: snapshot-mismatches-narrow-${{ matrix.os }}
+          path: target/snapshot-mismatches-narrow
+          if-no-files-found: ignore
+
   build-wasm:
     name: Build wasm
     # runtime is normally 30 seconds

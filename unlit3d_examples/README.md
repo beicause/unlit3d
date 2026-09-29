@@ -50,11 +50,25 @@ spawned once as a resource entity, a scene's meshes and materials are allocated
 through its mesh source, and every `RedrawRequested` acquires the swap chain's
 next image, renders the ECS world into it and presents it. A resize is handed to
 the surface, which reconfigures the swap chain and rebuilds the depth and
-multisample attachments the renderer draws with. The frame loop also hands each
-scene the target's current size, and every scene takes its camera aspect from
-that size rather than from the size it was built at, so a window that changes
-shape re-aims the projection — a wider window shows more of the scene — instead
-of stretching it.
+multisample attachments the renderer draws with.
+
+A scene that draws 3D content declares a **baseline aspect** — 960×720, the
+shape the ported scenes were captured at. The windowed path draws such a scene
+through the largest rectangle of that aspect the target fits, and hands the
+scene that rectangle's own size, so every scene takes its camera aspect from the
+region it is actually drawn into. The target only ever adds bars around the
+picture: a wide window shows the same view a narrow one does, larger, rather
+than more of it, and nothing is ever stretched. The UI is drawn over the whole
+target rather than the letterboxed region, because a panel has no aspect of its
+own. The headless path turns the letterbox off and draws at the scene's own
+size, so a capture is unchanged.
+
+A readout in the top-right corner reports the smoothed frame rate and frame
+time. In a browser, the first press on the window asks for fullscreen — the one
+gesture a browser accepts as permission — and a device being held upright is
+then locked to landscape, so the picture fills a phone's screen. The lock
+follows from the fullscreen: the browser releases it when fullscreen ends, and
+it is never applied to a device already held sideways.
 
 The GPU context is requested asynchronously, because the adapter and device
 requests are: on the web they resolve on the browser's task queue, so the frame
@@ -99,8 +113,9 @@ cargo xtask run-wasm
 
 The page it serves sizes the canvas to the viewport less a small margin of its
 own, rather than to the window the example asks for, so the example fills a
-phone's screen and follows a window that is resized. The scenes take their
-camera aspect from that canvas, so the picture re-aims instead of stretching.
+phone's screen and follows a window that is resized. The canvas is not the
+picture, though: each 3D scene is drawn into the baseline-aspect region of it,
+so the same picture fills whatever shape the page gives the canvas.
 
 It is a library as well as a binary, because Android starts neither a process
 nor a command line: the activity loads the shared library and calls its
@@ -166,6 +181,7 @@ the value must be the next argument, so `--name=value` is not accepted.
 | `--snapshot <PATH>` | none | Compare the captured frame against the snapshot at `PATH`, instead of the scene's own snapshots |
 | `--update` | off | Store the snapshots being compared instead of comparing them |
 | `--no-ui` | off | Draw the scene without its UI overlay |
+| `--letterbox` | off | Fit the content to the target the way the window does: keep the scene's baseline aspect and draw into the largest region of that aspect the target holds, leaving the rest clear |
 | `--min-score <S>` | the scene's own, else `85.0` | Lowest SSIMULACRA2 score that counts as matching |
 | `--snapshot-dir <D>` | the asset submodule's `snapshots` | Where the scene's own snapshots resolve, by name |
 | `--mismatch-dir <D>` | none | Write every frame that does not match its snapshot to `D` as a lossless WebP, mirroring the snapshot's name |
@@ -235,6 +251,14 @@ A scene's own snapshots only describe a run that reproduces the scene's stored
 settings, so overriding `--size`, `--frames` or `--no-ui` makes a custom capture
 that is written with `--output` but not compared against the scene's snapshots;
 compare it explicitly with `--snapshot <PATH>` instead.
+
+`--letterbox` is what makes such a capture show the windowed picture rather than
+a stretched one. A scene's own snapshots are all at its baseline shape, where
+there is nothing to fit, so they cannot cover the fitting itself; a capture at
+another shape with `--letterbox` is what checks that the content lands inside
+the fitted region with the rest left clear, and CI stores one of those for the
+default scene. Without the flag, `--size` draws the content across the whole
+target, which is what a scene's own snapshots rely on.
 
 A mismatch is frequently the platform showing through rather than a regression:
 the stored images come from one GPU stack, and another driver's rounding can put
