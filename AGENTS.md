@@ -12,8 +12,32 @@
 
 ## Git 工作流
 
-- **主分支（`main`）保持线性历史，不要有 merge commit**。合入改动用 `git cherry-pick`、`git rebase` 或 squash，不要用 `git merge`。
-- **提交信息格式**：若该提交有明显针对的作用域，写 `scope: Xxx xxxx`；否则直接写 `Xxx xxxx`。scope 取主要受影响的 crate 名（如 `unlit_wgpu`、`unlit3d`、`xtask`）或作用域名（如`docs`、`ci`），跨 crate 时取改动量最大的那个。标题行（subject）用英文、首字母大写、不加句号；正文用英文，说明动机与影响。
+- **主分支（`main`）保持线性历史，不要有 merge commit**。合入改动用 `git cherry-pick`、`git rebase` 或 `git merge --squash`，不要用 `git merge`。
+
+## 提交信息格式约定
+
+提交信息需满足以下格式：
+```
+<type>[optional scope]: <description>
+
+[optional body]
+
+[optional footer(s)]
+```
+提交信息用英文，不得含emoji。`<description>`首字母大写，末尾不带句号。`body`和`footer`首字母大小，末尾带句号。其中`<type>`可以是：
+| Type       | Purpose                        |
+| ---------- | ------------------------------ |
+| `feat`     | New feature                    |
+| `fix`      | Bug fix                        |
+| `docs`     | Documentation only             |
+| `style`    | Formatting/style (no logic)    |
+| `refactor` | Code refactor (no feature/fix) |
+| `perf`     | Performance improvement        |
+| `test`     | Add/update tests               |
+| `build`    | Build system/dependencies      |
+| `ci`       | CI/config changes              |
+| `chore`    | Maintenance/misc               |
+| `revert`   | Revert commit                  |
 
 ## 常用命令
 
