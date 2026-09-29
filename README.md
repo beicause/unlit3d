@@ -181,9 +181,12 @@ The tests fall into three layers, by how close they sit to the code they check:
   re-blessed with `SNAPSHOT_UPDATE=1`.
 
 All snapshot baselines therefore live in
-[`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule; clone it
-with `git submodule update --init`. After an intentional rendering change,
-re-bless the affected snapshots and review the image diff before committing.
+[`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule. It is
+marked `update = none`, so a project that depends on this one through git fetches
+no snapshots it would never compare against; clone it here, where the tests do use
+it, with `git submodule update --init --checkout`. After an intentional rendering
+change, re-bless the affected snapshots and review the image diff before
+committing.
 Because the baselines come from one GPU stack, another platform's driver can
 score a scene below the threshold with nothing wrong; a frame that does not match
 is therefore written before the test fails, and CI uploads those directories as

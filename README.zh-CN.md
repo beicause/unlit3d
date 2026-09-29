@@ -139,8 +139,10 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   （`SNAPSHOT_UPDATE=1` 重新生成），因为它既是示例也是 CI 的渲染回归检查。
 
 快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
-中，用 `git submodule update --init` 拉取；改动渲染结果后重新生成对应快照，并审查
-图像差异再提交。由于基线来自同一套 GPU 栈，换一个平台的驱动就可能让某个场景低于阈值
+中。它被标记为 `update = none`：把本库当作 git 依赖的项目不会去拉取用不到的快照；
+而这里测试确实要用，所以在本仓库用 `git submodule update --init --checkout` 拉取。
+改动渲染结果后重新生成对应快照，并审查图像差异再提交。由于基线来自同一套 GPU 栈，
+换一个平台的驱动就可能让某个场景低于阈值
 而并没有出错；因此不匹配的帧会在测试失败前被写下（每一趟各写进 `target/` 下的一个
 目录），CI 再把这些目录作为 artifact 上传。
 

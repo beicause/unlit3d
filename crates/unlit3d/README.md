@@ -518,7 +518,8 @@ pixels that come back. The multi-frame snapshot coverage of those scenes lives
 in [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md),
 whose `tests/gpu_scenes.rs` compares them against the SSIMULACRA2 snapshots under
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md).
-Clone the submodule with `git submodule update --init`; re-bless intentional
+Clone the submodule here with `git submodule update --init --checkout`, which is
+what gets past its `update = none`; re-bless intentional
 changes with `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples` and review
 the image diff. Where each test layer sits
 across the workspace, and what CI runs, is in the

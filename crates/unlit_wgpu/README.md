@@ -682,7 +682,9 @@ The GPU integration tests render meshes into offscreen textures, read them back
 and compare them against the snapshots under `tests/snapshots` with the
 SSIMULACRA2 perceptual metric. That directory is a symlink into the
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
-submodule; clone it with `git submodule update --init`. To re-bless a snapshot
+submodule; clone it here with `git submodule update --init --checkout`, which is
+what gets past the `update = none` that keeps a git dependency from fetching
+snapshots it never compares against. To re-bless a snapshot
 after an intentional change, run the test with `SNAPSHOT_UPDATE=1` set, then
 review the image diff before committing it.
 

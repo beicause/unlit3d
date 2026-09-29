@@ -187,7 +187,8 @@ tie-break 规则决定，API 把这件事留给实现。这样零星几个像素
 
 确有意改动渲染结果后，要重新生成快照，用 `SNAPSHOT_UPDATE=1` 运行，然后在提交前审查
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
-中的图像差异。该 submodule 用 `git submodule update --init` 检出。
+中的图像差异。该 submodule 用 `git submodule update --init --checkout` 检出，
+`--checkout` 是为了越过它的 `update = none`。
 
 ## 测试
 

@@ -241,7 +241,8 @@ To re-bless a snapshot after an intentional rendering change, run with
 `SNAPSHOT_UPDATE=1`, then review the image diffs in
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
 before committing them. That submodule is checked out with
-`git submodule update --init`.
+`git submodule update --init --checkout`, which is what gets past its
+`update = none`.
 
 ## Tests
 

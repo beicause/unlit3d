@@ -60,12 +60,16 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
-      # The snapshots live in the asset submodule. Without it the
+      - uses: actions/checkout@v7.0.1
+
+      # The snapshots live in the asset submodule. `.gitmodules` marks it
+      # `update = none`, so a project that depends on this one through git does
+      # not fetch snapshots it never compares against; the tests here do, and
+      # `--checkout` is what forces past that setting. Without it the
       # `tests/snapshots` symlinks dangle, and a comparison against a missing
       # snapshot stores the frame and passes instead of comparing.
-      - uses: actions/checkout@v7.0.1
-        with:
-          submodules: true
+      - name: Check out the asset submodule
+        run: git submodule update --init --checkout
 
       - name: Install rust toolchain
         run: |
@@ -168,12 +172,15 @@ jobs:
     timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7.0.1
+
       # The snapshots live in the asset submodule, and the wasm test binaries
       # embed them at compile time. Without it the build fails on the
-      # `include_bytes!` rather than comparing against a missing frame.
-      - uses: actions/checkout@v7.0.1
-        with:
-          submodules: true
+      # `include_bytes!` rather than comparing against a missing frame. The
+      # `--checkout` is what gets past the submodule's `update = none`, as in
+      # the build job above.
+      - name: Check out the asset submodule
+        run: git submodule update --init --checkout
 
       - name: Install rust toolchain
         run: |

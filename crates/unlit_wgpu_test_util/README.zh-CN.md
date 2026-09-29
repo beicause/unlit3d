@@ -100,7 +100,9 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
 - **原生平台**按名字在 `tests/snapshots` 下查找（相对于进程的工作目录），并在比较时
   读取，因此可以改写。该目录是指向
   [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
-  submodule 的软链接；用 `git submodule update --init` 拉取。
+  submodule 的软链接；在本仓库用 `git submodule update --init --checkout` 拉取。
+  `--checkout` 是为了越过该 submodule 的 `update = none`——它让把本库当作 git 依赖的
+  项目不必去拉取那些永远用不到的快照。
 - **web 上**没有文件系统，所以字节在编译期由 `include_bytes!` 内嵌进 wasm 二进制，
   相对于宏被调用的那个文件解析。除此之外比较完全相同——帧在浏览器里真的被解码、真的
   被打分。

@@ -387,7 +387,8 @@ GPU 集成测试把场景渲染到离屏目标并检查回读的像素。这些�
 [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md)：
 它的 `tests/gpu_scenes.rs` 把这些场景与
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
-下的 SSIMULACRA2 快照比较。用 `git submodule update --init` 拉取 submodule；有意改动
+下的 SSIMULACRA2 快照比较。在本仓库用 `git submodule update --init --checkout` 拉取
+submodule（`--checkout` 是为了越过它的 `update = none`）；有意改动
 后用 `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples` 重新生成，并审查图像差异。各测试层在整个工作区中的位置，以及 CI 所跑的内容，
 见[根 README](https://github.com/beicause/unlit3d/blob/main/README.zh-CN.md#测试与基准)。
 

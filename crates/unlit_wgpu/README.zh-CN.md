@@ -597,8 +597,10 @@ cargo nextest run -p unlit_wgpu   # 只跑本 crate
 GPU 集成测试把网格渲染到离屏纹理上，回读后与 `tests/snapshots` 下的快照用
 SSIMULACRA2 感知指标比较。该目录是指向
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
-submodule 的软链接；用 `git submodule update --init` 拉取。若确有意改动后要重新生成
-快照，带 `SNAPSHOT_UPDATE=1` 运行对应测试，然后在提交前审查图像差异。
+submodule 的软链接；在本仓库用 `git submodule update --init --checkout` 拉取，
+`--checkout` 是为了越过它的 `update = none`——那让 git 依赖方不必拉取永远用不到的快照。
+若确有意改动后要重新生成快照，带 `SNAPSHOT_UPDATE=1` 运行对应测试，然后在提交前审查
+图像差异。
 
 单元测试位于 `src/` 内，覆盖私有纯逻辑；`tests/` 下的集成测试只经公开 API 使用本
 crate。各测试层在整个工作区中的位置，以及 CI 所跑的内容，见
