@@ -4,7 +4,7 @@
 //! test runs. Natively they are read from the asset submodule beside the test
 //! file, so a mismatch can be re-stored in place with `SNAPSHOT_UPDATE=1`. In a
 //! browser there is no filesystem to read or write, so
-//! [`snapshot!`](crate::snapshot) embeds the baseline into the wasm binary at
+//! [`snapshot!`](macro@crate::snapshot) embeds the baseline into the wasm binary at
 //! the call site instead — and the comparison itself, a real SSIMULACRA2 score,
 //! runs there unchanged.
 //!
@@ -65,7 +65,7 @@ pub const DEFAULT_TOLERANCE: Tolerance = Tolerance {
 
 /// A snapshot baseline, and where its bytes come from.
 ///
-/// Built by [`snapshot!`](crate::snapshot), which is the only way to get one:
+/// Built by [`snapshot!`](macro@crate::snapshot), which is the only way to get one:
 /// the macro is what turns a literal name into an embedded byte array on the
 /// web, and it has to see the name as a literal to do it.
 #[derive(Clone, Copy)]
@@ -508,7 +508,7 @@ fn compare(
     compare_frame_bytes(bytes, rgba, width, height, channel_delta)
 }
 
-/// Where a snapshot named `name` lives, under [`SNAPSHOT_DIR`].
+/// Where a snapshot named `name` lives, under the snapshots directory.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn snapshot_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(SNAPSHOT_DIR).join(name)

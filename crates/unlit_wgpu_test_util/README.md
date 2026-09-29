@@ -92,10 +92,10 @@ sets it.
 
 With `snapshot` enabled, a test can store a rendered frame or assert it against a
 stored one. `assert_image_snapshot` compares the frame against the snapshot named
-`name` within [`DEFAULT_TOLERANCE`]; `assert_image_snapshot_with_tolerance` takes
-an explicit [`Tolerance`].
+`name` within `DEFAULT_TOLERANCE`; `assert_image_snapshot_with_tolerance` takes
+an explicit `Tolerance`.
 
-A [`Tolerance`] names up to two gates, and both must pass:
+A `Tolerance` names up to two gates, and both must pass:
 
 - a **score floor**, on SSIMULACRA2's 0–100 scale, which notices a change spread
   thinly over the whole frame;
@@ -110,7 +110,7 @@ indistinguishable from one chosen to make a failure go away.
 `score_frame_webp` and `store_frame_webp` are the underlying pieces, for a caller
 that wants to report the score rather than assert.
 
-Where the baseline comes from depends on the target, and the [`snapshot!`] macro
+Where the baseline comes from depends on the target, and the `snapshot!` macro
 is what arranges it:
 
 - **Natively** the name is looked up under `tests/snapshots`, relative to the

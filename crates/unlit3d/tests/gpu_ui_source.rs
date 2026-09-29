@@ -7,7 +7,7 @@
 //! state and the frame's load ops.
 //!
 //! The snapshot coverage that used to live here now runs in `unlit3d_examples`
-//! (the `ui_only` and `mesh_and_ui` scenes), whose headless path verifies the
+//! (the `ui_only` and `mesh_and_ui` scenes), whose snapshot tests verify the
 //! same frames against the stored snapshots. Every remaining test renders one
 //! frame to warm egui up — the first frame does not know the font metrics —
 //! and asserts on the second. Nothing here reads the clock or the layout

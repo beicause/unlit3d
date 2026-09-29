@@ -107,8 +107,8 @@ jobs:
 
       # The install is the one step a failure in which can take the test step
       # with it: without nextest there is nothing for `cargo xtask test` to run,
-      # so that step's implicit `success()` skips it. The doc build and the
-      # snapshot comparison below are independent of it and carry on.
+      # so that step's implicit `success()` skips it. The doc build below is
+      # independent of it and carries on.
       #
       # `GITHUB_TOKEN` keeps cargo-binstall on its prebuilt-binary path: without
       # it the release lookup is unauthenticated and can be rate-limited into a
@@ -123,6 +123,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # The suite includes the example's scene snapshots, so this one step is
+      # what verifies the scenes' rendering — twice, once per device tier, since
+      # `cargo xtask test` runs the second pass with `UNLIT3D_DEVICE_TIER=webgl2`.
+      # The same tests then run again in a real browser under `build-wasm`,
+      # which is a WebGL2 implementation the device tiers only imitate.
       - name: Test ${{matrix.os}}
         id: test
         run: cargo xtask test
@@ -154,16 +159,6 @@ jobs:
         run: cargo doc --workspace --no-deps --document-private-items --keep-going
         env:
           RUSTDOCFLAGS: -D warnings
-
-      # The example's scenes are compared against their snapshots by the test
-      # suite, so `cargo xtask test` above already ran them — twice, once per
-      # device tier, which is what the separate WebGL2 pass here used to do by
-      # hand. The scenes and their snapshots are described in `unlit3d_examples`,
-      # and `tests/gpu_scenes.rs` is where they are compared.
-      #
-      # The same tests run in a browser too: `cargo xtask test-wasm` loads them
-      # into a real WebGL2 implementation, which is a stack the device tiers can
-      # only imitate.
 
   build-wasm:
     name: Build and test wasm

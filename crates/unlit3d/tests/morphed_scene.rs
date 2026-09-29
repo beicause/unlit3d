@@ -3,7 +3,7 @@
 //! meshes.
 //!
 //! The multi-frame snapshot coverage that used to live here now runs in
-//! `unlit3d_examples` (the `ecs_morphed` scene), whose headless path verifies
+//! `unlit3d_examples` (the `ecs_morphed` scene), whose snapshot test verifies
 //! the same frames against the stored snapshots.
 
 pub mod common;

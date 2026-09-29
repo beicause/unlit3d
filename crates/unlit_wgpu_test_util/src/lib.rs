@@ -37,9 +37,8 @@ pub mod browser;
 /// Drive a future to completion on the calling thread.
 ///
 /// The harness's own entry points already do this, so this is for a
-/// synchronous caller that has to build a [`Ctx`] itself — the example's
-/// headless capture path, which is not a test. It cannot be used on the web,
-/// where a browser tab has nothing to block on.
+/// synchronous caller that has to build a [`Ctx`] itself. It cannot be used on
+/// the web, where a browser tab has nothing to block on.
 #[cfg(not(target_arch = "wasm32"))]
 pub use pollster::block_on;
 
@@ -100,9 +99,8 @@ impl Ctx {
     ///
     /// Asynchronous because wgpu's adapter and device requests are: on the web
     /// they wrap promises that only settle in a later task, and a browser has
-    /// no second thread to block on. A synchronous caller that is not a test —
-    /// the example's headless capture — drives this through
-    /// [`block_on`](crate::block_on).
+    /// no second thread to block on. A synchronous caller drives this through
+    /// [`block_on`].
     pub async fn headless() -> Ctx {
         Ctx::headless_for(DeviceTier::from_env()).await
     }
