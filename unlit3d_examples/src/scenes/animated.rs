@@ -84,6 +84,7 @@ pub static SCENE: SceneDef = SceneDef {
     title: "Animated grid",
     description: "a grid of cubes filling, moving and recycling over eight frames",
     size: TEST_SIZE,
+    baseline: Some(TEST_SIZE),
     frames: STEPS.len() as u32,
     step_seconds: Some(SEQUENCE_STEP),
     samples: 1,

@@ -7,6 +7,11 @@ mod cli;
 #[cfg(target_os = "android")]
 pub mod android;
 
+/// Presentation a pointer press asks for: fullscreen in the browser, and the
+/// landscape lock only fullscreen permits. A no-op away from the web.
+mod web;
+
+use std::collections::VecDeque;
 use std::io::Write;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -21,6 +26,7 @@ use unlit3d::winit::WindowSurface;
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
 use unlit_wgpu::resources::ResourceGraph;
+use unlit_wgpu::scene::ViewportRect;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
@@ -202,6 +208,11 @@ fn run_headless_scene(
     // A scene's own snapshots only describe a run that reproduces the scene's
     // stored settings. Overriding the size, the frame count or the UI makes a
     // custom capture instead, which compares against `--snapshot <PATH>`.
+    //
+    // `--letterbox` is not part of this because it needs no entry: a scene's
+    // baseline is its own snapshot size, so letterboxing at that size fits the
+    // whole target and draws exactly the same frame. A letterbox only means
+    // something alongside `--size`, which is already covered here.
     let reproduces_scene = args.size.is_none() && args.frames.is_none() && !args.no_ui;
     if args.update && args.snapshot.is_none() && !reproduces_scene {
         stderr(
@@ -220,6 +231,10 @@ fn run_headless_scene(
             ui: def.ui && !args.no_ui,
             selector: false,
             reproducible: true,
+            // A capture draws at the size it was asked for, which the stored
+            // snapshots were taken at, so letterboxing is off unless the run is
+            // a deliberate capture of the fitted picture.
+            letterbox: args.letterbox,
             // A capture steps the sequence once per frame, so it draws exactly
             // the frames the snapshots froze.
             sequence_step: None,
@@ -233,6 +248,12 @@ fn run_headless_scene(
             bind_offscreen_target(world, renderer, &ctx.device, size, def.samples, def.depth)
         })
         .expect("the renderer is a resource entity");
+
+    // The region the content is drawn into, published before the first frame
+    // the way a frame loop publishes it: the whole target, or the letterboxed
+    // part of it when the run asked for one. A source reads it while building
+    // its scene, so it has to be stated before the first render.
+    set_frame_viewport(world, scene.viewport.map(FrameViewport));
 
     let (width, height) = size;
     let bytes_per_pixel = HEADLESS_FORMAT
@@ -466,6 +487,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         last_frame: Instant::now(),
         initial_size: args.size.unwrap_or(scene.size),
         initial_scene: scene,
+        fullscreen: web::FullscreenRequest::new(),
     };
 
     // Native runs the loop on this thread. The web hands the app to the
@@ -530,6 +552,10 @@ struct App {
     initial_size: (u32, u32),
     /// The scene the example starts with; a switch replaces it.
     initial_scene: &'static scenes::SceneDef,
+    /// What the first press on the window asks the platform for, in the
+    /// browser: fullscreen, and then the landscape lock a fullscreen phone
+    /// wants.
+    fullscreen: web::FullscreenRequest,
 }
 
 /// The GPU context a scene draws with, requested asynchronously.
@@ -647,10 +673,25 @@ struct Scene {
     /// Translates the window's events into the world's input events. The
     /// headless path never feeds it, so its state stays idle.
     input: WinitInput,
-    /// The render target size, in pixels.
+    /// The size the scene's content is drawn at, in pixels: the target's own,
+    /// or the letterboxed part of it when [`Self::viewport`] is set.
+    ///
+    /// This is what the scene's camera is built for and what its behaviour is
+    /// handed, so the projection matches what the viewport scales into place.
     size: (u32, u32),
+    /// The region of the target the 3D content is drawn into, or `None` to draw
+    /// into the whole of it.
+    ///
+    /// Set when the scene declares an aspect of its own — see
+    /// [`scenes::SceneDef::baseline`] — so a target of any shape shows the same
+    /// picture at a different scale rather than showing more of it.
+    viewport: Option<ViewportRect>,
     /// The scene's per-frame behaviour and snapshot table.
     control: SceneControl,
+    /// The frame-rate measurement the windowed shell's readout displays.
+    ///
+    /// Unused by the headless path, which has no display to report a rate for.
+    frame_rate: Entity,
     /// The frame index the scene's behaviour is handed.
     frame: u32,
     /// The interval the index advances at, in seconds, or `None` to advance it
@@ -839,10 +880,26 @@ impl ApplicationHandler<UserEvent> for App {
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
-                scene.size = (size.width, size.height);
+                scene.resize((size.width, size.height), self.initial_scene.baseline);
                 self.resize_surface(size.width, size.height);
             }
             WindowEvent::RedrawRequested => self.draw(),
+            // A press is the one gesture a browser accepts as permission to go
+            // fullscreen, and it arrives here as a mouse button or as a touch.
+            // Either way it is handled from the event rather than from the
+            // frame loop, which has no gesture to point at; see [`web`].
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::Touch(winit::event::Touch {
+                phase: winit::event::TouchPhase::Started,
+                ..
+            }) => {
+                if let Some(window) = &self.window {
+                    self.fullscreen.press(window);
+                }
+            }
             _ => {}
         }
     }
@@ -899,6 +956,9 @@ impl App {
                         ui: def.ui,
                         selector: true,
                         reproducible: false,
+                        // A window of any shape shows the same picture, scaled
+                        // to whatever fits.
+                        letterbox: true,
                         // The windowed loop holds each frame of a fixed
                         // sequence for the scene's own step, so it plays at a
                         // watchable pace.
@@ -912,7 +972,7 @@ impl App {
                 self.scene.as_mut().expect("the scene was just built")
             }
         };
-        scene.size = size;
+        scene.resize(size, self.initial_scene.baseline);
 
         // A surface is built once per foreground stretch: the one kept from
         // before a suspension has only to follow the window it was made from,
@@ -1043,11 +1103,16 @@ impl App {
         // image as the renderer's target; it returns `None` for a frame that
         // should be skipped, such as an occluded window's.
         let (world, renderer) = (&scene.world, scene.renderer);
+        let viewport = scene.viewport;
         world
             .with_mut::<Renderer, _>(renderer, |renderer| {
                 let Some(frame) = surface.acquire(world, renderer) else {
                     return;
                 };
+                // Stated before the frame is assembled, so every source that
+                // draws the 3D content records into this region and the UI
+                // overlay, which states none, still covers the whole target.
+                set_frame_viewport(world, viewport.map(FrameViewport));
                 renderer.render(world);
                 let queue = world
                     .get::<wgpu::Queue>(renderer.context().queue)
@@ -1085,12 +1150,20 @@ impl Scene {
             capabilities,
         );
         let renderer = world.spawn((Renderer::new(context),));
-        let control = (def.build)(&mut world, context, renderer, size, options);
-
+        // The scene's content is built for the region it will be drawn into,
+        // not for the whole target: a camera built for the target's aspect
+        // would be sheared back out to it by the viewport. A run that does not
+        // letterbox — every capture — draws into the whole target, so its
+        // content size is the target's own and nothing about it changes.
+        let (viewport, content) = letterbox(def.baseline, size, options.letterbox);
+        let control = (def.build)(&mut world, context, renderer, content, options);
         let input = WinitInput::new(&mut world);
         // The selector's switch component lives in every world; only a windowed
         // run mounts the panel that writes it.
         let switch = world.spawn((SceneSwitch(None),));
+        // The frame-rate component likewise, so both paths build the same
+        // world shape and only the windowed run mounts the panel reading it.
+        let frame_rate = world.spawn((FrameRate::default(),));
 
         // The UI source drives the scene's own panels — and, in a windowed
         // run, the selector panel. A headless scene without UI mounts none.
@@ -1111,14 +1184,17 @@ impl Scene {
 
         if options.selector {
             mount_selector(&mut world, switch, def);
+            mount_frame_rate(&mut world, frame_rate);
         }
 
         Self {
             world,
             renderer,
             input,
-            size,
+            size: content,
+            viewport,
             control,
+            frame_rate,
             frame: 0,
             sequence_step: options.sequence_step,
             sequence_clock: 0.0,
@@ -1127,8 +1203,26 @@ impl Scene {
         }
     }
 
+    /// Re-state the target's size, re-letterboxing the content for its shape.
+    ///
+    /// Called on every resize and on the first frame that knows the window's
+    /// size, so the projection, the region the content is drawn into and the
+    /// size the scene's behaviour is handed all follow the target together.
+    fn resize(&mut self, target: (u32, u32), baseline: Option<(u32, u32)>) {
+        let (viewport, content) = letterbox(baseline, target, true);
+        self.size = content;
+        self.viewport = viewport;
+    }
+
     /// Advance the scene by `delta_time` seconds.
     fn advance(&mut self, delta_time: f32) {
+        // Measured before anything else, so the reading covers the whole frame
+        // — input, behaviour, render and present — and not just the part
+        // between here and the next call.
+        self.world
+            .with_mut::<FrameRate, _>(self.frame_rate, |rate| rate.push(delta_time))
+            .expect("the frame-rate component exists");
+
         // The frame's input events run the world's behaviour components. The
         // UI source and the dispatcher read the same list, and the caller
         // clears it once both have: this is the whole input step, and doing it
@@ -1210,6 +1304,107 @@ fn mount_selector(world: &mut World, switch: Entity, current: &'static scenes::S
     }),));
 }
 
+/// The frame rate the windowed shell reports, as a component so the panel that
+/// displays it and the loop that measures it share one value.
+///
+/// It lives in the world like any other behaviour state rather than being
+/// captured by the panel's closure: a panel may run several times in one frame
+/// when egui redoes a layout, and a panel must not reach for its own
+/// [`UiPanel`], so the measurement belongs in a sibling component.
+#[derive(Default)]
+struct FrameRate {
+    /// The frames measured so far, capped at [`FrameRate::WINDOW`].
+    ///
+    /// A sliding window rather than a running mean: a scene that stalls once
+    /// should not drag the reading down for the rest of the session, and a rate
+    /// that has just changed should show up within a few frames.
+    samples: VecDeque<f32>,
+}
+
+impl FrameRate {
+    /// How many frames the reading averages over.
+    ///
+    /// About a second at 60 Hz: long enough that the number does not flicker
+    /// with every frame, short enough that a change is visible promptly.
+    const WINDOW: usize = 60;
+
+    /// Record one frame's duration, in seconds.
+    fn push(&mut self, delta: f32) {
+        if self.samples.len() == Self::WINDOW {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(delta);
+    }
+
+    /// The mean frame time over the window, in seconds, or `None` before any
+    /// frame was measured.
+    fn mean_seconds(&self) -> Option<f32> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let total: f32 = self.samples.iter().sum();
+        Some(total / self.samples.len() as f32)
+    }
+
+    /// The reading as `"60.0 fps · 16.7 ms"`.
+    ///
+    /// The frame time is shown next to the rate because the two answer
+    /// different questions: the rate is what a display is judged against, while
+    /// the milliseconds are what a budget is spent in.
+    fn text(&self) -> String {
+        match self.mean_seconds() {
+            Some(seconds) if seconds > 0.0 => {
+                format!("{:.1} fps · {:.1} ms", 1.0 / seconds, seconds * 1e3)
+            }
+            // The first frame has no previous one to measure against.
+            _ => "— fps".to_owned(),
+        }
+    }
+}
+
+/// Mount the frame-rate readout in the window's top-right corner.
+///
+/// An [`egui::Area`] rather than a window: it is pinned, not something the user
+/// can drag away or accidentally resize, and `interactable(false)` keeps it
+/// from swallowing a click meant for the scene underneath it.
+fn mount_frame_rate(world: &mut World, rate: Entity) {
+    world.spawn((UiPanel::new(move |world, _entity, ui| {
+        let text = world
+            .with_mut::<FrameRate, _>(rate, |rate| rate.text())
+            .expect("the frame-rate component exists");
+        egui::Area::new(egui::Id::new("unlit3d::frame-rate"))
+            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(egui::RichText::new(text).monospace());
+                });
+            });
+    }),));
+}
+
+/// The region a scene's content is drawn into and the size its camera is built
+/// for, for a `target`-pixel render target.
+///
+/// `baseline` is the aspect to keep, or `None` for a scene with no aspect of
+/// its own — a UI-only one — which draws into the whole target. `letterbox`
+/// turns the whole mechanism off, which is what the headless path wants: its
+/// captures are the scene's own size and must stay comparable with the stored
+/// snapshots.
+fn letterbox(
+    baseline: Option<(u32, u32)>,
+    target: (u32, u32),
+    letterbox: bool,
+) -> (Option<ViewportRect>, (u32, u32)) {
+    match baseline.filter(|_| letterbox) {
+        Some(baseline) => (
+            Some(scenes::baseline_viewport(baseline, target)),
+            scenes::content_size(baseline, target),
+        ),
+        None => (None, target),
+    }
+}
+
 /// Accumulate `delta_time` into `clock` and report whether a `step`-long
 /// interval has passed, subtracting it from the clock if so.
 ///
@@ -1228,7 +1423,7 @@ fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::tick;
+    use super::{FrameRate, letterbox, tick};
 
     #[test]
     fn a_clock_reaches_its_step_only_after_enough_time() {
@@ -1259,5 +1454,67 @@ mod tests {
         assert!(tick(&mut clock, 0.5, 0.0));
         assert_eq!(clock, 0.0, "the surplus is used up");
         assert!(!tick(&mut clock, 0.5, 0.0));
+    }
+
+    #[test]
+    fn the_frame_rate_reads_nothing_until_a_frame_was_measured() {
+        let rate = FrameRate::default();
+        assert_eq!(rate.mean_seconds(), None);
+        assert_eq!(rate.text(), "— fps");
+    }
+
+    #[test]
+    fn the_frame_rate_averages_its_window_and_reports_both_units() {
+        let mut rate = FrameRate::default();
+        // A steady 16 ms a frame is a little over 60 fps.
+        for _ in 0..FrameRate::WINDOW {
+            rate.push(0.016);
+        }
+        let mean = rate.mean_seconds().expect("a measured frame");
+        assert!((mean - 0.016).abs() < 1e-6);
+        assert_eq!(rate.text(), "62.5 fps · 16.0 ms");
+    }
+
+    #[test]
+    fn the_frame_rate_window_slides_rather_than_averaging_the_session() {
+        let mut rate = FrameRate::default();
+        // A long slow stretch, then enough fast frames to fill the window
+        // again: the reading has to follow, or a scene that stalled once would
+        // read slow for the rest of the session.
+        for _ in 0..FrameRate::WINDOW * 2 {
+            rate.push(0.1);
+        }
+        for _ in 0..FrameRate::WINDOW {
+            rate.push(0.01);
+        }
+        assert_eq!(rate.samples.len(), FrameRate::WINDOW);
+        let mean = rate.mean_seconds().expect("a measured frame");
+        assert!((mean - 0.01).abs() < 1e-6, "got {mean}");
+    }
+
+    #[test]
+    fn only_a_scene_with_a_baseline_and_a_window_letterboxes() {
+        // The windowed path keeps a declared baseline's aspect.
+        let (viewport, content) = letterbox(Some((960, 720)), (1600, 600), true);
+        assert_eq!(content, (800, 600), "the camera is built for the region");
+        let viewport = viewport.expect("a letterbox is stated");
+        assert_eq!((viewport.width, viewport.height), (800.0, 600.0));
+        assert_eq!(viewport.x, 400.0, "centred horizontally");
+
+        // The headless path never does: its captures are the scene's own size.
+        assert_eq!(
+            letterbox(Some((960, 720)), (1600, 600), false),
+            (None, (1600, 600))
+        );
+
+        // A scene with no aspect of its own draws into the whole target, which
+        // is what a UI-only scene wants at any size.
+        assert_eq!(letterbox(None, (1600, 600), true), (None, (1600, 600)));
+
+        // A target of the baseline's own shape needs no bars.
+        let (viewport, content) = letterbox(Some((960, 720)), (960, 720), true);
+        assert_eq!(content, (960, 720));
+        let viewport = viewport.expect("a letterbox is stated");
+        assert_eq!((viewport.x, viewport.y), (0.0, 0.0));
     }
 }

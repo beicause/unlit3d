@@ -22,6 +22,7 @@ pub static SCENE: SceneDef = SceneDef {
     title: "Skinned cube",
     description: "a cube bent by a two-joint skin over six frames",
     size: TEST_SIZE,
+    baseline: Some(TEST_SIZE),
     frames: FRAMES as u32,
     step_seconds: Some(SEQUENCE_STEP),
     samples: 1,

@@ -149,6 +149,7 @@ pub static SCENE: SceneDef = SceneDef {
     title: "Mesh topologies",
     description: "every primitive topology, indexed and non-indexed",
     size: TEST_SIZE,
+    baseline: Some(TEST_SIZE),
     frames: 1,
     step_seconds: None,
     samples: 1,

@@ -49,7 +49,17 @@ pollster.workspace = true
 # The logger backend and panic hook forward to the browser console.
 console_error_panic_hook.workspace = true
 console_log.workspace = true
+# The browser's fullscreen and screen-orientation APIs, with the bindings that
+# reach them.
+wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = [
+    "OrientationLockType",
+    "OrientationType",
+    "Screen",
+    "ScreenOrientation",
+    "Window",
+] }
 
 # Winit needs one of its Android activity backends selected to build for
 # Android, and the choice belongs to whoever starts the event loop. Picking it

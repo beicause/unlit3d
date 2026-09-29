@@ -4,7 +4,7 @@
 //! is the workspace's CI check against `spin_cube.webp`: 30 frames at the
 //! default window size, so a rendering regression fails the build.
 
-use super::{SceneControl, SceneDef, SceneOptions};
+use super::{BASELINE_SIZE, SceneControl, SceneDef, SceneOptions};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
@@ -31,6 +31,7 @@ pub static SCENE: SceneDef = SceneDef {
     title: "Spinning cube",
     description: "the example's own scene: a textured cube with two panels",
     size: (960, 720),
+    baseline: Some(BASELINE_SIZE),
     frames: 30,
     step_seconds: None,
     samples: SAMPLE_COUNT,

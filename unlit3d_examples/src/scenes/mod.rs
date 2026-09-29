@@ -28,6 +28,7 @@ pub mod transparent;
 pub mod ui_only;
 
 use unlit_wgpu::pipeline::UnlitOptions;
+use unlit_wgpu::scene::ViewportRect;
 use unlit3d::prelude::*;
 
 /// Advances a scene's behaviour by one frame.
@@ -75,6 +76,20 @@ pub struct SceneDef {
     pub description: &'static str,
     /// The render target size the scene's snapshots were captured at.
     pub size: (u32, u32),
+    /// The aspect the windowed path keeps the scene's 3D content at, as a
+    /// reference resolution, or `None` for a scene that draws no 3D content and
+    /// so has an aspect to keep.
+    ///
+    /// A scene that declares one is drawn through the largest rectangle of that
+    /// aspect that fits the window, so a wide window and a narrow one show the
+    /// same picture — the wide one larger — instead of the wide one showing
+    /// more. The headless path ignores this and draws at [`Self::size`], which
+    /// the snapshots were captured at.
+    ///
+    /// A UI-only scene declares none: an interface belongs on the whole window,
+    /// and letterboxing it would put bars around a panel that has no aspect of
+    /// its own.
+    pub baseline: Option<(u32, u32)>,
     /// How many frames the headless path draws before finishing.
     pub frames: u32,
     /// How long each frame stays on screen in the windowed loop, in seconds,
@@ -180,6 +195,13 @@ pub struct SceneOptions {
     /// Suppress everything egui animates against the clock, so a captured
     /// frame does not depend on when it was drawn.
     pub reproducible: bool,
+    /// Keep the scene's declared [`SceneDef::baseline`] aspect by drawing its
+    /// content into the largest region of that aspect the target fits.
+    ///
+    /// The windowed path sets this so a window of any shape shows the same
+    /// picture, larger or smaller. The headless path clears it: a capture draws
+    /// at the scene's own size, which its snapshots were taken at.
+    pub letterbox: bool,
     /// Seconds each frame of a fixed-sequence scene stays on screen, or `None`
     /// to advance the sequence once per drawn frame.
     ///
@@ -198,6 +220,19 @@ pub struct SceneOptions {
 
 /// The size the ported test scenes draw at, matching their snapshots.
 pub const TEST_SIZE: (u32, u32) = (256, 192);
+
+/// The aspect the windowed example keeps its 3D content to, as a reference
+/// resolution.
+///
+/// Whatever the window's shape, a scene that declares this baseline is drawn
+/// through the largest rectangle of this aspect that fits the target, so a wide
+/// screen and a narrow one show the same picture — the wide one larger — rather
+/// than the wide one showing more and the narrow one cropping it.
+///
+/// The resolution itself is only the reference the aspect comes from; the
+/// content is scaled to whatever the target allows. It matches the default
+/// window's size and the 4:3 ratio every scene's snapshots were captured at.
+pub const BASELINE_SIZE: (u32, u32) = (960, 720);
 
 /// The format the test scenes render into: sRGB, like the example's window.
 pub const TEST_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -261,6 +296,30 @@ pub fn cube() -> RawMesh {
 /// window being stretched — re-aims instead of stretching.
 pub fn aspect_of(size: (u32, u32)) -> f32 {
     size.0 as f32 / size.1.max(1) as f32
+}
+
+/// The region of a `target`-pixel render target a `baseline`-aspect scene draws
+/// into: the largest rectangle of that aspect that fits, centred.
+///
+/// The content is scaled to this region instead of to the target, so the target
+/// only ever adds bars around the picture — a wide window shows the same view a
+/// narrow one does, larger, rather than more of it. A scene whose camera is
+/// built for the region's aspect draws undistorted inside it.
+pub fn baseline_viewport(baseline: (u32, u32), target: (u32, u32)) -> ViewportRect {
+    ViewportRect::fit_aspect(aspect_of(baseline), target.0.max(1), target.1.max(1))
+}
+
+/// The size a scene's camera should be built for when its content is drawn into
+/// the `baseline`-aspect part of a `target`-pixel render target.
+///
+/// This is the letterboxed region's own size, in whole pixels, so a camera
+/// taking its aspect from it matches what the viewport scales into place: the
+/// two agree exactly rather than approximately, which is what keeps a cube
+/// cubic. A camera built for the target's own size would shear the picture
+/// back out to the target's aspect.
+pub fn content_size(baseline: (u32, u32), target: (u32, u32)) -> (u32, u32) {
+    let viewport = baseline_viewport(baseline, target);
+    (viewport.width as u32, viewport.height as u32)
 }
 
 /// The eye [`camera_view`] looks from.

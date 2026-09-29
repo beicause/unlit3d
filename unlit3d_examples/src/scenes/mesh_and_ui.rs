@@ -22,6 +22,7 @@ pub static SCENE: SceneDef = SceneDef {
     title: "Mesh and UI",
     description: "a cube with the rich egui panel over it, one pass",
     size: TEST_SIZE,
+    baseline: Some(TEST_SIZE),
     frames: 2,
     step_seconds: None,
     samples: 1,

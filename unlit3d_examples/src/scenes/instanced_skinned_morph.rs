@@ -29,6 +29,7 @@ pub static SCENE: SceneDef = SceneDef {
     title: "Instanced skin + morph",
     description: "three cubes sharing one mesh, deformed per instance",
     size: TEST_SIZE,
+    baseline: Some(TEST_SIZE),
     frames: FRAMES as u32,
     step_seconds: Some(SEQUENCE_STEP),
     samples: 1,

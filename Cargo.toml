@@ -23,7 +23,11 @@ log = { version = "0.4", default-features = false, features = ["alloc", "std"] }
 pollster = { version = "0.4.0", default-features = false }
 profiling = { version = "1.0.18", default-features = false }
 smallvec = { version = "1.16.1", default-features = false, features = ["const_generics", "const_new", "union"] }
+wasm-bindgen = "0.2.128"
 wasm-bindgen-futures = "0.4.78"
+# The browser APIs the web build reaches directly — fullscreen and screen
+# orientation. Each crate selects the features it needs.
+web-sys = { version = "0.3.105", default-features = false }
 # `std::time::Instant` panics on `wasm32-unknown-unknown`; this reads the
 # browser's clock there and re-exports `std::time` on every other target.
 web-time = { version = "1.1.0", default-features = false }

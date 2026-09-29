@@ -58,6 +58,7 @@ pub static SCENE: SceneDef = SceneDef {
     title: "Transparent z-sorted panes",
     description: "translucent panes composited back to front over opaque cubes",
     size: TEST_SIZE,
+    baseline: Some(TEST_SIZE),
     frames: 1,
     step_seconds: None,
     samples: 1,
