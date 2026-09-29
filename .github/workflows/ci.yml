@@ -240,7 +240,7 @@ jobs:
 
       - name: Install rust toolchain
         run: |
-          rustup toolchain install stable --no-self-update --profile=minimal
+          rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add aarch64-linux-android
 
       - name: Caching
@@ -273,6 +273,14 @@ jobs:
       # version this project pins, and `cargo ndk` finds it by itself.
       - name: Install cargo-ndk
         run: cargo binstall --no-confirm cargo-ndk
+
+      # The `build` job lints the workspace for the host, which never compiles
+      # the code behind `cfg(target_os = "android")` — the entry point among it.
+      # Linting the target the APK ships is what covers that half, and it runs
+      # before the cross-build because it is the same compilation: a lint error
+      # here is a build error one step later, reported with a line.
+      - name: Clippy (Android target)
+        run: cargo ndk -t arm64-v8a -P 26 clippy --workspace --all-targets --all-features -- -D warnings
 
       # One command for both halves: `cargo ndk` builds the example's shared
       # library into the APK's `jniLibs` directory, then the task runs the
