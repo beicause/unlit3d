@@ -18,9 +18,16 @@ use winit::platform::android::activity::AndroidApp;
 /// rather than reusing one. Suspending and resuming the activity is *not* a
 /// second call: the loop stays alive and the app keeps its state across it.
 ///
-/// The symbol is exported unmangled — a `"Rust"` ABI function — because that is
-/// the name the activity's glue looks up; a panic here is caught and logged by
-/// the glue instead of reaching the activity.
+/// The symbol is exported unmangled — through the `"Rust"` ABI the glue's
+/// `extern` block declares — because that is the name the activity's glue looks
+/// the function up by; a panic here is caught and logged by the glue instead of
+/// reaching the activity. The export itself is the one piece of unsafe code in
+/// the crate: `#[unsafe(no_mangle)]` asserts that no other library exports the
+/// name.
+#[expect(
+    unsafe_code,
+    reason = "exporting the entry point to the Android activity requires `#[unsafe(no_mangle)]`"
+)]
 #[unsafe(no_mangle)]
 pub extern "Rust" fn android_main(app: AndroidApp) {
     crate::init_logging();

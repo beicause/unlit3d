@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![warn(unsafe_code)]
 
 pub mod scenes;
 
