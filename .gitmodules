@@ -1,3 +1,4 @@
 [submodule "unlit3d_asset_files"]
 	path = unlit3d_asset_files
 	url = https://github.com/beicause/unlit3d_asset_files
+    update = none
