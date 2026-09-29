@@ -1372,15 +1372,33 @@ fn mount_frame_rate(world: &mut World, rate: Entity) {
         let text = world
             .with_mut::<FrameRate, _>(rate, |rate| rate.text())
             .expect("the frame-rate component exists");
-        egui::Area::new(egui::Id::new("unlit3d::frame-rate"))
-            .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
-            .interactable(false)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    ui.label(egui::RichText::new(text).monospace());
-                });
-            });
+        frame_rate_readout(ui, &text);
     }),));
+}
+
+/// Draw the frame-rate readout, showing `text`, in the top-right corner of
+/// `ui`'s screen.
+///
+/// The label is set to [`egui::Label::extend`], so the readout grows to fit its
+/// text instead of wrapping it. An anchored area lays its contents out against
+/// the size it remembered from the previous pass, so a reading that is wider
+/// than the last one — the first real reading after the empty placeholder, or
+/// any reading after the rate changes — would otherwise be broken across lines
+/// in a narrow window.
+///
+/// A free function rather than the body of the panel's closure so a test can
+/// drive it against a bare [`egui::Context`]: what it has to get right — one
+/// line, whatever the previous reading was — is a property of the widget tree,
+/// not of the world.
+fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
+    egui::Area::new(egui::Id::new("unlit3d::frame-rate"))
+        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(text).monospace()).extend());
+            });
+        });
 }
 
 /// The region a scene's content is drawn into and the size its camera is built
@@ -1423,7 +1441,70 @@ fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameRate, letterbox, tick};
+    use super::{FrameRate, egui, frame_rate_readout, letterbox, tick};
+
+    /// Every line count the readout laid a text galley out with, for a screen
+    /// of `screen` points showing each of `texts` in turn.
+    ///
+    /// The readout is anchored, and an anchored area lays its contents out
+    /// against the size it remembered from the previous pass, so one pass
+    /// proves nothing: the failure it is prone to only shows once the text
+    /// outgrows what the last pass left room for. `texts` is therefore a
+    /// sequence of readings, one per pass, and the first pass — egui's
+    /// invisible sizing pass — draws no text at all and contributes nothing.
+    fn readout_lines(screen: (f32, f32), texts: &[&str]) -> Vec<usize> {
+        let ctx = egui::Context::default();
+        let mut lines = Vec::new();
+        for text in texts {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(screen.0, screen.1),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| frame_rate_readout(ui, text));
+            // egui panics if a texture delta is dropped unapplied; a real frame
+            // hands it to the integration, and this test discards it.
+            output.textures_delta.clear();
+            for clipped in &output.shapes {
+                if let egui::Shape::Text(text) = &clipped.shape {
+                    lines.push(text.galley.rows.len());
+                }
+            }
+        }
+        lines
+    }
+
+    #[test]
+    fn the_frame_rate_readout_stays_on_one_line() {
+        // The reading is re-laid out every frame, starting from the empty
+        // placeholder, and it grows a digit as the average settles: the readout
+        // must hold one line through all of it, at any window width.
+        for screen in [(1600.0, 900.0), (640.0, 480.0), (320.0, 240.0)] {
+            for texts in [
+                vec!["60.0 fps · 16.7 ms"; 4],
+                vec!["— fps"; 4],
+                vec![
+                    "— fps",
+                    "60.0 fps · 16.7 ms",
+                    "60.0 fps · 16.7 ms",
+                    "100.0 fps · 10.0 ms",
+                ],
+            ] {
+                let lines = readout_lines(screen, &texts);
+                assert!(
+                    !lines.is_empty(),
+                    "the readout drew nothing at {screen:?} {texts:?}"
+                );
+                assert_eq!(
+                    lines,
+                    vec![1; lines.len()],
+                    "screen {screen:?} text {texts:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_clock_reaches_its_step_only_after_enough_time() {
