@@ -9,6 +9,7 @@
 pub mod common;
 
 use common::*;
+use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
 /// The per-vertex displacement of each target: the first tapers the cube's top
@@ -48,10 +49,8 @@ fn camera() -> Camera {
 }
 
 /// A morph variant with no targets is rejected rather than drawn undeformed.
-#[test]
-#[should_panic(expected = "a variant that reads morph positions needs the mesh's morph targets")]
-fn morphing_without_targets_panics() {
-    let ctx = Ctx::headless();
+async fn morphing_without_targets_panics() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
@@ -60,10 +59,8 @@ fn morphing_without_targets_panics() {
 
 /// A mesh whose weights do not match its target count is rejected rather than
 /// read past the end of the packed pose.
-#[test]
-#[should_panic(expected = "a mesh's morph weights must hold one weight per morph target")]
-fn mismatched_morph_weight_count_panics() {
-    let ctx = Ctx::headless();
+async fn mismatched_morph_weight_count_panics() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
@@ -89,10 +86,8 @@ fn mismatched_morph_weight_count_panics() {
 
 /// A morphed mesh drawn without a weight entity is rejected rather than blended
 /// by whatever the frame packed for somebody else.
-#[test]
-#[should_panic(expected = "a mesh with morph targets needs a `MorphBinding`")]
-fn morphing_without_a_weight_binding_panics() {
-    let ctx = Ctx::headless();
+async fn morphing_without_a_weight_binding_panics() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
@@ -111,9 +106,8 @@ fn morphing_without_a_weight_binding_panics() {
 }
 
 /// Several meshes can share one weight entity, and moving it moves all of them.
-#[test]
-fn meshes_can_share_one_morph_weights() {
-    let ctx = Ctx::headless();
+async fn meshes_can_share_one_morph_weights() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
@@ -162,3 +156,17 @@ fn meshes_can_share_one_morph_weights() {
         "the shared weights must reach both meshes"
     );
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    #[should_panic(expected = "a variant that reads morph positions needs the mesh's morph targets")]
+    morphing_without_targets_panics,
+    #[should_panic(expected = "a mesh's morph weights must hold one weight per morph target")]
+    mismatched_morph_weight_count_panics,
+    #[should_panic(expected = "a mesh with morph targets needs a `MorphBinding`")]
+    morphing_without_a_weight_binding_panics,
+    meshes_can_share_one_morph_weights,
+}
+
+gpu_test_main!(all_tests());

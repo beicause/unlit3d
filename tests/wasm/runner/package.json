@@ -1,0 +1,11 @@
+{
+  "name": "unlit3d-wasm-test-runner",
+  "private": true,
+  "type": "module",
+  "description": "Runs the wasm GPU tests in a real browser, one test per request.",
+  "license": "MIT OR Apache-2.0",
+  "dependencies": {
+    "express": "^5.2.1",
+    "playwright": "^1.63.0"
+  }
+}

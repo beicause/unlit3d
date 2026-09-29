@@ -6,7 +6,7 @@
 #![expect(unused_imports, reason = "different test files use different subsets")]
 
 pub use unlit_wgpu_test_util::{
-    Ctx, Frame, assert_image_snapshot, assert_image_snapshot_with_threshold, bg_entry,
+    Ctx, Frame, assert_image_snapshot, assert_image_snapshot_with_tolerance, bg_entry,
     count_pixels_off_background, read_texture_bytes, readback_buffer, rgb, srgb_to_linear_u8,
     texel_bytes,
 };

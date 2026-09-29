@@ -130,6 +130,13 @@ Commands follow the `cargo xtask` convention:
 - **`cargo xtask test`** — `cargo nextest run` over the unit and integration
   tests, then `cargo test --doc` for the doctests nextest does not cover.
   `--release` uses the release profile.
+- **`cargo xtask test-wasm`** — build the GPU tests for
+  `wasm32-unknown-unknown`, bindgen them, and run them in a real browser through
+  WebGL2, one page per test; then load the example and check it drew something.
+  Needs `wasm-bindgen-cli` at the version the workspace resolves,
+  `cargo nextest`, and Node; it installs the runner's own dependencies and a
+  browser, unless `CHROME_PATH` names one to reuse. `--show` opens a visible
+  window to watch a failure happen.
 - **`cargo xtask run-wasm`** — build the web example and serve it from a built-in
   static server (WebGPU needs a secure context; `file://` will not do).
   `--no-serve` only builds it, and `--release` uses the release profile.
@@ -188,11 +195,26 @@ tier still runs after the default one fails.
 cargo xtask test                 # the whole workspace: nextest, then the doctests
 cargo nextest run -p unlit_wgpu  # one crate
 cargo nextest run -E 'test(name)'  # one test
+cargo xtask test-wasm            # the GPU tests again, in a browser
 ```
 
 `nextest` does not run doctests, so `cargo xtask test` follows it with
 `cargo test --doc`. Filtering with `cargo nextest run` is for iterating; it is no
 substitute for the task, and CI runs the task so the two cannot drift.
+
+`cargo xtask test-wasm` runs the rendering crates' GPU tests a second time, on
+`wasm32-unknown-unknown` in a real browser through WebGL2. The test files are the
+same ones; a `harness = false` test target is itself the wasm module, and the
+harness's macros give it the export the page calls. What the browser presents is
+the part no headless device can — a real WebGL2 implementation, with its own
+limits, its own shader translation and its own rasterizer. Because that
+rasterizer is not the one the snapshots were captured on, a `Tolerance` can name
+how far a frame may differ; the cube snapshots use it, and carry the
+measurements behind their bound.
+
+It also starts the example in the browser and checks that it drew a shaded image
+rather than a blank canvas. The GPU tests never start the example, so without
+this a change that compiles and still leaves the page empty would pass them.
 
 Per-crate notes:
 
@@ -201,12 +223,13 @@ Per-crate notes:
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour and deferred commands. |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | Unit tests plus GPU integration tests that render meshes into offscreen textures and compare them against the snapshots under `tests/snapshots` (a symlink into the asset submodule). |
 | [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
-| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | Nothing of its own: it is the harness the other crates' GPU tests use. |
+| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | How the harness itself behaves — the snapshot comparison, and counting the pixels that differ. The GPU tests it makes possible live in the crates above. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`) and the fixed-step playback clock (`src/lib.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
 
 A GPU is needed for the rendering crates' integration tests and for the example.
 On a headless CI runner, Mesa's `lavapipe` serves as the software Vulkan
-implementation.
+implementation. The wasm pass needs none: the browser falls back to software
+WebGL2.
 
 ## Benchmarks
 

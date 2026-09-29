@@ -34,6 +34,38 @@ zerocopy-derive.workspace = true
 unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot"] }
 wgpu = { workspace = true, features = ["noop"] }
 
+# The GPU tests drive the shared registry rather than libtest's generated
+# harness, so one file serves both `cargo nextest` and the browser's wasm
+# build. `wasm-bindgen` is what exports the page's entry point on the web.
+
+[[test]]
+name = "custom_pipeline"
+harness = false
+
+[[test]]
+name = "gpu_ecs"
+harness = false
+
+[[test]]
+name = "gpu_ui_source"
+harness = false
+required-features = ["ui"]
+
+[[test]]
+name = "letterbox"
+harness = false
+
+[[test]]
+name = "morphed_scene"
+harness = false
+
+[[test]]
+name = "skinned_scene"
+harness = false
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen.workspace = true
+
 [features]
 default = ["ui", "winit"]
 ## The [`ui`](crate::ui) module: an egui overlay drawn as a frame source, and

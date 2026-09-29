@@ -11,7 +11,8 @@ publish = false
 [dependencies]
 glam.workspace = true
 log.workspace = true
-# Drives wgpu's async adapter/device requests from the synchronous harness.
+# Drives wgpu's asynchronous adapter and device requests. A browser cannot
+# block on them, so the harness is asynchronous wherever it talks to wgpu.
 pollster.workspace = true
 # For `DeviceTier`/`DeviceCapabilities`: a test that narrows the device to
 # WebGL2's shape has to record the capabilities that go with it, and they have
@@ -32,13 +33,32 @@ version = "0.5"
 default-features = false
 optional = true
 
-# The logger backend `init_logging` installs: `env_logger` reads `RUST_LOG`
-# natively, `console_log` forwards to the browser console on the web.
+# The writing side of the harness. A browser has no filesystem to write a test
+# result to, so its half of the harness reports through `sessionStorage`
+# instead, and these pull in only what building a canvas and an export needs.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The logger backend `init_logging` installs natively: `env_logger` reads
+# `RUST_LOG`.
 env_logger.workspace = true
+# The native test runner, and the HTTP client the wasm proxy drives the browser
+# with. Neither is reachable from a wasm build, whose tests run in a page.
+libtest-mimic.workspace = true
+ureq.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The logger backend `init_logging` installs on the web: `console_log` forwards
+# to the browser console.
 console_log.workspace = true
+# A wasm build creates its adapter from a canvas, which needs the DOM, and
+# publishes its result through an export the page calls.
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+] }
 
 [features]
 snapshot = ["dep:image", "dep:ssimulacra2"]

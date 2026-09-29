@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>unlit3d wasm GPU tests</title>
+    <link rel="icon" href="data:," />
+    <script type="module">
+      import { start } from "./index.js";
+
+      // The verdict travels through sessionStorage, so it has to start empty:
+      // a result left by an earlier test must not be able to answer for this
+      // one.
+      window.sessionStorage.clear();
+
+      // A failure before the harness takes over — a module that will not load,
+      // an adapter the browser refuses — is still this test's failure.
+      start().catch((error) => {
+        window.sessionStorage.test_failure = String(error?.stack ?? error);
+      });
+    </script>
+  </head>
+  <body></body>
+</html>

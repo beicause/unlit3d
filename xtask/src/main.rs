@@ -15,6 +15,7 @@ mod publish;
 mod run_wasm;
 mod step;
 mod test;
+mod test_wasm;
 
 use argh::FromArgs;
 
@@ -30,6 +31,7 @@ fn run() -> Result<(), String> {
     match args.task {
         Task::Check(task) => check::run(task.release),
         Task::Test(task) => test::run(task.release),
+        Task::TestWasm(task) => test_wasm::run(&task),
         Task::RunWasm(task) => run_wasm::run(&task),
         Task::BuildAndroid(task) => build_android::run(&task),
         Task::Publish(task) => publish::run(&task),
@@ -55,6 +57,8 @@ enum Task {
     Check(CheckArgs),
     /// Run the workspace's tests.
     Test(TestArgs),
+    /// Run the GPU tests in a real browser, through wasm and WebGL2.
+    TestWasm(TestWasmArgs),
     /// Build and serve the web example.
     RunWasm(RunWasmArgs),
     /// Build the Android example's shared library and the APK around it.
@@ -87,6 +91,19 @@ struct TestArgs {
     /// build in release mode.
     #[argh(switch)]
     release: bool,
+}
+
+/// Arguments of `cargo xtask test-wasm`.
+#[derive(FromArgs)]
+#[argh(
+    subcommand,
+    name = "test-wasm",
+    description = "run the GPU tests in a real browser through wasm and WebGL2"
+)]
+struct TestWasmArgs {
+    /// show the browser window, to watch a failure happen.
+    #[argh(switch)]
+    show: bool,
 }
 
 /// Arguments of `cargo xtask run-wasm`.

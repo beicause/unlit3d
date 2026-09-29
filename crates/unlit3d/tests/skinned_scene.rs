@@ -8,6 +8,7 @@
 pub mod common;
 
 use common::*;
+use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
 /// Where the camera sits, close enough that a deformation moves many pixels.
@@ -24,10 +25,8 @@ fn camera() -> Camera {
 
 /// A skinned mesh with no joint stream is rejected rather than drawn
 /// undeformed.
-#[test]
-#[should_panic(expected = "a variant that reads joints needs the mesh's joints")]
-fn skinning_without_skin_data_panics() {
-    let ctx = Ctx::headless();
+async fn skinning_without_skin_data_panics() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
@@ -36,10 +35,8 @@ fn skinning_without_skin_data_panics() {
 
 /// A skinned mesh drawn without a pose entity is rejected rather than deformed
 /// by whatever the frame packed for somebody else.
-#[test]
-#[should_panic(expected = "a skinned mesh needs a `SkinBinding`")]
-fn skinning_without_a_pose_binding_panics() {
-    let ctx = Ctx::headless();
+async fn skinning_without_a_pose_binding_panics() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
@@ -52,9 +49,8 @@ fn skinning_without_a_pose_binding_panics() {
 }
 
 /// One pose entity drives two meshes, and moving it moves both.
-#[test]
-fn meshes_can_share_one_skin_pose() {
-    let ctx = Ctx::headless();
+async fn meshes_can_share_one_skin_pose() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
@@ -103,3 +99,15 @@ fn meshes_can_share_one_skin_pose() {
 
     assert_ne!(rest, deformed, "the shared pose must reach both meshes");
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    #[should_panic(expected = "a variant that reads joints needs the mesh's joints")]
+    skinning_without_skin_data_panics,
+    #[should_panic(expected = "a skinned mesh needs a `SkinBinding`")]
+    skinning_without_a_pose_binding_panics,
+    meshes_can_share_one_skin_pose,
+}
+
+gpu_test_main!(all_tests());

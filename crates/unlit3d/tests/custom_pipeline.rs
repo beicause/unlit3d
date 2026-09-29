@@ -12,6 +12,7 @@ use common::*;
 use unlit_wgpu::specialize::{
     RenderPipelineDesc, SpecializedPipeline, Specializer, SpecializerKey,
 };
+use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::pipeline::{FamilyContext, RenderPipelineFactory};
 use unlit3d::prelude::*;
 
@@ -367,11 +368,10 @@ impl RenderPipelineFactory<RenderPipelineDesc> for MeshLayoutFactory {
 
 /// A caller-registered pipeline family draws, with no built-in shader
 /// involved.
-#[test]
-fn a_custom_pipeline_draws_through_the_ecs() {
+async fn a_custom_pipeline_draws_through_the_ecs() {
     use zerocopy::IntoBytes;
 
-    let ctx = Ctx::headless();
+    let ctx = Ctx::headless().await;
 
     // A source with no unlit family at all: the only family is ours.
     let mut world = unlit_ecs::World::new();
@@ -451,9 +451,8 @@ fn a_custom_pipeline_draws_through_the_ecs() {
 /// One family draws several meshes, each through its own mesh bind group: the
 /// pipeline handle is a plain shareable component, and the bind group that
 /// differs per draw is the mesh's, not the pipeline's.
-#[test]
-fn one_pipeline_draws_many_meshes() {
-    let ctx = Ctx::headless();
+async fn one_pipeline_draws_many_meshes() {
+    let ctx = Ctx::headless().await;
     let mut world = unlit_ecs::World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
 
@@ -567,3 +566,12 @@ fn upload(device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[Vertex]) -> wg
     queue.write_buffer(&buffer, 0, vertices.as_bytes());
     buffer
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    a_custom_pipeline_draws_through_the_ecs,
+    one_pipeline_draws_many_meshes,
+}
+
+gpu_test_main!(all_tests());

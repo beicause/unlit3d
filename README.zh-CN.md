@@ -100,6 +100,11 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   profile。
 - **`cargo xtask test`** — 用 `cargo nextest run` 覆盖单元与集成测试，随后
   `cargo test --doc` 补上 nextest 不跑的 doctest。加 `--release` 走 release profile。
+- **`cargo xtask test-wasm`** — 把 GPU 测试构建到 `wasm32-unknown-unknown`、做
+  bindgen，再经由 WebGL2 在真实浏览器里逐个测试各开一个页面运行；随后加载示例并检查
+  它确实画出了东西。需要与工作区解析版本一致的 `wasm-bindgen-cli`、`cargo nextest`
+  与 Node；它会自行安装 runner 的依赖与一个浏览器，除非用 `CHROME_PATH` 指定现成的。
+  `--show` 打开可见窗口以观察失败。
 - **`cargo xtask run-wasm`** — 构建 web 示例并用内置静态服务器提供（WebGPU 需要 secure
   context，`file://` 不行）。`--no-serve` 只构建，`--release` 走 release。
 - **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译示例的动态库放进
@@ -145,11 +150,23 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 cargo xtask test                 # 整个工作区：先 nextest，再 doctest
 cargo nextest run -p unlit_wgpu  # 单个 crate
 cargo nextest run -E 'test(name)'  # 单个测试
+cargo xtask test-wasm            # 同一批 GPU 测试，再在浏览器里跑一遍
 ```
 
 `nextest` 不跑 doctest，因此 `cargo xtask test` 会在其后追加 `cargo test --doc`。
 用 `cargo nextest run` 筛选只适合迭代时用，它不能替代该任务；CI 跑的就是该任务，
 所以两者不会脱节。
+
+`cargo xtask test-wasm` 把渲染 crate 的 GPU 测试再跑一遍：构建到
+`wasm32-unknown-unknown`，经由 WebGL2 在真实浏览器中运行。测试文件是同一批；
+`harness = false` 的测试 target 本身就是那个 wasm 模块，骨架的宏给它生成页面要调用的
+导出。浏览器提供的是无头设备给不了的东西——一个真实的 WebGL2 实现，带着它自己的
+limits、自己的着色器翻译和自己的光栅化器。由于该光栅化器并不是采集快照时所用的那个，
+`Tolerance` 可以指定一帧允许相差多少；立方体快照正是这么用的，并附有其阈值的实测依据。
+
+它还会在浏览器里启动示例，并检查画布上留下的是一幅有明暗的画面、而不是一片空白。
+GPU 测试从不会启动示例，因此没有这一步的话，某个"能编过、但页面仍是空的"改动会照样
+通过。
 
 各 crate 的测试覆盖：
 
@@ -158,11 +175,11 @@ cargo nextest run -E 'test(name)'  # 单个测试
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令。 |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。其多帧快照覆盖位于 `unlit3d_examples`。 |
-| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 自身没有测试：它是其他 crate 的 GPU 测试所使用的骨架。 |
+| [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）与固定步长播放时钟（`src/lib.rs`）。其渲染输出由 CI 的快照任务检查，而不是由 `cargo test` 目标检查。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
-`lavapipe` 作为软件 Vulkan 实现。
+`lavapipe` 作为软件 Vulkan 实现。wasm 那一遍不需要 GPU：浏览器会回退到软件 WebGL2。
 
 ## 基准测试
 

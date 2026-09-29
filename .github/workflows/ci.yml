@@ -234,18 +234,27 @@ jobs:
           if-no-files-found: ignore
 
   build-wasm:
-    name: Build wasm
-    # runtime is normally 30 seconds
-    timeout-minutes: 5
+    name: Build and test wasm
+    # The runner installs a browser, builds the workspace and every wasm test
+    # binary, and then drives one browser page per test. Software WebGL2 is what
+    # makes the last part slow rather than the build.
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
+      # The snapshots live in the asset submodule, and the wasm test binaries
+      # embed them at compile time. Without it the build fails on the
+      # `include_bytes!` rather than comparing against a missing frame.
       - uses: actions/checkout@v7.0.1
+        with:
+          submodules: true
 
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add wasm32-unknown-unknown
 
+      # One cache for the whole job: its two builds share this key, and the
+      # features they differ in are the only reason there are two.
       - name: Caching
         uses: Swatinem/rust-cache@v2
         with:
@@ -253,23 +262,30 @@ jobs:
           env-vars: ImageVersion
           cache-bin: false
 
+      # Host-only, so it compiles the workspace for the machine the task runner
+      # itself runs on rather than for wasm.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --no-default-features -- -Dwarnings
 
-      - name: Build wasm
-        # Not `--all-targets`: the example crate is a `cdylib` as well as a
-        # binary, and on `wasm32-unknown-unknown` both want to write
-        # `unlit3d_examples.wasm`, which cargo warns about as an output
-        # filename collision. The binary is what a browser runs; the library
-        # exists for Android, so only the targets that never produce it are
-        # built here.
-        #
-        # `xtask` is excluded because it is a host-only task runner: its HTTP
-        # server reaches `async-io` and so `errno`, which does not build for
-        # this target. Nothing in the browser or the APK depends on it.
-        run: >
-          cargo build --workspace --exclude xtask
-          --target wasm32-unknown-unknown --bins --tests --benches --examples
+      # `cargo xtask test-wasm` checks this CLI against the `wasm-bindgen` the
+      # workspace resolves, so the version is taken from the workspace rather
+      # than pinned here — a bump then needs no edit to this file.
+      - name: Install wasm-bindgen
+        run: |
+          version=$(cargo metadata --format-version 1 --all-features \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install wasm-bindgen-cli --version="$version"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # Builds the workspace for wasm, bindgens each test binary, and runs them
+      # in a browser. The runner's JS dependencies and a browser are installed
+      # by the subcommand before it starts anything.
+      - name: Test wasm
+        run: cargo xtask test-wasm
 
   build-android:
     name: Build android

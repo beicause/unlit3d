@@ -17,6 +17,7 @@ use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
+use unlit_wgpu_test_util::{gpu_test_main, gpu_tests, snapshot};
 
 /// The UI's logical layout, in points. The physical target scales with the
 /// pixel density, so this stays fixed across densities.
@@ -228,9 +229,8 @@ fn global_group(
     })
 }
 
-#[test]
-fn text_and_button_render_over_the_clear() {
-    let ctx = Ctx::headless();
+async fn text_and_button_render_over_the_clear() {
+    let ctx = Ctx::headless().await;
     let frame = render_ui(&ctx, 1.0);
 
     // Text in the top-left region: the glyphs use egui's light default color,
@@ -250,9 +250,8 @@ fn text_and_button_render_over_the_clear() {
     );
 }
 
-#[test]
-fn opaque_rect_reaches_full_red() {
-    let ctx = Ctx::headless();
+async fn opaque_rect_reaches_full_red() {
+    let ctx = Ctx::headless().await;
     let frame = render_ui(&ctx, 1.0);
 
     // Centre of the opaque red rect (16,120)-(112,168).
@@ -263,9 +262,8 @@ fn opaque_rect_reaches_full_red() {
     );
 }
 
-#[test]
-fn translucent_rect_blends_over_the_clear() {
-    let ctx = Ctx::headless();
+async fn translucent_rect_blends_over_the_clear() {
+    let ctx = Ctx::headless().await;
     let frame = render_ui(&ctx, 1.0);
 
     // Centre of the translucent blue rect (128,120)-(224,168): premultiplied
@@ -285,9 +283,8 @@ fn translucent_rect_blends_over_the_clear() {
 /// corner** is what makes this catch a scissor rectangle stated in points
 /// instead of pixels: the projection would still place the geometry
 /// correctly, but an unscaled clip would cut the rectangle off partway.
-#[test]
-fn ui_lands_in_the_same_place_at_any_pixel_density() {
-    let ctx = Ctx::headless();
+async fn ui_lands_in_the_same_place_at_any_pixel_density() {
+    let ctx = Ctx::headless().await;
     let low = render_ui(&ctx, 1.0);
     let high = render_ui(&ctx, 2.0);
 
@@ -320,9 +317,8 @@ fn ui_lands_in_the_same_place_at_any_pixel_density() {
 /// filtering is visible: nearest keeps a hard edge between the magenta and
 /// white halves and repeats each texel, while the default linear filter
 /// blends across the whole stretch.
-#[test]
-fn nearest_sampling_options_reach_the_texture() {
-    let ctx = Ctx::headless();
+async fn nearest_sampling_options_reach_the_texture() {
+    let ctx = Ctx::headless().await;
     let mut image: Option<egui::TextureHandle> = None;
     let frame = render_ui_with(&ctx, 1.0, |ui| {
         let handle = image.get_or_insert_with(|| load_test_image(ui));
@@ -346,9 +342,8 @@ fn nearest_sampling_options_reach_the_texture() {
     );
 }
 
-#[test]
-fn ui_matches_snapshot() {
-    let ctx = Ctx::headless();
+async fn ui_matches_snapshot() {
+    let ctx = Ctx::headless().await;
     // The image texture is registered once and reused, so the measured frame
     // redraws the same texture rather than reallocating it.
     let mut image: Option<egui::TextureHandle> = None;
@@ -357,7 +352,7 @@ fn ui_matches_snapshot() {
         let handle = image.get_or_insert_with(|| load_test_image(ui));
         draw_test_image(ui, handle);
     });
-    assert_image_snapshot("egui_ui.webp", &frame, frame.width, frame.height);
+    assert_image_snapshot(snapshot!("egui_ui.webp"), &frame, frame.width, frame.height);
 }
 
 /// A magenta-and-white 2x1 image registered with egui: the left half is
@@ -389,9 +384,8 @@ fn draw_test_image(ui: &mut egui::Ui, texture: &egui::TextureHandle) {
 /// exercises the [`egui::ImageData`] -> texture path that the text tests
 /// never touch. Drawing text beside it makes the frame carry two distinct
 /// textures, so the material groups cannot be confused with one another.
-#[test]
-fn user_image_uploads_and_renders() {
-    let ctx = Ctx::headless();
+async fn user_image_uploads_and_renders() {
+    let ctx = Ctx::headless().await;
     let mut image: Option<egui::TextureHandle> = None;
 
     let frame = render_ui_with(&ctx, 1.0, |ui| {
@@ -427,9 +421,8 @@ fn user_image_uploads_and_renders() {
 ///
 /// The leak is invisible in one cycle, so this runs two identical ones and
 /// compares: a leak accumulates one slot per cycle.
-#[test]
-fn freeing_a_texture_releases_its_graph_nodes() {
-    let ctx = Ctx::headless();
+async fn freeing_a_texture_releases_its_graph_nodes() {
+    let ctx = Ctx::headless().await;
     let screen = ScreenDescriptor {
         size_in_pixels: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
@@ -500,9 +493,8 @@ fn freeing_a_texture_releases_its_graph_nodes() {
 /// geometry buffers, each texture's view and material, and its samplers. Only
 /// the nodes the test registered itself — the two uniforms and the bind group
 /// binding them — are left in the graph afterwards.
-#[test]
-fn releasing_the_integration_returns_its_graph_nodes() {
-    let ctx = Ctx::headless();
+async fn releasing_the_integration_returns_its_graph_nodes() {
+    let ctx = Ctx::headless().await;
     let screen = ScreenDescriptor {
         size_in_pixels: [WIDTH, HEIGHT],
         pixels_per_point: 1.0,
@@ -561,3 +553,19 @@ fn releasing_the_integration_returns_its_graph_nodes() {
          the integration leaked {before} - 3 nodes"
     );
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    text_and_button_render_over_the_clear,
+    opaque_rect_reaches_full_red,
+    translucent_rect_blends_over_the_clear,
+    ui_lands_in_the_same_place_at_any_pixel_density,
+    nearest_sampling_options_reach_the_texture,
+    ui_matches_snapshot,
+    user_image_uploads_and_renders,
+    freeing_a_texture_releases_its_graph_nodes,
+    releasing_the_integration_returns_its_graph_nodes,
+}
+
+gpu_test_main!(all_tests());

@@ -32,6 +32,7 @@ use unlit_wgpu::specialize::{
     SpecializedPipeline, Specializer as _, SurfaceKey, SurfaceSpecializer,
 };
 use unlit_wgpu::texel_array::Array;
+use unlit_wgpu_test_util::{Tolerance, gpu_test_main, gpu_tests, snapshot};
 use zerocopy::IntoBytes;
 
 const WIDTH: u32 = 256;
@@ -39,6 +40,58 @@ const HEIGHT: u32 = 192;
 /// Background the tests clear to, as normalized sRGB components.
 const CLEAR: [f64; 3] = [0.05, 0.05, 0.08];
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// The tolerance the two cube snapshots are compared within.
+///
+/// Both frames are cubes seen at an angle: their silhouette and the edges
+/// between their faces are hard, and in `unlit_cubes_instanced` the cubes
+/// overlap, so which of two cubes owns a pixel where they meet is the depth
+/// test's to decide. Where two depths are equal, or where a multisampled edge
+/// resolves differently, that is the implementation's choice rather than the
+/// API's, so a second implementation moves a scatter of pixels along those
+/// edges while drawing the same picture.
+///
+/// The perceptual score is weak on these frames, and alone would be the wrong
+/// gate. A differing pixel sits on a hard edge, where the metric is most
+/// sensitive, so the scatter costs far more than its area suggests — enough to
+/// turn the metric's own ranking inside out: the WebGL2 frame of
+/// `unlit_cubes_instanced`, which draws the cubes in the right places with the
+/// right colors, scores 48.97, *below* the 57.38 that shifting that whole frame
+/// one pixel scores. A gate the metric cannot order correctly must not be the
+/// one deciding these frames, which is what the outlier allowance is for.
+///
+/// The score is still worth bounding, just loosely: 45 sits below the lowest
+/// score a correct frame reached rather than just under it, so it catches a
+/// frame that has collapsed — the picture missing, or every vertex in the wrong
+/// place — without re-deciding the edge scatter the outlier allowance already
+/// judges. 57.38 passing it is the accepted cost, and the outlier allowance
+/// catches that regression instead.
+///
+/// Measured against the stored snapshots, as score / outliers:
+///
+/// | frame | `unlit_cubes_instanced` | `unlit_cube_textured` |
+/// |-------|-------------------------|-----------------------|
+/// | Vulkan (where they were captured) | 95.88 / 0.000% | 100.00 / 0.000% |
+/// | native GL | 73.11 / 0.157% | 100.00 / 0.000% |
+/// | Chromium on WebGL2 | 48.97 / 0.385% | 79.28 / 0.118% |
+/// | regression: shifted one pixel | 57.38 / 2.979% | 3.20 / 5.015% |
+/// | regression: red cube 0.05 nearer | — / 1.750% | — |
+/// | regression: drawn 10/255 darker | 28.79 / 54.688% | 27.49 / 50.635% |
+/// | regression: the frame blanked | -301.81 / 54.688% | -415.07 / 50.781% |
+///
+/// 1% sits in the widest gap the outlier measurements leave: every correct frame
+/// stays under 0.4%, and the mildest regression measured is over four times past
+/// it. The cost is that a change staying within `channel_delta` of nearly every
+/// pixel is invisible here — moving one cube 0.02 units nearer reads 0.60%,
+/// under this bound — so this tolerance is for a second implementation, not a
+/// substitute for the test's own assertions. What covers the property the frames
+/// are really about is the structural check beside each one: that the three
+/// cubes land in the order their transforms put them, each in its own color.
+const CUBE_TOLERANCE: Tolerance = Tolerance {
+    min_score: Some(45.0),
+    max_outliers: Some(0.01),
+    channel_delta: 8,
+};
 
 /// A uniformly scaled, Y-rotated instance at `translation`.
 fn placed(
@@ -566,9 +619,8 @@ fn vertex_color_options(device: &wgpu::Device) -> UnlitOptions {
     )
 }
 
-#[test]
-fn renders_a_cube_over_the_clear_color() {
-    let ctx = Ctx::headless();
+async fn renders_a_cube_over_the_clear_color() {
+    let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
 
@@ -596,9 +648,8 @@ fn renders_a_cube_over_the_clear_color() {
     );
 }
 
-#[test]
-fn base_color_reaches_the_frame() {
-    let ctx = Ctx::headless();
+async fn base_color_reaches_the_frame() {
+    let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
 
     let brightest = |base_color: [f32; 4]| {
@@ -620,9 +671,8 @@ fn base_color_reaches_the_frame() {
     );
 }
 
-#[test]
-fn depth_ordering_hides_the_far_instance() {
-    let ctx = Ctx::headless();
+async fn depth_ordering_hides_the_far_instance() {
+    let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
 
     // A far red cube and a near green one, drawn far-first so a missing depth
@@ -648,9 +698,8 @@ fn depth_ordering_hides_the_far_instance() {
     );
 }
 
-#[test]
-fn msaa_produces_more_partial_coverage_than_no_msaa() {
-    let ctx = Ctx::headless();
+async fn msaa_produces_more_partial_coverage_than_no_msaa() {
+    let ctx = Ctx::headless().await;
     let instance = placed(0.9, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
 
     // Pixels that are neither fully clear nor fully covered: the
@@ -677,20 +726,23 @@ fn msaa_produces_more_partial_coverage_than_no_msaa() {
     );
 }
 
-#[test]
-fn unlit_cube_matches_snapshot() {
-    let ctx = Ctx::headless();
+async fn unlit_cube_matches_snapshot() {
+    let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
-    assert_image_snapshot("unlit_cube.webp", &frame, frame.width, frame.height);
+    assert_image_snapshot(
+        snapshot!("unlit_cube.webp"),
+        &frame,
+        frame.width,
+        frame.height,
+    );
 }
 
 /// One draw call over several instances: the per-instance transform and base
 /// color must both reach the shader, so every cube lands in its own place with
 /// its own color.
-#[test]
-fn instanced_cubes_match_snapshot() {
-    let ctx = Ctx::headless();
+async fn instanced_cubes_match_snapshot() {
+    let ctx = Ctx::headless().await;
     let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
 
     // A row of cubes at different depths, each with its own base color, all
@@ -743,20 +795,20 @@ fn instanced_cubes_match_snapshot() {
          red x={red:.1}, green x={green:.1}, blue x={blue:.1}"
     );
 
-    assert_image_snapshot(
-        "unlit_cubes_instanced.webp",
+    assert_image_snapshot_with_tolerance(
+        snapshot!("unlit_cubes_instanced.webp"),
         &frame,
         frame.width,
         frame.height,
+        CUBE_TOLERANCE,
     );
 }
 
 /// Without a position stream the geometry is a single point at each instance
 /// origin, so a position-less draw needs no position buffer and still lands
 /// where the per-instance transform puts it.
-#[test]
-fn position_less_variant_draws_points_at_instance_origins() {
-    let ctx = Ctx::headless();
+async fn position_less_variant_draws_points_at_instance_origins() {
+    let ctx = Ctx::headless().await;
     let options = UnlitOptions::standard(&ctx.device).with_flags(UnlitFlags::VERTEX_INSTANCE);
     let fixture = fixture(&ctx, &options, 1);
     assert!(
@@ -802,18 +854,18 @@ fn position_less_variant_draws_points_at_instance_origins() {
     );
 }
 
-#[test]
-fn textured_cube_matches_snapshot() {
-    let ctx = Ctx::headless();
+async fn textured_cube_matches_snapshot() {
+    let ctx = Ctx::headless().await;
     let options = UnlitOptions::standard(&ctx.device);
     let fixture = fixture(&ctx, &options, 4);
     let instance = placed(0.8, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
     let frame = render(&ctx, &fixture, &[instance]);
-    assert_image_snapshot(
-        "unlit_cube_textured.webp",
+    assert_image_snapshot_with_tolerance(
+        snapshot!("unlit_cube_textured.webp"),
         &frame,
         frame.width,
         frame.height,
+        CUBE_TOLERANCE,
     );
 }
 
@@ -822,9 +874,8 @@ fn textured_cube_matches_snapshot() {
 ///
 /// This pins the `LoadOp::Load` path of `begin_pass`, which the other tests
 /// never exercise — they all clear.
-#[test]
-fn a_loaded_color_attachment_keeps_its_contents() {
-    let ctx = Ctx::headless();
+async fn a_loaded_color_attachment_keeps_its_contents() {
+    let ctx = Ctx::headless().await;
     // No MSAA: the pass draws straight into the color texture, so a stored
     // frame survives into a second pass that loads.
     let (context, target) = render_target(&ctx, 1);
@@ -899,11 +950,10 @@ fn uniform(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
     })
 }
 
-#[test]
-fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
+async fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
     use unlit_wgpu::resources::{Resource, ResourceGraph};
 
-    let ctx = Ctx::headless();
+    let ctx = Ctx::headless().await;
     let mut graph = ResourceGraph::new();
 
     let base = graph.insert_strong(uniform(&ctx.device, "test::base"));
@@ -936,9 +986,8 @@ fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
 /// pipeline is bound. A pipeline that kept the base options' depth format
 /// therefore could not be drawn into a color-only target at all, which is what
 /// a UI-only or overlay-only pass needs.
-#[test]
-fn a_color_only_target_draws_a_cube() {
-    let ctx = Ctx::headless();
+async fn a_color_only_target_draws_a_cube() {
+    let ctx = Ctx::headless().await;
     // Specialize for the depth-less target the same way a caller would, then
     // build the pipeline from the result.
     let mut options = vertex_color_options(&ctx.device);
@@ -985,14 +1034,13 @@ fn a_color_only_target_draws_a_cube() {
 /// *and* the padding stripped. Every other readback in the suite is 256 wide,
 /// where the two alignments coincide, so an unpadded copy validates there by
 /// luck and fails on any other width.
-#[test]
-fn a_readback_handles_a_row_that_is_not_copy_aligned() {
+async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
     // 60 RGBA pixels is 240 bytes: a multiple of the buffer alignment (4) but
     // not of the copy row alignment (256), which is exactly the case the
     // harness used to reject.
     const WIDTH: u32 = 60;
     const HEIGHT: u32 = 8;
-    let ctx = Ctx::headless();
+    let ctx = Ctx::headless().await;
 
     let ft = create_render_target(&ctx.device, COLOR_FORMAT, WIDTH, HEIGHT, 1);
     let mut encoder = ctx
@@ -1049,3 +1097,22 @@ fn a_readback_handles_a_row_that_is_not_copy_aligned() {
         }
     }
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    renders_a_cube_over_the_clear_color,
+    base_color_reaches_the_frame,
+    depth_ordering_hides_the_far_instance,
+    msaa_produces_more_partial_coverage_than_no_msaa,
+    unlit_cube_matches_snapshot,
+    instanced_cubes_match_snapshot,
+    position_less_variant_draws_points_at_instance_origins,
+    textured_cube_matches_snapshot,
+    a_loaded_color_attachment_keeps_its_contents,
+    resource_graph_rebuilds_a_dependent_after_a_resource_change,
+    a_color_only_target_draws_a_cube,
+    a_readback_handles_a_row_that_is_not_copy_aligned,
+}
+
+gpu_test_main!(all_tests());

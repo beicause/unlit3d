@@ -2,10 +2,28 @@
 #
 # `cargo xtask test` is how the workspace's tests are run; it calls nextest for
 # the unit and integration tests, then `cargo test --doc` for the doctests
-# nextest does not cover.
+# nextest does not cover. `cargo xtask test-wasm` is the browser pass, and uses
+# the `wasm` profile below.
 
 [profile.default]
 # Keep going after the first failure instead of cancelling the run. Nextest's
 # default cancels the rest, and since every GPU test builds its own device, one
 # early failure would otherwise hide every failure behind it.
 fail-fast = false
+
+# The browser pass, run by `cargo xtask test-wasm`.
+#
+# There the test binary is a native proxy and every trial drives a browser, so
+# the filter selects the trials whose names carry the `[wasm]` marker rather
+# than the suite's ordinary tests — which would otherwise be listed too, and
+# would run in-process against a device the browser was supposed to provide.
+#
+# Each trial opens a page and builds a device, so a browser run is slower than
+# a native one; the timeout is what keeps a wedged page from hanging the suite.
+[profile.wasm]
+default-filter = "test([wasm])"
+slow-timeout = { period = "45s", terminate-after = 2 }
+fail-fast = false
+# A browser that failed once is not worth retrying: a snapshot mismatch or a
+# missing adapter will reproduce, and a retry only doubles the wait.
+retries = 0

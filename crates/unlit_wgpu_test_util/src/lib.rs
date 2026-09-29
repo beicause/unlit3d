@@ -11,6 +11,38 @@ pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 /// Recording is what the harness's backend reports; see [`init_logging`].
 pub use log;
 
+// The registry a test file declares its tests in, and the two runners that
+// drive it: `native` under `cargo nextest`, `browser` in a wasm build. A test
+// file names only the macros, so which runner is in play is not its concern.
+mod registry;
+
+pub use registry::{TestBody, TestEntry, TestFn};
+
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::run;
+
+// The proxy a native build runs in the browser's stead, sending each test to
+// the runner over HTTP. Which of the two the binary is, is decided at run time
+// from the environment.
+#[cfg(not(target_arch = "wasm32"))]
+mod proxy;
+#[cfg(not(target_arch = "wasm32"))]
+pub use proxy::{WASM_TEST_ENV, run_wasm};
+
+#[cfg(target_arch = "wasm32")]
+pub mod browser;
+
+/// Drive a future to completion on the calling thread.
+///
+/// The harness's own entry points already do this, so this is for a
+/// synchronous caller that has to build a [`Ctx`] itself — the example's
+/// headless capture path, which is not a test. It cannot be used on the web,
+/// where a browser tab has nothing to block on.
+#[cfg(not(target_arch = "wasm32"))]
+pub use pollster::block_on;
+
 // ---------------------------------------------------------------------------
 // Logging
 // ---------------------------------------------------------------------------
@@ -65,8 +97,14 @@ impl Ctx {
     /// Create a headless GPU context with the default adapter.
     ///
     /// `UNLIT3D_DEVICE_TIER` narrows the device; see [`Ctx::headless_for`].
-    pub fn headless() -> Ctx {
-        Ctx::headless_for(DeviceTier::from_env())
+    ///
+    /// Asynchronous because wgpu's adapter and device requests are: on the web
+    /// they wrap promises that only settle in a later task, and a browser has
+    /// no second thread to block on. A synchronous caller that is not a test —
+    /// the example's headless capture — drives this through
+    /// [`block_on`](crate::block_on).
+    pub async fn headless() -> Ctx {
+        Ctx::headless_for(DeviceTier::from_env()).await
     }
 
     /// Create a headless GPU context restricted to `tier`.
@@ -77,32 +115,91 @@ impl Ctx {
     /// hardware that has both. The adapter's own limits and capabilities are
     /// what [`DeviceTier::Native`] asks for; the WebGPU baseline's, which is
     /// what [`Ctx::headless`] uses, are what [`DeviceTier::WebGpu`] asks for.
-    pub fn headless_for(tier: DeviceTier) -> Ctx {
+    ///
+    /// Nothing is presented: the context is headless on the web too, where the
+    /// canvas exists only because a browser will not hand out an adapter
+    /// without one.
+    pub async fn headless_for(tier: DeviceTier) -> Ctx {
         init_logging();
-        // From the environment, so `WGPU_BACKEND` selects the backend the same
-        // way it does in an application — which is how the GLES and WebGL2
-        // paths are reached on a machine whose default is Vulkan.
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let adapter =
-            pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
-                .expect("no graphics adapter available");
+        let instance = new_instance();
+
+        // A browser creates a GL context from a canvas, so its adapter request
+        // has to name a surface even though nothing is ever drawn into it. The
+        // surface is dropped once the adapter has been chosen: the device
+        // outlives the surface it was chosen for.
+        #[cfg(target_arch = "wasm32")]
+        let surface = Some(create_surface(&instance));
+        #[cfg(not(target_arch = "wasm32"))]
+        let surface: Option<wgpu::Surface<'static>> = None;
+
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                compatible_surface: surface.as_ref(),
+                ..Default::default()
+            })
+            .await
+            .expect("no graphics adapter available");
         let capabilities = tier.capabilities_of(&adapter);
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("unlit_wgpu_test_util"),
-            required_features: wgpu::Features::empty(),
-            required_limits: tier.limits(&adapter.limits()),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        }))
-        .expect("failed to request device");
+        let (device, queue) = adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: Some("unlit_wgpu_test_util"),
+                required_features: wgpu::Features::empty(),
+                required_limits: tier.limits(&adapter.limits()),
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                memory_hints: wgpu::MemoryHints::Performance,
+                trace: wgpu::Trace::Off,
+            })
+            .await
+            .expect("failed to request device");
+        drop(surface);
         Ctx {
             device,
             queue,
             capabilities,
         }
     }
+}
+
+/// The instance a context's device comes from.
+///
+/// Natively the environment chooses, so `WGPU_BACKEND` selects a backend the
+/// same way it does in an application — which is how the GLES and WebGL2 paths
+/// are reached on a machine whose default is Vulkan.
+fn new_instance() -> wgpu::Instance {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        // A browser has no environment to read, and WebGL2 is what the wasm
+        // suite is for, so the backend is named rather than discovered.
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        descriptor.backends = wgpu::Backends::GL;
+        // WebGL cannot report a fence as done on its own, so a `poll(Wait)`
+        // would never resolve: `AutoFinish` is what makes the backend finish
+        // the fence itself and let a readback complete. See wgpu#4589.
+        descriptor.backend_options.gl.fence_behavior = wgpu::GlFenceBehavior::AutoFinish;
+        wgpu::Instance::new(descriptor)
+    }
+}
+
+/// A canvas for the browser to make a WebGL context from.
+///
+/// The canvas is never attached to the document and never sized: the context
+/// is what the adapter request needs, not the drawing surface.
+#[cfg(target_arch = "wasm32")]
+fn create_surface(instance: &wgpu::Instance) -> wgpu::Surface<'static> {
+    use wasm_bindgen::JsCast as _;
+
+    let canvas = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.create_element("canvas").ok())
+        .and_then(|element| element.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+        .expect("a document to create the test canvas in");
+    instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+        .expect("a surface from the test canvas")
 }
 
 /// Pair a binding slot with a resource.
@@ -336,222 +433,16 @@ pub fn count_pixels_off_background(px: &[u8], background: [f64; 3], tolerance: u
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "snapshot")]
-mod snapshot_impl {
-    use image::ImageEncoder;
-    use ssimulacra2::{ColorPrimaries, Rgb, TransferCharacteristic, compute_frame_ssimulacra2};
-
-    /// Where [`assert_image_snapshot`] looks a snapshot up by name, relative to
-    /// the process's working directory.
-    const SNAPSHOT_DIR: &str = "tests/snapshots";
-
-    /// The perceptual score a frame must reach to match its snapshot.
-    pub const DEFAULT_MIN_SCORE: f64 = 85.0;
-
-    /// What went wrong storing or comparing a snapshot.
-    ///
-    /// The paths and scores a caller reports come from here rather than from a
-    /// panic, so a tool can turn a mismatch into its own exit code.
-    #[derive(Debug)]
-    pub enum SnapshotError {
-        /// The frame's bytes do not describe `width` x `height` RGBA pixels.
-        FrameSize {
-            /// Bytes the frame holds.
-            got: usize,
-            /// Bytes the dimensions require.
-            expected: usize,
-        },
-        /// The snapshot file could not be read or written.
-        Io(std::io::Error),
-        /// The snapshot could not be decoded as WebP.
-        Decode(image::ImageError),
-        /// The snapshot's dimensions differ from the frame's.
-        Dimensions {
-            /// The snapshot's dimensions.
-            snapshot: (u32, u32),
-            /// The frame's dimensions.
-            frame: (u32, u32),
-        },
-        /// The two images could not be scored.
-        Score(ssimulacra2::Ssimulacra2Error),
-    }
-
-    impl core::fmt::Display for SnapshotError {
-        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-            match self {
-                Self::FrameSize { got, expected } => {
-                    write!(f, "frame size mismatch: {got} bytes, expected {expected}")
-                }
-                Self::Io(error) => write!(f, "{error}"),
-                Self::Decode(error) => write!(f, "decoding the snapshot failed: {error}"),
-                Self::Dimensions { snapshot, frame } => write!(
-                    f,
-                    "the snapshot is {}x{} but the frame is {}x{}",
-                    snapshot.0, snapshot.1, frame.0, frame.1
-                ),
-                Self::Score(error) => write!(f, "scoring the frames failed: {error}"),
-            }
-        }
-    }
-
-    impl std::error::Error for SnapshotError {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            match self {
-                Self::Io(error) => Some(error),
-                Self::Decode(error) => Some(error),
-                Self::Score(error) => Some(error),
-                Self::FrameSize { .. } | Self::Dimensions { .. } => None,
-            }
-        }
-    }
-
-    /// Turn an RGBA8 frame into the RGB the metric reads.
-    ///
-    /// The metric works in XYB, which it derives from *linear* RGB, so the
-    /// values handed over are the sRGB ones the frame holds: the transfer
-    /// characteristic named here is what linearizes them, and naming it is also
-    /// what says the frame is sRGB rather than something else.
-    fn rgb_frame(rgba: &[u8], width: u32, height: u32) -> Rgb {
-        let data: Vec<[f32; 3]> = rgba
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|px| {
-                [
-                    f32::from(px[0]) / 255.0,
-                    f32::from(px[1]) / 255.0,
-                    f32::from(px[2]) / 255.0,
-                ]
-            })
-            .collect();
-        Rgb::new(
-            data,
-            width as usize,
-            height as usize,
-            TransferCharacteristic::SRGB,
-            ColorPrimaries::BT709,
-        )
-        .expect("the frame's dimensions and pixel count agree")
-    }
-
-    /// Encode `rgba` as a lossless WebP.
-    pub fn encode_frame_webp(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
-        let mut webp = Vec::new();
-        image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
-            .write_image(rgba, width, height, image::ExtendedColorType::Rgba8)
-            .expect("webp encode failed");
-        webp
-    }
-
-    /// Where a snapshot named `name` lives, under [`SNAPSHOT_DIR`].
-    pub fn snapshot_path(name: &str) -> std::path::PathBuf {
-        std::path::Path::new(SNAPSHOT_DIR).join(name)
-    }
-
-    /// Write `rgba` to `path` as a lossless WebP, creating its directory.
-    pub fn store_frame_webp(
-        path: &std::path::Path,
-        rgba: &[u8],
-        width: u32,
-        height: u32,
-    ) -> Result<(), SnapshotError> {
-        check_frame_size(rgba, width, height)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(SnapshotError::Io)?;
-        }
-        std::fs::write(path, encode_frame_webp(rgba, width, height)).map_err(SnapshotError::Io)
-    }
-
-    /// Score the frame `rgba` against the snapshot at `path`, on SSIMULACRA2's
-    /// 0–100 scale where higher is closer.
-    ///
-    /// The snapshot must exist; a missing one is an [`std::io::Error`] rather
-    /// than a cue to store the frame, so a caller that wants to store it says
-    /// so itself.
-    pub fn score_frame_webp(
-        path: &std::path::Path,
-        rgba: &[u8],
-        width: u32,
-        height: u32,
-    ) -> Result<f64, SnapshotError> {
-        check_frame_size(rgba, width, height)?;
-        let reference_bytes = std::fs::read(path).map_err(SnapshotError::Io)?;
-        let reference =
-            image::load_from_memory_with_format(&reference_bytes, image::ImageFormat::WebP)
-                .map_err(SnapshotError::Decode)?
-                .to_rgba8();
-        if (reference.width(), reference.height()) != (width, height) {
-            return Err(SnapshotError::Dimensions {
-                snapshot: (reference.width(), reference.height()),
-                frame: (width, height),
-            });
-        }
-
-        let reference_frame = rgb_frame(reference.as_raw(), width, height);
-        let current_frame = rgb_frame(rgba, width, height);
-        compute_frame_ssimulacra2(reference_frame, current_frame).map_err(SnapshotError::Score)
-    }
-
-    /// Reject a frame whose bytes do not describe `width` x `height` RGBA
-    /// pixels.
-    fn check_frame_size(rgba: &[u8], width: u32, height: u32) -> Result<(), SnapshotError> {
-        let expected = (width as usize) * (height as usize) * 4;
-        if rgba.len() == expected {
-            Ok(())
-        } else {
-            Err(SnapshotError::FrameSize {
-                got: rgba.len(),
-                expected,
-            })
-        }
-    }
-
-    /// Assert that `rgba` matches the snapshot named `name`, scoring it against
-    /// [`DEFAULT_MIN_SCORE`].
-    ///
-    /// A missing snapshot is written from this frame rather than failed on, so
-    /// the first run of a new test records its baseline; `SNAPSHOT_UPDATE=1`
-    /// rewrites one that exists.
-    pub fn assert_image_snapshot(name: &str, rgba: &[u8], width: u32, height: u32) {
-        assert_image_snapshot_with_threshold(name, rgba, width, height, DEFAULT_MIN_SCORE);
-    }
-
-    /// Assert that `rgba` matches the snapshot named `name` at `min_score` or
-    /// better on SSIMULACRA2's 0–100 scale.
-    ///
-    /// Like [`Self::assert_image_snapshot`], a missing snapshot is written
-    /// rather than failed on.
-    pub fn assert_image_snapshot_with_threshold(
-        name: &str,
-        rgba: &[u8],
-        width: u32,
-        height: u32,
-        min_score: f64,
-    ) {
-        let path = snapshot_path(name);
-        let update = std::env::var_os("SNAPSHOT_UPDATE").is_some();
-
-        if !path.exists() || update {
-            // A snapshot name may carry subdirectories. `create_dir_all` is a
-            // no-op for the directories that already exist, including the
-            // `tests/snapshots` symlink into the asset repository.
-            store_frame_webp(&path, rgba, width, height)
-                .unwrap_or_else(|e| panic!("store snapshot {name}: {e}"));
-            log::info!(
-                "snapshot `{name}` {}",
-                if update { "updated" } else { "stored" }
-            );
-            return;
-        }
-
-        let score = score_frame_webp(&path, rgba, width, height)
-            .unwrap_or_else(|e| panic!("compare snapshot {name}: {e}"));
-        assert!(
-            score >= min_score,
-            "snapshot `{name}` perceptual mismatch: SSIMULACRA2 score {score:.2} < {min_score}
-             if the change is intentional, re-store with SNAPSHOT_UPDATE=1"
-        );
-    }
-}
+mod snapshot;
 
 #[cfg(feature = "snapshot")]
-pub use snapshot_impl::*;
+pub use snapshot::{
+    DEFAULT_MIN_SCORE, DEFAULT_TOLERANCE, Snapshot, SnapshotError, Tolerance,
+    assert_image_snapshot, assert_image_snapshot_with_tolerance,
+};
+
+// The storing half of the snapshot helpers needs a filesystem, which a browser
+// has not got. What is left on the web still compares against the frames
+// embedded by `snapshot!`.
+#[cfg(all(feature = "snapshot", not(target_arch = "wasm32")))]
+pub use snapshot::{encode_frame_webp, score_frame_webp, snapshot_path, store_frame_webp};

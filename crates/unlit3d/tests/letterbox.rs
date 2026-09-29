@@ -15,6 +15,7 @@
 pub mod common;
 
 use common::*;
+use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
 /// The baseline every target here is shaped around: 4:3, the shape the
@@ -125,9 +126,8 @@ fn cube_world(ctx: &Ctx, size: (u32, u32), viewport: Option<ViewportRect>) -> (W
 /// what the letterbox promises is that the content sits at the same place
 /// *within its region* whatever the target's shape, and that everything outside
 /// that region is untouched clear colour.
-#[test]
-fn a_letterboxed_frame_keeps_the_baseline_picture_and_bars_the_rest() {
-    let ctx = Ctx::headless();
+async fn a_letterboxed_frame_keeps_the_baseline_picture_and_bars_the_rest() {
+    let ctx = Ctx::headless().await;
 
     // The reference: the baseline drawn into a target of its own shape, so its
     // content region is the whole frame and nothing is letterboxed.
@@ -200,9 +200,8 @@ fn is_bare_outside(frame: &Frame, viewport: ViewportRect) -> bool {
 ///
 /// This is the property the letterbox exists for — a wide screen and a narrow
 /// one showing the same view rather than one showing more.
-#[test]
-fn the_same_baseline_content_fills_its_region_on_any_target_shape() {
-    let ctx = Ctx::headless();
+async fn the_same_baseline_content_fills_its_region_on_any_target_shape() {
+    let ctx = Ctx::headless().await;
 
     let mut relative = Vec::new();
     for (target, label) in [
@@ -251,3 +250,12 @@ fn the_same_baseline_content_fills_its_region_on_any_target_shape() {
         );
     }
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    a_letterboxed_frame_keeps_the_baseline_picture_and_bars_the_rest,
+    the_same_baseline_content_fills_its_region_on_any_target_shape,
+}
+
+gpu_test_main!(all_tests());

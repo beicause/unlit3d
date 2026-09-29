@@ -153,7 +153,9 @@ pub fn run() -> ExitCode {
 fn headless(args: Args) -> ExitCode {
     use unlit_wgpu_test_util::Ctx;
 
-    let ctx = Ctx::headless();
+    // The capture path is synchronous, unlike a test's, so it drives the
+    // asynchronous device request to completion itself.
+    let ctx = unlit_wgpu_test_util::block_on(Ctx::headless());
 
     // `--scene all` runs every scene, which is what CI does; anything else
     // runs the one the command line named.

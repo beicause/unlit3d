@@ -7,6 +7,7 @@
 pub mod common;
 
 use common::*;
+use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
 // ---------------------------------------------------------------------------
@@ -14,9 +15,8 @@ use unlit3d::prelude::*;
 // ---------------------------------------------------------------------------
 
 /// A single cube via the ECS API covers a meaningful part of the frame.
-#[test]
-fn ecs_cube_covers_the_frame() {
-    let ctx = Ctx::headless();
+async fn ecs_cube_covers_the_frame() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
@@ -58,9 +58,8 @@ fn ecs_cube_covers_the_frame() {
 /// Two cubes at different z-positions, each with its own Transform and an
 /// InstanceColor tint.
 /// The nearer (green) cube must win the depth test at centre.
-#[test]
-fn ecs_depth_ordering_hides_the_far_instance() {
-    let ctx = Ctx::headless();
+async fn ecs_depth_ordering_hides_the_far_instance() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
@@ -117,9 +116,8 @@ fn ecs_depth_ordering_hides_the_far_instance() {
 /// bind group, not out of it, so the removal walk from the buffers reaches the
 /// group but never the uniform. `remove_mesh` collects it through the graph's
 /// cleanup, leaving the graph exactly as it was before the mesh existed.
-#[test]
-fn removing_a_mesh_leaves_no_resource_behind() {
-    let ctx = Ctx::headless();
+async fn removing_a_mesh_leaves_no_resource_behind() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
 
@@ -162,9 +160,8 @@ fn removing_a_mesh_leaves_no_resource_behind() {
 /// reads the previous mesh's vertices and indices — silently, since every
 /// offset involved is still valid. Rendering the replacement and checking the
 /// pixels it covers is what catches it.
-#[test]
-fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
-    let ctx = Ctx::headless();
+async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
@@ -264,9 +261,8 @@ fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 /// meshes' vertices, and a node left behind leaves every draw reading a
 /// replaced buffer. Rendering a frame per mesh while meshes accumulate, and
 /// checking the first mesh each time, covers both.
-#[test]
-fn meshes_allocated_across_frames_survive_pool_growth() {
-    let ctx = Ctx::headless();
+async fn meshes_allocated_across_frames_survive_pool_growth() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
@@ -317,3 +313,15 @@ fn meshes_allocated_across_frames_survive_pool_growth() {
         );
     }
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    ecs_cube_covers_the_frame,
+    ecs_depth_ordering_hides_the_far_instance,
+    removing_a_mesh_leaves_no_resource_behind,
+    a_mesh_reusing_a_freed_range_draws_its_own_geometry,
+    meshes_allocated_across_frames_survive_pool_growth,
+}
+
+gpu_test_main!(all_tests());

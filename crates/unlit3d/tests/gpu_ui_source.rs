@@ -18,6 +18,7 @@
 pub mod common;
 
 use common::*;
+use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
 /// The colour a UI-only test clears to, distinguishable from every panel.
@@ -314,9 +315,8 @@ fn spawn_load_ops(world: &mut World) {
 ///
 /// Panels are entities, so the source has to run every one of them rather than
 /// a single interface.
-#[test]
-fn ui_only_with_two_panels() {
-    let ctx = Ctx::headless();
+async fn ui_only_with_two_panels() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
@@ -362,9 +362,8 @@ fn ui_only_with_two_panels() {
 ///
 /// A UI is an overlay, so a pixel no panel covers must still be the clear
 /// colour the `RenderLoadOps` asked for.
-#[test]
-fn ui_only_clears_to_load_ops() {
-    let ctx = Ctx::headless();
+async fn ui_only_clears_to_load_ops() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
@@ -395,10 +394,9 @@ fn ui_only_clears_to_load_ops() {
 /// The pipeline is specialized for the target's sample count and color
 /// format, so a mismatch would be a validation error, and an sRGB mistake
 /// would show up as an inverted or darkened colour.
-#[test]
-fn ui_only_multisampled_and_srgb() {
+async fn ui_only_multisampled_and_srgb() {
     const SAMPLES: u32 = 4;
-    let ctx = Ctx::headless();
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
@@ -431,10 +429,9 @@ fn ui_only_multisampled_and_srgb() {
 /// physical pixels. This samples the rectangle's far corner because a clip
 /// that forgot to scale by the density would cut the panel short there while
 /// leaving its centre intact.
-#[test]
-fn ui_only_at_high_pixel_density() {
+async fn ui_only_at_high_pixel_density() {
     const PPP: f32 = 2.0;
-    let ctx = Ctx::headless();
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
@@ -534,12 +531,11 @@ const PANEL_PIXEL: (u32, u32) = (16, 144);
 /// The panel is opaque so each order leaves one colour on top: with the UI
 /// last the panel's colour survives the overlap, and with the UI first the
 /// cube's does. Nothing but the record order differs between the two frames.
-#[test]
-fn mesh_and_ui_respects_source_order() {
+async fn mesh_and_ui_respects_source_order() {
     /// An opaque panel, so the topmost draw decides the overlap pixel.
     const OPAQUE_BLUE: egui::Color32 = egui::Color32::from_rgb(0, 0, 255);
 
-    let ctx = Ctx::headless();
+    let ctx = Ctx::headless().await;
     let mut ui_last = World::new();
     let ui_on_top = mesh_and_ui_frame(&ctx, &mut ui_last, false, band_panel(OPAQUE_BLUE));
 
@@ -583,11 +579,10 @@ fn mesh_and_ui_respects_source_order() {
 ///
 /// Scissor state is a local of each `Scene::record`, not of the pass, so a
 /// panel's clip cannot reach the earlier 3D draws.
-#[test]
-fn ui_does_not_clip_the_mesh() {
+async fn ui_does_not_clip_the_mesh() {
     /// A clip region in one corner, far from the cube.
     const CLIP: f32 = 32.0;
-    let ctx = Ctx::headless();
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
@@ -632,9 +627,8 @@ fn ui_does_not_clip_the_mesh() {
 /// scene — leaked from one frame into the next. The rich panel is what makes
 /// this worth checking: it registers a texture on its first frame, and every
 /// later frame has to reuse it rather than re-upload or lose it.
-#[test]
-fn mesh_and_ui_survive_a_second_frame() {
-    let ctx = Ctx::headless();
+async fn mesh_and_ui_survive_a_second_frame() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
@@ -719,9 +713,8 @@ fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
 /// keeps the larger size it grew to. Splitting on the capacity instead leaves
 /// the positions right and the UVs and colors wrong, which reads back as a
 /// garbled but correctly-placed interface.
-#[test]
-fn a_frame_with_spare_geometry_buffer_room_draws_the_same_picture() {
-    let ctx = Ctx::headless();
+async fn a_frame_with_spare_geometry_buffer_room_draws_the_same_picture() {
+    let ctx = Ctx::headless().await;
     let grown = frame_after_burst(&ctx, 64);
     let filled = frame_after_burst(&ctx, 0);
 
@@ -807,9 +800,8 @@ fn patched_texture() -> UiPanel {
 /// texture, so the upload path has to reach the texture itself rather than the
 /// view a material samples; reaching for the view finds no texture and the
 /// patch is dropped, which leaves whole glyphs missing from the interface.
-#[test]
-fn a_patched_texture_shows_the_patch() {
-    let ctx = Ctx::headless();
+async fn a_patched_texture_shows_the_patch() {
+    let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
@@ -830,3 +822,19 @@ fn a_patched_texture_shows_the_patch() {
          update leaves the texture black"
     );
 }
+
+// The registry both runners drive: `cargo nextest` natively, and a
+// browser through the wasm export `gpu_test_main!` adds.
+gpu_tests! {
+    ui_only_with_two_panels,
+    ui_only_clears_to_load_ops,
+    ui_only_multisampled_and_srgb,
+    ui_only_at_high_pixel_density,
+    mesh_and_ui_respects_source_order,
+    ui_does_not_clip_the_mesh,
+    mesh_and_ui_survive_a_second_frame,
+    a_frame_with_spare_geometry_buffer_room_draws_the_same_picture,
+    a_patched_texture_shows_the_patch,
+}
+
+gpu_test_main!(all_tests());

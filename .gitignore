@@ -1,3 +1,11 @@
 /target
 Cargo.lock
 *.log
+
+# Built by `cargo xtask test-wasm`: the assembled page, the bindgen'd example and
+# modules, and the runner's installed dependencies. All are reproduced from
+# source.
+/tests/wasm/dist/
+/tests/wasm/example/
+/tests/wasm/runner/node_modules/
+/tests/wasm/runner/package-lock.json

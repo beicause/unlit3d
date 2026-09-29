@@ -14,6 +14,7 @@
 ```text
 cargo xtask check          # 对全工作区跑 clippy，随后 cargo fmt --check
 cargo xtask test           # 用 nextest 跑单元与集成测试，随后跑 doctest
+cargo xtask test-wasm      # 经由 wasm 与 WebGL2 在浏览器里跑 GPU 测试
 cargo xtask run-wasm       # 构建 web 示例并提供给浏览器
 cargo xtask build-android  # 构建 Android 动态库及其 APK
 cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crates.io
@@ -39,6 +40,38 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 所走路径（着色器的数组用纹理而非 storage buffer 读取、网格的顶点偏移被烘焙进索引）
 的那一趟。把该变量设为 `native` 可改为按适配器自身的 limits 运行，而非基线。接受
 `--release`，两趟都生效。
+
+### `cargo xtask test-wasm`
+
+跑的是 `cargo xtask test` 所跑的同一批 GPU 测试，但在真实浏览器里、构建到
+`wasm32-unknown-unknown` 上运行，随后还会启动示例本身。wasm 二进制没有进程可以启动、
+也没有退出码可以交回，所以这一趟是*搭*出来的而不是直接跑的：
+
+1. 先把整个工作区构建到 wasm——用默认 feature，也就是浏览器与 APK 实际发布的那个——
+   这样某个改动若弄坏了该 target 上的示例或库，会在这里就失败，而不是只在自己的 job
+   里失败。
+2. `cargo nextest list --list-type binaries-only` 构建 wasm 测试二进制并报告它们落在
+   哪里——之所以问 nextest，是为了让 target 列表、feature 与名字和宿主机那一趟保持
+   一致。
+3. `wasm-bindgen` 把每个二进制变成导出 `run_test` 的 JS 模块。
+4. 测试页面（加载一个模块并调用该导出）被拷贝到它们旁边，同时写入
+   `wasm_paths.json`，把模块名映射到脚本名。
+5. 一个 Node runner 提供该目录，并让每个测试在一个全新的浏览器上下文里各开一个页面。
+6. *同一批*原生测试二进制在设置了 `UNLIT3D_WASM_TEST` 后变成代理而不是测试套件：
+   `cargo nextest` 驱动它们，每个 trial 请求 runner 在浏览器里跑那个测试。于是
+   nextest 的列出、筛选、报告与退出码都和普通套件一样可用。
+
+结果通过 `sessionStorage` 传递，因为浏览器没有退出码，而 panic 的测试会让其实例 trap
+而不是 unwind——这也是 `#[should_panic]` 由 panic hook 判定、而不是靠捕获 panic 的
+原因。
+
+在跑测试之前，runner 还会加载示例——也就是浏览器真正运行的那个程序，GPU 测试从不会
+启动它——并检查它能启动、能选到后端、并在画布上留下带明暗的画面而不是一片空白。它用的
+正是 `run-wasm` 所提供的同一个页面、由同一份代码构建，因此两者不会走样。
+
+runner 的 JS 依赖与浏览器会在首次运行时安装；用 `CHROME_PATH` 指定现成的浏览器可
+免于下载，`--show` 打开可见窗口以观察失败。nextest 那一趟使用的 profile 是 `wasm`，
+定义在 `.config/nextest.toml` 中。
 
 ### `cargo xtask run-wasm`
 
@@ -91,6 +124,7 @@ crate 继续。
 src/main.rs          参数解析（argh）与任务分发
 src/check.rs         cargo xtask check
 src/test.rs          cargo xtask test
+src/test_wasm.rs      cargo xtask test-wasm：浏览器那一趟及其 runner
 src/run_wasm.rs      cargo xtask run-wasm：wasm 构建、bindgen 与页面
 src/build_android.rs cargo xtask build-android：交叉构建与 APK
 src/publish.rs       cargo xtask publish：要发布的 crate 及其顺序

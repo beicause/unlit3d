@@ -12,11 +12,11 @@ use std::path::{Path, PathBuf};
 use super::{RunWasmArgs, http, step};
 
 /// The binary crate whose example runs on the web.
-const EXAMPLE_CRATE: &str = "unlit3d_examples";
+pub const EXAMPLE_CRATE: &str = "unlit3d_examples";
 /// The wasm binary `wasm-bindgen` reads and names its output after.
-const BINARY_NAME: &str = "unlit3d_examples";
+pub const BINARY_NAME: &str = "unlit3d_examples";
 /// The target triple the web build runs on.
-const TARGET: &str = "wasm32-unknown-unknown";
+pub const TARGET: &str = "wasm32-unknown-unknown";
 /// Where the bindgen output lands, inside `target/`.
 const OUT_DIR: &str = "generated";
 /// The port the example prefers to be served on. Fixed, so the URL to open
@@ -24,6 +24,10 @@ const OUT_DIR: &str = "generated";
 const PORT: u16 = 8000;
 
 /// The web page that imports the bindgen output and starts the example.
+///
+/// Public because `cargo xtask test-wasm` serves this same page: it is what
+/// starts the example, and a test that used a different one would not be
+/// testing what `run-wasm` ships.
 ///
 /// The canvas is sized by this page, not by the window attributes the example
 /// asks for: winit writes those into the canvas's inline `style`, and `!important`
@@ -100,70 +104,62 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
 /// Build and serve the web example.
 pub fn run(args: &RunWasmArgs) -> Result<(), String> {
-    build(args)?;
-    bindgen(args)?;
+    let out = build_example(args.release, &args.cargo_args)?;
 
     if args.no_serve {
         println!(
             "built; serve {} with any static file server binding to localhost",
-            out_dir(args).display()
+            out.display()
         );
         return Ok(());
     }
 
-    http::serve(&out_dir(args), PORT)
+    http::serve(&out, PORT)
 }
 
-/// Compile the example for `wasm32-unknown-unknown`.
+/// Compile the example for `wasm32-unknown-unknown`, and bindgen it.
 ///
 /// The example is a library as well as a binary — Android packages the library
 /// and the binary is what a browser runs — so the bin is named explicitly.
 /// Building every target instead would build the cdylib for the web, where it
 /// is not what runs, and the two share the `unlit3d_examples.wasm` filename.
-fn build(args: &RunWasmArgs) -> Result<(), String> {
-    let profile: &[&str] = if args.release { &["--release"] } else { &[] };
+///
+/// Shared with `cargo xtask test-wasm`, which loads the same page: writing it
+/// here keeps the page under test identical to the one `run-wasm` serves.
+/// Returns the directory the bindgen output and the page were written to.
+pub fn build_example(release: bool, cargo_args: &[String]) -> Result<PathBuf, String> {
+    let profile: &[&str] = if release { &["--release"] } else { &[] };
     let mut cargo = std::process::Command::new("cargo");
     cargo
         .args(["build", "--target", TARGET, "-p", EXAMPLE_CRATE])
         .args(["--bin", BINARY_NAME])
         .args(profile)
-        .args(&args.cargo_args);
-    step::run(&mut cargo, "the wasm build")
-}
+        .args(cargo_args);
+    step::run(&mut cargo, "the wasm build")?;
 
-/// Turn the wasm into the JS loader a browser imports, and write the page.
-fn bindgen(args: &RunWasmArgs) -> Result<(), String> {
+    let profile_dir = if release { "release" } else { "debug" };
+    let out = Path::new("target").join(OUT_DIR).join(profile_dir);
+    let wasm = Path::new("target")
+        .join(TARGET)
+        .join(profile_dir)
+        .join(format!("{BINARY_NAME}.wasm"));
+
     let mut bindgen = std::process::Command::new("wasm-bindgen");
     bindgen
-        .arg(wasm_path(args))
+        .arg(&wasm)
         .args(["--target", "web", "--no-typescript"])
         .arg("--out-dir")
-        .arg(out_dir(args))
+        .arg(&out)
         .arg("--out-name")
         .arg(BINARY_NAME);
     step::run(&mut bindgen, "wasm-bindgen")?;
 
     // The loader is imported as `./unlit3d_examples.js`, so the page sits
     // beside it. Written only when absent, so a customized one survives.
-    let index = out_dir(args).join("index.html");
+    let index = out.join("index.html");
     if !index.exists() {
         std::fs::write(&index, INDEX_HTML)
             .map_err(|error| format!("writing {}: {error}", index.display()))?;
     }
-    Ok(())
-}
-
-/// The directory the bindgen output and the page live in.
-fn out_dir(args: &RunWasmArgs) -> PathBuf {
-    Path::new("target")
-        .join(OUT_DIR)
-        .join(if args.release { "release" } else { "debug" })
-}
-
-/// The wasm `wasm-bindgen` reads.
-fn wasm_path(args: &RunWasmArgs) -> PathBuf {
-    Path::new("target")
-        .join(TARGET)
-        .join(if args.release { "release" } else { "debug" })
-        .join(format!("{BINARY_NAME}.wasm"))
+    Ok(out)
 }
