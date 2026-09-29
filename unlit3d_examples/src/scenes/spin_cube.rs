@@ -101,12 +101,11 @@ fn build(
     // The camera the frame is viewed from, and the cube itself. A frame with
     // no RenderLoadOps component is opened with the defaults, so the pass
     // clears color and depth on its own.
-    let aspect = size.0 as f32 / size.1 as f32;
     let orbit = CameraOrbit {
         azimuth: 0.6,
         elevation: ORBIT_ELEVATION,
     };
-    let camera = world.spawn((orbit_camera(aspect, orbit.azimuth, orbit.elevation), orbit));
+    let camera = world.spawn((orbit_camera(size, orbit.azimuth, orbit.elevation), orbit));
     // The cube carries its spin and the orbit the panels drive, so one entity
     // owns everything the frame loop and the panels share.
     let cube = world.spawn((
@@ -234,7 +233,7 @@ fn build(
     }
 
     SceneControl {
-        advance: Box::new(move |world, _frame, delta_time| {
+        advance: Box::new(move |world, _frame, delta_time, frame_size| {
             // The panel's button leaves its press as state; consume it here,
             // once.
             for (_, mut reset) in world.query::<&mut SpinReset>() {
@@ -257,10 +256,11 @@ fn build(
                 transform.rotation = glam::Quat::from_rotation_y(spin.angle);
             }
 
-            // The camera follows the orbit a slider or a drag set.
-            let aspect = size.0 as f32 / size.1 as f32;
+            // The camera follows the orbit a slider or a drag set — and the
+            // frame's own size, so a window that changes shape re-aims it
+            // instead of stretching the cube.
             for (_, (orbit, mut camera)) in world.query::<(&CameraOrbit, &mut Camera)>() {
-                *camera = orbit_camera(aspect, orbit.azimuth, orbit.elevation);
+                *camera = orbit_camera(frame_size, orbit.azimuth, orbit.elevation);
             }
         }),
         snapshot: Box::new(|frame| (frame == 29).then(|| "spin_cube.webp".to_owned())),
@@ -298,14 +298,10 @@ struct FrameCount(u64);
 
 /// A camera orbiting [`ORBIT_TARGET`] at `azimuth` and `elevation`, in radians.
 ///
-/// The built-in pipeline compares depth with `Greater` and clears to the far
-/// plane, so the projection is reverse-z infinite.
-fn orbit_camera(aspect: f32, azimuth: f32, elevation: f32) -> Camera {
-    let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
-        60f32.to_radians(),
-        aspect,
-        0.1,
-    );
+/// The projection comes from [`super::camera_looking_at`], so it follows the
+/// frame's own aspect: the built-in pipeline compares depth with `Greater` and
+/// clears to the far plane, so the projection is reverse-z infinite.
+fn orbit_camera(size: (u32, u32), azimuth: f32, elevation: f32) -> Camera {
     let eye = ORBIT_TARGET
         + ORBIT_RADIUS
             * glam::Vec3::new(
@@ -313,11 +309,7 @@ fn orbit_camera(aspect: f32, azimuth: f32, elevation: f32) -> Camera {
                 elevation.sin(),
                 elevation.cos() * azimuth.cos(),
             );
-    let view = glam::camera::rh::view::look_at_mat4(eye, ORBIT_TARGET, glam::Vec3::Y);
-    Camera {
-        clip_from_world: projection * view,
-        position: eye,
-    }
+    super::camera_looking_at(eye, ORBIT_TARGET, size)
 }
 
 /// A `size` x `size` checkerboard base-color texture.

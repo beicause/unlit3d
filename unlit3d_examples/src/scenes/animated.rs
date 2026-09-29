@@ -99,7 +99,7 @@ fn build(
     world: &mut World,
     context: RenderContext,
     _renderer: Entity,
-    _size: (u32, u32),
+    size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
@@ -107,7 +107,7 @@ fn build(
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
     let source_entity = spawn_source(world, source);
 
-    let camera_entity = world.spawn((orbit_camera(0),));
+    let camera_entity = world.spawn((orbit_camera(0, size),));
 
     // One entry per cell, holding the entity and the mesh while it is
     // occupied. Counts allocations, not cells: a cell that is filled twice
@@ -116,7 +116,7 @@ fn build(
     let mut allocated = 0usize;
 
     SceneControl {
-        advance: Box::new(move |world, frame, _delta| {
+        advance: Box::new(move |world, frame, _delta, frame_size| {
             // The sequence loops, so a windowed run keeps animating. A pass
             // starts from the state the first one did — every cell empty and
             // the allocation counter back at zero — so a later pass replays the
@@ -176,10 +176,15 @@ fn build(
                         .expect("a live mesh carries a transform");
                 }
             }
-            let camera = orbit_camera(step_index);
-            world
-                .with_mut::<Camera, _>(camera_entity, |current| *current = camera)
-                .expect("the camera entity carries a camera");
+            // Re-aim from the frame's own size, so a window that changes
+            // shape re-aims the orbit instead of stretching the grid.
+            super::aim_camera(
+                world,
+                camera_entity,
+                orbit_eye(step_index),
+                GRID_TARGET,
+                frame_size,
+            );
         }),
         snapshot: Box::new(|frame| {
             // The live count walks the steps up to `frame`, applying each
@@ -228,17 +233,20 @@ fn cell_transform(cell: usize, frame: usize) -> Transform {
     }
 }
 
+/// The point the orbiting camera looks at.
+const GRID_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.2, 0.0);
+
 /// The camera of `frame`, orbiting the grid once over the whole sequence.
-fn orbit_camera(frame: usize) -> Camera {
+fn orbit_camera(frame: usize, size: (u32, u32)) -> Camera {
+    super::camera_looking_at(orbit_eye(frame), GRID_TARGET, size)
+}
+
+/// Where the camera of `frame` orbits.
+fn orbit_eye(frame: usize) -> glam::Vec3 {
     let angle = frame as f32 * ORBIT_STEP;
-    let eye = glam::Vec3::new(
+    glam::Vec3::new(
         ORBIT_RADIUS * angle.sin(),
         ORBIT_HEIGHT,
         ORBIT_RADIUS * angle.cos(),
-    );
-    super::camera_looking_at(
-        eye,
-        glam::Vec3::new(0.0, 0.2, 0.0),
-        TEST_SIZE.0 as f32 / TEST_SIZE.1 as f32,
     )
 }

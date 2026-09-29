@@ -28,7 +28,15 @@ const PORT: u16 = 8000;
 /// The canvas is sized by this page, not by the window attributes the example
 /// asks for: winit writes those into the canvas's inline `style`, and `!important`
 /// is what lets the page override them so the canvas follows a phone's viewport
-/// instead of staying at the desktop size the example requests.
+/// instead of staying at the desktop size the example requests. The body's
+/// padding is the margin around the canvas, and `box-sizing` keeps that margin
+/// inside the viewport rather than pushing the page past it; the safe-area
+/// maxima keep the canvas clear of a phone's notch and home indicator.
+///
+/// The canvas therefore follows the viewport and not its own aspect ratio, so
+/// the example's scenes take their camera aspect from the render target's size
+/// each frame. A window that changes shape re-aims the projection and shows
+/// more or less of the scene; nothing is stretched.
 ///
 /// `touch-action: none` is what makes a finger drag reach the app at all. The
 /// Pointer Events specification has `preventDefault()` on `pointerdown` *not*
@@ -43,6 +51,10 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>unlit3d + winit</title>
     <style>
+      :root {
+        /* The gap between the canvas and the window's edge. */
+        --margin: 16px;
+      }
       html,
       body {
         margin: 0;
@@ -54,11 +66,22 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         overscroll-behavior: none;
         background: #101014;
       }
+      body {
+        /* The margin around the canvas. `border-box` keeps the padding inside
+           the viewport, so the canvas's own size is the viewport less this
+           margin. */
+        box-sizing: border-box;
+        padding:
+          max(var(--margin), env(safe-area-inset-top))
+          max(var(--margin), env(safe-area-inset-right))
+          max(var(--margin), env(safe-area-inset-bottom))
+          max(var(--margin), env(safe-area-inset-left));
+      }
       canvas {
         display: block;
         /* Override the inline size winit sets from the window attributes, so
-           the canvas follows the viewport instead of staying at the size the
-           example asks for. */
+           the canvas follows the viewport — less the margin above — instead of
+           staying at the size the example asks for. */
         width: 100% !important;
         height: 100% !important;
         /* Without this the browser claims a drag as its own pan. */

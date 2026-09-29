@@ -1144,9 +1144,11 @@ impl Scene {
         };
 
         // The scene's own per-frame behaviour runs after the input, so the
-        // world the renderer reads is this frame's.
+        // world the renderer reads is this frame's. It is handed the target's
+        // current size, so a scene whose camera follows the target's aspect
+        // re-aims on the very frame a resize reaches the loop.
         if stepped {
-            (self.control.advance)(&mut self.world, self.frame, delta_time);
+            (self.control.advance)(&mut self.world, self.frame, delta_time, self.size);
             self.frame += 1;
         }
 

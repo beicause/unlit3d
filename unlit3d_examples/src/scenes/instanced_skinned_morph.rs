@@ -44,7 +44,7 @@ fn build(
     world: &mut World,
     context: RenderContext,
     _renderer: Entity,
-    _size: (u32, u32),
+    size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
@@ -76,7 +76,7 @@ fn build(
         )
     });
 
-    world.spawn((camera(),));
+    let camera_entity = world.spawn((camera(size),));
 
     // One pose entity and one weights entity per instance, all naming the
     // same shared mesh: the instances merge into a single draw whose instance
@@ -114,7 +114,7 @@ fn build(
         .collect();
 
     SceneControl {
-        advance: Box::new(move |world, frame, _delta| {
+        advance: Box::new(move |world, frame, _delta, frame_size| {
             let frame = frame as usize % FRAMES;
             // Update every instance's own pose: one component write per
             // instance, and the source packs and uploads them once per frame.
@@ -128,6 +128,9 @@ fn build(
                     .expect("the weight entity carries a `MorphWeights`")
                     .weights = instance_weights(frame, instance).to_vec();
             }
+            // The camera the whole sequence shares, re-aimed at the frame's
+            // aspect so a resized window does not stretch the instances.
+            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
         }),
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32)
@@ -136,13 +139,15 @@ fn build(
     }
 }
 
+/// Where the camera sits, far enough back to see all instances, and what it
+/// looks at.
+const CAMERA_EYE: glam::Vec3 = glam::Vec3::new(0.0, 1.3, 3.6);
+/// The point the camera looks at.
+const CAMERA_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.2, 0.0);
+
 /// The camera the whole sequence shares, wide enough to see all instances.
-fn camera() -> Camera {
-    super::camera_looking_at(
-        glam::Vec3::new(0.0, 1.3, 3.6),
-        glam::Vec3::new(0.0, 0.2, 0.0),
-        TEST_SIZE.0 as f32 / TEST_SIZE.1 as f32,
-    )
+fn camera(size: (u32, u32)) -> Camera {
+    super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)
 }
 
 /// The bending angle `instance` holds in `frame`.

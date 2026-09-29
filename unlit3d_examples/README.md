@@ -50,7 +50,11 @@ spawned once as a resource entity, a scene's meshes and materials are allocated
 through its mesh source, and every `RedrawRequested` acquires the swap chain's
 next image, renders the ECS world into it and presents it. A resize is handed to
 the surface, which reconfigures the swap chain and rebuilds the depth and
-multisample attachments the renderer draws with.
+multisample attachments the renderer draws with. The frame loop also hands each
+scene the target's current size, and every scene takes its camera aspect from
+that size rather than from the size it was built at, so a window that changes
+shape re-aims the projection — a wider window shows more of the scene — instead
+of stretching it.
 
 The GPU context is requested asynchronously, because the adapter and device
 requests are: on the web they resolve on the browser's task queue, so the frame
@@ -92,6 +96,11 @@ To run the same example in a browser — where WebGPU needs a secure context, so
 ```text
 cargo xtask run-wasm
 ```
+
+The page it serves sizes the canvas to the viewport less a small margin of its
+own, rather than to the window the example asks for, so the example fills a
+phone's screen and follows a window that is resized. The scenes take their
+camera aspect from that canvas, so the picture re-aims instead of stretching.
 
 It is a library as well as a binary, because Android starts neither a process
 nor a command line: the activity loads the shared library and calls its

@@ -54,8 +54,10 @@ fn build(
     }
 
     SceneControl {
-        // The interface is static: egui needs no per-frame advance.
-        advance: Box::new(|_world, _frame, _delta| {}),
+        // The interface is static: egui needs no per-frame advance. The UI
+        // source lays it out at the frame's own size, so a resize needs
+        // nothing from the scene.
+        advance: Box::new(|_world, _frame, _delta, _size| {}),
         // The second frame is the first with the font metrics laid out.
         snapshot: Box::new(|frame| (frame == 1).then(|| "ui_only.webp".to_owned())),
     }

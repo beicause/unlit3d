@@ -37,7 +37,7 @@ fn build(
     world: &mut World,
     context: RenderContext,
     _renderer: Entity,
-    _size: (u32, u32),
+    size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
@@ -68,7 +68,7 @@ fn build(
         )
     });
 
-    world.spawn((camera(),));
+    let camera_entity = world.spawn((camera(size),));
     // The weights are an entity of their own: the mesh names it rather than
     // owning it, so blending a pose is one component write and nothing on the
     // mesh changes.
@@ -85,7 +85,7 @@ fn build(
     ));
 
     SceneControl {
-        advance: Box::new(move |world, frame, _delta| {
+        advance: Box::new(move |world, frame, _delta, frame_size| {
             let frame = frame as usize % FRAMES;
             // The weights are a component write, not a mesh re-upload and not
             // a GPU call: the source packs and uploads them once per frame.
@@ -93,6 +93,9 @@ fn build(
                 .get_mut::<MorphWeights>(weights_entity)
                 .expect("the weight entity carries a `MorphWeights`")
                 .weights = weights(frame).to_vec();
+            // The camera the whole sequence shares, re-aimed at the frame's
+            // aspect so a resized window does not stretch the cube.
+            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
         }),
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32).then(|| format!("ecs_morphed/frame_{frame:02}.webp"))
@@ -100,13 +103,14 @@ fn build(
     }
 }
 
+/// Where the camera sits and what it looks at.
+const CAMERA_EYE: glam::Vec3 = glam::Vec3::new(1.0, 1.0, 2.8);
+/// The point the camera looks at.
+const CAMERA_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.2, 0.0);
+
 /// The camera the whole sequence shares, so a frame's difference is the morph's.
-fn camera() -> Camera {
-    super::camera_looking_at(
-        glam::Vec3::new(1.0, 1.0, 2.8),
-        glam::Vec3::new(0.0, 0.2, 0.0),
-        TEST_SIZE.0 as f32 / TEST_SIZE.1 as f32,
-    )
+fn camera(size: (u32, u32)) -> Camera {
+    super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)
 }
 
 /// The weights of `frame`, in target order.

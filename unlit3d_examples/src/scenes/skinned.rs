@@ -37,7 +37,7 @@ fn build(
     world: &mut World,
     context: RenderContext,
     _renderer: Entity,
-    _size: (u32, u32),
+    size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
@@ -65,7 +65,7 @@ fn build(
         )
     });
 
-    world.spawn((camera(),));
+    let camera_entity = world.spawn((camera(size),));
     // The pose is an entity of its own: the mesh names it rather than owning
     // it, so animating the skeleton is one component write and nothing on the
     // mesh changes.
@@ -83,7 +83,7 @@ fn build(
 
     let mut skin = skin;
     SceneControl {
-        advance: Box::new(move |world, frame, _delta| {
+        advance: Box::new(move |world, frame, _delta, frame_size| {
             let frame = frame as usize % FRAMES;
             // The pose is a component write, not a mesh re-upload and not a
             // GPU call: the source packs and uploads it once per frame.
@@ -91,6 +91,9 @@ fn build(
             *world
                 .get_mut::<SkinPose>(pose_entity)
                 .expect("the pose entity carries a `SkinPose`") = skin.pose();
+            // The camera the whole sequence shares, re-aimed at the frame's
+            // aspect so a resized window does not stretch the cube.
+            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
         }),
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32).then(|| format!("ecs_skinned/frame_{frame:02}.webp"))
@@ -98,13 +101,12 @@ fn build(
     }
 }
 
+/// The point the camera looks at.
+const CAMERA_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.2, 0.0);
+
 /// The camera the whole sequence shares, so a frame's difference is the pose's.
-fn camera() -> Camera {
-    super::camera_looking_at(
-        CAMERA_EYE,
-        glam::Vec3::new(0.0, 0.2, 0.0),
-        TEST_SIZE.0 as f32 / TEST_SIZE.1 as f32,
-    )
+fn camera(size: (u32, u32)) -> Camera {
+    super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)
 }
 
 /// The angle the bending joint holds in `frame`.

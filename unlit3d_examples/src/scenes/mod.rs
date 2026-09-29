@@ -30,12 +30,16 @@ pub mod ui_only;
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::prelude::*;
 
-/// Advances a scene's behaviour by one frame's `delta` seconds.
+/// Advances a scene's behaviour by one frame.
 ///
 /// `frame` counts the frames the scene has drawn; the scenes that animate
 /// through a fixed sequence loop it, so a windowed scene keeps moving after
-/// the sequence that produced its snapshots ends.
-pub type Advance = Box<dyn FnMut(&mut World, u32, f32)>;
+/// the sequence that produced its snapshots ends. `delta` is the seconds since
+/// the previous frame. `size` is the render target's size in physical pixels,
+/// which a scene reads here rather than capturing the size it was built at: a
+/// camera whose projection has to follow the target's aspect is re-aimed from
+/// this every frame, so a window that changes shape never stretches the scene.
+pub type Advance = Box<dyn FnMut(&mut World, u32, f32, (u32, u32))>;
 
 /// Names the snapshot a frame verifies against, if it has one.
 pub type Snapshot = Box<dyn Fn(u32) -> Option<String>>;
@@ -250,24 +254,34 @@ pub fn cube() -> RawMesh {
     (positions, uvs, colors, indices)
 }
 
-/// Camera looking at the origin from (0, 1.2, 3.2).
+/// The aspect ratio of a `size`-pixel render target.
+///
+/// Every camera in the example takes its aspect from here rather than from the
+/// size its scene was built at, so a target whose shape changes — a browser
+/// window being stretched — re-aims instead of stretching.
+pub fn aspect_of(size: (u32, u32)) -> f32 {
+    size.0 as f32 / size.1.max(1) as f32
+}
+
+/// The eye [`camera_view`] looks from.
+pub const DEFAULT_EYE: glam::Vec3 = glam::Vec3::new(0.0, 1.2, 3.2);
+/// The point [`camera_view`] looks at.
+pub const DEFAULT_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.2, 0.0);
+
+/// Camera looking at [`DEFAULT_TARGET`] from [`DEFAULT_EYE`].
 ///
 /// Uses reverse-z infinite perspective matching the built-in pipeline's
 /// `CompareFunction::Greater` and `depth_clear = 0.0`.
-pub fn camera_view(aspect: f32) -> Camera {
-    camera_looking_at(
-        glam::Vec3::new(0.0, 1.2, 3.2),
-        glam::Vec3::new(0.0, 0.2, 0.0),
-        aspect,
-    )
+pub fn camera_view(size: (u32, u32)) -> Camera {
+    camera_looking_at(DEFAULT_EYE, DEFAULT_TARGET, size)
 }
 
 /// A camera at `eye` looking at `target`, with the same reverse-z infinite
 /// perspective as [`camera_view`].
-pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, aspect: f32) -> Camera {
+pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, size: (u32, u32)) -> Camera {
     let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
         60f32.to_radians(),
-        aspect,
+        aspect_of(size),
         0.1,
     );
     let view = glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y);
@@ -275,6 +289,25 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, aspect: f32) -> Ca
         clip_from_world: projection * view,
         position: eye,
     }
+}
+
+/// Re-aim `entity`'s camera at `target` from `eye` for a frame of `size`.
+///
+/// The scenes whose camera never moves still call this every frame, so their
+/// projection keeps the frame's own aspect. It is what a scene does in
+/// [`SceneControl::advance`](SceneControl) instead of capturing the size it was
+/// built at.
+pub fn aim_camera(
+    world: &mut World,
+    entity: Entity,
+    eye: glam::Vec3,
+    target: glam::Vec3,
+    size: (u32, u32),
+) {
+    let camera = camera_looking_at(eye, target, size);
+    world
+        .with_mut::<Camera, _>(entity, |current| *current = camera)
+        .expect("the entity carries a camera");
 }
 
 /// Unlit options for the ported ECS scenes: vertex colour + instance, no

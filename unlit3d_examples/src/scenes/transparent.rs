@@ -73,7 +73,7 @@ fn build(
     world: &mut World,
     context: RenderContext,
     _renderer: Entity,
-    _size: (u32, u32),
+    size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
@@ -153,8 +153,7 @@ fn build(
         )
     });
 
-    let aspect = TEST_SIZE.0 as f32 / TEST_SIZE.1 as f32;
-    world.spawn((camera_looking_at(CAMERA_EYE, CAMERA_TARGET, aspect),));
+    let camera_entity = world.spawn((camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),));
 
     world.spawn((
         Transform {
@@ -185,8 +184,11 @@ fn build(
     }
 
     SceneControl {
-        // A single frame: the composite is static, so it needs no advance.
-        advance: Box::new(|_world, _frame, _delta| {}),
+        // A single frame: the composite is static, so only the camera's aspect
+        // is advanced, keeping a resized window from stretching the panes.
+        advance: Box::new(move |world, _frame, _delta, frame_size| {
+            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
+        }),
         // The first frame is the snapshot; whichever frame is drawn, the
         // picture is the same.
         snapshot: Box::new(|frame| (frame == 0).then(|| "transparent_zsorted.webp".to_owned())),

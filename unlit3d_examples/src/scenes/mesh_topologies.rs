@@ -217,7 +217,7 @@ fn build(
     world: &mut World,
     context: RenderContext,
     _renderer: Entity,
-    _size: (u32, u32),
+    size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
@@ -235,10 +235,10 @@ fn build(
         .collect();
     let indices = index_buffer();
 
-    world.spawn((camera_looking_at(
+    let camera_entity = world.spawn((camera_looking_at(
         glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
         glam::Vec3::ZERO,
-        TEST_SIZE.0 as f32 / TEST_SIZE.1 as f32,
+        size,
     ),));
 
     let mut entities = Vec::new();
@@ -277,8 +277,17 @@ fn build(
     }
 
     SceneControl {
-        // Static: one frame, and nothing about it animates.
-        advance: Box::new(|_world, _frame, _delta| {}),
+        // Static: nothing about the frame animates, but the camera keeps the
+        // frame's aspect so a resized window does not stretch the patches.
+        advance: Box::new(move |world, _frame, _delta, frame_size| {
+            super::aim_camera(
+                world,
+                camera_entity,
+                glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
+                glam::Vec3::ZERO,
+                frame_size,
+            );
+        }),
         snapshot: Box::new(|frame| (frame == 0).then(|| "mesh_topologies.webp".to_owned())),
     }
 }

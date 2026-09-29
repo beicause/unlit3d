@@ -37,7 +37,7 @@ fn build(
     world: &mut World,
     context: RenderContext,
     _renderer: Entity,
-    _size: (u32, u32),
+    size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
@@ -60,7 +60,7 @@ fn build(
         )
     });
 
-    world.spawn((camera_view(TEST_SIZE.0 as f32 / TEST_SIZE.1 as f32),));
+    let camera_entity = world.spawn((camera_view(size),));
     world.spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
@@ -82,8 +82,17 @@ fn build(
     }
 
     SceneControl {
-        // Static: egui needs no per-frame advance.
-        advance: Box::new(|_world, _frame, _delta| {}),
+        // Static: egui needs no per-frame advance, and the camera only has to
+        // keep the frame's aspect so a resized window does not stretch it.
+        advance: Box::new(move |world, _frame, _delta, frame_size| {
+            super::aim_camera(
+                world,
+                camera_entity,
+                super::DEFAULT_EYE,
+                super::DEFAULT_TARGET,
+                frame_size,
+            );
+        }),
         snapshot: Box::new(|frame| (frame == 1).then(|| "mesh_and_ui.webp".to_owned())),
     }
 }
