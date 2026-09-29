@@ -445,4 +445,12 @@ pub use snapshot::{
 // has not got. What is left on the web still compares against the frames
 // embedded by `snapshot!`.
 #[cfg(all(feature = "snapshot", not(target_arch = "wasm32")))]
-pub use snapshot::{encode_frame_webp, score_frame_webp, snapshot_path, store_frame_webp};
+pub use snapshot::{
+    DEFAULT_MISMATCH_DIR, MISMATCH_DIR_ENV, score_frame_webp, snapshot_path, store_frame_webp,
+};
+
+// The encoder is the one piece of the storing half a browser needs: a frame that
+// fails a comparison is encoded there and handed to the runner, which has the
+// filesystem this side has not got.
+#[cfg(all(feature = "snapshot", target_arch = "wasm32"))]
+pub use snapshot::encode_frame_webp;

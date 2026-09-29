@@ -37,17 +37,18 @@ use winit::window::{Window, WindowId};
 /// The number of samples the windowed loop presents every frame with.
 const SAMPLE_COUNT: u32 = scenes::spin_cube::SAMPLE_COUNT;
 
-/// The timestep the headless path advances the scene by, in seconds, so a
-/// captured frame does not depend on how long the frame took to draw.
-#[cfg(feature = "snapshot")]
-const FIXED_STEP: f32 = 1.0 / 60.0;
+/// The timestep a scene is stepped by when it is drawn without a display.
+///
+/// A windowed run advances by how long its last frame took, so its pace depends
+/// on the machine. Drawing to compare against a stored frame has to be
+/// reproducible instead, and this is the fixed step that makes it so.
+pub const FIXED_STEP: f32 = 1.0 / 60.0;
 
-/// The format the headless path renders into.
+/// The format a scene is rendered into when it is drawn without a display.
 ///
 /// sRGB, like the view a window surface presents through: it is what lets the
 /// built-in unlit shader's colors reach the readback unchanged.
-#[cfg(feature = "snapshot")]
-const HEADLESS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Write `text` to standard output.
 ///
@@ -105,7 +106,7 @@ fn init_logging() {
 
 /// Run the example from the command line.
 ///
-/// Returns the process exit code: the headless capture reports its result
+/// Returns the process exit code: the snapshot tests report their result
 /// through it, so a CI run sees a mismatched snapshot as a failed command.
 ///
 /// Android never comes through here — its activity has no command line and
@@ -132,295 +133,11 @@ pub fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    if args.headless {
-        return headless(args);
-    }
-
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("an event loop");
     windowed(args, event_loop);
     ExitCode::SUCCESS
-}
-
-/// Render offscreen, read the frames back and report on them.
-///
-/// No window and no event loop: the frames are drawn as fast as the device
-/// takes them, on a fixed timestep so the same command produces the same
-/// picture. Every scene's frames are compared against its own snapshots,
-/// unless a raw `--snapshot <PATH>` capture was asked for instead.
-#[cfg(feature = "snapshot")]
-fn headless(args: Args) -> ExitCode {
-    use unlit_wgpu_test_util::Ctx;
-
-    // The capture path is synchronous, unlike a test's, so it drives the
-    // asynchronous device request to completion itself.
-    let ctx = unlit_wgpu_test_util::block_on(Ctx::headless());
-
-    // `--scene all` runs every scene, which is what CI does; anything else
-    // runs the one the command line named.
-    let scenes: Vec<&scenes::SceneDef> = if args.scene == "all" {
-        scenes::SCENES.to_vec()
-    } else {
-        vec![scenes::by_id(&args.scene).expect("validated by the CLI")]
-    };
-
-    // Every scene runs even when one fails, so a CI run reports every
-    // mismatch in a single pass.
-    let mut failed = false;
-    for def in scenes {
-        failed |= run_headless_scene(&ctx, def, &args);
-    }
-
-    if failed {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
-/// `--headless` without the feature the readback and comparison live behind.
-#[cfg(not(feature = "snapshot"))]
-fn headless(_args: Args) -> ExitCode {
-    stderr(
-        "error: `--headless` needs the `snapshot` feature\n\
-         try: cargo run -p unlit3d_examples --features snapshot -- --headless ...\n",
-    );
-    ExitCode::from(2)
-}
-
-/// Render one scene offscreen and compare its frames against its snapshots.
-///
-/// Returns whether anything failed: a snapshot that does not match, one that
-/// is missing, or a frame that could not be written.
-#[cfg(feature = "snapshot")]
-fn run_headless_scene(
-    ctx: &unlit_wgpu_test_util::Ctx,
-    def: &'static scenes::SceneDef,
-    args: &Args,
-) -> bool {
-    use unlit_wgpu_test_util::{read_texture_bytes, store_frame_webp};
-
-    let size = args.size.unwrap_or(def.size);
-    let frames = args.frames.unwrap_or(def.frames);
-    // An explicit `--min-score` means that bar; otherwise the scene's own, so a
-    // scene whose pixels a backend may legitimately place differently can set a
-    // threshold that matches what it draws.
-    let min_score = args.min_score.unwrap_or_else(|| def.min_score());
-    // A scene's own snapshots only describe a run that reproduces the scene's
-    // stored settings. Overriding the size, the frame count or the UI makes a
-    // custom capture instead, which compares against `--snapshot <PATH>`.
-    //
-    // `--letterbox` is not part of this because it needs no entry: a scene's
-    // baseline is its own snapshot size, so letterboxing at that size fits the
-    // whole target and draws exactly the same frame. A letterbox only means
-    // something alongside `--size`, which is already covered here.
-    let reproduces_scene = args.size.is_none() && args.frames.is_none() && !args.no_ui;
-    if args.update && args.snapshot.is_none() && !reproduces_scene {
-        stderr(
-            "error: `--update` without `--snapshot <PATH>` needs the scene's own \
-             size, frame count and UI; pass `--snapshot <PATH>` to store a custom \
-             capture instead\n",
-        );
-        return true;
-    }
-    let mut scene = Scene::new(
-        ctx.device.clone(),
-        ctx.queue.clone(),
-        ctx.capabilities,
-        size,
-        scenes::SceneOptions {
-            ui: def.ui && !args.no_ui,
-            selector: false,
-            reproducible: true,
-            // A capture draws at the size it was asked for, which the stored
-            // snapshots were taken at, so letterboxing is off unless the run is
-            // a deliberate capture of the fitted picture.
-            letterbox: args.letterbox,
-            // A capture steps the sequence once per frame, so it draws exactly
-            // the frames the snapshots froze.
-            sequence_step: None,
-        },
-        def,
-    );
-
-    let (world, renderer) = (&scene.world, scene.renderer);
-    let target = world
-        .with_mut::<Renderer, _>(renderer, |renderer| {
-            bind_offscreen_target(world, renderer, &ctx.device, size, def.samples, def.depth)
-        })
-        .expect("the renderer is a resource entity");
-
-    // The region the content is drawn into, published before the first frame
-    // the way a frame loop publishes it: the whole target, or the letterboxed
-    // part of it when the run asked for one. A source reads it while building
-    // its scene, so it has to be stated before the first render.
-    set_frame_viewport(world, scene.viewport.map(FrameViewport));
-
-    let (width, height) = size;
-    let bytes_per_pixel = HEADLESS_FORMAT
-        .block_copy_size(None)
-        .expect("an RGBA8 format has a block copy size");
-
-    let mut failed = false;
-    for frame in 0..frames {
-        scene.advance(FIXED_STEP);
-        scene.render();
-        scene.end_frame();
-
-        // A scene's own snapshots are compared frame by frame; a raw
-        // `--snapshot <PATH>` capture is compared once, after the loop.
-        if args.snapshot.is_none()
-            && reproduces_scene
-            && let Some(name) = (scene.control.snapshot)(frame)
-        {
-            let bytes = read_texture_bytes(ctx, &target, width, height, bytes_per_pixel);
-            let path = args.snapshot_dir.join(&name);
-            // The mismatch mirrors the snapshot's own name, so a run over every
-            // scene keeps each frame under the scene it belongs to instead of
-            // colliding on the file name.
-            let mismatch = args.mismatch_dir.as_ref().map(|dir| dir.join(&name));
-            failed |= compare_frame(
-                &path,
-                &bytes,
-                width,
-                height,
-                args.update,
-                min_score,
-                mismatch.as_deref(),
-            );
-        }
-    }
-    log::info!(
-        "scene `{}`: captured a {width}x{height} frame over {} frames",
-        def.id,
-        frames
-    );
-
-    // The last frame is read back once more for `--output` and a raw
-    // `--snapshot <PATH>` comparison, so it is the last frame drawn whatever
-    // the frame count was.
-    let last_frame = read_texture_bytes(ctx, &target, width, height, bytes_per_pixel);
-
-    if let Some(path) = &args.output {
-        match store_frame_webp(path, &last_frame, width, height) {
-            Ok(()) => log::info!("wrote {}", path.display()),
-            Err(error) => {
-                stderr(&format!("error: writing {}: {error}\n", path.display()));
-                failed = true;
-            }
-        }
-    }
-
-    if let Some(path) = &args.snapshot {
-        failed |= compare_frame(
-            path,
-            &last_frame,
-            width,
-            height,
-            args.update,
-            min_score,
-            args.mismatch_dir
-                .as_ref()
-                .map(|dir| dir.join(mismatch_name(path)))
-                .as_deref(),
-        );
-    }
-
-    failed
-}
-
-/// The name a raw `--snapshot <PATH>` capture's mismatched frame is written
-/// under, inside the mismatch directory.
-///
-/// A raw capture names its own path rather than a snapshot directory, so it
-/// has no scene-relative name to mirror; the file name alone keeps the
-/// extension and stays clear of the subdirectories a scene's snapshots use.
-#[cfg(feature = "snapshot")]
-fn mismatch_name(snapshot: &std::path::Path) -> &std::path::Path {
-    snapshot
-        .file_name()
-        .map(std::path::Path::new)
-        .unwrap_or(snapshot)
-}
-
-/// Store or score `rgba` against the snapshot at `path`.
-///
-/// `update` stores the frame; otherwise a missing snapshot is an error rather
-/// than a cue to write one, and a present one is scored on SSIMULACRA2.
-///
-/// When the snapshot does not match and `mismatch` names a path, the frame is
-/// written there as well. A mismatch is often the platform showing through —
-/// the stored images come from one GPU stack, and another driver's rounding
-/// can put a scene below the threshold without anything being wrong — so the
-/// frame is kept for a human to look at rather than left as a score in a log.
-#[cfg(feature = "snapshot")]
-fn compare_frame(
-    path: &std::path::Path,
-    rgba: &[u8],
-    width: u32,
-    height: u32,
-    update: bool,
-    min_score: f64,
-    mismatch: Option<&std::path::Path>,
-) -> bool {
-    use unlit_wgpu_test_util::{score_frame_webp, store_frame_webp};
-
-    // Writing the frame is a courtesy to whoever reads the result: a failure to
-    // write it must not turn a passing snapshot into a failing run, nor hide
-    // the mismatch that made it worth writing. So it is reported and dropped.
-    let store_mismatch = |rgba: &[u8]| {
-        if let Some(mismatch) = mismatch
-            && let Err(error) = store_frame_webp(mismatch, rgba, width, height)
-        {
-            stderr(&format!(
-                "warning: writing the mismatched frame to {}: {error}\n",
-                mismatch.display()
-            ));
-        }
-    };
-
-    let label = path.display();
-    if update {
-        match store_frame_webp(path, rgba, width, height) {
-            Ok(()) => {
-                log::info!("updated the snapshot at {label}");
-                false
-            }
-            Err(error) => {
-                stderr(&format!("error: writing {label}: {error}\n"));
-                true
-            }
-        }
-    } else if !path.exists() {
-        // Storing a missing snapshot would pass CI by writing the very
-        // thing it is meant to check, so the caller has to ask.
-        stderr(&format!(
-            "error: no snapshot at {label} to compare against; \
-             store one with `--update` and review it\n"
-        ));
-        true
-    } else {
-        match score_frame_webp(path, rgba, width, height) {
-            Ok(score) if score >= min_score => {
-                log::info!("snapshot {label}: SSIMULACRA2 score {score:.2}");
-                false
-            }
-            Ok(score) => {
-                stderr(&format!(
-                    "error: the frame does not match {label}: \
-                     SSIMULACRA2 score {score:.2} < {min_score:.2}\n"
-                ));
-                store_mismatch(rgba);
-                true
-            }
-            Err(error) => {
-                stderr(&format!("error: comparing against {label}: {error}\n"));
-                store_mismatch(rgba);
-                true
-            }
-        }
-    }
 }
 
 /// Bind an offscreen `size`-pixel target as the renderer's render target, and
@@ -431,8 +148,7 @@ fn compare_frame(
 /// way — and the color texture is the one a readback copies out of. A scene
 /// declares its own sample count and whether it draws into a depth attachment,
 /// matching how its snapshots were captured.
-#[cfg(feature = "snapshot")]
-fn bind_offscreen_target(
+pub fn bind_offscreen_target(
     world: &World,
     renderer: &mut Renderer,
     device: &wgpu::Device,
@@ -443,7 +159,7 @@ fn bind_offscreen_target(
     use unlit_wgpu::render_attachments::create_render_target;
     use unlit_wgpu::resources::TextureExt;
 
-    let target = create_render_target(device, HEADLESS_FORMAT, size.0, size.1, samples);
+    let target = create_render_target(device, OFFSCREEN_FORMAT, size.0, size.1, samples);
     let default_view = |texture: &wgpu::Texture| {
         TextureExt::create_view(texture, &wgpu::TextureViewDescriptor::default())
     };
@@ -664,16 +380,21 @@ impl GpuState {
 ///
 /// Deliberately knows nothing about how a frame reaches a display: it advances
 /// the scene's behaviour and renders into whatever target is bound, so the
-/// windowed and headless paths differ only in what they bind and what they do
+/// windowed run and the snapshot tests differ only in what they bind and what
 /// with the result. The scene itself is a [`scenes::SceneDef`] whose build
 /// populated the world and returned the [`SceneControl`] this drives.
-struct Scene {
-    world: World,
+///
+/// Public because the snapshot tests drive the same scenes offscreen: the web
+/// renders them and compares each frame against its snapshot, which is the
+/// comparison they make.
+pub struct Scene {
+    /// The ECS world the scene's content lives in.
+    pub world: World,
     /// The renderer resource entity: the handle every renderer access goes
     /// through.
-    renderer: Entity,
+    pub renderer: Entity,
     /// Translates the window's events into the world's input events. The
-    /// headless path never feeds it, so its state stays idle.
+    /// snapshot tests never feed it, so its state stays idle.
     input: WinitInput,
     /// The size the scene's content is drawn at, in pixels: the target's own,
     /// or the letterboxed part of it when [`Self::viewport`] is set.
@@ -687,19 +408,19 @@ struct Scene {
     /// Set when the scene declares an aspect of its own — see
     /// [`scenes::SceneDef::baseline`] — so a target of any shape shows the same
     /// picture at a different scale rather than showing more of it.
-    viewport: Option<ViewportRect>,
+    pub viewport: Option<ViewportRect>,
     /// The scene's per-frame behaviour and snapshot table.
-    control: SceneControl,
+    pub control: SceneControl,
     /// The frame-rate measurement the windowed shell's readout displays.
     ///
-    /// Unused by the headless path, which has no display to report a rate for.
+    /// Unused by the snapshot tests, which have no display to report a rate on.
     frame_rate: Entity,
     /// The frame index the scene's behaviour is handed.
     frame: u32,
     /// The interval the index advances at, in seconds, or `None` to advance it
     /// once per drawn frame.
     ///
-    /// The headless path advances it every frame so a capture draws exactly the
+    /// The snapshot tests advance it every frame so a capture draws exactly the
     /// frames its snapshots froze; the windowed path hands a scene that froze a
     /// sequence a longer interval, so the sequence plays at a watchable pace
     /// instead of one frame per display refresh.
@@ -1135,7 +856,7 @@ impl Scene {
     /// frame's GPU context and the renderer resource entity; the scene's build
     /// adds its sources, meshes, camera and entities, and returns the
     /// [`SceneControl`] that drives them.
-    fn new(
+    pub fn new(
         device: wgpu::Device,
         queue: wgpu::Queue,
         capabilities: DeviceCapabilities,
@@ -1168,7 +889,7 @@ impl Scene {
         let frame_rate = world.spawn((FrameRate::default(),));
 
         // The UI source drives the scene's own panels — and, in a windowed
-        // run, the selector panel. A headless scene without UI mounts none.
+        // run, the selector panel. A scene captured without UI mounts none.
         if options.ui || options.selector {
             let mut source_ui = UiSource::new();
             if options.reproducible && def.reproducible_ui {
@@ -1217,7 +938,7 @@ impl Scene {
     }
 
     /// Advance the scene by `delta_time` seconds.
-    fn advance(&mut self, delta_time: f32) {
+    pub fn advance(&mut self, delta_time: f32) {
         // Measured before anything else, so the reading covers the whole frame
         // — input, behaviour, render and present — and not just the part
         // between here and the next call.
@@ -1262,11 +983,10 @@ impl Scene {
 
     /// Render one frame into whatever target the caller bound.
     ///
-    /// Only the headless path draws through this: the windowed one acquires
+    /// Only the snapshot tests draw through this: the windowed run acquires
     /// the swap chain's image and renders between the acquire and the present,
     /// so it needs both under one borrow.
-    #[cfg(feature = "snapshot")]
-    fn render(&mut self) {
+    pub fn render(&mut self) {
         let (world, renderer) = (&self.world, self.renderer);
         world
             .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(world))
@@ -1275,7 +995,7 @@ impl Scene {
 
     /// Finish the frame: drop the events every consumer has read, and apply
     /// whatever a behaviour component or panel queued.
-    fn end_frame(&mut self) {
+    pub fn end_frame(&mut self) {
         if let Some(state) = self.world.query::<&InputState>().next().map(|(e, _)| e) {
             let _ = self
                 .world
@@ -1408,7 +1128,7 @@ fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
 ///
 /// `baseline` is the aspect to keep, or `None` for a scene with no aspect of
 /// its own — a UI-only one — which draws into the whole target. `letterbox`
-/// turns the whole mechanism off, which is what the headless path wants: its
+/// turns the whole mechanism off, which is what a capture wants: its
 /// captures are the scene's own size and must stay comparable with the stored
 /// snapshots.
 fn letterbox(
@@ -1584,7 +1304,7 @@ mod tests {
         assert_eq!((viewport.width, viewport.height), (800.0, 600.0));
         assert_eq!(viewport.x, 400.0, "centred horizontally");
 
-        // The headless path never does: its captures are the scene's own size.
+        // A capture never does: it draws at the scene's own size.
         assert_eq!(
             letterbox(Some((960, 720)), (1600, 600), false),
             (None, (1600, 600))

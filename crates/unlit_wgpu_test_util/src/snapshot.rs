@@ -11,7 +11,6 @@
 //! Both paths decode the same WebP and score it the same way; only the origin
 //! of the bytes differs.
 
-#[cfg(not(target_arch = "wasm32"))]
 use image::ImageEncoder;
 use ssimulacra2::{ColorPrimaries, Rgb, TransferCharacteristic, compute_frame_ssimulacra2};
 
@@ -138,6 +137,37 @@ macro_rules! snapshot {
             $crate::Snapshot::on_disk($name)
         }
     }};
+}
+
+/// The snapshots one scene's frames verify against, in frame order.
+///
+/// A scene that freezes a sequence of frames stores each as its own snapshot
+/// under a directory named for the scene. Listing them here rather than
+/// building the names at run time is what lets a web build carry them in the
+/// binary: the wasm arm embeds every listed file, the way [`snapshot!`] embeds
+/// one, and the host arm resolves them under the snapshot directory instead.
+///
+/// The list is the scene's own frame table, so it is written out in full
+/// rather than derived — a frame whose snapshot is missing from the list is a
+/// frame the test does not compare, and one named here that has no file fails
+/// to compile on the web.
+///
+/// ```
+/// use unlit_wgpu_test_util::snapshots;
+///
+/// // A scene storing two frames under its own directory.
+/// let frames = snapshots![
+///     "ecs_animated/frame_00_alloc3_free0_live3.webp",
+///     "ecs_animated/frame_01_alloc2_free0_live5.webp",
+/// ];
+/// assert_eq!(frames.len(), 2);
+/// assert_eq!(frames[0].name(), "ecs_animated/frame_00_alloc3_free0_live3.webp");
+/// ```
+#[macro_export]
+macro_rules! snapshots {
+    ($($name:literal),+ $(,)?) => {
+        [$($crate::snapshot!($name)),+]
+    };
 }
 
 /// What went wrong storing or comparing a snapshot.
@@ -309,6 +339,24 @@ fn outlier_fraction(reference: &[u8], rgba: &[u8], channel_delta: u8) -> f64 {
     outliers as f64 / pixels as f64
 }
 
+/// The environment variable that collects mismatched frames on the host.
+///
+/// A mismatch is often the platform showing through rather than a regression:
+/// the stored frames come from one GPU stack, and another driver's rounding can
+/// put a frame below the bar with nothing wrong. Writing the frame that did not
+/// match is what lets CI upload it as an artifact, so the difference can be
+/// looked at instead of guessed at from a score.
+///
+/// Unset, frames go under [`DEFAULT_MISMATCH_DIR`]. Set to a path, they go there
+/// instead — which is how a task that makes several passes gives each one its
+/// own directory.
+#[cfg(not(target_arch = "wasm32"))]
+pub const MISMATCH_DIR_ENV: &str = "UNLIT3D_SNAPSHOT_MISMATCH_DIR";
+
+/// Where mismatched frames are written when [`MISMATCH_DIR_ENV`] is unset.
+#[cfg(not(target_arch = "wasm32"))]
+pub const DEFAULT_MISMATCH_DIR: &str = "target/snapshot-mismatches";
+
 /// Assert that `rgba` matches `snapshot` within [`DEFAULT_TOLERANCE`].
 ///
 /// Natively a missing snapshot is written from this frame rather than failed
@@ -326,6 +374,14 @@ pub fn assert_image_snapshot(snapshot: Snapshot, rgba: &[u8], width: u32, height
 /// failed on — natively, where there is somewhere to write it. A freshly
 /// written snapshot is not judged at all, since it was just made from this
 /// frame.
+///
+/// A frame that does not match is kept before the assertion fails, so a run that
+/// fails in CI leaves it behind for the job to upload: natively it is written
+/// under [`DEFAULT_MISMATCH_DIR`] (or [`MISMATCH_DIR_ENV`]), and on the web it is
+/// handed to the test runner, which is the process that has a filesystem.
+/// Keeping it is a courtesy to whoever reads the result, so a failure to do so
+/// is reported and dropped rather than replacing the mismatch it was meant to
+/// explain.
 pub fn assert_image_snapshot_with_tolerance(
     snapshot: Snapshot,
     rgba: &[u8],
@@ -337,26 +393,67 @@ pub fn assert_image_snapshot_with_tolerance(
     let comparison = compare(snapshot, rgba, width, height, tolerance.channel_delta)
         .unwrap_or_else(|error| panic!("snapshot {name}: {error}"));
 
-    if let Some(min_score) = tolerance.min_score {
-        assert!(
-            comparison.score >= min_score,
-            "snapshot `{name}` perceptual mismatch: SSIMULACRA2 score {:.2} < {min_score}
-             if the change is intentional, re-store with SNAPSHOT_UPDATE=1",
+    let failure = if let Some(min_score) = tolerance.min_score
+        && comparison.score < min_score
+    {
+        Some(format!(
+            "perceptual mismatch: SSIMULACRA2 score {:.2} < {min_score}",
             comparison.score,
-        );
-    }
-
-    if let Some(max_outliers) = tolerance.max_outliers {
-        assert!(
-            comparison.outliers <= max_outliers,
-            "snapshot `{name}` differs over {:.2}% of its pixels, above the {:.2}% allowed \
-             beyond a channel difference of {}
-             if the change is intentional, re-store with SNAPSHOT_UPDATE=1",
+        ))
+    } else if let Some(max_outliers) = tolerance.max_outliers
+        && comparison.outliers > max_outliers
+    {
+        Some(format!(
+            "differs over {:.2}% of its pixels, above the {:.2}% allowed \
+             beyond a channel difference of {}",
             comparison.outliers * 100.0,
             max_outliers * 100.0,
             tolerance.channel_delta,
+        ))
+    } else {
+        None
+    };
+
+    if let Some(failure) = failure {
+        store_mismatch(name, rgba, width, height);
+        panic!(
+            "snapshot `{name}` {failure}
+             if the change is intentional, re-store with SNAPSHOT_UPDATE=1"
         );
     }
+}
+
+/// Keep a frame that did not match, so a failing run leaves it behind.
+///
+/// Natively, where a test owns its own filesystem: the snapshot's name is a path
+/// relative to the snapshot directory, so it keeps each frame under the test it
+/// belongs to rather than colliding on a file name.
+#[cfg(not(target_arch = "wasm32"))]
+fn store_mismatch(name: &str, rgba: &[u8], width: u32, height: u32) {
+    let dir = std::env::var_os(MISMATCH_DIR_ENV)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(DEFAULT_MISMATCH_DIR));
+    let path = dir.join(name);
+    if let Err(error) = store_frame_webp(&path, rgba, width, height) {
+        // Reported, not raised: the mismatch is the result worth reporting, and
+        // losing this frame must not replace it with a write error.
+        log::warn!(
+            "writing the mismatched frame to {}: {error}",
+            path.display()
+        );
+    }
+}
+
+/// Keep a frame that did not match, by handing it to the runner.
+///
+/// A page has no filesystem, so the encoded frame is passed to the process that
+/// has one — the Node test runner, which writes it under its own mismatch
+/// directory. The encoding happens here because the frame's bytes only exist in
+/// the browser.
+#[cfg(target_arch = "wasm32")]
+fn store_mismatch(name: &str, rgba: &[u8], width: u32, height: u32) {
+    let webp = encode_frame_webp(rgba, width, height);
+    crate::browser::record_mismatch(name, &webp);
 }
 
 /// Measure a frame against its baseline, storing one where none exists yet.
@@ -418,7 +515,9 @@ pub fn snapshot_path(name: &str) -> std::path::PathBuf {
 }
 
 /// Encode `rgba` as a lossless WebP.
-#[cfg(not(target_arch = "wasm32"))]
+///
+/// Available on the web too: a frame that fails a comparison is encoded there
+/// and handed to the runner, since the bytes only exist in the browser.
 pub fn encode_frame_webp(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
     let mut webp = Vec::new();
     image::codecs::webp::WebPEncoder::new_lossless(&mut webp)

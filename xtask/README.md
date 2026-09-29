@@ -46,6 +46,12 @@ indices — on a machine whose own adapter is Vulkan, Metal or DX12. Set the
 variable to `native` to run against the adapter's own limits instead of the
 baseline. Accepts `--release`, which applies to both passes.
 
+A frame that fails its snapshot comparison is written before the test fails, under
+`target/snapshot-mismatches` for the default pass and
+`target/snapshot-mismatches-webgl2` for the tier pass — a directory each, so a
+frame that differs under both tiers can be told apart. CI uploads them when a
+test fails, so a mismatch can be looked at rather than only scored.
+
 ### `cargo xtask test-wasm`
 
 Runs the same GPU tests `cargo xtask test` does, but on
@@ -63,7 +69,9 @@ assembled rather than run:
 4. The test page, which loads one module and calls that export, is copied beside
    them, together with a `wasm_paths.json` mapping a module name to its script.
 5. A Node runner serves that directory and opens the page once per test in a
-   fresh browser context.
+   fresh browser context. A frame that fails its comparison is encoded in the
+   browser — the page has no filesystem — and handed to this runner, which
+   writes it under `target/snapshot-mismatches-wasm` for CI to upload.
 6. The *same* native test binaries, with `UNLIT3D_WASM_TEST` set, become a proxy
    instead of a test suite: `cargo nextest` drives them, and each trial asks the
    runner to run that test in the browser. Nextest's listing, filtering,

@@ -126,9 +126,18 @@ is what arranges it:
 A missing snapshot is *stored* rather than compared, and setting
 `SNAPSHOT_UPDATE=1` re-stores every snapshot it touches. So a snapshot that was
 never committed silently passes CI by writing itself — which is why the CI
-snapshot job checks the submodule out and the example's headless path refuses to
-compare against a snapshot that does not exist. On the web a missing snapshot
-cannot arise: the build would not have compiled.
+snapshot job checks the submodule out. On the web a missing snapshot cannot
+arise: the build would not have compiled.
+
+A frame that *fails* its comparison is kept before the assertion fails, so a run
+that fails in CI leaves the frame behind for the job to upload: natively it is
+written under `UNLIT3D_SNAPSHOT_MISMATCH_DIR` (or `target/snapshot-mismatches`),
+and on the web it is encoded in the browser and handed to the test runner, which
+is the process that has a filesystem. A mismatch is often the platform showing
+through rather than a regression — the stored frames come from one GPU stack, and
+another driver's rounding is enough to put a frame below the bar — so having the
+frame is what makes the difference something to look at rather than to infer from
+a score.
 
 To re-bless a snapshot after an intentional rendering change:
 

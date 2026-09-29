@@ -11,6 +11,16 @@ keywords = ["gamedev", "graphics", "rendering", "webgpu", "wgpu"]
 # submodule; neither travels in a package, so the tests do not either.
 exclude = ["/tests"]
 
+[[test]]
+harness = false
+name = "gpu_unlit"
+required-features = ["unlit"]
+
+[[test]]
+harness = false
+name = "gpu_ui"
+required-features = ["egui"]
+
 [dependencies]
 arrayvec.workspace = true
 bitflags.workspace = true
@@ -36,16 +46,6 @@ wesl = { version = "0.5.0", default-features = false, features = ["package"] }
 # The GPU tests drive the shared registry rather than libtest's generated
 # harness, so one file serves both `cargo nextest` and the browser's wasm
 # build. `wasm-bindgen` is what exports the page's entry point on the web.
-
-[[test]]
-name = "gpu_unlit"
-harness = false
-required-features = ["unlit"]
-
-[[test]]
-name = "gpu_ui"
-harness = false
-required-features = ["egui"]
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen.workspace = true

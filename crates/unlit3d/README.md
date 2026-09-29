@@ -516,11 +516,11 @@ cargo nextest run -p unlit3d    # just this crate
 The GPU integration tests render scenes into offscreen targets and inspect the
 pixels that come back. The multi-frame snapshot coverage of those scenes lives
 in [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md),
-whose headless path compares them against the SSIMULACRA2 snapshots under
+whose `tests/gpu_scenes.rs` compares them against the SSIMULACRA2 snapshots under
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md).
 Clone the submodule with `git submodule update --init`; re-bless intentional
-changes with `cargo run -p unlit3d_examples --features snapshot -- --headless
---scene all --update` and review the image diff. Where each test layer sits
+changes with `SNAPSHOT_UPDATE=1 cargo nextest run -p unlit3d_examples` and review
+the image diff. Where each test layer sits
 across the workspace, and what CI runs, is in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 

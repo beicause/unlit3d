@@ -3,11 +3,10 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/unlit3d_e
 # unlit3d_examples
 
 A windowed example with selectable scenes, rendered through
-[`unlit3d::winit::WindowSurface`]
-— or, headlessly, into an offscreen target that is read back and compared
-against stored snapshots. It is both the workspace's example program and its
-rendering regression check in CI, and it is also the Android example, packaged
-as an APK.
+[`unlit3d::winit::WindowSurface`]. Its scenes are also drawn offscreen by
+`tests/gpu_scenes.rs`, which compares every frame against a stored snapshot, so
+the crate is both the workspace's example program and a rendering regression
+check. It is also the Android example, packaged as an APK.
 
 It is at an **early stage** along with the crates it uses, and it exercises
 parts of them that are still under construction.
@@ -15,10 +14,10 @@ parts of them that are still under construction.
 ## Scenes
 
 The example's scenes are the snapshot scenes the GPU tests used to draw in
-`crates/unlit3d/tests`: every one of them is now a selectable scene, and the
-example's headless path is the check that replaced those tests. The windowed
-loop shows the scene the command line selected and lists every scene in a
-panel, so one can be switched to at runtime. `--list-scenes` prints the table:
+`crates/unlit3d/tests`: every one of them is now a selectable scene, and
+`tests/gpu_scenes.rs` is the check that replaced those tests. The windowed loop
+shows the scene the command line selected and lists every scene in a panel, so
+one can be switched to at runtime. `--list-scenes` prints the table:
 
 ```text
 Scenes:
@@ -60,8 +59,8 @@ region it is actually drawn into. The target only ever adds bars around the
 picture: a wide window shows the same view a narrow one does, larger, rather
 than more of it, and nothing is ever stretched. The UI is drawn over the whole
 target rather than the letterboxed region, because a panel has no aspect of its
-own. The headless path turns the letterbox off and draws at the scene's own
-size, so a capture is unchanged.
+own. The snapshot tests turn the letterbox off and draw at the scene's own size,
+so a capture is unchanged.
 
 A readout in the top-right corner reports the smoothed frame rate and frame
 time. In a browser, the first press on the window asks for fullscreen — the one
@@ -82,12 +81,6 @@ surface, and on Android destroys the native window under it, but the window
 handle, the GPU context and the whole ECS world stay: the swap chain alone is
 released and built again on the next resume, so the app comes back to the state
 it left — the same spin angle, camera orbit and panel values.
-
-## Features
-
-| Feature | Default | Provides |
-|---------|---------|----------|
-| `snapshot` | no | the headless capture path: `--headless`, `--output` and `--snapshot`. It pulls in the test harness's frame readback and perceptual comparison, so the wasm and Android builds never see it |
 
 ## Running it
 
@@ -150,19 +143,21 @@ It extends `GameActivity`, which loads the library named by the
 only takes the screen over. The whole application — window, GPU context, frame
 loop — is this crate's.
 
-## Headless capture
+## Snapshot tests
 
-With the `snapshot` feature, the example is its own snapshot runner. It renders
-a scene offscreen with no window and no event loop, advancing it by a fixed
-timestep so the same command produces the same picture, and compares each frame
-against the scene's stored snapshots:
+`tests/gpu_scenes.rs` is where the example's rendering is checked. It draws every
+scene offscreen, with no window and no event loop, advancing it by a fixed
+timestep so the same code produces the same picture, and compares each frame the
+scene freezes against the scene's stored snapshot:
 
 ```text
-cargo run -p unlit3d_examples --features snapshot -- --headless --scene ecs_skinned
+cargo nextest run -p unlit3d_examples
 ```
 
-`--headless` without the feature reports that the feature is needed and exits
-with code 2. `--scene all` runs every scene, which is what CI does.
+The test is a library test rather than a command line: the same body runs
+natively and, because the test binary is what the wasm test page loads, in a
+browser too. `cargo xtask test` runs it twice, once per device tier, and
+`cargo xtask test-wasm` runs it against a real WebGL2 implementation.
 
 ### Options
 
@@ -172,29 +167,13 @@ the value must be the next argument, so `--name=value` is not accepted.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `--headless` | off | Render offscreen, read the frame back and exit, without opening a window |
-| `--scene <ID>` | `spin_cube` | The scene to run; `all` runs every scene (headless only) |
+| `--scene <ID>` | `spin_cube` | The scene to start from |
 | `--list-scenes` | off | Print the scene table and exit |
-| `--size <WxH>` | the scene's own | Render target size in pixels; also the window's initial size |
-| `--frames <N>` | the scene's own | Frames to draw before capturing |
-| `--output <PATH>` | none | Write the captured frame to `PATH` as a lossless WebP |
-| `--snapshot <PATH>` | none | Compare the captured frame against the snapshot at `PATH`, instead of the scene's own snapshots |
-| `--update` | off | Store the snapshots being compared instead of comparing them |
-| `--no-ui` | off | Draw the scene without its UI overlay |
-| `--letterbox` | off | Fit the content to the target the way the window does: keep the scene's baseline aspect and draw into the largest region of that aspect the target holds, leaving the rest clear |
-| `--min-score <S>` | the scene's own, else `85.0` | Lowest SSIMULACRA2 score that counts as matching |
-| `--snapshot-dir <D>` | the asset submodule's `snapshots` | Where the scene's own snapshots resolve, by name |
-| `--mismatch-dir <D>` | none | Write every frame that does not match its snapshot to `D` as a lossless WebP, mirroring the snapshot's name |
-
-`--output`, `--snapshot`, `--update`, `--mismatch-dir` and `--scene all` have no
-meaning in the windowed loop, so asking for one without `--headless` is an error
-rather than a silent no-op. `--scene all` cannot be combined with `--output` or
-`--snapshot`. `--no-ui` is only honoured by the headless path; the windowed path
-always mounts the UI.
+| `--size <WxH>` | the scene's own | Initial window size in pixels |
 
 ### Playback pace
 
-A headless capture draws a multi-frame scene's frames back to back, so one run
+A snapshot test draws a multi-frame scene's frames back to back, so one run
 matches its snapshots frame by frame. The windowed loop instead plays them over
 time: a scene whose animation was frozen as a few frames holds each one for
 `SEQUENCE_STEP` (currently 0.5 s), so the sequence is watchable rather than
@@ -203,8 +182,8 @@ windowed frame, so a stall does not skip frames.
 
 ### Choosing a device tier
 
-`UNLIT3D_DEVICE_TIER` sets how much of the WebGPU baseline every headless device
-this example builds is asked for. Unset, it is `webgpu`: the guaranteed baseline
+`UNLIT3D_DEVICE_TIER` sets how much of the WebGPU baseline every offscreen device
+a test builds is asked for. Unset, it is `webgpu`: the guaranteed baseline
 limits, so the device is no larger than the API promises and the frame runs
 wherever WebGPU does. Only the texture resolution is taken from the adapter, so
 the device is never smaller than the machine allows. `native` asks for the
@@ -218,8 +197,7 @@ value is refused rather than guessed at, since running the wrong tier would pass
 while testing nothing.
 
 ```text
-UNLIT3D_DEVICE_TIER=webgl2 \
-  cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
+UNLIT3D_DEVICE_TIER=webgl2 cargo nextest run -p unlit3d_examples
 ```
 
 `WGPU_BACKEND` selects the backend in the usual `wgpu` way and is independent of
@@ -229,53 +207,38 @@ even where the GL context is not.
 
 ### Snapshots
 
-Without `--snapshot`, a headless run compares every frame the scene declares a
-snapshot for against the snapshot directory. The comparison uses SSIMULACRA2 and
-exits non-zero when the score falls below the threshold, which is `--min-score`
-when given, otherwise the scene's own, otherwise `85.0`. If a snapshot is
-missing it refuses to compare and tells you to generate one with `--update` —
-writing a missing snapshot would let a regression pass CI by creating the very
-file the check is meant to read.
+Each test compares every frame the scene declares a snapshot for against the
+snapshot directory. The comparison uses SSIMULACRA2 and fails when the score
+falls below the tolerance, which the test states for the scene it draws. A
+missing snapshot is written from the frame rather than failed on, so the first
+run of a new test records its baseline, and `SNAPSHOT_UPDATE=1` rewrites one that
+exists.
 
-A scene declares a threshold of its own through `SceneDef::min_score`, and only
-when the default is the wrong bar for what it draws. The default suits a frame
-of whole surfaces, where a regression moves large regions and so lands far below
-the line. A frame of thin primitives is different: its pixels are outlines, and
-which triangle an outline pixel belongs to is a rasterizer's tie-breaking rule
-to decide — one the API leaves to each implementation. A scatter of such pixels
-is worth tens of points there, so `mesh_topologies` accepts 75 rather than 85
-and says in its definition which measurements put 75 above every correct frame
-and below every broken one.
+The default tolerance suits a frame of whole surfaces, where a regression moves
+large regions and so lands far below the line. A frame of thin primitives is
+different: its pixels are outlines, and which triangle an outline pixel belongs
+to is a rasterizer's tie-breaking rule to decide — one the API leaves to each
+implementation. A scatter of such pixels is worth tens of points there, so
+`mesh_topologies` is given a tolerance of its own, stated with the measurements
+that put its bound above every correct frame and below every broken one.
 
 A scene's own snapshots only describe a run that reproduces the scene's stored
-settings, so overriding `--size`, `--frames` or `--no-ui` makes a custom capture
-that is written with `--output` but not compared against the scene's snapshots;
-compare it explicitly with `--snapshot <PATH>` instead.
-
-`--letterbox` is what makes such a capture show the windowed picture rather than
-a stretched one. A scene's own snapshots are all at its baseline shape, where
-there is nothing to fit, so they cannot cover the fitting itself; a capture at
-another shape with `--letterbox` is what checks that the content lands inside
-the fitted region with the rest left clear, and CI stores one of those for the
-default scene. Without the flag, `--size` draws the content across the whole
-target, which is what a scene's own snapshots rely on.
+settings, so a test draws at the scene's own size and frame count. The letterbox
+fitting the windowed path applies is checked by a test of its own, which draws
+the default scene at a target narrower than its baseline and compares the fitted
+picture against a capture made for it.
 
 A mismatch is frequently the platform showing through rather than a regression:
 the stored images come from one GPU stack, and another driver's rounding can put
-a scene below `--min-score` with nothing wrong. `--mismatch-dir <D>` therefore
-writes every frame that does not match, under its snapshot's name in `D`, so the
-frame can be looked at instead of guessed at from a score. This is what the CI
-snapshot job does, and it uploads `D` as an artifact when the comparison fails.
-A run over `--scene all` compares every scene and every frame regardless, so one
-pass reports each mismatch.
+a scene below the line with nothing wrong. A frame that fails is therefore
+written before the test fails — natively under
+`UNLIT3D_SNAPSHOT_MISMATCH_DIR`, and in a browser through the runner, which is
+the process that has a filesystem — so the frame can be looked at instead of
+guessed at from a score. CI uploads those directories as artifacts when a test
+fails.
 
-```text
-cargo run -p unlit3d_examples --features snapshot -- --headless --scene all
-```
-
-is exactly what the CI snapshot job runs, against the submodule's committed
-images. To re-bless one or all of them after an intentional rendering change,
-add `--update`, then review the image diffs in
+To re-bless a snapshot after an intentional rendering change, run with
+`SNAPSHOT_UPDATE=1`, then review the image diffs in
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)
 before committing them. That submodule is checked out with
 `git submodule update --init`.
@@ -283,15 +246,8 @@ before committing them. That submodule is checked out with
 ## Tests
 
 The crate's own tests cover the command line (`src/cli.rs`) and the fixed-step
-playback clock (`src/lib.rs`):
-
-```text
-cargo nextest run -p unlit3d_examples
-```
-
-The example's rendering output is checked by the CI snapshot job above rather
-than by a `cargo test` target. Where each test layer sits across the workspace,
-and what CI runs, is in the
+playback clock (`src/lib.rs`), and `tests/gpu_scenes.rs` covers the rendering.
+Where each test layer sits across the workspace, and what CI runs, is in the
 [root README](https://github.com/beicause/unlit3d/blob/main/README.md#tests-and-benchmarks).
 
 ## License

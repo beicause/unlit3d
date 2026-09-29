@@ -11,6 +11,29 @@ const TIER_ENV: &str = "UNLIT3D_DEVICE_TIER";
 /// The value that asks for the WebGL2 tier.
 const WEBGL2_TIER: &str = "webgl2";
 
+/// The environment variable that collects mismatched snapshot frames.
+///
+/// Defined by `unlit_wgpu_test_util`, and repeated here as a literal because
+/// this is a separate crate that does not depend on it.
+const MISMATCH_DIR_ENV: &str = "UNLIT3D_SNAPSHOT_MISMATCH_DIR";
+
+/// Where the mismatched frames of a tier are collected, relative to the
+/// workspace root.
+///
+/// An absolute path is passed to the tests because they run with their own
+/// package as the working directory, so a relative one would put each package's
+/// frames somewhere different. Collecting them in one directory is what lets
+/// CI upload every frame that failed from a single path.
+fn mismatch_dir(tier: Option<&str>) -> Result<std::path::PathBuf, String> {
+    let root = std::env::current_dir()
+        .map_err(|error| format!("reading the working directory: {error}"))?;
+    let name = match tier {
+        Some(tier) => format!("snapshot-mismatches-{tier}"),
+        None => "snapshot-mismatches".to_owned(),
+    };
+    Ok(root.join("target").join(name))
+}
+
 /// Run the workspace's tests.
 ///
 /// `cargo nextest run` is the test runner: it gives every test its own
@@ -51,6 +74,10 @@ pub fn run(release: bool) -> Result<(), String> {
 }
 
 /// Run the workspace's tests through nextest, optionally under a device tier.
+///
+/// Each pass collects its mismatched snapshot frames in a directory of its own,
+/// so a run that fails under both tiers keeps them apart, and CI can upload
+/// whatever was written however far the run got.
 fn nextest(profile: &[&str], tier: Option<&str>) -> Result<(), String> {
     let mut command = std::process::Command::new("cargo");
     command
@@ -63,7 +90,8 @@ fn nextest(profile: &[&str], tier: Option<&str>) -> Result<(), String> {
             "--tests",
             "--all-features",
         ])
-        .args(profile);
+        .args(profile)
+        .env(MISMATCH_DIR_ENV, mismatch_dir(tier)?);
     let named = match tier {
         Some(tier) => {
             command.env(TIER_ENV, tier);

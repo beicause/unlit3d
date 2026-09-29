@@ -53,12 +53,15 @@ console_log.workspace = true
 # publishes its result through an export the page calls.
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = [
+web-sys = {
+  workspace = true,
+  features = [
     "Document",
     "Element",
     "HtmlCanvasElement",
     "Window",
-] }
+  ]
+}
 
 [features]
 snapshot = ["dep:image", "dep:ssimulacra2"]

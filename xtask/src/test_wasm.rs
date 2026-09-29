@@ -26,8 +26,9 @@ use crate::{TestWasmArgs, step};
 /// The packages whose tests can run in a browser.
 ///
 /// Named rather than taken from the workspace, because these are the ones whose
-/// test targets are wasm-test binaries.
-const PACKAGES: &[&str] = &["unlit_wgpu", "unlit3d"];
+/// test targets are wasm-test binaries. The example's own snapshot tests are
+/// among them: its scenes run in the browser the same way the crates' tests do.
+const PACKAGES: &[&str] = &["unlit_wgpu", "unlit3d", "unlit3d_examples"];
 
 /// The target the tests are built for.
 const TARGET: &str = "wasm32-unknown-unknown";
@@ -47,6 +48,21 @@ const WEB: &str = "tests/wasm/web";
 
 /// The Playwright runner, which serves [`DIST`] and drives a browser.
 const RUNNER: &str = "tests/wasm/runner";
+
+/// The environment variable that collects mismatched snapshot frames.
+///
+/// Defined by `unlit_wgpu_test_util` for the host pass, and read by the Node
+/// runner for the browser one — which is the process that can write, since the
+/// page has no filesystem. Repeated here as a literal because this is a
+/// separate crate that does not depend on the harness.
+const MISMATCH_DIR_ENV: &str = "UNLIT3D_SNAPSHOT_MISMATCH_DIR";
+
+/// Where this pass collects the frames that failed their comparison.
+///
+/// A directory of its own, so a browser run's frames are not mixed in with the
+/// host run's: the two can legitimately differ, and telling them apart is the
+/// first thing a reader wants to do.
+const MISMATCH_DIR: &str = "target/snapshot-mismatches-wasm";
 
 /// The environment variable that puts a test binary in proxy mode.
 ///
@@ -405,6 +421,7 @@ impl Runner {
         let mut child = Command::new("node")
             .arg(Path::new(RUNNER).join("index.js"))
             .args(if show { &["--show"][..] } else { &[][..] })
+            .env(MISMATCH_DIR_ENV, MISMATCH_DIR)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()

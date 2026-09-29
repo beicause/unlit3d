@@ -124,7 +124,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Test ${{matrix.os}}
+        id: test
         run: cargo xtask test
+
+      # A frame that fails its snapshot comparison is written rather than only
+      # scored, so a mismatch arrives as an image to look at instead of a number
+      # to guess from — the stored frames come from one GPU stack, and another
+      # driver's rounding is enough to put a scene below the bar with nothing
+      # wrong. `cargo xtask test` gives each device tier a directory of its own,
+      # so a run that fails under both keeps them apart.
+      - name: Upload the mismatched snapshot frames
+        if: ${{ failure() && steps.test.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: snapshot-mismatches-${{ matrix.os }}
+          path: |
+            target/snapshot-mismatches
+            target/snapshot-mismatches-webgl2
+          if-no-files-found: ignore
 
       # What the checks below need is a workspace that compiles, which is what
       # `steps.build` records — not a green run of everything above them. A
@@ -138,100 +155,15 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-      # The example renders every scene headlessly and compares each frame
-      # against its stored snapshot, so a rendering regression fails here
-      # rather than passing unnoticed. This is the check that replaced the
-      # snapshot tests that used to live in `crates/unlit3d/tests`; the
-      # scenes and their snapshots are described in `unlit3d_examples`.
-      # The device is the default tier — the WebGPU baseline's limits, which
-      # every implementation guarantees. `--update` regenerates the snapshots;
-      # review their diff before committing it.
+      # The example's scenes are compared against their snapshots by the test
+      # suite, so `cargo xtask test` above already ran them — twice, once per
+      # device tier, which is what the separate WebGL2 pass here used to do by
+      # hand. The scenes and their snapshots are described in `unlit3d_examples`,
+      # and `tests/gpu_scenes.rs` is where they are compared.
       #
-      # The snapshots were captured on one GPU stack (Linux's lavapipe), and
-      # another driver's rounding is enough to put a scene below the threshold
-      # without anything being wrong. A mismatch therefore writes the frame it
-      # scored under `target/`, and the step after this one uploads those
-      # frames, so a platform difference can be looked at instead of guessed at
-      # from a score. The upload waits on this step's own outcome rather than on
-      # the job's, so a failure elsewhere — a tool that would not install, say —
-      # does not turn into an upload of frames this step never wrote.
-      - name: Compare the example's scenes against their snapshots
-        id: snapshots
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: >
-          cargo run -p unlit3d_examples --features snapshot
-          -- --headless --scene all
-          --mismatch-dir target/snapshot-mismatches
-
-      # `failure()` is not redundant with the outcome check: an `if` that names
-      # no status function gets an implicit `success()`, which is false by the
-      # time this step runs, so the comparison alone would never be reached.
-      - name: Upload the mismatched frames
-        if: ${{ failure() && steps.snapshots.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: snapshot-mismatches-${{ matrix.os }}
-          path: target/snapshot-mismatches
-          if-no-files-found: ignore
-
-      # The same scenes again, with every headless device narrowed to what
-      # WebGL2 offers: no storage buffers, no `base_vertex`, none of the other
-      # downlevel capabilities. This is what draws the shader's arrays from
-      # textures and bakes a mesh's pool offset into its indices, so a scene
-      # that only works on the storage path fails here. It is a rendering
-      # comparison rather than a capability probe: the frames have to come back
-      # the same as the stored ones. The mismatches go to a directory of their
-      # own so a run that fails both steps keeps the two tiers apart.
-      #
-      # `!cancelled()` rather than the implicit `success()`: a mismatch in the
-      # default tier must not hide what the WebGL2 tier would have reported, so
-      # one run shows every scene that fails under either tier. It still waits
-      # on the build, since a workspace that does not compile has no frame to
-      # compare, and a cancelled run is the other exception: there is nothing
-      # left to report.
-      - name: Compare the example's scenes under the WebGL2 device tier
-        id: snapshots-webgl2
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: >
-          cargo run -p unlit3d_examples --features snapshot
-          -- --headless --scene all
-          --mismatch-dir target/snapshot-mismatches-webgl2
-        env:
-          UNLIT3D_DEVICE_TIER: webgl2
-
-      - name: Upload the mismatched frames under the WebGL2 device tier
-        if: ${{ failure() && steps.snapshots-webgl2.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: snapshot-mismatches-webgl2-${{ matrix.os }}
-          path: target/snapshot-mismatches-webgl2
-          if-no-files-found: ignore
-
-      # The default scene again, at a target narrower than its baseline, with
-      # the content fitted the way a window fits it. This is the letterbox
-      # checked against a stored frame: the picture has to land inside the
-      # fitted region with the rest left clear, so a change that stretched the
-      # content to the target, dropped the region, or let a scene's content
-      # leak outside it fails here rather than only in a unit test of the
-      # arithmetic. The scene's own snapshots are all at its baseline shape,
-      # which has no bars to check.
-      - name: Compare the letterboxed capture of the default scene
-        id: snapshot-narrow
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: >
-          cargo run -p unlit3d_examples --features snapshot
-          -- --headless --scene spin_cube
-          --size 480x720 --letterbox
-          --snapshot unlit3d_asset_files/snapshots/spin_cube_narrow.webp
-          --mismatch-dir target/snapshot-mismatches-narrow
-
-      - name: Upload the mismatched letterboxed frame
-        if: ${{ failure() && steps.snapshot-narrow.outcome == 'failure' }}
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: snapshot-mismatches-narrow-${{ matrix.os }}
-          path: target/snapshot-mismatches-narrow
-          if-no-files-found: ignore
+      # The same tests run in a browser too: `cargo xtask test-wasm` loads them
+      # into a real WebGL2 implementation, which is a stack the device tiers can
+      # only imitate.
 
   build-wasm:
     name: Build and test wasm
@@ -285,7 +217,21 @@ jobs:
       # in a browser. The runner's JS dependencies and a browser are installed
       # by the subcommand before it starts anything.
       - name: Test wasm
+        id: test-wasm
         run: cargo xtask test-wasm
+
+      # The page has no filesystem, so a frame that fails a comparison is
+      # encoded in the browser and handed to the Node runner, which writes it
+      # under the wasm pass's own directory. A real WebGL2 rasterizer is a
+      # different implementation from any device tier, so this is where a frame
+      # is most likely to differ for reasons that are not a regression.
+      - name: Upload the mismatched snapshot frames
+        if: ${{ failure() && steps.test-wasm.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: snapshot-mismatches-wasm
+          path: target/snapshot-mismatches-wasm
+          if-no-files-found: ignore
 
   build-android:
     name: Build android

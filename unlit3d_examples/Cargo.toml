@@ -2,7 +2,7 @@
 name = "unlit3d_examples"
 version = "0.1.0-dev.1"
 edition.workspace = true
-description = "A windowed unlit3d example with selectable scenes, plus the headless snapshot runner the CI rendering check uses."
+description = "A windowed unlit3d example with selectable scenes, and the snapshot tests that compare them."
 repository.workspace = true
 license.workspace = true
 keywords = ["example", "gamedev", "webgpu", "wgpu"]
@@ -20,6 +20,10 @@ name = "unlit3d_examples"
 name = "unlit3d_examples"
 path = "src/main.rs"
 
+[[test]]
+harness = false
+name = "gpu_scenes"
+
 [dependencies]
 argh.workspace = true
 glam.workspace = true
@@ -30,10 +34,12 @@ web-time.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
-# The headless capture path reads frames back and scores them against
-# snapshots; the harness already does both, so it is an optional dependency
-# rather than a copy. Off by default: the windowed example needs neither.
-unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"], optional = true }
+# The snapshot tests drive the example's own scenes through the harness, so they
+# read frames back and compare them with the same code the crates' GPU tests use,
+# rather than a copy. Nothing in the library reaches the harness itself, so it is
+# a test dependency and not a dependency of the example.
+[dev-dependencies]
+unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"] }
 
 # The logger backend, which differs by platform even though there is only one
 # per target: `env_logger` writes to the terminal a command line runs in.
@@ -53,13 +59,20 @@ console_log.workspace = true
 # reach them.
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = [
+web-sys = {
+  workspace = true,
+  features = [
     "OrientationLockType",
     "OrientationType",
     "Screen",
     "ScreenOrientation",
     "Window",
-] }
+  ]
+}
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# The export the test page calls is what `gpu_test_main!` generates.
+wasm-bindgen.workspace = true
 
 # Winit needs one of its Android activity backends selected to build for
 # Android, and the choice belongs to whoever starts the event loop. Picking it
@@ -71,13 +84,6 @@ web-sys = { workspace = true, features = [
 [target.'cfg(target_os = "android")'.dependencies]
 android_logger = "0.15.1"
 winit = { workspace = true, features = ["android-game-activity"] }
-
-[features]
-## The headless capture path: `--headless`, `--output` and `--snapshot`.
-##
-## It pulls in the test harness's frame readback and perceptual comparison, so
-## it is off by default and the wasm and Android builds never see it.
-snapshot = ["dep:unlit_wgpu_test_util"]
 
 [lints]
 workspace = true

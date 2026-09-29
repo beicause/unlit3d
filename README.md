@@ -89,7 +89,7 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes and a headless snapshot mode; also the Android example, packaged as an APK. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; also the Android example, packaged as an APK. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
 
@@ -175,19 +175,19 @@ The tests fall into three layers, by how close they sit to the code they check:
   image.
 - **Snapshot tests** compare a frame (or a multi-frame sequence) against an image
   stored in the repository, using SSIMULACRA2. The low-level API's snapshots stay
-  in `unlit_wgpu`'s tests (re-bless with `SNAPSHOT_UPDATE=1`); the high-level ECS
-  scenes' run through [`unlit3d_examples`](unlit3d_examples/README.md)'s headless
-  mode (`--scene all` verifies them, `--update` re-blesses them), because the
-  example is both the demo and the CI rendering check.
+  in `unlit_wgpu`'s tests; the high-level ECS scenes' run through
+  [`unlit3d_examples`](unlit3d_examples/README.md)'s `tests/gpu_scenes.rs`,
+  because the example is both the demo and the CI rendering check. Either is
+  re-blessed with `SNAPSHOT_UPDATE=1`.
 
 All snapshot baselines therefore live in
 [`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule; clone it
 with `git submodule update --init`. After an intentional rendering change,
 re-bless the affected snapshots and review the image diff before committing.
 Because the baselines come from one GPU stack, another platform's driver can
-score a scene below the threshold with nothing wrong; CI passes `--mismatch-dir`
-so every frame that does not match is uploaded as an artifact, and the WebGL2
-tier still runs after the default one fails.
+score a scene below the threshold with nothing wrong; a frame that does not match
+is therefore written before the test fails, and CI uploads those directories as
+artifacts. The WebGL2 tier still runs after the default one fails.
 
 ### Running them
 
@@ -250,8 +250,8 @@ the lint gates, on every push to `main` and every pull request:
   --check` over the TOML, and `cargo fmt --all -- --check`.
 - **build** (Linux, macOS, Windows) — clippy with and without the `unlit`
   feature, `cargo build --workspace --all-targets`, `cargo xtask test`,
-  `cargo doc` with `-D warnings`, and the example's headless snapshot comparison
-  twice: once at the WebGPU baseline's limits, once with every headless device
+  `cargo doc` with `-D warnings`, and the workspace's snapshot comparisons
+  twice: once at the WebGPU baseline's limits, once with every offscreen device
   narrowed to WebGL2's shape. Linux installs Mesa for `lavapipe`, since the
   runners have no GPU.
 - **build-wasm** — clippy and a `wasm32-unknown-unknown` build. The build
@@ -259,11 +259,18 @@ the lint gates, on every push to `main` and every pull request:
   for that target.
 - **build-android** — the `aarch64-linux-android` cross-build and the Gradle APK.
 
-The snapshot comparison is the check that makes a rendering regression fail
-rather than pass unnoticed, which is why the example's scenes carry it. Its
+The snapshot comparisons are the check that makes a rendering regression fail
+rather than pass unnoticed, which is why the example's scenes carry them. Their
 second run is what reaches the WebGL2 paths on a runner whose own adapter has
 storage buffers and `base_vertex`, by setting `UNLIT3D_DEVICE_TIER=webgl2`
-rather than by building for the web.
+rather than by building for the web. `build-wasm` runs the same comparisons in a
+real browser, through the same test bodies.
+
+A frame that fails a comparison is written before the test fails, so a CI run
+that fails leaves it behind: each pass writes its own directory under
+`target/`, and the jobs upload them as artifacts. A mismatch is often the
+platform showing through rather than a regression, so having the frame is what
+makes the difference something to look at rather than to infer from a score.
 
 ## Workspace layout
 
@@ -272,7 +279,7 @@ crates/unlit_wgpu/           the renderer, its WESL shaders and its GPU tests
 crates/unlit3d/              the ECS-integrated rendering API
 crates/unlit_ecs/            the archetype ECS
 crates/unlit_wgpu_test_util/ the shared GPU test harness
-unlit3d_examples/            the windowed example, its scenes and its snapshot runner
+unlit3d_examples/            the windowed example, its scenes and their snapshot tests
 unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
 android/                     the Gradle project that packages the example as an APK
 xtask/                       the `cargo xtask` task runner

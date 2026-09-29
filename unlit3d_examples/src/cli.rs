@@ -1,16 +1,16 @@
 //! The example's command line.
 //!
 //! The flags are declared with [`argh`], which derives the parser and the
-//! `--help` text from the [`Args`] struct. The few values with a shape of their
-//! own — a `WxH` size, a frame count, a score — are parsed by the functions
-//! [`Args`] names through `from_str_fn`, so the rules live next to the options
-//! they constrain.
+//! `--help` text from the [`Args`] struct. A value with a shape of its own — a
+//! `WxH` size — is parsed by the function [`Args`] names through `from_str_fn`,
+//! so the rules live next to the option they constrain.
 //!
-//! [`Args::validate`] holds the checks that span more than one option: a
-//! capture option without `--headless`, a scene the example does not know, and
-//! the combinations that cannot both say what to compare.
-
-use std::path::PathBuf;
+//! [`Args::validate`] holds the checks that span more than one option: here,
+//! a scene the example does not know.
+//!
+//! The scenes' snapshots are not compared through this command line. That is a
+//! test's job, and it lives in `tests/gpu_scenes.rs`, where the same bodies run
+//! natively and in a browser.
 
 use argh::FromArgs;
 
@@ -18,23 +18,6 @@ use crate::scenes;
 
 /// The program name argh puts in its usage and error messages.
 const PROGRAM: &str = "unlit3d_examples";
-
-/// The lowest SSIMULACRA2 score that counts as matching by default.
-///
-/// The same threshold the snapshot tests use, restated here so the command line
-/// does not have to reach into the test harness for it.
-pub const DEFAULT_MIN_SCORE: f64 = 85.0;
-
-/// The default snapshot directory: the asset submodule's `snapshots`.
-///
-/// Resolved through the crate's manifest rather than the working directory, so
-/// `cargo run` finds it wherever it is invoked from.
-pub fn default_snapshot_dir() -> PathBuf {
-    PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../unlit3d_asset_files/snapshots"
-    ))
-}
 
 /// The scene `--scene` starts from.
 fn default_scene() -> String {
@@ -45,15 +28,10 @@ fn default_scene() -> String {
 #[derive(FromArgs, Debug, Clone, PartialEq)]
 #[argh(
     help_triggers("-h", "--help"),
-    description = "a windowed example with selectable scenes and an egui overlay, \
-                   or a headless capture that verifies each scene against its snapshots"
+    description = "a windowed example with selectable scenes and an egui overlay"
 )]
 pub struct Args {
-    /// render offscreen, read the frame back and exit, without opening a window
-    #[argh(switch)]
-    pub headless: bool,
-
-    /// the scene to run, or `all` for every scene in a headless run
+    /// the scene to start from
     #[argh(option, default = "default_scene()")]
     pub scene: String,
 
@@ -61,68 +39,17 @@ pub struct Args {
     #[argh(switch)]
     pub list_scenes: bool,
 
-    /// render target size in pixels, as `WxH`; the scene's own when omitted
+    /// initial window size in pixels, as `WxH`; the scene's own when omitted
     #[argh(option, from_str_fn(parse_size))]
     pub size: Option<(u32, u32)>,
-
-    /// frames to draw before capturing; the scene's own when omitted
-    #[argh(option, from_str_fn(parse_count))]
-    pub frames: Option<u32>,
-
-    /// write the captured frame to this path as a lossless WebP
-    #[argh(option)]
-    pub output: Option<PathBuf>,
-
-    /// compare the captured frame against the snapshot at this path, instead of
-    /// the scene's own snapshots
-    #[argh(option)]
-    pub snapshot: Option<PathBuf>,
-
-    /// store the snapshots being compared instead of comparing them
-    #[argh(switch)]
-    pub update: bool,
-
-    /// draw the scene without its UI overlay
-    #[argh(switch)]
-    pub no_ui: bool,
-
-    /// fit the content to the render target the way the window does: keep the
-    /// scene's baseline aspect, drawing into the largest region of that aspect
-    /// the target holds, and leave the rest clear
-    #[argh(switch)]
-    pub letterbox: bool,
-
-    /// lowest SSIMULACRA2 score that counts as matching; the scene's own when
-    /// it declares one, the example's default otherwise
-    #[argh(option, from_str_fn(parse_score))]
-    pub min_score: Option<f64>,
-
-    /// where the scene's own snapshots resolve, by name
-    #[argh(option, default = "default_snapshot_dir()")]
-    pub snapshot_dir: PathBuf,
-
-    /// write each frame that does not match its snapshot to this directory, as
-    /// a lossless WebP, mirroring the snapshot's name
-    #[argh(option)]
-    pub mismatch_dir: Option<PathBuf>,
 }
 
 impl Default for Args {
     fn default() -> Self {
         Self {
-            headless: false,
             scene: default_scene(),
             list_scenes: false,
             size: None,
-            frames: None,
-            output: None,
-            snapshot: None,
-            update: false,
-            no_ui: false,
-            letterbox: false,
-            min_score: None,
-            snapshot_dir: default_snapshot_dir(),
-            mismatch_dir: None,
         }
     }
 }
@@ -175,45 +102,13 @@ impl Args {
     /// argh has already parsed each option on its own; this is the part only
     /// the combination can decide.
     fn validate(&self) -> Result<(), String> {
-        // The capture options have no meaning in the windowed loop, so asking
-        // for one there is a mistake worth reporting rather than silently
-        // ignoring.
-        if !self.headless {
-            let capture_option = if self.output.is_some() {
-                Some("--output")
-            } else if self.snapshot.is_some() {
-                Some("--snapshot")
-            } else if self.mismatch_dir.is_some() {
-                Some("--mismatch-dir")
-            } else if self.update {
-                Some("--update")
-            } else {
-                None
-            };
-            if let Some(option) = capture_option {
-                return Err(format!("`{option}` needs `--headless`"));
-            }
-            if self.scene == "all" {
-                return Err("`--scene all` needs `--headless`".to_owned());
-            }
-        }
-
-        // A scene the example does not know is a typo worth reporting,
-        // whichever mode it was asked in. `all` is not a scene of its own.
-        if self.scene != "all" && scenes::by_id(&self.scene).is_none() {
+        // A scene the example does not know is a typo worth reporting.
+        if scenes::by_id(&self.scene).is_none() {
             return Err(format!(
                 "unknown scene `{}`\n{}",
                 self.scene,
                 scenes::list_text()
             ));
-        }
-
-        // A raw capture against one path and a run over every scene cannot both
-        // say what to compare.
-        if self.scene == "all" && (self.snapshot.is_some() || self.output.is_some()) {
-            return Err(
-                "`--scene all` cannot be combined with `--output` or `--snapshot`".to_owned(),
-            );
         }
 
         Ok(())
@@ -232,22 +127,6 @@ fn parse_size(text: &str) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
-/// Parse a frame count of at least one.
-fn parse_count(text: &str) -> Result<u32, String> {
-    match text.trim().parse::<u32>() {
-        Ok(count) if count > 0 => Ok(count),
-        _ => Err(format!("`{text}` is not a frame count of at least one")),
-    }
-}
-
-/// Parse a finite SSIMULACRA2 score.
-fn parse_score(text: &str) -> Result<f64, String> {
-    match text.trim().parse::<f64>() {
-        Ok(score) if score.is_finite() => Ok(score),
-        _ => Err(format!("`{text}` is not a finite score")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,59 +140,26 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_run_the_default_scene_windowed() {
+    fn no_arguments_start_the_default_scene_at_its_own_size() {
         let args = run(&[]).expect("no arguments parse");
-        assert!(!args.headless);
         assert_eq!(args.scene, scenes::default().id);
         assert!(!args.list_scenes);
         assert_eq!(args.size, None);
-        assert_eq!(args.frames, None);
-        assert_eq!(args.output, None);
-        assert_eq!(args.snapshot, None);
-        assert!(!args.update);
-        assert!(!args.no_ui);
-        assert!(!args.letterbox);
-        // Not the default score: an omitted `--min-score` leaves the choice to
-        // the scene, which may declare a threshold of its own.
-        assert_eq!(args.min_score, None);
-        assert_eq!(args.snapshot_dir, default_snapshot_dir());
-        assert_eq!(args.mismatch_dir, None);
     }
 
     #[test]
-    fn the_capture_options_are_read() {
+    fn the_window_options_are_read() {
         let args = run(&[
-            "--headless",
             "--scene",
             "ecs_skinned",
             "--size",
             "320x240",
-            "--frames",
-            "5",
-            "--output",
-            "frame.webp",
-            "--snapshot",
-            "snap.webp",
-            "--update",
-            "--min-score",
-            "90.5",
-            "--snapshot-dir",
-            "snaps",
-            "--mismatch-dir",
-            "mismatches",
+            "--list-scenes",
         ])
-        .expect("the capture options parse");
-
-        assert!(args.headless);
+        .expect("the options parse");
         assert_eq!(args.scene, "ecs_skinned");
         assert_eq!(args.size, Some((320, 240)));
-        assert_eq!(args.frames, Some(5));
-        assert_eq!(args.output.as_deref(), Some("frame.webp".as_ref()));
-        assert_eq!(args.snapshot.as_deref(), Some("snap.webp".as_ref()));
-        assert!(args.update);
-        assert_eq!(args.min_score, Some(90.5));
-        assert_eq!(args.snapshot_dir, PathBuf::from("snaps"));
-        assert_eq!(args.mismatch_dir, Some(PathBuf::from("mismatches")));
+        assert!(args.list_scenes);
     }
 
     #[test]
@@ -322,60 +168,20 @@ mod tests {
             Parsed::Help(text) => text,
             Parsed::Run(_) => panic!("`--help` must not run"),
         };
-        assert!(
-            help.contains("--headless"),
-            "help names the options: {help}"
-        );
+        assert!(help.contains("--scene"), "help names the options: {help}");
         assert!(parse(["-h"]).is_ok(), "`-h` is a help trigger too");
     }
 
     #[test]
-    fn a_capture_option_without_headless_is_rejected() {
-        assert_eq!(
-            run(&["--snapshot", "snap.webp"]),
-            Err("`--snapshot` needs `--headless`".to_owned())
-        );
-        assert_eq!(
-            run(&["--output", "frame.webp"]),
-            Err("`--output` needs `--headless`".to_owned())
-        );
-        assert_eq!(
-            run(&["--update"]),
-            Err("`--update` needs `--headless`".to_owned())
-        );
-        assert_eq!(
-            run(&["--mismatch-dir", "mismatches"]),
-            Err("`--mismatch-dir` needs `--headless`".to_owned())
-        );
-    }
-
-    #[test]
     fn an_unknown_scene_is_rejected() {
-        assert!(run(&["--headless", "--scene", "nonsense"]).is_err());
         assert!(run(&["--scene", "nonsense"]).is_err());
     }
 
     #[test]
-    fn running_every_scene_is_headless_only() {
-        let args = run(&["--headless", "--scene", "all"]).expect("headless `all` parses");
-        assert_eq!(args.scene, "all");
-        assert_eq!(
-            run(&["--scene", "all"]),
-            Err("`--scene all` needs `--headless`".to_owned())
-        );
-        assert!(
-            run(&["--headless", "--scene", "all", "--snapshot", "x.webp"]).is_err(),
-            "a raw capture cannot be combined with every scene"
-        );
-    }
-
-    #[test]
     fn malformed_values_are_rejected() {
-        assert!(run(&["--headless", "--size", "wide"]).is_err());
-        assert!(run(&["--headless", "--size", "0x240"]).is_err());
-        assert!(run(&["--headless", "--frames", "0"]).is_err());
-        assert!(run(&["--headless", "--min-score", "nan"]).is_err());
-        assert!(run(&["--headless", "--size"]).is_err());
+        assert!(run(&["--size", "wide"]).is_err());
+        assert!(run(&["--size", "0x240"]).is_err());
+        assert!(run(&["--size"]).is_err());
         assert!(run(&["--nonsense"]).is_err());
     }
 }

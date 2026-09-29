@@ -1,6 +1,6 @@
 //! The example's own scene: a spinning, textured cube with two egui panels.
 //!
-//! This is the scene the windowed example always showed. Its headless capture
+//! This is the scene the windowed example always showed. Its snapshot test
 //! is the workspace's CI check against `spin_cube.webp`: 30 frames at the
 //! default window size, so a rendering regression fails the build.
 
@@ -25,7 +25,7 @@ const ORBIT_ELEVATION: f32 = 0.5;
 const ORBIT_TARGET: glam::Vec3 = glam::Vec3::new(0.0, 0.0, 0.0);
 
 /// The scene: a spinning cube at the example's default window size, whose
-/// headless capture verifies `spin_cube.webp`.
+/// snapshot test verifies `spin_cube.webp`.
 pub static SCENE: SceneDef = SceneDef {
     id: "spin_cube",
     title: "Spinning cube",
@@ -38,7 +38,6 @@ pub static SCENE: SceneDef = SceneDef {
     depth: true,
     ui: true,
     reproducible_ui: true,
-    min_score: None,
     build,
 };
 

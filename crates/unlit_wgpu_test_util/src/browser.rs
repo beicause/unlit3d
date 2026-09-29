@@ -23,10 +23,31 @@ use crate::TestEntry;
     window.sessionStorage.test_failure = message;
     console.error(message);
   }
+
+  export function publish_mismatch(name, bytes) {
+    // Onto the window rather than into `sessionStorage`: a frame is a large
+    // binary blob, and the storage quota is a few megabytes, while a window
+    // property is limited only by the page's memory. The runner reads it back
+    // with `evaluate` before the page is closed, which is the only moment the
+    // bytes exist anyway.
+    window.__unlit3d_mismatch = { name, bytes: Uint8Array.from(bytes) };
+  }
 ")]
 extern "C" {
     fn test_success();
     fn test_failure(message: String);
+    fn publish_mismatch(name: String, bytes: &[u8]);
+}
+
+/// Hand a frame that did not match to the page, so the runner can keep it.
+///
+/// A page has no filesystem, so the frame goes to the runner — a Node process,
+/// which has one — through a window property the runner reads back with
+/// `evaluate`. It is published alongside the test's failure rather than instead
+/// of it: the verdict is still the panic the caller raises, and this is only what
+/// a human needs in order to see why.
+pub fn record_mismatch(name: &str, webp: &[u8]) {
+    publish_mismatch(name.to_owned(), webp);
 }
 
 /// Run the registered test called `name`, publishing its result for the page.

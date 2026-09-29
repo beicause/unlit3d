@@ -9,7 +9,7 @@
 // `cargo xtask test-wasm` starts and stops this process; `cargo nextest` is
 // what drives the requests, one per test.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,19 @@ import { chromium } from "playwright";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The page and the wasm modules, assembled by `cargo xtask test-wasm`. */
 const DIST = path.join(HERE, "..", "dist");
+
+/** Where a frame that failed its comparison is written.
+ *
+ * The page has no filesystem, so the wasm side hands the encoded frame here
+ * through a window property and this process — which has one — writes it. CI
+ * uploads the directory, so a mismatch arrives as an image to look at rather
+ * than only as a score. The harness's own `UNLIT3D_SNAPSHOT_MISMATCH_DIR`
+ * renames it, and `cargo xtask test-wasm` points it at the wasm pass's own
+ * directory so a host run's frames are not mixed in with a browser run's.
+ */
+const MISMATCH_DIR =
+  process.env.UNLIT3D_SNAPSHOT_MISMATCH_DIR ??
+  path.resolve(HERE, "..", "..", "..", "target", "snapshot-mismatches-wasm");
 
 const PORT = Number(process.env.PORT ?? 3000);
 /** How long one test may take. Software WebGL is slow, so this is generous. */
@@ -59,6 +72,38 @@ const browser = await chromium.launch({
 
 const app = express();
 
+/**
+ * Write the frame a failed comparison left in the page, if it left one.
+ *
+ * The name is the snapshot's, a path relative to the snapshot directory, so a
+ * frame keeps the scene or test it belongs to instead of colliding on a file
+ * name. Nothing is written when the test failed for another reason — a panic
+ * with no comparison behind it — and a failure to write is reported rather than
+ * raised, since the test's own failure is what the caller must still see.
+ */
+async function saveMismatch(page) {
+  let record;
+  try {
+    record = await page.evaluate(() => {
+      const found = window.__unlit3d_mismatch;
+      return found ? { name: found.name, bytes: Array.from(found.bytes) } : null;
+    });
+  } catch {
+    // The page may already be gone; the test's failure is reported either way.
+    return;
+  }
+  if (!record) return;
+
+  try {
+    const target = path.join(MISMATCH_DIR, record.name);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, Buffer.from(record.bytes));
+    console.error(`wrote the mismatched frame to ${target}`);
+  } catch (error) {
+    console.error(`could not write the mismatched frame: ${error}`);
+  }
+}
+
 app.get("/run_test", async (req, res) => {
   const name = String(req.query.name ?? "");
   const module = String(req.query.wasm ?? "");
@@ -94,6 +139,10 @@ app.get("/run_test", async (req, res) => {
     if (failure === null) {
       res.sendStatus(200);
     } else {
+      // A frame that failed a comparison is written here, because the page had
+      // nowhere to put it. Collected under the mismatch directory so a CI job
+      // can upload what failed, the same way the host pass does.
+      await saveMismatch(page);
       res.status(500).send(`${failure}\n\n${logs.join("\n")}`);
     }
   } catch (error) {

@@ -67,7 +67,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例及其无头快照模式；也是打包成 APK 的 Android 示例。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是打包成 APK 的 Android 示例。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
 
@@ -134,15 +134,15 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) 建无头设备，
   离屏渲染后回读像素断言，但不与存储图像比较。
 - **快照测试**：把一帧（或多帧序列）与存储图像做 SSIMULACRA2 感知比较。低层 API 的
-  快照留在 `unlit_wgpu` 的测试里（`SNAPSHOT_UPDATE=1` 重新生成）；高层 ECS 场景的
-  快照由 [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的无头模式运行
-  （`--scene all` 验证、`--update` 重新生成），因为它既是示例也是 CI 的渲染回归检查。
+  快照留在 `unlit_wgpu` 的测试里；高层 ECS 场景的快照由
+  [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的 `tests/gpu_scenes.rs` 运行
+  （`SNAPSHOT_UPDATE=1` 重新生成），因为它既是示例也是 CI 的渲染回归检查。
 
 快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
 中，用 `git submodule update --init` 拉取；改动渲染结果后重新生成对应快照，并审查
 图像差异再提交。由于基线来自同一套 GPU 栈，换一个平台的驱动就可能让某个场景低于阈值
-而并没有出错；CI 因此传入 `--mismatch-dir`，把每个不匹配的帧作为 artifact 上传，且
-默认档位失败后 WebGL2 档位仍会继续运行。
+而并没有出错；因此不匹配的帧会在测试失败前被写下（每一趟各写进 `target/` 下的一个
+目录），CI 再把这些目录作为 artifact 上传。
 
 ### 运行
 
@@ -176,7 +176,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个"能编过
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。其多帧快照覆盖位于 `unlit3d_examples`。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）与固定步长播放时钟（`src/lib.rs`）。其渲染输出由 CI 的快照任务检查，而不是由 `cargo test` 目标检查。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_scenes.rs` 的渲染快照。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
 `lavapipe` 作为软件 Vulkan 实现。wasm 那一遍不需要 GPU：浏览器会回退到软件 WebGL2。
@@ -198,8 +198,8 @@ pull request 上运行上述检查以及各 lint 关卡：
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
 - **build**（Linux、macOS、Windows）—— 带与不带 `unlit` feature 的 clippy、
   `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
-  `cargo doc`，以及示例的无头快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，
-  一遍把所有无头设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa
+  `cargo doc`，以及工作区的快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，
+  一遍把所有离屏设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa
   以提供 `lavapipe`。
 - **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建。构建会排除
   `xtask`：它是只在宿主机上运行的任务运行器，其 HTTP 服务器无法为该目标编译。
@@ -207,7 +207,12 @@ pull request 上运行上述检查以及各 lint 关卡：
 
 快照比较正是让渲染回归会失败而不是悄然通过的那道检查，这也是示例的场景承担它的原因。
 它的第二遍通过设置 `UNLIT3D_DEVICE_TIER=webgl2`（而不是为 Web 构建）来触达 WebGL2
-路径，即便 runner 自身的适配器有 storage buffer 与 `base_vertex`。
+路径，即便 runner 自身的适配器有 storage buffer 与 `base_vertex`。`build-wasm` 则用
+同一批测试体，在真实浏览器中跑同样的比较。
+
+比较失败的帧会在测试失败前被写下，因此 CI 中失败的运行会把它留在 `target/` 下各自
+的目录里，由任务作为 artifact 上传。不匹配往往反映的是平台差异而非回归，所以拿到这
+一帧，才能让人直接查看差异，而不是从分数去推断。
 
 ## 工作区结构
 
@@ -216,7 +221,7 @@ crates/unlit_wgpu/           渲染器、它的 WESL 着色器与 GPU 测试
 crates/unlit3d/              与 ECS 集成的渲染 API
 crates/unlit_ecs/            archetype ECS
 crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
-unlit3d_examples/            窗口化示例、它的场景与快照运行器
+unlit3d_examples/            窗口化示例、它的场景与场景的快照测试
 unlit3d_benchmarks/          帧路径基准测试与剖析运行
 android/                     把示例打包成 APK 的 Gradle 工程
 xtask/                       cargo xtask 任务执行器

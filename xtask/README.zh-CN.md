@@ -41,6 +41,11 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 的那一趟。把该变量设为 `native` 可改为按适配器自身的 limits 运行，而非基线。接受
 `--release`，两趟都生效。
 
+与其快照不匹配的帧会在测试失败前被写下：默认那趟放在 `target/snapshot-mismatches`，
+档位那趟放在 `target/snapshot-mismatches-webgl2`——各占一个目录，因此两个档位下都
+不同的帧可以被区分开。测试失败时 CI 会上传它们，于是不匹配可以被人查看，而不只是被
+打分。
+
 ### `cargo xtask test-wasm`
 
 跑的是 `cargo xtask test` 所跑的同一批 GPU 测试，但在真实浏览器里、构建到
@@ -57,6 +62,8 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 4. 测试页面（加载一个模块并调用该导出）被拷贝到它们旁边，同时写入
    `wasm_paths.json`，把模块名映射到脚本名。
 5. 一个 Node runner 提供该目录，并让每个测试在一个全新的浏览器上下文里各开一个页面。
+   与其快照不匹配的帧在浏览器中编码——页面没有文件系统——并交给这个 runner，由它写到
+   `target/snapshot-mismatches-wasm` 供 CI 上传。
 6. *同一批*原生测试二进制在设置了 `UNLIT3D_WASM_TEST` 后变成代理而不是测试套件：
    `cargo nextest` 驱动它们，每个 trial 请求 runner 在浏览器里跑那个测试。于是
    nextest 的列出、筛选、报告与退出码都和普通套件一样可用。

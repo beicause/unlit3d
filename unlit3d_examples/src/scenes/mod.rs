@@ -4,12 +4,12 @@
 //! were captured at, what offscreen target it draws into, and a
 //! [`build`](SceneDef::build) that populates an ECS world. The world it builds is the ordinary one every
 //! frame loop drives — the frame's context and [`Renderer`] are already in it
-//! — so the windowed and headless paths differ only in what they bind and what
+//! — so the windowed run and the snapshot tests differ only in what they bind
 //! they do with the result.
 //!
 //! A scene's [`SceneControl`] carries the per-frame behaviour (an animated
 //! sequence, the orbit of the camera) and the snapshot each frame verifies
-//! against in the headless path. Scenes without snapshots — the windowed
+//! against in the snapshot tests. Scenes without snapshots — the windowed
 //! example's own — report none.
 //!
 //! Every scene here is ported from a GPU snapshot test that used to live in
@@ -48,12 +48,12 @@ pub type Snapshot = Box<dyn Fn(u32) -> Option<String>>;
 /// How the example's runner drives one scene.
 ///
 /// The two closures are what remains of the scene once its world is built: the
-/// behaviour that advances every frame, and the snapshot the headless path
+/// behaviour that advances every frame, and the snapshot the scene's test
 /// compares each frame against.
 pub struct SceneControl {
     /// Advance the scene's behaviour by `delta` seconds.
     pub advance: Advance,
-    /// The snapshot the headless path compares frame `frame` against, if any.
+    /// The snapshot the scene's test compares frame `frame` against, if any.
     ///
     /// The name is relative to the snapshot directory, exactly as the test the
     /// scene was ported from stored it.
@@ -62,7 +62,7 @@ pub struct SceneControl {
 
 /// One selectable scene.
 ///
-/// The fields the headless path draws the scene at — [`Self::size`],
+/// The fields the snapshot tests draw the scene at — [`Self::size`],
 /// [`Self::frames`], [`Self::samples`] and [`Self::depth`] — reproduce the
 /// test the scene came from, so a captured frame is comparable with the
 /// snapshot it was stored against. The windowed path draws at the window's own
@@ -83,60 +83,39 @@ pub struct SceneDef {
     /// A scene that declares one is drawn through the largest rectangle of that
     /// aspect that fits the window, so a wide window and a narrow one show the
     /// same picture — the wide one larger — instead of the wide one showing
-    /// more. The headless path ignores this and draws at [`Self::size`], which
+    /// more. The snapshot tests ignore this and draw at [`Self::size`], which
     /// the snapshots were captured at.
     ///
     /// A UI-only scene declares none: an interface belongs on the whole window,
     /// and letterboxing it would put bars around a panel that has no aspect of
     /// its own.
     pub baseline: Option<(u32, u32)>,
-    /// How many frames the headless path draws before finishing.
+    /// How many frames the snapshot tests draw before finishing.
     pub frames: u32,
     /// How long each frame stays on screen in the windowed loop, in seconds,
     /// or `None` for a scene that animates continuously from the frame delta.
     ///
-    /// The headless path ignores this and draws the frames back to back, so a
+    /// The snapshot tests ignore this and draw the frames back to back, so a
     /// capture stays reproducible; the windowed path uses it so a scene whose
     /// frames were frozen as a sequence plays at a watchable pace rather than
     /// as fast as the display refreshes.
     pub step_seconds: Option<f32>,
-    /// The sample count of the offscreen target the headless path binds.
+    /// The sample count of the offscreen target the snapshot tests bind.
     pub samples: u32,
     /// Whether that offscreen target carries a depth-stencil attachment.
     pub depth: bool,
     /// Whether the scene draws UI panels of its own.
     ///
-    /// The headless path mounts a UI source to drive them; the windowed path
+    /// The snapshot tests mount a UI source to drive them; the windowed path
     /// always mounts one, for the scene selector.
     pub ui: bool,
     /// Whether the scene's UI animates against egui's clock.
     ///
     /// A scene whose snapshots were captured with the clock suppressed — the
     /// example's own, whose panels live in egui windows — declares `true`, so
-    /// the headless path zeroes egui's animation time for it. The ported test
+    /// the snapshot tests zero egui's animation time for it. The ported test
     /// scenes were captured with the clock live, and declare `false`.
     pub reproducible_ui: bool,
-    /// The SSIMULACRA2 score this scene's snapshots accept, when the default is
-    /// not the right bar for it.
-    ///
-    /// The default suits a scene whose frame covers whole surfaces: a
-    /// regression changes large regions of it, so its score falls far below the
-    /// line, while two implementations of the same drawing land close together.
-    /// A scene of thin primitives is different, because its pixels are edges —
-    /// and which triangle an edge pixel belongs to is a rasterizer's
-    /// tie-breaking rule to decide, one the API leaves to each implementation.
-    /// A handful of such pixels is worth tens of points there, so the default
-    /// would reject a frame that is right in every way that matters.
-    ///
-    /// A scene that declares one should put it in the gap its platform
-    /// differences and its real regressions leave: above every score a correct
-    /// frame has been seen to reach on any backend, below every score a broken
-    /// one has. [`mesh_topologies`] is the scene that needs one, and its
-    /// definition carries the measurements.
-    ///
-    /// `--min-score` overrides it, since a caller asking for a specific bar
-    /// means that bar.
-    pub min_score: Option<f64>,
     /// Build the scene's world content and return its per-frame behaviour.
     ///
     /// The world already holds the frame's context and the renderer resource
@@ -177,14 +156,6 @@ pub fn list_text() -> String {
     text
 }
 
-impl SceneDef {
-    /// The score this scene's snapshots have to reach, or the example's default
-    /// when the scene does not say.
-    pub fn min_score(&self) -> f64 {
-        self.min_score.unwrap_or(crate::cli::DEFAULT_MIN_SCORE)
-    }
-}
-
 /// What a scene is built with.
 #[derive(Clone, Copy)]
 pub struct SceneOptions {
@@ -199,13 +170,13 @@ pub struct SceneOptions {
     /// content into the largest region of that aspect the target fits.
     ///
     /// The windowed path sets this so a window of any shape shows the same
-    /// picture, larger or smaller. The headless path clears it: a capture draws
+    /// picture, larger or smaller. The snapshot tests clear it: a capture draws
     /// at the scene's own size, which its snapshots were taken at.
     pub letterbox: bool,
     /// Seconds each frame of a fixed-sequence scene stays on screen, or `None`
     /// to advance the sequence once per drawn frame.
     ///
-    /// A capture passes `None` so it draws exactly the frames the snapshots
+    /// A test passes `None` so it draws exactly the frames the snapshots
     /// froze; a windowed run passes the scene's own [`SceneDef::step_seconds`]
     /// so the sequence plays at a watchable pace.
     pub sequence_step: Option<f32>,
@@ -242,7 +213,7 @@ pub const TEST_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb
 ///
 /// The ported test scenes froze an animation as a handful of frames, so
 /// playing them one per displayed frame would flash past in a fraction of a
-/// second. The headless path ignores this and draws the frames back to back.
+/// second. The snapshot tests ignore this and draw the frames back to back.
 pub const SEQUENCE_STEP: f32 = 0.5;
 
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
@@ -575,39 +546,4 @@ pub fn remove_mesh(world: &World, source_entity: Entity, mesh: GpuMesh) {
     with_mesh_source(world, source_entity, |source, world| {
         source.remove_mesh(world, mesh)
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_scene_without_a_threshold_uses_the_default() {
-        let scene = by_id("spin_cube").expect("the default scene exists");
-        assert_eq!(scene.min_score, None);
-        assert_eq!(scene.min_score(), crate::cli::DEFAULT_MIN_SCORE);
-    }
-
-    #[test]
-    fn a_scene_with_a_threshold_uses_its_own() {
-        let scene = by_id("mesh_topologies").expect("the topology scene exists");
-        assert_eq!(scene.min_score, Some(75.0));
-        assert_eq!(scene.min_score(), 75.0);
-    }
-
-    /// A declared threshold has to be below the default, since the default is
-    /// the bar a scene is held to when its pixels are not in question; one at
-    /// or above it would say nothing.
-    #[test]
-    fn a_declared_threshold_is_below_the_default() {
-        for scene in SCENES {
-            if let Some(min_score) = scene.min_score {
-                assert!(
-                    (0.0..crate::cli::DEFAULT_MIN_SCORE).contains(&min_score),
-                    "`{}` declares {min_score}, which the default already covers",
-                    scene.id
-                );
-            }
-        }
-    }
 }
