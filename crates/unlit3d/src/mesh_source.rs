@@ -56,7 +56,7 @@ use crate::scene::{
     AnyFamily, DrawHandlesKey, EntryHandles, Family, RenderPipelineHandles, SceneFrame,
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
-use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
+use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target, frame_viewport};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 
 /// The entries of an unlit mesh's bind group, in the order the variant's mesh
@@ -2253,6 +2253,18 @@ impl FrameSource for MeshSource {
         let Some(camera) = camera else {
             return;
         };
+
+        // Where in the target the frame's 3D content belongs, stated by the
+        // frame loop. A loop that letterboxes — one keeping the content's
+        // aspect on a differently-shaped target — puts the region here, and the
+        // scene draws through it so the picture is scaled uniformly.
+        //
+        // The camera already carries the matching projection, since the frame
+        // loop built it for the region's aspect, so the frustum this source
+        // culls with follows the same shape and nothing is culled at the edges
+        // the letterbox would have hidden.
+        self.scene
+            .set_viewport(frame_viewport(world).map(|viewport| viewport.0));
 
         // The target the frame is specialized for, written by the frame loop
         // before it renders. Without it no pipeline can be resolved, and a

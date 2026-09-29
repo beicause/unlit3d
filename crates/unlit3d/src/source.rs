@@ -21,7 +21,7 @@ use core::any::Any;
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
-use unlit_wgpu::scene::Scene;
+use unlit_wgpu::scene::{Scene, ViewportRect};
 use unlit_wgpu::specialize::SurfaceKey;
 
 /// Where a source records, relative to every other source.
@@ -97,6 +97,29 @@ pub struct FrameTarget {
 #[derive(Clone, Copy, Debug, Default)]
 struct FrameTargetSlot(Option<FrameTarget>);
 
+/// The region of the frame's target that scene-like sources draw into, or
+/// `None` for the whole of it.
+///
+/// This is how a frame loop letterboxes content whose own aspect differs from
+/// its target's: it states the rectangle once per frame, and every source that
+/// draws 3D content records into it — so the content is scaled uniformly and
+/// the same picture appears on any target shape. A source that composes over
+/// the content rather than being part of it, a UI overlay for instance, ignores
+/// this and covers the whole target.
+///
+/// It is a per-frame value rather than a field on [`RenderContext`] for the
+/// same reason [`FrameTarget`] is: the context is spawned once and stays `Copy`,
+/// while this changes with every resize.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrameViewport(pub ViewportRect);
+
+/// The world resource holding the frame's current [`FrameViewport`].
+///
+/// Internal: the frame loop writes it through [`set_frame_viewport`] and
+/// sources read it through [`frame_viewport`].
+#[derive(Clone, Copy, Debug, Default)]
+struct FrameViewportSlot(Option<FrameViewport>);
+
 /// What a source claimed of the frame's input.
 ///
 /// A UI toolkit decides whether it wants the pointer or the keyboard while it
@@ -164,6 +187,41 @@ pub(crate) fn unset_frame_target(world: &World) -> bool {
     };
     world
         .with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = None)
+        .is_some()
+}
+
+/// The region of the frame's target that 3D sources draw into.
+///
+/// A source calls this in [`FrameSource::build_scene`] to learn where the
+/// content it is part of belongs, and passes it to
+/// [`Scene::set_viewport`] so its draws land inside it.
+///
+/// `None` means the frame loop stated no letterbox, so the whole target is the
+/// region — the ordinary case, and the one every caller that never letterboxes
+/// leaves the world in.
+pub fn frame_viewport(world: &World) -> Option<FrameViewport> {
+    world
+        .query::<&FrameViewportSlot>()
+        .next()
+        .and_then(|(_, slot)| slot.0)
+}
+
+/// State the region of the frame's target that 3D sources draw into.
+///
+/// The frame loop calls this before it renders, next to
+/// [`set_frame_target`](crate::renderer::Renderer::set_render_target). A frame
+/// loop that never calls it leaves the whole target as the region, which is
+/// what every caller that does not letterbox wants.
+///
+/// A letterbox is a property of the target, not of a source, so it is stated
+/// here rather than by each source: see [`FrameViewport`]. Returns whether a
+/// slot existed to write; a world only gets one from [`spawn_context`].
+pub fn set_frame_viewport(world: &World, viewport: Option<FrameViewport>) -> bool {
+    let Some(entity) = world.query::<&FrameViewportSlot>().next().map(|(e, _)| e) else {
+        return false;
+    };
+    world
+        .with_mut::<FrameViewportSlot, _>(entity, |slot| slot.0 = viewport)
         .is_some()
 }
 
@@ -355,6 +413,9 @@ pub fn spawn_context(
     // The frame loop writes the target here every frame; until it does, no
     // source may draw.
     world.spawn((FrameTargetSlot::default(),));
+    // Where in that target the frame's 3D content belongs; the whole of it
+    // until a frame loop states a letterbox.
+    world.spawn((FrameViewportSlot::default(),));
     // What the frame's sources claimed of its input, written by whichever
     // source consumes input and read by the caller's own logic.
     world.spawn((InputCapture::default(),));

@@ -329,6 +329,42 @@ impl TestGpu {
         ft.color
     }
 
+    /// Like [`Self::bind_offscreen_target_with`], but at a chosen size.
+    ///
+    /// A test of how content is fitted to a target has to vary the target's
+    /// shape; the frame's default is only one of them.
+    pub fn bind_offscreen_target_sized(
+        &self,
+        world: &World,
+        size: (u32, u32),
+        samples: u32,
+        with_depth: bool,
+    ) -> wgpu::Texture {
+        use unlit_wgpu::render_attachments::create_render_target;
+        let device = world
+            .get::<wgpu::Device>(self.context.device)
+            .expect("the context's device")
+            .clone();
+        let ft = create_render_target(&device, COLOR_FORMAT, size.0, size.1, samples);
+        let (_, color_view) = self.register_texture(world, ft.color.clone());
+        let depth_view = with_depth.then(|| {
+            self.graph(world).insert_strong(TextureExt::create_view(
+                &ft.depth,
+                &wgpu::TextureViewDescriptor::default(),
+            ))
+        });
+        let msaa_view = ft.msaa.as_ref().map(|msaa| {
+            self.graph(world).insert_strong(TextureExt::create_view(
+                msaa,
+                &wgpu::TextureViewDescriptor::default(),
+            ))
+        });
+        self.with_renderer(world, |renderer, world| {
+            renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);
+        });
+        ft.color
+    }
+
     /// Bind the offscreen target for `label` and render one frame.
     ///
     /// Returns the colour texture the frame was drawn into, ready to read back.
@@ -336,6 +372,28 @@ impl TestGpu {
         let target = self.bind_offscreen_target(world, label);
         self.render(world);
         target
+    }
+
+    /// Bind a `size`-pixel offscreen target, render one frame and read it back
+    /// as RGBA.
+    ///
+    /// What a test of the frame's own fitting needs: the target's shape is the
+    /// input, so it cannot come from the harness's default size.
+    pub fn render_to_offscreen_sized(
+        &self,
+        ctx: &Ctx,
+        world: &World,
+        size: (u32, u32),
+        _label: &str,
+    ) -> Frame {
+        let target = self.bind_offscreen_target_sized(world, size, 1, true);
+        self.render(world);
+        let rgba = read_texture_bytes(ctx, &target, size.0, size.1, texel_bytes(&target));
+        Frame {
+            rgba,
+            width: size.0,
+            height: size.1,
+        }
     }
 
     /// Render one frame from the world.

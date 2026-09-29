@@ -33,6 +33,13 @@
 //! [`DrawEntry::stencil_reference`]), so it never leaks from one draw to the
 //! next. Both are per-[`Scene`] state: [`Scene::record`] starts from the pass's
 //! own defaults, so nothing a scene leaves behind is seen by the next one.
+//!
+//! The viewport is pass state of the same kind — wgpu has no call that resets
+//! it either — but it covers a whole scene rather than one draw, so a scene
+//! states it once in [`Scene::viewport`]. A scene that states none draws into
+//! whatever region the pass already holds, which is the whole target only if
+//! the caller put it there; the frame driver in `unlit3d` does that for every
+//! scene that states none, so one scene's letterbox never crops the next one's.
 
 use arrayvec::ArrayVec;
 use core::ops::Range;
@@ -76,6 +83,101 @@ impl ScissorRect {
     pub fn at(self, x: u32, y: u32) -> Self {
         Self { x, y, ..self }
     }
+}
+
+/// The region of the render target a scene draws into, in pixels.
+///
+/// Fragments outside it are discarded and the clip space a pipeline writes is
+/// stretched across it, which is what letterboxes a scene whose own aspect
+/// differs from its target's: the projection keeps the scene's aspect, and the
+/// viewport places the result inside the target without distortion.
+///
+/// Unlike [`ScissorRect`], which clips in whole pixels, a viewport is
+/// fractional — a centred letterbox rarely lands on a pixel boundary — so its
+/// fields are floats. It is pass state with no reset call, so see
+/// [`Scene::viewport`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewportRect {
+    /// Left edge, in pixels.
+    pub x: f32,
+    /// Top edge, in pixels.
+    pub y: f32,
+    /// Width in pixels.
+    pub width: f32,
+    /// Height in pixels.
+    pub height: f32,
+    /// The depth the near plane of the viewport's clip space maps to.
+    pub min_depth: f32,
+    /// The depth the far plane of the viewport's clip space maps to.
+    pub max_depth: f32,
+}
+
+impl ViewportRect {
+    /// A rectangle covering `width` x `height` pixels from the origin, over the
+    /// whole `0.0..=1.0` depth range.
+    pub fn new(width: f32, height: f32) -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width,
+            height,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }
+    }
+
+    /// Same rectangle, with its origin moved to (`x`, `y`).
+    pub fn at(self, x: f32, y: f32) -> Self {
+        Self { x, y, ..self }
+    }
+
+    /// Same rectangle, mapped over `min_depth..=max_depth` instead of the whole
+    /// depth range.
+    pub fn with_depth(self, min_depth: f32, max_depth: f32) -> Self {
+        Self {
+            min_depth,
+            max_depth,
+            ..self
+        }
+    }
+
+    /// The largest rectangle of `aspect` that fits inside a
+    /// `target_width` x `target_height` target, centred.
+    ///
+    /// This is the letterbox: a target wider than `aspect` gets a rectangle
+    /// spanning the full height with bars at the sides, a narrower one spans
+    /// the full width with bars above and below, and the rectangle's own aspect
+    /// is `aspect` either way — so content drawn through it is scaled
+    /// uniformly, showing the same picture on any target shape rather than
+    /// being stretched to the target's.
+    ///
+    /// A degenerate target, or an `aspect` that is not a positive finite
+    /// number, has no rectangle to fit, so the whole target comes back rather
+    /// than a zero-sized region.
+    pub fn fit_aspect(aspect: f32, target_width: u32, target_height: u32) -> Self {
+        let (width, height) = (target_width as f32, target_height as f32);
+        // `is_finite` is what rejects a NaN aspect, which no comparison would.
+        if !aspect.is_finite() || aspect <= 0.0 || width <= 0.0 || height <= 0.0 {
+            return Self::new(width.max(0.0), height.max(0.0));
+        }
+        if width / height > aspect {
+            let fitted = height * aspect;
+            Self::new(fitted, height).at((width - fitted) * 0.5, 0.0)
+        } else {
+            let fitted = width / aspect;
+            Self::new(width, fitted).at(0.0, (height - fitted) * 0.5)
+        }
+    }
+}
+
+/// The largest viewport a target can hold: the whole of it.
+///
+/// A scene that states none is left with whatever the pass holds, and the
+/// frame driver in `unlit3d` sets this before such a scene records, so the
+/// default a scene comes out to is the whole target.
+#[must_use]
+pub fn full_viewport(width: u32, height: u32) -> ViewportRect {
+    ViewportRect::new(width as f32, height as f32)
 }
 
 /// What to draw for one mesh.
@@ -279,6 +381,13 @@ impl DrawEntry {
 pub struct Scene {
     /// The draws to run, in order.
     pub draws: Vec<DrawEntry>,
+    /// The region of the target every draw is recorded into, or `None` to
+    /// leave the pass's own viewport alone.
+    ///
+    /// Whole-scene state rather than per-draw: wgpu's viewport has no reset
+    /// call, so a scene that letterboxes itself states one here and a scene
+    /// that draws full-target states none — see [`Scene::viewport`].
+    viewport: Option<ViewportRect>,
 }
 
 impl Scene {
@@ -295,6 +404,33 @@ impl Scene {
     /// Append `draw` to this scene and return it.
     pub fn with_draw(mut self, draw: DrawEntry) -> Self {
         self.draws.push(draw);
+        self
+    }
+
+    /// The region of the target this scene is recorded into, or `None` to leave
+    /// the pass's own viewport alone.
+    ///
+    /// Recording a scene with no viewport of its own leaves the pass's viewport
+    /// exactly as it was, which is *not* the same as "cover the whole target":
+    /// wgpu has no call that resets a viewport, so a region an earlier scene
+    /// set stays set for every scene after it. [`Renderer`] therefore sets the
+    /// whole target before recording a scene that states none, so one scene's
+    /// letterbox never crops the next one's draws.
+    ///
+    /// [`Renderer`]: https://docs.rs/unlit3d
+    pub fn viewport(&self) -> Option<ViewportRect> {
+        self.viewport
+    }
+
+    /// Record every draw into `viewport` instead of the pass's own region.
+    pub fn set_viewport(&mut self, viewport: Option<ViewportRect>) {
+        self.viewport = viewport;
+    }
+
+    /// Same scene, recorded into `viewport`.
+    #[must_use]
+    pub fn with_viewport(mut self, viewport: ViewportRect) -> Self {
+        self.viewport = Some(viewport);
         self
     }
 
@@ -318,12 +454,44 @@ impl Scene {
     /// Record the scene into `pass`, skipping any `set_*` call whose target is
     /// already bound from the previous draw.
     ///
-    /// The pass state the recording tracks — the scissor rectangle and the
-    /// stencil reference in particular — starts from the pass's own defaults
-    /// and ends with this scene, so recording a second scene into the same pass
-    /// does not inherit the first one's clips.
+    /// The pass state the recording tracks — the scissor rectangle, the
+    /// stencil reference and the scene's own viewport — starts from the pass's
+    /// defaults and ends with this scene, so recording a second scene into the
+    /// same pass does not inherit the first one's clips. A scene that states no
+    /// viewport leaves the pass's region exactly as it is; a caller that needs
+    /// a region for it uses [`Scene::record_with_viewport`].
     pub fn record(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.record_in(pass, None);
+    }
+
+    /// Record the scene into `pass` as [`Scene::record`] does, drawing into
+    /// `fallback` when the scene states no viewport of its own.
+    ///
+    /// A caller recording several scenes into one pass needs this: wgpu has no
+    /// call that resets a viewport, so a scene that states none would otherwise
+    /// inherit the region the previous scene set. Passing the whole target as
+    /// the fallback gives each scene that does not letterbox the full target
+    /// back — which is what `unlit3d`'s frame driver does.
+    pub fn record_with_viewport(&self, pass: &mut wgpu::RenderPass<'_>, fallback: ViewportRect) {
+        self.record_in(pass, Some(fallback));
+    }
+
+    /// The region the scene records into when `fallback` may stand in for the
+    /// viewport the scene itself states.
+    ///
+    /// Split out from [`Scene::record_in`] so the choice is testable without a
+    /// render pass: the recording needs a real one, and which region a scene
+    /// ends up with is the rule that matters.
+    fn resolved_viewport(&self, fallback: Option<ViewportRect>) -> Option<ViewportRect> {
+        self.viewport.or(fallback)
+    }
+
+    /// The shared body of [`Scene::record`] and [`Scene::record_with_viewport`].
+    fn record_in(&self, pass: &mut wgpu::RenderPass<'_>, fallback: Option<ViewportRect>) {
         let mut state = PassState::default();
+        if let Some(viewport) = self.resolved_viewport(fallback) {
+            state.set_viewport(pass, viewport);
+        }
         for draw in &self.draws {
             if state.pipeline != Some(&draw.pipeline) {
                 pass.set_pipeline(&draw.pipeline);
@@ -387,6 +555,8 @@ trait RenderPassInterface<'a> {
     );
     /// Set the scissor rectangle.
     fn set_scissor_rect(&mut self, scissor: ScissorRect);
+    /// Set the viewport.
+    fn set_viewport_rect(&mut self, viewport: ViewportRect);
     /// Set the stencil reference.
     fn set_stencil_reference(&mut self, reference: u32);
 }
@@ -419,6 +589,18 @@ impl<'a, 'p> RenderPassInterface<'a> for wgpu::RenderPass<'p> {
         );
     }
 
+    fn set_viewport_rect(&mut self, viewport: ViewportRect) {
+        wgpu::RenderPass::set_viewport(
+            self,
+            viewport.x,
+            viewport.y,
+            viewport.width,
+            viewport.height,
+            viewport.min_depth,
+            viewport.max_depth,
+        );
+    }
+
     fn set_stencil_reference(&mut self, reference: u32) {
         wgpu::RenderPass::set_stencil_reference(self, reference);
     }
@@ -439,6 +621,7 @@ struct PassState<'a> {
     vertex_buffers: ArrayVec<(u32, &'a wgpu::Buffer, Range<u64>), MAX_VERTEX_BUFFERS>,
     index_buffer: Option<(&'a wgpu::Buffer, Range<u64>, wgpu::IndexFormat)>,
     scissor: Option<ScissorRect>,
+    viewport: Option<ViewportRect>,
     stencil_reference: u32,
 }
 
@@ -523,6 +706,16 @@ impl<'a> PassState<'a> {
         }
         self.scissor = Some(scissor);
         pass.set_scissor_rect(scissor);
+    }
+
+    /// Set the viewport, skipping the call when the pass already holds that
+    /// rectangle.
+    fn set_viewport(&mut self, pass: &mut impl RenderPassInterface<'a>, viewport: ViewportRect) {
+        if self.viewport == Some(viewport) {
+            return;
+        }
+        self.viewport = Some(viewport);
+        pass.set_viewport_rect(viewport);
     }
 
     /// Set the stencil reference, skipping the call when the pass already
@@ -641,6 +834,134 @@ fn fs_main() -> @location(0) vec4<f32> {
         assert_eq!(ScissorRect::new(64, 32), rect.at(0, 0));
     }
 
+    #[test]
+    fn viewport_rect_builders_compose() {
+        let rect = ViewportRect::new(64.0, 32.0).at(8.5, 16.25);
+        assert_eq!(
+            rect,
+            ViewportRect {
+                x: 8.5,
+                y: 16.25,
+                width: 64.0,
+                height: 32.0,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            }
+        );
+        // The whole target, which is what the driver sets before a scene that
+        // states no viewport of its own.
+        assert_eq!(full_viewport(320, 240), ViewportRect::new(320.0, 240.0));
+        assert_eq!(
+            rect.with_depth(0.5, 1.0).min_depth,
+            0.5,
+            "the depth range is the caller's to narrow"
+        );
+    }
+
+    /// A letterbox keeps the requested aspect and stays inside the target,
+    /// centred, whichever way the target and the aspect differ.
+    #[test]
+    fn fitting_an_aspect_letterboxes_within_the_target() {
+        // A 4:3 target is the aspect itself: no bars, no offset.
+        assert_eq!(
+            ViewportRect::fit_aspect(4.0 / 3.0, 800, 600),
+            ViewportRect::new(800.0, 600.0)
+        );
+
+        // A wider target gets bars at the sides: the height is the constraint,
+        // and the rectangle is centred horizontally.
+        let wide = ViewportRect::fit_aspect(4.0 / 3.0, 1600, 600);
+        assert_eq!(wide, ViewportRect::new(800.0, 600.0).at(400.0, 0.0));
+        assert!((wide.width / wide.height - 4.0 / 3.0).abs() < 1e-5);
+        assert_eq!(wide.x + wide.width + wide.x, 1600.0, "centred horizontally");
+        assert_eq!(wide.y, 0.0);
+
+        // A narrower target gets bars above and below, centred vertically.
+        let tall = ViewportRect::fit_aspect(4.0 / 3.0, 600, 900);
+        assert_eq!(tall, ViewportRect::new(600.0, 450.0).at(0.0, 225.0));
+        assert!((tall.width / tall.height - 4.0 / 3.0).abs() < 1e-5);
+        assert_eq!(tall.y + tall.height + tall.y, 900.0, "centred vertically");
+        assert_eq!(tall.x, 0.0);
+
+        // The depth range is left at the whole of clip space.
+        assert_eq!((tall.min_depth, tall.max_depth), (0.0, 1.0));
+    }
+
+    /// A target that cannot hold a letterbox — a degenerate one, or an aspect
+    /// that is not a positive number — comes back whole rather than empty.
+    #[test]
+    fn an_impossible_letterbox_is_the_whole_target() {
+        for aspect in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert_eq!(
+                ViewportRect::fit_aspect(aspect, 320, 240),
+                ViewportRect::new(320.0, 240.0),
+                "aspect {aspect} has no rectangle to fit"
+            );
+        }
+        for target in [(0, 0), (0, 240), (320, 0)] {
+            let fitted = ViewportRect::fit_aspect(4.0 / 3.0, target.0, target.1);
+            assert!(fitted.width >= 0.0 && fitted.height >= 0.0);
+            assert!(fitted.width.is_finite() && fitted.height.is_finite());
+        }
+    }
+
+    /// A scene's own viewport is recorded, and a scene that states none leaves
+    /// the pass's region to whoever set it.
+    #[test]
+    fn a_scene_records_only_the_viewport_it_states() {
+        let own = ViewportRect::new(320.0, 180.0).at(0.0, 20.0);
+        let scene = Scene::new().with_viewport(own);
+        assert_eq!(scene.viewport(), Some(own));
+
+        // A scene that never states one issues no viewport call of its own: the
+        // pass keeps whatever region it holds.
+        let plain = Scene::new();
+        assert_eq!(plain.viewport(), None);
+        assert_eq!(plain.resolved_viewport(None), None);
+    }
+
+    /// A fallback region stands in only for a scene that states no viewport of
+    /// its own, which is what keeps one scene's letterbox from cropping the
+    /// next one's.
+    #[test]
+    fn a_fallback_viewport_fills_in_for_a_scene_that_states_none() {
+        let whole = ViewportRect::new(800.0, 600.0);
+        let own = ViewportRect::new(320.0, 180.0).at(0.0, 20.0);
+
+        let plain = Scene::new();
+        assert_eq!(plain.resolved_viewport(Some(whole)), Some(whole));
+
+        // The scene's own region wins over the fallback rather than the two
+        // being combined.
+        let letterboxed = Scene::new().with_viewport(own);
+        assert_eq!(letterboxed.resolved_viewport(Some(whole)), Some(own));
+
+        // With no fallback either, there is nothing to set.
+        assert_eq!(letterboxed.resolved_viewport(None), Some(own));
+    }
+
+    /// Setting the same viewport twice records one call, and a later scene
+    /// that states a different one records again rather than inheriting it.
+    #[test]
+    fn viewport_calls_are_deduplicated() {
+        let mut pass = MockPass::default();
+        let mut state = PassState::default();
+        let first = ViewportRect::new(320.0, 180.0);
+        let second = ViewportRect::new(160.0, 90.0);
+
+        state.set_viewport(&mut pass, first);
+        // The same rectangle again is a no-op: the pass already has it.
+        state.set_viewport(&mut pass, first);
+        // A fractional difference is a real one: a centred letterbox rarely
+        // lands on a pixel boundary.
+        let nudged = ViewportRect::new(320.0, 180.0).at(0.5, 0.5);
+        state.set_viewport(&mut pass, nudged);
+        state.set_viewport(&mut pass, second);
+
+        assert_eq!(pass.viewports, vec![first, nudged, second]);
+        assert_eq!(state.viewport, Some(second));
+    }
+
     /// The builders thread through a draw unchanged, so a draw keeps every
     /// bound resource while adding the scissor.
     #[test]
@@ -685,6 +1006,7 @@ fn fs_main() -> @location(0) vec4<f32> {
         vertex_buffers: Vec<u32>,
         index_buffers: Vec<wgpu::IndexFormat>,
         scissors: Vec<ScissorRect>,
+        viewports: Vec<ViewportRect>,
         stencil_references: Vec<u32>,
     }
 
@@ -708,6 +1030,10 @@ fn fs_main() -> @location(0) vec4<f32> {
 
         fn set_scissor_rect(&mut self, scissor: ScissorRect) {
             self.scissors.push(scissor);
+        }
+
+        fn set_viewport_rect(&mut self, viewport: ViewportRect) {
+            self.viewports.push(viewport);
         }
 
         fn set_stencil_reference(&mut self, reference: u32) {

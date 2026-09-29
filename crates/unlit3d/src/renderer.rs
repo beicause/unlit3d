@@ -17,6 +17,7 @@
 use unlit_ecs::World;
 use unlit_wgpu::render_attachments::RenderAttachments;
 use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureView};
+use unlit_wgpu::scene::full_viewport;
 use unlit_wgpu::specialize::SurfaceKey;
 
 use crate::components::RenderLoadOps;
@@ -296,9 +297,19 @@ impl Renderer {
                 load_ops.depth,
                 load_ops.stencil,
             );
+            // The viewport is pass state with no reset call, so a scene that
+            // states none has to be given the whole target explicitly —
+            // otherwise it would inherit the region an earlier scene set and
+            // draw inside another scene's letterbox.
+            let (width, height) = self
+                .bound_size
+                .expect("set_render_target binds the target before rendering");
+            let whole = full_viewport(width, height);
             for &entity in self.order.entities() {
                 world
-                    .with_mut::<Source, _>(entity, |source| source.scene().record(&mut pass))
+                    .with_mut::<Source, _>(entity, |source| {
+                        source.scene().record_with_viewport(&mut pass, whole)
+                    })
                     .expect("the source entity exists");
             }
         }
