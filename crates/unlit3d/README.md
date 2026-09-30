@@ -341,10 +341,12 @@ RGBA8: 8-bit layouts upload as `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`, 16-bit
 ones as the half-float formats of the same width, and 32-bit float ones as
 `Rgba32Float`. Three-channel layouts widen by one, since neither an sRGB nor a
 float format comes in three channels. Two consequences are worth knowing: a
-grayscale texture samples as `(l, 0, 0, 1)` — WebGPU has neither a luminance
-format nor a component swizzle, so it draws red until a shader says otherwise —
-and `Rgba32Float` is `unfilterable-float` on devices without
-`Features::FLOAT32_FILTERABLE`, in which case the material binds a
+grayscale texture carries its luminance in the red channel — WebGPU has neither
+a luminance format nor a component swizzle — so the unlit shader's
+`BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` flags expand it to
+RGB(A) and decode the luminance from sRGB, which `UnlitGltf::pipeline_key` sets
+for exactly those uploads; and `Rgba32Float` is `unfilterable-float` on devices
+without `Features::FLOAT32_FILTERABLE`, in which case the material binds a
 non-filtering sampler and `UnlitOptions::texture_filtering` specializes the
 bind-group layout to match.
 

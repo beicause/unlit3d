@@ -56,11 +56,17 @@
 //! three-channel layouts, because neither an sRGB nor a float format comes in
 //! three channels, and a 32-bit float one for the same reason.
 //!
-//! A single-channel image is the one case that does not come out looking like
-//! the source: WebGPU has no luminance format and no component swizzle, so a
-//! grayscale texture samples as `(l, 0, 0, 1)` — the red channel carrying the
-//! luma — until a shader says otherwise. The built-in unlit shader has no
-//! luminance path yet, so a grayscale base-color texture draws red.
+//! A one- or two-channel image is the interesting case: WebGPU has no
+//! luminance format and no component swizzle, so a grayscale texture samples
+//! as `(l, 0, 0, 1)` — the red channel carrying the luma — unless the shader
+//! expands it. The built-in unlit shader does, under
+//! `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA`, which
+//! [`UnlitGltf::pipeline_key`] sets for exactly those uploads: the texel
+//! fans out to RGB (and its second channel to alpha) and the luminance is
+//! decoded from sRGB, which is the encoding the glTF spec asks of a base-color
+//! texture and the one an RGB upload would have been decoded by the sampler.
+//! A caller writing its own shader either sets the same flags or takes the
+//! luma from the red channel as it is.
 //!
 //! `Rgba32Float` is also the only upload a device may refuse to filter: it is
 //! `unfilterable-float` without `Features::FLOAT32_FILTERABLE`, and then the
@@ -246,8 +252,12 @@ impl UnlitGltf {
         // binding is a filtering one: the pipeline and the material bind group
         // have to agree, or the group does not fit the pipeline.
         if let Some(info) = &texture {
-            options.texture_filtering =
-                self.image_filtering(info.texture().source().index(), device);
+            let image = info.texture().source().index();
+            options.texture_filtering = self.image_filtering(image, device);
+            // A one- or two-channel texture uploads in a format that cannot
+            // decode sRGB for itself, so the shader expands the texel and
+            // decodes the luminance instead.
+            options.flags |= self.image_luminance(image);
         }
         // glTF base colors and textures are straight (non-premultiplied)
         // alpha, which is exactly what `ALPHA_BLENDING` composites.
@@ -758,6 +768,24 @@ impl UnlitGltf {
     /// sample — the same answer [`Self::insert_image`] bakes into the handle.
     fn image_filtering(&self, image: usize, device: &wgpu::Device) -> bool {
         image_format(&self.images[image], device).filtering
+    }
+
+    /// How image `image`'s texels have to be expanded once sampled: nothing for
+    /// a texture that already carries RGB, and the matching luminance flag for
+    /// one carrying a single luma channel, or luma and alpha.
+    ///
+    /// Both bit depths are affected. Neither `R8Unorm` nor `R16Float` can
+    /// decode sRGB for itself — WebGPU attaches the transfer function only to
+    /// four-channel formats — so the shader does it, on the assumption the
+    /// grayscale source is sRGB-encoded just as an RGB one would be.
+    fn image_luminance(&self, image: usize) -> UnlitFlags {
+        match self.images[image].format {
+            gltf::image::Format::R8 | gltf::image::Format::R16 => UnlitFlags::BASE_COLOR_LUMINANCE,
+            gltf::image::Format::R8G8 | gltf::image::Format::R16G16 => {
+                UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA
+            }
+            _ => UnlitFlags::empty(),
+        }
     }
 
     fn material(&self, material: usize) -> gltf::Material<'_> {

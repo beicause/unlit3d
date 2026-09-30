@@ -228,8 +228,10 @@ primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它�
 图像按「最接近解码出像素」的 GPU 格式上传，因此纹理保留自己的通道数与精度，而不会被一
 律拓宽成 RGBA8：8 位布局上传为 `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`，16 位上传为同宽
 度的半浮点格式，32 位浮点上传为 `Rgba32Float`；三通道布局则补一个通道，因为 sRGB 与浮
-点格式都没有三通道的。两个后果值得一提：灰度纹理采样为 `(l, 0, 0, 1)`——WebGPU 既没有
-亮度格式也没有分量重排，所以它在着色器另有说明之前会画成红色；以及 `Rgba32Float` 在缺
+点格式都没有三通道的。两个后果值得一提：灰度纹理把亮度放在红通道里——WebGPU 既没有亮度
+格式也没有分量重排——因此 unlit 着色器的 `BASE_COLOR_LUMINANCE` 与
+`BASE_COLOR_LUMINANCE_ALPHA` 标志会把它展开成 RGB(A) 并把亮度从 sRGB 解码，
+`UnlitGltf::pipeline_key` 正好为这类上传设置它们；以及 `Rgba32Float` 在缺
 少 `Features::FLOAT32_FILTERABLE` 的设备上是 `unfilterable-float`，此时材质绑定不可过滤
 的采样器，并由 `UnlitOptions::texture_filtering` 特化绑定组布局来匹配。
 
