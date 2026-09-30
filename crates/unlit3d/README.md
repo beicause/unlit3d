@@ -335,6 +335,19 @@ The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `UnlitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.
 
+An image is uploaded in the GPU format closest to the pixels the loader decoded,
+so textures keep their channels and precision instead of all being widened to
+RGBA8: 8-bit layouts upload as `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`, 16-bit
+ones as the half-float formats of the same width, and 32-bit float ones as
+`Rgba32Float`. Three-channel layouts widen by one, since neither an sRGB nor a
+float format comes in three channels. Two consequences are worth knowing: a
+grayscale texture samples as `(l, 0, 0, 1)` — WebGPU has neither a luminance
+format nor a component swizzle, so it draws red until a shader says otherwise —
+and `Rgba32Float` is `unfilterable-float` on devices without
+`Features::FLOAT32_FILTERABLE`, in which case the material binds a
+non-filtering sampler and `UnlitOptions::texture_filtering` specializes the
+bind-group layout to match.
+
 ## UI
 
 `ui::UiPanel` is itself a behaviour component holding a closure, so
