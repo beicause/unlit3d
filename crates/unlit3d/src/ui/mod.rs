@@ -259,10 +259,14 @@ impl UiSource {
                     "unlit3d::ui::globals",
                     <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
                 );
-                let camera_id = graph.insert_strong(camera.clone());
-                let globals_id = graph.insert_strong(globals.clone());
+                let camera_id = graph.insert_strong(camera.clone(), None);
+                let globals_id = graph.insert_strong(globals.clone(), None);
+                // The two uniforms are written into every frame rather than
+                // replaced, so the group has nothing to rebuild from: the only
+                // change that reaches it is the pipeline swap above, which
+                // replaces it outright.
                 let group = global_group(device, &pipeline, &camera, &globals);
-                let group_id = graph.insert_strong(group);
+                let group_id = graph.insert_strong(group, None);
                 graph.add_dependency(group_id, camera_id);
                 graph.add_dependency(group_id, globals_id);
                 self.gpu = Some(Gpu {
@@ -412,6 +416,11 @@ impl FrameSource for UiSource {
         );
         queue.write_buffer(&gpu.globals, 0, Globals::default().as_bytes());
 
+        // The frame's one rebuild pass: the uniform writes and the textures the
+        // integration just uploaded marked their readers dirty, and the scene
+        // assembled below reads the rebuilt groups.
+        graph.maintain();
+
         let mut ui_scene = gpu.integration.scene(&graph);
         self.scene.extend(&mut ui_scene);
         self.surface = Some(target.surface);
@@ -450,10 +459,12 @@ impl FrameSource for UiSource {
             .get_mut::<ResourceGraph>(context.graph)
             .expect("the context's resource graph exists");
         gpu.integration.release(&mut graph);
-        graph.remove_drop(gpu.global_group);
-        graph.remove_drop(gpu.camera_id);
-        graph.remove_drop(gpu.globals_id);
-        graph.cleanup_drop();
+        graph.remove(gpu.global_group);
+        graph.remove(gpu.camera_id);
+        graph.remove(gpu.globals_id);
+        // The nodes are marked above; this drops them and everything the UI
+        // orphaned, in one pass.
+        graph.maintain();
     }
 }
 

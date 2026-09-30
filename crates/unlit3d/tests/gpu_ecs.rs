@@ -133,6 +133,8 @@ async fn removing_a_mesh_leaves_no_resource_behind() {
     );
 
     gpu.remove_mesh(&world, mesh);
+    // The removal is a mark; the frame's own maintain is what drops it.
+    gpu.maintain(&world);
 
     assert_eq!(
         gpu.graph(&world).len(),

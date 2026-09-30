@@ -102,8 +102,8 @@ fn render_ui_with(
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph.insert_strong(camera.clone());
-    let globals_id = graph.insert_strong(globals.clone());
+    let camera_id = graph.insert_strong(camera.clone(), None);
+    let globals_id = graph.insert_strong(globals.clone(), None);
     // The test target is sRGB: the UI converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
     // from its layout, and the UI draws with it.
@@ -114,8 +114,10 @@ fn render_ui_with(
         ..Default::default()
     };
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
-    let global_group_id =
-        graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
+    let global_group_id = graph.insert_strong(
+        global_group(&ctx.device, &pipeline, &camera, &globals),
+        None,
+    );
     graph.add_dependency(global_group_id, camera_id);
     graph.add_dependency(global_group_id, globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
@@ -430,13 +432,15 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph.insert_strong(camera.clone());
-    let globals_id = graph.insert_strong(globals.clone());
+    let camera_id = graph.insert_strong(camera.clone(), None);
+    let globals_id = graph.insert_strong(globals.clone(), None);
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
-    let global_group_id =
-        graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
+    let global_group_id = graph.insert_strong(
+        global_group(&ctx.device, &pipeline, &camera, &globals),
+        None,
+    );
     graph.add_dependency(global_group_id, camera_id);
     graph.add_dependency(global_group_id, globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
@@ -465,6 +469,9 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
             }
         });
         ui.update(graph, &ctx.queue, &mut encoder, &egui_ctx, output, screen);
+        // The frame's one rebuild pass: it collects the texture egui freed and
+        // rebuilds whatever the update marked dirty.
+        graph.maintain();
         // Dropping the last handle is what makes egui free the texture, so the
         // next frame sees it gone.
         drop(handle);
@@ -502,13 +509,15 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph.insert_strong(camera.clone());
-    let globals_id = graph.insert_strong(globals.clone());
+    let camera_id = graph.insert_strong(camera.clone(), None);
+    let globals_id = graph.insert_strong(globals.clone(), None);
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
-    let global_group_id =
-        graph.insert_strong(global_group(&ctx.device, &pipeline, &camera, &globals));
+    let global_group_id = graph.insert_strong(
+        global_group(&ctx.device, &pipeline, &camera, &globals),
+        None,
+    );
     graph.add_dependency(global_group_id, camera_id);
     graph.add_dependency(global_group_id, globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
@@ -545,6 +554,8 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
     );
 
     ui.release(&mut graph);
+    // Release only marks the nodes; the frame's own maintain drops them.
+    graph.maintain();
 
     assert_eq!(
         graph.len(),

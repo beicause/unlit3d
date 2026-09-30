@@ -40,7 +40,6 @@
 //! combination of attributes and a family can specialize on it at draw time.
 
 use core::hash::Hash;
-use std::sync::Arc;
 
 use unlit_wgpu::resources::ResourceId;
 use unlit_wgpu::specialize::{PipelineDescriptor, SpecializedPipeline, SurfaceKey, VertexLayout};
@@ -48,47 +47,64 @@ use unlit_wgpu::texel_array::ArrayHandle;
 
 use crate::components::GpuMesh;
 
-/// Rebuilds a pipeline's global bind group against the source's current
-/// buffers.
-///
-/// The renderer calls it whenever a buffer the group was built from is
-/// replaced -- the camera, globals or metadata buffer, say. A pipeline that
-/// binds no global group passes None instead and is never visited.
-///
-/// Not `Send`: the closure captures the wgpu device it builds groups with,
-/// and wgpu's web device is not `Send`. The renderer drives it on the thread
-/// the world lives on, so no cross-thread bound is needed.
-pub type GlobalGroupRebuild = Arc<dyn Fn(&RenderResources) -> wgpu::BindGroup>;
+pub use unlit_wgpu::resources::Rebuild;
 
-/// The source's global arrays and buffers, as a rebuild closure sees them.
+/// The ids of the source's global arrays and buffers.
 ///
 /// These are the resources every pipeline can rely on the renderer keeping up
 /// to date: the camera uniform, the frame globals, the mesh-metadata array and
 /// the frame's two pose arrays.
+///
+/// A factory hands these ids to the [Rebuild] it returns, and the recipe reads
+/// the current resource out of the graph each time it runs. That indirection is
+/// what makes rebinding lazy: when the source replaces a buffer, its readers
+/// only find out at the next maintain, and a [Rebuild] that reads the id never
+/// holds a stale buffer handle.
 ///
 /// The three arrays are [`ArrayHandle`]s rather than buffers because which
 /// resource holds them follows from the device: a device with storage buffers
 /// holds each in one, a device without them — WebGL2 — holds the same bytes in
 /// a texture. A pipeline that binds them asks the handle for its binding
 /// resource and never has to know which it is.
-#[derive(Clone, Debug)]
-pub struct RenderResources {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GlobalResources {
     /// The camera uniform buffer.
-    pub camera: wgpu::Buffer,
+    pub camera: ResourceId<wgpu::Buffer>,
     /// The frame-globals uniform buffer.
-    pub globals: wgpu::Buffer,
+    pub globals: ResourceId<wgpu::Buffer>,
     /// The mesh-metadata array.
-    pub metadata: ArrayHandle,
+    pub metadata: ResourceId<ArrayHandle>,
     /// The frame's joint matrices: every visible skinned instance's joints,
     /// one array for the whole frame.
-    pub joints: ArrayHandle,
+    pub joints: ResourceId<ArrayHandle>,
     /// The frame's morph weights: every visible morphed instance's weights, one
     /// array for the whole frame.
-    pub morph_weights: ArrayHandle,
+    pub morph_weights: ResourceId<ArrayHandle>,
     /// The frame's morph displacements: every morphed mesh's per-vertex
     /// displacements, one array for the whole frame. A mesh names its slice
     /// through its metadata entry's `morph_deltas_offset`.
-    pub morph_deltas: ArrayHandle,
+    pub morph_deltas: ResourceId<ArrayHandle>,
+}
+
+impl GlobalResources {
+    /// Declare that the group behind `group` was built from every one of these
+    /// resources, so replacing any of them marks it dirty.
+    ///
+    /// A global bind group reads all of them, so it depends on all of them.
+    /// They are added one at a time because the uniforms and the arrays are
+    /// different kinds.
+    pub(crate) fn declare_dependencies(
+        &self,
+        graph: &mut unlit_wgpu::resources::ResourceGraph,
+        group: ResourceId<wgpu::BindGroup>,
+    ) {
+        graph.add_dependency(group, self.camera);
+        graph.add_dependency(group, self.globals);
+        graph.add_dependency(group, self.metadata);
+        graph.add_dependency(group, self.joints);
+        graph.add_dependency(group, self.morph_weights);
+        graph.add_dependency(group, self.morph_deltas);
+    }
 }
 
 /// A pipeline and the layouts its draws agree with.
@@ -100,13 +116,13 @@ pub struct RegisteredRenderPipeline {
     /// The compiled render pipeline.
     pub pipeline: wgpu::RenderPipeline,
 
-    /// The bind group bound at
-    /// [GLOBAL_GROUP](unlit_wgpu::pipeline::GLOBAL_GROUP), together
-    /// with how to rebuild it when the source's buffers change.
+    /// How to rebuild the bind group bound at
+    /// [GLOBAL_GROUP](unlit_wgpu::pipeline::GLOBAL_GROUP) when the source's
+    /// buffers change.
     ///
     /// None for a pipeline that binds nothing at that index -- a shader
     /// with no uniform or storage inputs, say.
-    pub global: Option<GlobalBinding>,
+    pub global: Option<Rebuild>,
 
     /// The layout a material bind group must be built from, bound at
     /// [MATERIAL_GROUP](unlit_wgpu::pipeline::MATERIAL_GROUP).
@@ -132,39 +148,19 @@ impl core::fmt::Debug for RegisteredRenderPipeline {
     }
 }
 
-/// A pipeline's global bind group and the closure that keeps it current.
-#[derive(Clone)]
-pub struct GlobalBinding {
-    /// The bind group bound for this pipeline's draws.
-    pub bind_group: wgpu::BindGroup,
-    /// Rebuilds [GlobalBinding::bind_group] from the source's current
-    /// buffers after one of them is replaced.
-    pub rebuild: GlobalGroupRebuild,
-}
-
-impl core::fmt::Debug for GlobalBinding {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("GlobalBinding")
-            .field("bind_group", &self.bind_group)
-            .finish_non_exhaustive()
-    }
-}
-
 /// The resource id a registered pipeline's global group lives under.
 #[derive(Clone)]
 pub(crate) struct RegisteredGlobal {
     /// The id in the source's resource graph.
     pub(crate) id: ResourceId<wgpu::BindGroup>,
-    /// How to rebuild the group.
-    pub(crate) rebuild: GlobalGroupRebuild,
 }
 
 /// What a [RenderPipelineFactory] may read from the source.
 pub struct FamilyContext<'a> {
     /// The device the pipeline is compiled on.
     pub device: &'a wgpu::Device,
-    /// The source's global buffers, for a pipeline that binds them.
-    pub resources: &'a RenderResources,
+    /// The ids of the source's global buffers, for a pipeline that binds them.
+    pub resources: GlobalResources,
 }
 
 /// The base descriptor an entity's pipeline variants start from.

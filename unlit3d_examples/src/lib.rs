@@ -170,7 +170,7 @@ pub fn bind_offscreen_target(
             .get_mut::<ResourceGraph>(renderer.context().graph)
             .expect("the context's resource graph exists");
         let insert = |graph: &mut ResourceGraph, view: unlit_wgpu::resources::TextureView| {
-            graph.insert_strong(view)
+            graph.insert_strong(view, None)
         };
         let color = insert(&mut graph, default_view(&target.color));
         let depth = with_depth.then(|| insert(&mut graph, default_view(&target.depth)));

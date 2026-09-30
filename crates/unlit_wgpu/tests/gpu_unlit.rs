@@ -931,32 +931,44 @@ fn uniform(device: &wgpu::Device, label: &str) -> wgpu::Buffer {
 }
 
 async fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
-    use unlit_wgpu::resources::{Resource, ResourceGraph};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use unlit_wgpu::resources::{Rebuild, Resource, ResourceGraph};
 
     let ctx = Ctx::headless().await;
     let mut graph = ResourceGraph::new();
 
-    let base = graph.insert_strong(uniform(&ctx.device, "test::base"));
+    let base = graph.insert_strong(uniform(&ctx.device, "test::base"), None);
 
-    // A stand-in dependent: rebuilding is driven purely by the graph.
-    let dependent = graph.insert_strong(uniform(&ctx.device, "test::dependent"));
+    // A dependent whose recipe records that it ran: rebuilding is driven
+    // purely by the graph.
+    let rebuilt = Rc::new(RefCell::new(false));
+    let seen = Rc::clone(&rebuilt);
+    let device = ctx.device.clone();
+    let dependent = graph.insert_strong(
+        uniform(&ctx.device, "test::dependent"),
+        Some(Rebuild::new(move |graph| {
+            assert!(
+                graph.get(base).is_some(),
+                "the dependency is rebuilt before its dependent"
+            );
+            *seen.borrow_mut() = true;
+            Resource::Buffer(uniform(&device, "test::rebuilt"))
+        })),
+    );
     graph.add_dependency(dependent, base);
 
-    assert!(!graph.is_dirty(dependent));
+    // A no-op pass leaves a clean graph alone, recipes and all.
+    graph.maintain();
+    assert!(!*rebuilt.borrow());
 
-    // Swapping the base must dirty the dependent, which the rebuild pass
-    // then refreshes in dependency order.
+    // Swapping the base must dirty the dependent, which the next pass then
+    // rebuilds in dependency order.
     graph.replace(base, uniform(&ctx.device, "test::base2"));
-    assert!(graph.is_dirty(base));
-    assert!(graph.is_dirty(dependent));
+    graph.maintain();
 
-    let mut rebuilt = Vec::new();
-    graph.rebuild_dirty(|id, _current, _dependencies| {
-        rebuilt.push(id);
-        Some(Resource::Buffer(uniform(&ctx.device, "test::rebuilt")))
-    });
-    assert_eq!(rebuilt, vec![base.erase(), dependent.erase()]);
-    assert!(!graph.any_dirty());
+    assert!(*rebuilt.borrow());
 }
 
 /// A target with no depth attachment must work.

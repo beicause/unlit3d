@@ -177,8 +177,8 @@ impl WindowSurface {
             sample_count,
         );
         let mut graph = context_graph(world, renderer);
-        let depth_view = graph.insert_strong(view_resource(&depth));
-        let msaa_view = msaa.map(|texture| graph.insert_strong(view_resource(&texture)));
+        let depth_view = graph.insert_strong(view_resource(&depth), None);
+        let msaa_view = msaa.map(|texture| graph.insert_strong(view_resource(&texture), None));
         drop(graph);
 
         Self {
@@ -250,6 +250,10 @@ impl WindowSurface {
                 .replace(id, view_resource(&texture))
                 .expect("the multisample view is in the graph");
         }
+        // A resize is not followed by a scene rebuild that would maintain the
+        // graph, so the replacement is collected and any dirty attachment path
+        // is rebuilt here, under the call's own maintain.
+        graph.maintain();
     }
 
     /// Release the swap chain.
@@ -273,12 +277,15 @@ impl WindowSurface {
 
         let mut graph = context_graph(world, renderer);
         if let Some(id) = self.color_view {
-            graph.remove_drop(id);
+            graph.remove(id);
         }
-        graph.remove_drop(self.depth_view);
+        graph.remove(self.depth_view);
         if let Some(id) = self.msaa_view {
-            graph.remove_drop(id);
+            graph.remove(id);
         }
+        // The removals are marked above; this drops them before the swap chain
+        // they name is gone.
+        graph.maintain();
     }
 
     /// Acquire the next frame and bind it as the renderer's render target.
@@ -320,10 +327,13 @@ impl WindowSurface {
                     .expect("the color view is in the graph");
                 id
             }
-            None => context_graph(world, renderer).insert_strong(view),
+            None => context_graph(world, renderer).insert_strong(view, None),
         };
         self.color_view = Some(color);
         renderer.set_render_target(world, Some(color), Some(self.depth_view), self.msaa_view);
+        // Replacing the color view marked every reader dirty; drop the old
+        // frame's view now rather than holding it until the next scene build.
+        context_graph(world, renderer).maintain();
         Some(Frame { surface_texture })
     }
 

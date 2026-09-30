@@ -13,18 +13,35 @@
 //!
 //! * [`ResourceGraph::replace`] swaps a resource and marks every resource
 //!   transitively built from it as *dirty*.
-//! * [`ResourceGraph::remove`] drops a resource together with everything
-//!   transitively built from it and returns what was dropped;
-//!   [`ResourceGraph::remove_drop`] does the same without returning it.
-//! * [`ResourceGraph::rebuild_dirty`] walks the dirty resources in dependency
-//!   order and lets the caller rebuild each one.
-//! * [`ResourceGraph::cleanup`] collects the resources nothing alive reads any
-//!   more and returns them; [`ResourceGraph::cleanup_drop`] drops them without
-//!   returning them.
+//! * [`ResourceGraph::remove`] marks a resource, together with everything
+//!   transitively built from it, for removal.
+//! * [`ResourceGraph::maintain`] drops everything marked for removal, collects
+//!   the resources nothing alive is built from any more, and rebuilds the
+//!   resources marked dirty.
+//!
+//! Nothing happens at the point of the change: `replace` only flips dirty
+//! flags and `remove` only records the root of the removal. Both take effect
+//! the next time [`ResourceGraph::maintain`] runs, which is where a frame
+//! calls them exactly once — before the resources are read.
 //!
 //! Updates are therefore lazy and precise: uploading new bytes into an
 //! existing buffer does not dirty anything, reallocating it does, and only the
 //! resources that actually consumed the old handle are affected.
+//!
+//! # Rebuilding
+//!
+//! A resource that can be rebuilt is inserted with a *recipe*:
+//! [`insert_strong`](ResourceGraph::insert_strong) takes an optional
+//! [`Rebuild`] closure that produces a fresh handle out of the graph. A recipe
+//! reads the resources it was built from back out of the graph by id rather
+//! than capturing their handles, so it observes the current state of its
+//! inputs — a buffer that was reallocated or an array that was replaced — at
+//! the moment it runs.
+//!
+//! [`ResourceGraph::maintain`] runs the recipes of the dirty nodes in
+//! dependency order, so a rebuilt resource is always built from
+//! already-rebuilt inputs. A dirty node with no recipe is left dirty: the
+//! caller changed something the graph cannot rebuild on its own.
 //!
 //! # Typed ids
 //!
@@ -52,14 +69,14 @@
 //! A removal only reaches the resources derived from the one removed, so a
 //! resource that *feeds* the removed subtree — a uniform a bind group reads —
 //! outlives the walk. Such a node is an orphan: nothing alive needs it, but no
-//! walk from an existing node reaches it. [`ResourceGraph::cleanup`] collects
-//! it.
+//! walk from an existing node reaches it. The same [`ResourceGraph::maintain`]
+//! pass that drops the marked subtree collects it.
 //!
 //! Because a node with no dependents is indistinguishable from a resource the
 //! caller still uses, every insertion says which one it is:
 //! [`ResourceGraph::insert_strong`] for a resource the caller holds and uses
 //! directly, and [`ResourceGraph::insert_weak`] for one that exists only to
-//! feed a consumer. Cleanup keeps a strong node, and keeps every resource a
+//! feed a consumer. Collection keeps a strong node, and keeps every resource a
 //! live node was built from; a weak node whose dependents are all gone is
 //! collected.
 //!
@@ -75,11 +92,11 @@
 //! group's single lifetime entry point. Liveness runs from the strong root to
 //! the parts, so the parts survive while the root does; removing the root drops
 //! only what was built *from* it — nothing, for a virtual root — and leaves the
-//! parts for [`ResourceGraph::cleanup`], which collects them unless another
+//! parts for [`ResourceGraph::maintain`], which collects them unless another
 //! live node is still built from them. A part shared by two roots therefore
 //! outlives either one alone.
 
-use smallvec::SmallVec;
+use std::sync::Arc;
 
 use crate::dag::{Dag, EdgeError, NodeId};
 
@@ -287,17 +304,6 @@ pub enum Resource {
     Virtual,
 }
 
-impl Resource {
-    /// Whether `other` is the same kind of resource as this one.
-    ///
-    /// A node keeps its kind for its whole life, so a replacement has to agree
-    /// with what it replaces; this is how [`ResourceGraph::rebuild_dirty`],
-    /// which hands resources around [erased](ResourceId::erase), checks that.
-    fn same_kind(&self, other: &Self) -> bool {
-        core::mem::discriminant(self) == core::mem::discriminant(other)
-    }
-}
-
 impl ResourceKind for Resource {
     fn borrow_from(resource: &Resource) -> Option<&Self> {
         Some(resource)
@@ -383,7 +389,7 @@ into_resource! {
 /// buffer, a [`ResourceId<wgpu::TextureView>`](ResourceId) to a view. The
 /// default, [`Resource`], is the *erased* kind — an id to a resource whose kind
 /// is known only at runtime — which is what graph-wide reads like
-/// [`ResourceGraph::dirty`] and [`ResourceGraph::dependencies`] hand out.
+/// [`ResourceGraph::dependencies`] hand out.
 ///
 /// While the resource lives, its id resolves through every accessor.
 /// Removing the resource invalidates every id to it: a later resource reuses
@@ -411,8 +417,8 @@ impl<R> ResourceId<R> {
     ///
     /// This is how a typed id is handed to an API that works in any kind — the
     /// erased [`ResourceId<Resource>`](Resource) that
-    /// [`ResourceGraph::dependencies`] and [`ResourceGraph::dirty`] speak in,
-    /// or a stored field a caller only ever passes back to the graph.
+    /// [`ResourceGraph::dependencies`] speaks in, or a stored field a caller
+    /// only ever passes back to the graph.
     pub fn erase(self) -> ResourceId {
         ResourceId {
             node: self.node,
@@ -467,28 +473,77 @@ impl<R> core::fmt::Debug for ResourceId<R> {
 #[derive(Debug)]
 struct Node {
     resource: Resource,
-    /// Set when this resource or one of its dependencies was replaced.
+    /// Set when this resource or one of its dependencies was replaced, and
+    /// cleared once [`ResourceGraph::maintain`] has run its recipe.
     dirty: bool,
-    /// Whether the resource survives cleanup on its own rather than only
+    /// Whether the resource survives collection on its own rather than only
     /// through the resources built from it. See [Retention](self).
     strong: bool,
+    /// How to build the resource again after one of its inputs was replaced,
+    /// or `None` when the graph cannot rebuild it on its own.
+    rebuild: Option<Rebuild>,
 }
 
-/// Direct dependencies a rebuild keeps on the stack; beyond this, they spill
-/// onto the heap. Edges are added as they are declared, so a rebuild that
-/// *reads* a node's dependencies is the only place that collects them.
-const MAX_INLINED_DIRECT_DEPENDENCIES: usize = 8;
+/// A recipe that builds a resource out of the graph it lives in.
+///
+/// A node that can be rebuilt is inserted with one —
+/// [`ResourceGraph::insert_strong`] — and [`ResourceGraph::maintain`]
+/// calls it whenever the node is dirty. The recipe reads whatever it was built
+/// from back out of the graph by [`ResourceId`], so it always sees the current
+/// handle of its inputs rather than a copy captured when it was written.
+///
+/// The closure runs while the graph is borrowed immutably, so it can only read
+/// the graph: a recipe returns the handle it built and the graph writes it into
+/// the node.
+#[derive(Clone)]
+pub struct Rebuild(Arc<dyn Fn(&ResourceGraph) -> Resource>);
+
+impl Rebuild {
+    /// Wrap `rebuild` as a reusable recipe.
+    ///
+    /// Only a resource that can be built purely from what the graph holds can
+    /// be rebuilt lazily; the closure captures the device and the layout it
+    /// needs on its own.
+    pub fn new(rebuild: impl Fn(&ResourceGraph) -> Resource + 'static) -> Self {
+        Self(Arc::new(rebuild))
+    }
+
+    /// Build the resource from the graph's current state.
+    ///
+    /// [`ResourceGraph::maintain`] calls this for a dirty node, but a caller
+    /// can also use it to build the first instance eagerly, when it has to hold
+    /// the resource before the next maintain.
+    ///
+    /// # Panics
+    ///
+    /// If the recipe builds a resource of a different kind than `R` names. A
+    /// recipe only ever builds the kind its node stores, so this is a
+    /// programming error.
+    pub fn build<R: ResourceKind>(&self, graph: &ResourceGraph) -> R {
+        ResourceKind::take_from((self.0)(graph))
+            .expect("the recipe builds a resource of the kind its node stores")
+    }
+}
+
+impl core::fmt::Debug for Rebuild {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The closure has no useful representation, so print the type alone.
+        f.debug_struct("Rebuild").finish_non_exhaustive()
+    }
+}
 
 /// A directed acyclic graph of wgpu resources.
 ///
 /// Every edge points from a dependency to a resource built from it, so the
 /// dependents of a node are exactly the nodes reachable from it. The graph
 /// refuses an edge that would close a cycle, which is what lets
-/// [`Self::dirty`] and [`Self::rebuild_dirty`] visit every node in dependency
-/// order.
+/// [`Self::maintain`] rebuild its dirty nodes in dependency order.
 #[derive(Debug, Default)]
 pub struct ResourceGraph {
     graph: Dag<Node>,
+    /// Roots marked by [`Self::remove`], waiting for [`Self::maintain`] to drop
+    /// them together with everything built from them.
+    removed: Vec<NodeId>,
 }
 
 impl ResourceGraph {
@@ -498,6 +553,9 @@ impl ResourceGraph {
     }
 
     /// Number of resources in the graph.
+    ///
+    /// A resource marked by [`Self::remove`] is still counted until the next
+    /// [`Self::maintain`] drops it.
     pub fn len(&self) -> usize {
         self.graph.len()
     }
@@ -507,23 +565,35 @@ impl ResourceGraph {
         self.graph.is_empty()
     }
 
-    /// Add `resource` as a *strong* node that [`Self::cleanup`] keeps whether
-    /// or not anything depends on it.
+    /// Add `resource` as a *strong* node that collection keeps whether or not
+    /// anything depends on it.
     ///
     /// Use this for a resource the caller holds and uses directly. Use
     /// [`Self::insert_weak`] for one that exists only to feed a consumer.
     ///
     /// The kind of the returned id is the resource's own:
-    /// `graph.insert_strong(buffer)` yields a buffer id, and
-    /// `insert_strong(Resource::Virtual)` — or `insert_strong(Virtual)` — a
-    /// [virtual](Virtual) one. The node is added at once; declare what it was
-    /// built from with [`Self::add_dependency`].
-    pub fn insert_strong<R: ResourceKind>(&mut self, resource: R) -> ResourceId<R> {
-        self.insert(resource, true)
+    /// `graph.insert_strong(buffer, None)` yields a buffer id, and
+    /// `insert_strong(Resource::Virtual, None)` — or
+    /// `insert_strong(Virtual, None)` — a [virtual](Virtual) one. The node is
+    /// added at once; declare what it was built from with
+    /// [`Self::add_dependency`].
+    ///
+    /// Pass a [`Rebuild`] recipe for a derived resource — a bind group, say —
+    /// that [`Self::maintain`] rebuilds once one of its inputs is replaced. The
+    /// recipe reads its inputs back out of the graph by id, so declare them
+    /// with [`Self::add_dependency`] as well: the edges decide when to rebuild,
+    /// and the recipe decides what to build from. `None` is a resource the
+    /// graph cannot build again on its own.
+    pub fn insert_strong<R: ResourceKind>(
+        &mut self,
+        resource: R,
+        rebuild: Option<Rebuild>,
+    ) -> ResourceId<R> {
+        self.insert(resource, true, rebuild)
     }
 
-    /// Add `resource` as a *weak* node that [`Self::cleanup`] collects once
-    /// nothing alive is built from it.
+    /// Add `resource` as a *weak* node that collection collects once nothing
+    /// alive is built from it.
     ///
     /// Use this for a resource that only feeds a consumer — a uniform a bind
     /// group reads, an input to a derived resource — so that dropping the
@@ -531,16 +601,29 @@ impl ResourceGraph {
     /// caller holds itself.
     ///
     /// See [`Self::insert_strong`] for how the kind of the id follows from the
-    /// resource.
-    pub fn insert_weak<R: ResourceKind>(&mut self, resource: R) -> ResourceId<R> {
-        self.insert(resource, false)
+    /// resource, and for what the optional [`Rebuild`] recipe means. A weak
+    /// node with a recipe is a derived resource nothing holds: it survives
+    /// while a live node reads it, and is rebuilt on the same terms as a strong
+    /// one while it does.
+    pub fn insert_weak<R: ResourceKind>(
+        &mut self,
+        resource: R,
+        rebuild: Option<Rebuild>,
+    ) -> ResourceId<R> {
+        self.insert(resource, false, rebuild)
     }
 
-    fn insert<R: ResourceKind>(&mut self, resource: R, strong: bool) -> ResourceId<R> {
+    fn insert<R: ResourceKind>(
+        &mut self,
+        resource: R,
+        strong: bool,
+        rebuild: Option<Rebuild>,
+    ) -> ResourceId<R> {
         let node = self.graph.insert(Node {
             resource: resource.into_resource(),
             dirty: false,
             strong,
+            rebuild,
         });
         ResourceId {
             node,
@@ -632,94 +715,56 @@ impl ResourceGraph {
         Some(previous)
     }
 
-    /// Remove `id` together with every resource transitively built from it,
-    /// returning everything that was dropped.
+    /// Mark `id` for removal, together with every resource transitively built
+    /// from it.
     ///
-    /// The removed resources are returned in dependency order (dependencies
-    /// first), so the last entries are the roots of the removed subtree.
+    /// Nothing is dropped here: the walk that finds the subtree and the drop
+    /// itself both happen once, in [`Self::maintain`]. Until then the ids keep
+    /// resolving, so a caller that marks a resource and then reads it back sees
+    /// what it marked rather than a freed slot.
     ///
-    /// When the dropped resources are not needed, prefer [`Self::remove_drop`],
-    /// which skips building the return vector.
-    pub fn remove<R>(&mut self, id: ResourceId<R>) -> Vec<Resource> {
-        self.graph
-            .remove_dependents(id.node)
-            .into_iter()
-            .map(|node| node.resource)
-            .collect()
-    }
-
-    /// Remove `id` together with every resource transitively built from it,
-    /// dropping everything without returning it.
+    /// Marking the same subtree twice, or a resource inside an already-marked
+    /// one, is harmless: [`Self::maintain`] drops each subtree once and a root
+    /// that no longer resolves is skipped.
     ///
-    /// This is [`Self::remove`] for callers that do not need the dropped
-    /// resources: it avoids allocating the return vector.
-    pub fn remove_drop<R>(&mut self, id: ResourceId<R>) {
-        self.graph.remove_dependents_drop(id.node);
-    }
-
-    /// Collect and return every resource nothing alive is built from.
-    ///
-    /// A resource is alive when it was inserted [strong](Self::insert_strong),
-    /// or when something alive was built from it. Everything else — a weak
-    /// resource whose every consumer has been removed — is dropped, and so is
-    /// anything built only from resources that are themselves dropped.
-    ///
-    /// This is what collects an orphan like a uniform feeding a bind group:
-    /// [`Self::remove`] on the bind group's inputs reaches the group but never
-    /// the uniform it was built from, so the uniform survives that walk and is
-    /// only freed here, once nothing that reads it is left.
-    ///
-    /// The returned resources are in unspecified order. Nothing that was
-    /// removed is referenced by a surviving node: a strongly held resource is
-    /// always kept, and a resource a live node was built from is kept too.
-    ///
-    /// When the dropped resources are not needed, prefer
-    /// [`Self::cleanup_drop`], which skips building the return vector.
-    pub fn cleanup(&mut self) -> Vec<Resource> {
-        let stamp = self.mark_alive();
-        self.graph
-            .remove_unmarked(stamp)
-            .into_iter()
-            .map(|node| node.resource)
-            .collect()
-    }
-
-    /// Drop every resource nothing alive is built from, without returning it.
-    ///
-    /// This is [`Self::cleanup`] for callers that do not need the dropped
-    /// resources: it avoids allocating the return vector.
-    pub fn cleanup_drop(&mut self) {
-        let stamp = self.mark_alive();
-        self.graph.remove_unmarked_drop(stamp);
-    }
-
-    /// Mark every node that is strong or that a strong node was built from,
-    /// and return the stamp the marks carry.
-    ///
-    /// Aliveness propagates from a dependent to what it was built from, so the
-    /// walk goes against the edges — from each strong node to its dependencies.
-    /// The walk allocates nothing per strong node: the marks live in the
-    /// graph's own per-slot stamps, which a single pass fills.
-    fn mark_alive(&mut self) -> u32 {
-        self.graph.mark_dependencies_where(|node| node.strong)
-    }
-
-    /// Whether `id` needs to be rebuilt before it can be used again.
-    pub fn is_dirty<R>(&self, id: ResourceId<R>) -> bool {
-        self.graph.get(id.node).is_some_and(|node| node.dirty)
-    }
-
-    /// Whether any resource in the graph is dirty.
-    pub fn any_dirty(&self) -> bool {
-        self.graph.node_weights().any(|node| node.dirty)
-    }
-
-    /// Mark `id` clean, for example after rebuilding it outside
-    /// [`Self::rebuild_dirty`].
-    pub fn mark_clean<R>(&mut self, id: ResourceId<R>) {
-        if let Some(node) = self.graph.get_mut(id.node) {
-            node.dirty = false;
+    /// An unknown id is ignored, so a caller may mark a resource it has already
+    /// seen removed.
+    pub fn remove<R>(&mut self, id: ResourceId<R>) {
+        if self.graph.get(id.node).is_some() {
+            self.removed.push(id.node);
         }
+    }
+
+    /// Bring the graph up to date: drop what was marked for removal, collect
+    /// the resources nothing alive is built from, and rebuild what is dirty.
+    ///
+    /// Call this once per frame before reading the resources, so that every
+    /// change made since the last call takes effect at a single point rather
+    /// than at each change. A frame that changed nothing does no work beyond
+    /// the liveness walk.
+    ///
+    /// The three passes run in a fixed order:
+    ///
+    /// 1. Each resource marked by [`Self::remove`] is dropped together with
+    ///    everything built from it.
+    /// 2. Every resource that no live node is built from — a weak node whose
+    ///    consumers are gone, or one built only from dropped resources — is
+    ///    collected.
+    /// 3. Every dirty resource with a [recipe](Rebuild) is rebuilt, in
+    ///    dependency order so that a rebuild sees its already-rebuilt inputs.
+    ///
+    /// Collecting before rebuilding means a resource that is about to be
+    /// collected is never rebuilt, and a dirty node without a recipe stays
+    /// dirty: the graph cannot build it again by itself.
+    pub fn maintain(&mut self) {
+        // `drain` empties the vector in place, so the roots a frame marks are
+        // dropped here while the buffer holding them is kept for the next one.
+        for root in self.removed.drain(..) {
+            self.graph.remove_dependents_drop(root);
+        }
+        let stamp = self.graph.mark_dependencies_where(|node| node.strong);
+        self.graph.remove_unmarked_drop(stamp);
+        self.rebuild_dirty();
     }
 
     /// The immediate dependencies recorded for `id`.
@@ -733,71 +778,34 @@ impl ResourceGraph {
         })
     }
 
-    /// Every dirty resource, [erased](ResourceId::erase) like
-    /// [`Self::dependencies`], in dependency order (a resource always follows
-    /// the resources it was built from).
-    pub fn dirty(&self) -> impl Iterator<Item = ResourceId> + '_ {
-        // The graph is acyclic by construction, so its topological order is a
-        // true dependency order and this visits every node.
-        self.graph
-            .topological_order()
-            .into_iter()
-            .filter(|&node| self.graph.get(node).is_some_and(|node| node.dirty))
-            .map(|node| ResourceId {
-                node,
-                kind: core::marker::PhantomData,
-            })
-    }
-
-    /// Rebuild every dirty resource by calling `rebuild` in dependency order.
-    ///
-    /// `rebuild` receives the dirty resource's id — [erased](ResourceId::erase),
-    /// since the graph visits every kind — its current handle, and its direct
-    /// dependencies' current handles. Returning `Some` replaces the resource
-    /// and clears its dirty flag; returning `None` leaves it dirty, which is
-    /// how a caller defers work it cannot do yet. The replacement must be of
-    /// the resource's own kind — a node never changes kind, which is what lets
-    /// a typed [`ResourceId`] keep naming the same thing — and a mismatch
-    /// trips a debug assertion.
+    /// Rebuild every dirty resource that has a recipe, in dependency order.
     ///
     /// Dependents are visited after their dependencies, so a rebuild observes
     /// already-updated inputs.
-    pub fn rebuild_dirty<F>(&mut self, mut rebuild: F)
-    where
-        F: FnMut(ResourceId, &Resource, &[Resource]) -> Option<Resource>,
-    {
+    fn rebuild_dirty(&mut self) {
         // The order is fixed up front, so the rebuilds cannot disturb the walk
-        // they are part of even though `rebuild` runs between its steps.
-        // `rebuild` cannot touch the graph — it receives only ids and handles
-        // — so the nodes it names are all still there.
+        // they are part of even though a recipe runs between its steps. A
+        // recipe only reads the graph, so the nodes it names are all still
+        // there.
         for node in self.graph.topological_order() {
-            if !self.graph.get(node).is_some_and(|node| node.dirty) {
-                continue;
-            }
-            let id = ResourceId {
-                node,
-                kind: core::marker::PhantomData,
-            };
-            // Dependency handles are cheap reference-counted clones, so the
-            // common case — a handful of dependencies — stays on the stack.
-            let dependencies: SmallVec<[Resource; MAX_INLINED_DIRECT_DEPENDENCIES]> = self
-                .dependencies(id)
-                .filter_map(|dependency| self.get(dependency).cloned())
-                .collect();
-            let Some(current) = self.get(id) else {
+            let Some(recipe) = self
+                .graph
+                .get(node)
+                .filter(|slot| slot.dirty)
+                .and_then(|slot| slot.rebuild.clone())
+            else {
                 continue;
             };
-            let Some(rebuilt) = rebuild(id, current, &dependencies) else {
+            let rebuilt = recipe.build::<Resource>(self);
+            let Some(slot) = self.graph.get_mut(node) else {
                 continue;
             };
             debug_assert!(
-                current.same_kind(&rebuilt),
+                core::mem::discriminant(&slot.resource) == core::mem::discriminant(&rebuilt),
                 "a rebuilt resource must be of the same kind as the one it replaces"
             );
-            if let Some(node) = self.graph.get_mut(node) {
-                node.resource = rebuilt;
-                node.dirty = false;
-            }
+            slot.resource = rebuilt;
+            slot.dirty = false;
         }
     }
 
@@ -811,6 +819,9 @@ impl ResourceGraph {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     use super::*;
 
     /// A resource stand-in: the graph logic never inspects the handle, so the
@@ -841,46 +852,89 @@ mod tests {
 
     /// A dependence-free strong buffer, the leaf most tests build from.
     fn strong_buffer(graph: &mut ResourceGraph, device: &wgpu::Device, label: &str) -> BufferId {
-        graph.insert_strong(buffer(device, label))
+        graph.insert_strong(buffer(device, label), None)
     }
 
     /// The id a [`strong_buffer`] hands back: a buffer id, spelled out so the
     /// tests do not have to infer it.
     type BufferId = ResourceId<wgpu::Buffer>;
 
-    #[test]
-    fn replace_marks_dependents_dirty() {
-        let device = device();
-        let mut graph = ResourceGraph::new();
-        let base = strong_buffer(&mut graph, &device, "base");
-        let middle = graph.insert_strong(buffer(&device, "middle"));
-        graph.add_dependency(middle, base);
-        let leaf = graph.insert_strong(buffer(&device, "leaf"));
-        graph.add_dependency(leaf, middle);
-
-        assert!(!graph.any_dirty());
-
-        graph.replace(base, buffer(&device, "base2"));
-        assert!(graph.is_dirty(base));
-        assert!(graph.is_dirty(middle));
-        assert!(graph.is_dirty(leaf));
-        // Dependency order: base before middle before leaf.
-        assert_eq!(
-            graph.dirty().collect::<Vec<_>>(),
-            vec![base.erase(), middle.erase(), leaf.erase()]
-        );
+    /// Insert a buffer whose recipe records that it ran, under `name`, and
+    /// returns a fresh buffer.
+    ///
+    /// The names accumulate in `order`, which is how a test observes both which
+    /// recipes ran and in what order.
+    fn rebuildable_buffer(
+        graph: &mut ResourceGraph,
+        device: &wgpu::Device,
+        order: &Rc<RefCell<Vec<&'static str>>>,
+        name: &'static str,
+    ) -> BufferId {
+        let order = Rc::clone(order);
+        let device = device.clone();
+        graph.insert_strong(
+            buffer(&device, name),
+            Some(Rebuild::new(move |_graph| {
+                order.borrow_mut().push(name);
+                buffer(&device, "rebuilt").into()
+            })),
+        )
     }
 
     #[test]
-    fn replace_does_not_dirty_unrelated_resources() {
+    fn maintain_rebuilds_the_dependents_of_a_replaced_resource() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let base = strong_buffer(&mut graph, &device, "base");
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let middle = rebuildable_buffer(&mut graph, &device, &order, "middle");
+        graph.add_dependency(middle, base);
+        let leaf = rebuildable_buffer(&mut graph, &device, &order, "leaf");
+        graph.add_dependency(leaf, middle);
+
+        graph.replace(base, buffer(&device, "base2"));
+        graph.maintain();
+
+        // Dependency order: the middle buffer was rebuilt before the leaf.
+        assert_eq!(*order.borrow(), vec!["middle", "leaf"]);
+    }
+
+    #[test]
+    fn maintain_rebuilds_only_the_dependents_of_the_replaced_resource() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let a = strong_buffer(&mut graph, &device, "a");
         let b = strong_buffer(&mut graph, &device, "b");
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let a_dependent = rebuildable_buffer(&mut graph, &device, &order, "a");
+        graph.add_dependency(a_dependent, a);
+        let b_dependent = rebuildable_buffer(&mut graph, &device, &order, "b");
+        graph.add_dependency(b_dependent, b);
 
         graph.replace(a, buffer(&device, "a2"));
-        assert!(graph.is_dirty(a));
-        assert!(!graph.is_dirty(b));
+        graph.maintain();
+
+        assert_eq!(*order.borrow(), vec!["a"]);
+    }
+
+    /// A dirty node with no recipe is left alone rather than preventing the
+    /// rebuild of the nodes built from it.
+    #[test]
+    fn maintain_leaves_a_dirty_node_without_a_recipe_dirty() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let base = strong_buffer(&mut graph, &device, "base");
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let dependent = rebuildable_buffer(&mut graph, &device, &order, "dependent");
+        graph.add_dependency(dependent, base);
+
+        graph.replace(base, buffer(&device, "base2"));
+        graph.maintain();
+        graph.maintain();
+
+        // The dependent is rebuilt once; the recipe-less base stays dirty and
+        // is skipped on every later pass.
+        assert_eq!(*order.borrow(), vec!["dependent"]);
     }
 
     /// The old handle is handed back in the id's own kind, so a caller
@@ -889,7 +943,7 @@ mod tests {
     fn replace_returns_the_previous_handle() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let id = graph.insert_strong(sized_buffer(&device, 64));
+        let id = graph.insert_strong(sized_buffer(&device, 64), None);
 
         let previous = graph.replace(id, sized_buffer(&device, 128)).unwrap();
         assert_eq!(previous.size(), 64);
@@ -897,59 +951,42 @@ mod tests {
     }
 
     #[test]
-    fn remove_drops_dependents() {
+    fn remove_marks_a_subtree_that_maintain_drops() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let base = strong_buffer(&mut graph, &device, "base");
-        let dependent = graph.insert_strong(buffer(&device, "dependent"));
+        let dependent = graph.insert_strong(buffer(&device, "dependent"), None);
         graph.add_dependency(dependent, base);
         let unrelated = strong_buffer(&mut graph, &device, "unrelated");
 
-        let removed = graph.remove(base);
-        assert_eq!(removed.len(), 2);
+        graph.remove(base);
+        // Marking drops nothing, so both marked nodes still resolve.
+        assert!(graph.get(base).is_some());
+        assert!(graph.get(dependent).is_some());
+
+        graph.maintain();
         assert!(graph.get(base).is_none());
         assert!(graph.get(dependent).is_none());
         assert!(graph.get(unrelated).is_some());
         assert_eq!(graph.len(), 1);
     }
 
+    /// A root marked twice, or marked inside an already-marked subtree, drops
+    /// the subtree once.
     #[test]
-    fn rebuild_dirty_visits_in_dependency_order() {
+    fn maintain_drops_an_overlapping_removal_once() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let base = strong_buffer(&mut graph, &device, "base");
-        let dependent = graph.insert_strong(buffer(&device, "dependent"));
+        let dependent = graph.insert_strong(buffer(&device, "dependent"), None);
         graph.add_dependency(dependent, base);
 
-        graph.replace(base, buffer(&device, "base2"));
+        graph.remove(base);
+        graph.remove(dependent);
+        graph.remove(base);
+        graph.maintain();
 
-        let mut visited = Vec::new();
-        graph.rebuild_dirty(|id, _current, dependencies| {
-            visited.push(id);
-            if id == dependent.erase() {
-                // The dependency was already rebuilt, so the caller observes
-                // the fresh handle rather than the replaced one.
-                assert_eq!(dependencies.len(), 1);
-            }
-            Some(buffer(&device, "rebuilt").into())
-        });
-
-        assert_eq!(visited, vec![base.erase(), dependent.erase()]);
-        assert!(!graph.any_dirty());
-    }
-
-    #[test]
-    fn rebuild_can_defer() {
-        let device = device();
-        let mut graph = ResourceGraph::new();
-        let base = strong_buffer(&mut graph, &device, "base");
-        graph.replace(base, buffer(&device, "base2"));
-
-        graph.rebuild_dirty(|_, _, _| None);
-        assert!(graph.is_dirty(base));
-
-        graph.mark_clean(base);
-        assert!(!graph.any_dirty());
+        assert!(graph.is_empty());
     }
 
     #[test]
@@ -958,9 +995,10 @@ mod tests {
         let device = device();
         let mut graph = ResourceGraph::new();
         let base = strong_buffer(&mut graph, &device, "base");
-        let dependent = graph.insert_strong(buffer(&device, "dependent"));
-        let stale = graph.insert_strong(buffer(&device, "stale"));
-        graph.remove_drop(stale);
+        let dependent = graph.insert_strong(buffer(&device, "dependent"), None);
+        let stale = graph.insert_strong(buffer(&device, "stale"), None);
+        graph.remove(stale);
+        graph.maintain();
         // Nothing was inserted since, so `stale`'s freed slot is still free —
         // the case the recycled-slot test below is the trap of.
         assert!(graph.get(base).is_some());
@@ -974,13 +1012,14 @@ mod tests {
         let device = device();
         let mut graph = ResourceGraph::new();
         let id = strong_buffer(&mut graph, &device, "a");
-        graph.remove_drop(id);
+        graph.remove(id);
+        graph.maintain();
         // The freed slot is handed straight back to the next node, so a stale
         // handle and the live one share an index. The id also records the
         // generation it was handed out with, so the two are still told apart:
         // the stale id resolves to nothing rather than to the node that took
         // its slot.
-        let dependent = graph.insert_strong(buffer(&device, "b"));
+        let dependent = graph.insert_strong(buffer(&device, "b"), None);
         assert_eq!(dependent.index(), id.index(), "the slot is reused");
         graph.add_dependency(dependent, id);
     }
@@ -993,7 +1032,8 @@ mod tests {
         let device = device();
         let mut graph = ResourceGraph::new();
         let stale = strong_buffer(&mut graph, &device, "stale");
-        graph.remove_drop(stale);
+        graph.remove(stale);
+        graph.maintain();
 
         let fresh = strong_buffer(&mut graph, &device, "fresh");
         assert_eq!(fresh.index(), stale.index(), "the slot is reused");
@@ -1002,7 +1042,6 @@ mod tests {
             graph.get(stale).is_none(),
             "the stale id resolves to nothing"
         );
-        assert!(!graph.is_dirty(stale));
         assert!(
             graph
                 .replace(stale, buffer(&device, "replacement"))
@@ -1016,8 +1055,9 @@ mod tests {
         let device = device();
         let mut graph = ResourceGraph::new();
         let dependency = strong_buffer(&mut graph, &device, "a");
-        let dependent = graph.insert_strong(buffer(&device, "b"));
-        graph.remove_drop(dependent);
+        let dependent = graph.insert_strong(buffer(&device, "b"), None);
+        graph.remove(dependent);
+        graph.maintain();
 
         graph.add_dependency(dependent, dependency);
     }
@@ -1031,66 +1071,61 @@ mod tests {
         let device = device();
         let mut graph = ResourceGraph::new();
         let a = strong_buffer(&mut graph, &device, "a");
-        let b = graph.insert_strong(buffer(&device, "b"));
+        let b = graph.insert_strong(buffer(&device, "b"), None);
         graph.add_dependency(b, a);
         // `a` already reaches `b`, so the reverse edge would close a cycle.
         graph.add_dependency(a, b);
     }
 
     #[test]
-    fn cleanup_keeps_strong_nodes_with_no_dependents() {
+    fn maintain_keeps_strong_nodes_with_no_dependents() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let strong = strong_buffer(&mut graph, &device, "strong");
 
-        assert!(graph.cleanup().is_empty());
+        graph.maintain();
         assert!(graph.get(strong).is_some());
     }
 
     #[test]
-    fn cleanup_collects_a_weak_node_nothing_is_built_from() {
+    fn maintain_collects_a_weak_node_nothing_is_built_from() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let weak = graph.insert_weak(buffer(&device, "weak"));
+        let weak = graph.insert_weak(buffer(&device, "weak"), None);
 
-        assert_eq!(graph.cleanup().len(), 1);
+        graph.maintain();
         assert!(graph.get(weak).is_none());
         assert!(graph.is_empty());
     }
 
     #[test]
-    fn cleanup_keeps_a_weak_node_a_strong_dependent_is_built_from() {
+    fn maintain_keeps_a_weak_node_a_strong_dependent_is_built_from() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let weak = graph.insert_weak(buffer(&device, "weak"));
-        let dependent = graph.insert_strong(buffer(&device, "dependent"));
+        let weak = graph.insert_weak(buffer(&device, "weak"), None);
+        let dependent = graph.insert_strong(buffer(&device, "dependent"), None);
         graph.add_dependency(dependent, weak);
 
-        assert!(graph.cleanup().is_empty());
+        graph.maintain();
         assert!(graph.get(weak).is_some());
         assert!(graph.get(dependent).is_some());
     }
 
     /// The case the graph exists for: a uniform feeding a bind group is
-    /// reached by no removal walk from the group's inputs, so only cleanup
-    /// collects it.
+    /// reached by no removal walk from the group's inputs, so only the orphan
+    /// pass collects it.
     #[test]
-    fn cleanup_collects_a_weak_node_orphaned_by_removing_its_dependent() {
+    fn maintain_collects_a_weak_node_orphaned_by_removing_its_dependent() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let weak = graph.insert_weak(buffer(&device, "uniform"));
+        let weak = graph.insert_weak(buffer(&device, "uniform"), None);
         let input = strong_buffer(&mut graph, &device, "input");
-        let group = graph.insert_strong(buffer(&device, "group"));
+        let group = graph.insert_strong(buffer(&device, "group"), None);
         graph.add_dependency(group, input);
         graph.add_dependency(group, weak);
 
-        graph.remove_drop(group);
-        assert!(
-            graph.get(weak).is_some(),
-            "the removal walk does not reach it"
-        );
-
-        graph.cleanup_drop();
+        graph.remove(group);
+        graph.maintain();
         assert!(graph.get(weak).is_none());
         assert!(
             graph.get(input).is_some(),
@@ -1099,25 +1134,25 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_collects_only_what_is_unreachable_from_a_strong_node() {
+    fn maintain_collects_only_what_is_unreachable_from_a_strong_node() {
         let device = device();
         let mut graph = ResourceGraph::new();
         // A weak chain feeding a strong node: every link is kept, because the
         // strong node was built from it.
-        let leaf = graph.insert_weak(buffer(&device, "leaf"));
-        let middle = graph.insert_weak(buffer(&device, "middle"));
+        let leaf = graph.insert_weak(buffer(&device, "leaf"), None);
+        let middle = graph.insert_weak(buffer(&device, "middle"), None);
         graph.add_dependency(middle, leaf);
-        let root = graph.insert_strong(buffer(&device, "root"));
+        let root = graph.insert_strong(buffer(&device, "root"), None);
         graph.add_dependency(root, middle);
         // A second chain whose strong node is removed: the whole chain goes.
-        let gone_leaf = graph.insert_weak(buffer(&device, "gone_leaf"));
-        let gone_middle = graph.insert_weak(buffer(&device, "gone_middle"));
+        let gone_leaf = graph.insert_weak(buffer(&device, "gone_leaf"), None);
+        let gone_middle = graph.insert_weak(buffer(&device, "gone_middle"), None);
         graph.add_dependency(gone_middle, gone_leaf);
-        let gone_root = graph.insert_strong(buffer(&device, "gone_root"));
+        let gone_root = graph.insert_strong(buffer(&device, "gone_root"), None);
         graph.add_dependency(gone_root, gone_middle);
 
-        graph.remove_drop(gone_root);
-        graph.cleanup_drop();
+        graph.remove(gone_root);
+        graph.maintain();
 
         assert!(graph.get(root).is_some());
         assert!(graph.get(middle).is_some());
@@ -1135,99 +1170,60 @@ mod tests {
         let leaf = strong_buffer(&mut graph, &device, "leaf");
         let other = strong_buffer(&mut graph, &device, "other");
 
-        let removed = graph.remove(leaf);
-        assert_eq!(removed.len(), 1);
+        graph.remove(leaf);
+        graph.maintain();
         assert!(graph.get(leaf).is_none());
         assert!(graph.get(other).is_some());
         assert_eq!(graph.len(), 1);
     }
 
-    /// The doc promises the removed subtree in dependency order, so callers
-    /// can rely on the last entries being its roots.
+    /// Removing a resource inside a chain drops everything built from it and
+    /// leaves the resource it was built from alive.
     #[test]
-    fn remove_returns_the_subtree_in_dependency_order() {
+    fn remove_drops_the_dependents_of_the_marked_resource() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let base = graph.insert_strong(sized_buffer(&device, 64));
-        let middle = graph.insert_strong(sized_buffer(&device, 128));
+        let base = graph.insert_strong(sized_buffer(&device, 64), None);
+        let middle = graph.insert_strong(sized_buffer(&device, 128), None);
         graph.add_dependency(middle, base);
-        let root = graph.insert_strong(sized_buffer(&device, 256));
+        let root = graph.insert_strong(sized_buffer(&device, 256), None);
         graph.add_dependency(root, middle);
 
-        let removed = graph.remove(middle);
-        assert_eq!(removed.len(), 2);
-        let Resource::Buffer(first) = &removed[0] else {
-            panic!("the first removed resource is a buffer");
-        };
-        let Resource::Buffer(second) = &removed[1] else {
-            panic!("the second removed resource is a buffer");
-        };
-        assert_eq!(first.size(), 128);
-        assert_eq!(second.size(), 256);
-        // The resource the subtree was built from outlives the removal.
-        assert!(graph.get(base).is_some());
-        assert!(graph.get(root).is_none());
-    }
-
-    /// [`ResourceGraph::remove_drop`] removes the same subtree as
-    /// [`ResourceGraph::remove`] without returning it.
-    #[test]
-    fn remove_drop_removes_the_same_subtree() {
-        let device = device();
-        let mut graph = ResourceGraph::new();
-        let base = graph.insert_strong(sized_buffer(&device, 64));
-        let middle = graph.insert_strong(sized_buffer(&device, 128));
-        graph.add_dependency(middle, base);
-        let root = graph.insert_strong(sized_buffer(&device, 256));
-        graph.add_dependency(root, middle);
-
-        graph.remove_drop(middle);
+        graph.remove(middle);
+        graph.maintain();
         assert!(graph.get(base).is_some());
         assert!(graph.get(middle).is_none());
         assert!(graph.get(root).is_none());
         assert_eq!(graph.len(), 1);
     }
 
-    /// [`ResourceGraph::cleanup_drop`] collects the same orphans as
-    /// [`ResourceGraph::cleanup`] without returning them.
-    #[test]
-    fn cleanup_drop_collects_orphans() {
-        let device = device();
-        let mut graph = ResourceGraph::new();
-        let weak = graph.insert_weak(buffer(&device, "weak"));
-
-        graph.cleanup_drop();
-        assert!(graph.get(weak).is_none());
-        assert!(graph.is_empty());
-    }
-
+    /// A recipe reads its inputs back out of the graph, so it sees the handles
+    /// the graph holds when it runs — the replaced ones, not the originals.
     #[test]
     fn rebuild_observes_the_updated_handles_of_its_dependencies() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let base = strong_buffer(&mut graph, &device, "base");
-        let dependent = graph.insert_strong(buffer(&device, "dependent"));
+        let observed = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&observed);
+        let rebuilt = device.clone();
+        let dependent = graph.insert_strong(
+            buffer(&device, "dependent"),
+            Some(Rebuild::new(move |graph| {
+                let size = graph
+                    .get(base)
+                    .expect("the dependency outlives the rebuild")
+                    .size();
+                seen.borrow_mut().push(size);
+                buffer(&rebuilt, "rebuilt").into()
+            })),
+        );
         graph.add_dependency(dependent, base);
 
         graph.replace(base, sized_buffer(&device, 128));
+        graph.maintain();
 
-        let mut observed = Vec::new();
-        graph.rebuild_dirty(|id, _, dependencies| {
-            if id == dependent.erase() {
-                let Resource::Buffer(buffer) = &dependencies[0] else {
-                    panic!("the dependency is a buffer");
-                };
-                observed.push(buffer.size());
-            }
-            // Defer the base itself so the dependent observes the replaced
-            // handle rather than a rebuild of it.
-            if id == base.erase() {
-                return None;
-            }
-            Some(buffer(&device, "rebuilt").into())
-        });
-
-        assert_eq!(observed, vec![128]);
+        assert_eq!(*observed.borrow(), vec![128]);
     }
 
     #[test]
@@ -1239,29 +1235,25 @@ mod tests {
         //  left   right
         //    \    /
         //     join
-        let base = strong_buffer(&mut graph, &device, "base");
-        let left = graph.insert_strong(buffer(&device, "left"));
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let base = rebuildable_buffer(&mut graph, &device, &order, "base");
+        let left = rebuildable_buffer(&mut graph, &device, &order, "left");
         graph.add_dependency(left, base);
-        let right = graph.insert_strong(buffer(&device, "right"));
+        let right = rebuildable_buffer(&mut graph, &device, &order, "right");
         graph.add_dependency(right, base);
-        let join = graph.insert_strong(buffer(&device, "join"));
+        let join = rebuildable_buffer(&mut graph, &device, &order, "join");
         graph.add_dependency(join, left);
         graph.add_dependency(join, right);
 
         graph.replace(base, buffer(&device, "base2"));
+        graph.maintain();
 
-        let mut visited = Vec::new();
-        graph.rebuild_dirty(|id, _, dependencies| {
-            if id == join.erase() {
-                assert_eq!(dependencies.len(), 2);
-            }
-            visited.push(id);
-            Some(buffer(&device, "rebuilt").into())
-        });
-
-        assert_eq!(visited.len(), 4);
-        assert_eq!(visited[0], base.erase());
-        assert_eq!(visited[3], join.erase());
+        // The base and both middle nodes are rebuilt before the join, which
+        // observes both of them.
+        let order = order.borrow().clone();
+        assert_eq!(order.len(), 4);
+        assert_eq!(order[0], "base");
+        assert_eq!(order[3], "join");
     }
 
     // -- kinds -------------------------------------------------------------
@@ -1272,7 +1264,7 @@ mod tests {
     fn a_typed_id_resolves_to_its_own_kind() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let id = graph.insert_strong(sized_buffer(&device, 64));
+        let id = graph.insert_strong(sized_buffer(&device, 64), None);
 
         assert_eq!(graph.get(id).unwrap().size(), 64);
         assert!(graph.get(id.erase()).is_some());
@@ -1289,9 +1281,16 @@ mod tests {
 
         assert_eq!(erased.index(), id.index());
         assert!(matches!(graph.get(erased), Some(Resource::Buffer(_))));
-        assert!(!graph.is_dirty(erased));
-        graph.replace(id, buffer(&device, "a2"));
-        assert!(graph.is_dirty(erased));
+        graph.replace(id, sized_buffer(&device, 128));
+        let Resource::Buffer(buffer) = graph.get(erased).expect("the erased id still resolves")
+        else {
+            panic!("the node holds a buffer");
+        };
+        assert_eq!(
+            buffer.size(),
+            128,
+            "the erased id reads the node's new resource"
+        );
     }
 
     /// A view records the format its descriptor stated.
@@ -1319,22 +1318,25 @@ mod tests {
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
         });
         let mut graph = ResourceGraph::new();
-        let default = graph.insert_strong(TextureExt::create_view(
-            &texture,
-            &wgpu::TextureViewDescriptor::default(),
-        ));
+        let default = graph.insert_strong(
+            TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default()),
+            None,
+        );
         assert_eq!(
             graph.get(default).map(TextureView::format),
             Some(wgpu::TextureFormat::Rgba8Unorm)
         );
 
-        let srgb = graph.insert_strong(TextureExt::create_view(
-            &texture,
-            &wgpu::TextureViewDescriptor {
-                format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
-                ..Default::default()
-            },
-        ));
+        let srgb = graph.insert_strong(
+            TextureExt::create_view(
+                &texture,
+                &wgpu::TextureViewDescriptor {
+                    format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+                    ..Default::default()
+                },
+            ),
+            None,
+        );
         assert_eq!(
             graph.get(srgb).map(TextureView::format),
             Some(wgpu::TextureFormat::Rgba8UnormSrgb)
@@ -1369,10 +1371,10 @@ mod tests {
             view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
         });
         let mut graph = ResourceGraph::new();
-        let id = graph.insert_strong(TextureExt::create_view(
-            &texture,
-            &wgpu::TextureViewDescriptor::default(),
-        ));
+        let id = graph.insert_strong(
+            TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default()),
+            None,
+        );
 
         graph.replace(
             id,
@@ -1388,90 +1390,89 @@ mod tests {
             graph.get(id).map(TextureView::format),
             Some(wgpu::TextureFormat::Rgba8UnormSrgb)
         );
-        assert!(graph.is_dirty(id));
     }
 
     // -- virtual nodes -----------------------------------------------------
 
     /// The aggregation-root pattern: parts are weak and dependency-free, the
     /// root is strong and built from them, so liveness runs from the root to
-    /// the parts and cleanup collects nothing.
+    /// the parts and the orphan pass collects nothing.
     #[test]
     fn a_virtual_root_keeps_its_weak_parts_alive() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let part = graph.insert_weak(buffer(&device, "part"));
-        let root = graph.insert_strong(Virtual);
+        let part = graph.insert_weak(buffer(&device, "part"), None);
+        let root = graph.insert_strong(Virtual, None);
         graph.add_dependency(root, part);
 
-        assert!(graph.cleanup().is_empty());
+        graph.maintain();
         assert!(graph.get(root).is_some());
         assert!(graph.get(part).is_some());
     }
 
-    /// Removing a virtual root drops only what was built from it — nothing —
-    /// so its parts are left as orphans for the next cleanup to collect.
+    /// Removing a virtual root drops it, and the parts it was the only live
+    /// consumer of are collected by the same `maintain`.
     #[test]
-    fn removing_a_virtual_root_orphans_its_parts_for_cleanup() {
+    fn removing_a_virtual_root_orphans_its_parts() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let part = graph.insert_weak(buffer(&device, "part"));
-        let root = graph.insert_strong(Virtual);
+        let part = graph.insert_weak(buffer(&device, "part"), None);
+        let root = graph.insert_strong(Virtual, None);
         graph.add_dependency(root, part);
 
-        graph.remove_drop(root);
-        assert!(
-            graph.get(part).is_some(),
-            "the removal walk does not reach the parts"
-        );
-
-        graph.cleanup_drop();
+        graph.remove(root);
+        graph.maintain();
         assert!(graph.get(part).is_none());
         assert!(graph.is_empty());
     }
 
-    /// A part two roots are built from outlives either root alone: cleanup
-    /// keeps it while the other root is still alive.
+    /// A part two roots are built from outlives either root alone: the orphan
+    /// pass keeps it while the other root is still alive.
     #[test]
     fn a_shared_part_survives_while_another_root_is_alive() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let part = graph.insert_weak(buffer(&device, "part"));
-        let first = graph.insert_strong(Virtual);
+        let part = graph.insert_weak(buffer(&device, "part"), None);
+        let first = graph.insert_strong(Virtual, None);
         graph.add_dependency(first, part);
-        let second = graph.insert_strong(Virtual);
+        let second = graph.insert_strong(Virtual, None);
         graph.add_dependency(second, part);
 
-        graph.remove_drop(first);
-        graph.cleanup_drop();
+        graph.remove(first);
+        graph.maintain();
         assert!(
             graph.get(part).is_some(),
             "the surviving root still owns the shared part"
         );
         assert!(graph.get(second).is_some());
 
-        graph.remove_drop(second);
-        graph.cleanup_drop();
+        graph.remove(second);
+        graph.maintain();
         assert!(graph.get(part).is_none());
         assert!(graph.is_empty());
     }
 
     /// Replacing a part marks the virtual root built from it dirty, and the
-    /// root follows its part in dependency order.
+    /// root's recipe follows its part in dependency order.
     #[test]
-    fn replacing_a_part_marks_the_virtual_root_dirty() {
+    fn replacing_a_part_rebuilds_the_virtual_root() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let part = graph.insert_weak(buffer(&device, "part"));
-        let root = graph.insert_strong(Virtual);
+        let part = graph.insert_weak(buffer(&device, "part"), None);
+        let order = Rc::new(RefCell::new(Vec::new()));
+        let root_order = Rc::clone(&order);
+        let root = graph.insert_strong(
+            Virtual,
+            Some(Rebuild::new(move |_graph| {
+                root_order.borrow_mut().push("root");
+                Resource::Virtual
+            })),
+        );
         graph.add_dependency(root, part);
 
         graph.replace(part, buffer(&device, "part2"));
-        assert!(graph.is_dirty(root));
-        assert_eq!(
-            graph.dirty().collect::<Vec<_>>(),
-            vec![part.erase(), root.erase()]
-        );
+        graph.maintain();
+        assert_eq!(*order.borrow(), vec!["root"]);
     }
 
     /// A virtual node is a graph citizen with no handle: it resolves to
@@ -1479,7 +1480,7 @@ mod tests {
     #[test]
     fn a_virtual_node_has_no_handle_of_its_own() {
         let mut graph = ResourceGraph::new();
-        let root = graph.insert_strong(Virtual);
+        let root = graph.insert_strong(Virtual, None);
 
         assert!(matches!(graph.get(root), Some(Virtual)));
     }
@@ -1487,11 +1488,11 @@ mod tests {
     /// A weak virtual node is collected like any other weak node once nothing
     /// alive is built from it.
     #[test]
-    fn cleanup_collects_a_weak_virtual_node_with_no_dependents() {
+    fn maintain_collects_a_weak_virtual_node_with_no_dependents() {
         let mut graph = ResourceGraph::new();
-        let root = graph.insert_weak(Virtual);
+        let root = graph.insert_weak(Virtual, None);
 
-        assert_eq!(graph.cleanup().len(), 1);
+        graph.maintain();
         assert!(graph.get(root).is_none());
         assert!(graph.is_empty());
     }
@@ -1502,8 +1503,8 @@ mod tests {
     fn a_virtual_node_can_be_replaced() {
         let device = device();
         let mut graph = ResourceGraph::new();
-        let root = graph.insert_weak(Virtual);
-        let dependent = graph.insert_strong(buffer(&device, "dependent"));
+        let root = graph.insert_weak(Virtual, None);
+        let dependent = graph.insert_strong(buffer(&device, "dependent"), None);
         graph.add_dependency(dependent, root);
 
         let previous = graph
@@ -1511,7 +1512,6 @@ mod tests {
             .expect("the node is in the graph");
         assert_eq!(previous, Virtual);
         assert!(matches!(graph.get(root), Some(Virtual)));
-        assert!(graph.is_dirty(dependent));
         assert_eq!(
             graph.dependencies(dependent).collect::<Vec<_>>(),
             vec![root.erase()]

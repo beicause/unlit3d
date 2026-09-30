@@ -44,6 +44,10 @@
   随帧一起传递，而不是让每个源各自重新发现。
 - **构建与录制是两个阶段。** 源在 `build_scene` 期间往图里注册资源并暂存上传；录制
   阶段只读取已经产出的场景，因此源自身状态与资源图之间永远不会产生借用冲突。
+- **资源图每帧只在构建阶段维护一次。** `replace` 与 `remove` 都只做标记；源在自己的
+  上传之后、组装帧之前调用一次 `ResourceGraph::maintain`，一趟之内丢弃待移除项、回收
+  孤儿资源并按依赖序重建脏的绑定组。不绘制任何东西的帧同样会维护；场景之外的路径
+  ——交换链尺寸变化、acquire——则显式维护，而不是把旧资源留到下一次场景构建。
 - 源自己的 GPU 资源由源释放；`despawn_source` 会在销毁实体前把释放排队，因为资源图
   无法察觉到实体消失。
 
@@ -124,7 +128,7 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
   自定义家族可以是任何东西。
 - 蓝图**延迟求值**：只在缓存未命中、真正要编译时才向 key 索取。
 - 家族编译出管线后，由 `RenderPipelineFactory` 把它转成渲染器要注册的
-  `RegisteredRenderPipeline`——已编译管线、三个绑定组的布局、全局组的重建闭包。它与
+  `RegisteredRenderPipeline`——已编译管线、三个绑定组的布局、全局组的重建配方。它与
   `unlit_wgpu` 的 `RenderPipelineDesc` 是一对**输出/输入**，两者之间隔着一次编译。
 
 `unlit3d` 只处理渲染管线，故其管线类型一律显式带 `Render` 字样（`GpuRenderPipeline`、
@@ -309,10 +313,13 @@ let (color_view, depth_view) = world
         let source = source.as_mut::<MeshSource>().unwrap();
         let color_view = source.register_texture_and_default_view(&world, ft.color).1;
         let depth_view = MeshSource::graph(&world, ctx)
-            .insert_strong(TextureExt::create_view(
-                &ft.depth,
-                &wgpu::TextureViewDescriptor::default(),
-            ));
+            .insert_strong(
+                TextureExt::create_view(
+                    &ft.depth,
+                    &wgpu::TextureViewDescriptor::default(),
+                ),
+                None,
+            );
         (color_view, depth_view)
     })
     .unwrap();

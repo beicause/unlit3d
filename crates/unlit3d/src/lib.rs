@@ -39,8 +39,8 @@ pub mod prelude {
         },
         mesh_source::{MeshSource, UnlitPipelineKey},
         pipeline::{
-            DrawKey, FamilyContext, GlobalBinding, GlobalGroupRebuild, RegisteredRenderPipeline,
-            RenderPipelineFactory, RenderPipelineKey, RenderResources,
+            DrawKey, FamilyContext, GlobalResources, Rebuild, RegisteredRenderPipeline,
+            RenderPipelineFactory, RenderPipelineKey,
         },
         renderer::Renderer,
         source::{

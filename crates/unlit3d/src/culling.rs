@@ -127,7 +127,7 @@ mod tests {
         // The root is a lifetime entry point this test never removes through,
         // so a bare placeholder node is enough.
         let mut graph = ResourceGraph::new();
-        let root = graph.insert_strong(Virtual);
+        let root = graph.insert_strong(Virtual, None);
         let mesh = GpuMesh {
             parts: Arc::new(MeshParts {
                 root,

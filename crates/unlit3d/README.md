@@ -62,6 +62,13 @@ given, in the order each source declares through
   and stages uploads during `build_scene`; recording only reads the scenes it
   already produced, so no borrow conflict ever arises between a source's own
   state and the graph.
+- **The graph is maintained once per frame, in the build phase.** `replace` and
+  `remove` only mark; the source calls `ResourceGraph::maintain` exactly once,
+  after its uploads and before it assembles the frame, so removals are dropped,
+  orphans collected and dirty bind groups rebuilt in one pass. A frame that
+  draws nothing still maintains, and the paths outside the scene — a surface
+  resize, a swap-chain acquire — maintain explicitly rather than holding the
+  old resources until the next scene build.
 - A source's later GPU resources are its own to release; [`despawn_source`](source::despawn_source)
   queues the release before despawning, because the graph cannot notice an
   entity going away.
@@ -188,7 +195,7 @@ A family connects "what the entity wants" to `unlit_wgpu`'s variant cache:
   [`RenderPipelineFactory`](pipeline::RenderPipelineFactory) turns it into the
   [`RegisteredRenderPipeline`](pipeline::RegisteredRenderPipeline) the renderer
   registers — the compiled pipeline, the three bind-group layouts and the global
-  group's rebuild closure. It and `unlit_wgpu`'s
+  group's rebuild recipe. It and `unlit_wgpu`'s
   [`RenderPipelineDesc`](unlit_wgpu::specialize::RenderPipelineDesc) are an
   **output/input** pair, with one compilation between them.
 
@@ -419,10 +426,13 @@ let (color_view, depth_view) = world
         let source = source.as_mut::<MeshSource>().unwrap();
         let color_view = source.register_texture_and_default_view(&world, ft.color).1;
         let depth_view = MeshSource::graph(&world, ctx)
-            .insert_strong(TextureExt::create_view(
-                &ft.depth,
-                &wgpu::TextureViewDescriptor::default(),
-            ));
+            .insert_strong(
+                TextureExt::create_view(
+                    &ft.depth,
+                    &wgpu::TextureViewDescriptor::default(),
+                ),
+                None,
+            );
         (color_view, depth_view)
     })
     .unwrap();

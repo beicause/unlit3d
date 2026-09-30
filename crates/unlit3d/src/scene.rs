@@ -23,8 +23,8 @@ use crate::bounds::FrustumPlanes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, ZSortedDrawing};
 use crate::culling::{VisibleMesh, collect_visible};
 use crate::pipeline::{
-    DrawKey, FamilyContext, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId,
-    RenderPipelineKey, RenderResources,
+    DrawKey, FamilyContext, GlobalResources, RegisteredRenderPipeline, RenderPipelineFactory,
+    RenderPipelineId, RenderPipelineKey,
 };
 
 /// A family: a specialization cache plus the factory that turns each variant
@@ -113,8 +113,8 @@ pub(crate) struct FamilyFrame<'a> {
     pub(crate) surface: SurfaceKey,
     /// The device a newly resolved variant is compiled on.
     pub(crate) device: &'a wgpu::Device,
-    /// The source's global buffers.
-    pub(crate) resources: &'a RenderResources,
+    /// The source's global buffer ids.
+    pub(crate) resources: GlobalResources,
 }
 
 /// Resolves one family's entities for one frame.
@@ -344,7 +344,7 @@ pub(crate) fn collect_and_sort_visible(
     camera: &Camera,
     surface: SurfaceKey,
     device: &wgpu::Device,
-    resources: &RenderResources,
+    resources: GlobalResources,
 ) {
     let SceneFrame {
         families,

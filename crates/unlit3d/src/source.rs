@@ -1205,7 +1205,7 @@ mod release_tests {
                     world
                         .get_mut::<ResourceGraph>(ctx.graph)
                         .expect("the context's graph exists")
-                        .insert_strong(GraphResource::Virtual),
+                        .insert_strong(GraphResource::Virtual, None),
                 );
             }
         }
@@ -1222,10 +1222,58 @@ mod release_tests {
             let Some(node) = self.node.take() else {
                 return;
             };
+            let mut graph = world
+                .get_mut::<ResourceGraph>(self.context.graph)
+                .expect("the context's graph exists");
+            graph.remove(node);
+            graph.maintain();
+        }
+    }
+
+    /// A source that marks its node on release but leaves the graph alone, as
+    /// a frame source does: the frame's one `maintain` is what settles it.
+    struct MarkingSource {
+        context: RenderContext,
+        node: Option<ResourceId>,
+        scene: Scene,
+    }
+
+    impl FrameSource for MarkingSource {
+        fn build_scene(
+            &mut self,
+            world: &World,
+            ctx: RenderContext,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+            self.context = ctx;
+            if self.node.is_none() {
+                self.node = Some(
+                    world
+                        .get_mut::<ResourceGraph>(ctx.graph)
+                        .expect("the context's graph exists")
+                        .insert_strong(GraphResource::Virtual, None),
+                );
+            }
+        }
+
+        fn scene(&self) -> &Scene {
+            &self.scene
+        }
+
+        fn order(&self) -> FrameOrder {
+            FrameOrder::OVERLAY
+        }
+
+        fn release(&mut self, world: &World) {
+            let Some(node) = self.node.take() else {
+                return;
+            };
+            // Mark only — no maintain here, which is the point of the test
+            // below: the pass belongs to the frame, not to each source.
             world
                 .get_mut::<ResourceGraph>(self.context.graph)
                 .expect("the context's graph exists")
-                .remove_drop(node);
+                .remove(node);
         }
     }
 
@@ -1320,5 +1368,84 @@ mod release_tests {
         despawn_source(&world, entity);
         world.apply();
         assert!(!world.contains(entity));
+    }
+
+    /// Two sources leaving in the same frame mark their nodes, and the frame's
+    /// single `maintain` is what drops both.
+    ///
+    /// Each source's `release` only marks, so the graph still resolves the
+    /// nodes right up to the pass — one `maintain` then collects what both
+    /// sources gave up, rather than each release paying for its own sweep.
+    #[test]
+    fn one_maintain_drops_the_nodes_every_source_marked() {
+        let mut world = World::new();
+        let ctx = noop_context(&mut world);
+        let mut entities = Vec::new();
+        for _ in 0..2 {
+            entities.push(spawn_source(
+                &mut world,
+                MarkingSource {
+                    context: ctx,
+                    node: None,
+                    scene: Scene::new(),
+                },
+            ));
+        }
+
+        // Build once each, so both register their node.
+        let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
+            .0
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        for &entity in &entities {
+            world
+                .with_mut::<Source, _>(entity, |source| {
+                    source.build_scene(&world, ctx, &mut encoder)
+                })
+                .expect("the source entity exists");
+        }
+
+        let nodes: Vec<ResourceId> = entities
+            .iter()
+            .filter_map(|&entity| {
+                world
+                    .with_mut::<Source, _>(entity, |source| {
+                        source.as_mut::<MarkingSource>().unwrap().node
+                    })
+                    .flatten()
+            })
+            .collect();
+        assert_eq!(nodes.len(), 2, "each source registered a node");
+
+        for &entity in &entities {
+            despawn_source(&world, entity);
+        }
+        world.apply();
+
+        // Both releases only marked: the nodes the two sources owned are still
+        // there until the frame maintains.
+        {
+            let graph = world.get_mut::<ResourceGraph>(ctx.graph).unwrap();
+            for &node in &nodes {
+                assert!(
+                    graph.get(node).is_some(),
+                    "release marks the node rather than dropping it"
+                );
+            }
+            assert!(graph.len() >= 2);
+        }
+
+        // The frame's one pass drops everything the two of them marked.
+        world
+            .get_mut::<ResourceGraph>(ctx.graph)
+            .unwrap()
+            .maintain();
+        let graph = world.get_mut::<ResourceGraph>(ctx.graph).unwrap();
+        for &node in &nodes {
+            assert!(
+                graph.get(node).is_none(),
+                "the single maintain collected the marked node"
+            );
+        }
+        assert!(graph.is_empty(), "nothing else was left behind");
     }
 }

@@ -232,11 +232,6 @@ impl<N> Dag<N> {
             .map(|edge| self.node_id(self.edges[edge as usize].from))
     }
 
-    /// Every node's weight, in unspecified order.
-    pub fn node_weights(&self) -> impl Iterator<Item = &N> + '_ {
-        self.nodes.iter().filter_map(|slot| slot.weight.as_ref())
-    }
-
     /// Apply `f` to `id` and to every node reachable from it by following
     /// dependents.
     ///
@@ -253,18 +248,10 @@ impl<N> Dag<N> {
         self.order = order;
     }
 
-    /// Remove `root` and every node reachable from it by following dependents,
-    /// returning their weights in dependency order: `root` first, then each
-    /// node after the nodes it depends on.
+    /// Remove `root` and every node reachable from it by following dependents.
     ///
     /// Handles to the removed nodes stop resolving. A handle that does not
     /// resolve removes nothing.
-    pub fn remove_dependents(&mut self, root: NodeId) -> Vec<N> {
-        self.plan_dependents(root);
-        self.take_planned()
-    }
-
-    /// [`Dag::remove_dependents`] for callers that do not need the weights.
     pub fn remove_dependents_drop(&mut self, root: NodeId) {
         self.plan_dependents(root);
         self.drop_planned();
@@ -299,17 +286,10 @@ impl<N> Dag<N> {
         stamp
     }
 
-    /// Remove every node the walk `stamp` did not mark, returning their weights
-    /// in unspecified order.
+    /// Remove every node the walk `stamp` did not mark.
     ///
     /// This is how a caller drops what a walk found unreachable and keeps the
     /// rest.
-    pub fn remove_unmarked(&mut self, stamp: u32) -> Vec<N> {
-        self.plan_unmarked(stamp);
-        self.take_planned()
-    }
-
-    /// [`Dag::remove_unmarked`] for callers that do not need the weights.
     pub fn remove_unmarked_drop(&mut self, stamp: u32) {
         self.plan_unmarked(stamp);
         self.drop_planned();
@@ -505,17 +485,6 @@ impl<N> Dag<N> {
         );
     }
 
-    /// Remove every slot [`Dag::order`] lists and return the weights.
-    fn take_planned(&mut self) -> Vec<N> {
-        let order = core::mem::take(&mut self.order);
-        let removed = order
-            .iter()
-            .filter_map(|&index| self.remove(self.node_id(index)))
-            .collect();
-        self.order = order;
-        removed
-    }
-
     /// Remove every slot [`Dag::order`] lists, dropping the weights.
     fn drop_planned(&mut self) {
         let order = core::mem::take(&mut self.order);
@@ -546,17 +515,6 @@ impl<N> Dag<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The weights a walk left unmarked, sorted for comparison.
-    fn unmarked(dag: &mut Dag<&str>, stamp: u32) -> Vec<String> {
-        let mut names: Vec<String> = dag
-            .remove_unmarked(stamp)
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        names.sort_unstable();
-        names
-    }
 
     #[test]
     fn a_removed_slot_is_reused_with_a_new_generation() {
@@ -698,10 +656,11 @@ mod tests {
         dag.add_edge(base, middle).unwrap();
         dag.add_edge(middle, root).unwrap();
 
-        // Dependency order: the node removed first is the one depended on.
-        assert_eq!(dag.remove_dependents(middle), vec!["middle", "root"]);
+        dag.remove_dependents_drop(middle);
         assert_eq!(dag.get(base), Some(&"base"), "the node it depends on stays");
         assert_eq!(dag.get(outside), Some(&"outside"));
+        assert_eq!(dag.get(middle), None);
+        assert_eq!(dag.get(root), None, "everything built from it goes");
         assert_eq!(dag.len(), 2);
     }
 
@@ -717,10 +676,11 @@ mod tests {
 
         // Everything down from `root` is kept, including `root` itself.
         let stamp = dag.mark_dependencies_where(|&name| name == "root");
-        assert_eq!(unmarked(&mut dag, stamp), vec!["unrelated"]);
+        dag.remove_unmarked_drop(stamp);
         assert!(dag.get(root).is_some());
         assert!(dag.get(middle).is_some());
         assert!(dag.get(leaf).is_some());
-        assert!(dag.get(unrelated).is_none());
+        assert!(dag.get(unrelated).is_none(), "only the unmarked node goes");
+        assert_eq!(dag.len(), 3);
     }
 }

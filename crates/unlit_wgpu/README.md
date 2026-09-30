@@ -39,8 +39,10 @@ checks that combination separately.
   Resources are created, replaced and removed through it, and the graph
   propagates "dirty" state to dependents so that derived resources (bind groups,
   pipelines) are rebuilt lazily. Replacing a resource marks everything
-  transitively built from it dirty, removing one drops its dependents, and
-  virtual nodes own no handle and serve as aggregation roots.
+  transitively built from it dirty, removing one marks its dependents, and a
+  single `maintain` pass per frame drops the removals, collects the orphans and
+  runs the rebuild recipes. Virtual nodes own no handle and serve as aggregation
+  roots.
 - [`mesh`] — vertex compression (`Snorm16x4` positions, `Snorm16x2` UVs,
   `Unorm8x4` colors, `Uint16x4` joints, `Unorm16x4` weights) and the
   [`MeshMetadata`](mesh::MeshMetadata) decode parameters that make the compact formats usable in a
@@ -452,11 +454,21 @@ graph:
   nothing rather than coming to mean whatever took the slot. A dependency on an
   invalid id fails in place rather than returning an error: that is a caller
   error, and it can only be surfaced where it is declared.
-- **Tracking is precise, updates are lazy.** Replacing a resource marks it
-  dirty, which means the resources depending on it need updating too; removing
-  one removes it and everything depending on it. The user calls a particular API
-  to bring the resource state up to date — updating the bind groups depending on
-  a buffer after growing it, say.
+- **Tracking is precise, updates are lazy.** `replace` only marks a resource
+  dirty — the resources depending on it need updating too — and `remove` only
+  marks a resource and everything depending on it for removal. Nothing happens
+  at the point of the change. A frame calls
+  [`ResourceGraph::maintain`](resources::ResourceGraph::maintain) exactly once,
+  before it reads any resource: that one pass drops what was removed, collects
+  what nothing alive is built from any more, and rebuilds the dirty resources in
+  dependency order. Uploading new bytes into an existing buffer dirties nothing;
+  reallocating it dirties only what actually consumed the old handle.
+- **A rebuild is a recipe, not a callback at the call site.** A resource the
+  graph can rebuild is inserted with a [`Rebuild`](resources::Rebuild) closure
+  that reads its inputs back out of the graph by id, so it observes a buffer
+  that was reallocated or an array that was replaced at the moment it runs. A
+  dirty node with no recipe stays dirty: the caller changed something the graph
+  cannot rebuild on its own.
 - **A texture view's format is recorded with the view.** This is the one
   exception to "no unnecessary wrappers": `wgpu` cannot tell a `TextureView`'s
   format from the view itself, and when an sRGB view covers a non-sRGB texture,
@@ -661,8 +673,9 @@ Per-frame upload is transparent to the caller: the caller maintains only
 CPU-side data, such as allocating or removing meshes, and the changes are
 synchronized to the GPU automatically when the frame renders, with no upload API
 to remember. This differs from the lazy dependency-graph updates in
-[Resources](#resources-one-dependency-tracked-graph), which the user still
-triggers through an API after a buffer or other resource is replaced.
+[Resources](#resources-one-dependency-tracked-graph), which the user triggers
+through one `maintain` call per frame, after a buffer or other resource is
+replaced or removed.
 
 A frame's uploads and the render pass consuming them are recorded into one
 encoder, so a frame is one submission, which keeps rendering's completion
