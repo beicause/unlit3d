@@ -72,29 +72,6 @@ pub struct Camera {
     pub active: bool,
 }
 
-impl Default for Camera {
-    /// An identity camera at the origin, active.
-    fn default() -> Self {
-        Self {
-            clip_from_world: glam::Mat4::IDENTITY,
-            position: glam::Vec3::ZERO,
-            active: true,
-        }
-    }
-}
-
-impl Camera {
-    /// A camera looking through `clip_from_world` from `position`, active.
-    #[must_use]
-    pub fn new(clip_from_world: glam::Mat4, position: glam::Vec3) -> Self {
-        Self {
-            clip_from_world,
-            position,
-            active: true,
-        }
-    }
-}
-
 /// The load ops a frame's pass is opened with.
 ///
 /// The renderer opens one pass per frame over its attachments; this component
@@ -529,14 +506,15 @@ mod tests {
 
     #[test]
     fn camera_fields_round_trip() {
-        let c = Camera::new(
-            glam::camera::rh::view::look_at_mat4(
+        let c = Camera {
+            clip_from_world: glam::camera::rh::view::look_at_mat4(
                 glam::Vec3::new(0.0, 5.0, 10.0),
                 glam::Vec3::ZERO,
                 glam::Vec3::Y,
             ),
-            glam::Vec3::new(0.0, 5.0, 10.0),
-        );
+            position: glam::Vec3::new(0.0, 5.0, 10.0),
+            active: true,
+        };
         assert_eq!(c.position, glam::Vec3::new(0.0, 5.0, 10.0));
         assert!(c.active);
     }

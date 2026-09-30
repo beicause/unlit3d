@@ -633,7 +633,11 @@ impl UnlitGltf {
         let position = transform.translation;
         let view = glam::Mat4::from_rotation_translation(transform.rotation, position).inverse();
         let clip_from_world = projection_matrix(&camera, aspect_ratio) * view;
-        Some(world.spawn((Camera::new(clip_from_world, position),)))
+        Some(world.spawn((Camera {
+            clip_from_world,
+            position,
+            active: true,
+        },)))
     }
 
     /// Spawn one entity per primitive of every node reachable from the

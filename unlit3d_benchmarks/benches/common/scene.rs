@@ -107,10 +107,12 @@ impl Frame {
         // the benchmarks use.
         let eye = Vec3::new(0.0, 0.0, side as f32 * 1.5 + 20.0);
         let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
-        world.spawn((Camera::new(
-            glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0) * view,
-            eye,
-        ),));
+        world.spawn((Camera {
+            clip_from_world: glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0)
+                * view,
+            position: eye,
+            active: true,
+        },));
 
         set_frame_target(
             &world,

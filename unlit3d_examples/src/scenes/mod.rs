@@ -315,7 +315,11 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, size: (u32, u32)) 
         0.1,
     );
     let view = glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y);
-    Camera::new(projection * view, eye)
+    Camera {
+        clip_from_world: projection * view,
+        position: eye,
+        active: true,
+    }
 }
 
 /// Re-aim `entity`'s camera at `target` from `eye` for a frame of `size`.

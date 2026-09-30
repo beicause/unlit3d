@@ -2491,7 +2491,11 @@ mod tests {
     /// that nothing in these tests is culled.
     fn test_camera(eye: glam::Vec3) -> Camera {
         let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y);
-        Camera::new(test_perspective() * view, eye)
+        Camera {
+            clip_from_world: test_perspective() * view,
+            position: eye,
+            active: true,
+        }
     }
 
     /// The entities of the source's visible cache in draw order.
@@ -2623,17 +2627,19 @@ mod tests {
         let mut world = World::new();
         // Spawned first, so a selection that ignored `active` would pick this
         // one instead of the active camera below.
-        let inactive = world.spawn((Camera::new(
-            glam::Mat4::IDENTITY,
-            glam::Vec3::new(1.0, 0.0, 0.0),
-        ),));
+        let inactive = world.spawn((Camera {
+            clip_from_world: glam::Mat4::IDENTITY,
+            position: glam::Vec3::new(1.0, 0.0, 0.0),
+            active: true,
+        },));
         world
             .with_mut::<Camera, _>(inactive, |camera| camera.active = false)
             .expect("the entity carries a camera");
-        let active = world.spawn((Camera::new(
-            glam::Mat4::IDENTITY,
-            glam::Vec3::new(2.0, 0.0, 0.0),
-        ),));
+        let active = world.spawn((Camera {
+            clip_from_world: glam::Mat4::IDENTITY,
+            position: glam::Vec3::new(2.0, 0.0, 0.0),
+            active: true,
+        },));
 
         let camera = frame_camera(&world).expect("a camera is active");
         assert_eq!(camera.position, glam::Vec3::new(2.0, 0.0, 0.0));
