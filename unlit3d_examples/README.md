@@ -62,11 +62,11 @@ target rather than the letterboxed region, because a panel has no aspect of its
 own. The snapshot tests turn the letterbox off and draw at the scene's own size,
 so a capture is unchanged.
 
-A readout in the top-right corner reports the smoothed frame rate and frame
-time. In a browser, a button below it offers fullscreen: the click is the one
-gesture a browser accepts as permission, so the display can be entered and left
-as often as the button is pressed, and it is labelled for whichever the document
-is not. A device being held upright is then locked to landscape, so the picture
+A readout at the top of the window, centred, reports the smoothed frame rate
+and frame time. In a browser, a button in the top-right corner — sized so a
+finger can land on it — offers fullscreen: the click is the one gesture a
+browser accepts as permission, so the display can be entered and left as often
+as the button is pressed, and it is labelled for whichever the document is not. A device being held upright is then locked to landscape, so the picture
 fills a phone's screen. The lock follows from the fullscreen: the browser
 releases it when fullscreen ends, and it is never applied to a device already
 held sideways. A page the browser denies fullscreen — one in an `iframe` without

@@ -1107,7 +1107,41 @@ impl FrameRate {
     }
 }
 
-/// Mount the frame-rate readout in the window's top-right corner.
+/// The distance every overlay keeps from the edge of the screen.
+///
+/// Each corner overlay is anchored to its edge with this offset, so none of
+/// them is drawn flush against the boundary — a readout or a button touching
+/// the very edge of a phone's display reads as clipped, and the safe-area
+/// insets the page already applies to the canvas are not visible to egui.
+const OVERLAY_MARGIN: f32 = 8.0;
+
+/// The gap between the frame-rate readout and the fullscreen button when a
+/// window is too narrow to hold them on the same row.
+const OVERLAY_GAP: f32 = 8.0;
+
+/// The smallest the fullscreen button is drawn, in points.
+///
+/// A control a phone has to be hit with a finger wants a taller target than a
+/// row of text: this is the height the touch-target guidelines converge on,
+/// and the button is grown to it.
+const FULLSCREEN_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(140.0, 44.0);
+
+/// The button's inner padding, symmetric so the label is centred within the
+/// button it is grown to.
+///
+/// A bare [`egui::Button::min_size`] would leave the label sitting in a corner:
+/// the button's atoms are aligned by the surrounding layout, which is not
+/// centred. Growing the padding instead — the same on every side — is what
+/// pushes the label to the middle of the larger button.
+const FULLSCREEN_BUTTON_PADDING: egui::Vec2 = egui::Vec2::new(16.0, 16.0);
+
+/// The id of the frame-rate readout's area.
+const FRAME_RATE_AREA: &str = "unlit3d::frame-rate";
+
+/// The id of the fullscreen button's area.
+const FULLSCREEN_AREA: &str = "unlit3d::fullscreen";
+
+/// Mount the frame-rate readout at the top of the window, centred.
 ///
 /// An [`egui::Area`] rather than a window: it is pinned, not something the user
 /// can drag away or accidentally resize, and `interactable(false)` keeps it
@@ -1121,7 +1155,7 @@ fn mount_frame_rate(world: &mut World, rate: Entity) {
     }),));
 }
 
-/// Draw the frame-rate readout, showing `text`, in the top-right corner of
+/// Draw the frame-rate readout, showing `text`, centred along the top edge of
 /// `ui`'s screen.
 ///
 /// The label is set to [`egui::Label::extend`], so the readout grows to fit its
@@ -1136,8 +1170,8 @@ fn mount_frame_rate(world: &mut World, rate: Entity) {
 /// line, whatever the previous reading was — is a property of the widget tree,
 /// not of the world.
 fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
-    egui::Area::new(egui::Id::new("unlit3d::frame-rate"))
-        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 8.0])
+    egui::Area::new(egui::Id::new(FRAME_RATE_AREA))
+        .anchor(egui::Align2::CENTER_TOP, [0.0, OVERLAY_MARGIN])
         .interactable(false)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -1146,8 +1180,7 @@ fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
         });
 }
 
-/// Mount the fullscreen button in the window's top-right corner, under the
-/// frame-rate readout.
+/// Mount the fullscreen button in the window's top-right corner.
 ///
 /// A button rather than the old "the first press asks for fullscreen": a press
 /// on the canvas is not discoverable — a phone shows no hint that it would
@@ -1169,22 +1202,58 @@ fn mount_fullscreen(world: &mut World, request: Entity) {
     }),));
 }
 
+/// The vertical offset the fullscreen button's anchor is drawn at.
+///
+/// The readout and the button share the top row when the window is wide enough
+/// for both to sit side by side. When it is not — the readout is centred, so on
+/// a portrait phone it reaches into the corner the button anchors to — the
+/// button drops to the row under the readout instead: hiding the end of the
+/// reading under the button that is meant to sit beside it on a roomier window
+/// does not help. The fallback keeps both legible and separated at any width.
+///
+/// Both areas are anchored, and an anchored area is laid out against the
+/// rectangle the previous pass remembered for it — which is what is compared
+/// here, so the decision is made about the very positions egui will use.
+fn fullscreen_button_top(ctx: &egui::Context) -> f32 {
+    let readout = ctx.memory(|memory| memory.area_rect(egui::Id::new(FRAME_RATE_AREA)));
+    let button = ctx.memory(|memory| memory.area_rect(egui::Id::new(FULLSCREEN_AREA)));
+    match (readout, button) {
+        // The readout stops clear of the button's column.
+        (Some(readout), Some(button)) if readout.right() + OVERLAY_GAP < button.left() => {
+            OVERLAY_MARGIN
+        }
+        // The readout reaches into the button's corner: stack beneath it.
+        (Some(readout), _) => readout.bottom() + OVERLAY_GAP,
+        // The button is the first thing drawn; the top row is where it belongs.
+        (None, _) => OVERLAY_MARGIN,
+    }
+}
+
 /// Draw the fullscreen button, labelled for what pressing it does, and report
 /// whether it was pressed.
 ///
 /// The label follows the document rather than a local flag: the user can leave
 /// fullscreen with the browser's own control — Escape, or the back gesture on a
 /// phone — and the button has to offer to go back in afterwards. That is also
-/// why it sits below the readout rather than beside it: an anchored area owns
-/// its corner, and the two would fight over the same rectangle.
+/// why it owns its corner rather than sharing a row with the readout: each
+/// anchored area keeps to itself, and the button is only drawn on top of the
+/// readout's line when the two would otherwise collide.
 ///
 /// A free function rather than the body of the panel's closure so a test can
 /// drive it against a bare [`egui::Context`], in both states, without a world
 /// or a window.
 fn fullscreen_button(ui: &mut egui::Ui, active: bool) -> bool {
-    // Below the readout, which is at `[-8.0, 8.0]` and one popup row tall.
-    egui::Area::new(egui::Id::new("unlit3d::fullscreen"))
-        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 44.0])
+    let label = if active {
+        "⏏ Exit fullscreen"
+    } else {
+        "⛶ Fullscreen"
+    };
+    let label = egui::RichText::new(label).monospace();
+    egui::Area::new(egui::Id::new(FULLSCREEN_AREA))
+        .anchor(
+            egui::Align2::RIGHT_TOP,
+            [-OVERLAY_MARGIN, fullscreen_button_top(ui.ctx())],
+        )
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
                 .show(ui, |ui| {
@@ -1196,14 +1265,13 @@ fn fullscreen_button(ui: &mut egui::Ui, active: bool) -> bool {
                     // remembered from the previous pass, so switching to it would
                     // otherwise break it across two lines in the narrower area the
                     // enter label had established.
-                    let label = if active {
-                        "⏏ Exit fullscreen"
-                    } else {
-                        "⛶ Fullscreen"
-                    };
-                    let label = egui::RichText::new(label).monospace();
-                    ui.add(egui::Button::new(label).wrap_mode(egui::TextWrapMode::Extend))
-                        .clicked()
+                    ui.style_mut().spacing.button_padding = FULLSCREEN_BUTTON_PADDING;
+                    ui.add(
+                        egui::Button::new(label)
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .min_size(FULLSCREEN_BUTTON_MIN_SIZE),
+                    )
+                    .clicked()
                 })
                 .inner
         })
@@ -1250,10 +1318,10 @@ fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameRate, egui, frame_rate_readout, fullscreen_button, letterbox, tick};
-
-    /// The id of the corner area the fullscreen button is drawn into.
-    const FULLSCREEN_AREA: &str = "unlit3d::fullscreen";
+    use super::{
+        FRAME_RATE_AREA, FULLSCREEN_AREA, FULLSCREEN_BUTTON_MIN_SIZE, FrameRate, OVERLAY_MARGIN,
+        egui, frame_rate_readout, fullscreen_button, letterbox, tick,
+    };
 
     /// Run one egui pass over a `screen`-point screen with `events`, drawing the
     /// fullscreen button in the state `active`, and report what it drew.
@@ -1395,44 +1463,107 @@ mod tests {
 
     #[test]
     fn the_fullscreen_button_does_not_cover_the_frame_rate_readout() {
-        let ctx = egui::Context::default();
-        let text = "60.0 fps · 16.7 ms";
-        let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::new(800.0, 600.0),
-            )),
-            ..Default::default()
-        };
-        // One pass draws both areas; both remember their rectangles.
-        let mut output = ctx.run_ui(input, |ui| {
-            frame_rate_readout(ui, text);
-            fullscreen_button(ui, false);
-        });
-        output.textures_delta.clear();
+        // The readout sits centred at the top and the button anchors to the
+        // top-right corner; on a window wide enough for both they share the top
+        // row, and on a narrow one — a portrait phone — the button drops to the
+        // row under the readout rather than hide the end of the reading.
+        for screen in [
+            (1280.0, 577.0),
+            (800.0, 600.0),
+            (390.0, 844.0),
+            (320.0, 480.0),
+        ] {
+            let ctx = egui::Context::default();
+            let text = "60.0 fps · 16.7 ms";
+            // Three passes: an anchored area lays out against the size it
+            // remembered from the previous pass, and the button's top depends
+            // on the readout's remembered rectangle, so the layout only
+            // settles once both have a geometry to remember.
+            for _ in 0..3 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::Vec2::new(screen.0, screen.1),
+                    )),
+                    ..Default::default()
+                };
+                let mut output = ctx.run_ui(input, |ui| {
+                    frame_rate_readout(ui, text);
+                    fullscreen_button(ui, false);
+                });
+                output.textures_delta.clear();
+            }
 
-        let readout = ctx.memory(|memory| {
-            memory
-                .area_rect(egui::Id::new("unlit3d::frame-rate"))
-                .expect("the readout was drawn")
-        });
-        let button = ctx.memory(|memory| {
-            memory
-                .area_rect(egui::Id::new(FULLSCREEN_AREA))
-                .expect("the button was drawn")
-        });
-        assert!(
-            !readout.intersects(button),
-            "the readout {readout:?} and the button {button:?} share screen space"
-        );
-        assert!(
-            button.top() >= readout.bottom(),
-            "the button sits below the readout"
-        );
-        assert!(
-            button.right() <= 800.0 && button.bottom() <= 600.0,
-            "the button stays on screen: {button:?}"
-        );
+            let readout = ctx.memory(|memory| {
+                memory
+                    .area_rect(egui::Id::new(FRAME_RATE_AREA))
+                    .expect("the readout was drawn")
+            });
+            let button = ctx.memory(|memory| {
+                memory
+                    .area_rect(egui::Id::new(FULLSCREEN_AREA))
+                    .expect("the button was drawn")
+            });
+            assert!(
+                !readout.intersects(button),
+                "at {screen:?} the readout {readout:?} and the button {button:?} share screen space"
+            );
+
+            // The readout is centred, its top a margin from the window's top.
+            assert!(
+                (readout.center().x - screen.0 / 2.0).abs() < 1.0,
+                "at {screen:?} the readout {readout:?} is not centred"
+            );
+            assert!(
+                (readout.top() - OVERLAY_MARGIN).abs() < 1.0,
+                "at {screen:?} the readout {readout:?} does not keep the top margin"
+            );
+
+            // The button keeps the margin from the right edge and stays on screen.
+            assert!(
+                (screen.0 - button.right() - OVERLAY_MARGIN).abs() < 1.0,
+                "at {screen:?} the button {button:?} does not keep the right margin"
+            );
+            assert!(
+                button.bottom() <= screen.1,
+                "at {screen:?} the button {button:?} runs off the bottom"
+            );
+
+            // Wide windows hold both on the top row; narrow ones stack the
+            // button under the readout.
+            if screen.0 >= 800.0 {
+                assert!(
+                    (button.top() - OVERLAY_MARGIN).abs() < 1.0,
+                    "at {screen:?} the button {button:?} should share the top row"
+                );
+            } else {
+                assert!(
+                    button.top() >= readout.bottom(),
+                    "at {screen:?} the button {button:?} should drop under the readout {readout:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_fullscreen_button_is_at_least_a_touch_target() {
+        // A control a phone has to be hit with a finger must not shrink to a
+        // row of text: the button is grown to the declared minimum, including
+        // the padding that centres the label, on every state and width.
+        for screen in [(1280.0, 577.0), (390.0, 844.0)] {
+            for active in [false, true] {
+                let ctx = egui::Context::default();
+                for _ in 0..2 {
+                    let _ = fullscreen_pass(&ctx, screen, active, Vec::new());
+                }
+                let button = area_rect(&ctx, FULLSCREEN_AREA);
+                assert!(
+                    button.width() >= FULLSCREEN_BUTTON_MIN_SIZE.x
+                        && button.height() >= FULLSCREEN_BUTTON_MIN_SIZE.y,
+                    "at {screen:?} {active} the button {button:?} is below the touch-target size"
+                );
+            }
+        }
     }
 
     /// Every line count the readout laid a text galley out with, for a screen
