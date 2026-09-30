@@ -59,6 +59,9 @@ impl Frame {
         // depth, one vertex stream. That keeps a benchmark's per-entity work on
         // the frame path rather than on binding a fuller material.
         let key = UnlitPipelineKey::new(UnlitOptions {
+            // No base-color texture, so the material group goes unused and the
+            // choice of filtering cannot be observed.
+            texture_filtering: true,
             flags: UnlitFlags::VERTEX_POSITION
                 | UnlitFlags::VERTEX_COLOR
                 | UnlitFlags::VERTEX_INSTANCE,

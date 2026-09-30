@@ -264,6 +264,21 @@ impl UnlitFlags {
 pub struct UnlitOptions {
     /// The channels and bindings the variant reads.
     pub flags: UnlitFlags,
+    /// Whether the base-color texture binding is filterable.
+    ///
+    /// A filtering binding accepts a sampler that interpolates between
+    /// texels and a texture whose format is filterable — the usual case, and
+    /// what [`Self::standard`] leaves. Clearing it declares the binding
+    /// unfilterable instead, which is what a texture sampled with
+    /// `nearest`-only filters has to bind to on a device that cannot filter
+    /// that format: `Rgba32Float`, say, is filterable only where
+    /// `FLOAT32_FILTERABLE` is present, and is still bindable without it
+    /// through an unfilterable binding.
+    ///
+    /// The two declare different bind-group layouts, so this is part of what
+    /// distinguishes one variant from another: a pipeline built for one cannot
+    /// bind a material built for the other.
+    pub texture_filtering: bool,
     /// How the pipeline assembles and culls primitives, including the strip
     /// index format a strip topology requires.
     ///
@@ -378,6 +393,7 @@ impl UnlitOptions {
                 count: 4,
                 ..Default::default()
             },
+            texture_filtering: true,
         }
     }
 
@@ -727,7 +743,9 @@ impl UnlitOptions {
                             binding: BASE_COLOR_TEXTURE_BINDING,
                             visibility: wgpu::ShaderStages::FRAGMENT,
                             ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                                sample_type: wgpu::TextureSampleType::Float {
+                                    filterable: self.texture_filtering,
+                                },
                                 view_dimension: wgpu::TextureViewDimension::D2,
                                 multisampled: false,
                             },
@@ -736,7 +754,11 @@ impl UnlitOptions {
                         wgpu::BindGroupLayoutEntry {
                             binding: BASE_COLOR_SAMPLER_BINDING,
                             visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                            ty: if self.texture_filtering {
+                                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
+                            } else {
+                                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+                            },
                             count: None,
                         },
                     ],
