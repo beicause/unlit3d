@@ -174,6 +174,27 @@ bitflags::bitflags! {
         /// deliberately outside [`Self::MESH_MASK`]: specializing a draw by its
         /// vertex layout must not clear it.
         const TEXEL_ARRAY = 1 << 10;
+        /// The base-color texture stores *luminance*: one channel, sampled
+        /// into every color channel.
+        ///
+        /// Required by neither of the other material flags, but only
+        /// meaningful together with [`Self::BASE_COLOR_TEXTURE`] — without a
+        /// texture there is nothing to expand. The sampled value is expanded
+        /// to `vec3(l)` and decoded from sRGB on the way, because a luminance
+        /// image cannot be uploaded in an sRGB format: WebGPU offers the
+        /// transfer function only for four-channel `Rgba8UnormSrgb` and
+        /// `Bgra8UnormSrgb`, so a one-channel texture has to carry the encoded
+        /// value and let the shader decode it.
+        const BASE_COLOR_LUMINANCE = 1 << 11;
+        /// The base-color texture stores *luminance and alpha*: two channels
+        /// holding `l` and `a`, sampled into the color and the alpha channel.
+        ///
+        /// Mutually exclusive with [`Self::BASE_COLOR_LUMINANCE`], and like
+        /// it only meaningful together with [`Self::BASE_COLOR_TEXTURE`]. The
+        /// luminance half decodes from sRGB exactly as
+        /// [`Self::BASE_COLOR_LUMINANCE`] does; alpha is coverage, so it
+        /// never converts.
+        const BASE_COLOR_LUMINANCE_ALPHA = 1 << 12;
     }
 }
 
@@ -402,7 +423,7 @@ impl UnlitOptions {
     ///
     /// Every name appears, so the composed variant never sees a name it does
     /// not know.
-    pub fn features(&self) -> [(&'static str, bool); 11] {
+    pub fn features(&self) -> [(&'static str, bool); 13] {
         [
             (
                 "VERTEX_POSITION",
@@ -442,6 +463,14 @@ impl UnlitOptions {
                 self.flags.contains(UnlitFlags::MORPH_POSITIONS),
             ),
             ("TEXEL_ARRAY", self.flags.contains(UnlitFlags::TEXEL_ARRAY)),
+            (
+                "BASE_COLOR_LUMINANCE",
+                self.flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE),
+            ),
+            (
+                "BASE_COLOR_LUMINANCE_ALPHA",
+                self.flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA),
+            ),
         ]
     }
 
@@ -928,8 +957,8 @@ fn default_depth_stencil_state() -> wgpu::DepthStencilState {
 ///
 /// # Panics
 /// If the flags contradict each other: a channel cannot be uncompressed
-/// without being read, and the base-color texture is sampled with the
-/// per-vertex UV.
+/// without being read, the base-color texture is sampled with the per-vertex
+/// UV, and only one luminance layout can expand a sampled texel.
 #[cfg(feature = "unlit")]
 fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
     let flags = options.flags;
@@ -971,6 +1000,21 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
         "the metadata index a draw decodes through is per-instance, so a \
          variant reading the mesh metadata requires `VERTEX_INSTANCE`: the \
          instance stream is what carries the index the draw loads it by"
+    );
+    assert!(
+        !flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE)
+            && !flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA)
+            || flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
+        "the luminance flags describe how a sampled base-color texel \
+         expands, so `BASE_COLOR_LUMINANCE` and \
+         `BASE_COLOR_LUMINANCE_ALPHA` require `BASE_COLOR_TEXTURE`"
+    );
+    assert!(
+        !(flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE)
+            && flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA)),
+        "a base-color texel has one channel or two, so \
+         `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` are \
+         mutually exclusive"
     );
 
     let main_path = wesl::syntax::ModulePath::new(
@@ -1062,7 +1106,11 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     ///
     /// `BASE_COLOR_TEXTURE` implies `VERTEX_UV`, an uncompressed channel
     /// implies its channel, and the joint and morph channels imply the position
-    /// they deform, so the invalid combinations are skipped.
+    /// they deform, so the invalid combinations are skipped. Each surviving
+    /// combination is then enumerated once per luminance layout, because those
+    /// describe the sampled texel rather than the vertex layout and so are
+    /// orthogonal to everything above — but only where a texel is sampled at
+    /// all.
     fn all_variants() -> Vec<UnlitOptions> {
         let mut variants = Vec::new();
         for texel_array in [false, true] {
@@ -1145,10 +1193,25 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                                 if flags.is_empty() {
                                                     continue;
                                                 }
-                                                variants.push(UnlitOptions {
-                                                    flags,
-                                                    ..UnlitOptions::standard_shape()
-                                                });
+                                                // A texel is expanded by one of the two
+                                                // luminance layouts, or not at all, and
+                                                // only a sampled texel can be expanded.
+                                                let luminance_layouts: &[UnlitFlags] =
+                                                    if base_color_texture {
+                                                        &[
+                                                            UnlitFlags::empty(),
+                                                            UnlitFlags::BASE_COLOR_LUMINANCE,
+                                                            UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA,
+                                                        ]
+                                                    } else {
+                                                        &[UnlitFlags::empty()]
+                                                    };
+                                                for luminance in luminance_layouts {
+                                                    variants.push(UnlitOptions {
+                                                        flags: flags | *luminance,
+                                                        ..UnlitOptions::standard_shape()
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -1189,6 +1252,76 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         assert!(converted.contains("srgb_to_linear(color.b)"));
         assert!(converted.contains("color.a"), "alpha passes through");
         assert!(!converted.contains("srgb_to_linear(color.a)"));
+    }
+
+    /// The two luminance layouts say how a sampled texel expands, so they
+    /// reach the fragment as the expansion itself — and only the one texel the
+    /// variant samples, never the color the target writes.
+    #[test]
+    fn luminance_flags_expand_a_sampled_texel() {
+        let composed = |flags: UnlitFlags| {
+            let options = UnlitOptions {
+                flags: UnlitOptions::standard_shape().flags | flags,
+                ..UnlitOptions::standard_shape()
+            };
+            compose_builtin(&options).expect("compose")
+        };
+
+        let full = composed(UnlitFlags::empty());
+        assert!(
+            !full.contains("srgb_to_linear(texel.r)"),
+            "a four-channel texture is uploaded in an sRGB format, so the \
+             sampler decodes it"
+        );
+
+        let luma = composed(UnlitFlags::BASE_COLOR_LUMINANCE);
+        assert!(
+            luma.contains("vec3<f32>(srgb_to_linear(texel.r))"),
+            "a luminance texel feeds every color channel, decoded"
+        );
+        assert!(
+            luma.contains("texel.a"),
+            "a luminance texture has no alpha, so the channel reads as one"
+        );
+
+        let luma_alpha = composed(UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA);
+        assert!(luma_alpha.contains("vec3<f32>(srgb_to_linear(texel.r))"));
+        assert!(
+            luma_alpha.contains("texel.g") && !luma_alpha.contains("texel.a"),
+            "the second channel of a luminance-alpha texture is its alpha, and \
+             coverage never converts"
+        );
+    }
+
+    /// The luminance layouts describe a sampled texel, so they are meaningless
+    /// without one and cannot both describe the same texel.
+    #[test]
+    #[should_panic(
+        expected = "`BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` require \
+                    `BASE_COLOR_TEXTURE`"
+    )]
+    fn a_luminance_layout_without_a_texture_is_rejected() {
+        let options = UnlitOptions {
+            flags: (UnlitOptions::standard_shape().flags & !UnlitFlags::BASE_COLOR_TEXTURE)
+                | UnlitFlags::BASE_COLOR_LUMINANCE,
+            ..UnlitOptions::standard_shape()
+        };
+        let _ = compose_builtin(&options);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "`BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` are mutually \
+                    exclusive"
+    )]
+    fn two_luminance_layouts_at_once_are_rejected() {
+        let options = UnlitOptions {
+            flags: UnlitOptions::standard_shape().flags
+                | UnlitFlags::BASE_COLOR_LUMINANCE
+                | UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA,
+            ..UnlitOptions::standard_shape()
+        };
+        let _ = compose_builtin(&options);
     }
 
     /// Specialize `options` for `surface` the way a family does.

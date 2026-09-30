@@ -34,6 +34,12 @@
 //                        read>` are read from 2D textures instead, one `f32`
 //                        lane per texel component; for devices with no storage
 //                        buffers at all, WebGL2 in particular
+//   BASE_COLOR_LUMINANCE  the base-color texture stores one luminance channel;
+//                        sample it into every color channel and decode the
+//                        result from sRGB
+//   BASE_COLOR_LUMINANCE_ALPHA  the base-color texture stores luminance and
+//                        alpha; sample them into RGB and alpha and decode the
+//                        luminance from sRGB
 //
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
@@ -290,26 +296,49 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     return out;
 }
 
+/// Convert a channel from sRGB (gamma) to linear light.
+///
+/// A base-color texture's RGB values are sRGB-encoded, whatever else the
+/// variant does with them. A four-channel one is uploaded in an sRGB format
+/// and so is decoded by the sampler; a luminance one cannot be, because
+/// WebGPU offers the transfer function only for four-channel formats, so the
+/// fragment decodes it here instead.
+fn srgb_to_linear(channel: f32) -> f32 {
+    if channel <= 0.04045 {
+        return channel / 12.92;
+    }
+    return pow((channel + 0.055) / 1.055, 2.4);
+}
+
 /// The color of one fragment, before the target's encoding.
 ///
 /// `in.color` and the base-color texel carry whatever alpha convention the
 /// caller's blend state expects — premultiplied for the UI, straight for
 /// meshes — and multiplying two RGBA values preserves it, so they combine
 /// directly.
+///
+/// The texel is decoded to linear light before it is combined: `in.color` is
+/// a linear factor, and a factor times an sRGB-encoded value would not be
+/// either. A luminance alpha is coverage, like any other alpha, so it is
+/// taken as it is.
 fn fragment_color(in: VertexOut) -> vec4<f32> {
     var color = in.color;
     @if(BASE_COLOR_TEXTURE) {
-        color = color * textureSample(base_color_tex, base_color_sampler, in.uv);
+        let texel = textureSample(base_color_tex, base_color_sampler, in.uv);
+        // A one- or two-channel texture carries its value in `r`, and its
+        // alpha — if it has one — in `g`; the channels past the last one read
+        // as `0` and `1`, so an expansion has to name the ones it wants.
+        @if(BASE_COLOR_LUMINANCE) {
+            color = color * vec4<f32>(vec3<f32>(srgb_to_linear(texel.r)), texel.a);
+        }
+        @if(BASE_COLOR_LUMINANCE_ALPHA) {
+            color = color * vec4<f32>(vec3<f32>(srgb_to_linear(texel.r)), texel.g);
+        }
+        @if(!BASE_COLOR_LUMINANCE && !BASE_COLOR_LUMINANCE_ALPHA) {
+            color = color * texel;
+        }
     }
     return color;
-}
-
-/// Convert a channel from sRGB (gamma) to linear light.
-fn srgb_to_linear(channel: f32) -> f32 {
-    if channel <= 0.04045 {
-        return channel / 12.92;
-    }
-    return pow((channel + 0.055) / 1.055, 2.4);
 }
 
 @fragment
