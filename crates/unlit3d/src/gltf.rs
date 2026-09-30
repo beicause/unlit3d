@@ -39,6 +39,12 @@
 //! # Ok(()) }
 //! ```
 //!
+//! Spawning entities never spawns a camera: the renderer draws with the first
+//! [`Camera`](crate::components::Camera) in the world, so one belongs to the
+//! caller. A document that ships its own cameras can offer one with
+//! [`UnlitGltf::spawn_camera`], which is worth doing only for a world that has
+//! none.
+//!
 //! # Supported subset
 //!
 //! The unlit renderer draws static meshes with a base-color texture and an
@@ -57,7 +63,7 @@
 
 use std::path::Path;
 
-use crate::components::{GpuMaterial, GpuMesh, InstanceColor, Transform, UnlitPipeline};
+use crate::components::{Camera, GpuMaterial, GpuMesh, InstanceColor, Transform, UnlitPipeline};
 use crate::mesh::UnlitMeshDesc;
 use crate::mesh_source::{MeshSource, UnlitPipelineKey};
 use unlit_ecs::prelude::{Entity, World};
@@ -76,6 +82,12 @@ pub struct UnlitGltf {
     images: Vec<gltf::image::Data>,
     /// World-space transform of every node, indexed by node index.
     node_transforms: Vec<Transform>,
+    /// World-space matrix of every node, indexed by node index.
+    ///
+    /// Kept beside the decomposed transform because a camera needs the matrix
+    /// itself: decomposing drops shear, and the view matrix of a node whose
+    /// ancestors shear has to keep it.
+    node_matrices: Vec<glam::Mat4>,
 }
 
 /// A texture uploaded from a glTF image.
@@ -156,12 +168,14 @@ impl UnlitGltf {
         buffers: Vec<gltf::buffer::Data>,
         images: Vec<gltf::image::Data>,
     ) -> Self {
-        let node_transforms = node_world_transforms(&document);
+        let node_matrices = node_world_matrices(&document);
+        let node_transforms = node_matrices.iter().map(|&m| decompose(m)).collect();
         Self {
             document,
             buffers,
             images,
             node_transforms,
+            node_matrices,
         }
     }
 
@@ -553,6 +567,44 @@ impl UnlitGltf {
         entities
     }
 
+    /// Spawn the [`Camera`] a node carries, placed by the node's world
+    /// transform.
+    ///
+    /// Returns `None` when the node has no camera, so a caller can walk a
+    /// document's nodes without asking first.
+    ///
+    /// `aspect_ratio` is the viewport's width over its height; it is used only
+    /// when the document leaves the camera's own `aspectRatio` unset, since a
+    /// document that states one should keep it.
+    ///
+    /// # Which camera draws
+    ///
+    /// The renderer draws with the *first* [`Camera`] in the world, so a world
+    /// that already has one keeps drawing through it — spawning a document's
+    /// camera beside it changes nothing. A caller that wants the document's
+    /// camera to draw must not give the world another one.
+    ///
+    /// The transform is applied as a view matrix, so the node's local `-Z` is
+    /// where the camera looks — glTF's own convention for a camera node.
+    pub fn spawn_camera(
+        &self,
+        world: &mut World,
+        node: usize,
+        aspect_ratio: f32,
+    ) -> Option<Entity> {
+        let camera = self.node(node).camera()?;
+        let matrix = self.node_matrices[node];
+        // Building the view from the decomposed rotation and translation
+        // rather than inverting the node's matrix keeps a degenerate node
+        // (a zero scale on some axis) from producing a matrix full of NaNs —
+        // a camera has no geometry to collapse.
+        let transform = decompose(matrix);
+        let position = transform.translation;
+        let view = glam::Mat4::from_rotation_translation(transform.rotation, position).inverse();
+        let clip_from_world = projection_matrix(&camera, aspect_ratio) * view;
+        Some(world.spawn((Camera::new(clip_from_world, position),)))
+    }
+
     /// Spawn one entity per primitive of every node reachable from the
     /// document's default scene.
     ///
@@ -787,14 +839,50 @@ fn address_mode(mode: gltf::texture::WrappingMode) -> wgpu::AddressMode {
     }
 }
 
-/// The world-space transform of every node, indexed by node index.
+/// The projection matrix a glTF camera looks through.
+///
+/// Both projections are built in the convention the unlit pipeline draws with:
+/// right-handed, Y-up, clip depth `0..=1` — WebGPU's NDC — so the frustum the
+/// renderer culls against matches the one the camera describes.
+///
+/// A perspective camera becomes an *infinite* reverse projection: glTF's
+/// `zfar` is dropped and the far plane goes to infinity. The built-in pipeline
+/// draws with a reversed depth buffer (`CompareFunction::Greater`, cleared to
+/// `0.0`), so a finite far plane would clip distant geometry that the pipeline
+/// is set up to keep.
+///
+/// `aspect_ratio` is the viewport's width over its height, used when the
+/// document leaves the camera's own `aspectRatio` unset.
+fn projection_matrix(camera: &gltf::camera::Camera<'_>, aspect_ratio: f32) -> glam::Mat4 {
+    use gltf::camera::Projection;
+    match camera.projection() {
+        Projection::Perspective(perspective) => {
+            let aspect = perspective.aspect_ratio().unwrap_or(aspect_ratio);
+            glam::camera::rh::proj::directx::perspective_infinite_reverse(
+                perspective.yfov(),
+                aspect,
+                perspective.znear(),
+            )
+        }
+        Projection::Orthographic(orthographic) => glam::camera::rh::proj::directx::orthographic(
+            -orthographic.xmag(),
+            orthographic.xmag(),
+            -orthographic.ymag(),
+            orthographic.ymag(),
+            orthographic.znear(),
+            orthographic.zfar(),
+        ),
+    }
+}
+
+/// The world-space matrix of every node, indexed by node index.
 ///
 /// The parent table is built from each node's children list (glTF nodes have
-/// no parent handle), then world transforms are accumulated root-first so a
-/// child always sees its parent's transform before its own is computed.
+/// no parent handle), then world matrices are accumulated root-first so a
+/// child always sees its parent's matrix before its own is computed.
 /// Hierarchies are traversed iteratively so arbitrarily deep scenes cannot
 /// overflow the stack.
-fn node_world_transforms(document: &gltf::Document) -> Vec<Transform> {
+fn node_world_matrices(document: &gltf::Document) -> Vec<glam::Mat4> {
     let mut parents = vec![None; document.nodes().len()];
     for node in document.nodes() {
         for child in node.children() {
@@ -819,10 +907,7 @@ fn node_world_transforms(document: &gltf::Document) -> Vec<Transform> {
         }
     }
 
-    document
-        .nodes()
-        .map(|node| decompose(world[node.index()]))
-        .collect()
+    world
 }
 
 /// Split a world-space matrix into the parts an entity's
