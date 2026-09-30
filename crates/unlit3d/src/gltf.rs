@@ -52,7 +52,7 @@
 //! drop what a handle names.
 //!
 //! `UnlitGltf::load("model.glb")` in the examples above opens a local file —
-//! see [`UnlitGltf::load`] and [`UnlitGltf::from_slice`] for how a document
+//! see [`UnlitGltf::load`] and [`UnlitGltf::from_buffer`] for how a document
 //! reaches the module in the first place.
 
 use std::path::Path;
@@ -66,7 +66,7 @@ use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
 
 /// A loaded glTF document, ready to be patched into another world.
 ///
-/// Construct with [`Self::load`] or [`Self::from_slice`]. The document is
+/// Construct with [`Self::load`] or [`Self::from_buffer`]. The document is
 /// parsed and its buffers and images decoded eagerly; no GPU resource exists
 /// until an `insert_*` call uploads one into some world's
 /// [`MeshSource`](crate::mesh_source::MeshSource).
@@ -146,7 +146,7 @@ impl UnlitGltf {
     /// arrive as embedded data URIs or, for a GLB, the `BIN` chunk; images
     /// must be embedded too (as data URIs or buffer views), because there is
     /// no base URI to resolve external references against.
-    pub fn from_slice(bytes: &[u8]) -> Result<Self, gltf::Error> {
+    pub fn from_buffer(bytes: &[u8]) -> Result<Self, gltf::Error> {
         let (document, buffers, images) = gltf::import_slice(bytes)?;
         Ok(Self::from_parts(document, buffers, images))
     }

@@ -5,7 +5,7 @@
 //!
 //! The documents are built in-memory as glTF JSON with a single data-URI
 //! buffer holding the vertices, indices and a 4x4 PNG (rows red, green, blue,
-//! white) as a buffer view, so `UnlitGltf::from_slice` needs no base path.
+//! white) as a buffer view, so `UnlitGltf::from_buffer` needs no base path.
 
 pub mod common;
 
@@ -33,7 +33,7 @@ struct QuadDoc {
     textured: bool,
 }
 
-/// The glTF JSON for one quad, as bytes for [`UnlitGltf::from_slice`].
+/// The glTF JSON for one quad, as bytes for [`UnlitGltf::from_buffer`].
 ///
 /// Node 0 is a parent of the meshed node 1, so spawning the default scene
 /// takes the world transform through a hierarchy. The quad is a unit square
@@ -120,7 +120,7 @@ async fn textured_quad_renders_four_colours() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let gltf = UnlitGltf::from_slice(&quad_document(&QuadDoc {
+    let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
         translation: [0.0, 0.0, 0.0],
         textured: true,
     }))
@@ -170,7 +170,7 @@ async fn node_hierarchy_translates_the_quad() {
     let gpu = TestGpu::new(&mut world, &ctx);
 
     let mut render = |translation: [f32; 3]| -> Vec<u8> {
-        let gltf = UnlitGltf::from_slice(&quad_document(&QuadDoc {
+        let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
             translation,
             textured: true,
         }))
@@ -227,7 +227,7 @@ async fn untextured_material_draws_flat() {
     let gpu = TestGpu::new(&mut world, &ctx);
     // Same document, but the material samples no texture: the sway to
     // textured/`TEXCOORD_0` is skipped, yet the buffer still carries them.
-    let gltf = UnlitGltf::from_slice(&quad_document(&QuadDoc {
+    let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
         translation: [0.0, 0.0, 0.0],
         textured: false,
     }))
@@ -267,7 +267,7 @@ async fn unload_empties_the_frame() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let gltf = UnlitGltf::from_slice(&quad_document(&QuadDoc {
+    let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
         translation: [0.0, 0.0, 0.0],
         textured: true,
     }))
