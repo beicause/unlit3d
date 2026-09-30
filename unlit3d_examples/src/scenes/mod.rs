@@ -315,10 +315,7 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, size: (u32, u32)) 
         0.1,
     );
     let view = glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y);
-    Camera {
-        clip_from_world: projection * view,
-        position: eye,
-    }
+    Camera::new(projection * view, eye)
 }
 
 /// Re-aim `entity`'s camera at `target` from `eye` for a frame of `size`.
@@ -334,9 +331,12 @@ pub fn aim_camera(
     target: glam::Vec3,
     size: (u32, u32),
 ) {
-    let camera = camera_looking_at(eye, target, size);
+    let mut camera = camera_looking_at(eye, target, size);
     world
-        .with_mut::<Camera, _>(entity, |current| *current = camera)
+        .with_mut::<Camera, _>(entity, |current| {
+            camera.active = current.active;
+            *current = camera;
+        })
         .expect("the entity carries a camera");
 }
 

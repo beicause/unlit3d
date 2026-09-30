@@ -168,6 +168,12 @@ components: [`Transform`](components::Transform), [`Camera`](components::Camera)
 [`InstanceColor`](components::InstanceColor) and the
 [`ZSortedDrawing`](components::ZSortedDrawing) marker.
 
+A frame is drawn through the first **active** [`Camera`](components::Camera) in
+the world — the renderer skips an entity whose
+[`Camera::active`](components::Camera::active) is `false`. A world can therefore
+hold several cameras and switch between them by toggling that flag per frame;
+with no active camera the frame is cleared and nothing is drawn.
+
 <details>
 <summary>Why a family sits between the entity and the pipeline cache</summary>
 

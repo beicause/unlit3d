@@ -54,15 +54,45 @@ impl Transform {
 
 /// Camera state: the combined projection x view matrix and the eye position.
 ///
-/// The renderer queries the first entity that carries this component to
-/// derive the camera uniforms and perform frustum culling. If no entity has
-/// a [`Camera`] component, the frame is cleared and nothing is drawn.
+/// The renderer queries the first **active** entity that carries this
+/// component to derive the camera uniforms and perform frustum culling. If no
+/// entity has an active [`Camera`], the frame is cleared and nothing is drawn.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Camera {
     /// World-to-clip matrix (projection x view).
     pub clip_from_world: glam::Mat4,
     /// World-space eye position.
     pub position: glam::Vec3,
+    /// Whether the renderer may draw through this camera.
+    ///
+    /// An inactive camera is kept out of the frame entirely: the renderer
+    /// skips it when choosing which camera to draw through, so a world can
+    /// hold several cameras — the ones a caller switches between — and pick
+    /// one per frame by toggling this flag rather than by respawning.
+    pub active: bool,
+}
+
+impl Default for Camera {
+    /// An identity camera at the origin, active.
+    fn default() -> Self {
+        Self {
+            clip_from_world: glam::Mat4::IDENTITY,
+            position: glam::Vec3::ZERO,
+            active: true,
+        }
+    }
+}
+
+impl Camera {
+    /// A camera looking through `clip_from_world` from `position`, active.
+    #[must_use]
+    pub fn new(clip_from_world: glam::Mat4, position: glam::Vec3) -> Self {
+        Self {
+            clip_from_world,
+            position,
+            active: true,
+        }
+    }
 }
 
 /// The load ops a frame's pass is opened with.
@@ -499,15 +529,16 @@ mod tests {
 
     #[test]
     fn camera_fields_round_trip() {
-        let c = Camera {
-            clip_from_world: glam::camera::rh::view::look_at_mat4(
+        let c = Camera::new(
+            glam::camera::rh::view::look_at_mat4(
                 glam::Vec3::new(0.0, 5.0, 10.0),
                 glam::Vec3::ZERO,
                 glam::Vec3::Y,
             ),
-            position: glam::Vec3::new(0.0, 5.0, 10.0),
-        };
+            glam::Vec3::new(0.0, 5.0, 10.0),
+        );
         assert_eq!(c.position, glam::Vec3::new(0.0, 5.0, 10.0));
+        assert!(c.active);
     }
 }
 

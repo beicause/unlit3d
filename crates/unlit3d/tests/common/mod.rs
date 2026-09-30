@@ -612,10 +612,7 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, aspect: f32) -> Ca
         0.1,
     );
     let view = glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y);
-    Camera {
-        clip_from_world: projection * view,
-        position: eye,
-    }
+    Camera::new(projection * view, eye)
 }
 
 /// A dense grid of cubes as one mesh, returned as

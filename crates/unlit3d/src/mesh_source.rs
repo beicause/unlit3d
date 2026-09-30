@@ -2141,6 +2141,24 @@ impl MeshSource {
     }
 }
 
+/// The camera a frame draws through: the first **active** [`Camera`] in
+/// `world`, copied out of its cell so the caller's borrow of the world does
+/// not block the accesses that follow.
+///
+/// Several cameras may live in one world — a caller switches between them by
+/// toggling [`Camera::active`] rather than by respawning. `None` means no
+/// camera is active, and the frame draws nothing.
+fn frame_camera(world: &World) -> Option<Camera> {
+    world
+        .query::<&Camera>()
+        .find(|(_, camera)| camera.active)
+        .map(|(_, camera)| Camera {
+            clip_from_world: camera.clip_from_world,
+            position: camera.position,
+            active: camera.active,
+        })
+}
+
 impl FrameSource for MeshSource {
     fn build_scene(
         &mut self,
@@ -2161,12 +2179,8 @@ impl FrameSource for MeshSource {
             self.upload_metadata(world, encoder);
         }
 
-        // The frame is drawn from the first camera in `world`, copied out of
-        // its cell so the borrow does not block the world accesses below.
-        let camera = world.query::<&Camera>().next().map(|(_, c)| Camera {
-            clip_from_world: c.clip_from_world,
-            position: c.position,
-        });
+        // The frame is drawn from the first *active* camera in `world`.
+        let camera = frame_camera(world);
         let Some(camera) = camera else {
             // Even a frame that draws nothing has to settle the graph: meshes
             // allocated or removed since the last frame are waiting, and the
@@ -2477,10 +2491,7 @@ mod tests {
     /// that nothing in these tests is culled.
     fn test_camera(eye: glam::Vec3) -> Camera {
         let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y);
-        Camera {
-            clip_from_world: test_perspective() * view,
-            position: eye,
-        }
+        Camera::new(test_perspective() * view, eye)
     }
 
     /// The entities of the source's visible cache in draw order.
@@ -2605,6 +2616,34 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn a_frame_uses_the_first_active_camera() {
+        let mut world = World::new();
+        // Spawned first, so a selection that ignored `active` would pick this
+        // one instead of the active camera below.
+        let inactive = world.spawn((Camera::new(
+            glam::Mat4::IDENTITY,
+            glam::Vec3::new(1.0, 0.0, 0.0),
+        ),));
+        world
+            .with_mut::<Camera, _>(inactive, |camera| camera.active = false)
+            .expect("the entity carries a camera");
+        let active = world.spawn((Camera::new(
+            glam::Mat4::IDENTITY,
+            glam::Vec3::new(2.0, 0.0, 0.0),
+        ),));
+
+        let camera = frame_camera(&world).expect("a camera is active");
+        assert_eq!(camera.position, glam::Vec3::new(2.0, 0.0, 0.0));
+        assert!(camera.active);
+
+        // With every camera inactive, the frame has nothing to draw through.
+        world
+            .with_mut::<Camera, _>(active, |camera| camera.active = false)
+            .expect("the entity carries a camera");
+        assert!(frame_camera(&world).is_none());
     }
 
     #[test]

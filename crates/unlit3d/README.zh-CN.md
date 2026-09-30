@@ -113,6 +113,10 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 注册调用者自己的家族，这与内置家族走的是同一条路。其他组件包括 `Transform`、
 `Camera`、`RenderLoadOps`、`InstanceColor` 以及 `ZSortedDrawing` 标记。
 
+一帧通过世界中第一个 **active** 的 `Camera` 绘制——`Camera::active` 为 `false` 的实体会被
+渲染器跳过。因此一个世界可以持有多个相机，逐帧切换该标志即可在它们之间切换；没有
+active 相机时，帧会被清空，什么都不绘制。
+
 <details>
 <summary>为什么实体与管线缓存之间要隔一层家族</summary>
 
