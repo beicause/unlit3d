@@ -7,8 +7,11 @@
 - **不要用字面量硬编码可能会变的常量**，如缓冲大小、顶点属性大小、纹理像素大小、结构体大小、字节数组索引等，可用`size_of`、`VertexFormat::size`、`TextureFormat::block_copy_size`、`ShaderLayout::SIZE`等计算。
 - **减少不必要的内存分配**，例如：遍历迭代器而不是收集到Vec再遍历、返回迭代其而不是Vec、每帧复用Vec/HashMap而不是重新创建。
 - **字节转换统一走 zerocopy**。
-- **完成任务后cargo检查**：运行`cargo clippy`和`cargo fmt`（或直接 `cargo xtask check`）。
-- **单元测试和集成测试**：对于较复杂、易错的函数逻辑要添加单元测试，对于各个库的功能添加集成测试，对于整体渲染的正确性添加快照测试。具体测试所在目录参见根目录 [`README.md`](./README.md) 的「测试与基准」一节
+- **单元测试和集成测试**：对于较复杂、易错的函数逻辑要添加单元测试，对于各个库的功能添加集成测试，对于整体渲染的正确性添加快照测试。具体测试所在目录参见根目录 [`README.md`](./README.md) 的「测试与基准」一节。对于发现的bug或回归问题，要告知用户，并尽可能添加针对性测试。
+- **提交前检查**：运行以下命令，并且一次运行所有命令，尽可能减少会话轮次：
+  1. 运行`cargo xtask check`。
+  2. 运行`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --keep-going`。
+  3. 运行`tombi format`、`typos`。
 
 ## Git 工作流
 
@@ -46,10 +49,12 @@
 由于`cargo`命令可能运行较慢，要注意：
 - **使用`cargo nextest`，而不是`cargo test`**。
 - **针对特定改动、特定bug时，使用`cargo nextest`时要筛选**。不要总是跑全量`cargo nextest`或`cargo xtask test`测试。
-- **合并整合多次改动后，再跑检查或测试**，不要改一点测一点，减少检查或测试次数。
-- **不要过度跑cargo build**：
-  1. 尽可能少用cargo build，优先用check或clippy。若cargo check或clippy通过了，则大概率cargo build也能通过。反正有CI兜底。
-  2. 如果改动不是平台特定的，如没有用到`#[cfg(...)]`，就无需跑平台特定（如wasm,android）的检查或构建。
+- **不要过度跑`cargo build`、`cargo nextest`**：
+  1. 开始任务时，假定所有测试均已通过，无需测试。
+  3. 对于仅文档的、非常简单的、非逻辑性的改动，不要再跑`cargo nextest`。
+  2. 整合多次改动后，再跑检查或测试，不要改一点测一点，减少检查或测试次数，尽可能减少会话轮次。
+  4. 优先用cargo check或clippy。若cargo check或clippy通过了，则大概率cargo build也能通过。反正有CI兜底。
+  5. 尽量在当前平台上实现测试，不要依赖设备特定行为，使用运行时检测GPU设备功能、`DeviceTier`等配置切换代码路径。如果改动目标不是平台特定的，就绝不跑平台特定（如wasm，android）的检查或测试，特定平台的cargo冷构建通常很慢。
 - **不会自己结束的命令要放后台跑，且不要对其等待**：如 `cargo xtask run-wasm`（它启动的静态服务器一直运行到被停止）。这类命令用后台任务启动，之后正常做别的事、需要时再读它的输出，**绝不要对其调用带 `wait` 的读取**——它不会结束，等待只会白等到超时。
 
 ## 关于本项目
