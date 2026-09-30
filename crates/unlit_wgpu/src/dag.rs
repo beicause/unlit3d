@@ -262,7 +262,7 @@ impl<N> Dag<N> {
     ///
     /// This follows each edge from a dependent to what it depends on, so it
     /// answers what is still needed by something that counts. The stamp is read
-    /// back by [`Dag::remove_unmarked`] and [`Dag::remove_unmarked_drop`].
+    /// back by [`Dag::remove_unmarked_drop`].
     pub fn mark_dependencies_where(&mut self, is_root: impl Fn(&N) -> bool) -> u32 {
         let stamp = self.next_stamp();
         let mut stack = core::mem::take(&mut self.stack);
