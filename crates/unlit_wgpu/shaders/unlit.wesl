@@ -290,10 +290,12 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     return out;
 }
 
-/// The premultiplied color of one fragment, before the target's encoding.
+/// The color of one fragment, before the target's encoding.
 ///
-/// `in.color` and the base-color texel are already premultiplied and in the
-/// space the caller supplied, so they multiply directly.
+/// `in.color` and the base-color texel carry whatever alpha convention the
+/// caller's blend state expects — premultiplied for the UI, straight for
+/// meshes — and multiplying two RGBA values preserves it, so they combine
+/// directly.
 fn fragment_color(in: VertexOut) -> vec4<f32> {
     var color = in.color;
     @if(BASE_COLOR_TEXTURE) {
