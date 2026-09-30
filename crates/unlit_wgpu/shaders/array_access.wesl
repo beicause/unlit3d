@@ -58,15 +58,17 @@ import package::mesh_metadata;
 /// packed: for each vertex, `mesh_metadata::MeshMetadata::morph_count` targets
 /// in order, three components each.
 ///
-/// A target's displacement is geometry, not pose: every vertex of the mesh has
-/// its own, so this is an array of the mesh's own rather than one the whole
-/// frame shares.
+/// A target's displacement is geometry — every vertex of the mesh has its own —
+/// but one array holds the displacements of every mesh in the frame and a draw
+/// names its slice with the metadata entry's `morph_deltas_offset`. Pooling
+/// them here rather than in a per-mesh buffer is what leaves the mesh group
+/// with nothing to bind.
 @if(!TEXEL_ARRAY && MORPH_POSITIONS)
-@group(2) @binding(1) var<storage, read> morph_deltas: array<f32>;
+@group(0) @binding(5) var<storage, read> morph_deltas: array<f32>;
 
-// The same four arrays as textures. Each keeps its binding number and group,
-// so the two paths declare the same interface and a variant differs only in
-// which resource type it binds.
+// The same arrays as textures. Each keeps its binding number and group, so the
+// two paths declare the same interface and a variant differs only in which
+// resource type it binds.
 @if(TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
 @group(0) @binding(2) var mesh_meta_tex: texture_2d<f32>;
 
@@ -77,7 +79,7 @@ import package::mesh_metadata;
 @group(0) @binding(4) var morph_weights_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && MORPH_POSITIONS)
-@group(2) @binding(1) var morph_deltas_tex: texture_2d<f32>;
+@group(0) @binding(5) var morph_deltas_tex: texture_2d<f32>;
 
 /// The texel holding element `index`'s first lane.
 ///
@@ -89,10 +91,10 @@ fn texel_of(array: texture_2d<f32>, index: u32) -> vec2<i32> {
     return vec2<i32>(i32(index % width), i32(index / width));
 }
 
-/// `Rgba32Float` texels one `MeshMetadata` spans: its 48 bytes over a texel's
+/// `Rgba32Float` texels one `MeshMetadata` spans: its 64 bytes over a texel's
 /// 16.
 @if(TEXEL_ARRAY)
-const MESH_METADATA_TEXELS: u32 = 3u;
+const MESH_METADATA_TEXELS: u32 = 4u;
 
 /// `Rgba32Float` texels one joint matrix spans: its 64 bytes over a texel's 16.
 @if(TEXEL_ARRAY)
@@ -106,22 +108,24 @@ public fn load_mesh_metadata(index: u32) -> mesh_metadata::MeshMetadata {
 
 /// Read the decode parameters and addressing of the mesh at `index`.
 ///
-/// The three texels are the struct's bytes in order: the AABB center and the
-/// vertex offset, the half-extents and the morph count, then the UV bounds. The
-/// addressing lanes are read as `f32` lanes and reinterpreted, because that is
-/// what the texel holds.
+/// The four texels are the struct's bytes in order: the AABB center and the
+/// vertex offset, the half-extents and the morph count, then the UV bounds,
+/// then the morph displacement offset. The integer members are read as `f32`
+/// lanes and reinterpreted, because that is what the texel holds.
 @if(TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
 public fn load_mesh_metadata(index: u32) -> mesh_metadata::MeshMetadata {
     let first = index * MESH_METADATA_TEXELS;
     let center = textureLoad(mesh_meta_tex, texel_of(mesh_meta_tex, first), 0);
     let extents = textureLoad(mesh_meta_tex, texel_of(mesh_meta_tex, first + 1u), 0);
     let uv = textureLoad(mesh_meta_tex, texel_of(mesh_meta_tex, first + 2u), 0);
+    let deltas = textureLoad(mesh_meta_tex, texel_of(mesh_meta_tex, first + 3u), 0);
     return mesh_metadata::MeshMetadata(
         center.xyz,
         bitcast<u32>(center.w),
         extents.xyz,
         bitcast<u32>(extents.w),
         uv,
+        bitcast<u32>(deltas.x),
     );
 }
 

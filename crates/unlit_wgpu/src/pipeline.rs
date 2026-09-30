@@ -33,6 +33,14 @@ pub const JOINTS_BINDING: u32 = 3;
 /// Like the joint matrices this is one array for the whole frame, and an
 /// instance's own slice starts at [`crate::mesh::MeshInstance::pose`]'s `y`.
 pub const MORPH_WEIGHTS_BINDING: u32 = 4;
+/// Binding slot of the frame's morph position displacements in the global bind
+/// group.
+///
+/// A mesh's displacements are its own geometry, but one array holds them for
+/// the whole frame and the mesh names its slice through the `morph_deltas_offset`
+/// of its [`MeshMetadata`](crate::mesh::MeshMetadata) entry. Pooling them here
+/// rather than in a per-mesh buffer is what lets a draw bind no mesh group.
+pub const MORPH_DELTAS_BINDING: u32 = 5;
 /// Bind-group index of the global group.
 pub const GLOBAL_GROUP: u32 = 0;
 /// Bind-group index of the material group.
@@ -42,12 +50,13 @@ pub const BASE_COLOR_TEXTURE_BINDING: u32 = 0;
 /// Binding slot of the base-color sampler in the material group.
 pub const BASE_COLOR_SAMPLER_BINDING: u32 = 1;
 /// Bind-group index of the mesh group.
-pub const MESH_GROUP: u32 = 2;
-/// Binding slot of the morph position displacements in the mesh group.
 ///
-/// Unlike the weights, a target's displacement is mesh geometry: every vertex
-/// of the mesh has its own, so it stays a per-mesh buffer.
-pub const MORPH_DELTAS_BINDING: u32 = 1;
+/// The built-in unlit variants bind nothing here: every input they read is in
+/// the global group or on the instance stream. The index stays a general
+/// extension point, so a caller's own pipeline can bind per-mesh data — a tint,
+/// a transform palette, a material parameter — and
+/// [`crate::scene::DrawEntry`] will bind it.
+pub const MESH_GROUP: u32 = 2;
 
 /// Vertex-buffer slot carrying compressed positions.
 pub const POSITION_SLOT: u32 = 0;
@@ -420,17 +429,6 @@ impl UnlitOptions {
         ]
     }
 
-    /// Whether this variant reads the mesh group: the morph displacements at
-    /// binding 1.
-    ///
-    /// Mirrors the shader's mesh-group condition, so the layout and the
-    /// composed variant agree on whether the group exists. The mesh's
-    /// addressing is not here any more: it rides the instance stream, and the
-    /// metadata it names lives in the global group.
-    pub fn needs_mesh_group(&self) -> bool {
-        self.needs_morphs()
-    }
-
     /// Whether this variant deforms its vertices by joint matrices and so
     /// reads the global group's array of them.
     pub fn needs_joints(&self) -> bool {
@@ -466,7 +464,7 @@ impl UnlitOptions {
     ///
     /// If the variant reads storage buffers on a device that has none.
     fn assert_device_supports_arrays(&self, device: &wgpu::Device) {
-        let reads_an_array = self.needs_metadata() || self.needs_pose() || self.needs_morphs();
+        let reads_an_array = self.needs_metadata() || self.needs_joints();
         assert!(
             !reads_an_array || self.uses_texel_arrays() || supports_storage_buffers(device),
             "this variant reads its arrays from storage buffers, but the device has none \
@@ -504,20 +502,10 @@ impl UnlitOptions {
         }
     }
 
-    /// Whether this variant reads the mesh group's morph deltas and the global
-    /// group's morph weights.
+    /// Whether this variant reads the global group's morph arrays: the
+    /// per-instance weights and the per-mesh displacements.
     pub fn needs_morphs(&self) -> bool {
         self.flags.contains(UnlitFlags::MORPH_POSITIONS)
-    }
-
-    /// Whether this variant reads the global group's frame-wide pose arrays:
-    /// the joint matrices and the morph weights.
-    ///
-    /// Both are per-instance state one array holds for the whole frame, so
-    /// they belong to the group every draw shares rather than to a mesh's own.
-    /// Mirrors the shader's pose condition so the two agree.
-    pub fn needs_pose(&self) -> bool {
-        self.needs_joints() || self.needs_morphs()
     }
 
     /// Whether this variant reads the global group's mesh-metadata array: the
@@ -609,9 +597,10 @@ impl std::error::Error for ComposeError {}
 /// The bind-group layouts an [`SpecializedUnlitPipeline`] variant declares.
 ///
 /// Built by [`UnlitOptions::bind_group_layouts`] from the same options a
-/// pipeline is built from, so the two agree: the global group always exists,
-/// the material group only for a variant that samples a base-color texture,
-/// and the mesh group only for one that reads a compressed channel.
+/// pipeline is built from, so the two agree: the global group always exists and
+/// the material group only for a variant that samples a base-color texture. The
+/// mesh group is always `None` — the built-in variants bind nothing there — but
+/// stays in the structure because the index is a general extension point.
 #[cfg(feature = "unlit")]
 #[derive(Clone, Debug)]
 pub struct UnlitBindGroupLayouts {
@@ -620,8 +609,10 @@ pub struct UnlitBindGroupLayouts {
     /// Layout of the material bind group (index 1), for a variant that
     /// samples a base-color texture.
     pub material: Option<wgpu::BindGroupLayout>,
-    /// Layout of the mesh bind group (index 2), for a variant that reads a
-    /// compressed channel and therefore decodes mesh metadata.
+    /// Layout of the mesh bind group (index 2).
+    ///
+    /// Always `None` for the built-in variants: every input they read is in the
+    /// global group or on the instance stream.
     pub mesh: Option<wgpu::BindGroupLayout>,
 }
 
@@ -664,10 +655,11 @@ impl UnlitOptions {
         self.assert_device_supports_arrays(device);
         let global = {
             // The group holds the frame's shared inputs: the camera, the frame
-            // globals, the mesh-metadata decode parameters and the pose arrays
-            // every instance slices into. A variant that reads none of the
-            // optional ones declares no binding for them.
-            let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 5>::new();
+            // globals, the mesh-metadata decode parameters, the pose arrays
+            // every instance slices into, and the morph displacements every
+            // mesh slices into. A variant that reads none of the optional ones
+            // declares no binding for them.
+            let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 6>::new();
             entries.push(wgpu::BindGroupLayoutEntry {
                 binding: CAMERA_BINDING,
                 visibility: wgpu::ShaderStages::VERTEX,
@@ -709,6 +701,14 @@ impl UnlitOptions {
                     MORPH_WEIGHTS_BINDING,
                     wgpu::BufferAddress::from(size_of::<f32>() as u64),
                 ));
+                // One position component of one target: like every other array
+                // entry the storage binding minimum is a single element, so a
+                // mesh joining or leaving the pool never invalidates the
+                // layout.
+                entries.push(self.array_entry(
+                    MORPH_DELTAS_BINDING,
+                    wgpu::BufferAddress::from(size_of::<f32>() as u64),
+                ));
             }
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("unlit_wgpu::unlit::globals"),
@@ -743,27 +743,10 @@ impl UnlitOptions {
                 })
             });
 
-        let mesh = self.needs_mesh_group().then(|| {
-            // The mesh group holds the morph displacements, which are geometry
-            // every vertex of the mesh has its own of. The addressing a draw
-            // reaches them by is not here any more — it rides the instance
-            // stream — and the pose is not either: a mesh may be drawn by
-            // several instances that each deform differently, so the joints and
-            // weights live in the frame's shared arrays.
-            //
-            // One position component of one target: the array is sized by the
-            // mesh, and like the other array entries its storage binding
-            // minimum is a single element so growing the mesh never invalidates
-            // the layout.
-            let entry = self.array_entry(
-                MORPH_DELTAS_BINDING,
-                wgpu::BufferAddress::from(size_of::<f32>() as u64),
-            );
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("unlit_wgpu::unlit::mesh"),
-                entries: &[entry],
-            })
-        });
+        // The built-in variants bind nothing at the mesh group: every input
+        // they read is in the global group or on the instance stream. The
+        // index remains a general extension point a caller's pipeline can use.
+        let mesh = None;
 
         UnlitBindGroupLayouts {
             global,
@@ -1437,16 +1420,6 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 options.needs_metadata(),
                 "variant {options:?}"
             );
-            // The mesh group exists exactly when the variant reads the morph
-            // displacements, which are the only per-mesh binding left: the
-            // decode parameters moved to the global group and the addressing
-            // that selects them rides the instance stream. The pose is not
-            // here either — it is per-instance and lives in the global group.
-            assert_eq!(
-                wgsl.contains("morph_deltas"),
-                options.needs_mesh_group(),
-                "variant {options:?}"
-            );
             // The pose arrays are the frame's, so they live in the global
             // group alongside the camera and the metadata.
             assert_eq!(
@@ -1467,7 +1440,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             // The path decides the resource type: storage buffers when the
             // device has them, textures when it does not. Neither path ever
             // leaves the other's declarations behind.
-            let reads_an_array = options.needs_metadata() || options.needs_pose();
+            let reads_an_array = options.needs_metadata() || options.needs_joints();
             if options.uses_texel_arrays() {
                 assert_eq!(
                     wgsl.matches("var<storage, read>").count(),

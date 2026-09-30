@@ -14,6 +14,7 @@ wesl_core::wesl_pkg!(
     "unlit_wgpu.rs"
 );
 
+pub mod array_pool;
 pub mod buffer_pool;
 pub mod capabilities;
 mod dag;

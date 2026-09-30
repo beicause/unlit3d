@@ -85,6 +85,10 @@ pub struct RenderResources {
     /// The frame's morph weights: every visible morphed instance's weights, one
     /// array for the whole frame.
     pub morph_weights: ArrayHandle,
+    /// The frame's morph displacements: every morphed mesh's per-vertex
+    /// displacements, one array for the whole frame. A mesh names its slice
+    /// through its metadata entry's `morph_deltas_offset`.
+    pub morph_deltas: ArrayHandle,
 }
 
 /// A pipeline and the layouts its draws agree with.

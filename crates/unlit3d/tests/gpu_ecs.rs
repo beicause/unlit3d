@@ -137,8 +137,7 @@ async fn removing_a_mesh_leaves_no_resource_behind() {
     assert_eq!(
         gpu.graph(&world).len(),
         baseline,
-        "remove_mesh should free the mesh's buffers, its bind group and the \
-         orphaned mesh-info uniform"
+        "remove_mesh should free the mesh's buffers and bind group"
     );
     // The warmed-up mesh and the source's own resources are untouched.
     assert!(

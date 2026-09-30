@@ -41,9 +41,9 @@
 //                      and addressing            [compressed channel | morph]
 //   group 0  binding 3  joint_matrices `array<mat4x4<f32>>`  [VERTEX_JOINTS]
 //   group 0  binding 4  morph_weights `array<f32>`           [MORPH_POSITIONS]
+//   group 0  binding 5  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
-//   group 2  binding 1  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
 //
 //   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
 //                      decoded through `mesh_meta`, followed by the joint pair
@@ -54,13 +54,18 @@
 //                      + Uint32x2 pose base + Uint32 metadata index, stepped
 //                      per instance                   [VERTEX_INSTANCE]
 //
+// Every array the shader reads is frame-wide and lives in the global group, so
+// a draw binds no group of its own: the metadata array carries each mesh's
+// decode parameters and its addressing, the pose arrays carry every instance's
+// joints and morph weights, and the morph displacements carry every mesh's
+// geometry. The last is a mesh's own data conceptually, but one array holds it
+// for the frame and a mesh names its slice through the metadata entry like
+// everything else, which is what leaves the mesh group nothing to bind.
+//
 // The metadata array exists when a channel is compressed or a morph target is
 // read: it carries both the decode parameters and the addressing a draw needs.
 // A variant that reads every channel uncompressed and morphs nothing declares
-// no metadata binding at all, and the mesh group exists only for the morph
-// displacements. The pose lives in the global group rather than a mesh's own
-// because it is per-instance state: one array serves every draw of the frame,
-// and each instance slices into it at the base its own record carries.
+// none of the optional bindings at all.
 //
 // The metadata index is per-instance data like the pose base, so the instance
 // stream carries it: `@builtin(instance_index)` addresses the same record, and
@@ -171,8 +176,10 @@ fn skin_position(
 ///
 /// The displacements are flat and tightly packed: for each vertex,
 /// `morph_count` consecutive targets in target order, three components each.
-/// `delta_base` is the offset of this vertex's block, and `weight_base` the
-/// offset of this instance's weights in the frame's shared array.
+/// `delta_base` offsets the vertex's own block inside the frame's shared
+/// displacement array — the mesh's `morph_deltas_offset` plus the vertex's
+/// ordinal times the target count — and `weight_base` the instance's weights in
+/// the frame's shared weight array.
 ///
 /// Only the first-order — linear — displacement is applied, which is all a
 /// position-only morph target needs.
@@ -242,10 +249,13 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     // instance names its own slice of them. That is what lets two instances of
     // one mesh hold different poses.
     @if(MORPH_POSITIONS) {
+        // The mesh's displacements are its own, so they are addressed in
+        // mesh-local ordinals: the pool-global `vertex_index` has to be mapped
+        // back through the mesh's own vertex offset first.
         let local_vertex = vertex_index - metadata.vertex_offset;
         local = morph_position(
             local,
-            local_vertex * metadata.morph_count * 3u,
+            metadata.morph_deltas_offset + local_vertex * metadata.morph_count * 3u,
             in.pose.y,
             metadata.morph_count,
         );

@@ -19,7 +19,6 @@ use crate::bounds::Aabb;
 pub use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::VertexAttributes;
-use unlit_wgpu::texel_array::ArrayHandle;
 
 /// A vertex buffer bound at `slot` for every draw of a mesh, with the
 /// layout the pipeline's vertex state must match.
@@ -67,12 +66,9 @@ pub struct MeshDesc {
     /// `None` for a pipeline that binds nothing at that index.
     pub bind_group: Option<wgpu::BindGroup>,
 
-    /// The morph displacements the mesh's `bind_group` reads.
+    /// The morph displacements the mesh's vertices are displaced by.
     ///
-    /// The buffer is moved into the resource graph with the mesh and recorded
-    /// as a *weak* node under the mesh's virtual root, so removing the mesh
-    /// releases it with the rest of the mesh's resources. A mesh with no morph
-    /// targets leaves this `None`.
+    /// A mesh with no morph targets leaves this `None`.
     ///
     /// The weights that blend these displacements are *not* here: they are
     /// per-instance pose state a [`MorphWeights`](crate::components::MorphWeights)
@@ -81,20 +77,18 @@ pub struct MeshDesc {
 }
 
 /// A mesh's morph displacements and how many targets follow each vertex.
+///
+/// The displacements are CPU data: the source pools them into one frame-wide
+/// array alongside every other morphed mesh's, and the mesh's metadata entry
+/// names the slice it took. Handing the source the geometry rather than a
+/// ready-made GPU buffer is what lets it lay every mesh's displacements out in
+/// one array.
 #[derive(Clone, Debug)]
 pub struct MorphDeltas {
     /// Every target's per-vertex position displacement, flat and tightly
     /// packed: for each vertex, `target_count` targets in order, three
     /// components each.
-    ///
-    /// A device with storage buffers holds the displacements in one; a device
-    /// without them — WebGL2 — holds the same bytes in a texture the shader
-    /// reads with `textureLoad`. Which it is, is the caller's choice here,
-    /// because only the caller knows what its device can read; build one with
-    /// [`Array::new`](unlit_wgpu::texel_array::Array::new) passing
-    /// [`supports_storage_buffers`](unlit_wgpu::pipeline::supports_storage_buffers)
-    /// as the limit.
-    pub array: ArrayHandle,
+    pub deltas: Vec<f32>,
     /// How many targets follow each vertex.
     pub target_count: u32,
 }

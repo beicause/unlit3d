@@ -52,6 +52,10 @@ checks that combination separately.
 - [`buffer_pool`] and [`vertex_pool`] — GPU buffers sub-allocated with it, so
   many meshes share one buffer per kind or per vertex layout instead of each
   owning its own.
+- [`array_pool`] — an [`Array`](texel_array::Array) sub-allocated the same way,
+  for variable-length slices a frame-wide array holds rather than one resource
+  each. It keeps a CPU mirror of the bytes, so several slices are written before
+  one upload reaches the GPU.
 - [`staging`] — host-visible staging buffers reused across frames instead of a
   fresh `queue.write_buffer` allocation per upload.
 - [`texel_array`] — a flat array of fixed-size elements bound either as one
@@ -249,10 +253,10 @@ impl Example {
             ],
         });
 
-        // 6. No mesh group: this variant reads no morph displacements, and
-        //    every other per-mesh input is in the global group or on the
-        //    instance stream. A morphing variant would bind the mesh's
-        //    displacements at `MESH_GROUP`.
+        // 6. No mesh group: the built-in variants read every input from the
+        //    global group or the instance stream, so a draw binds none of its
+        //    own. The index remains a general extension point a caller's
+        //    pipeline can bind per-mesh data into.
 
         Example {
             device: device.clone(),
@@ -402,8 +406,8 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 # }
 ```
 
-The doc comments of `mesh`, `buffer_pool`, `offset_allocator`, `staging` and
-`render_attachments` also contain runnable examples.
+The doc comments of `mesh`, `array_pool`, `buffer_pool`, `offset_allocator`,
+`staging` and `render_attachments` also contain runnable examples.
 
 ## Shaders
 
@@ -579,10 +583,13 @@ business.
 
 ### Reading the frame's arrays: storage buffers or texels
 
-The built-in shader reads three frame-wide arrays — the per-mesh decode
-parameters, the frame's joint matrices and its morph weights — plus a mesh's own
-morph displacements. The straightforward binding for each is a read-only storage
-buffer, and every device that meets the WebGPU baseline takes it.
+The built-in shader reads four frame-wide arrays: the per-mesh decode
+parameters, the frame's joint matrices, its morph weights and its morph
+displacements. The last is a mesh's own geometry, but one array holds it for the
+whole frame and a mesh names its slice through its metadata entry, which is what
+leaves the mesh group with nothing to bind. The straightforward binding for each
+is a read-only storage buffer, and every device that meets the WebGPU baseline
+takes it.
 
 WebGL2 does not meet that baseline here: GLES 3.0 has no SSBO at all, `wgpu`
 reports `max_storage_buffers_per_shader_stage` as zero, and a bind-group layout

@@ -136,6 +136,7 @@ mod tests {
                 bind_group_id: None,
                 vertex_allocation: None,
                 index_allocation: None,
+                morph_deltas_allocation: None,
                 metadata_index: 0,
             }),
             vertex_layout: VertexLayout::default(),

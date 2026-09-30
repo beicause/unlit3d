@@ -696,7 +696,8 @@ mod tests {
 
     /// The element size of a `mat4x4<f32>`: four texels of `Rgba32Float`.
     const MATRIX_ELEMENT: u64 = 64;
-    /// The element size of the 48-byte metadata struct.
+    /// The element size of a struct-shaped element: three `Rgba32Float` texels,
+    /// a size that is neither the matrix element above nor a scalar.
     const STRUCT_ELEMENT: u64 = 48;
     /// The element size of a bare `f32` array.
     const SCALAR_ELEMENT: u64 = 4;

@@ -133,8 +133,8 @@ pub struct MeshParts {
     /// The mesh's virtual root node in the resource graph.
     ///
     /// It holds no GPU resource of its own and is the mesh's only lifetime
-    /// entry point: the vertex and index buffers, the mesh bind group and the
-    /// mesh-info uniform are all weak nodes registered under it, so
+    /// entry point: the vertex and index buffers and the bind group a caller
+    /// supplied are all weak nodes registered under it, so
     /// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) frees the whole
     /// mesh by removing this one node and collecting the parts it leaves
     /// behind.
@@ -163,6 +163,14 @@ pub struct MeshParts {
     ///
     /// `None` when the mesh owns its index buffer whole.
     pub(crate) index_allocation: Option<Allocation>,
+
+    /// The mesh's morph displacements' range in the frame-wide pool, to hand
+    /// back when the mesh is removed.
+    ///
+    /// `None` when the mesh carries no morph targets. The displacements are the
+    /// mesh's own, but they live in one array the whole frame shares, so the
+    /// mesh holds a range rather than a resource.
+    pub(crate) morph_deltas_allocation: Option<Allocation>,
 
     /// Index of the mesh's entry in the source's mesh-metadata array.
     ///

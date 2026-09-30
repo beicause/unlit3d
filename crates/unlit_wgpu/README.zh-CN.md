@@ -39,6 +39,9 @@
   Aaltonen 的 `OffsetAllocator` 中的两级分离适配算法。
 - `buffer_pool` 与 `vertex_pool` —— 用上述分配器做次级分配的 GPU 缓冲，使许多网格
   按种类或按顶点布局共享同一个缓冲。
+- `array_pool` —— 同样做次级分配的 [`Array`](texel_array::Array)，用于帧级数组承载
+  变长切片、而不是每个切片各占一个资源的情况。它保留一份字节的 CPU 镜像，因此可以
+  先写入多个切片，再一次性上传到 GPU。
 - `staging` —— 跨帧复用的 host 可见 staging 缓冲，而不是每次上传都让
   `queue.write_buffer` 新分配一个。
 - `texel_array` —— 定长元素的平坦数组，既可以绑定为一个 storage buffer，也可以在
@@ -228,10 +231,10 @@ impl Example {
             ],
         });
 
-        // 6. No mesh group: this variant reads no morph displacements, and
-        //    every other per-mesh input is in the global group or on the
-        //    instance stream. A morphing variant would bind the mesh's
-        //    displacements at `MESH_GROUP`.
+        // 6. No mesh group: the built-in variants read every input from the
+        //    global group or the instance stream, so a draw binds none of its
+        //    own. The index remains a general extension point a caller's
+        //    pipeline can bind per-mesh data into.
 
         Example {
             device: device.clone(),
@@ -381,8 +384,8 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 # }
 ```
 
-`mesh`、`buffer_pool`、`offset_allocator`、`staging` 与 `render_attachments`
-的文档注释中也含有可运行示例。
+`mesh`、`array_pool`、`buffer_pool`、`offset_allocator`、`staging` 与
+`render_attachments` 的文档注释中也含有可运行示例。
 
 ## 着色器
 
@@ -515,9 +518,10 @@ unlit 与自定义管线各自实现该 trait，而不是由内置管线用私�
 
 ### 读取本帧的数组：storage buffer 还是 texel
 
-内置着色器要读三个帧级数组——逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重——
-以及某个网格自身的形变位移。最直接的绑定方式是只读 storage buffer，凡满足 WebGPU
-基线的设备都走这条。
+内置着色器要读四个帧级数组：逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重，
+以及本帧的形变位移。最后一项概念上是网格自己的几何，但整帧共用一个数组，网格通过
+自己的 metadata 条目命名它占的那段——这正是网格组已无物可绑的原因。最直接的绑定方式
+是只读 storage buffer，凡满足 WebGPU 基线的设备都走这条。
 
 WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
 `max_storage_buffers_per_shader_stage` 为 0，声明 storage buffer 的绑定组布局会被

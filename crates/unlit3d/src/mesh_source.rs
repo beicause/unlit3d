@@ -19,6 +19,7 @@ use hashbrown::HashMap;
 use std::sync::Arc;
 
 use unlit_ecs::{TypeIdHashMap, World};
+use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
@@ -58,31 +59,6 @@ use crate::scene::{
 };
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target, frame_viewport};
 use unlit_wgpu::capabilities::DeviceCapabilities;
-
-/// The entries of an unlit mesh's bind group, in the order the variant's mesh
-/// layout declares them.
-///
-/// The group holds the mesh's morph displacements, which exist only for a mesh
-/// carrying targets. A variant that reads a binding the mesh did not supply is
-/// a programming error, and the bind group creation below rejects it.
-///
-/// The addressing a draw reaches the displacements by is deliberately absent:
-/// it rides the instance stream, and the entry it names lives in the global
-/// group. The pose is absent for the same reason it always was — the joint
-/// matrices and morph weights are per-instance state the frame's global group
-/// binds, so two instances of one mesh can deform differently.
-fn mesh_group_entries<'a>(
-    morph_deltas: Option<&'a ArrayHandle>,
-) -> arrayvec::ArrayVec<wgpu::BindGroupEntry<'a>, 1> {
-    let mut entries = arrayvec::ArrayVec::new();
-    if let Some(deltas) = morph_deltas {
-        entries.push(wgpu::BindGroupEntry {
-            binding: MORPH_DELTAS_BINDING,
-            resource: deltas.binding_resource(),
-        });
-    }
-    entries
-}
 
 /// The byte size of one index of `format`.
 ///
@@ -204,7 +180,7 @@ fn create_unlit_global_group(
     // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
     // whenever a global buffer is replaced, and the optional entries depend on
     // the variant, so the group is assembled rather than truncated.
-    let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 5>::new();
+    let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 6>::new();
     entries.push(wgpu::BindGroupEntry {
         binding: CAMERA_BINDING,
         resource: resources.camera.as_entire_binding(),
@@ -232,6 +208,10 @@ fn create_unlit_global_group(
         entries.push(wgpu::BindGroupEntry {
             binding: MORPH_WEIGHTS_BINDING,
             resource: resources.morph_weights.binding_resource(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: MORPH_DELTAS_BINDING,
+            resource: resources.morph_deltas.binding_resource(),
         });
     }
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -478,6 +458,8 @@ struct GlobalBufferNodes {
     joints: ResourceId<ArrayHandle>,
     /// The frame's morph weights.
     morph_weights: ResourceId<ArrayHandle>,
+    /// The frame's morph displacements.
+    morph_deltas: ResourceId<ArrayHandle>,
 }
 
 impl GlobalBufferNodes {
@@ -493,6 +475,7 @@ impl GlobalBufferNodes {
         graph.add_dependency(group, self.metadata);
         graph.add_dependency(group, self.joints);
         graph.add_dependency(group, self.morph_weights);
+        graph.add_dependency(group, self.morph_deltas);
     }
 }
 
@@ -514,13 +497,6 @@ pub struct MeshSource {
     camera_buf: ResourceId<wgpu::Buffer>,
     /// Resource id of the frame-globals uniform buffer.
     globals_buf: ResourceId<wgpu::Buffer>,
-    /// The texture limit to hold an array in a texture, or `None` to hold it
-    /// in a storage buffer.
-    ///
-    /// A device without storage buffers — WebGL2 — reads its arrays from
-    /// textures, and this is where that choice is made once and reused for
-    /// every array the source owns and every one it grows.
-    array_max_dimension: Option<u32>,
     /// The mesh-metadata array, held in whichever resource the device reads.
     metadata_array: Array,
     /// Resource id of the mesh-metadata array.
@@ -535,6 +511,23 @@ pub struct MeshSource {
     morph_weights_array: Array,
     /// Resource id of the frame's morph-weight array.
     morph_weights_buf: ResourceId<ArrayHandle>,
+    /// The frame's morph-displacement array, pooling every morphed mesh's
+    /// deltas into one resource.
+    ///
+    /// A mesh's displacements are its own geometry, but one array holds them
+    /// for the frame and the mesh names its slice through its metadata entry's
+    /// `morph_deltas_offset`. That is what leaves the mesh group nothing to
+    /// bind.
+    morph_deltas_pool: ArrayPool,
+    /// Resource id of the frame's morph-displacement array.
+    morph_deltas_buf: ResourceId<ArrayHandle>,
+    /// Whether a mesh's displacements were written into the pool since the
+    /// array was last uploaded.
+    ///
+    /// Allocating or removing a mesh marks it; the next
+    /// [build](FrameSource::build_scene) uploads the array then, so the upload
+    /// always lands in the same encoder as the draws that read it.
+    morph_deltas_dirty: bool,
     /// Per-frame globals (advanced once per built scene).
     globals: Globals,
     /// Metadata entries, one per live uploaded mesh.
@@ -699,6 +692,17 @@ impl MeshSource {
             array_max_dimension,
         );
         let morph_weights_buf = graph.insert_strong(morph_weights_array.handle());
+        // The morph displacements are pooled rather than indexed: a mesh's
+        // slice is as long as it has vertices, so it takes a sub-allocation
+        // like a vertex stream rather than a fixed slot like an entry.
+        let morph_deltas_pool = ArrayPool::new(
+            &device,
+            "unlit3d::morph_deltas",
+            size_of::<f32>() as u64,
+            1,
+            array_max_dimension,
+        );
+        let morph_deltas_buf = graph.insert_strong(morph_deltas_pool.handle());
 
         // Initial upload of camera and globals.
         queue.write_buffer(
@@ -734,13 +738,15 @@ impl MeshSource {
             context: ctx,
             camera_buf,
             globals_buf,
-            array_max_dimension,
             metadata_array,
             metadata_buf,
             joints_array,
             joints_buf,
             morph_weights_array,
             morph_weights_buf,
+            morph_deltas_pool,
+            morph_deltas_buf,
+            morph_deltas_dirty: false,
             globals,
             metadata: Vec::new(),
             free_metadata: Vec::new(),
@@ -1007,41 +1013,47 @@ impl MeshSource {
             (id, format)
         });
 
-        // The morph displacements are a weak node, and they are the bind
-        // group's dependency: the mesh owns them, so removing it frees them
-        // with the rest of its parts.
+        // The morph displacements are this mesh's geometry, but they go into
+        // the frame-wide pool rather than a resource of their own, so the mesh
+        // holds an element range like it holds a vertex range. The range's
+        // offset is what its metadata entry names.
         //
         // The joint matrices and the morph weights are *not* here. They are
         // per-instance pose state: the frame's global group binds them, so two
         // instances of one mesh can deform differently.
-        let morph_target_count = morph_deltas.as_ref().map_or(0, |morph| morph.target_count);
-        let morph_deltas_id = morph_deltas
-            .as_ref()
-            .map(|morph| Self::graph(world, self.context).insert_weak(morph.array.clone()));
-
-        let bind_group_id = bind_group.map(|bind_group| {
-            // Only the buffers the group reads, so replacing or removing one
-            // reaches the group. The mesh's vertex and index buffers are
-            // deliberately absent: a draw binds them directly, the group reads
-            // none of them, and a pooled buffer changes when the pool grows —
-            // a dependency would rebuild every group of every mesh that shares
-            // the pool for nothing.
-            let mut graph = Self::graph(world, self.context);
-            let bind_group_id = graph.insert_weak(bind_group);
-            if let Some(id) = morph_deltas_id {
-                graph.add_dependency(bind_group_id, id);
+        let (morph_target_count, morph_deltas_offset, morph_deltas_allocation) = match morph_deltas
+        {
+            Some(morph) => {
+                let range = self
+                    .morph_deltas_pool
+                    .allocate(&self.device(world), morph.deltas.len() as u32)
+                    .expect("the morph-displacement pool grows");
+                self.morph_deltas_pool.write(range, morph.deltas.as_bytes());
+                self.morph_deltas_dirty = true;
+                (morph.target_count, range.offset(), Some(range.allocation()))
             }
-            bind_group_id
-        });
+            None => (0, 0, None),
+        };
+
+        // A bind group the caller supplied — a custom pipeline's per-mesh data
+        // — is a weak node under the mesh's root, so removing the mesh frees
+        // it with the rest of its parts. The pools a mesh's own data lives in
+        // are deliberately not dependencies: a pooled resource changes when its
+        // pool grows, and a dependency would rebuild every group of every mesh
+        // sharing the pool for nothing.
+        let bind_group_id =
+            bind_group.map(|bind_group| Self::graph(world, self.context).insert_weak(bind_group));
 
         // The entry is owned whether or not the pipeline reads it: a draw that
         // reads no metadata simply leaves the index unused. A slot a removed
         // mesh held is reused, so the array stays as dense as the meshes that
         // are still alive.
         //
-        // The morph count the addressing carries is the mesh's own: no other
-        // count describes the displacements it uploaded.
+        // The morph count and displacement offset the addressing carries are
+        // this mesh's own: no other values describe the displacements it
+        // pooled.
         metadata.morph_count = morph_target_count;
+        metadata.morph_deltas_offset = morph_deltas_offset;
         let metadata_index = match self.free_metadata.pop() {
             Some(index) => {
                 self.metadata[index as usize] = metadata;
@@ -1071,9 +1083,6 @@ impl MeshSource {
         if let Some(id) = bind_group_id {
             graph.add_dependency(root, id);
         }
-        if let Some(id) = morph_deltas_id {
-            graph.add_dependency(root, id);
-        }
         drop(graph);
 
         GpuMesh {
@@ -1084,6 +1093,7 @@ impl MeshSource {
                 bind_group_id,
                 vertex_allocation: None,
                 index_allocation: None,
+                morph_deltas_allocation,
                 metadata_index,
             }),
             vertex_layout,
@@ -1152,15 +1162,12 @@ impl MeshSource {
             morph_targets,
         } = desc;
 
-        // The key's layouts are derived on the fly: the source keeps no
-        // per-family state, and the pure layout builder is the same one the
-        // family's factory uses, so the two cannot drift.
+        // The key's options say what the mesh's streams look like: the pure
+        // layout builders below are the same ones the family's factory uses, so
+        // the two cannot drift. The built-in variants bind nothing at the mesh
+        // group, so the mesh carries no bind group of its own: every input it
+        // reads is in the global group or on the instance stream.
         let options = &key.options;
-        let layouts = options.bind_group_layouts(&device);
-        // The mesh group exists only for the morph displacements. A variant
-        // that morphs nothing binds nothing at the index, and the draw below
-        // leaves the group off.
-        let mesh_layout = layouts.mesh.clone();
         // The streams are the key's, not the caller's: a buffer has to be
         // packed the way the shader reading it declares its vertex layout, so
         // a channel the key does not read is left out.
@@ -1220,7 +1227,9 @@ impl MeshSource {
 
         // The morph displacements, when the draw reads them. They are geometry
         // the mesh owns, written once here; the weights that blend them are
-        // per-instance pose state the frame's global group binds.
+        // per-instance pose state the frame's global group binds. The source
+        // pools them into the frame-wide array, so what it hands over is the
+        // raw data rather than a resource.
         let morph_deltas = options.needs_morphs().then(|| {
             assert!(
                 !morph_targets.is_empty(),
@@ -1241,31 +1250,10 @@ impl MeshSource {
                     deltas.extend_from_slice(&target.positions[vertex]);
                 }
             }
-            // Written once rather than every frame, so it goes straight to the
-            // queue instead of through a staging buffer and the frame encoder.
-            let mut array = Array::new(
-                &device,
-                Some("unlit3d::mesh::morph_deltas"),
-                size_of::<f32>() as u64,
-                deltas.len() as u64,
-                self.array_max_dimension,
-            );
-            array.write(&queue, deltas.as_bytes());
             MorphDeltas {
-                array: array.handle(),
+                deltas,
                 target_count,
             }
-        });
-
-        // The morph displacements' bind group, for a variant that reads them.
-        // A variant that morphs nothing binds nothing at the mesh group, and a
-        // mesh with no targets supplies no displacements to read.
-        let mesh_bind_group = mesh_layout.as_ref().map(|mesh_layout| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("unlit3d::mesh::bind_group"),
-                layout: mesh_layout,
-                entries: &mesh_group_entries(morph_deltas.as_ref().map(|morph| &morph.array)),
-            })
         });
 
         // The vertex layout the key's options declare, slot for slot. An empty
@@ -1403,7 +1391,9 @@ impl MeshSource {
                 count,
                 indexed,
                 aabb,
-                bind_group: mesh_bind_group,
+                // The built-in variants bind nothing at the mesh group, so the
+                // mesh carries no group of its own.
+                bind_group: None,
                 morph_deltas,
             },
             meta,
@@ -1626,6 +1616,9 @@ impl MeshSource {
         if let Some(index) = mesh.parts.index_allocation {
             self.index_pool.release(index);
         }
+        if let Some(deltas) = mesh.parts.morph_deltas_allocation {
+            self.morph_deltas_pool.release(deltas);
+        }
 
         let metadata_index = mesh.parts.metadata_index;
         let emptied = self.metadata.get_mut(metadata_index as usize);
@@ -1756,6 +1749,28 @@ impl MeshSource {
             .upload(&device, encoder, self.packed_joints.as_bytes());
     }
 
+    /// Grow the frame's morph-displacement array if a mesh outgrew it, and
+    /// upload the pooled slices through the frame's encoder.
+    ///
+    /// Allocating or removing a mesh marks the pool dirty, so the upload lands
+    /// in the next frame together with the draws that read it. The resource is
+    /// replaced only when it is too small, so a steady scene rewrites in place
+    /// and rebuilds no bind group.
+    fn upload_morph_deltas(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+        if !self.morph_deltas_dirty {
+            return;
+        }
+        self.morph_deltas_dirty = false;
+        let device = self.device(world);
+        if self.morph_deltas_pool.upload(&device, encoder) {
+            // A replaced array invalidates every global group bound to it.
+            Self::graph(world, self.context)
+                .replace(self.morph_deltas_buf, self.morph_deltas_pool.handle())
+                .expect("the morph-displacement array's node exists");
+            self.rebuild_dirty_global_groups(world);
+        }
+    }
+
     /// Grow the frame's morph-weight array if the packed data outgrew it, and
     /// upload it through the frame's encoder.
     fn upload_morph_weights(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
@@ -1792,6 +1807,10 @@ impl MeshSource {
             morph_weights: graph
                 .get(self.morph_weights_buf)
                 .expect("morph weights array")
+                .clone(),
+            morph_deltas: graph
+                .get(self.morph_deltas_buf)
+                .expect("morph deltas array")
                 .clone(),
         }
     }
@@ -1991,8 +2010,8 @@ impl MeshSource {
     /// check is the pool's own handle compared against what the node holds: no
     /// counter to keep in step, and repeating the call is free.
     ///
-    /// Nothing depends on a pool node — a mesh's bind group reads only its
-    /// mesh-info uniform — so replacing one marks nothing else dirty. A
+    /// Nothing depends on a pool node — the built-in variants bind no
+    /// per-mesh resource at all — so replacing one marks nothing else dirty. A
     /// dependency added onto a pool buffer makes every grow rebuild it, which
     /// is why there must not be one.
     fn sync_pool_node(pool: &BufferPool, id: ResourceId<wgpu::Buffer>, graph: &mut ResourceGraph) {
@@ -2048,6 +2067,7 @@ impl MeshSource {
                 metadata: self.metadata_buf,
                 joints: self.joints_buf,
                 morph_weights: self.morph_weights_buf,
+                morph_deltas: self.morph_deltas_buf,
             },
         );
         let ctx = self.context;
@@ -2273,6 +2293,10 @@ impl FrameSource for MeshSource {
             profiling::scope!("mesh_source.poses.upload");
             self.upload_joints(world, encoder);
             self.upload_morph_weights(world, encoder);
+            // The pool's upload rebuilds the global groups itself if it had to
+            // replace the array, so it runs before the instance upload like the
+            // pose arrays do.
+            self.upload_morph_deltas(world, encoder);
         }
 
         // Pack instance data into the reused scratch buffer and upload it.
@@ -2323,6 +2347,7 @@ impl FrameSource for MeshSource {
         graph.remove_drop(self.metadata_buf);
         graph.remove_drop(self.joints_buf);
         graph.remove_drop(self.morph_weights_buf);
+        graph.remove_drop(self.morph_deltas_buf);
         graph.remove_drop(self.index_pool_id);
         for id in self.vertex_pool_ids.values() {
             graph.remove_drop(*id);
@@ -2388,6 +2413,23 @@ mod tests {
                     label: Some("test::encoder"),
                 },
             )
+        }
+
+        /// An empty bind group, for a mesh that carries a group of its own.
+        fn empty_bind_group(&self) -> wgpu::BindGroup {
+            let layout = self.source.device(&self.world).create_bind_group_layout(
+                &wgpu::BindGroupLayoutDescriptor {
+                    label: Some("test::mesh::empty"),
+                    entries: &[],
+                },
+            );
+            self.source
+                .device(&self.world)
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("test::mesh::empty"),
+                    layout: &layout,
+                    entries: &[],
+                })
         }
     }
 
@@ -2800,13 +2842,13 @@ mod tests {
     #[test]
     fn removing_a_mesh_frees_every_resource_built_from_it() {
         let mut h = harness();
-        // A morphing mesh, so the mesh has a bind group of its own to free.
+        // A morphing mesh, so the mesh holds a displacement range of its own
+        // alongside its vertex and index ranges.
         let mesh = morph_mesh(&mut h);
         let ctx = h.source.context();
 
-        // The root is the mesh's lifetime entry point; its parts are the bind
-        // group that reads the mesh's morph displacements, if it has one. The
-        // mesh's vertices and indices live in pools, so they are strong nodes
+        // The root is the mesh's lifetime entry point; the mesh's vertices,
+        // indices and displacements live in pools, so those are strong nodes
         // the source owns and survive the mesh — what the mesh loses is its
         // share of them, which `remove_mesh` hands back.
         let before = MeshSource::graph(&h.world, ctx).len();
@@ -2815,18 +2857,17 @@ mod tests {
             MeshSource::graph(&h.world, ctx).get(mesh.parts.root),
             Some(Virtual)
         ));
-        let bind_group = mesh.parts.bind_group_id.expect("the mesh has a group");
         let root = mesh.parts.root;
+        assert!(
+            mesh.parts.morph_deltas_allocation.is_some(),
+            "a morphing mesh holds a displacement range"
+        );
 
         h.source.remove_mesh(&h.world, mesh);
 
         assert!(
             MeshSource::graph(&h.world, ctx).get(root).is_none(),
             "root removed"
-        );
-        assert!(
-            MeshSource::graph(&h.world, ctx).get(bind_group).is_none(),
-            "the bind group built from them removed"
         );
         assert!(
             MeshSource::graph(&h.world, ctx).len() < before,
@@ -2841,9 +2882,19 @@ mod tests {
     #[test]
     fn a_mesh_registers_its_pooled_parts_nowhere_under_its_root() {
         let mut h = harness();
-        // A morphing mesh, so the mesh has a bind group of its own to hang off
-        // the root.
-        let mesh = morph_mesh(&mut h);
+        // A caller-supplied bind group, which is the one part a mesh can own
+        // outright: the built-in variants bind nothing per mesh, so their
+        // meshes carry none.
+        let bind_group = h.empty_bind_group();
+        let mesh = h.source.allocate_mesh(
+            &h.world,
+            MeshDesc {
+                vertex_buffers: ArrayVec::new(),
+                count: 3,
+                bind_group: Some(bind_group.clone()),
+                ..Default::default()
+            },
+        );
         let ctx = h.source.context();
 
         // The pools are the source's, not the mesh's: a mesh that goes away

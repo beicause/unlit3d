@@ -236,6 +236,16 @@ pub struct MeshMetadata {
     pub morph_count: u32,
     /// `xy` is the UV minimum and `zw` its extents.
     pub uv_min_and_extents: glam::Vec4,
+    /// First element this mesh's morph displacements occupy in the frame's
+    /// shared `array<f32>`.
+    ///
+    /// The displacements are the mesh's own geometry, but they live in one
+    /// frame-wide array rather than a per-mesh buffer, so a draw names its
+    /// slice by an offset like this one instead of binding a resource.
+    pub morph_deltas_offset: u32,
+    /// Explicit tail padding: the struct's 16-byte alignment rounds its 52 used
+    /// bytes up to 64, and an array element is that whole stride.
+    pub pad0: [u32; 3],
 }
 
 /// One per-instance record: the affine model matrix, base color, pose base and
