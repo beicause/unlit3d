@@ -322,11 +322,15 @@ What it does is patch the world you already render:
   [`GpuMesh`](components::GpuMesh), the [`UnlitPipeline`](components::UnlitPipeline)
   for the mesh, an [`InstanceColor`](components::InstanceColor) tinted with the
   material's base-color factor, and — when the mesh reads a base-color texture —
-  the matching [`GpuMaterial`](components::GpuMaterial).
+  the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
+  material is `alphaMode: BLEND` is also marked
+  [`ZSortedDrawing`](components::ZSortedDrawing), so the renderer composites it
+  back-to-front after the opaque geometry.
 
 What loads: positions, UVs, vertex colors and indices; base-color textures and
-the materials that sample them; and node hierarchies, accumulated into world
-transforms. What does not yet: skinning, morph targets, normals and tangents.
+the materials that sample them; blended (`alphaMode: BLEND`) materials; and node
+hierarchies, accumulated into world transforms. What does not yet: skinning,
+morph targets, normals, tangents and alpha cutoff (`alphaMode: MASK`).
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `UnlitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.

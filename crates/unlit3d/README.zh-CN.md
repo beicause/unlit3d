@@ -215,10 +215,13 @@ active 相机时，帧会被清空，什么都不绘制。
 - `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
   的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`、已上传的
   `GpuMesh`、该网格的 `UnlitPipeline`、以材质基础色因子着色的 `InstanceColor`，
-  以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。
+  以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
+  primitive 还会带上 `ZSortedDrawing` 标记，于是渲染器在绘制完不透明几何之后按由远及近
+  的顺序混合它。
 
-支持加载：位置、UV、顶点色与索引；基础色纹理及采样它们的材质；以及按世界变换累加的
-节点层级。暂不支持：蒙皮、形变目标、法线与切线。网格上传所用的管线 key 总是由
+支持加载：位置、UV、顶点色与索引；基础色纹理及采样它们的材质；混合
+（`alphaMode: BLEND`）材质；以及按世界变换累加的节点层级。暂不支持：蒙皮、形变目标、
+法线、切线以及 alpha 裁剪（`alphaMode: MASK`）。网格上传所用的管线 key 总是由
 primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它绘制所用的变体绝不会
 要求网格不存在的流。
 

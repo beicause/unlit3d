@@ -23,14 +23,17 @@ const IDX_OFFSET: u32 = 80; // 6 × u16
 const IMG_OFFSET: u32 = 92; // the 80-byte PNG
 const BIN_LENGTH: u32 = 172;
 
-/// How a document is shaped: where the mesh node sits, and whether the
-/// material samples a texture.
+/// How a document is shaped: where the mesh node sits, whether the
+/// material samples a texture, and whether it blends.
 struct QuadDoc {
     /// The mesh node's local translation.
     translation: [f32; 3],
     /// `true`: the material samples the 4x4 PNG through `TEXCOORD_0`.
     /// `false`: a flat base-color factor, no texture and no uvs.
     textured: bool,
+    /// `true`: the material states `alphaMode: BLEND` and a half-opaque
+    /// base-color factor.
+    blend: bool,
 }
 
 /// The glTF JSON for one quad, as bytes for [`UnlitGltf::from_buffer`].
@@ -40,8 +43,9 @@ struct QuadDoc {
 /// in the XY plane, CCW when seen from +Z.
 fn quad_document(doc: &QuadDoc) -> Vec<u8> {
     let mut attributes = "\"POSITION\":0".to_string();
+    let alpha = if doc.blend { 0.5 } else { 1.0 };
     let mut material =
-        "\"pbrMetallicRoughness\":{\"baseColorFactor\":[1.0,1.0,1.0,1.0]".to_string();
+        format!("\"pbrMetallicRoughness\":{{\"baseColorFactor\":[1.0,1.0,1.0,{alpha}]");
     let mut textures = String::new();
     if doc.textured {
         attributes.push_str(",\"TEXCOORD_0\":1");
@@ -53,6 +57,9 @@ fn quad_document(doc: &QuadDoc) -> Vec<u8> {
         );
     }
     material.push('}');
+    if doc.blend {
+        material.push_str(",\"alphaMode\":\"BLEND\"");
+    }
     let json = format!(
         concat!(
             "{{\"asset\":{{\"version\":\"2.0\"}},\"scene\":0,",
@@ -123,6 +130,7 @@ async fn textured_quad_renders_four_colours() {
     let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
         translation: [0.0, 0.0, 0.0],
         textured: true,
+        blend: false,
     }))
     .expect("the embedded document parses");
 
@@ -173,6 +181,7 @@ async fn node_hierarchy_translates_the_quad() {
         let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
             translation,
             textured: true,
+            blend: false,
         }))
         .expect("the embedded document parses");
         let images =
@@ -230,6 +239,7 @@ async fn untextured_material_draws_flat() {
     let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
         translation: [0.0, 0.0, 0.0],
         textured: false,
+        blend: false,
     }))
     .expect("the embedded document parses");
     let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
@@ -262,6 +272,66 @@ async fn untextured_material_draws_flat() {
     );
 }
 
+/// A material with `alphaMode: BLEND` turns on blending and z-sorting rather
+/// than writing opaque geometry: the quad composites over the background
+/// instead of covering it with white.
+async fn a_blended_material_composites_over_the_frame() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
+        translation: [0.0, 0.0, 0.0],
+        textured: false,
+        blend: true,
+    }))
+    .expect("the embedded document parses");
+
+    // The primitive's key carries the blend state...
+    let key = gpu.with_mesh_source(&world, |source, world| {
+        gltf.pipeline_key(&source.device(world), 0, 0)
+    });
+    assert!(
+        key.options.color_target.blend.is_some(),
+        "an alphaMode BLEND material blends"
+    );
+
+    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
+    let materials = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_materials(source, world, &images)
+    });
+    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+    let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+
+    // ...and the spawned entity is marked for back-to-front compositing.
+    let z_sorted: Vec<Entity> = world
+        .query::<&ZSortedDrawing>()
+        .map(|(entity, _)| entity)
+        .collect();
+    assert_eq!(
+        z_sorted, entities,
+        "a blended primitive spawns with ZSortedDrawing"
+    );
+
+    world.spawn((camera(),));
+    let target = gpu.bind_offscreen_target(&world, "test::gltf_blended_quad");
+    gpu.render(&world);
+    let px = read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target));
+
+    let quarter = (WIDTH * HEIGHT / 4) as usize;
+    // Half-opaque white over the background: almost no texel reaches fully
+    // opaque white, which is exactly what the unblended draw would produce.
+    let white = count_colour(&px, [255, 255, 255], 1);
+    assert!(
+        white < quarter / 10,
+        "a blended quad composites rather than writing opaque white ({white} texels)"
+    );
+    let covered = count_pixels_off_background(&px, CLEAR, 2);
+    assert!(
+        covered > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the blended quad still covers the frame: {covered} texels"
+    );
+}
+
 /// Unloading every resource empties the frame again.
 async fn unload_empties_the_frame() {
     let ctx = Ctx::headless().await;
@@ -270,6 +340,7 @@ async fn unload_empties_the_frame() {
     let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
         translation: [0.0, 0.0, 0.0],
         textured: true,
+        blend: false,
     }))
     .expect("the embedded document parses");
     let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
@@ -323,6 +394,7 @@ gpu_tests! {
     textured_quad_renders_four_colours,
     node_hierarchy_translates_the_quad,
     untextured_material_draws_flat,
+    a_blended_material_composites_over_the_frame,
     unload_empties_the_frame,
 }
 

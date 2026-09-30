@@ -48,10 +48,12 @@
 //! # Supported subset
 //!
 //! The unlit renderer draws static meshes with a base-color texture and an
-//! instance tint. Everything else a glTF document can carry is ignored: no
-//! skinning, morph targets, normals, tangents, alpha blending, double-sided
-//! rendering or animations. A mesh whose primitive uses techniques outside
-//! this subset still uploads and spawns — it just renders without them.
+//! instance tint, and composites a material whose `alphaMode` is `BLEND` —
+//! straight alpha, drawn z-sorted so overlapping surfaces layer correctly.
+//! Everything else a glTF document can carry is ignored: no skinning, morph
+//! targets, normals, tangents, alpha cutoff (`MASK`), double-sided rendering
+//! or animations. A mesh whose primitive uses techniques outside this subset
+//! still uploads and spawns — it just renders without them.
 //!
 //! Every handle returned here must be given back to the matching `unload_*`
 //! call when the resource is no longer wanted; the graph does not otherwise
@@ -63,7 +65,9 @@
 
 use std::path::Path;
 
-use crate::components::{Camera, GpuMaterial, GpuMesh, InstanceColor, Transform, UnlitPipeline};
+use crate::components::{
+    Camera, GpuMaterial, GpuMesh, InstanceColor, Transform, UnlitPipeline, ZSortedDrawing,
+};
 use crate::mesh::UnlitMeshDesc;
 use crate::mesh_source::{MeshSource, UnlitPipelineKey};
 use unlit_ecs::prelude::{Entity, World};
@@ -184,8 +188,10 @@ impl UnlitGltf {
     /// The key always carries the position and instance streams. It reads the
     /// UV and base-color-texture streams when the primitive carries
     /// `TEXCOORD_0` *and* its material declares a base-color texture, and the
-    /// vertex-color stream when the primitive carries `COLOR_0`. Everything
-    /// else follows [`UnlitOptions::standard`], so the key is exactly what
+    /// vertex-color stream when the primitive carries `COLOR_0`. A material
+    /// whose `alphaMode` is `BLEND` also blends, so the key is drawn with
+    /// [`wgpu::BlendState::ALPHA_BLENDING`]; everything else follows
+    /// [`UnlitOptions::standard`], so the key is exactly what
     /// [`Self::insert_mesh`] uploads with.
     pub fn pipeline_key(
         &self,
@@ -194,10 +200,10 @@ impl UnlitGltf {
         primitive: usize,
     ) -> UnlitPipelineKey {
         let primitive = self.primitive(mesh, primitive);
+        let material = primitive.material();
         let mut flags = UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_INSTANCE;
         if primitive.get(&gltf::Semantic::TexCoords(0)).is_some()
-            && primitive
-                .material()
+            && material
                 .pbr_metallic_roughness()
                 .base_color_texture()
                 .is_some()
@@ -207,7 +213,13 @@ impl UnlitGltf {
         if primitive.get(&gltf::Semantic::Colors(0)).is_some() {
             flags |= UnlitFlags::VERTEX_COLOR;
         }
-        UnlitPipelineKey::new(UnlitOptions::standard(device).with_flags(flags))
+        let mut options = UnlitOptions::standard(device).with_flags(flags);
+        // glTF base colors and textures are straight (non-premultiplied)
+        // alpha, which is exactly what `ALPHA_BLENDING` composites.
+        if material.alpha_mode() == gltf::material::AlphaMode::Blend {
+            options.color_target.blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+        }
+        UnlitPipelineKey::new(options)
     }
 
     // -- images ---------------------------------------------------------------
@@ -505,8 +517,11 @@ impl UnlitGltf {
     /// node's world-space [`Transform`], the uploaded [`GpuMesh`], the
     /// pipeline for the mesh's key and an [`InstanceColor`] tinted with the
     /// material's base-color factor. A primitive whose key reads a base-color
-    /// texture also carries the matching [`GpuMaterial`]. Children are not
-    /// spawned; use [`Self::spawn_default_scene`] for the whole scene.
+    /// texture also carries the matching [`GpuMaterial`]. A blended primitive
+    /// ([`gltf::material::AlphaMode::Blend`]) also carries
+    /// [`ZSortedDrawing`], so it is drawn after the opaque geometry and
+    /// composited back-to-front. Children are not spawned; use
+    /// [`Self::spawn_default_scene`] for the whole scene.
     ///
     /// # Panics
     ///
@@ -532,35 +547,51 @@ impl UnlitGltf {
                             && handle.primitive_index == primitive.index()
                     })
                     .expect("a document mesh must be inserted before the node that draws it");
+                // The base-color factor tints the instance whether or not the
+                // material samples a texture; a primitive naming no material
+                // falls back to the glTF default, opaque white.
+                let tint: glam::Vec4 = primitive
+                    .material()
+                    .pbr_metallic_roughness()
+                    .base_color_factor()
+                    .into();
                 let material = mesh_handle
                     .key
                     .options
                     .flags
                     .contains(UnlitFlags::BASE_COLOR_TEXTURE)
                     .then(|| self.primitive_material(primitive, materials));
-                let tint = match material {
-                    Some(material) => self
-                        .material(material.material)
-                        .pbr_metallic_roughness()
-                        .base_color_factor()
-                        .into(),
-                    None => glam::Vec4::ONE,
-                };
+                let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
                 let bundle = (
                     transform.clone(),
                     mesh_handle.mesh.clone(),
                     UnlitPipeline::new(mesh_handle.key.clone()),
                     InstanceColor::new(tint),
                 );
-                match material {
-                    Some(material) => entities.push(world.spawn((
+                match (material, z_sorted) {
+                    (Some(material), true) => entities.push(world.spawn((
+                        bundle.0,
+                        bundle.1,
+                        bundle.2,
+                        material.bind_group.clone(),
+                        bundle.3,
+                        ZSortedDrawing,
+                    ))),
+                    (Some(material), false) => entities.push(world.spawn((
                         bundle.0,
                         bundle.1,
                         bundle.2,
                         material.bind_group.clone(),
                         bundle.3,
                     ))),
-                    None => entities.push(world.spawn(bundle)),
+                    (None, true) => entities.push(world.spawn((
+                        bundle.0,
+                        bundle.1,
+                        bundle.2,
+                        bundle.3,
+                        ZSortedDrawing,
+                    ))),
+                    (None, false) => entities.push(world.spawn(bundle)),
                 }
             }
         }
