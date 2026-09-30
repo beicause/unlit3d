@@ -8,8 +8,8 @@ mod cli;
 #[cfg(target_os = "android")]
 pub mod android;
 
-/// Presentation a pointer press asks for: fullscreen in the browser, and the
-/// landscape lock only fullscreen permits. A no-op away from the web.
+/// The browser's fullscreen button, and the landscape lock that only
+/// fullscreen permits. Nothing is offered away from the web.
 mod web;
 
 use std::collections::VecDeque;
@@ -206,7 +206,6 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         last_frame: Instant::now(),
         initial_size: args.size.unwrap_or(scene.size),
         initial_scene: scene,
-        fullscreen: web::FullscreenRequest::new(),
     };
 
     // Native runs the loop on this thread. The web hands the app to the
@@ -271,10 +270,6 @@ struct App {
     initial_size: (u32, u32),
     /// The scene the example starts with; a switch replaces it.
     initial_scene: &'static scenes::SceneDef,
-    /// What the first press on the window asks the platform for, in the
-    /// browser: fullscreen, and then the landscape lock a fullscreen phone
-    /// wants.
-    fullscreen: web::FullscreenRequest,
 }
 
 /// The GPU context a scene draws with, requested asynchronously.
@@ -431,6 +426,8 @@ pub struct Scene {
     sequence_clock: f32,
     /// The scene-selector's switch component, read once per frame.
     switch: Entity,
+    /// The fullscreen button's request component, read once per frame.
+    fullscreen: Entity,
     /// A scene switch requested by the selector, consumed by the frame loop.
     pending: Option<&'static scenes::SceneDef>,
 }
@@ -438,6 +435,15 @@ pub struct Scene {
 /// Set by the windowed shell's scene-selector panel, read once by the frame
 /// loop.
 struct SceneSwitch(Option<&'static scenes::SceneDef>);
+
+/// Set by the windowed shell's fullscreen button, read once by the frame loop.
+///
+/// A flag rather than the state to move to: the button asks for the document to
+/// change, and which way it changes is read from the document itself at the
+/// moment the request is served. A panel runs while the world is borrowed to
+/// lay the UI out, so it can only record the click; the frame loop owns the
+/// window the request is served on. See [`web`].
+struct FullscreenRequest(bool);
 
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
@@ -608,22 +614,6 @@ impl ApplicationHandler<UserEvent> for App {
                 self.resize_surface(size.width, size.height);
             }
             WindowEvent::RedrawRequested => self.draw(),
-            // A press is the one gesture a browser accepts as permission to go
-            // fullscreen, and it arrives here as a mouse button or as a touch.
-            // Either way it is handled from the event rather than from the
-            // frame loop, which has no gesture to point at; see [`web`].
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            }
-            | WindowEvent::Touch(winit::event::Touch {
-                phase: winit::event::TouchPhase::Started,
-                ..
-            }) => {
-                if let Some(window) = &self.window {
-                    self.fullscreen.press(window);
-                }
-            }
             _ => {}
         }
     }
@@ -814,6 +804,16 @@ impl App {
             return;
         }
 
+        // The fullscreen button's request is served here, before the frame is
+        // drawn. The click reached the page through winit's own mouse or touch
+        // event, so the transient activation the browser demands is open, and
+        // the call has to be made from the loop that owns the window. See
+        // [`web`].
+        let fullscreen = self.scene.as_mut().is_some_and(Scene::take_fullscreen);
+        if fullscreen && let Some(window) = &self.window {
+            web::toggle(window);
+        }
+
         let (Some(surface), Some(scene)) = (self.surface.as_mut(), self.scene.as_mut()) else {
             return;
         };
@@ -885,6 +885,8 @@ impl Scene {
         // The selector's switch component lives in every world; only a windowed
         // run mounts the panel that writes it.
         let switch = world.spawn((SceneSwitch(None),));
+        // The fullscreen button's request component likewise.
+        let fullscreen = world.spawn((FullscreenRequest(false),));
         // The frame-rate component likewise, so both paths build the same
         // world shape and only the windowed run mounts the panel reading it.
         let frame_rate = world.spawn((FrameRate::default(),));
@@ -909,6 +911,13 @@ impl Scene {
         if options.selector {
             mount_selector(&mut world, switch, def);
             mount_frame_rate(&mut world, frame_rate);
+            // The browser is the one platform with a page to make fullscreen,
+            // and a page can still be denied it — an `iframe` without the
+            // `fullscreen` permission. No button is drawn where a press could
+            // only fail, so a phone never shows a control that does nothing.
+            if web::supported() {
+                mount_fullscreen(&mut world, fullscreen);
+            }
         }
 
         Self {
@@ -923,6 +932,7 @@ impl Scene {
             sequence_step: options.sequence_step,
             sequence_clock: 0.0,
             switch,
+            fullscreen,
             pending: None,
         }
     }
@@ -980,6 +990,18 @@ impl Scene {
     /// A scene switch requested by the selector panel, if any.
     fn take_switch(&mut self) -> Option<&'static scenes::SceneDef> {
         self.pending.take()
+    }
+
+    /// Whether the fullscreen button asked for a change, clearing the request.
+    ///
+    /// Read once per frame by the windowed loop, which is what serves it; the
+    /// scene keeps no opinion of its own about fullscreen.
+    fn take_fullscreen(&mut self) -> bool {
+        self.world
+            .with_mut::<FullscreenRequest, _>(self.fullscreen, |request| {
+                std::mem::take(&mut request.0)
+            })
+            .expect("the fullscreen request component exists")
     }
 
     /// Render one frame into whatever target the caller bound.
@@ -1124,6 +1146,70 @@ fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
         });
 }
 
+/// Mount the fullscreen button in the window's top-right corner, under the
+/// frame-rate readout.
+///
+/// A button rather than the old "the first press asks for fullscreen": a press
+/// on the canvas is not discoverable — a phone shows no hint that it would
+/// work, and nothing tells a user who left fullscreen that they may ask again —
+/// whereas a button is visible on every platform and keeps working after the
+/// browser has left fullscreen. Nothing about the request is latched, so the
+/// display can be entered and left as often as the button is pressed.
+///
+/// The click is recorded rather than served here: a panel runs while the world
+/// is borrowed, and it has no window to ask; the frame loop reads the request
+/// and calls [`web::toggle`], which is where a browser accepts it from.
+fn mount_fullscreen(world: &mut World, request: Entity) {
+    world.spawn((UiPanel::new(move |world, _entity, ui| {
+        let active = web::active();
+        let clicked = fullscreen_button(ui, active);
+        if clicked {
+            let _ = world.with_mut::<FullscreenRequest, _>(request, |request| request.0 = true);
+        }
+    }),));
+}
+
+/// Draw the fullscreen button, labelled for what pressing it does, and report
+/// whether it was pressed.
+///
+/// The label follows the document rather than a local flag: the user can leave
+/// fullscreen with the browser's own control — Escape, or the back gesture on a
+/// phone — and the button has to offer to go back in afterwards. That is also
+/// why it sits below the readout rather than beside it: an anchored area owns
+/// its corner, and the two would fight over the same rectangle.
+///
+/// A free function rather than the body of the panel's closure so a test can
+/// drive it against a bare [`egui::Context`], in both states, without a world
+/// or a window.
+fn fullscreen_button(ui: &mut egui::Ui, active: bool) -> bool {
+    // Below the readout, which is at `[-8.0, 8.0]` and one popup row tall.
+    egui::Area::new(egui::Id::new("unlit3d::fullscreen"))
+        .anchor(egui::Align2::RIGHT_TOP, [-8.0, 44.0])
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style())
+                .show(ui, |ui| {
+                    // The glyphs are drawn from the default font — ⛶ to enter and
+                    // ⏏ to leave — with a word beside each so the meaning does not
+                    // rest on a symbol alone. Both labels are laid out to extend
+                    // rather than wrap: the exit label is the wider of the two, and
+                    // an anchored area lays its contents out against the size it
+                    // remembered from the previous pass, so switching to it would
+                    // otherwise break it across two lines in the narrower area the
+                    // enter label had established.
+                    let label = if active {
+                        "⏏ Exit fullscreen"
+                    } else {
+                        "⛶ Fullscreen"
+                    };
+                    let label = egui::RichText::new(label).monospace();
+                    ui.add(egui::Button::new(label).wrap_mode(egui::TextWrapMode::Extend))
+                        .clicked()
+                })
+                .inner
+        })
+        .inner
+}
+
 /// The region a scene's content is drawn into and the size its camera is built
 /// for, for a `target`-pixel render target.
 ///
@@ -1164,7 +1250,190 @@ fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameRate, egui, frame_rate_readout, letterbox, tick};
+    use super::{FrameRate, egui, frame_rate_readout, fullscreen_button, letterbox, tick};
+
+    /// The id of the corner area the fullscreen button is drawn into.
+    const FULLSCREEN_AREA: &str = "unlit3d::fullscreen";
+
+    /// Run one egui pass over a `screen`-point screen with `events`, drawing the
+    /// fullscreen button in the state `active`, and report what it drew.
+    ///
+    /// What the pass drew is both what pressing the button did — the returned
+    /// flag — and every galley it laid out, which is how a test reads the
+    /// label without reaching into egui's internals.
+    fn fullscreen_pass(
+        ctx: &egui::Context,
+        screen: (f32, f32),
+        active: bool,
+        events: Vec<egui::Event>,
+    ) -> (bool, Vec<String>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(screen.0, screen.1),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut clicked = false;
+        let mut output = ctx.run_ui(input, |ui| {
+            clicked = fullscreen_button(ui, active);
+        });
+        // egui panics if a texture delta is dropped unapplied; a real frame
+        // hands it to the integration, and this test discards it.
+        output.textures_delta.clear();
+        let labels = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        (clicked, labels)
+    }
+
+    /// The centre of the area with `id`, which a previous pass has to have
+    /// drawn for this to answer.
+    fn area_centre(ctx: &egui::Context, id: &str) -> egui::Pos2 {
+        area_rect(ctx, id).center()
+    }
+
+    /// The rectangle of the area with `id`, which a previous pass has to have
+    /// drawn for this to answer.
+    fn area_rect(ctx: &egui::Context, id: &str) -> egui::Rect {
+        ctx.memory(|memory| {
+            memory
+                .area_rect(egui::Id::new(id))
+                .expect("the area was drawn")
+        })
+    }
+
+    /// The pointer events that tap `pos`: a press and, on a later pass, the
+    /// release that egui reports as a click.
+    fn tap(pos: egui::Pos2) -> (Vec<egui::Event>, Vec<egui::Event>) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        (
+            vec![egui::Event::PointerMoved(pos), button(true)],
+            vec![button(false)],
+        )
+    }
+
+    #[test]
+    fn the_fullscreen_button_offers_the_action_that_is_not_in_effect() {
+        let ctx = egui::Context::default();
+        // Two passes, because an anchored area is laid out against the size the
+        // previous pass left it.
+        for active in [false, true] {
+            let _ = fullscreen_pass(&ctx, (800.0, 600.0), active, Vec::new());
+            let (clicked, labels) = fullscreen_pass(&ctx, (800.0, 600.0), active, Vec::new());
+            assert!(!clicked, "nothing was pressed");
+            let label = labels.join(" ");
+            if active {
+                assert!(
+                    label.contains("Exit fullscreen"),
+                    "leaving is offered while fullscreen, got {label:?}"
+                );
+            } else {
+                assert!(
+                    label.contains("Fullscreen") && !label.contains("Exit"),
+                    "entering is offered while windowed, got {label:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_fullscreen_button_reports_a_press() {
+        let ctx = egui::Context::default();
+        let screen = (800.0, 600.0);
+        // An anchored area is laid out at the position the previous pass gave
+        // it, and it is only pinned to its corner from the pass after the
+        // first, so the tap is aimed at where two passes have put it.
+        let _ = fullscreen_pass(&ctx, screen, false, Vec::new());
+        let _ = fullscreen_pass(&ctx, screen, false, Vec::new());
+        let (press, release) = tap(area_centre(&ctx, FULLSCREEN_AREA));
+
+        // A release with no press before it is not a click, so the request is
+        // not raised by a stray event.
+        let (clicked, _) = fullscreen_pass(&ctx, screen, false, release.clone());
+        assert!(!clicked, "a release alone is not a click");
+        // Neither is a press the user has not let go of yet.
+        let (clicked, _) = fullscreen_pass(&ctx, screen, false, press);
+        assert!(!clicked, "a press alone is not a click");
+        let (clicked, _) = fullscreen_pass(&ctx, screen, false, release);
+        assert!(clicked, "the release inside the button is a click");
+    }
+
+    #[test]
+    fn the_fullscreen_button_grows_to_its_wider_label() {
+        let ctx = egui::Context::default();
+        // The area remembers the size of the narrower enter label, which is
+        // what it is laid out against when the exit label is first drawn.
+        let _ = fullscreen_pass(&ctx, (800.0, 600.0), false, Vec::new());
+        let (_, enter_labels) = fullscreen_pass(&ctx, (800.0, 600.0), false, Vec::new());
+        assert_eq!(enter_labels.len(), 1, "the enter label is one line");
+        let enter = area_rect(&ctx, FULLSCREEN_AREA);
+        let _ = fullscreen_pass(&ctx, (800.0, 600.0), true, Vec::new());
+        let leaving = area_rect(&ctx, FULLSCREEN_AREA);
+        // A wrapped label makes the button a row taller, which is the bug: the
+        // exit label is wider than the enter one, not taller than it.
+        assert!(
+            (leaving.height() - enter.height()).abs() < 1.0,
+            "the exit label wrapped: {enter:?} became {leaving:?}"
+        );
+        assert!(
+            leaving.width() > enter.width(),
+            "the exit label is the wider of the two: {enter:?} to {leaving:?}"
+        );
+    }
+
+    #[test]
+    fn the_fullscreen_button_does_not_cover_the_frame_rate_readout() {
+        let ctx = egui::Context::default();
+        let text = "60.0 fps · 16.7 ms";
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(800.0, 600.0),
+            )),
+            ..Default::default()
+        };
+        // One pass draws both areas; both remember their rectangles.
+        let mut output = ctx.run_ui(input, |ui| {
+            frame_rate_readout(ui, text);
+            fullscreen_button(ui, false);
+        });
+        output.textures_delta.clear();
+
+        let readout = ctx.memory(|memory| {
+            memory
+                .area_rect(egui::Id::new("unlit3d::frame-rate"))
+                .expect("the readout was drawn")
+        });
+        let button = ctx.memory(|memory| {
+            memory
+                .area_rect(egui::Id::new(FULLSCREEN_AREA))
+                .expect("the button was drawn")
+        });
+        assert!(
+            !readout.intersects(button),
+            "the readout {readout:?} and the button {button:?} share screen space"
+        );
+        assert!(
+            button.top() >= readout.bottom(),
+            "the button sits below the readout"
+        );
+        assert!(
+            button.right() <= 800.0 && button.bottom() <= 600.0,
+            "the button stays on screen: {button:?}"
+        );
+    }
 
     /// Every line count the readout laid a text galley out with, for a screen
     /// of `screen` points showing each of `texts` in turn.

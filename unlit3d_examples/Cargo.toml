@@ -62,6 +62,9 @@ wasm-bindgen-futures.workspace = true
 web-sys = {
   workspace = true,
   features = [
+    # Reading whether the page may take a canvas fullscreen, and whether it is
+    # in it now, is what decides if the button is drawn and what it says.
+    "Document",
     "OrientationLockType",
     "OrientationType",
     "Screen",
