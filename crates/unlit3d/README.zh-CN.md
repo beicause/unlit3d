@@ -15,9 +15,11 @@
 |---------|------|-----------|
 | `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；以及 winit 输入转发 |
+| `gltf` | 否 | `gltf` 模块：把一个 glTF 文档加载为 `UnlitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 
 使用 `--no-default-features` 时，本 crate 保留 ECS 组件、帧源、mesh 路径、管线抽象
-与可移植的 `input` 模块——它们都不依赖 egui 或 winit。
+与可移植的 `input` 模块——它们都不依赖 egui 或 winit。开启 `gltf` 则在同一套 ECS 与
+mesh 路径之上增加 glTF 加载器，见下文。
 
 ## 这一层的定位
 
@@ -190,6 +192,31 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
   运行期错误而非可捕获的 panic。
 
 </details>
+
+## 加载 glTF 文档
+
+`gltf` 模块（cargo feature `gltf`，默认关闭）把一个
+[glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) 文档——`.glb`
+或 `.gltf`——加载为 `UnlitGltf`。文档、缓冲与图像在构造函数里被急切地解析和解码，
+每个节点的世界空间变换也提前算好，因此 `UnlitGltf` 是模型的**记录**，而不是 GPU
+资源：它既不拥有 `World`，也不拥有 `MeshSource`。
+
+它做的是修补你已经在渲染的那个世界：
+
+- `insert_image` / `insert_material` / `insert_mesh` 把一个图像、材质或网格上传进目标
+  帧源的资源图并返回句柄；批量版本（`insert_images`、`insert_materials`、
+  `insert_meshes`）一次上传文档里的一切，与文档自身的索引对齐。
+- `unload_*` 只移除其句柄所指的东西——批量版本接受句柄切片；材质必须先于它采样的
+  图像卸载，因为纹理不能比依赖它的材质活得更久。没有任何隐式回收。
+- `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
+  的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`、已上传的
+  `GpuMesh`、该网格的 `UnlitPipeline`、以材质基础色因子着色的 `InstanceColor`，
+  以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。
+
+支持加载：位置、UV、顶点色与索引；基础色纹理及采样它们的材质；以及按世界变换累加的
+节点层级。暂不支持：蒙皮、形变目标、法线与切线。网格上传所用的管线 key 总是由
+primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它绘制所用的变体绝不会
+要求网格不存在的流。
 
 ## UI
 

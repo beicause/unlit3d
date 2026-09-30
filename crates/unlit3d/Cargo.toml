@@ -16,6 +16,11 @@ name = "custom_pipeline"
 
 [[test]]
 harness = false
+name = "gltf_scene"
+required-features = ["gltf"]
+
+[[test]]
+harness = false
 name = "gpu_ecs"
 
 [[test]]
@@ -41,6 +46,7 @@ bitflags.workspace = true
 const_shader_layout.workspace = true
 egui = { workspace = true, optional = true }
 glam.workspace = true
+gltf = { workspace = true, optional = true }
 hashbrown.workspace = true
 log.workspace = true
 profiling.workspace = true
@@ -68,6 +74,11 @@ wasm-bindgen.workspace = true
 
 [features]
 default = ["ui", "winit"]
+## Load glTF documents and patch them into another world's [`MeshSource`] with
+## the [`gltf`](crate::gltf) module: upload textures, materials and meshes into
+## an existing resource graph, unload them again, and spawn entities that draw
+## the document's default scene.
+gltf = ["dep:gltf"]
 ## The [`ui`](crate::ui) module: an egui overlay drawn as a frame source, and
 ## the [`unlit_wgpu`] egui backend it draws with. The UI's frame clock
 ## is the one place that needs a browser-capable `Instant`.

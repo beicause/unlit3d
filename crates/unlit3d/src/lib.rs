@@ -4,6 +4,8 @@
 pub mod bounds;
 pub mod components;
 pub mod culling;
+#[cfg(feature = "gltf")]
+pub mod gltf;
 pub mod input;
 pub mod mesh;
 pub mod mesh_source;

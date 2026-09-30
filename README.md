@@ -68,6 +68,11 @@ Not supported: lighting and shadows, and post-processing.
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
   the frame's target.
+- **Optional glTF loading.** The `unlit3d` `gltf` feature loads a glTF 2.0
+  document into a plain record of the model — no `World`, no GPU state — and
+  patches its images, materials and meshes into the resource graph of a world
+  you already render, unloads them again, and spawns the entities that draw the
+  document's default scene.
 - **Persistent, pooled GPU resources.** Draws work with raw `wgpu` resources;
   they live across frames, are rebuilt only when needed, and share and reuse the
   buffers uploads go through.
@@ -86,7 +91,7 @@ Not supported: lighting and shadows, and post-processing.
 | Crate | Role |
 |-------|------|
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit pipeline, and an egui backend. Knows nothing about ECS. |
-| [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation. |
+| [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; also the Android example, packaged as an APK. |

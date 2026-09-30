@@ -18,10 +18,12 @@ directly, and you are expected to know WebGPU to use it well.
 |---------|---------|----------|
 | `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain, and the winit input translation |
+| `gltf` | no | the `gltf` module: load a glTF document into an `UnlitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 
 With `--no-default-features` the crate keeps the ECS components, the frame
 sources, the mesh path, the pipeline abstraction and the portable [`input`]
-module — none of which depend on egui or winit.
+module — none of which depend on egui or winit. Enabling `gltf` adds the glTF
+loader on top of the same ECS and mesh path; see below.
 
 ## What this layer is for
 
@@ -287,6 +289,41 @@ it is privileged: a caller's own family is registered through the same
   rather than a catchable panic.
 
 </details>
+
+## Loading glTF documents
+
+The `gltf` module (cargo feature `gltf`, off by default) loads a
+[glTF 2.0](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html) document —
+`.glb` or `.gltf` — into an `UnlitGltf`. The document, its
+buffers and its images are parsed and decoded eagerly in the constructor, and
+the world-space transform of every node is computed up front, so `UnlitGltf` is
+a *record* of the model, not a GPU resource: it owns no `World` and no
+[`MeshSource`](mesh_source::MeshSource).
+
+What it does is patch the world you already render:
+
+- `insert_image` / `insert_material` / `insert_mesh` upload one image, material
+  or mesh into the target source's resource graph and return a handle; the
+  batch versions (`insert_images`, `insert_materials`, `insert_meshes`) upload
+  everything the document has, aligned with the document's own indices.
+- `unload_*` removes exactly what its handles name — the batch versions take a
+  slice of handles, and a material must be unloaded before the image it
+  samples, because the texture cannot outlive the material that depends on it.
+  Nothing is reclaimed implicitly.
+- `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
+  mesh (or every node reachable from the default scene): one entity per
+  primitive, each carrying the node's world-space [`Transform`](components::Transform), the uploaded
+  [`GpuMesh`](components::GpuMesh), the [`UnlitPipeline`](components::UnlitPipeline)
+  for the mesh, an [`InstanceColor`](components::InstanceColor) tinted with the
+  material's base-color factor, and — when the mesh reads a base-color texture —
+  the matching [`GpuMaterial`](components::GpuMaterial).
+
+What loads: positions, UVs, vertex colors and indices; base-color textures and
+the materials that sample them; and node hierarchies, accumulated into world
+transforms. What does not yet: skinning, morph targets, normals and tangents.
+The pipeline key a mesh is uploaded with is always derived from the primitive's
+own attributes (see `UnlitGltf::pipeline_key`),
+so the variant it draws with never asks for a stream the mesh does not have.
 
 ## UI
 

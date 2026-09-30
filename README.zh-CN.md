@@ -49,6 +49,9 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   可渲染实体把网格、材质与管线作为组件携带，游戏逻辑与绘制共用同一套模型。
 - **按变体组合的 unlit 管线。** 着色器变体只含网格实际使用的通道——位置、UV、顶点色、
   逐实例变换与颜色、基础色纹理、蒙皮、形变目标——并针对本帧的渲染目标特化。
+- **可选的 glTF 加载。** `unlit3d` 的 `gltf` feature 把一个 glTF 2.0 文档加载为纯粹的
+  模型记录——没有 `World`，没有 GPU 状态——并把它的图像、材质与网格修补进你已在渲染
+  的世界的资源图，再卸载它们，并生成绘制文档默认场景的实体。
 - **常驻且池化的 GPU 资源。** 直接使用 `wgpu` 资源；跨帧保留，按需重建，并共享复用
   上传所经过的缓冲。
 - **CPU 视锥剔除与自动实例化。** 屏幕外的网格不产生开销，状态相同的绘制折叠为一次
@@ -64,7 +67,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | Crate | 职责 |
 |-------|------|
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 管线与 egui 后端。不认识 ECS。 |
-| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现。 |
+| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是打包成 APK 的 Android 示例。 |
