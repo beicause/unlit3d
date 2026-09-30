@@ -38,11 +38,11 @@
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
 //   group 0  binding 2  mesh_meta     `array<MeshMetadata>` decode parameters
+//                      and addressing            [compressed channel | morph]
 //   group 0  binding 3  joint_matrices `array<mat4x4<f32>>`  [VERTEX_JOINTS]
 //   group 0  binding 4  morph_weights `array<f32>`           [MORPH_POSITIONS]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
-//   group 2  binding 0  mesh_info     `MeshInfo` addressing
 //   group 2  binding 1  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
 //
 //   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
@@ -51,15 +51,23 @@
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
 //                      plus color Unorm8x4 [VERTEX_COLOR]
 //   slot 2  instance   Float32x4x3 model matrix + Unorm8x4 base color
-//                      + Uint32x2 pose base, stepped per instance
-//                      [VERTEX_INSTANCE]
+//                      + Uint32x2 pose base + Uint32 metadata index, stepped
+//                      per instance                   [VERTEX_INSTANCE]
 //
-// The mesh metadata bindings exist only when a channel is compressed: a
-// variant that reads every channel uncompressed declares no metadata binding
-// at all. The mesh group exists when the variant reads metadata or morph
+// The metadata array exists when a channel is compressed or a morph target is
+// read: it carries both the decode parameters and the addressing a draw needs.
+// A variant that reads every channel uncompressed and morphs nothing declares
+// no metadata binding at all, and the mesh group exists only for the morph
 // displacements. The pose lives in the global group rather than a mesh's own
 // because it is per-instance state: one array serves every draw of the frame,
 // and each instance slices into it at the base its own record carries.
+//
+// The metadata index is per-instance data like the pose base, so the instance
+// stream carries it: `@builtin(instance_index)` addresses the same record, and
+// a variant that reads metadata therefore requires [VERTEX_INSTANCE]. One
+// record layout then serves every variant of a frame, which is what lets a
+// single instance buffer hold the instances of meshes drawn by different
+// variants.
 //
 // The four arrays under [TEXEL_ARRAY] keep their binding numbers but change
 // resource type: a `texture_2d<f32>` replaces the `var<storage, read>`, holding
@@ -78,9 +86,6 @@ import package::view;
 
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
-
-@if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS)
-@group(2) @binding(0) var<uniform> mesh_info: mesh_metadata::MeshInfo;
 
 struct VertexInput {
     /// Per-vertex position: full precision, or compressed to Snorm16x4
@@ -112,6 +117,14 @@ struct VertexInput {
     /// Per-instance pose base, Uint32x2: `.x` is the instance's first joint
     /// matrix and `.y` its first morph weight in the frame's shared arrays.
     @if(VERTEX_INSTANCE) @location(9) pose: vec2<u32>,
+
+    /// Per-instance index of the mesh's entry in the frame's metadata array,
+    /// which carries the decode parameters and the draw addressing.
+    ///
+    /// Declared whenever the variant reads the instance stream, whether or not
+    /// it reads metadata: every instance record then has one layout, so one
+    /// buffer holds the instances of meshes drawn by different variants.
+    @if(VERTEX_INSTANCE) @location(10) metadata_index: u32,
 }
 
 struct VertexOut {
@@ -157,19 +170,23 @@ fn skin_position(
 /// Add the weighted displacement of every morph target to a vertex.
 ///
 /// The displacements are flat and tightly packed: for each vertex,
-/// `mesh_info.morph_count` consecutive targets in target order, three
-/// components each. `delta_base` is the offset of this vertex's block, and
-/// `weight_base` the offset of this instance's weights in the frame's shared
-/// array.
+/// `morph_count` consecutive targets in target order, three components each.
+/// `delta_base` is the offset of this vertex's block, and `weight_base` the
+/// offset of this instance's weights in the frame's shared array.
 ///
 /// Only the first-order — linear — displacement is applied, which is all a
 /// position-only morph target needs.
 @if(MORPH_POSITIONS)
-fn morph_position(position: vec3<f32>, delta_base: u32, weight_base: u32) -> vec3<f32> {
+fn morph_position(
+    position: vec3<f32>,
+    delta_base: u32,
+    weight_base: u32,
+    morph_count: u32,
+) -> vec3<f32> {
     var morphed = position;
     var morph = 0u;
     loop {
-        if morph >= mesh_info.morph_count {
+        if morph >= morph_count {
             break;
         }
         let weight = array_access::load_morph_weight(weight_base + morph);
@@ -192,8 +209,12 @@ fn morph_position(position: vec3<f32>, delta_base: u32, weight_base: u32) -> vec
 public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> VertexOut {
     // The block form would scope `metadata` to the block, so the declaration
     // itself carries the condition.
-    @if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV))
-    let metadata = array_access::load_mesh_metadata(mesh_info.metadata_index);
+    //
+    // The struct carries both the decode parameters and the addressing, and
+    // the index comes from the instance stream, so anything that reads either
+    // loads it once here.
+    @if((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS)
+    let metadata = array_access::load_mesh_metadata(in.metadata_index);
 
     // Without a position stream the geometry is a single point at the
     // instance origin, so the vertex position is the model matrix's
@@ -221,11 +242,12 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     // instance names its own slice of them. That is what lets two instances of
     // one mesh hold different poses.
     @if(MORPH_POSITIONS) {
-        let local_vertex = vertex_index - mesh_info.vertex_offset;
+        let local_vertex = vertex_index - metadata.vertex_offset;
         local = morph_position(
             local,
-            local_vertex * mesh_info.morph_count * 3u,
+            local_vertex * metadata.morph_count * 3u,
             in.pose.y,
+            metadata.morph_count,
         );
     }
     @if(VERTEX_JOINTS) {

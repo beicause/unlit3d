@@ -22,11 +22,11 @@ use unlit_ecs::{TypeIdHashMap, World};
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    JointMatrix, MeshInfo, MeshInstance, MeshMetadata, PoseBase, compress_weights, index_fits_u16,
+    JointMatrix, MeshInstance, MeshMetadata, PoseBase, compress_weights, index_fits_u16,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    INSTANCE_SLOT, JOINTS_BINDING, MESH_INFO_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
+    INSTANCE_SLOT, JOINTS_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
     MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
     supports_storage_buffers,
 };
@@ -62,23 +62,19 @@ use unlit_wgpu::capabilities::DeviceCapabilities;
 /// The entries of an unlit mesh's bind group, in the order the variant's mesh
 /// layout declares them.
 ///
-/// The mesh-info uniform is the group's first entry always; the morph
-/// displacements follow it only when the mesh carries targets. A variant that
-/// reads a binding the mesh did not supply is a programming error, and the bind
-/// group creation below rejects it.
+/// The group holds the mesh's morph displacements, which exist only for a mesh
+/// carrying targets. A variant that reads a binding the mesh did not supply is
+/// a programming error, and the bind group creation below rejects it.
 ///
-/// The pose is deliberately absent: the joint matrices and morph weights are
-/// per-instance state the frame's global group binds, so two instances of one
-/// mesh can deform differently.
+/// The addressing a draw reaches the displacements by is deliberately absent:
+/// it rides the instance stream, and the entry it names lives in the global
+/// group. The pose is absent for the same reason it always was — the joint
+/// matrices and morph weights are per-instance state the frame's global group
+/// binds, so two instances of one mesh can deform differently.
 fn mesh_group_entries<'a>(
-    mesh_info: &'a wgpu::Buffer,
     morph_deltas: Option<&'a ArrayHandle>,
-) -> arrayvec::ArrayVec<wgpu::BindGroupEntry<'a>, 2> {
+) -> arrayvec::ArrayVec<wgpu::BindGroupEntry<'a>, 1> {
     let mut entries = arrayvec::ArrayVec::new();
-    entries.push(wgpu::BindGroupEntry {
-        binding: MESH_INFO_BINDING,
-        resource: mesh_info.as_entire_binding(),
-    });
     if let Some(deltas) = morph_deltas {
         entries.push(wgpu::BindGroupEntry {
             binding: MORPH_DELTAS_BINDING,
@@ -942,14 +938,17 @@ impl MeshSource {
         };
         // The raw API says nothing about the mesh's channels, so the mesh is
         // not known to carry joints; a caller that uploads a skinned layout
-        // goes through `allocate_unlit_mesh`, which does know.
-        self.allocate_mesh_with_metadata(world, desc, metadata, false)
+        // goes through `allocate_unlit_mesh`, which does know. It owns its
+        // buffers whole, so it is drawn from vertex zero and morphs nothing.
+        self.allocate_mesh_with_metadata(world, desc, metadata, false, 0)
     }
 
     /// Upload a mesh together with the full metadata entry it owns.
     ///
     /// The entry is appended to the CPU-side array and reaches the GPU on the
-    /// next built scene; the returned handle names its index.
+    /// next built scene; the returned handle names its index. `vertex_offset`
+    /// is the draw addressing the entry carries; the morph count is the one the
+    /// mesh's own displacements declare.
     ///
     /// `skinned` records whether the mesh's position stream carries joints, so
     /// a skinned draw can be required to name the pose entity it deforms by.
@@ -957,11 +956,10 @@ impl MeshSource {
         &mut self,
         world: &World,
         desc: MeshDesc,
-        metadata: MeshMetadata,
+        mut metadata: MeshMetadata,
         skinned: bool,
+        vertex_offset: u32,
     ) -> GpuMesh {
-        let queue = self.queue(world);
-
         let MeshDesc {
             vertex_buffers,
             index_buffer,
@@ -969,9 +967,14 @@ impl MeshSource {
             indexed,
             aabb,
             bind_group,
-            mesh_info_buffer,
             morph_deltas,
         } = desc;
+
+        // The vertex offset is part of the entry the mesh owns, so the shader
+        // reaches it through the same index the decode parameters come from.
+        // It maps `@builtin(vertex_index)` back to this mesh's own vertex
+        // ordinal for the morph displacements.
+        metadata.vertex_offset = vertex_offset;
 
         // The parts, capped like the description they come from: a mesh cannot
         // have more vertex buffers than a pass can bind.
@@ -1004,15 +1007,9 @@ impl MeshSource {
             (id, format)
         });
 
-        // The uniform the mesh's group reads is a weak node that nothing is
-        // built from: the group depends on it, not the other way round. It is
-        // the mesh's virtual root that keeps it alive, like every other part.
-        let mesh_info_id =
-            mesh_info_buffer.map(|buffer| Self::graph(world, self.context).insert_weak(buffer));
-
-        // The morph displacements are a weak node like the mesh-info uniform,
-        // and like it they are the bind group's dependency: the mesh owns them,
-        // so removing it frees them with the rest of its parts.
+        // The morph displacements are a weak node, and they are the bind
+        // group's dependency: the mesh owns them, so removing it frees them
+        // with the rest of its parts.
         //
         // The joint matrices and the morph weights are *not* here. They are
         // per-instance pose state: the frame's global group binds them, so two
@@ -1031,9 +1028,6 @@ impl MeshSource {
             // the pool for nothing.
             let mut graph = Self::graph(world, self.context);
             let bind_group_id = graph.insert_weak(bind_group);
-            if let Some(id) = mesh_info_id {
-                graph.add_dependency(bind_group_id, id);
-            }
             if let Some(id) = morph_deltas_id {
                 graph.add_dependency(bind_group_id, id);
             }
@@ -1041,9 +1035,13 @@ impl MeshSource {
         });
 
         // The entry is owned whether or not the pipeline reads it: a draw that
-        // binds no metadata group simply leaves the index unused. A slot a
-        // removed mesh held is reused, so the array stays as dense as the
-        // meshes that are still alive.
+        // reads no metadata simply leaves the index unused. A slot a removed
+        // mesh held is reused, so the array stays as dense as the meshes that
+        // are still alive.
+        //
+        // The morph count the addressing carries is the mesh's own: no other
+        // count describes the displacements it uploaded.
+        metadata.morph_count = morph_target_count;
         let metadata_index = match self.free_metadata.pop() {
             Some(index) => {
                 self.metadata[index as usize] = metadata;
@@ -1056,18 +1054,6 @@ impl MeshSource {
             }
         };
         self.metadata_dirty = true;
-
-        // The uniform names the entry the mesh just took, so it is written
-        // once the index above is known.
-        if let Some(id) = mesh_info_id {
-            queue.write_buffer(
-                Self::graph(world, self.context)
-                    .get(id)
-                    .expect("mesh-info buffer exists"),
-                0,
-                MeshInfo::new(metadata_index).as_bytes(),
-            );
-        }
 
         // Every part of the mesh is registered weak and dependency-free, so
         // the strong virtual root below is the one node that keeps them all
@@ -1083,9 +1069,6 @@ impl MeshSource {
             graph.add_dependency(root, id);
         }
         if let Some(id) = bind_group_id {
-            graph.add_dependency(root, id);
-        }
-        if let Some(id) = mesh_info_id {
             graph.add_dependency(root, id);
         }
         if let Some(id) = morph_deltas_id {
@@ -1174,10 +1157,10 @@ impl MeshSource {
         // family's factory uses, so the two cannot drift.
         let options = &key.options;
         let layouts = options.bind_group_layouts(&device);
-        let mesh_layout = layouts
-            .mesh
-            .clone()
-            .expect("the unlit variant reads mesh metadata");
+        // The mesh group exists only for the morph displacements. A variant
+        // that morphs nothing binds nothing at the index, and the draw below
+        // leaves the group off.
+        let mesh_layout = layouts.mesh.clone();
         // The streams are the key's, not the caller's: a buffer has to be
         // packed the way the shader reading it declares its vertex layout, so
         // a channel the key does not read is left out.
@@ -1274,26 +1257,15 @@ impl MeshSource {
             }
         });
 
-        // The mesh-info uniform and the bind group the shader reads it
-        // through. The index is unknown until the mesh is allocated below, and
-        // the buffer is written then.
-        let mesh_info_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::mesh::info"),
-            size: size_of::<MeshInfo>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let mesh_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("unlit3d::mesh::bind_group"),
-            layout: &mesh_layout,
-            // The entries follow the variant's own layout: the metadata index
-            // is always there, and the morph displacements exist exactly when
-            // the variant reads them and the mesh supplied them.
-            entries: &mesh_group_entries(
-                &mesh_info_buf,
-                morph_deltas.as_ref().map(|morph| &morph.array),
-            ),
+        // The morph displacements' bind group, for a variant that reads them.
+        // A variant that morphs nothing binds nothing at the mesh group, and a
+        // mesh with no targets supplies no displacements to read.
+        let mesh_bind_group = mesh_layout.as_ref().map(|mesh_layout| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("unlit3d::mesh::bind_group"),
+                layout: mesh_layout,
+                entries: &mesh_group_entries(morph_deltas.as_ref().map(|morph| &morph.array)),
+            })
         });
 
         // The vertex layout the key's options declare, slot for slot. An empty
@@ -1413,7 +1385,9 @@ impl MeshSource {
         };
 
         // The mesh owns the metadata entry `meta` — the same AABB and UV
-        // decode parameters the compression just derived.
+        // decode parameters the compression just derived, plus the addressing
+        // the draw needs. The vertex offset is known here, and the mesh's own
+        // morph count is taken from the displacements it uploaded.
         let aabb = Aabb::new(meta.aabb_center, meta.aabb_half_extents);
         let mut mesh = self.allocate_mesh_with_metadata(
             world,
@@ -1429,32 +1403,12 @@ impl MeshSource {
                 count,
                 indexed,
                 aabb,
-                bind_group: Some(mesh_bind_group),
-                // The group reads the metadata index through this uniform, so
-                // the group depends on it: the uniform is inserted weak, and
-                // removing the mesh frees the group and then collects the
-                // orphaned uniform.
-                mesh_info_buffer: Some(mesh_info_buf.clone()),
+                bind_group: mesh_bind_group,
                 morph_deltas,
             },
             meta,
             skinned,
-        );
-
-        // The addressing the shader reads: the metadata index names the decode
-        // parameters, the vertex offset maps `@builtin(vertex_index)` back to
-        // this mesh's own vertex ordinal for the morph displacements, and the
-        // target count bounds that loop.
-        queue.write_buffer(
-            &mesh_info_buf,
-            0,
-            MeshInfo {
-                metadata_index: mesh.parts.metadata_index,
-                vertex_offset,
-                morph_count: mesh.morph_targets,
-                pad0: 0,
-            }
-            .as_bytes(),
+            vertex_offset,
         );
 
         // The mesh's parts are complete only now: the pool-backed slots and
@@ -1496,9 +1450,9 @@ impl MeshSource {
         mesh.vertex_layout = VertexLayout::new(layouts);
         mesh.first = first;
         // Zero whenever the offset was baked into the indices instead, which is
-        // what a draw on a device without `base_vertex` requires. The
-        // `MeshInfo` uniform carries `vertex_offset` either way: the shader
-        // reads pool-global vertex ordinals on both paths.
+        // what a draw on a device without `base_vertex` requires. The metadata
+        // entry carries `vertex_offset` either way: the shader reads
+        // pool-global vertex ordinals on both paths.
         mesh.base_vertex = draw_base_vertex;
         mesh
     }
@@ -2384,6 +2338,7 @@ impl FrameSource for MeshSource {
 mod tests {
     use super::*;
     use crate::components::{Transform, UnlitPipeline, ZSortedDrawing};
+    use crate::mesh::UnlitMorphTarget;
     use crate::scene::DrawShape;
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
@@ -2544,6 +2499,37 @@ mod tests {
         let mut options = UnlitOptions::standard(device);
         options.flags &= !(UnlitFlags::VERTEX_UV | UnlitFlags::BASE_COLOR_TEXTURE);
         options
+    }
+
+    /// Options for a variant that reads morph displacements, which is the only
+    /// built-in variant that still binds a mesh group.
+    ///
+    /// The UV and colour channels are dropped so the mesh below carries only
+    /// the geometry a morph needs.
+    fn morph_options(device: &wgpu::Device) -> UnlitOptions {
+        use unlit_wgpu::pipeline::UnlitFlags;
+        let mut options = UnlitOptions::standard(device);
+        options.flags |= UnlitFlags::MORPH_POSITIONS;
+        options.flags &=
+            !(UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR | UnlitFlags::BASE_COLOR_TEXTURE);
+        options
+    }
+
+    /// A triangle mesh with one morph target, for the tests that need the
+    /// mesh group a morphing variant binds.
+    fn morph_mesh(harness: &mut Harness) -> GpuMesh {
+        let key = UnlitPipelineKey::new(morph_options(&harness.source.device(&harness.world)));
+        let target = [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]];
+        harness.source.allocate_unlit_mesh(
+            &harness.world,
+            &key,
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                indices: Some(&[0u32, 1, 2]),
+                morph_targets: &[UnlitMorphTarget { positions: &target }],
+                ..Default::default()
+            },
+        )
     }
 
     /// Register a 2D texture with `source` and return a view id and a sampler
@@ -2814,14 +2800,15 @@ mod tests {
     #[test]
     fn removing_a_mesh_frees_every_resource_built_from_it() {
         let mut h = harness();
-        let mesh = h.tri_mesh();
+        // A morphing mesh, so the mesh has a bind group of its own to free.
+        let mesh = morph_mesh(&mut h);
         let ctx = h.source.context();
 
         // The root is the mesh's lifetime entry point; its parts are the bind
-        // group and the mesh-info uniform that feeds it. The mesh's vertices
-        // and indices live in pools, so they are strong nodes the source owns
-        // and survive the mesh — what the mesh loses is its share of them,
-        // which `remove_mesh` hands back.
+        // group that reads the mesh's morph displacements, if it has one. The
+        // mesh's vertices and indices live in pools, so they are strong nodes
+        // the source owns and survive the mesh — what the mesh loses is its
+        // share of them, which `remove_mesh` hands back.
         let before = MeshSource::graph(&h.world, ctx).len();
         let index_pool_free = h.source.index_pool.free_space();
         assert!(matches!(
@@ -2854,7 +2841,9 @@ mod tests {
     #[test]
     fn a_mesh_registers_its_pooled_parts_nowhere_under_its_root() {
         let mut h = harness();
-        let mesh = h.tri_mesh();
+        // A morphing mesh, so the mesh has a bind group of its own to hang off
+        // the root.
+        let mesh = morph_mesh(&mut h);
         let ctx = h.source.context();
 
         // The pools are the source's, not the mesh's: a mesh that goes away

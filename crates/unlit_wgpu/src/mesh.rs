@@ -190,10 +190,17 @@ impl core::fmt::Display for CompressError {
 
 impl std::error::Error for CompressError {}
 
-/// Per-mesh vertex-decode parameters.
+/// Per-mesh vertex-decode parameters and draw addressing.
 ///
 /// Mirrors `mesh_metadata.wesl::MeshMetadata`; the layout is checked at
 /// compile time against the WGSL storage-buffer alignment rules.
+///
+/// The struct carries the mesh's addressing as well as its decode parameters,
+/// because both are per-mesh and immutable once the mesh is uploaded: a draw
+/// reaches them through one index, the metadata index its instance record
+/// carries. The addressing scalars fill what the `vec3` members would
+/// otherwise leave as padding, so the two together cost no more than the decode
+/// parameters alone.
 #[repr(C)]
 #[derive(
     Clone,
@@ -210,38 +217,6 @@ impl std::error::Error for CompressError {}
 pub struct MeshMetadata {
     /// Center of the position bounding box.
     pub aabb_center: glam::Vec3,
-    /// Explicit alignment padding (`vec3<f32>` requires 16-byte alignment).
-    pub pad0: u32,
-    /// Half-extents of the position bounding box.
-    pub aabb_half_extents: glam::Vec3,
-    /// Explicit alignment padding.
-    pub pad1: u32,
-    /// `xy` is the UV minimum and `zw` its extents.
-    pub uv_min_and_extents: glam::Vec4,
-}
-
-/// Per-draw addressing into the shared mesh-metadata array.
-///
-/// Mirrors `mesh_metadata.wesl::MeshInfo` and is bound as `var<uniform>`, so
-/// the layout is checked against the WGSL uniform address-space rules. Draws
-/// with no metadata of their own still bind this so the global group keeps a
-/// stable layout.
-#[repr(C)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    zerocopy_derive::FromBytes,
-    zerocopy_derive::Immutable,
-    zerocopy_derive::IntoBytes,
-    zerocopy_derive::KnownLayout,
-    const_shader_layout::ShaderLayoutCompat,
-)]
-pub struct MeshInfo {
-    /// Index into the `array<MeshMetadata>` bound with the global group.
-    pub metadata_index: u32,
     /// First element this mesh's vertices occupy in the pool its streams live
     /// in, which is the draw's `firstVertex` or `baseVertex`.
     ///
@@ -249,29 +224,23 @@ pub struct MeshInfo {
     /// morph deltas, which are stored per mesh — subtracts it from
     /// `@builtin(vertex_index)`.
     pub vertex_offset: u32,
-    /// How many morph targets follow each vertex in the morph binding.
+    /// Half-extents of the position bounding box.
+    pub aabb_half_extents: glam::Vec3,
+    /// How many morph targets follow each vertex in the morph displacement
+    /// array.
     ///
     /// Zero without [`UnlitFlags::MORPH_POSITIONS`].
     ///
     /// [`UnlitFlags::MORPH_POSITIONS`]:
     ///     crate::pipeline::UnlitFlags::MORPH_POSITIONS
     pub morph_count: u32,
-    /// Explicit tail padding.
-    pub pad0: u32,
+    /// `xy` is the UV minimum and `zw` its extents.
+    pub uv_min_and_extents: glam::Vec4,
 }
 
-impl MeshInfo {
-    /// Address the metadata at `metadata_index`.
-    pub fn new(metadata_index: u32) -> Self {
-        Self {
-            metadata_index,
-            ..Default::default()
-        }
-    }
-}
-
-/// One per-instance record: the affine model matrix, base color and pose base
-/// the built-in pipeline reads from its per-instance vertex buffer.
+/// One per-instance record: the affine model matrix, base color, pose base and
+/// metadata index the built-in pipeline reads from its per-instance vertex
+/// buffer.
 ///
 /// This is the vertex stream of `unlit.wesl`'s instance slot, so upload a
 /// `&[MeshInstance]` as that slot's buffer. The matrix is packed as three
@@ -312,6 +281,14 @@ pub struct MeshInstance {
     pub base_color: CompressedColor,
     /// Where this instance's pose starts in the frame's shared pose arrays.
     pub pose: PoseBase,
+    /// Index of the mesh's entry in the frame's metadata array, which carries
+    /// its decode parameters and its draw addressing.
+    ///
+    /// The index is a property of the mesh rather than of the instance, but it
+    /// rides the instance stream because that is what a draw can reach without
+    /// a bind group of its own. Every instance of one mesh carries the same
+    /// index.
+    pub metadata_index: u32,
 }
 
 impl MeshInstance {
@@ -319,7 +296,8 @@ impl MeshInstance {
     ///
     /// The color is quantized to the `Unorm8x4` the instance stream carries, so
     /// a component outside `0..=1` saturates rather than wrapping. The instance
-    /// reads no pose data; point it at some with [`Self::with_pose`].
+    /// reads no pose data and no metadata; point it at them with
+    /// [`Self::with_pose`] and [`Self::with_metadata_index`].
     pub fn new(world_from_local: glam::Affine3A, base_color: glam::Vec4) -> Self {
         let linear = world_from_local.matrix3;
         let translation = world_from_local.translation;
@@ -331,6 +309,7 @@ impl MeshInstance {
             ],
             base_color: base_color.to_array().map(f32_to_unorm8),
             pose: PoseBase::ZERO,
+            metadata_index: 0,
         }
     }
 
@@ -347,6 +326,13 @@ impl MeshInstance {
     #[must_use]
     pub fn with_pose(mut self, joints: u32, weights: u32) -> Self {
         self.pose = PoseBase::new(joints, weights);
+        self
+    }
+
+    /// Point this instance at the mesh metadata entry at `metadata_index`.
+    #[must_use]
+    pub fn with_metadata_index(mut self, metadata_index: u32) -> Self {
+        self.metadata_index = metadata_index;
         self
     }
 }

@@ -67,9 +67,9 @@ impl DeviceCapabilities {
     /// Where this is missing, a mesh cannot name its vertices through the
     /// draw's `base_vertex` — the backend would have to call a GL entry point
     /// that does not exist — so its indices are offset at upload instead. The
-    /// mesh source is what decides which of the two a mesh's indices get; see
-    /// [`MeshInfo`](crate::mesh::MeshInfo) for the addressing the draw then
-    /// reads.
+    /// mesh source is what decides which of the two a mesh's indices get; the
+    /// addressing the draw then reads is the metadata entry's
+    /// [`vertex_offset`](crate::mesh::MeshMetadata::vertex_offset).
     pub fn base_vertex(&self) -> bool {
         self.base_vertex
     }

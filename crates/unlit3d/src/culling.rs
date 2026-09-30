@@ -68,7 +68,11 @@ pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut 
         let base_color = color.map_or(glam::Vec4::ONE, |color| color.color);
         out.push(VisibleMesh {
             entity,
-            instance: MeshInstance::new(model, base_color),
+            // The metadata index is the mesh's, but it rides the instance
+            // record: that is what a draw reaches without a bind group of its
+            // own. Every instance of one mesh carries the same one.
+            instance: MeshInstance::new(model, base_color)
+                .with_metadata_index(mesh.parts.metadata_index),
             skinned: mesh.skinned,
             morph_targets: mesh.morph_targets,
         });

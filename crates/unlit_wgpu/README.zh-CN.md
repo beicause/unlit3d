@@ -71,12 +71,12 @@
 # {
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions,
+    MeshInstance, MeshMetadata, compress_indices, compress_positions,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, SpecializedUnlitPipeline,
+    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
+    UV_COLOR_SLOT, UnlitOptions, SpecializedUnlitPipeline,
 };
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::render_attachments::{
@@ -92,7 +92,6 @@ struct Example {
     pipeline: SpecializedUnlitPipeline,
     globals: wgpu::BindGroup,
     material: wgpu::BindGroup,
-    mesh: wgpu::BindGroup,
     positions: wgpu::Buffer,
     uv_color: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -160,16 +159,22 @@ impl Example {
         }
         uv_color.unmap();
 
-        // 3. Per-instance data: an affine model matrix plus a base color.
+        // 3. Per-instance data: an affine model matrix, a base color and the
+        //    index of the metadata entry this mesh decodes through. The index
+        //    is the mesh's, but it rides the instance stream because that is
+        //    what a draw reaches without a bind group of its own.
+        let metadata_index = 0;
         let instances = [
             MeshInstance::new(
                 glam::Affine3A::from_rotation_y(0.6),
                 glam::Vec4::new(1.0, 0.85, 0.4, 1.0),
-            ),
+            )
+            .with_metadata_index(metadata_index),
             MeshInstance::new(
                 glam::Affine3A::from_translation(glam::Vec3::new(1.4, 0.0, -0.5)),
                 glam::Vec4::new(0.4, 0.8, 1.0, 1.0),
-            ),
+            )
+            .with_metadata_index(metadata_index),
         ];
         let instance_count = instances.len() as u32;
         let instances = upload(instances.as_bytes(), vertex, "instances");
@@ -223,22 +228,10 @@ impl Example {
             ],
         });
 
-        // 6. The mesh group selects which metadata entry decodes this draw, so
-        //    one pipeline can draw many differently-compressed meshes. It
-        //    exists only while a channel is compressed.
-        let mesh_info = upload(
-            MeshInfo::new(0).as_bytes(),
-            wgpu::BufferUsages::UNIFORM,
-            "mesh_info",
-        );
-        let mesh = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("mesh"),
-            layout: &pipeline.descriptor().bind_group_layouts(device).mesh.expect("a compressed mesh"),
-            entries: &[wgpu::BindGroupEntry {
-                binding: MESH_INFO_BINDING,
-                resource: mesh_info.as_entire_binding(),
-            }],
-        });
+        // 6. No mesh group: this variant reads no morph displacements, and
+        //    every other per-mesh input is in the global group or on the
+        //    instance stream. A morphing variant would bind the mesh's
+        //    displacements at `MESH_GROUP`.
 
         Example {
             device: device.clone(),
@@ -246,7 +239,6 @@ impl Example {
             pipeline,
             globals: globals_group,
             material,
-            mesh,
             positions,
             uv_color,
             indices,
@@ -280,7 +272,6 @@ impl Example {
         )
         .with_bind_group(GLOBAL_GROUP, &self.globals)
         .with_bind_group(MATERIAL_GROUP, &self.material)
-        .with_bind_group(MESH_GROUP, &self.mesh)
         .with_vertex_buffer(POSITION_SLOT, &self.positions)
         .with_vertex_buffer(UV_COLOR_SLOT, &self.uv_color)
         .with_vertex_buffer(INSTANCE_SLOT, &self.instances)
@@ -524,7 +515,7 @@ unlit 与自定义管线各自实现该 trait，而不是由内置管线用私�
 
 ### 读取本帧的数组：storage buffer 还是 texel
 
-内置着色器要读四个帧级数组：逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重，
+内置着色器要读三个帧级数组——逐网格的解码参数、本帧的骨骼矩阵、本帧的形变权重——
 以及某个网格自身的形变位移。最直接的绑定方式是只读 storage buffer，凡满足 WebGPU
 基线的设备都走这条。
 

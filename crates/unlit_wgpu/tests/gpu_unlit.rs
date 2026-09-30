@@ -15,13 +15,12 @@ mod common;
 use common::*;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    MeshInfo, MeshInstance, MeshMetadata, compress_indices, compress_positions, quantize_colors,
+    MeshInstance, MeshMetadata, compress_indices, compress_positions, quantize_colors,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP, MESH_INFO_BINDING,
-    MESH_METADATA_BINDING, POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags,
-    UnlitOptions,
+    GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
+    SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
 };
 use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
@@ -511,26 +510,6 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         entries: &global_entries,
     });
 
-    // Mesh group: which metadata entry decodes this draw.
-    let info_buffer = upload_buffer(
-        ctx,
-        "test::mesh_info",
-        MeshInfo::new(0).as_bytes(),
-        wgpu::BufferUsages::UNIFORM,
-    );
-    let mesh_group = metadata.then(|| {
-        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("test::mesh"),
-            layout: &fixture
-                .pipeline
-                .descriptor()
-                .bind_group_layouts(&ctx.device)
-                .mesh
-                .expect("a variant that needs metadata has a mesh layout"),
-            entries: &[bg_entry(MESH_INFO_BINDING, info_buffer.as_entire_binding())],
-        })
-    });
-
     let instance_data = upload_buffer(
         ctx,
         "test::instances",
@@ -560,9 +539,10 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     if let Some(bind_group) = &fixture.material {
         draw = draw.with_bind_group(MATERIAL_GROUP, bind_group);
     }
-    if let Some(mesh_group) = &mesh_group {
-        draw = draw.with_bind_group(MESH_GROUP, mesh_group);
-    }
+    // No mesh group: the variants these tests build read no morph
+    // displacements, and every other per-mesh input rides the instance stream
+    // or the global group. A morphed variant would bind its displacements at
+    // [MESH_GROUP] here.
     // Per-instance data places the geometry, so the slot is bound only when
     // the variant reads it. A variant without it draws one instance.
     if instanced {

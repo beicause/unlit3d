@@ -30,9 +30,11 @@
 
 import package::mesh_metadata;
 
-// The condition under which the decode parameters are read: exactly when a
-// channel is compressed.
-@if(!TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV)))
+// The condition under which the metadata array is read: when a channel is
+// compressed, or when a morph target's displacements have to be addressed. The
+// struct carries both the decode parameters and the addressing, so a morph
+// reads it even when every channel is uncompressed.
+@if(!TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
 @group(0) @binding(2) var<storage, read> mesh_meta: array<mesh_metadata::MeshMetadata>;
 
 /// This frame's joint matrices, indexed by the joint pair in the position
@@ -53,8 +55,8 @@ import package::mesh_metadata;
 @group(0) @binding(4) var<storage, read> morph_weights: array<f32>;
 
 /// Every morph target's per-vertex position displacement, flat and tightly
-/// packed: for each vertex, `MeshInfo::morph_count` targets in order, three
-/// components each.
+/// packed: for each vertex, `mesh_metadata::MeshMetadata::morph_count` targets
+/// in order, three components each.
 ///
 /// A target's displacement is geometry, not pose: every vertex of the mesh has
 /// its own, so this is an array of the mesh's own rather than one the whole
@@ -65,7 +67,7 @@ import package::mesh_metadata;
 // The same four arrays as textures. Each keeps its binding number and group,
 // so the two paths declare the same interface and a variant differs only in
 // which resource type it binds.
-@if(TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV)))
+@if(TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
 @group(0) @binding(2) var mesh_meta_tex: texture_2d<f32>;
 
 @if(TEXEL_ARRAY && VERTEX_JOINTS)
@@ -96,19 +98,19 @@ const MESH_METADATA_TEXELS: u32 = 3u;
 @if(TEXEL_ARRAY)
 const JOINT_MATRIX_TEXELS: u32 = 4u;
 
-/// Read the decode parameters of the mesh at `index`.
-@if(!TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV)))
+/// Read the decode parameters and addressing of the mesh at `index`.
+@if(!TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
 public fn load_mesh_metadata(index: u32) -> mesh_metadata::MeshMetadata {
     return mesh_meta[index];
 }
 
-/// Read the decode parameters of the mesh at `index`.
+/// Read the decode parameters and addressing of the mesh at `index`.
 ///
-/// The three texels are the struct's bytes in order: the AABB center and its
-/// padding, the half-extents and their padding, then the UV bounds. The
-/// padding lanes are read as `f32` lanes and reinterpreted, because that is
-/// what the texel holds; nothing reads their value.
-@if(TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV)))
+/// The three texels are the struct's bytes in order: the AABB center and the
+/// vertex offset, the half-extents and the morph count, then the UV bounds. The
+/// addressing lanes are read as `f32` lanes and reinterpreted, because that is
+/// what the texel holds.
+@if(TEXEL_ARRAY && ((VERTEX_POSITION && !UNCOMPRESSED_POSITION) || (VERTEX_UV && !UNCOMPRESSED_UV) || MORPH_POSITIONS))
 public fn load_mesh_metadata(index: u32) -> mesh_metadata::MeshMetadata {
     let first = index * MESH_METADATA_TEXELS;
     let center = textureLoad(mesh_meta_tex, texel_of(mesh_meta_tex, first), 0);

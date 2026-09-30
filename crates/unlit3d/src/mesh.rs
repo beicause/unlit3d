@@ -62,19 +62,10 @@ pub struct MeshDesc {
     pub aabb: Aabb,
     /// A bind group bound at
     /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP), for a
-    /// pipeline that reads per-mesh data such as the metadata index.
+    /// pipeline that reads per-mesh data.
     ///
     /// `None` for a pipeline that binds nothing at that index.
     pub bind_group: Option<wgpu::BindGroup>,
-    /// The per-mesh `MeshInfo` uniform the `bind_group` reads, if it reads
-    /// one.
-    ///
-    /// The buffer is moved into the resource graph, so the caller hands over
-    /// ownership. It is recorded as a *weak* node under the mesh's virtual
-    /// root, so it lives exactly as long as the mesh: replacing it marks the
-    /// bind group dirty, and removing the mesh releases it with the rest of
-    /// the mesh's resources.
-    pub mesh_info_buffer: Option<wgpu::Buffer>,
 
     /// The morph displacements the mesh's `bind_group` reads.
     ///

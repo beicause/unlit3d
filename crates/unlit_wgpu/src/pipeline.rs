@@ -8,8 +8,8 @@
 
 #[cfg(feature = "unlit")]
 use crate::mesh::{
-    ChannelEncoding, MeshInfo, MeshVertexStreamWriter, PositionStreamChannels,
-    PositionStreamWriter, UvColorFlags,
+    ChannelEncoding, MeshVertexStreamWriter, PositionStreamChannels, PositionStreamWriter,
+    UvColorFlags,
 };
 #[cfg(feature = "unlit")]
 use crate::render_attachments::default_depth_stencil_format;
@@ -43,8 +43,6 @@ pub const BASE_COLOR_TEXTURE_BINDING: u32 = 0;
 pub const BASE_COLOR_SAMPLER_BINDING: u32 = 1;
 /// Bind-group index of the mesh group.
 pub const MESH_GROUP: u32 = 2;
-/// Binding slot of the mesh-info uniform in the mesh group.
-pub const MESH_INFO_BINDING: u32 = 0;
 /// Binding slot of the morph position displacements in the mesh group.
 ///
 /// Unlike the weights, a target's displacement is mesh geometry: every vertex
@@ -84,6 +82,9 @@ pub mod location {
     /// `x` is the instance's first joint matrix and `y` its first morph weight
     /// in the frame's shared pose arrays.
     pub const POSE: u32 = 9;
+    /// Per-instance index of the mesh metadata entry (`Uint32`), read from the
+    /// instance stream.
+    pub const METADATA_INDEX: u32 = 10;
 }
 
 /// Entry point name of the built-in shader's vertex stage.
@@ -419,13 +420,15 @@ impl UnlitOptions {
         ]
     }
 
-    /// Whether this variant reads the mesh group: the [`MeshInfo`] uniform and
-    /// the morph displacements it addresses.
+    /// Whether this variant reads the mesh group: the morph displacements at
+    /// binding 1.
     ///
     /// Mirrors the shader's mesh-group condition, so the layout and the
-    /// composed variant agree on whether the group exists.
+    /// composed variant agree on whether the group exists. The mesh's
+    /// addressing is not here any more: it rides the instance stream, and the
+    /// metadata it names lives in the global group.
     pub fn needs_mesh_group(&self) -> bool {
-        self.needs_metadata() || self.needs_morphs()
+        self.needs_morphs()
     }
 
     /// Whether this variant deforms its vertices by joint matrices and so
@@ -517,18 +520,19 @@ impl UnlitOptions {
         self.needs_joints() || self.needs_morphs()
     }
 
-    /// Whether this variant reads a compressed channel and therefore needs the
-    /// mesh-metadata bindings: the global group's storage buffer and the mesh
-    /// group's [`MeshInfo`] uniform.
+    /// Whether this variant reads the global group's mesh-metadata array: the
+    /// per-mesh decode parameters and the addressing a morph reads.
     ///
-    /// Mirrors the shader's metadata condition, so the layouts and the
-    /// composed variant agree on whether the bindings exist.
+    /// Mirrors the shader's metadata condition, so the layout and the composed
+    /// variant agree on whether the binding exists. A morph needs the array
+    /// even when every channel is uncompressed, because the struct also carries
+    /// the vertex offset and morph count its displacements are addressed by.
     pub fn needs_metadata(&self) -> bool {
         let compressed_position = self.flags.contains(UnlitFlags::VERTEX_POSITION)
             && !self.flags.contains(UnlitFlags::UNCOMPRESSED_POSITION);
         let compressed_uv = self.flags.contains(UnlitFlags::VERTEX_UV)
             && !self.flags.contains(UnlitFlags::UNCOMPRESSED_UV);
-        compressed_position || compressed_uv
+        compressed_position || compressed_uv || self.needs_morphs()
     }
 
     /// The UV-and-color vertex stream this variant expects.
@@ -740,35 +744,24 @@ impl UnlitOptions {
             });
 
         let mesh = self.needs_mesh_group().then(|| {
-            // The mesh group is the draw's own addressing: the metadata
-            // index it decodes through and, for a morphed variant, the
-            // displacements it reads. The pose is not here — a mesh may be
-            // drawn by several instances that each deform differently, so
-            // the joints and weights live in the frame's shared arrays.
-            let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 2>::new();
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: MESH_INFO_BINDING,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(<MeshInfo as const_shader_layout::ShaderLayout>::SIZE),
-                },
-                count: None,
-            });
-            if self.needs_morphs() {
-                // One position component of one target: the array is sized by
-                // the mesh, and like the other array entries its storage
-                // binding minimum is a single element so growing the mesh never
-                // invalidates the layout.
-                entries.push(self.array_entry(
-                    MORPH_DELTAS_BINDING,
-                    wgpu::BufferAddress::from(size_of::<f32>() as u64),
-                ));
-            }
+            // The mesh group holds the morph displacements, which are geometry
+            // every vertex of the mesh has its own of. The addressing a draw
+            // reaches them by is not here any more — it rides the instance
+            // stream — and the pose is not either: a mesh may be drawn by
+            // several instances that each deform differently, so the joints and
+            // weights live in the frame's shared arrays.
+            //
+            // One position component of one target: the array is sized by the
+            // mesh, and like the other array entries its storage binding
+            // minimum is a single element so growing the mesh never invalidates
+            // the layout.
+            let entry = self.array_entry(
+                MORPH_DELTAS_BINDING,
+                wgpu::BufferAddress::from(size_of::<f32>() as u64),
+            );
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("unlit_wgpu::unlit::mesh"),
-                entries: &entries,
+                entries: &[entry],
             })
         });
 
@@ -789,12 +782,13 @@ impl UnlitOptions {
     pub fn vertex_buffer_layouts(&self) -> [Option<VertexBufferLayoutDesc>; 3] {
         let flags = self.flags;
 
-        const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+        const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
             location::MODEL_0 => Float32x4,
             location::MODEL_1 => Float32x4,
             location::MODEL_2 => Float32x4,
             location::BASE_COLOR => Unorm8x4,
             location::POSE => Uint32x2,
+            location::METADATA_INDEX => Uint32,
         ];
 
         // Each stream describes its own layout, so the attributes a pipeline
@@ -967,6 +961,12 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
          `VERTEX_JOINTS` and `MORPH_POSITIONS` require `VERTEX_INSTANCE`: the \
          instance stream is what carries the pose base the draw reads"
     );
+    assert!(
+        !options.needs_metadata() || flags.contains(UnlitFlags::VERTEX_INSTANCE),
+        "the metadata index a draw decodes through is per-instance, so a \
+         variant reading the mesh metadata requires `VERTEX_INSTANCE`: the \
+         instance stream is what carries the index the draw loads it by"
+    );
 
     let main_path = wesl::syntax::ModulePath::new(
         wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
@@ -1120,6 +1120,17 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                                 // from the instance stream, so it needs
                                                 // one.
                                                 if (vertex_joints || morph_positions)
+                                                    && !vertex_instance
+                                                {
+                                                    continue;
+                                                }
+                                                // The metadata index is per-instance
+                                                // too, so a variant that decodes through
+                                                // it needs the instance stream.
+                                                let compressed = (vertex_position
+                                                    && !uncompressed_position)
+                                                    || (vertex_uv && !uncompressed_uv);
+                                                if (compressed || morph_positions)
                                                     && !vertex_instance
                                                 {
                                                     continue;
@@ -1426,11 +1437,13 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 options.needs_metadata(),
                 "variant {options:?}"
             );
-            // The mesh group exists whenever the variant reads per-mesh data:
-            // the decode parameters or the morph displacements. The pose is
-            // not here — it is per-instance and lives in the global group.
+            // The mesh group exists exactly when the variant reads the morph
+            // displacements, which are the only per-mesh binding left: the
+            // decode parameters moved to the global group and the addressing
+            // that selects them rides the instance stream. The pose is not
+            // here either — it is per-instance and lives in the global group.
             assert_eq!(
-                wgsl.contains("var<uniform> mesh_info"),
+                wgsl.contains("morph_deltas"),
                 options.needs_mesh_group(),
                 "variant {options:?}"
             );
@@ -1701,6 +1714,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             model + 2 * vec4,
             offset_of!(MeshInstance, base_color) as u64,
             offset_of!(MeshInstance, pose) as u64,
+            offset_of!(MeshInstance, metadata_index) as u64,
         ];
         let actual: Vec<u64> = instance.attributes.iter().map(|a| a.offset).collect();
         assert_eq!(
@@ -1708,8 +1722,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             "attribute offsets must line up with the MeshInstance fields"
         );
 
-        // The shader reads three matrix columns followed by the base color and
-        // the pose base.
+        // The shader reads three matrix columns followed by the base color, the
+        // pose base and the metadata index.
         let locations: Vec<u32> = instance
             .attributes
             .iter()
@@ -1723,16 +1737,19 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 location::MODEL_2,
                 location::BASE_COLOR,
                 location::POSE,
+                location::METADATA_INDEX,
             ]
         );
-        // The matrix columns are floats, the color is quantized and the pose
-        // base indexes the frame's pose arrays and so is integer.
+        // The matrix columns are floats, the color is quantized, and the pose
+        // base and metadata index are integers: one indexes the frame's pose
+        // arrays, the other the frame's metadata array.
         let expected_formats = [
             wgpu::VertexFormat::Float32x4,
             wgpu::VertexFormat::Float32x4,
             wgpu::VertexFormat::Float32x4,
             wgpu::VertexFormat::Unorm8x4,
             wgpu::VertexFormat::Uint32x2,
+            wgpu::VertexFormat::Uint32,
         ];
         let formats: Vec<wgpu::VertexFormat> =
             instance.attributes.iter().map(|a| a.format).collect();
