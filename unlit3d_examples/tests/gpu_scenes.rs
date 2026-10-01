@@ -55,12 +55,45 @@ use unlit3d_examples::{FIXED_STEP, Scene};
 /// the mildest regression measured. The default 85 would fail every implementation
 /// that is not the one the frames were captured on.
 ///
-/// The outlier bound is the same difference seen as a count: no scene here
-/// exceeded 0.037% of its pixels beyond a channel difference of 8, so 0.1% leaves
-/// that scatter room while catching a frame differing over many more.
+/// The outlier bound is the same difference seen as a count: none of the scenes
+/// this covers exceeded 0.037% of its pixels beyond a channel difference of 8,
+/// so 0.1% leaves that scatter room while catching a frame differing over many
+/// more. The glTF scene draws a whole model rather than a few primitives and
+/// scatters over more of its outline than that, so it carries a bound of its
+/// own — see [`GLTF_TOLERANCE`].
 const SCENE_TOLERANCE: Tolerance = Tolerance {
     min_score: Some(75.0),
     max_outliers: Some(0.001),
+    channel_delta: 8,
+};
+
+/// The tolerance the glTF scene is judged with.
+///
+/// This is [`SCENE_TOLERANCE`] with a looser outlier bound, for the same reason
+/// that tolerance exists at all. The scene is the first here whose content is a
+/// whole model rather than a handful of primitives: the fox and the morph-target
+/// cube put a long, finely detailed outline through the frame, and a rasterizer
+/// that resolves those edges differently touches many more pixels than the
+/// simple shapes do. Its outliers are still the edge scatter and nothing else —
+/// every one of them falls within two pixels of an outline, and none inside a
+/// surface — but there are enough of them to pass the tighter bound.
+///
+/// Measured against the stored snapshots, as pixels past a channel difference of
+/// 8:
+///
+/// | over a real WebGL2 pass | outliers |
+/// |-------------------------|----------|
+/// | worst of the six frames | 0.12% |
+/// | of which further than 2px inside an outline | 0.00% |
+/// | a real regression: the frame shifted one pixel | 1.39–1.70% |
+///
+/// 0.5% sits between them with room on both sides: nearly four times the worst
+/// correct frame, and under half the mildest regression measured. It is looser
+/// than the other scenes' 0.1% only because those draw shapes whose outlines are
+/// a fraction of this one's.
+const GLTF_TOLERANCE: Tolerance = Tolerance {
+    min_score: Some(75.0),
+    max_outliers: Some(0.005),
     channel_delta: 8,
 };
 
@@ -293,7 +326,7 @@ async fn instanced_skinned_morph_matches_its_snapshots() {
 async fn gltf_matches_its_snapshots() {
     compare_scene(
         &scenes::gltf::SCENE,
-        SCENE_TOLERANCE,
+        GLTF_TOLERANCE,
         &snapshots![
             "gltf/frame_00.webp",
             "gltf/frame_01.webp",
