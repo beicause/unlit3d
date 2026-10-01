@@ -350,12 +350,17 @@ What it does is patch the world you already render:
   requires. A target that displaces only normals or tangents is not counted and
   not uploaded, so a mesh whose every target displaces nothing this loader
   reads draws undeformed rather than through the morph path.
+- A primitive whose material is `doubleSided` is drawn from either side: the
+  pipeline variant drops its cull mode, so the back faces the single-sided
+  variant would discard are rasterized instead. Nothing else about the variant
+  changes, because the unlit fragment shader reads no normal — there is no
+  back-face normal to reverse and no lighting equation to evaluate.
 
 What loads: positions, UVs, vertex colors, joints, weights and indices;
 base-color textures and the materials that sample them; blended
-(`alphaMode: BLEND`) and cut-off (`alphaMode: MASK`) materials; skinned
-primitives; positional morph targets; and node hierarchies, accumulated into
-world transforms. What does not yet: normal and tangent morphs, normals,
+(`alphaMode: BLEND`), cut-off (`alphaMode: MASK`) and double-sided materials;
+skinned primitives; positional morph targets; and node hierarchies, accumulated
+into world transforms. What does not yet: normal and tangent morphs, normals,
 tangents and animations.
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `UnlitGltf::pipeline_key`),

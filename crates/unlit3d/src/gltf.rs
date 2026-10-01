@@ -251,8 +251,9 @@ impl UnlitGltf {
     /// whose `alphaMode` is `BLEND` also blends, so the key is drawn with
     /// [`wgpu::BlendState::ALPHA_BLENDING`], and one whose `alphaMode` is
     /// `MASK` carries [`UnlitFlags::ALPHA_CUTOFF`] so its fragments are
-    /// discarded below the cutoff; everything else follows
-    /// [`UnlitOptions::standard`], so the key is exactly what
+    /// discarded below the cutoff. A `doubleSided` material turns back-face
+    /// culling off, so its geometry is drawn from either side; everything else
+    /// follows [`UnlitOptions::standard`], so the key is exactly what
     /// [`Self::insert_mesh`] uploads with.
     pub fn pipeline_key(
         &self,
@@ -308,6 +309,14 @@ impl UnlitGltf {
         // the variant — see [`Self::insert_material`].
         if texture.is_some() && alpha_cutoff(&material).is_some() {
             options.flags |= UnlitFlags::ALPHA_CUTOFF;
+        }
+        // A `doubleSided` material is visible from behind, so its back faces
+        // are rasterized rather than culled. Nothing else about the variant
+        // changes: the unlit fragment shader reads no normal, so there is no
+        // back-face normal to reverse, and the geometry simply draws from both
+        // sides.
+        if material.double_sided() {
+            options.primitive.cull_mode = None;
         }
         UnlitPipelineKey::new(options)
     }
@@ -1701,6 +1710,121 @@ mod tests {
         glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
         glb.extend_from_slice(&bin);
         glb
+    }
+
+    /// A GLB holding one triangle whose material states `doubleSided` or not.
+    fn sided_document(double_sided: bool) -> Vec<u8> {
+        let mut bin = Vec::new();
+        let mut views: Vec<String> = Vec::new();
+        let mut add = |bin: &mut Vec<u8>, bytes: &[u8], target: Option<u32>| {
+            while !bin.len().is_multiple_of(4) {
+                bin.push(0);
+            }
+            let target = target.map_or(String::new(), |target| format!(r#", "target": {target}"#));
+            views.push(format!(
+                r#"{{ "buffer": 0, "byteOffset": {}, "byteLength": {}{target} }}"#,
+                bin.len(),
+                bytes.len()
+            ));
+            bin.extend_from_slice(bytes);
+            views.len() - 1
+        };
+        let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let position_view = add(&mut bin, &positions, Some(34962));
+        let indices: Vec<u8> = [0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let index_view = add(&mut bin, &indices, Some(34963));
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+        let sided = if double_sided {
+            r#","doubleSided":true"#
+        } else {
+            ""
+        };
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "scene":0,
+                "scenes":[{{"nodes":[0]}}],
+                "nodes":[{{"mesh":0}}],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},
+                                            "indices":1,
+                                            "material":0}}]}}],
+                "materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":[1.0,1.0,1.0,1.0]}}{sided}}}],
+                "accessors":[
+                    {{"bufferView":{position_view},"componentType":5126,"count":3,"type":"VEC3",
+                      "min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]}},
+                    {{"bufferView":{index_view},"componentType":5123,"count":3,"type":"SCALAR"}}],
+                "bufferViews":[{}],
+                "buffers":[{{"byteLength":{}}}]}}"#,
+            views.join(", "),
+            bin.len(),
+        );
+        let mut json = json.into_bytes();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut glb = Vec::new();
+        glb.extend_from_slice(&0x4654_6C67u32.to_le_bytes());
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+        glb.extend_from_slice(&bin);
+        glb
+    }
+
+    #[test]
+    fn a_double_sided_material_culls_nothing() {
+        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+
+        let single = UnlitGltf::from_buffer(&sided_document(false))
+            .expect("the single-sided document parses");
+        assert_eq!(
+            single
+                .pipeline_key(&device, 0, 0)
+                .options
+                .primitive
+                .cull_mode,
+            Some(wgpu::Face::Back),
+            "a material that is not double-sided culls back faces"
+        );
+
+        let double =
+            UnlitGltf::from_buffer(&sided_document(true)).expect("the sided document parses");
+        assert_eq!(
+            double
+                .pipeline_key(&device, 0, 0)
+                .options
+                .primitive
+                .cull_mode,
+            None,
+            "a double-sided material culls nothing"
+        );
+    }
+
+    #[test]
+    fn culling_alone_distinguishes_the_two_sided_variants() {
+        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let single = UnlitGltf::from_buffer(&sided_document(false))
+            .expect("the single-sided document parses")
+            .pipeline_key(&device, 0, 0);
+        let double = UnlitGltf::from_buffer(&sided_document(true))
+            .expect("the double-sided document parses")
+            .pipeline_key(&device, 0, 0);
+        assert_ne!(
+            single, double,
+            "the two sides must be separate variants so each keeps its own pipeline"
+        );
+        assert_eq!(
+            single.options.flags, double.options.flags,
+            "nothing but the cull mode sets the two apart"
+        );
     }
 
     #[test]

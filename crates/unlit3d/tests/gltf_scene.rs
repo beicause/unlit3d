@@ -46,6 +46,8 @@ struct QuadDoc {
     /// `Some(cutoff)`: the material states `alphaMode: MASK` with that
     /// `alphaCutoff`, and a half-opaque base-color factor to compare against.
     mask: Option<f32>,
+    /// `true`: the material states `doubleSided`, so its back faces draw too.
+    double_sided: bool,
 }
 
 /// The glTF JSON for one quad, as bytes for [`UnlitGltf::from_buffer`].
@@ -80,6 +82,9 @@ fn quad_document(doc: &QuadDoc) -> Vec<u8> {
     }
     if let Some(cutoff) = doc.mask {
         material.push_str(&format!(",\"alphaMode\":\"MASK\",\"alphaCutoff\":{cutoff}"));
+    }
+    if doc.double_sided {
+        material.push_str(",\"doubleSided\":true");
     }
     let json = format!(
         concat!(
@@ -429,6 +434,7 @@ async fn textured_quad_renders_four_colours() {
         textured: true,
         blend: false,
         mask: None,
+        double_sided: false,
     }))
     .expect("the embedded document parses");
 
@@ -466,6 +472,118 @@ async fn textured_quad_renders_four_colours() {
     );
 }
 
+/// The buffer of one quad whose triangles are wound the other way round, so
+/// the face the frame's camera sees is a *back* face.
+///
+/// Same corners as the other tests; only the index order differs, which is the
+/// whole point. The vertices carry a flat red colour rather than a texture, so
+/// the document needs no image and the buffer is the geometry alone: positions
+/// (48 bytes), colours (16) and indices (12).
+const REVERSED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZmbmP83MrD8AAAAAZmbmv83MrD8AAAAA/wAA//8AAP//AAD//wAA/wAAAgABAAAAAwACAA==";
+
+/// The glTF JSON of the reversed-winding quad, optionally `doubleSided`.
+fn reversed_document(double_sided: bool) -> Vec<u8> {
+    let sided = if double_sided {
+        ",\"doubleSided\":true"
+    } else {
+        ""
+    };
+    let json = format!(
+        concat!(
+            "{{\"asset\":{{\"version\":\"2.0\"}},\"scene\":0,",
+            "\"scenes\":[{{\"nodes\":[0]}}],",
+            "\"nodes\":[{{\"mesh\":0}}],",
+            "\"meshes\":[{{\"primitives\":[{{\"attributes\":",
+            "{{\"POSITION\":0,\"COLOR_0\":1}},\"indices\":2,\"material\":0}}]}}],",
+            "\"materials\":[{{\"pbrMetallicRoughness\":",
+            "{{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}}{sided}}}],",
+            "\"accessors\":[",
+            "{{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",",
+            "\"min\":[-1.8,-1.35,0.0],\"max\":[1.8,1.35,0.0]}},",
+            "{{\"bufferView\":1,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\",",
+            "\"normalized\":true}},",
+            "{{\"bufferView\":2,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}}],",
+            "\"bufferViews\":[",
+            "{{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48,\"target\":34962}},",
+            "{{\"buffer\":0,\"byteOffset\":48,\"byteLength\":16,\"target\":34962}},",
+            "{{\"buffer\":0,\"byteOffset\":64,\"byteLength\":12,\"target\":34963}}],",
+            "\"buffers\":[{{\"byteLength\":76,",
+            "\"uri\":\"data:application/octet-stream;base64,"
+        ),
+        sided = sided
+    );
+
+    // The base64 blob is a constant, not a literal a `concat!` can splice.
+    let mut document = json;
+    document.push_str(REVERSED_BIN_BASE64);
+    document.push_str("\"}]}");
+    document.into_bytes()
+}
+
+/// A `doubleSided` material draws the geometry's back faces too: a quad wound
+/// away from the camera is culled when single-sided and covered when not.
+///
+/// Nothing in the unlit fragment shader reads a normal, so double-sidedness is
+/// the cull mode alone — the back faces are rasterized as they are rather than
+/// with a reversed normal.
+async fn a_double_sided_material_draws_back_faces() {
+    let ctx = Ctx::headless().await;
+
+    let render = |double_sided: bool| {
+        let ctx = &ctx;
+        async move {
+            let mut world = World::new();
+            let gpu = TestGpu::new(&mut world, ctx);
+            let gltf = UnlitGltf::from_buffer(&reversed_document(double_sided))
+                .expect("the embedded document parses");
+
+            let key = gltf.pipeline_key(&ctx.device, 0, 0);
+            if double_sided {
+                assert_eq!(
+                    key.options.primitive.cull_mode, None,
+                    "a double-sided material culls nothing"
+                );
+            } else {
+                assert_eq!(
+                    key.options.primitive.cull_mode,
+                    Some(wgpu::Face::Back),
+                    "a single-sided material culls back faces"
+                );
+            }
+
+            let images =
+                gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
+            let materials = gpu.with_mesh_source(&world, |source, world| {
+                gltf.insert_materials(source, world, &images)
+            });
+            let meshes =
+                gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+            gltf.spawn_default_scene(&mut world, &meshes, &materials);
+            world.spawn((camera(),));
+
+            let target = gpu.bind_offscreen_target(&world, "test::gltf_double_sided");
+            gpu.render(&world);
+            read_texture_bytes(ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+        }
+    };
+
+    let single = render(false).await;
+    let double = render(true).await;
+
+    // The single-sided pass culled every triangle, so the frame is untouched.
+    assert_eq!(
+        count_colour(&single, [255, 0, 0], 4),
+        0,
+        "a quad wound away from the camera is culled when single-sided"
+    );
+    // Turning the culling off lets the same geometry cover the frame.
+    let red = count_colour(&double, [255, 0, 0], 4);
+    assert!(
+        red > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the same quad covers the frame once culling is off: {red} red texels"
+    );
+}
+
 /// The world transform of a node in a hierarchy reaches the spawned entity:
 /// a translated parent moves the quad out of the frame's centre, so the
 /// rendered frame differs from the untranslated one and leaves background on
@@ -481,6 +599,7 @@ async fn node_hierarchy_translates_the_quad() {
             textured: true,
             blend: false,
             mask: None,
+            double_sided: false,
         }))
         .expect("the embedded document parses");
         let images =
@@ -540,6 +659,7 @@ async fn untextured_material_draws_flat() {
         textured: false,
         blend: false,
         mask: None,
+        double_sided: false,
     }))
     .expect("the embedded document parses");
     let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
@@ -584,6 +704,7 @@ async fn a_blended_material_composites_over_the_frame() {
         textured: false,
         blend: true,
         mask: None,
+        double_sided: false,
     }))
     .expect("the embedded document parses");
 
@@ -648,6 +769,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
             textured: true,
             blend: false,
             mask: Some(cutoff),
+            double_sided: false,
         }))
         .expect("the embedded document parses");
 
@@ -731,6 +853,7 @@ async fn unload_empties_the_frame() {
         textured: true,
         blend: false,
         mask: None,
+        double_sided: false,
     }))
     .expect("the embedded document parses");
     let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
@@ -788,6 +911,7 @@ gpu_tests! {
     a_masked_material_discards_fragments_below_its_cutoff,
     a_skinned_quad_follows_its_joint,
     a_morphed_quad_follows_its_weights,
+    a_double_sided_material_draws_back_faces,
     unload_empties_the_frame,
 }
 
