@@ -245,6 +245,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # The example embeds the glTF assets with `include_bytes!`, and linting the
+      # workspace compiles it, so the cross-build needs them as much as the host
+      # one does. `.gitmodules` marks the submodule `update = none`, so
+      # `--checkout` is what gets past that setting; without it the step below
+      # fails on the missing assets rather than on anything this job is about.
+      - name: Check out the asset submodule
+        run: git submodule update --init --checkout
+
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy

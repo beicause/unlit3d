@@ -46,6 +46,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
+      # The example embeds the glTF assets with `include_bytes!`, so the web
+      # build needs the asset submodule. `.gitmodules` marks it `update = none`,
+      # and `--checkout` is what gets past that setting, as in `ci.yml`.
+      - name: Check out the asset submodule
+        run: git submodule update --init --checkout
+
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal
