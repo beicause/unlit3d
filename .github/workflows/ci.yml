@@ -286,8 +286,23 @@ jobs:
 
       # The NDK is not installed here: the runner image already carries the
       # version this project pins, and `cargo ndk` finds it by itself.
+      #
+      # `--strategies` is spelled out because cargo-ndk's own manifest disables
+      # two of the defaults (`disabled-strategies = ["quick-install", "compile"]`
+      # in its `[package.metadata.binstall]`), the source build among them. That
+      # leaves the prebuilt download as its only option, so a release lookup the
+      # API rate-limits into a `403` has nowhere to fall back to and fails the
+      # install outright — as it did here. Naming the strategies on the command
+      # line overrides the package's list and puts `cargo install` back behind
+      # the download, which is what nextest already has by default.
+      #
+      # `GITHUB_TOKEN` keeps the lookup authenticated so that fallback stays the
+      # rare path, as the `GITHUB_TOKEN` on the nextest install in the `build`
+      # job does for the same reason.
       - name: Install cargo-ndk
-        run: cargo binstall --no-confirm cargo-ndk
+        run: cargo binstall --no-confirm --strategies crate-meta-data,quick-install,compile cargo-ndk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # The `build` job lints the workspace for the host, which never compiles
       # the code behind `cfg(target_os = "android")` — the entry point among it.
