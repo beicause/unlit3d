@@ -26,7 +26,7 @@ hashbrown = { version = "0.17.1", default-features = false, features = ["default
 # proxy sends each test to the browser's runner with.
 libtest-mimic = "0.8.2"
 log = { version = "0.4", default-features = false, features = ["alloc", "std"] }
-pollster = { version = "0.4.0", default-features = false }
+pollster = { version = "1.0.1", default-features = false }
 profiling = { version = "1.0.18", default-features = false }
 smallvec = { version = "1.16.1", default-features = false, features = ["const_generics", "const_new", "union"] }
 ureq = { version = "3.4.0", default-features = false }
