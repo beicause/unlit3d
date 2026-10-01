@@ -211,9 +211,12 @@ active 相机时，帧会被清空，什么都不绘制。
 
 它做的是修补你已经在渲染的那个世界：
 
-- `insert_image` / `insert_material` / `insert_mesh` 把一个图像、材质或网格上传进目标
-  帧源的资源图并返回句柄；批量版本（`insert_images`、`insert_materials`、
-  `insert_meshes`）一次上传文档里的一切，与文档自身的索引对齐。
+- `insert_resources` 一次上传整份文档，返回持有全部句柄的 `GltfResources`；
+  `spawn_node` / `spawn_default_scene` 接收的正是这个结构体。想一次只插入一类资源的调用方
+  ——比如让两份文档共用一个纹理——也可以改用 `insert_image` / `insert_material` /
+  `insert_mesh` 上传单个图像、材质或网格，或用批量版本（`insert_images`、
+  `insert_materials`、`insert_meshes`）一次上传某一类全部资源（与文档自身的索引对齐），
+  再自行拼出 `GltfResources`。
 - 交出句柄只让其所指变得可回收：材质的绑定组与材质同寿，它采样的纹理视图也由材质
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
 - `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）

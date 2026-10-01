@@ -60,7 +60,7 @@ fn build(
                 indices: Some(&indices),
                 joints: Some(&skin.joints),
                 weights: Some(&skin.weights),
-                morph_targets: &[],
+                morph_deltas: None,
             },
         )
     });

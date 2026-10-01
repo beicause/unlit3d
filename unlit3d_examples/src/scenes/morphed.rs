@@ -8,7 +8,7 @@
 
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
-    morph_targets,
+    morph_deltas,
 };
 use unlit3d::prelude::*;
 
@@ -48,11 +48,7 @@ fn build(
     let source_entity = spawn_source(world, source);
 
     let (positions, uvs, colors, indices) = super::cube();
-    let (taper, widen) = morph_targets(&positions);
-    let targets = [
-        UnlitMorphTarget { positions: &taper },
-        UnlitMorphTarget { positions: &widen },
-    ];
+    let deltas = morph_deltas(&positions);
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         source.allocate_unlit_mesh(
             world,
@@ -62,7 +58,7 @@ fn build(
                 uvs: Some(&uvs),
                 colors: Some(&colors),
                 indices: Some(&indices),
-                morph_targets: &targets,
+                morph_deltas: Some(deltas),
                 ..Default::default()
             },
         )

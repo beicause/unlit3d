@@ -20,31 +20,31 @@
 //! # Ok(()) }
 //! ```
 //!
-//! The document is inserted piece by piece — images, then materials, then
-//! meshes — and each piece is a handle that keeps its resources alive:
+//! The document is inserted in one call, which returns every handle that keeps
+//! what it uploaded alive:
 //!
 //! ```no_run
 //! # use unlit3d::gltf::UnlitGltf;
 //! # use unlit3d::prelude::{MeshSource, World};
 //! # fn run(source: &mut MeshSource, world: &mut World) -> Result<(), gltf::Error> {
 //! let gltf = UnlitGltf::load("model.glb")?;
-//! let images = gltf.insert_images(source, world);
-//! let materials = gltf.insert_materials(source, world, &images);
-//! let meshes = gltf.insert_meshes(source, world);
-//! let entities = gltf.spawn_default_scene(world, &meshes, &materials);
+//! let resources = gltf.insert_resources(source, world);
+//! let entities = gltf.spawn_default_scene(world, &resources);
 //! // ... render ...
 //! // Giving the handles up makes their resources collectable.
-//! drop(materials);
-//! drop(meshes);
-//! drop(images);
+//! drop(resources);
 //! # Ok(()) }
 //! ```
 //!
+//! A caller that wants to insert one kind of resource at a time — to reuse a
+//! texture between documents, say — can still call
+//! [`UnlitGltf::insert_images`], [`UnlitGltf::insert_materials`] and
+//! [`UnlitGltf::insert_meshes`] directly and build a [`GltfResources`] of its
+//! own.
+//!
 //! Spawning entities never spawns a camera: the renderer draws with the first
-//! [`Camera`] in the world, so one belongs to the
-//! caller. A document that ships its own cameras can offer one with
-//! [`UnlitGltf::spawn_camera`], which is worth doing only for a world that has
-//! none.
+//! [`Camera`](crate::components::Camera) in the world, so one belongs to the
+//! caller.
 //!
 //! # Texture formats
 //!
@@ -116,10 +116,10 @@
 use std::path::Path;
 
 use crate::components::{
-    Camera, GpuMaterial, GpuMesh, InstanceColor, InstanceCutoff, MorphBinding, MorphWeights,
-    SkinBinding, SkinPose, Transform, UnlitPipeline, ZSortedDrawing,
+    GpuMaterial, GpuMesh, InstanceColor, InstanceCutoff, MorphBinding, MorphWeights, SkinBinding,
+    SkinPose, Transform, UnlitPipeline, ZSortedDrawing,
 };
-use crate::mesh::{UnlitMeshDesc, UnlitMorphTarget};
+use crate::mesh::{MorphDeltas, UnlitMeshDesc};
 use crate::mesh_source::{MeshSource, UnlitPipelineKey};
 use gltf::animation::util::ReadOutputs;
 use gltf::animation::{Interpolation, Property};
@@ -148,9 +148,9 @@ pub struct UnlitGltf {
     node_transforms: Vec<Transform>,
     /// World-space matrix of every node, indexed by node index.
     ///
-    /// Kept beside the decomposed transform because a camera needs the matrix
-    /// itself: decomposing drops shear, and the view matrix of a node whose
-    /// ancestors shear has to keep it.
+    /// Kept beside the decomposed transform because animation recomposes the
+    /// matrices from the node's own local transform and its parents, and a
+    /// shear in that chain has to survive the recomposition.
     node_matrices: Vec<glam::Mat4>,
     /// The parent of every node, indexed by node index; `None` at a root.
     ///
@@ -168,8 +168,9 @@ pub struct UnlitGltf {
 
 /// A texture uploaded from a glTF image.
 ///
-/// Produced by [`UnlitGltf::insert_image`] / [`UnlitGltf::insert_images`].
-/// Dropping the handle makes the texture collectable by the next maintain.
+/// Produced by [`UnlitGltf::insert_resources`] or
+/// [`UnlitGltf::insert_image`] / [`UnlitGltf::insert_images`]. Dropping the
+/// handle makes the texture collectable by the next maintain.
 #[derive(Clone, Debug)]
 pub struct GltfImage {
     /// The index of the image in the glTF document.
@@ -190,9 +191,10 @@ pub struct GltfImage {
 
 /// A material bind group built from a glTF material's base-color texture.
 ///
-/// Produced by [`UnlitGltf::insert_material`] /
-/// [`UnlitGltf::insert_materials`]. Dropping the handle makes the bind group
-/// collectable; the view and sampler it names are the caller's own handles.
+/// Produced by [`UnlitGltf::insert_resources`] or
+/// [`UnlitGltf::insert_material`] / [`UnlitGltf::insert_materials`]. Dropping
+/// the handle makes the bind group collectable; the view and sampler it names
+/// are the caller's own handles.
 #[derive(Clone, Debug)]
 pub struct GltfMaterial {
     /// The index of the material in the glTF document.
@@ -207,8 +209,9 @@ pub struct GltfMaterial {
 
 /// A mesh uploaded from one glTF primitive.
 ///
-/// Produced by [`UnlitGltf::insert_mesh`] / [`UnlitGltf::insert_meshes`].
-/// Dropping the handle makes the mesh collectable by the next maintain.
+/// Produced by [`UnlitGltf::insert_resources`] or [`UnlitGltf::insert_mesh`] /
+/// [`UnlitGltf::insert_meshes`]. Dropping the handle makes the mesh
+/// collectable by the next maintain.
 ///
 /// The key is derived from the primitive's own attributes and is the key the
 /// mesh was uploaded with; spawning an entity from this handle reuses the same
@@ -243,6 +246,31 @@ pub struct GltfNode {
     /// The entity holding the node's [`MorphWeights`], when the node's mesh
     /// has morph targets.
     pub weights: Option<Entity>,
+}
+
+/// Every resource one document uploaded, in document order.
+///
+/// Produced by [`UnlitGltf::insert_resources`], which uploads the whole
+/// document in one call, and taken by [`UnlitGltf::spawn_node`] and
+/// [`UnlitGltf::spawn_default_scene`] to draw it. Each vector is indexed by
+/// the document index it came from: `images[i]` is image `i`, `materials[m]`
+/// is material `m` — `None` when it names no base-color texture — and
+/// `meshes` holds every primitive of every mesh, document-mesh-major and then
+/// primitive-minor.
+///
+/// Holding the struct is what keeps the uploaded resources alive: dropping it
+/// lets the next [`MeshSource::maintain`] collect them.
+///
+/// A caller that inserts the pieces itself — to share textures between
+/// documents, say — builds one of these to spawn with.
+#[derive(Clone, Debug, Default)]
+pub struct GltfResources {
+    /// Every uploaded image, indexed by document image.
+    pub images: Vec<GltfImage>,
+    /// Every uploaded material, indexed by document material.
+    pub materials: Vec<Option<GltfMaterial>>,
+    /// Every uploaded primitive, document-mesh-major then primitive-minor.
+    pub meshes: Vec<GltfMesh>,
 }
 
 impl UnlitGltf {
@@ -551,10 +579,11 @@ impl UnlitGltf {
     /// The key is derived from the primitive's own attributes (see
     /// [`Self::pipeline_key`]): TEXCOORD_0 and a base-color-textured material
     /// enable the UV and base-color-texture streams, COLOR_0 the vertex-color
-    /// stream, positions and an instance stream always. A primitive read with
-    /// streams its attributes do not declare would panic, so the derivation is
-    /// the only safe choice here. Skins, morph targets, normals and tangents
-    /// are ignored (see the module docs).
+    /// stream, positions and an instance stream always, JOINTS_0 and WEIGHTS_0
+    /// the joint stream and a position-displacing morph target the displacement
+    /// stream. A primitive read with streams its attributes do not declare
+    /// would panic, so the derivation is the only safe choice here. Normals and
+    /// tangents are ignored (see the module docs).
     ///
     /// # Panics
     ///
@@ -569,74 +598,80 @@ impl UnlitGltf {
         let key = self.pipeline_key(&source.device(world), mesh, primitive);
         let primitive = self.primitive(mesh, primitive);
         let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
+        let flags = key.options.flags;
 
         let positions: Vec<[f32; 3]> = reader
             .read_positions()
             .expect("a glTF primitive carries its POSITION attribute")
             .collect();
-        let uvs: Option<Vec<[f32; 2]>> = reader
-            .read_tex_coords(0)
-            .map(|uvs| uvs.into_f32().collect());
-        let colors: Option<Vec<[u8; 4]>> = reader
-            .read_colors(0)
-            .map(|colors| colors.into_rgba_u8().collect());
+        // Read only the streams the key names: an attribute the key does not
+        // read is not uploaded, so decoding it would be wasted work.
+        let uvs: Option<Vec<[f32; 2]>> = flags.contains(UnlitFlags::VERTEX_UV).then(|| {
+            reader
+                .read_tex_coords(0)
+                .expect("the key reads uvs, so the primitive has TEXCOORD_0")
+                .into_f32()
+                .collect()
+        });
+        let colors: Option<Vec<[u8; 4]>> = flags.contains(UnlitFlags::VERTEX_COLOR).then(|| {
+            reader
+                .read_colors(0)
+                .expect("the key reads colors, so the primitive has COLOR_0")
+                .into_rgba_u8()
+                .collect()
+        });
         let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
-        let joints: Option<Vec<[u16; 4]>> = reader
-            .read_joints(0)
-            .map(|joints| joints.into_u16().collect());
-        let weights: Option<Vec<[f32; 4]>> = reader
-            .read_weights(0)
-            .map(|weights| weights.into_f32().collect());
-        // The displacements a morph target applies, one flat array per target
-        // that displaces positions — the count the key was built from, so a
-        // target of normals only is dropped here just as it was there.
-        let morphs: Vec<Vec<[f32; 3]>> = reader
-            .read_morph_targets()
-            .filter_map(|(positions, _, _)| positions.map(|deltas| deltas.collect::<Vec<_>>()))
-            .collect();
-        let morph_targets: Vec<UnlitMorphTarget<'_>> = morphs
-            .iter()
-            .map(|positions| UnlitMorphTarget { positions })
-            .collect();
+        let joints: Option<Vec<[u16; 4]>> = flags.contains(UnlitFlags::VERTEX_JOINTS).then(|| {
+            reader
+                .read_joints(0)
+                .expect("the key reads joints, so the primitive has JOINTS_0")
+                .into_u16()
+                .collect()
+        });
+        let weights: Option<Vec<[f32; 4]>> = flags.contains(UnlitFlags::VERTEX_JOINTS).then(|| {
+            reader
+                .read_weights(0)
+                .expect("the key reads joints, so the primitive has WEIGHTS_0")
+                .into_f32()
+                .collect()
+        });
+        // The displacements the key's morph stream reads, packed the way a
+        // mesh wants them: for each vertex, every position-displacing target in
+        // order, three components each. Writing straight into the packed array
+        // keeps one allocation for the whole thing, however many targets the
+        // primitive declares; a target of normals alone is skipped here just as
+        // it was when the key was built.
+        let morph_deltas = flags.contains(UnlitFlags::MORPH_POSITIONS).then(|| {
+            let target_count = morph_target_count(&primitive);
+            let mut deltas = vec![0.0; positions.len() * target_count * 3];
+            let mut target = 0;
+            for (displacements, _, _) in reader.read_morph_targets() {
+                let Some(displacements) = displacements else {
+                    continue;
+                };
+                for (vertex, displacement) in displacements.enumerate() {
+                    let start = (vertex * target_count + target) * 3;
+                    deltas[start..start + 3].copy_from_slice(&displacement);
+                }
+                target += 1;
+            }
+            MorphDeltas {
+                deltas,
+                target_count: target_count as u32,
+            }
+        });
 
         let gpu_mesh = source.allocate_unlit_mesh(
             world,
             &key,
             UnlitMeshDesc {
                 positions: &positions,
-                uvs: key.options.flags.contains(UnlitFlags::VERTEX_UV).then(|| {
-                    uvs.as_deref()
-                        .expect("the key reads uvs, so the primitive has TEXCOORD_0")
-                }),
-                colors: key
-                    .options
-                    .flags
-                    .contains(UnlitFlags::VERTEX_COLOR)
-                    .then(|| {
-                        colors
-                            .as_deref()
-                            .expect("the key reads colors, so the primitive has COLOR_0")
-                    }),
+                uvs: uvs.as_deref(),
+                colors: colors.as_deref(),
                 indices: indices.as_deref(),
-                joints: key
-                    .options
-                    .flags
-                    .contains(UnlitFlags::VERTEX_JOINTS)
-                    .then(|| {
-                        joints
-                            .as_deref()
-                            .expect("the key reads joints, so the primitive has JOINTS_0")
-                    }),
-                weights: key
-                    .options
-                    .flags
-                    .contains(UnlitFlags::VERTEX_JOINTS)
-                    .then(|| {
-                        weights
-                            .as_deref()
-                            .expect("the key reads joints, so the primitive has WEIGHTS_0")
-                    }),
-                morph_targets: &morph_targets,
+                joints: joints.as_deref(),
+                weights: weights.as_deref(),
+                morph_deltas,
             },
         );
 
@@ -653,13 +688,41 @@ impl UnlitGltf {
     /// The vector is ordered document-mesh-major, then primitive-minor: first
     /// all of mesh 0's primitives, then mesh 1's, and so on.
     pub fn insert_meshes(&self, source: &mut MeshSource, world: &World) -> Vec<GltfMesh> {
-        let mut meshes = Vec::new();
+        let count: usize = self
+            .document
+            .meshes()
+            .map(|mesh| mesh.primitives().len())
+            .sum();
+        let mut meshes = Vec::with_capacity(count);
         for mesh in 0..self.document.meshes().len() {
             for primitive in 0..self.mesh(mesh).primitives().count() {
                 meshes.push(self.insert_mesh(source, world, mesh, primitive));
             }
         }
         meshes
+    }
+
+    /// Insert the whole document and return every handle that keeps it alive.
+    ///
+    /// This is the one call that uploads a document: it inserts the images,
+    /// builds the materials from them and uploads every primitive, and hands
+    /// back a [`GltfResources`] holding all of it. Pass that to
+    /// [`Self::spawn_node`] or [`Self::spawn_default_scene`] to draw the
+    /// document; keep it alive for as long as the entities live.
+    ///
+    /// A caller that inserts the pieces itself — to share a texture between
+    /// documents, say — can call [`Self::insert_images`],
+    /// [`Self::insert_materials`] and [`Self::insert_meshes`] instead and
+    /// build a [`GltfResources`] of its own.
+    pub fn insert_resources(&self, source: &mut MeshSource, world: &World) -> GltfResources {
+        let images = self.insert_images(source, world);
+        let materials = self.insert_materials(source, world, &images);
+        let meshes = self.insert_meshes(source, world);
+        GltfResources {
+            images,
+            materials,
+            meshes,
+        }
     }
 
     // -- skins ----------------------------------------------------------------
@@ -980,14 +1043,13 @@ impl UnlitGltf {
     /// # Panics
     ///
     /// If the node's mesh (or a mesh it shares primitives with) was not
-    /// inserted, or a primitive's material is `None` in `materials` while its
-    /// key reads a base-color texture.
+    /// inserted into `resources`, or a primitive's material is `None` there
+    /// while its key reads a base-color texture.
     pub fn spawn_node(
         &self,
         world: &mut World,
         node: usize,
-        meshes: &[GltfMesh],
-        materials: &[Option<GltfMaterial>],
+        resources: &GltfResources,
     ) -> GltfNode {
         let index = node;
         let transform = self.node_transforms[node].clone();
@@ -1001,7 +1063,8 @@ impl UnlitGltf {
         let mut morphs: Option<Entity> = None;
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
-                let mesh_handle = meshes
+                let mesh_handle = resources
+                    .meshes
                     .iter()
                     .find(|handle| {
                         handle.mesh_index == mesh.index()
@@ -1025,7 +1088,7 @@ impl UnlitGltf {
                     .options
                     .flags
                     .contains(UnlitFlags::BASE_COLOR_TEXTURE)
-                    .then(|| self.primitive_material(primitive, materials));
+                    .then(|| self.primitive_material(primitive, &resources.materials));
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
                 let skinned = mesh_handle
                     .key
@@ -1085,48 +1148,6 @@ impl UnlitGltf {
         }
     }
 
-    /// Spawn the [`Camera`] a node carries, placed by the node's world
-    /// transform.
-    ///
-    /// Returns `None` when the node has no camera, so a caller can walk a
-    /// document's nodes without asking first.
-    ///
-    /// `aspect_ratio` is the viewport's width over its height; it is used only
-    /// when the document leaves the camera's own `aspectRatio` unset, since a
-    /// document that states one should keep it.
-    ///
-    /// # Which camera draws
-    ///
-    /// The renderer draws with the *first* [`Camera`] in the world, so a world
-    /// that already has one keeps drawing through it — spawning a document's
-    /// camera beside it changes nothing. A caller that wants the document's
-    /// camera to draw must not give the world another one.
-    ///
-    /// The transform is applied as a view matrix, so the node's local `-Z` is
-    /// where the camera looks — glTF's own convention for a camera node.
-    pub fn spawn_camera(
-        &self,
-        world: &mut World,
-        node: usize,
-        aspect_ratio: f32,
-    ) -> Option<Entity> {
-        let camera = self.node(node).camera()?;
-        let matrix = self.node_matrices[node];
-        // Building the view from the decomposed rotation and translation
-        // rather than inverting the node's matrix keeps a degenerate node
-        // (a zero scale on some axis) from producing a matrix full of NaNs —
-        // a camera has no geometry to collapse.
-        let transform = decompose(matrix);
-        let position = transform.translation;
-        let view = glam::Mat4::from_rotation_translation(transform.rotation, position).inverse();
-        let clip_from_world = projection_matrix(&camera, aspect_ratio) * view;
-        Some(world.spawn((Camera {
-            clip_from_world,
-            position,
-            active: true,
-        },)))
-    }
-
     /// Spawn every node reachable from the document's default scene.
     ///
     /// Returns one [`GltfNode`] per visited node, in the order the walk
@@ -1143,8 +1164,7 @@ impl UnlitGltf {
     pub fn spawn_default_scene(
         &self,
         world: &mut World,
-        meshes: &[GltfMesh],
-        materials: &[Option<GltfMaterial>],
+        resources: &GltfResources,
     ) -> Vec<GltfNode> {
         let scene = self
             .document
@@ -1153,7 +1173,7 @@ impl UnlitGltf {
         let mut nodes = Vec::new();
         let mut stack: Vec<usize> = scene.nodes().map(|node| node.index()).collect();
         while let Some(node) = stack.pop() {
-            nodes.push(self.spawn_node(world, node, meshes, materials));
+            nodes.push(self.spawn_node(world, node, resources));
             stack.extend(self.node(node).children().map(|child| child.index()));
         }
         nodes
@@ -1531,42 +1551,6 @@ fn address_mode(mode: gltf::texture::WrappingMode) -> wgpu::AddressMode {
         WrappingMode::ClampToEdge => wgpu::AddressMode::ClampToEdge,
         WrappingMode::MirroredRepeat => wgpu::AddressMode::MirrorRepeat,
         WrappingMode::Repeat => wgpu::AddressMode::Repeat,
-    }
-}
-
-/// The projection matrix a glTF camera looks through.
-///
-/// Both projections are built in the convention the unlit pipeline draws with:
-/// right-handed, Y-up, clip depth `0..=1` — WebGPU's NDC — so the frustum the
-/// renderer culls against matches the one the camera describes.
-///
-/// A perspective camera becomes an *infinite* reverse projection: glTF's
-/// `zfar` is dropped and the far plane goes to infinity. The built-in pipeline
-/// draws with a reversed depth buffer (`CompareFunction::Greater`, cleared to
-/// `0.0`), so a finite far plane would clip distant geometry that the pipeline
-/// is set up to keep.
-///
-/// `aspect_ratio` is the viewport's width over its height, used when the
-/// document leaves the camera's own `aspectRatio` unset.
-fn projection_matrix(camera: &gltf::camera::Camera<'_>, aspect_ratio: f32) -> glam::Mat4 {
-    use gltf::camera::Projection;
-    match camera.projection() {
-        Projection::Perspective(perspective) => {
-            let aspect = perspective.aspect_ratio().unwrap_or(aspect_ratio);
-            glam::camera::rh::proj::directx::perspective_infinite_reverse(
-                perspective.yfov(),
-                aspect,
-                perspective.znear(),
-            )
-        }
-        Projection::Orthographic(orthographic) => glam::camera::rh::proj::directx::orthographic(
-            -orthographic.xmag(),
-            orthographic.xmag(),
-            -orthographic.ymag(),
-            orthographic.ymag(),
-            orthographic.znear(),
-            orthographic.zfar(),
-        ),
     }
 }
 

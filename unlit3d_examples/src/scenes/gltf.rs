@@ -106,22 +106,18 @@ fn build(
     // two documents sharing a frame share a source. Each document derives its
     // own pipeline keys, since a skinned primitive and a morphed one read
     // different streams.
-    let (fox_meshes, fox_materials, morph_meshes, morph_materials) =
+    let (fox_resources, morph_resources) =
         super::with_mesh_source(world, source_entity, |source, world| {
-            let fox_images = fox.insert_images(source, world);
-            let fox_materials = fox.insert_materials(source, world, &fox_images);
-            let fox_meshes = fox.insert_meshes(source, world);
-            let morph_images = morph.insert_images(source, world);
-            let morph_materials = morph.insert_materials(source, world, &morph_images);
-            let morph_meshes = morph.insert_meshes(source, world);
-            (fox_meshes, fox_materials, morph_meshes, morph_materials)
+            let fox_resources = fox.insert_resources(source, world);
+            let morph_resources = morph.insert_resources(source, world);
+            (fox_resources, morph_resources)
         });
 
     // The spawned handles are what `apply_animation` writes through: the fox's
     // handle carries the pose entity its skin reads, and the cube's carries
     // the weights entity its morph targets read.
-    let fox_nodes = fox.spawn_default_scene(world, &fox_meshes, &fox_materials);
-    let morph_nodes = morph.spawn_default_scene(world, &morph_meshes, &morph_materials);
+    let fox_nodes = fox.spawn_default_scene(world, &fox_resources);
+    let morph_nodes = morph.spawn_default_scene(world, &morph_resources);
 
     // Neither document animates the node its mesh hangs from — the fox's mesh
     // sits on a root beside the skeleton, and the cube's node is animated only

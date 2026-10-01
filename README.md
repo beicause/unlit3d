@@ -72,9 +72,10 @@ Not supported: lighting and shadows, and post-processing.
   document into a plain record of the model — no `World`, no GPU state — and
   patches its images, materials and meshes into the resource graph of a world
   you already render, unloads them again, and spawns the entities that draw the
-  document's default scene. Node hierarchies, cameras, skinned and morphed
-  primitives, blended or cut-off materials, and the document's animations —
-  sampled at a time you choose — all come across.
+  document's default scene. Node hierarchies, skinned and morphed primitives,
+  blended or cut-off materials, and the document's animations — sampled at a
+  time you choose — all come across. Cameras do not: the renderer draws with
+  the world's own `Camera`, so the caller places it.
 - **Persistent, pooled GPU resources.** Draws work with raw `wgpu` resources;
   they live across frames, are rebuilt only when needed, and share and reuse the
   buffers uploads go through.

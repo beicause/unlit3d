@@ -30,7 +30,7 @@ async fn skinning_without_skin_data_panics() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
-    gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &[]);
+    gpu.allocate_deformed_cube_mesh(&world, &key, None, None, None);
 }
 
 /// A skinned mesh drawn without a pose entity is rejected rather than deformed

@@ -12,31 +12,28 @@ use common::*;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
-/// The per-vertex displacement of each target: the first tapers the cube's top
-/// to a point, the second widens its base.
+/// The displacement of the two targets, packed the way a mesh stores them:
+/// per vertex, one target after the other, three components each.
 ///
-/// Both are functions of the vertex's own position, so the two targets produce
+/// The first target tapers the cube's top to a point, the second widens its
+/// base. Both are functions of the vertex's own position, so the two produce
 /// visibly different shapes and a wrong target stride reads the wrong one.
-fn morph_targets(positions: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
-    let taper = positions
-        .iter()
-        .map(|position| {
-            let height = (position[1] + 1.0) * 0.5;
-            [
-                -position[0] * height * 0.7,
-                0.0,
-                -position[2] * height * 0.7,
-            ]
-        })
-        .collect();
-    let widen = positions
-        .iter()
-        .map(|position| {
-            let height = (1.0 - position[1]) * 0.5;
-            [position[0] * height * 0.6, 0.0, position[2] * height * 0.6]
-        })
-        .collect();
-    (taper, widen)
+fn morph_deltas(positions: &[[f32; 3]]) -> MorphDeltas {
+    let mut deltas = Vec::with_capacity(positions.len() * 2 * 3);
+    for position in positions {
+        let height = (position[1] + 1.0) * 0.5;
+        deltas.extend_from_slice(&[
+            -position[0] * height * 0.7,
+            0.0,
+            -position[2] * height * 0.7,
+        ]);
+        let height = (1.0 - position[1]) * 0.5;
+        deltas.extend_from_slice(&[position[0] * height * 0.6, 0.0, position[2] * height * 0.6]);
+    }
+    MorphDeltas {
+        deltas,
+        target_count: 2,
+    }
 }
 
 /// The camera the remaining tests share.
@@ -54,7 +51,7 @@ async fn morphing_without_targets_panics() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
-    gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &[]);
+    gpu.allocate_deformed_cube_mesh(&world, &key, None, None, None);
 }
 
 /// A mesh whose weights do not match its target count is rejected rather than
@@ -65,13 +62,9 @@ async fn mismatched_morph_weight_count_panics() {
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     let (positions, _uvs, _colors, _indices) = cube();
-    let (taper, widen) = morph_targets(&positions);
-    let targets = [
-        UnlitMorphTarget { positions: &taper },
-        UnlitMorphTarget { positions: &widen },
-    ];
+    let deltas = morph_deltas(&positions);
     // Two targets, one weight: the shader would loop past the end of the pose.
-    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
+    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
     let weights_entity = world.spawn((MorphWeights::new(vec![0.5]),));
 
     world.spawn((camera(),));
@@ -92,12 +85,8 @@ async fn morphing_without_a_weight_binding_panics() {
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     let (positions, _uvs, _colors, _indices) = cube();
-    let (taper, widen) = morph_targets(&positions);
-    let targets = [
-        UnlitMorphTarget { positions: &taper },
-        UnlitMorphTarget { positions: &widen },
-    ];
-    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
+    let deltas = morph_deltas(&positions);
+    let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
 
     world.spawn((camera(),));
     world.spawn((mesh, UnlitPipeline::new(key)));
@@ -112,13 +101,9 @@ async fn meshes_can_share_one_morph_weights() {
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
     let (positions, _uvs, _colors, _indices) = cube();
-    let (taper, widen) = morph_targets(&positions);
-    let targets = [
-        UnlitMorphTarget { positions: &taper },
-        UnlitMorphTarget { positions: &widen },
-    ];
-    let first = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
-    let second = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, &targets);
+    let deltas = morph_deltas(&positions);
+    let first = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas.clone()));
+    let second = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
 
     // One weight entity, named by both meshes: a crowd of copies of one mesh
     // shares one blended pose instead of holding a copy each.
@@ -160,7 +145,7 @@ async fn meshes_can_share_one_morph_weights() {
 // The registry both runners drive: `cargo nextest` natively, and a
 // browser through the wasm export `gpu_test_main!` adds.
 gpu_tests! {
-    #[should_panic(expected = "a variant that reads morph positions needs the mesh's morph targets")]
+    #[should_panic(expected = "a variant that reads morph positions needs the mesh's morph displacements")]
     morphing_without_targets_panics,
     #[should_panic(expected = "a mesh's morph weights must hold one weight per morph target")]
     mismatched_morph_weight_count_panics,

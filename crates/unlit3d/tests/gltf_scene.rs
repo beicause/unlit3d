@@ -250,13 +250,10 @@ async fn a_morphed_quad_follows_its_weights() {
         "the mesh's own weights are the starting pose"
     );
 
-    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-    let materials = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_materials(source, world, &images)
-    });
-    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     assert!(
-        meshes[0]
+        resources.meshes[0]
             .key
             .options
             .flags
@@ -264,7 +261,7 @@ async fn a_morphed_quad_follows_its_weights() {
         "the primitive declares targets, so the key reads displacements"
     );
 
-    let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    let entities = gltf.spawn_default_scene(&mut world, &resources);
     assert_eq!(entities.len(), 1, "one mesh node draws one entity");
 
     let weights_entity = {
@@ -400,12 +397,9 @@ async fn an_animation_moves_the_drawn_mesh() {
         "the clip ends at its last keyframe"
     );
 
-    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-    let materials = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_materials(source, world, &images)
-    });
-    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
-    let nodes = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let nodes = gltf.spawn_default_scene(&mut world, &resources);
     world.spawn((camera(),));
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
 
@@ -449,13 +443,10 @@ async fn a_skinned_quad_follows_its_joint() {
         .expect("the embedded document parses");
     assert_eq!(gltf.skin_joint_count(0), Some(1), "the skin has one joint");
 
-    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-    let materials = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_materials(source, world, &images)
-    });
-    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     assert!(
-        meshes[0]
+        resources.meshes[0]
             .key
             .options
             .flags
@@ -463,7 +454,7 @@ async fn a_skinned_quad_follows_its_joint() {
         "the primitive declares JOINTS_0, so the key reads joints"
     );
 
-    let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    let entities = gltf.spawn_default_scene(&mut world, &resources);
     assert_eq!(entities.len(), 1, "one mesh node draws one entity");
 
     // The drawn entity names the pose entity the spawn created, and that
@@ -536,12 +527,9 @@ async fn textured_quad_renders_four_colours() {
     }))
     .expect("the embedded document parses");
 
-    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-    let materials = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_materials(source, world, &images)
-    });
-    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
-    let _entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let _entities = gltf.spawn_default_scene(&mut world, &resources);
     world.spawn((camera(),));
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_textured_quad");
@@ -647,14 +635,9 @@ async fn a_double_sided_material_draws_back_faces() {
                 );
             }
 
-            let images =
-                gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-            let materials = gpu.with_mesh_source(&world, |source, world| {
-                gltf.insert_materials(source, world, &images)
-            });
-            let meshes =
-                gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
-            gltf.spawn_default_scene(&mut world, &meshes, &materials);
+            let resources =
+                gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+            gltf.spawn_default_scene(&mut world, &resources);
             world.spawn((camera(),));
 
             let target = gpu.bind_offscreen_target(&world, "test::gltf_double_sided");
@@ -698,15 +681,10 @@ async fn node_hierarchy_translates_the_quad() {
             double_sided: false,
         }))
         .expect("the embedded document parses");
-        let images =
-            gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-        let materials = gpu.with_mesh_source(&world, |source, world| {
-            gltf.insert_materials(source, world, &images)
-        });
-        let meshes =
-            gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+        let resources =
+            gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
         let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_translated_quad");
-        let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+        let entities = gltf.spawn_default_scene(&mut world, &resources);
         world.spawn((camera(),));
         gpu.render(&world);
         let px = read_texture_bytes(
@@ -724,9 +702,7 @@ async fn node_hierarchy_translates_the_quad() {
             }
         }
         // Giving up the handles is the unload; the next maintain collects.
-        drop(materials);
-        drop(meshes);
-        drop(images);
+        drop(resources);
         gpu.maintain(&world);
         px
     };
@@ -759,17 +735,14 @@ async fn untextured_material_draws_flat() {
         double_sided: false,
     }))
     .expect("the embedded document parses");
-    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-    let materials = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_materials(source, world, &images)
-    });
-    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     assert!(
-        materials.iter().all(Option::is_none),
+        resources.materials.iter().all(Option::is_none),
         "a textureless material binds nothing"
     );
 
-    let _entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    let _entities = gltf.spawn_default_scene(&mut world, &resources);
     world.spawn((camera(),));
     let target = gpu.bind_offscreen_target(&world, "test::gltf_flat_quad");
     gpu.render(&world);
@@ -814,12 +787,9 @@ async fn a_blended_material_composites_over_the_frame() {
         "an alphaMode BLEND material blends"
     );
 
-    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-    let materials = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_materials(source, world, &images)
-    });
-    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
-    let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let entities = gltf.spawn_default_scene(&mut world, &resources);
 
     // ...and the spawned entity is marked for back-to-front compositing.
     let z_sorted: Vec<Entity> = world
@@ -891,14 +861,9 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
             "a cut-off material does not blend"
         );
 
-        let images =
-            gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-        let materials = gpu.with_mesh_source(&world, |source, world| {
-            gltf.insert_materials(source, world, &images)
-        });
-        let meshes =
-            gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
-        let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+        let resources =
+            gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+        let entities = gltf.spawn_default_scene(&mut world, &resources);
         assert!(
             world.query::<&ZSortedDrawing>().next().is_none(),
             "a cut-off material draws opaque coverage, so it needs no sort"
@@ -920,9 +885,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
             }
         }
         // Giving up the handles is the unload; the next maintain collects.
-        drop(materials);
-        drop(meshes);
-        drop(images);
+        drop(resources);
         gpu.maintain(&world);
         px
     };
@@ -959,12 +922,9 @@ async fn unload_empties_the_frame() {
         double_sided: false,
     }))
     .expect("the embedded document parses");
-    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
-    let materials = gpu.with_mesh_source(&world, |source, world| {
-        gltf.insert_materials(source, world, &images)
-    });
-    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
-    let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    let resources =
+        gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
+    let entities = gltf.spawn_default_scene(&mut world, &resources);
     world.spawn((camera(),));
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_before");
@@ -981,9 +941,7 @@ async fn unload_empties_the_frame() {
         }
     }
     // Giving up the handles is the unload; the next maintain collects.
-    drop(materials);
-    drop(meshes);
-    drop(images);
+    drop(resources);
     gpu.maintain(&world);
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_after");

@@ -123,21 +123,13 @@ pub struct UnlitMeshDesc<'a> {
     /// Weights are normalized on upload, so a caller may pass unnormalized
     /// ones; a vertex whose weights sum to zero is left undeformed.
     pub weights: Option<&'a [[f32; 4]]>,
-    /// The morph targets that displace the mesh, in target order.
-    pub morph_targets: &'a [UnlitMorphTarget<'a>],
-}
-
-/// One morph target of a mesh: the displacement it applies to every vertex.
-///
-/// Only positions displace — a morph target carries no normal or tangent —
-/// and a target displaces every vertex of the mesh it belongs to, so
-/// [`Self::positions`] must be as long as the mesh's own vertex list. How much
-/// of the displacement applies is the mesh's
-/// [`MorphWeights`](crate::components::MorphWeights) component, not the
-/// target's: the same target can be weighted differently by two meshes sharing
-/// it.
-#[derive(Clone, Copy, Debug)]
-pub struct UnlitMorphTarget<'a> {
-    /// Per-vertex position displacement, in the mesh's local space.
-    pub positions: &'a [[f32; 3]],
+    /// The morph displacements that deform the mesh, for a variant that reads
+    /// them.
+    ///
+    /// Only positions displace: a target carries no normal or tangent, so the
+    /// packed displacements are all this mesh has. How much of them applies is
+    /// the mesh's [`MorphWeights`](crate::components::MorphWeights) component,
+    /// not the mesh's: the same displacements can be weighted differently by
+    /// two meshes.
+    pub morph_deltas: Option<MorphDeltas>,
 }

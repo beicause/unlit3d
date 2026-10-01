@@ -312,10 +312,14 @@ a *record* of the model, not a GPU resource: it owns no `World` and no
 
 What it does is patch the world you already render:
 
-- `insert_image` / `insert_material` / `insert_mesh` upload one image, material
-  or mesh into the target source's resource graph and return a handle; the
-  batch versions (`insert_images`, `insert_materials`, `insert_meshes`) upload
-  everything the document has, aligned with the document's own indices.
+- `insert_resources` uploads the whole document in one call and returns a
+  [`GltfResources`](gltf::GltfResources) holding every handle it made; that is
+  the struct `spawn_node` / `spawn_default_scene` take. A caller that wants one
+  kind of resource at a time — to share a texture between two documents, say —
+  can instead call `insert_image` / `insert_material` / `insert_mesh` for a
+  single image, material or mesh, or the batch versions (`insert_images`,
+  `insert_materials`, `insert_meshes`) for everything of one kind, aligned with
+  the document's own indices, and assemble a `GltfResources` of its own.
 - Giving up a handle makes exactly what it names collectable: the material's
   bind group lives while the material does, and the texture view it samples is
   held by the material too, so dropping the material's handle is enough to

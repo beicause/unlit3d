@@ -47,7 +47,7 @@ use crate::components::{
     Camera, GpuMaterial, GpuMesh, MeshParts, MorphBinding, MorphWeights, SkinBinding, SkinPose,
 };
 use crate::culling::VisibleMesh;
-use crate::mesh::{MeshDesc, MorphDeltas, UnlitMeshDesc};
+use crate::mesh::{MeshDesc, UnlitMeshDesc};
 use crate::pipeline::{
     DrawKey, FamilyContext, GlobalResources, Rebuild, RegisteredGlobal, RegisteredRenderPipeline,
     RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
@@ -1129,7 +1129,7 @@ impl MeshSource {
     /// compressed channel and so declare no mesh-metadata group; if the key
     /// declares the joint channel but [`UnlitMeshDesc::joints`] or
     /// [`UnlitMeshDesc::weights`] is `None`; or if the key declares morph
-    /// positions but [`UnlitMeshDesc::morph_targets`] is empty.
+    /// positions but [`UnlitMeshDesc::morph_deltas`] is `None`.
     pub fn allocate_unlit_mesh(
         &mut self,
         world: &World,
@@ -1146,7 +1146,7 @@ impl MeshSource {
             indices,
             joints,
             weights,
-            morph_targets,
+            morph_deltas,
         } = desc;
 
         // The key's options say what the mesh's streams look like: the pure
@@ -1218,29 +1218,19 @@ impl MeshSource {
         // pools them into the frame-wide array, so what it hands over is the
         // raw data rather than a resource.
         let morph_deltas = options.needs_morphs().then(|| {
-            assert!(
-                !morph_targets.is_empty(),
-                "a variant that reads morph positions needs the mesh's morph targets"
+            let morph_deltas = morph_deltas.expect(
+                "a variant that reads morph positions needs the mesh's morph displacements",
             );
-            let target_count = morph_targets.len() as u32;
-            // One vertex's targets are contiguous, so the flat array is a
-            // vertex-major, target-minor matrix of three-component
-            // displacements.
-            let mut deltas = Vec::with_capacity(positions.len() * morph_targets.len() * 3);
-            for vertex in 0..positions.len() {
-                for target in morph_targets {
-                    assert_eq!(
-                        target.positions.len(),
-                        positions.len(),
-                        "a morph target must displace every vertex of its mesh"
-                    );
-                    deltas.extend_from_slice(&target.positions[vertex]);
-                }
-            }
-            MorphDeltas {
-                deltas,
-                target_count,
-            }
+            assert_ne!(
+                morph_deltas.target_count, 0,
+                "a morphing mesh needs at least one target"
+            );
+            assert_eq!(
+                morph_deltas.deltas.len(),
+                positions.len() * morph_deltas.target_count as usize * 3,
+                "a morph displacement array must hold three components per vertex and target"
+            );
+            morph_deltas
         });
 
         // The vertex layout the key's options declare, slot for slot. An empty
@@ -2286,7 +2276,7 @@ impl FrameSource for MeshSource {
 mod tests {
     use super::*;
     use crate::components::{Transform, UnlitPipeline, ZSortedDrawing};
-    use crate::mesh::UnlitMorphTarget;
+    use crate::mesh::MorphDeltas;
     use crate::scene::DrawShape;
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
@@ -2485,14 +2475,19 @@ mod tests {
     /// mesh group a morphing variant binds.
     fn morph_mesh(harness: &mut Harness) -> GpuMesh {
         let key = UnlitPipelineKey::new(morph_options(&harness.source.device(&harness.world)));
-        let target = [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]];
+        // One target displacing all three vertices by the same amount, packed
+        // vertex-major: three components per vertex.
+        let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         harness.source.allocate_unlit_mesh(
             &harness.world,
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 indices: Some(&[0u32, 1, 2]),
-                morph_targets: &[UnlitMorphTarget { positions: &target }],
+                morph_deltas: Some(MorphDeltas {
+                    deltas,
+                    target_count: 1,
+                }),
                 ..Default::default()
             },
         )

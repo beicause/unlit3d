@@ -488,28 +488,28 @@ impl BendSkin {
     }
 }
 
-/// The per-vertex displacement of the two morph targets the deformed scenes
-/// use: the first tapers the cube's top to a point, the second widens its base.
-pub fn morph_targets(positions: &[[f32; 3]]) -> (Vec<[f32; 3]>, Vec<[f32; 3]>) {
-    let taper = positions
-        .iter()
-        .map(|position| {
-            let height = (position[1] + 1.0) * 0.5;
-            [
-                -position[0] * height * 0.7,
-                0.0,
-                -position[2] * height * 0.7,
-            ]
-        })
-        .collect();
-    let widen = positions
-        .iter()
-        .map(|position| {
-            let height = (1.0 - position[1]) * 0.5;
-            [position[0] * height * 0.6, 0.0, position[2] * height * 0.6]
-        })
-        .collect();
-    (taper, widen)
+/// The displacement of the two morph targets the deformed scenes use, packed
+/// the way a mesh stores it: per vertex, one target after the other, three
+/// components each.
+///
+/// The first target tapers the cube's top to a point, the second widens its
+/// base.
+pub fn morph_deltas(positions: &[[f32; 3]]) -> MorphDeltas {
+    let mut deltas = Vec::with_capacity(positions.len() * 2 * 3);
+    for position in positions {
+        let height = (position[1] + 1.0) * 0.5;
+        deltas.extend_from_slice(&[
+            -position[0] * height * 0.7,
+            0.0,
+            -position[2] * height * 0.7,
+        ]);
+        let height = (1.0 - position[1]) * 0.5;
+        deltas.extend_from_slice(&[position[0] * height * 0.6, 0.0, position[2] * height * 0.6]);
+    }
+    MorphDeltas {
+        deltas,
+        target_count: 2,
+    }
 }
 
 /// Run `f` on the world's `MeshSource`, which lives on the source entity.

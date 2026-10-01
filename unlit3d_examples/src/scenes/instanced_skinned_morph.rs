@@ -12,7 +12,7 @@
 
 use super::{
     BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
-    morph_targets, rest_pose,
+    morph_deltas, rest_pose,
 };
 use unlit3d::prelude::*;
 
@@ -55,11 +55,7 @@ fn build(
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, 0.0);
-    let (taper, widen) = morph_targets(&positions);
-    let targets = [
-        UnlitMorphTarget { positions: &taper },
-        UnlitMorphTarget { positions: &widen },
-    ];
+    let deltas = morph_deltas(&positions);
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         source.allocate_unlit_mesh(
             world,
@@ -71,7 +67,7 @@ fn build(
                 indices: Some(&indices),
                 joints: Some(&skin.joints),
                 weights: Some(&skin.weights),
-                morph_targets: &targets,
+                morph_deltas: Some(deltas),
             },
         )
     });

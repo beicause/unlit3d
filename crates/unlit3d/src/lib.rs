@@ -36,9 +36,7 @@ pub mod prelude {
             PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent, TouchEvent,
             TouchPhase, WheelUnit, dispatch_input,
         },
-        mesh::{
-            JointMatrix, MeshDesc, MorphDeltas, UnlitMeshDesc, UnlitMorphTarget, VertexBufferDesc,
-        },
+        mesh::{JointMatrix, MeshDesc, MorphDeltas, UnlitMeshDesc, VertexBufferDesc},
         mesh_source::{MeshSource, UnlitPipelineKey},
         pipeline::{
             DrawKey, FamilyContext, GlobalResources, Rebuild, RegisteredRenderPipeline,

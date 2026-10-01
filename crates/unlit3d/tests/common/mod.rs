@@ -213,11 +213,11 @@ impl TestGpu {
     }
 
     /// Allocate a cube through the source under `key`, carrying the joint
-    /// stream and morph targets the variant reads.
+    /// stream and morph displacements the variant reads.
     ///
     /// The key must be a variant that declares the matching channels — the
-    /// joint stream for joints, the morph bindings for targets — which is what
-    /// a test of either path builds with [`deformation_options`].
+    /// joint stream for joints, the morph bindings for displacements — which
+    /// is what a test of either path builds with [`deformation_options`].
     ///
     /// The pose itself is not here: the joints and weights a frame deforms by
     /// live in components of their own, so a test that animates one attaches
@@ -229,7 +229,7 @@ impl TestGpu {
         key: &UnlitPipelineKey,
         joints: Option<&[[u16; 4]]>,
         weights: Option<&[[f32; 4]]>,
-        morph_targets: &[UnlitMorphTarget<'_>],
+        morph_deltas: Option<MorphDeltas>,
     ) -> GpuMesh {
         let (positions, uvs, colors, indices) = cube();
         self.with_mesh_source(world, |source, world| {
@@ -243,7 +243,7 @@ impl TestGpu {
                     indices: Some(&indices),
                     joints,
                     weights,
-                    morph_targets,
+                    morph_deltas,
                 },
             )
         })
@@ -273,14 +273,14 @@ impl TestGpu {
                     indices: Some(&indices),
                     joints: Some(&skin.joints),
                     weights: Some(&skin.weights),
-                    morph_targets: &[],
+                    morph_deltas: None,
                 },
             )
         });
         (mesh, skin)
     }
 
-    /// Allocate a cube morphed by `targets`, returning the mesh.
+    /// Allocate a cube morphed by `deltas`, returning the mesh.
     ///
     /// The weights that blend the targets are not part of the mesh: they live
     /// in a [`MorphWeights`] component the test attaches to an entity and names
@@ -289,9 +289,9 @@ impl TestGpu {
         &self,
         world: &World,
         key: &UnlitPipelineKey,
-        targets: &[UnlitMorphTarget<'_>],
+        deltas: MorphDeltas,
     ) -> GpuMesh {
-        self.allocate_deformed_cube_mesh(world, key, None, None, targets)
+        self.allocate_deformed_cube_mesh(world, key, None, None, Some(deltas))
     }
 
     /// Allocate an offscreen colour target and a matching depth-stencil target,
