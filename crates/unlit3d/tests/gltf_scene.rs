@@ -875,8 +875,9 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
         }))
         .expect("the embedded document parses");
 
-        // The cutoff is a uniform the material binds, not a variant of its
-        // own: the key only declares that fragments are cut off.
+        // The cutoff is per-instance state the spawned entity carries, not a
+        // uniform the material binds: the key only declares that fragments are
+        // cut off, and `spawn_node` writes each instance's own value.
         let key = gpu.with_mesh_source(&world, |source, world| {
             gltf.pipeline_key(&source.device(world), 0, 0)
         });

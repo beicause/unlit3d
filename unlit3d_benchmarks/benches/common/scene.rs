@@ -64,7 +64,8 @@ impl Frame {
             texture_filtering: true,
             flags: UnlitFlags::VERTEX_POSITION
                 | UnlitFlags::VERTEX_COLOR
-                | UnlitFlags::VERTEX_INSTANCE,
+                | UnlitFlags::INSTANCE_TRANSFORM
+                | UnlitFlags::INSTANCE_METADATA,
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             color_target: wgpu::ColorTargetState {

@@ -346,16 +346,22 @@ pub fn aim_camera(
         .expect("the entity carries a camera");
 }
 
-/// Unlit options for the ported ECS scenes: vertex colour + instance, no
-/// texture, no MSAA, with reverse-z depth.
+/// Unlit options for the ported ECS scenes: vertex colour + per-instance
+/// transform, no texture, no MSAA, with reverse-z depth.
 ///
 /// The scene's key is built from these — the same options the snapshot tests
-/// the scenes came from were drawn with.
+/// the scenes came from were drawn with. A scene whose instances carry a tint
+/// adds [`UnlitFlags::INSTANCE_COLOR`](unlit_wgpu::pipeline::UnlitFlags::INSTANCE_COLOR)
+/// to the returned flags.
 pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
     use unlit_wgpu::pipeline::UnlitFlags;
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
-    let flags =
-        UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE;
+    // A compressed position decodes through the instance's metadata index,
+    // so the variant declares the instance stream's metadata field too.
+    let flags = UnlitFlags::VERTEX_POSITION
+        | UnlitFlags::VERTEX_COLOR
+        | UnlitFlags::INSTANCE_TRANSFORM
+        | UnlitFlags::INSTANCE_METADATA;
     UnlitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
@@ -382,6 +388,18 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
     }
 }
 
+/// [`unlit_options`] plus the per-instance tint.
+///
+/// For a scene whose instances carry an
+/// [`InstanceColor`]: the tint is read from
+/// the instance stream, so the variant has to declare that attribute, and a
+/// scene that never tints should not spend the bytes.
+pub fn tinted_options(device: &wgpu::Device) -> UnlitOptions {
+    let mut options = unlit_options(device);
+    options.flags |= unlit_wgpu::pipeline::UnlitFlags::INSTANCE_COLOR;
+    options
+}
+
 /// Unlit options for a variant that deforms its vertices.
 ///
 /// `joints` adds the joint stream and the joint-matrix binding; `morphs` adds
@@ -390,12 +408,15 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
 /// camera as an undeformed one.
 pub fn deformation_options(device: &wgpu::Device, joints: bool, morphs: bool) -> UnlitOptions {
     use unlit_wgpu::pipeline::UnlitFlags;
-    let mut options = unlit_options(device);
+    let mut options = tinted_options(device);
+    // A deforming draw reads its base out of the instance stream, and each
+    // half of the pose has a field of its own: skinning reads the joint base,
+    // morphing the morph base.
     if joints {
-        options.flags |= UnlitFlags::VERTEX_JOINTS;
+        options.flags |= UnlitFlags::VERTEX_JOINTS | UnlitFlags::INSTANCE_JOINTS;
     }
     if morphs {
-        options.flags |= UnlitFlags::MORPH_POSITIONS;
+        options.flags |= UnlitFlags::MORPH_POSITIONS | UnlitFlags::INSTANCE_MORPH;
     }
     options
 }

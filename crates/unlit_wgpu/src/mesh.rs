@@ -248,9 +248,9 @@ pub struct MeshMetadata {
     pub pad0: [u32; 3],
 }
 
-/// One per-instance record: the affine model matrix, base color, pose base and
-/// metadata index the built-in pipeline reads from its per-instance vertex
-/// buffer.
+/// One per-instance record: the affine model matrix, base color, pose bases,
+/// metadata index and alpha cutoff the built-in pipeline reads from its
+/// per-instance vertex buffer.
 ///
 /// This is the vertex stream of `unlit.wesl`'s instance slot, so upload a
 /// `&[MeshInstance]` as that slot's buffer. The matrix is packed as three
@@ -259,20 +259,22 @@ pub struct MeshMetadata {
 /// [`glam::Mat4`]: the shader transforms a point with three dot products and
 /// never treats it as a matrix.
 ///
-/// [`Self::pose`] addresses the frame's shared pose arrays, which is what lets
-/// two instances of one mesh deform differently: the joints and morph weights a
-/// draw deforms by are per-instance state, so they cannot live in the mesh's
-/// own bind group.
+/// [`Self::joints_base`] and [`Self::morph_base`] address the frame's shared
+/// pose arrays, which is what lets two instances of one mesh deform
+/// differently: the joints and morph weights a draw deforms by are per-instance
+/// state, so they cannot live in the mesh's own bind group. Skinning and
+/// morphing are independent, so the two bases are separate fields rather than
+/// the lanes of one vector — a variant that only skins declares no weight base.
 ///
 /// Vertex attributes are addressed by the explicit offsets of
 /// [`crate::pipeline::UnlitOptions::vertex_buffer_layouts`], not by WGSL
 /// shader-layout rules, so this type makes no `const_shader_layout` claim;
 /// that the offsets line up is asserted by a test instead.
 ///
-/// The record is tightly packed — the sum of its vertex formats is its stride —
+/// The record is tightly packed — the sum of its vertex formats is its size —
 /// which is why the columns are `[f32; 4]` rather than [`glam::Vec4`]: a `Vec4`
 /// is sixteen-byte aligned, which would round the record up and leave trailing
-/// padding the upload would have to write as zeroes.
+/// padding the layout would have to account for.
 #[repr(C)]
 #[derive(
     Clone,
@@ -289,8 +291,8 @@ pub struct MeshInstance {
     pub model: [[f32; 4]; 3],
     /// Linear RGBA base color, `Unorm8x4`.
     pub base_color: CompressedColor,
-    /// Where this instance's pose starts in the frame's shared pose arrays.
-    pub pose: PoseBase,
+    /// This instance's first joint matrix in the frame's shared joint array.
+    pub joints_base: u32,
     /// Index of the mesh's entry in the frame's metadata array, which carries
     /// its decode parameters and its draw addressing.
     ///
@@ -299,6 +301,12 @@ pub struct MeshInstance {
     /// a bind group of its own. Every instance of one mesh carries the same
     /// index.
     pub metadata_index: u32,
+    /// Alpha below which a cut-off variant discards the fragment.
+    ///
+    /// Zero for an instance that cuts nothing off, which no alpha falls below.
+    pub cutoff: f32,
+    /// This instance's first morph weight in the frame's shared weight array.
+    pub morph_base: u32,
 }
 
 impl MeshInstance {
@@ -306,8 +314,8 @@ impl MeshInstance {
     ///
     /// The color is quantized to the `Unorm8x4` the instance stream carries, so
     /// a component outside `0..=1` saturates rather than wrapping. The instance
-    /// reads no pose data and no metadata; point it at them with
-    /// [`Self::with_pose`] and [`Self::with_metadata_index`].
+    /// reads no pose data, no metadata and no alpha cutoff; point it at them
+    /// with the `with_*` setters.
     pub fn new(world_from_local: glam::Affine3A, base_color: glam::Vec4) -> Self {
         let linear = world_from_local.matrix3;
         let translation = world_from_local.translation;
@@ -318,8 +326,10 @@ impl MeshInstance {
                 linear.z_axis.extend(translation.z).to_array(),
             ],
             base_color: base_color.to_array().map(f32_to_unorm8),
-            pose: PoseBase::ZERO,
+            joints_base: 0,
             metadata_index: 0,
+            cutoff: 0.0,
+            morph_base: 0,
         }
     }
 
@@ -331,11 +341,19 @@ impl MeshInstance {
         glam::Vec3::new(self.model[0][3], self.model[1][3], self.model[2][3])
     }
 
-    /// Point this instance at the joint matrices starting at `joints` and the
-    /// morph weights starting at `weights` in the frame's shared pose arrays.
+    /// Point this instance at the joint matrices starting at `joints_base` in
+    /// the frame's shared joint array.
     #[must_use]
-    pub fn with_pose(mut self, joints: u32, weights: u32) -> Self {
-        self.pose = PoseBase::new(joints, weights);
+    pub fn with_joints_base(mut self, joints_base: u32) -> Self {
+        self.joints_base = joints_base;
+        self
+    }
+
+    /// Point this instance at the morph weights starting at `morph_base` in the
+    /// frame's shared weight array.
+    #[must_use]
+    pub fn with_morph_base(mut self, morph_base: u32) -> Self {
+        self.morph_base = morph_base;
         self
     }
 
@@ -343,6 +361,13 @@ impl MeshInstance {
     #[must_use]
     pub fn with_metadata_index(mut self, metadata_index: u32) -> Self {
         self.metadata_index = metadata_index;
+        self
+    }
+
+    /// Discard this instance's fragments below the alpha `cutoff`.
+    #[must_use]
+    pub fn with_cutoff(mut self, cutoff: f32) -> Self {
+        self.cutoff = cutoff;
         self
     }
 }
@@ -369,45 +394,6 @@ pub type CompressedColor = [u8; 4];
 /// One vertex's joint indices: `Uint16x4`.
 pub type CompressedJoints = [u16; 4];
 
-/// Where one instance's pose starts in the frame's shared pose arrays:
-/// `Uint32x2`, with `x` indexing the joint matrices and `y` the morph weights.
-///
-/// Both arrays hold the pose of every visible instance, so the shader reads a
-/// joint or a weight at this base plus its own index. Zero for an instance that
-/// deforms by nothing.
-#[repr(C)]
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    zerocopy_derive::FromBytes,
-    zerocopy_derive::Immutable,
-    zerocopy_derive::IntoBytes,
-    zerocopy_derive::KnownLayout,
-)]
-pub struct PoseBase {
-    /// The instance's first joint matrix.
-    pub joints: u32,
-    /// The instance's first morph weight.
-    pub weights: u32,
-}
-
-impl PoseBase {
-    /// An instance that deforms by nothing.
-    pub const ZERO: Self = Self {
-        joints: 0,
-        weights: 0,
-    };
-
-    /// The base an instance deforming by the joint matrices at `joints` and the
-    /// morph weights at `weights` reads from.
-    pub const fn new(joints: u32, weights: u32) -> Self {
-        Self { joints, weights }
-    }
-}
 /// One vertex's joint weights: `Unorm16x4`, summing to 1.
 pub type CompressedWeights = [u16; 4];
 

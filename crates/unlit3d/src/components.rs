@@ -474,6 +474,35 @@ impl InstanceColor {
     }
 }
 
+/// Per-instance alpha cutoff, discarding fragments below it.
+///
+/// The renderer packs it into the per-instance vertex stream next to the model
+/// matrix, so two entities sharing a mesh and a cut-off pipeline can still cut
+/// at different alphas. Entities without this component leave the cutoff at
+/// zero, which no alpha falls below, and so discard nothing.
+///
+/// The component only supplies the value the shader compares against; the
+/// variant that discards anything is the one carrying
+/// [`UnlitFlags::ALPHA_CUTOFF`](unlit_wgpu::pipeline::UnlitFlags::ALPHA_CUTOFF).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InstanceCutoff {
+    /// Alpha a fragment has to reach to be drawn.
+    pub cutoff: f32,
+}
+
+impl Default for InstanceCutoff {
+    fn default() -> Self {
+        Self { cutoff: 0.0 }
+    }
+}
+
+impl InstanceCutoff {
+    /// A cutoff component discarding fragments below `cutoff`.
+    pub const fn new(cutoff: f32) -> Self {
+        Self { cutoff }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

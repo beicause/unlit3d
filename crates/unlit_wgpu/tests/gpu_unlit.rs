@@ -517,11 +517,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         wgpu::BufferUsages::VERTEX,
     );
     let instance_count = instances.len() as u32;
-    let instanced = fixture
-        .pipeline
-        .descriptor()
-        .flags
-        .contains(UnlitFlags::VERTEX_INSTANCE);
+    let instanced = fixture.pipeline.descriptor().reads_instances();
     let range = match &fixture.mesh.indices {
         Some((_, count)) => DrawRange::Indexed {
             indices: 0..*count,
@@ -595,7 +591,11 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 /// The vertex-color variant the pixel tests use.
 fn vertex_color_options(device: &wgpu::Device) -> UnlitOptions {
     UnlitOptions::standard(device).with_flags(
-        UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE,
+        UnlitFlags::VERTEX_POSITION
+            | UnlitFlags::VERTEX_COLOR
+            | UnlitFlags::INSTANCE_TRANSFORM
+            | UnlitFlags::INSTANCE_COLOR
+            | UnlitFlags::INSTANCE_METADATA,
     )
 }
 
@@ -789,7 +789,8 @@ async fn instanced_cubes_match_snapshot() {
 /// where the per-instance transform puts it.
 async fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless().await;
-    let options = UnlitOptions::standard(&ctx.device).with_flags(UnlitFlags::VERTEX_INSTANCE);
+    let options = UnlitOptions::standard(&ctx.device)
+        .with_flags(UnlitFlags::INSTANCE_TRANSFORM | UnlitFlags::INSTANCE_COLOR);
     let fixture = fixture(&ctx, &options, 1);
     assert!(
         fixture.mesh.positions.is_none(),

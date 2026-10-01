@@ -8,7 +8,7 @@
 //! pooled range, a stale metadata entry or a mispacked instance looks like
 //! from frame to frame.
 
-use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, unlit_options};
+use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE};
 use unlit3d::prelude::*;
 
 /// The grid of cells a cube can occupy, in the XZ plane.
@@ -104,7 +104,8 @@ fn build(
 ) -> SceneControl {
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
+    // Every cell is tinted through its instance colour.
+    let key = UnlitPipelineKey::new(super::tinted_options(&source.device(world)));
     let source_entity = spawn_source(world, source);
 
     let camera_entity = world.spawn((orbit_camera(0, size),));

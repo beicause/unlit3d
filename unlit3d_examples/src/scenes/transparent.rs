@@ -15,7 +15,7 @@
 //! order, so a scene that lost the sort would composite them the other way
 //! round and fail the snapshot rather than happening to look right.
 
-use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at, unlit_options};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
 use unlit_wgpu::pipeline::UnlitFlags;
 use unlit3d::prelude::*;
 
@@ -88,8 +88,10 @@ fn build(
     // behind it, but depth *testing* stays on: the panes are composited among
     // themselves by their draw order, and an opaque cube in front of them must
     // still occlude them.
-    let opaque_key = UnlitPipelineKey::new(unlit_options(&device));
-    let mut translucent = unlit_options(&device);
+    // Both variants read the instance tint: the backdrop is tinted through it,
+    // and every pane's tint is its own.
+    let opaque_key = UnlitPipelineKey::new(super::tinted_options(&device));
+    let mut translucent = super::tinted_options(&device);
     translucent.color_target.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -114,7 +116,12 @@ fn build(
     // The translucent variant reads no per-vertex colour: each pane's tint is
     // its own instance colour, so one mesh serves all of them. The flags go in
     // through the setter, which keeps the array path the device needs.
-    translucent = translucent.with_flags(UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_INSTANCE);
+    translucent = translucent.with_flags(
+        UnlitFlags::VERTEX_POSITION
+            | UnlitFlags::INSTANCE_TRANSFORM
+            | UnlitFlags::INSTANCE_COLOR
+            | UnlitFlags::INSTANCE_METADATA,
+    );
     let translucent_key = UnlitPipelineKey::new(translucent);
 
     let source_entity = spawn_source(world, source);

@@ -114,8 +114,8 @@
 use std::path::Path;
 
 use crate::components::{
-    Camera, GpuMaterial, GpuMesh, InstanceColor, MorphBinding, MorphWeights, SkinBinding, SkinPose,
-    Transform, UnlitPipeline, ZSortedDrawing,
+    Camera, GpuMaterial, GpuMesh, InstanceColor, InstanceCutoff, MorphBinding, MorphWeights,
+    SkinBinding, SkinPose, Transform, UnlitPipeline, ZSortedDrawing,
 };
 use crate::mesh::{UnlitMeshDesc, UnlitMorphTarget};
 use crate::mesh_source::{MeshSource, UnlitPipelineKey};
@@ -297,10 +297,11 @@ impl UnlitGltf {
     /// whose `alphaMode` is `BLEND` also blends, so the key is drawn with
     /// [`wgpu::BlendState::ALPHA_BLENDING`], and one whose `alphaMode` is
     /// `MASK` carries [`UnlitFlags::ALPHA_CUTOFF`] so its fragments are
-    /// discarded below the cutoff. A `doubleSided` material turns back-face
-    /// culling off, so its geometry is drawn from either side; everything else
-    /// follows [`UnlitOptions::standard`], so the key is exactly what
-    /// [`Self::insert_mesh`] uploads with.
+    /// discarded below the cutoff — [`Self::spawn_node`] writes that cutoff
+    /// into the instance the node spawns. A `doubleSided` material turns
+    /// back-face culling off, so its geometry is drawn from either side;
+    /// everything else follows [`UnlitOptions::standard`], so the key is
+    /// exactly what [`Self::insert_mesh`] uploads with.
     pub fn pipeline_key(
         &self,
         device: &wgpu::Device,
@@ -309,7 +310,14 @@ impl UnlitGltf {
     ) -> UnlitPipelineKey {
         let primitive = self.primitive(mesh, primitive);
         let material = primitive.material();
-        let mut flags = UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_INSTANCE;
+        // The transform and the tint are per-instance for every primitive, and
+        // a compressed position or UV decodes through the instance's metadata
+        // index, so every glTF variant reads at least those three fields of the
+        // instance record.
+        let mut flags = UnlitFlags::VERTEX_POSITION
+            | UnlitFlags::INSTANCE_TRANSFORM
+            | UnlitFlags::INSTANCE_COLOR
+            | UnlitFlags::INSTANCE_METADATA;
         let texture = material.pbr_metallic_roughness().base_color_texture();
         if primitive.get(&gltf::Semantic::TexCoords(0)).is_some() && texture.is_some() {
             flags |= UnlitFlags::VERTEX_UV | UnlitFlags::BASE_COLOR_TEXTURE;
@@ -323,13 +331,16 @@ impl UnlitGltf {
         if primitive.get(&gltf::Semantic::Joints(0)).is_some()
             && primitive.get(&gltf::Semantic::Weights(0)).is_some()
         {
-            flags |= UnlitFlags::VERTEX_JOINTS;
+            // A skinned draw reads its joint-matrix base out of the instance
+            // stream, so the joint stream implies the instance field.
+            flags |= UnlitFlags::VERTEX_JOINTS | UnlitFlags::INSTANCE_JOINTS;
         }
         // Only position displacements are read, so a target that carries
         // none is skipped rather than drawn as a no-op: a mesh whose targets
         // all displace normals deforms nothing here.
         if morph_target_count(&primitive) > 0 {
-            flags |= UnlitFlags::MORPH_POSITIONS;
+            // Likewise, a morphed draw reads its weight base per instance.
+            flags |= UnlitFlags::MORPH_POSITIONS | UnlitFlags::INSTANCE_MORPH;
         }
         let mut options = UnlitOptions::standard(device).with_flags(flags);
         // The texture the material samples decides whether the base-color
@@ -350,10 +361,10 @@ impl UnlitGltf {
         }
         // A `MASK` material is not a translucent one: its fragments are either
         // drawn whole or discarded, so it neither blends nor needs the
-        // back-to-front sort a blended one does. The cutoff itself is one
-        // material's own value, bound by the material rather than baked into
-        // the variant — see [`Self::insert_material`].
-        if texture.is_some() && alpha_cutoff(&material).is_some() {
+        // back-to-front sort a blended one does. The cutoff itself is
+        // per-instance state, so it rides the instance stream rather than the
+        // material group — see [`Self::spawn_node`].
+        if alpha_cutoff(&material).is_some() {
             options.flags |= UnlitFlags::ALPHA_CUTOFF;
         }
         // A `doubleSided` material is visible from behind, so its back faces
@@ -486,8 +497,7 @@ impl UnlitGltf {
         // texture; build the bind group against exactly that variant. Its
         // layout is the filtering one only when the image can be filtered, and
         // the sampler has to be non-filtering in step with it.
-        let cutoff = alpha_cutoff(&data);
-        let key = textured_key(&source.device(world), image.filtering, cutoff.is_some());
+        let key = textured_key(&source.device(world), image.filtering);
         let descriptor = sampler_descriptor(&info.texture().sampler());
         let descriptor = if image.filtering {
             descriptor
@@ -515,13 +525,9 @@ impl UnlitGltf {
             view
         };
 
-        let bind_group = match cutoff {
-            Some(cutoff) => {
-                source.allocate_unlit_material_with_cutoff(world, &key, view, sampler, cutoff)
-            }
-            None => source.allocate_unlit_material(world, &key, view, sampler),
-        }
-        .expect("a base-color variant builds a material bind group");
+        let bind_group = source
+            .allocate_unlit_material(world, &key, view, sampler)
+            .expect("a base-color variant builds a material bind group");
         Some(GltfMaterial {
             material,
             bind_group,
@@ -1056,6 +1062,10 @@ impl UnlitGltf {
                     .pbr_metallic_roughness()
                     .base_color_factor()
                     .into();
+                // The `alphaMode: MASK` cutoff the shader compares against is
+                // read before the primitive is handed to the material lookup,
+                // which takes it by value.
+                let cutoff = alpha_cutoff(&primitive.material());
                 let material = mesh_handle
                     .key
                     .options
@@ -1093,6 +1103,11 @@ impl UnlitGltf {
                 bundle.push(mesh_handle.mesh.clone());
                 bundle.push(UnlitPipeline::new(mesh_handle.key.clone()));
                 bundle.push(InstanceColor::new(tint));
+                // The cutoff is per-instance state, so the entity carries it
+                // and the shader reads it out of the instance stream.
+                if let Some(cutoff) = cutoff {
+                    bundle.push(InstanceCutoff::new(cutoff));
+                }
                 if let Some(material) = material {
                     bundle.push(material.bind_group.clone());
                 }
@@ -1477,15 +1492,18 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
 
 /// The key a material bind group is built against: the base-color variant.
 ///
-/// Only `BASE_COLOR_TEXTURE`, `texture_filtering` and `ALPHA_CUTOFF` shape the
-/// material group's layout, so any key carrying them works; this is the one a
-/// base-color-textured primitive's [`UnlitGltf::pipeline_key`] derives to.
-fn textured_key(device: &wgpu::Device, filtering: bool, cutoff: bool) -> UnlitPipelineKey {
-    let mut flags = UnlitFlags::VERTEX_POSITION
-        | UnlitFlags::VERTEX_INSTANCE
+/// Only `BASE_COLOR_TEXTURE` and `texture_filtering` shape the material group's
+/// layout, so any key carrying them works; this is the one a base-color-textured
+/// primitive's [`UnlitGltf::pipeline_key`] derives to. The instance flags a draw
+/// adds do not enter the material group, and wgpu deduplicates identical layout
+/// descriptors, so the group fits the pipeline whatever else its key reads.
+fn textured_key(device: &wgpu::Device, filtering: bool) -> UnlitPipelineKey {
+    let flags = UnlitFlags::VERTEX_POSITION
+        | UnlitFlags::INSTANCE_TRANSFORM
+        | UnlitFlags::INSTANCE_COLOR
+        | UnlitFlags::INSTANCE_METADATA
         | UnlitFlags::VERTEX_UV
         | UnlitFlags::BASE_COLOR_TEXTURE;
-    flags.set(UnlitFlags::ALPHA_CUTOFF, cutoff);
     UnlitPipelineKey::new(UnlitOptions {
         texture_filtering: filtering,
         ..UnlitOptions::standard(device).with_flags(flags)

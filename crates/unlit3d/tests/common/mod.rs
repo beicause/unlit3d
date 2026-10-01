@@ -63,7 +63,10 @@ impl TestGpu {
             ResourceGraph::new(),
             ctx.capabilities,
         );
-        let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+        // The harness's default key reads the per-instance tint as well as the
+        // transform: the ECS tests tint their entities, and a variant that
+        // omits `INSTANCE_COLOR` would draw them all in their mesh colour.
+        let key = UnlitPipelineKey::new(tinted_options(&ctx.device));
         let renderer = world.spawn((Renderer::new(context),));
         Self {
             context,
@@ -420,15 +423,23 @@ impl TestGpu {
     }
 }
 
-/// Unlit options for the ECS tests: vertex colour + instance, no texture,
-/// no MSAA, with reverse-z depth.
+/// Unlit options for the ECS tests: vertex colour + per-instance transform,
+/// no texture, no MSAA, with reverse-z depth.
+///
+/// A test whose entities carry an `InstanceColor` reads the per-instance tint,
+/// so it builds its key from [`tinted_options`] instead: a variant that never
+/// tints should not declare the attribute, and one that does has to.
 fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
     use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions};
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
     // `with_flags` keeps the array path `standard` chose for the device while
     // replacing everything the variant itself decides.
-    let flags =
-        UnlitFlags::VERTEX_POSITION | UnlitFlags::VERTEX_COLOR | UnlitFlags::VERTEX_INSTANCE;
+    // A compressed position decodes through the instance's metadata index,
+    // so the variant declares the instance stream's metadata field too.
+    let flags = UnlitFlags::VERTEX_POSITION
+        | UnlitFlags::VERTEX_COLOR
+        | UnlitFlags::INSTANCE_TRANSFORM
+        | UnlitFlags::INSTANCE_METADATA;
     unlit_wgpu::pipeline::UnlitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
@@ -457,11 +468,22 @@ fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
 pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
 
+/// [`unlit_options`] plus the per-instance tint.
+///
+/// A test whose entities carry an `InstanceColor` has to declare the attribute:
+/// the draw's key is derived from the mesh's own vertex layout, so a variant
+/// that omits `INSTANCE_COLOR` reads no tint however the entity is spawned.
+pub fn tinted_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
+    let mut options = unlit_options(device);
+    options.flags |= unlit_wgpu::pipeline::UnlitFlags::INSTANCE_COLOR;
+    options
+}
+
 /// Unlit options for a variant that deforms its vertices.
 ///
 /// `joints` adds the joint stream and the joint-matrix binding; `morphs` adds
 /// the morph-delta and morph-weight bindings. Both start from
-/// [`unlit_options`], so a deformed test draws the same cube under the same
+/// [`tinted_options`], so a deformed test draws the same cube under the same
 /// camera as an undeformed one.
 pub fn deformation_options(
     device: &wgpu::Device,
@@ -469,12 +491,15 @@ pub fn deformation_options(
     morphs: bool,
 ) -> unlit_wgpu::pipeline::UnlitOptions {
     use unlit_wgpu::pipeline::UnlitFlags;
-    let mut options = unlit_options(device);
+    let mut options = tinted_options(device);
+    // A deforming draw reads its base out of the instance stream, and each
+    // half of the pose has a field of its own: skinning reads the joint base,
+    // morphing the morph base.
     if joints {
-        options.flags |= UnlitFlags::VERTEX_JOINTS;
+        options.flags |= UnlitFlags::VERTEX_JOINTS | UnlitFlags::INSTANCE_JOINTS;
     }
     if morphs {
-        options.flags |= UnlitFlags::MORPH_POSITIONS;
+        options.flags |= UnlitFlags::MORPH_POSITIONS | UnlitFlags::INSTANCE_MORPH;
     }
     options
 }

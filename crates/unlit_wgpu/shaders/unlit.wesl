@@ -18,9 +18,20 @@
 //                        the mesh metadata
 //   VERTEX_COLOR         read a per-vertex color and multiply it into the
 //                        base color
-//   VERTEX_INSTANCE      read the per-instance model matrix and base color;
-//                        without it every vertex is modeled at the origin
-//                        and the base color is white
+//   INSTANCE_TRANSFORM   read the per-instance model matrix and transform the
+//                        vertex by it; without it every vertex is already in
+//                        world space, which is what a screen-space draw wants
+//   INSTANCE_COLOR       read the per-instance base color; without it the base
+//                        color is white
+//   INSTANCE_JOINTS      read the per-instance joint-matrix base, so the
+//                        [VERTEX_JOINTS] deformation knows which instance's
+//                        matrices to apply
+//   INSTANCE_MORPH       read the per-instance morph-weight base, so the
+//                        [MORPH_POSITIONS] deformation knows which instance's
+//                        weights to apply
+//   INSTANCE_METADATA    read the per-instance index of the mesh's metadata
+//                        entry, which carries the decode parameters and the
+//                        draw addressing
 //   BASE_COLOR_TEXTURE   sample the material base-color texture
 //   SRGB_TO_LINEAR_OUTPUT  the fragment's color values are sRGB-encoded and
 //                        the target expects linear values, so convert the
@@ -41,7 +52,7 @@
 //                        alpha; sample them into RGB and alpha and decode the
 //                        luminance from sRGB
 //   ALPHA_CUTOFF         discard a fragment whose alpha is below the
-//                        material's cutoff, bound as a uniform
+//                        instance's cutoff
 //
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
@@ -52,17 +63,19 @@
 //   group 0  binding 5  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
-//   group 1  binding 2  material_cutoff `material::MaterialCutoff` uniform
-//                                                                [ALPHA_CUTOFF]
 //
 //   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
 //                      decoded through `mesh_meta`, followed by the joint pair
 //                      Uint16x4 indices + Unorm16x4 weights [VERTEX_JOINTS]
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
 //                      plus color Unorm8x4 [VERTEX_COLOR]
-//   slot 2  instance   Float32x4x3 model matrix + Unorm8x4 base color
-//                      + Uint32x2 pose base + Uint32 metadata index, stepped
-//                      per instance                   [VERTEX_INSTANCE]
+//   slot 2  instance   Float32x4x3 model matrix      [INSTANCE_TRANSFORM]
+//                      + Unorm8x4 base color          [INSTANCE_COLOR]
+//                      + Uint32 joint base            [INSTANCE_JOINTS]
+//                      + Uint32 metadata index        [INSTANCE_METADATA]
+//                      + Float32 alpha cutoff         [ALPHA_CUTOFF]
+//                      + Uint32 morph base            [INSTANCE_MORPH]
+//                      stepped per instance
 //
 // Every array the shader reads is frame-wide and lives in the global group, so
 // a draw binds no group of its own: the metadata array carries each mesh's
@@ -77,12 +90,19 @@
 // A variant that reads every channel uncompressed and morphs nothing declares
 // none of the optional bindings at all.
 //
-// The metadata index is per-instance data like the pose base, so the instance
+// The instance stream is one record layout whose attributes each serve one
+// function, so a variant declares exactly the ones it reads and they are all
+// the same record's fields. The record is a struct rather than a loose bag of
+// attributes because the frame holds one buffer of records for every visible
+// instance, whatever variant draws it: the stride is the whole record, and a
+// variant that reads two fields still declares them at their own offsets.
+//
+// The metadata index is per-instance data like the pose bases, so the instance
 // stream carries it: `@builtin(instance_index)` addresses the same record, and
-// a variant that reads metadata therefore requires [VERTEX_INSTANCE]. One
-// record layout then serves every variant of a frame, which is what lets a
-// single instance buffer hold the instances of meshes drawn by different
-// variants.
+// a variant that reads metadata therefore requires [INSTANCE_METADATA]. The
+// same holds for the alpha cutoff and the two pose bases: they are per-instance
+// state, so they cannot live in the mesh's or the material's bind group, which
+// one draw can share with differently-posed and differently-cut instances.
 //
 // The four arrays under [TEXEL_ARRAY] keep their binding numbers but change
 // resource type: a `texture_2d<f32>` replaces the `var<storage, read>`, holding
@@ -92,7 +112,6 @@
 
 import package::array_access;
 import package::globals;
-import package::material;
 import package::mesh_compression;
 import package::mesh_metadata;
 import package::view;
@@ -102,7 +121,6 @@ import package::view;
 
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
-@if(ALPHA_CUTOFF) @group(1) @binding(2) var<uniform> material_cutoff: material::MaterialCutoff;
 
 struct VertexInput {
     /// Per-vertex position: full precision, or compressed to Snorm16x4
@@ -117,12 +135,12 @@ struct VertexInput {
 
     /// Per-instance affine model matrix: one column per location, with each
     /// column's `.w` holding the translation component.
-    @if(VERTEX_INSTANCE) @location(3) model_0: vec4<f32>,
-    @if(VERTEX_INSTANCE) @location(4) model_1: vec4<f32>,
-    @if(VERTEX_INSTANCE) @location(5) model_2: vec4<f32>,
+    @if(INSTANCE_TRANSFORM) @location(3) model_0: vec4<f32>,
+    @if(INSTANCE_TRANSFORM) @location(4) model_1: vec4<f32>,
+    @if(INSTANCE_TRANSFORM) @location(5) model_2: vec4<f32>,
     /// Per-instance base color, Unorm8x4, unpacked to `0..=1` by the vertex
     /// format.
-    @if(VERTEX_INSTANCE) @location(6) base_color: vec4<f32>,
+    @if(INSTANCE_COLOR) @location(6) base_color: vec4<f32>,
 
     /// Joint indices, Uint16x4. They address data rather than interpolate, so
     /// they are never normalized, and they are part of the position stream
@@ -131,17 +149,20 @@ struct VertexInput {
     /// Joint weights, Unorm16x4, summing to 1.
     @if(VERTEX_JOINTS) @location(8) weights: vec4<f32>,
 
-    /// Per-instance pose base, Uint32x2: `.x` is the instance's first joint
-    /// matrix and `.y` its first morph weight in the frame's shared arrays.
-    @if(VERTEX_INSTANCE) @location(9) pose: vec2<u32>,
+    /// Per-instance joint-matrix base, Uint32: the instance's first joint
+    /// matrix in the frame's shared array.
+    @if(INSTANCE_JOINTS) @location(9) joints_base: u32,
 
     /// Per-instance index of the mesh's entry in the frame's metadata array,
     /// which carries the decode parameters and the draw addressing.
-    ///
-    /// Declared whenever the variant reads the instance stream, whether or not
-    /// it reads metadata: every instance record then has one layout, so one
-    /// buffer holds the instances of meshes drawn by different variants.
-    @if(VERTEX_INSTANCE) @location(10) metadata_index: u32,
+    @if(INSTANCE_METADATA) @location(10) metadata_index: u32,
+
+    /// Per-instance alpha cutoff, Float32: a fragment below it is discarded.
+    @if(ALPHA_CUTOFF) @location(11) cutoff: f32,
+
+    /// Per-instance morph-weight base, Uint32: the instance's first weight in
+    /// the frame's shared array.
+    @if(INSTANCE_MORPH) @location(12) morph_base: u32,
 }
 
 struct VertexOut {
@@ -149,6 +170,9 @@ struct VertexOut {
     @if(VERTEX_UV) @location(0) uv: vec2<f32>,
     /// Base color multiplied by the per-vertex color when present.
     @location(1) color: vec4<f32>,
+    /// The instance's alpha cutoff, constant across the primitive; the
+    /// fragment stage compares it against the color's alpha.
+    @if(ALPHA_CUTOFF) @location(2) cutoff: f32,
 }
 
 /// Transform a local-space point by an affine matrix packed as three columns
@@ -268,27 +292,30 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
         local = morph_position(
             local,
             metadata.morph_deltas_offset + local_vertex * metadata.morph_count * 3u,
-            in.pose.y,
+            in.morph_base,
             metadata.morph_count,
         );
     }
     @if(VERTEX_JOINTS) {
-        local = skin_position(local, in.joints, in.weights, in.pose.x);
+        local = skin_position(local, in.joints, in.weights, in.joints_base);
     }
 
-    // Without an instance stream nothing transforms the vertex: the
-    // positions are already in world space, which is what screen-space draws
-    // such as a UI pass want.
+    // Without an instance transform nothing places the vertex: the positions
+    // are already in world space, which is what screen-space draws such as a
+    // UI pass want.
     var world = local;
-    @if(VERTEX_INSTANCE) {
+    @if(INSTANCE_TRANSFORM) {
         world = transform_point(in.model_0, in.model_1, in.model_2, local);
     }
 
     var out: VertexOut;
     out.clip = camera.clip_from_world * vec4<f32>(world, 1.0);
     out.color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
-    @if(VERTEX_INSTANCE) {
+    @if(INSTANCE_COLOR) {
         out.color = in.base_color;
+    }
+    @if(ALPHA_CUTOFF) {
+        out.cutoff = in.cutoff;
     }
     @if(VERTEX_UV && UNCOMPRESSED_UV) {
         out.uv = in.uv;
@@ -350,11 +377,13 @@ fn fragment_color(in: VertexOut) -> vec4<f32> {
 @fragment
 public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let color = fragment_color(in);
-    // A cut-off material draws binary coverage: it writes depth and color like
-    // an opaque one wherever the texel is opaque enough, and writes nothing at
-    // all elsewhere, so it needs no blending and no back-to-front sort.
+    // A cut-off instance draws binary coverage: it writes depth and color like
+    // an opaque one wherever the fragment is opaque enough, and writes nothing
+    // at all elsewhere, so it needs no blending and no back-to-front sort. The
+    // cutoff is the instance's own, so two instances of one mesh can cut at
+    // different alphas.
     @if(ALPHA_CUTOFF) {
-        if color.a < material_cutoff.cutoff {
+        if color.a < in.cutoff {
             discard;
         }
     }

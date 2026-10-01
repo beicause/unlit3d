@@ -10,7 +10,7 @@ use unlit_ecs::{Entity, World};
 use unlit_wgpu::mesh::MeshInstance;
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
-use crate::components::{GpuMesh, InstanceColor, Transform};
+use crate::components::{GpuMesh, InstanceColor, InstanceCutoff, Transform};
 
 /// Whether a mesh whose local bounds are `aabb`, placed by
 /// `world_from_local`, lies entirely outside `frustum` and can be skipped.
@@ -45,19 +45,23 @@ pub(crate) struct VisibleMesh {
 /// contents.
 ///
 /// An entity's placement is its optional [Transform], defaulting to the
-/// identity; its tint is its optional [InstanceColor], defaulting to white.
+/// identity; its tint is its optional [InstanceColor], defaulting to white; and
+/// its cutoff is its optional [InstanceCutoff], defaulting to zero.
 /// The same resolved [MeshInstance] is what the entity is finally drawn with,
 /// so culling and drawing cannot disagree about where the mesh is.
 ///
-/// The pose base is left at zero here: it is only known once the frame has
+/// The pose bases are left at zero here: they are only known once the frame has
 /// packed the poses of the meshes that passed culling, so
 /// [`MeshSource::pack_poses`](crate::mesh_source::MeshSource::pack_poses) fills
-/// it in.
+/// them in.
 pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut Vec<VisibleMesh>) {
     out.clear();
-    for (entity, (mesh, transform, color)) in
-        world.query::<(&GpuMesh, Option<&Transform>, Option<&InstanceColor>)>()
-    {
+    for (entity, (mesh, transform, color, cutoff)) in world.query::<(
+        &GpuMesh,
+        Option<&Transform>,
+        Option<&InstanceColor>,
+        Option<&InstanceCutoff>,
+    )>() {
         let model = match transform {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
@@ -66,13 +70,15 @@ pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut 
             continue;
         }
         let base_color = color.map_or(glam::Vec4::ONE, |color| color.color);
+        let cutoff = cutoff.map_or(0.0, |cutoff| cutoff.cutoff);
         out.push(VisibleMesh {
             entity,
             // The metadata index is the mesh's, but it rides the instance
             // record: that is what a draw reaches without a bind group of its
             // own. Every instance of one mesh carries the same one.
             instance: MeshInstance::new(model, base_color)
-                .with_metadata_index(mesh.parts.metadata_index),
+                .with_metadata_index(mesh.parts.metadata_index)
+                .with_cutoff(cutoff),
             skinned: mesh.skinned,
             morph_targets: mesh.morph_targets,
         });

@@ -1072,7 +1072,7 @@ mod tests {
         assert!(flags.contains(UnlitFlags::BASE_COLOR_TEXTURE));
         // Nothing per-instance: the vertices are already in the projection's
         // space, and nothing is compressed, so nothing needs decoding.
-        assert!(!flags.contains(UnlitFlags::VERTEX_INSTANCE));
+        assert!(!flags.intersects(UnlitFlags::INSTANCE_MASK));
         assert!(!options.needs_metadata());
         // Overlaid rather than depth-tested. The base options carry a depth
         // state, so the UI's overlaid state is the one left behind.

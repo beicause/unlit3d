@@ -26,12 +26,12 @@ pub const MESH_METADATA_BINDING: u32 = 2;
 ///
 /// The array holds the pose of every visible instance, so it is per-frame data
 /// the source packs rather than anything a mesh owns; an instance's own slice
-/// starts at [`crate::mesh::MeshInstance::pose`]'s `x`.
+/// starts at [`crate::mesh::MeshInstance::joints_base`].
 pub const JOINTS_BINDING: u32 = 3;
 /// Binding slot of the frame's morph weights in the global bind group.
 ///
 /// Like the joint matrices this is one array for the whole frame, and an
-/// instance's own slice starts at [`crate::mesh::MeshInstance::pose`]'s `y`.
+/// instance's own slice starts at [`crate::mesh::MeshInstance::morph_base`].
 pub const MORPH_WEIGHTS_BINDING: u32 = 4;
 /// Binding slot of the frame's morph position displacements in the global bind
 /// group.
@@ -49,11 +49,6 @@ pub const MATERIAL_GROUP: u32 = 1;
 pub const BASE_COLOR_TEXTURE_BINDING: u32 = 0;
 /// Binding slot of the base-color sampler in the material group.
 pub const BASE_COLOR_SAMPLER_BINDING: u32 = 1;
-/// Binding slot of the material's alpha cutoff uniform in the material group.
-///
-/// See [`UnlitFlags::ALPHA_CUTOFF`]: the value is a uniform rather than a part
-/// of the pipeline's variant, so one pipeline serves every cutoff.
-pub const ALPHA_CUTOFF_BINDING: u32 = 2;
 /// Bind-group index of the mesh group.
 ///
 /// The built-in unlit variants bind nothing here: every input they read is in
@@ -91,14 +86,30 @@ pub mod location {
     /// Joint weights (`Unorm16x4`), read from the position stream right after
     /// the indices.
     pub const JOINTS_WEIGHTS: u32 = 8;
-    /// Per-instance pose base (`Uint32x2`), read from the instance stream.
+    /// Per-instance joint-matrix base (`Uint32`), read from the instance
+    /// stream.
     ///
-    /// `x` is the instance's first joint matrix and `y` its first morph weight
-    /// in the frame's shared pose arrays.
-    pub const POSE: u32 = 9;
+    /// The instance's first joint matrix in the frame's shared joint array; the
+    /// shader reads a joint at this base plus its own joint index.
+    pub const JOINTS_BASE: u32 = 9;
     /// Per-instance index of the mesh metadata entry (`Uint32`), read from the
     /// instance stream.
     pub const METADATA_INDEX: u32 = 10;
+    /// Per-instance alpha cutoff (`Float32`), read from the instance stream.
+    ///
+    /// A [`UnlitFlags::ALPHA_CUTOFF`](crate::pipeline::UnlitFlags::ALPHA_CUTOFF)
+    /// variant compares a fragment's alpha against it and discards the
+    /// fragment when it is below.
+    pub const CUTOFF: u32 = 11;
+    /// Per-instance morph-weight base (`Uint32`), read from the instance
+    /// stream.
+    ///
+    /// The instance's first morph weight in the frame's shared weight array;
+    /// the shader reads a target's weight at this base plus its own target
+    /// index. It is a location of its own rather than a lane of
+    /// [`JOINTS_BASE`] because skinning and morphing are independent — a
+    /// variant that reads one has no business declaring the other.
+    pub const MORPH_BASE: u32 = 12;
 }
 
 /// Entry point name of the built-in shader's vertex stage.
@@ -116,7 +127,7 @@ bitflags::bitflags! {
     /// attribute or binding, so a variant contains exactly what it uses. The
     /// flags are independent except where noted.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-    pub struct UnlitFlags: u16 {
+    pub struct UnlitFlags: u32 {
         /// Read a per-vertex position.
         ///
         /// Without it the geometry is a single point at the instance origin,
@@ -135,15 +146,43 @@ bitflags::bitflags! {
         const UNCOMPRESSED_UV = 1 << 3;
         /// Read a per-vertex color and multiply it into the base color.
         const VERTEX_COLOR = 1 << 4;
-        /// Read the [`INSTANCE_SLOT`] vertex stream: the per-instance affine
-        /// model matrix and base color.
+        /// Read the per-instance affine model matrix and transform the vertex
+        /// by it.
         ///
         /// Without it nothing transforms the vertices — they are already in
-        /// world space — and the base color is white, which is what
-        /// screen-space draws (a user-interface pass, for example) want.
-        const VERTEX_INSTANCE = 1 << 5;
+        /// world space — which is what screen-space draws (a user-interface
+        /// pass, for example) want.
+        const INSTANCE_TRANSFORM = 1 << 5;
+        /// Read the per-instance base color and multiply it into the color.
+        ///
+        /// Without it the inherited color is white, so a variant that draws no
+        /// texture and no per-vertex color draws white.
+        const INSTANCE_COLOR = 1 << 6;
+        /// Read the per-instance joint-matrix base: where this instance's
+        /// first joint matrix starts in the frame's shared joint array.
+        ///
+        /// The base is per-instance state — that is what lets two instances of
+        /// one mesh deform differently — so a variant that skins its vertices
+        /// has to read the base that addresses its own slice. Implied by
+        /// [`Self::VERTEX_JOINTS`].
+        const INSTANCE_JOINTS = 1 << 7;
+        /// Read the per-instance morph-weight base: where this instance's
+        /// first morph weight starts in the frame's shared weight array.
+        ///
+        /// Like [`Self::INSTANCE_JOINTS`] this is per-instance state, but the
+        /// two are independent: a variant that only skins declares no weight
+        /// base, and one that only morphs declares no joint base. Implied by
+        /// [`Self::MORPH_POSITIONS`].
+        const INSTANCE_MORPH = 1 << 8;
+        /// Read the per-instance index of the mesh's metadata entry.
+        ///
+        /// Required by `UnlitOptions::needs_metadata`: the decode parameters
+        /// and the draw addressing a compressed channel or a morph target
+        /// reads are per-mesh, but the index rides the instance stream because
+        /// that is what a draw reaches without a bind group of its own.
+        const INSTANCE_METADATA = 1 << 9;
         /// Sample a base-color texture from the material group.
-        const BASE_COLOR_TEXTURE = 1 << 6;
+        const BASE_COLOR_TEXTURE = 1 << 10;
         /// The color target is sRGB-aware: it encodes the values written to
         /// it, so the fragment converts them from sRGB to linear first.
         ///
@@ -151,21 +190,24 @@ bitflags::bitflags! {
         /// arrive in — premultiplied sRGB for a user-interface pass, say — and
         /// a target that encodes sRGB would otherwise encode them a second
         /// time. Alpha is coverage rather than color, so it never converts.
-        const SRGB_TO_LINEAR_OUTPUT = 1 << 7;
+        const SRGB_TO_LINEAR_OUTPUT = 1 << 11;
         /// Read per-vertex joint indices and weights from the position stream
         /// and deform the vertex by the joint matrices the mesh group binds.
         ///
         /// The joint pair is part of [`Self::VERTEX_POSITION`]'s stream, so
         /// this requires it; the deformation happens before the instance
-        /// transform, in the mesh's own space.
-        const VERTEX_JOINTS = 1 << 8;
+        /// transform, in the mesh's own space. The base that addresses this
+        /// instance's slice is the separate [`Self::INSTANCE_JOINTS`] flag.
+        const VERTEX_JOINTS = 1 << 12;
         /// Read a per-vertex morph position offset and add it to the
         /// deformed position.
         ///
         /// Every morph target's delta for one vertex is read and weighted by
         /// the mesh's morph weights, so a target with a zero weight costs
-        /// nothing but a multiply. Requires [`Self::VERTEX_POSITION`].
-        const MORPH_POSITIONS = 1 << 9;
+        /// nothing but a multiply. Requires [`Self::VERTEX_POSITION`], and the
+        /// base that addresses this instance's slice is the separate
+        /// [`Self::INSTANCE_MORPH`] flag.
+        const MORPH_POSITIONS = 1 << 13;
         /// Read the arrays that would otherwise be `var<storage, read>` from
         /// 2D textures instead.
         ///
@@ -178,7 +220,7 @@ bitflags::bitflags! {
         /// This is a property of the device rather than of a draw, so it is
         /// deliberately outside [`Self::MESH_MASK`]: specializing a draw by its
         /// vertex layout must not clear it.
-        const TEXEL_ARRAY = 1 << 10;
+        const TEXEL_ARRAY = 1 << 14;
         /// The base-color texture stores *luminance*: one channel, sampled
         /// into every color channel.
         ///
@@ -190,7 +232,7 @@ bitflags::bitflags! {
         /// transfer function only for four-channel `Rgba8UnormSrgb` and
         /// `Bgra8UnormSrgb`, so a one-channel texture has to carry the encoded
         /// value and let the shader decode it.
-        const BASE_COLOR_LUMINANCE = 1 << 11;
+        const BASE_COLOR_LUMINANCE = 1 << 15;
         /// The base-color texture stores *luminance and alpha*: two channels
         /// holding `l` and `a`, sampled into the color and the alpha channel.
         ///
@@ -199,21 +241,21 @@ bitflags::bitflags! {
         /// luminance half decodes from sRGB exactly as
         /// [`Self::BASE_COLOR_LUMINANCE`] does; alpha is coverage, so it
         /// never converts.
-        const BASE_COLOR_LUMINANCE_ALPHA = 1 << 12;
-        /// Discard a fragment whose alpha is below the material's cutoff.
+        const BASE_COLOR_LUMINANCE_ALPHA = 1 << 16;
+        /// Discard a fragment whose alpha is below the instance's cutoff.
         ///
-        /// The cutoff itself is a uniform the material group binds at
-        /// [`ALPHA_CUTOFF_BINDING`] — a
-        /// [`MaterialCutoff`](crate::globals::MaterialCutoff) — rather than a
-        /// part of the variant: a flag only switches a code path, and a cutoff
-        /// baked into the options would compile one pipeline per distinct
-        /// value, because the options are the pipeline key.
+        /// The cutoff itself rides the instance stream rather than the
+        /// material group: it is per-instance state, and a flag only switches a
+        /// code path — a cutoff baked into the options would compile one
+        /// pipeline per distinct value, because the options are the pipeline
+        /// key. An instance that carries no cutoff leaves the value at zero,
+        /// which no alpha falls below, so the path costs a compare and nothing
+        /// else.
         ///
-        /// Only meaningful together with [`Self::BASE_COLOR_TEXTURE`]: an
-        /// untextured fragment's alpha is the instance color's, and a caller
-        /// that wants those cut off can write the alpha it wants into the
-        /// instance color instead of paying for a binding.
-        const ALPHA_CUTOFF = 1 << 13;
+        /// An untextured fragment can be cut off too: its alpha is the
+        /// instance color's, and the cutoff is explicit per instance either
+        /// way.
+        const ALPHA_CUTOFF = 1 << 17;
     }
 }
 
@@ -241,15 +283,29 @@ impl UnlitFlags {
         .union(UnlitFlags::VERTEX_UV)
         .union(UnlitFlags::UNCOMPRESSED_UV)
         .union(UnlitFlags::VERTEX_COLOR)
-        .union(UnlitFlags::VERTEX_INSTANCE)
+        .union(UnlitFlags::INSTANCE_TRANSFORM)
+        .union(UnlitFlags::INSTANCE_COLOR)
+        .union(UnlitFlags::INSTANCE_JOINTS)
+        .union(UnlitFlags::INSTANCE_MORPH)
+        .union(UnlitFlags::INSTANCE_METADATA)
         .union(UnlitFlags::VERTEX_JOINTS);
+
+    /// The instance-stream flags, whichever of them are set.
+    ///
+    /// The per-instance record holds every field a draw can read from it, so
+    /// the parts of it a variant reads are exactly these bits.
+    pub const INSTANCE_MASK: UnlitFlags = UnlitFlags::INSTANCE_TRANSFORM
+        .union(UnlitFlags::INSTANCE_COLOR)
+        .union(UnlitFlags::INSTANCE_JOINTS)
+        .union(UnlitFlags::INSTANCE_MORPH)
+        .union(UnlitFlags::INSTANCE_METADATA);
 
     /// The [`Self::MESH_MASK`] flags one vertex-buffer slot implies.
     ///
     /// A channel is identified by its shader location, which is stable
-    /// across variants, and the instance bit by the slot's step mode. Only
-    /// the built-in pipeline's slots are read; any other slot contributes
-    /// nothing.
+    /// across variants; the instance step mode says the slot is the instance
+    /// stream. Only the built-in pipeline's slots are read; any other slot
+    /// contributes nothing.
     pub fn for_vertex_buffer(
         slot: u32,
         layout: &crate::specialize::VertexBufferLayoutDesc,
@@ -286,10 +342,21 @@ impl UnlitFlags {
                     }
                 }
             }
+            INSTANCE_SLOT => {
+                for attribute in &layout.attributes {
+                    match attribute.shader_location {
+                        location::MODEL_0 | location::MODEL_1 | location::MODEL_2 => {
+                            flags |= UnlitFlags::INSTANCE_TRANSFORM;
+                        }
+                        location::BASE_COLOR => flags |= UnlitFlags::INSTANCE_COLOR,
+                        location::JOINTS_BASE => flags |= UnlitFlags::INSTANCE_JOINTS,
+                        location::MORPH_BASE => flags |= UnlitFlags::INSTANCE_MORPH,
+                        location::METADATA_INDEX => flags |= UnlitFlags::INSTANCE_METADATA,
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
-        }
-        if layout.step_mode == wgpu::VertexStepMode::Instance {
-            flags |= UnlitFlags::VERTEX_INSTANCE;
         }
         flags
     }
@@ -408,10 +475,15 @@ impl UnlitOptions {
     /// construct the standard configuration without one.
     pub(crate) fn standard_shape() -> Self {
         Self {
+            // A compressed position or UV decodes through the instance's
+            // metadata index, so the standard shape reads that field too. It
+            // reads no tint: a variant that draws a per-instance colour asks
+            // for `INSTANCE_COLOR` on top.
             flags: UnlitFlags::VERTEX_POSITION
                 | UnlitFlags::VERTEX_UV
                 | UnlitFlags::VERTEX_COLOR
-                | UnlitFlags::VERTEX_INSTANCE
+                | UnlitFlags::INSTANCE_TRANSFORM
+                | UnlitFlags::INSTANCE_METADATA
                 | UnlitFlags::BASE_COLOR_TEXTURE,
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -442,7 +514,7 @@ impl UnlitOptions {
     ///
     /// Every name appears, so the composed variant never sees a name it does
     /// not know.
-    pub fn features(&self) -> [(&'static str, bool); 14] {
+    pub fn features(&self) -> [(&'static str, bool); 18] {
         [
             (
                 "VERTEX_POSITION",
@@ -462,8 +534,24 @@ impl UnlitOptions {
                 self.flags.contains(UnlitFlags::VERTEX_COLOR),
             ),
             (
-                "VERTEX_INSTANCE",
-                self.flags.contains(UnlitFlags::VERTEX_INSTANCE),
+                "INSTANCE_TRANSFORM",
+                self.flags.contains(UnlitFlags::INSTANCE_TRANSFORM),
+            ),
+            (
+                "INSTANCE_COLOR",
+                self.flags.contains(UnlitFlags::INSTANCE_COLOR),
+            ),
+            (
+                "INSTANCE_JOINTS",
+                self.flags.contains(UnlitFlags::INSTANCE_JOINTS),
+            ),
+            (
+                "INSTANCE_MORPH",
+                self.flags.contains(UnlitFlags::INSTANCE_MORPH),
+            ),
+            (
+                "INSTANCE_METADATA",
+                self.flags.contains(UnlitFlags::INSTANCE_METADATA),
             ),
             (
                 "BASE_COLOR_TEXTURE",
@@ -497,10 +585,16 @@ impl UnlitOptions {
         ]
     }
 
-    /// Whether this variant reads a per-material alpha cutoff and so binds the
-    /// material group's uniform for it.
-    pub fn needs_alpha_cutoff(&self) -> bool {
-        self.flags.contains(UnlitFlags::ALPHA_CUTOFF)
+    /// Whether this variant reads anything from the instance stream.
+    ///
+    /// [`ALPHA_CUTOFF`](UnlitFlags::ALPHA_CUTOFF) counts even though it is not
+    /// part of [`INSTANCE_MASK`](UnlitFlags::INSTANCE_MASK): the cutoff it
+    /// compares against is a field of
+    /// the instance record, so a variant that cuts fragments off declares the
+    /// instance stream's layout whether or not it reads any other field.
+    pub fn reads_instances(&self) -> bool {
+        self.flags.intersects(UnlitFlags::INSTANCE_MASK)
+            || self.flags.contains(UnlitFlags::ALPHA_CUTOFF)
     }
 
     /// Whether this variant deforms its vertices by joint matrices and so
@@ -794,8 +888,7 @@ impl UnlitOptions {
             .flags
             .contains(UnlitFlags::BASE_COLOR_TEXTURE)
             .then(|| {
-                let mut entries =
-                    arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 3>::new();
+                let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 2>::new();
                 entries.push(wgpu::BindGroupLayoutEntry {
                     binding: BASE_COLOR_TEXTURE_BINDING,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -818,23 +911,6 @@ impl UnlitOptions {
                     },
                     count: None,
                 });
-                // The cutoff is one material's value, so it belongs beside the
-                // texture it cuts — and a variant that does not cut off
-                // anything declares no binding for it.
-                if self.needs_alpha_cutoff() {
-                    entries.push(wgpu::BindGroupLayoutEntry {
-                        binding: ALPHA_CUTOFF_BINDING,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: Some(
-                                <crate::globals::MaterialCutoff as const_shader_layout::ShaderLayout>::SIZE,
-                            ),
-                        },
-                        count: None,
-                    });
-                }
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("unlit_wgpu::unlit::material"),
                     entries: &entries,
@@ -857,21 +933,10 @@ impl UnlitOptions {
     /// order.
     ///
     /// A slot whose variant declares no attributes — the UV-and-color slot
-    /// without either channel, or the instance slot without
-    /// [`UnlitFlags::VERTEX_INSTANCE`] — is reported as `None`, so a variant
-    /// never binds a buffer the shader does not declare.
+    /// without either channel, or the instance slot for a variant that reads
+    /// nothing per-instance — is reported as `None`, so a variant never binds a
+    /// buffer the shader does not declare.
     pub fn vertex_buffer_layouts(&self) -> [Option<VertexBufferLayoutDesc>; 3] {
-        let flags = self.flags;
-
-        const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 6] = wgpu::vertex_attr_array![
-            location::MODEL_0 => Float32x4,
-            location::MODEL_1 => Float32x4,
-            location::MODEL_2 => Float32x4,
-            location::BASE_COLOR => Unorm8x4,
-            location::POSE => Uint32x2,
-            location::METADATA_INDEX => Uint32,
-        ];
-
         // Each stream describes its own layout, so the attributes a pipeline
         // declares and the bytes a packed mesh writes come from one
         // description and cannot drift apart.
@@ -880,21 +945,104 @@ impl UnlitOptions {
         [
             (!position.is_empty()).then(|| position.layout()),
             (!uv_color.is_empty()).then(|| uv_color.layout()),
-            flags
-                .contains(UnlitFlags::VERTEX_INSTANCE)
-                .then(|| VertexBufferLayoutDesc {
-                    // The record is tightly packed, so its stride is the sum of
-                    // the attribute formats: the flat `[f32; 4]` columns and the
-                    // `Uint32x2` pose base carry no alignment padding, and the
-                    // `Unorm8x4` color fills its four bytes exactly.
-                    array_stride: INSTANCE_ATTRIBUTES
-                        .iter()
-                        .map(|attribute| attribute.format.size())
-                        .sum(),
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: INSTANCE_ATTRIBUTES.into_iter().collect(),
-                }),
+            self.instance_layout(),
         ]
+    }
+
+    /// The instance stream this variant expects, or `None` when it reads
+    /// nothing per-instance.
+    ///
+    /// One record layout serves every variant of a frame — the source uploads a
+    /// single `&[MeshInstance]` buffer and binds it at [`INSTANCE_SLOT`] for
+    /// every draw — so the stride is always the whole [`MeshInstance`] and each
+    /// variant declares only the attributes its own flags switch on. Declaring
+    /// a subset is safe because the stride still covers the fields it omits,
+    /// and each declared attribute keeps its fixed offset.
+    ///
+    /// [`MeshInstance`]: crate::mesh::MeshInstance
+    fn instance_layout(&self) -> Option<VertexBufferLayoutDesc> {
+        if !self.reads_instances() {
+            return None;
+        }
+        let flags = self.flags;
+        let mut attributes = crate::specialize::VertexAttributes::new();
+        let mut declare =
+            |enabled: bool, shader_location: u32, format: wgpu::VertexFormat, offset: u64| {
+                if enabled {
+                    attributes.push(wgpu::VertexAttribute {
+                        format,
+                        offset,
+                        shader_location,
+                    });
+                }
+            };
+        let field = |offset: usize| offset as u64;
+        let model = core::mem::offset_of!(crate::mesh::MeshInstance, model);
+        let column = core::mem::size_of::<[f32; 4]>() as u64;
+        let transform = flags.contains(UnlitFlags::INSTANCE_TRANSFORM);
+        declare(
+            transform,
+            location::MODEL_0,
+            wgpu::VertexFormat::Float32x4,
+            field(model),
+        );
+        declare(
+            transform,
+            location::MODEL_1,
+            wgpu::VertexFormat::Float32x4,
+            field(model) + column,
+        );
+        declare(
+            transform,
+            location::MODEL_2,
+            wgpu::VertexFormat::Float32x4,
+            field(model) + 2 * column,
+        );
+        declare(
+            flags.contains(UnlitFlags::INSTANCE_COLOR),
+            location::BASE_COLOR,
+            wgpu::VertexFormat::Unorm8x4,
+            field(core::mem::offset_of!(crate::mesh::MeshInstance, base_color)),
+        );
+        declare(
+            flags.contains(UnlitFlags::INSTANCE_JOINTS),
+            location::JOINTS_BASE,
+            wgpu::VertexFormat::Uint32,
+            field(core::mem::offset_of!(
+                crate::mesh::MeshInstance,
+                joints_base
+            )),
+        );
+        declare(
+            flags.contains(UnlitFlags::INSTANCE_METADATA),
+            location::METADATA_INDEX,
+            wgpu::VertexFormat::Uint32,
+            field(core::mem::offset_of!(
+                crate::mesh::MeshInstance,
+                metadata_index
+            )),
+        );
+        declare(
+            flags.contains(UnlitFlags::ALPHA_CUTOFF),
+            location::CUTOFF,
+            wgpu::VertexFormat::Float32,
+            field(core::mem::offset_of!(crate::mesh::MeshInstance, cutoff)),
+        );
+        declare(
+            flags.contains(UnlitFlags::INSTANCE_MORPH),
+            location::MORPH_BASE,
+            wgpu::VertexFormat::Uint32,
+            field(core::mem::offset_of!(crate::mesh::MeshInstance, morph_base)),
+        );
+        Some(VertexBufferLayoutDesc {
+            // The stride is the record's whole size rather than the sum of the
+            // declared formats: a variant that declares a subset still steps
+            // over the fields it omits, which keeps every instance aligned in
+            // one shared buffer.
+            array_stride: core::mem::size_of::<crate::mesh::MeshInstance>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes,
+        })
     }
 }
 
@@ -1005,8 +1153,7 @@ fn default_depth_stencil_state() -> wgpu::DepthStencilState {
 /// # Panics
 /// If the flags contradict each other: a channel cannot be uncompressed
 /// without being read, the base-color texture is sampled with the per-vertex
-/// UV, only one luminance layout can expand a sampled texel, and a cutoff
-/// compares the alpha of a texel that has to be sampled.
+/// UV, and only one luminance layout can expand a sampled texel.
 #[cfg(feature = "unlit")]
 fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
     let flags = options.flags;
@@ -1037,16 +1184,21 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
          requires `VERTEX_POSITION`"
     );
     assert!(
-        !(flags.contains(UnlitFlags::VERTEX_JOINTS) || flags.contains(UnlitFlags::MORPH_POSITIONS))
-            || flags.contains(UnlitFlags::VERTEX_INSTANCE),
-        "the joints and morph weights a draw deforms by are per-instance, so \
-         `VERTEX_JOINTS` and `MORPH_POSITIONS` require `VERTEX_INSTANCE`: the \
-         instance stream is what carries the pose base the draw reads"
+        !flags.contains(UnlitFlags::VERTEX_JOINTS) || flags.contains(UnlitFlags::INSTANCE_JOINTS),
+        "the joint matrix base a draw skins by is per-instance, so \
+         `VERTEX_JOINTS` requires `INSTANCE_JOINTS`: the instance stream is \
+         what carries the base the draw reads"
     );
     assert!(
-        !options.needs_metadata() || flags.contains(UnlitFlags::VERTEX_INSTANCE),
+        !flags.contains(UnlitFlags::MORPH_POSITIONS) || flags.contains(UnlitFlags::INSTANCE_MORPH),
+        "the morph weight base a draw deforms by is per-instance, so \
+         `MORPH_POSITIONS` requires `INSTANCE_MORPH`: the instance stream is \
+         what carries the base the draw reads"
+    );
+    assert!(
+        !options.needs_metadata() || flags.contains(UnlitFlags::INSTANCE_METADATA),
         "the metadata index a draw decodes through is per-instance, so a \
-         variant reading the mesh metadata requires `VERTEX_INSTANCE`: the \
+         variant reading the mesh metadata requires `INSTANCE_METADATA`: the \
          instance stream is what carries the index the draw loads it by"
     );
     assert!(
@@ -1063,11 +1215,6 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
         "a base-color texel has one channel or two, so \
          `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` are \
          mutually exclusive"
-    );
-    assert!(
-        !flags.contains(UnlitFlags::ALPHA_CUTOFF) || flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
-        "the alpha the fragment cuts off is the sampled texel's, so \
-         `ALPHA_CUTOFF` requires `BASE_COLOR_TEXTURE`"
     );
 
     let main_path = wesl::syntax::ModulePath::new(
@@ -1172,108 +1319,123 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     for vertex_uv in [false, true] {
                         for uncompressed_uv in [false, true] {
                             for vertex_color in [false, true] {
-                                for vertex_instance in [false, true] {
-                                    for base_color_texture in [false, true] {
-                                        for vertex_joints in [false, true] {
-                                            for morph_positions in [false, true] {
-                                                let mut flags = UnlitFlags::empty();
-                                                flags.set(
-                                                    UnlitFlags::VERTEX_POSITION,
-                                                    vertex_position,
-                                                );
-                                                flags.set(
-                                                    UnlitFlags::UNCOMPRESSED_POSITION,
-                                                    uncompressed_position,
-                                                );
-                                                flags.set(UnlitFlags::VERTEX_UV, vertex_uv);
-                                                flags.set(
-                                                    UnlitFlags::UNCOMPRESSED_UV,
-                                                    uncompressed_uv,
-                                                );
-                                                flags.set(UnlitFlags::VERTEX_COLOR, vertex_color);
-                                                flags.set(
-                                                    UnlitFlags::VERTEX_INSTANCE,
-                                                    vertex_instance,
-                                                );
-                                                flags.set(
-                                                    UnlitFlags::BASE_COLOR_TEXTURE,
-                                                    base_color_texture,
-                                                );
-                                                flags.set(UnlitFlags::VERTEX_JOINTS, vertex_joints);
-                                                flags.set(
-                                                    UnlitFlags::MORPH_POSITIONS,
-                                                    morph_positions,
-                                                );
-                                                flags.set(UnlitFlags::TEXEL_ARRAY, texel_array);
-                                                if base_color_texture && !vertex_uv {
-                                                    continue;
-                                                }
-                                                if uncompressed_position && !vertex_position {
-                                                    continue;
-                                                }
-                                                if uncompressed_uv && !vertex_uv {
-                                                    continue;
-                                                }
-                                                // The joint stream is part of the position
-                                                // stream, and a morph target displaces the
-                                                // position.
-                                                if (vertex_joints || morph_positions)
-                                                    && !vertex_position
-                                                {
-                                                    continue;
-                                                }
-                                                // A deforming draw reads its pose base
-                                                // from the instance stream, so it needs
-                                                // one.
-                                                if (vertex_joints || morph_positions)
-                                                    && !vertex_instance
-                                                {
-                                                    continue;
-                                                }
-                                                // The metadata index is per-instance
-                                                // too, so a variant that decodes through
-                                                // it needs the instance stream.
-                                                let compressed = (vertex_position
-                                                    && !uncompressed_position)
-                                                    || (vertex_uv && !uncompressed_uv);
-                                                if (compressed || morph_positions)
-                                                    && !vertex_instance
-                                                {
-                                                    continue;
-                                                }
-                                                // A variant reading nothing composes an
-                                                // empty vertex-input struct.
-                                                if flags.is_empty() {
-                                                    continue;
-                                                }
-                                                // A texel is expanded by one of the two
-                                                // luminance layouts, or not at all, and
-                                                // only a sampled texel can be expanded.
-                                                let luminance_layouts: &[UnlitFlags] =
-                                                    if base_color_texture {
-                                                        &[
-                                                            UnlitFlags::empty(),
-                                                            UnlitFlags::BASE_COLOR_LUMINANCE,
-                                                            UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA,
-                                                        ]
-                                                    } else {
-                                                        &[UnlitFlags::empty()]
-                                                    };
-                                                for luminance in luminance_layouts {
-                                                    // A cutoff compares a
-                                                    // sampled texel's alpha,
-                                                    // so only a textured
-                                                    // variant can cut.
-                                                    for cutoff in [false, true] {
-                                                        if cutoff && !base_color_texture {
-                                                            continue;
+                                for instance_transform in [false, true] {
+                                    for instance_color in [false, true] {
+                                        for base_color_texture in [false, true] {
+                                            for vertex_joints in [false, true] {
+                                                for morph_positions in [false, true] {
+                                                    let mut flags = UnlitFlags::empty();
+                                                    flags.set(
+                                                        UnlitFlags::VERTEX_POSITION,
+                                                        vertex_position,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::UNCOMPRESSED_POSITION,
+                                                        uncompressed_position,
+                                                    );
+                                                    flags.set(UnlitFlags::VERTEX_UV, vertex_uv);
+                                                    flags.set(
+                                                        UnlitFlags::UNCOMPRESSED_UV,
+                                                        uncompressed_uv,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::VERTEX_COLOR,
+                                                        vertex_color,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::INSTANCE_TRANSFORM,
+                                                        instance_transform,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::INSTANCE_COLOR,
+                                                        instance_color,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::BASE_COLOR_TEXTURE,
+                                                        base_color_texture,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::VERTEX_JOINTS,
+                                                        vertex_joints,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::MORPH_POSITIONS,
+                                                        morph_positions,
+                                                    );
+                                                    flags.set(UnlitFlags::TEXEL_ARRAY, texel_array);
+                                                    if base_color_texture && !vertex_uv {
+                                                        continue;
+                                                    }
+                                                    if uncompressed_position && !vertex_position {
+                                                        continue;
+                                                    }
+                                                    if uncompressed_uv && !vertex_uv {
+                                                        continue;
+                                                    }
+                                                    // The joint stream is part of the position
+                                                    // stream, and a morph target displaces the
+                                                    // position.
+                                                    if (vertex_joints || morph_positions)
+                                                        && !vertex_position
+                                                    {
+                                                        continue;
+                                                    }
+                                                    // A deforming draw reads its base from the
+                                                    // instance stream, so it needs the matching
+                                                    // half of it. The two halves are
+                                                    // independent: skinning reads the joint
+                                                    // base, morphing the weight base.
+                                                    flags.set(
+                                                        UnlitFlags::INSTANCE_JOINTS,
+                                                        vertex_joints,
+                                                    );
+                                                    flags.set(
+                                                        UnlitFlags::INSTANCE_MORPH,
+                                                        morph_positions,
+                                                    );
+                                                    // The metadata index is per-instance too, so
+                                                    // a variant that decodes through it needs the
+                                                    // instance stream.
+                                                    let compressed = (vertex_position
+                                                        && !uncompressed_position)
+                                                        || (vertex_uv && !uncompressed_uv);
+                                                    flags.set(
+                                                        UnlitFlags::INSTANCE_METADATA,
+                                                        compressed || morph_positions,
+                                                    );
+                                                    // A variant reading nothing composes an
+                                                    // empty vertex-input struct.
+                                                    if flags.is_empty() {
+                                                        continue;
+                                                    }
+                                                    // A texel is expanded by one of the two
+                                                    // luminance layouts, or not at all, and
+                                                    // only a sampled texel can be expanded.
+                                                    let luminance_layouts: &[UnlitFlags] =
+                                                        if base_color_texture {
+                                                            &[
+                                                                UnlitFlags::empty(),
+                                                                UnlitFlags::BASE_COLOR_LUMINANCE,
+                                                                UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA,
+                                                            ]
+                                                        } else {
+                                                            &[UnlitFlags::empty()]
+                                                        };
+                                                    for luminance in luminance_layouts {
+                                                        // A cutoff compares its instance's alpha
+                                                        // against the instance's own cutoff, so
+                                                        // any variant can cut — textured or not.
+                                                        for cutoff in [false, true] {
+                                                            let mut flags = flags | *luminance;
+                                                            flags.set(
+                                                                UnlitFlags::ALPHA_CUTOFF,
+                                                                cutoff,
+                                                            );
+                                                            variants.push(UnlitOptions {
+                                                                flags,
+                                                                ..UnlitOptions::standard_shape()
+                                                            });
                                                         }
-                                                        let mut flags = flags | *luminance;
-                                                        flags.set(UnlitFlags::ALPHA_CUTOFF, cutoff);
-                                                        variants.push(UnlitOptions {
-                                                            flags,
-                                                            ..UnlitOptions::standard_shape()
-                                                        });
                                                     }
                                                 }
                                             }
@@ -1357,8 +1519,9 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
     }
 
-    /// The cutoff is read by the fragment that discards, so the variant has
-    /// to bind it, and a variant that never cuts binds nothing.
+    /// The cutoff rides the instance stream, so the fragment that discards has
+    /// to read the instance attribute, and a variant that never cuts declares
+    /// no such attribute.
     #[test]
     fn alpha_cutoff_flag_discards_a_fragment_below_the_cutoff() {
         let composed = |flags: UnlitFlags| {
@@ -1371,17 +1534,39 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
         let plain = composed(UnlitFlags::empty());
         assert!(
-            !plain.contains("material_cutoff.cutoff"),
+            !plain.contains("discard"),
             "an opaque material keeps every fragment it is given"
+        );
+        assert!(
+            !plain.contains("cutoff"),
+            "a variant that never cuts declares no cutoff input"
         );
 
         let cut = composed(UnlitFlags::ALPHA_CUTOFF);
+        let layouts = UnlitOptions {
+            flags: UnlitOptions::standard_shape().flags | UnlitFlags::ALPHA_CUTOFF,
+            ..UnlitOptions::standard_shape()
+        }
+        .vertex_buffer_layouts();
+        let instance = layouts[crate::pipeline::INSTANCE_SLOT as usize]
+            .as_ref()
+            .expect("a cutting variant reads the instance stream");
         assert!(
-            cut.contains("var<uniform> material_cutoff:") && cut.contains("MaterialCutoff {"),
-            "the cutoff is one material's own value, so it is bound"
+            instance
+                .attributes
+                .iter()
+                .any(
+                    |attribute| attribute.shader_location == crate::pipeline::location::CUTOFF
+                        && attribute.format == wgpu::VertexFormat::Float32
+                ),
+            "the cutoff is one instance's own value, so it rides the instance stream"
         );
         assert!(
-            cut.contains("if color.a < material_cutoff.cutoff"),
+            cut.contains("@location(11)\n    cutoff: f32"),
+            "the shader reads the cutoff from its instance attribute"
+        );
+        assert!(
+            cut.contains("if color.a < in.cutoff"),
             "a fragment below the cutoff is dropped rather than blended"
         );
         assert!(cut.contains("discard"), "dropped fragments write nothing");
@@ -1413,17 +1598,6 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             flags: UnlitOptions::standard_shape().flags
                 | UnlitFlags::BASE_COLOR_LUMINANCE
                 | UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA,
-            ..UnlitOptions::standard_shape()
-        };
-        let _ = compose_builtin(&options);
-    }
-
-    #[test]
-    #[should_panic(expected = "`ALPHA_CUTOFF` requires `BASE_COLOR_TEXTURE`")]
-    fn a_cutoff_without_a_texture_is_rejected() {
-        let options = UnlitOptions {
-            flags: (UnlitOptions::standard_shape().flags & !UnlitFlags::BASE_COLOR_TEXTURE)
-                | UnlitFlags::ALPHA_CUTOFF,
             ..UnlitOptions::standard_shape()
         };
         let _ = compose_builtin(&options);
@@ -1613,25 +1787,43 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             UnlitFlags::VERTEX_UV | UnlitFlags::UNCOMPRESSED_UV
         );
 
-        // An instance-stepped slot, whatever it carries.
-        let instance = layout(
-            wgpu::VertexStepMode::Instance,
-            &[attribute(wgpu::VertexFormat::Float32x4, location::MODEL_0)],
-        );
-        assert!(
-            UnlitFlags::for_vertex_buffer(UV_COLOR_SLOT, &instance)
-                .contains(UnlitFlags::VERTEX_INSTANCE)
-        );
+        // The instance slot: every attribute declares its own function, so a
+        // variant that reads one field does not have to read the others.
+        let instance_cases = [
+            (location::MODEL_0, UnlitFlags::INSTANCE_TRANSFORM),
+            (location::BASE_COLOR, UnlitFlags::INSTANCE_COLOR),
+            (location::JOINTS_BASE, UnlitFlags::INSTANCE_JOINTS),
+            (location::MORPH_BASE, UnlitFlags::INSTANCE_MORPH),
+            (location::METADATA_INDEX, UnlitFlags::INSTANCE_METADATA),
+        ];
+        let mut instance_layouts = Vec::new();
+        for (shader_location, expected) in instance_cases {
+            let instance = layout(
+                wgpu::VertexStepMode::Instance,
+                &[attribute(wgpu::VertexFormat::Uint32, shader_location)],
+            );
+            assert_eq!(
+                UnlitFlags::for_vertex_buffer(INSTANCE_SLOT, &instance),
+                expected,
+                "instance attribute {shader_location} declares its own function"
+            );
+            instance_layouts.push(instance);
+        }
 
         // No result ever leaves the mesh mask or claims a material/target bit.
-        for (slot, layout) in [
-            (POSITION_SLOT, &compressed),
-            (POSITION_SLOT, &uncompressed),
-            (UV_COLOR_SLOT, &uv_color),
-            (UV_COLOR_SLOT, &uncompressed_uv),
-            (UV_COLOR_SLOT, &instance),
-        ] {
-            let flags = UnlitFlags::for_vertex_buffer(slot, layout);
+        let mut cases = vec![
+            (POSITION_SLOT, compressed),
+            (POSITION_SLOT, uncompressed),
+            (UV_COLOR_SLOT, uv_color),
+            (UV_COLOR_SLOT, uncompressed_uv),
+        ];
+        cases.extend(
+            instance_layouts
+                .into_iter()
+                .map(|layout| (INSTANCE_SLOT, layout)),
+        );
+        for (slot, layout) in cases {
+            let flags = UnlitFlags::for_vertex_buffer(slot, &layout);
             assert!(
                 UnlitFlags::MESH_MASK.contains(flags),
                 "for_vertex_buffer produced flags outside MESH_MASK"
@@ -1733,11 +1925,17 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 options.needs_joints(),
                 "variant {options:?}"
             );
-            // A deforming draw addresses its pose through the instance
-            // stream, so it always declares that input.
+            // A deforming draw addresses its joints and its morph weights
+            // through the instance stream, one attribute each, so a variant
+            // that only does one of the two declares only that one.
             assert_eq!(
-                vertex_input.contains("pose:"),
-                flags.contains(UnlitFlags::VERTEX_INSTANCE),
+                vertex_input.contains("joints_base:"),
+                flags.contains(UnlitFlags::INSTANCE_JOINTS),
+                "variant {options:?}"
+            );
+            assert_eq!(
+                vertex_input.contains("morph_base:"),
+                flags.contains(UnlitFlags::INSTANCE_MORPH),
                 "variant {options:?}"
             );
         }
@@ -1772,7 +1970,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let layouts = UnlitOptions {
             flags: UnlitFlags::VERTEX_POSITION
                 | UnlitFlags::VERTEX_UV
-                | UnlitFlags::VERTEX_INSTANCE,
+                | UnlitFlags::INSTANCE_TRANSFORM,
             ..UnlitOptions::standard_shape()
         }
         .vertex_buffer_layouts();
@@ -1787,14 +1985,12 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let instance = layouts[INSTANCE_SLOT as usize]
             .as_ref()
             .expect("instance slot");
-        // One `vec4` per attribute, with the pose base integer rather than
-        // float — the stride sums the formats rather than assuming they agree.
-        let expected: u64 = instance
-            .attributes
-            .iter()
-            .map(|attribute| attribute.format.size())
-            .sum();
-        assert_eq!(instance.array_stride, expected);
+        // Every variant reads the same instance buffer, so the stride is the
+        // whole record even when the variant declares only some of its fields.
+        assert_eq!(
+            instance.array_stride,
+            std::mem::size_of::<crate::mesh::MeshInstance>() as u64
+        );
         assert_eq!(instance.step_mode, wgpu::VertexStepMode::Instance);
     }
 
@@ -1913,7 +2109,12 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         use core::mem::{offset_of, size_of};
 
         let layouts = UnlitOptions {
-            flags: UnlitFlags::VERTEX_INSTANCE,
+            flags: UnlitFlags::INSTANCE_TRANSFORM
+                | UnlitFlags::INSTANCE_COLOR
+                | UnlitFlags::INSTANCE_JOINTS
+                | UnlitFlags::INSTANCE_MORPH
+                | UnlitFlags::INSTANCE_METADATA
+                | UnlitFlags::ALPHA_CUTOFF,
             ..UnlitOptions::standard_shape()
         }
         .vertex_buffer_layouts();
@@ -1946,8 +2147,10 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             model + vec4,
             model + 2 * vec4,
             offset_of!(MeshInstance, base_color) as u64,
-            offset_of!(MeshInstance, pose) as u64,
+            offset_of!(MeshInstance, joints_base) as u64,
             offset_of!(MeshInstance, metadata_index) as u64,
+            offset_of!(MeshInstance, cutoff) as u64,
+            offset_of!(MeshInstance, morph_base) as u64,
         ];
         let actual: Vec<u64> = instance.attributes.iter().map(|a| a.offset).collect();
         assert_eq!(
@@ -1956,7 +2159,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
 
         // The shader reads three matrix columns followed by the base color, the
-        // pose base and the metadata index.
+        // joint base, the metadata index, the cutoff and the morph base.
         let locations: Vec<u32> = instance
             .attributes
             .iter()
@@ -1969,19 +2172,23 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 location::MODEL_1,
                 location::MODEL_2,
                 location::BASE_COLOR,
-                location::POSE,
+                location::JOINTS_BASE,
                 location::METADATA_INDEX,
+                location::CUTOFF,
+                location::MORPH_BASE,
             ]
         );
-        // The matrix columns are floats, the color is quantized, and the pose
-        // base and metadata index are integers: one indexes the frame's pose
-        // arrays, the other the frame's metadata array.
+        // The matrix columns are floats, the color is quantized, the cutoff is a
+        // float, and the two bases and the metadata index are integers: each
+        // addresses a slot in one of the frame's shared arrays.
         let expected_formats = [
             wgpu::VertexFormat::Float32x4,
             wgpu::VertexFormat::Float32x4,
             wgpu::VertexFormat::Float32x4,
             wgpu::VertexFormat::Unorm8x4,
-            wgpu::VertexFormat::Uint32x2,
+            wgpu::VertexFormat::Uint32,
+            wgpu::VertexFormat::Uint32,
+            wgpu::VertexFormat::Float32,
             wgpu::VertexFormat::Uint32,
         ];
         let formats: Vec<wgpu::VertexFormat> =
