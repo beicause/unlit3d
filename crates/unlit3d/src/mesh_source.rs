@@ -1621,18 +1621,6 @@ impl MeshSource {
         }
     }
 
-    /// Free the bind group `material` names, together with everything built
-    /// from it.
-    ///
-    /// Giving up the handle is the removal: the bind group node is collected by
-    /// the next [`Self::maintain`](MeshSource::maintain) once nothing else
-    /// holds it. The material's own resources — the texture view and sampler it
-    /// was built from — are the caller's and stay in the graph; drop their ids
-    /// separately if nothing else reads them.
-    pub fn remove_material(&mut self, material: GpuMaterial) {
-        drop(material);
-    }
-
     // -- poses -----------------------------------------------------------------
 
     /// Pack every visible instance's pose into the frame's shared arrays and
@@ -2915,7 +2903,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_a_material_keeps_the_resources_it_reads() {
+    fn dropping_a_material_keeps_the_resources_it_reads() {
         let mut h = harness();
         let ctx = h.source.context();
         let (view, sampler) = test_material_resources(&mut h);
@@ -2924,18 +2912,18 @@ mod tests {
             .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
             .expect("the standard variant reads a base-color texture");
 
-        // The material handle is given up outright: an id is a strong
+        // Giving the handle up is the whole of it: an id is a strong
         // reference, so a clone kept here would keep the bind group alive and
         // the assertion below would have nothing to observe.
         let before = MeshSource::graph(&h.world, ctx).len();
-        h.source.remove_material(material);
+        drop(material);
         h.source.maintain(&h.world);
 
         assert!(
             MeshSource::graph(&h.world, ctx).len() < before,
             "the bind group is gone"
         );
-        // The view and sampler are the caller's, so removing the material
+        // The view and sampler are the caller's, so giving up the material
         // that reads them leaves them alone.
         assert!(
             MeshSource::graph(&h.world, ctx).get(&view).is_some(),
