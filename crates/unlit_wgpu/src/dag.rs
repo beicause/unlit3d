@@ -1,4 +1,4 @@
-//! A directed acyclic graph with stable, generation-checked node handles.
+//! A directed acyclic graph with slot handles.
 //!
 //! This is the structure [`ResourceGraph`](crate::resources::ResourceGraph)
 //! keeps its resources in. It is a directed graph plus one rule the rest of the
@@ -7,10 +7,12 @@
 //!
 //! # Handles
 //!
-//! A [`NodeId`] is a slot index plus a generation. Removing a node frees its
-//! slot for a later insertion, but the slot's generation moves on, so a handle
-//! to the removed node resolves to nothing rather than to whatever took its
-//! place. Handles are `Copy` and resolve for as long as the node lives.
+//! A [`NodeId`] is the slot a node occupies. Removing a node frees its slot for
+//! a later insertion, so a handle to a removed node can come to name whatever
+//! takes its place. Deciding liveness is the caller's job, not the graph's:
+//! [`ResourceId`](crate::resources::ResourceId) carries a strong reference that
+//! [`ResourceGraph`](crate::resources::ResourceGraph) collects on, so a node
+//! whose handle is still held is never removed in the first place.
 //!
 //! # Edges
 //!
@@ -18,17 +20,16 @@
 //! the resource built from it. [`Dag::dependencies`] therefore walks back along
 //! the edges, [`Dag::for_each_dependent_mut`] walks forward, and
 //! [`Dag::topological_order`] puts every node after the nodes it depends on. An
-//! edge is recorded once however often it is declared.
+//! edge is recorded once however often it is declared, which
+//! [`Dag::add_edge`] reports: only the declaration that recorded it returns
+//! `true`.
 
 use std::vec::Vec;
 
-/// A handle to a node in a [`Dag`].
+/// The slot a node occupies in a [`Dag`].
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeId {
-    /// The slot the node occupies.
     index: u32,
-    /// The slot's generation when this handle was handed out.
-    generation: u32,
 }
 
 impl NodeId {
@@ -57,9 +58,6 @@ pub enum EdgeError {
 /// A slot a node occupies.
 #[derive(Debug)]
 struct NodeSlot<N> {
-    /// Bumped when the slot is freed, so handles to the node that occupied it
-    /// stop resolving.
-    generation: u32,
     /// The node's weight, or `None` while the slot is vacant.
     weight: Option<N>,
     /// Edges leaving this node, towards the nodes that depend on it.
@@ -77,14 +75,12 @@ struct EdgeSlot {
     to: u32,
 }
 
-/// A directed acyclic graph whose node handles survive the removal of other
-/// nodes, and whose edges may not close a cycle.
+/// A directed acyclic graph whose edges may not close a cycle.
 ///
-/// Slots are recycled: removing a node frees its slot and bumps its generation,
-/// and a later insertion reuses it. Neither the node array nor the walk stamps
-/// shrink, so a graph that once held many nodes keeps scanning that many:
-/// memory is bounded by the peak number of nodes held at once, not by the
-/// number held now.
+/// Slots are recycled: removing a node frees its slot, and a later insertion
+/// reuses it. Neither the node array nor the walk stamps shrink, so a graph that
+/// once held many nodes keeps scanning that many: memory is bounded by the peak
+/// number of nodes held at once, not by the number held now.
 #[derive(Debug)]
 pub struct Dag<N> {
     nodes: Vec<NodeSlot<N>>,
@@ -156,7 +152,6 @@ impl<N> Dag<N> {
             }
             None => {
                 self.nodes.push(NodeSlot {
-                    generation: 0,
                     weight: Some(weight),
                     dependents: Vec::new(),
                     dependencies: Vec::new(),
@@ -180,13 +175,16 @@ impl<N> Dag<N> {
         self.nodes[index].weight.as_mut()
     }
 
-    /// Record that `to` depends on `from`.
+    /// Record that `to` depends on `from`, and report whether this call
+    /// recorded it.
     ///
     /// Refused when either handle does not resolve, when both name the same
     /// node, or when the edge would close a cycle. Declaring an existing
     /// dependency again is a no-op rather than a second edge, so
-    /// [`Dag::dependencies`] never yields the same node twice.
-    pub fn add_edge(&mut self, from: NodeId, to: NodeId) -> Result<(), EdgeError> {
+    /// [`Dag::dependencies`] never yields the same node twice; such a repeat
+    /// returns `Ok(false)`, and only the call that recorded the edge returns
+    /// `Ok(true)`.
+    pub fn add_edge(&mut self, from: NodeId, to: NodeId) -> Result<bool, EdgeError> {
         let Some(from_index) = self.resolve(from) else {
             return Err(EdgeError::NoSuchNode(from));
         };
@@ -201,7 +199,7 @@ impl<N> Dag<N> {
             return Err(EdgeError::Cycle);
         }
         if self.has_edge(from_index, to_index) {
-            return Ok(());
+            return Ok(false);
         }
         let edge = match self.free_edges.pop() {
             Some(edge) => {
@@ -221,7 +219,7 @@ impl<N> Dag<N> {
         };
         self.nodes[from_index].dependents.push(edge);
         self.nodes[to_index].dependencies.push(edge);
-        Ok(())
+        Ok(true)
     }
 
     /// The nodes `id` depends on, in unspecified order.
@@ -248,51 +246,27 @@ impl<N> Dag<N> {
         self.order = order;
     }
 
-    /// Remove `root` and every node reachable from it by following dependents.
+    /// Remove every node `is_dead` reports, and return how many were removed.
     ///
-    /// Handles to the removed nodes stop resolving. A handle that does not
-    /// resolve removes nothing.
-    pub fn remove_dependents_drop(&mut self, root: NodeId) {
-        self.plan_dependents(root);
-        self.drop_planned();
-    }
-
-    /// Mark every node matching `is_root` and every node those depend on,
-    /// transitively, and return the stamp the marks carry.
-    ///
-    /// This follows each edge from a dependent to what it depends on, so it
-    /// answers what is still needed by something that counts. The stamp is read
-    /// back by [`Dag::remove_unmarked_drop`].
-    pub fn mark_dependencies_where(&mut self, is_root: impl Fn(&N) -> bool) -> u32 {
-        let stamp = self.next_stamp();
-        let mut stack = core::mem::take(&mut self.stack);
-        stack.clear();
-        for index in 0..self.nodes.len() {
-            if self.nodes[index].weight.as_ref().is_some_and(&is_root) {
-                self.visited[index] = stamp;
-                stack.push(index as u32);
-            }
+    /// A node is dropped with the weights of the nodes that depend on it still
+    /// in place, so a weight whose drop releases something another node was
+    /// waiting for only shows up on the next call: a caller that has to reach a
+    /// fixpoint sweeps until this reports `0`.
+    pub fn remove_where_drop(&mut self, is_dead: impl Fn(&N) -> bool) -> usize {
+        self.order.clear();
+        self.order.extend(
+            (0..self.nodes.len())
+                .filter(|&index| self.nodes[index].weight.as_ref().is_some_and(&is_dead))
+                .map(|index| index as u32),
+        );
+        let order = core::mem::take(&mut self.order);
+        let removed = order.len();
+        for &index in &order {
+            let id = self.node_id(index);
+            self.remove(id);
         }
-        while let Some(index) = stack.pop() {
-            for &edge in &self.nodes[index as usize].dependencies {
-                let from = self.edges[edge as usize].from;
-                if self.visited[from as usize] != stamp {
-                    self.visited[from as usize] = stamp;
-                    stack.push(from);
-                }
-            }
-        }
-        self.stack = stack;
-        stamp
-    }
-
-    /// Remove every node the walk `stamp` did not mark.
-    ///
-    /// This is how a caller drops what a walk found unreachable and keeps the
-    /// rest.
-    pub fn remove_unmarked_drop(&mut self, stamp: u32) {
-        self.plan_unmarked(stamp);
-        self.drop_planned();
+        self.order = order;
+        removed
     }
 
     /// Every node, ordered so that a node always follows the nodes it depends
@@ -341,13 +315,12 @@ impl<N> Dag<N> {
     /// Remove the node `id` names together with every edge touching it, and
     /// return its weight.
     ///
-    /// Internal: the only removals the graph performs are whole subtrees and
-    /// everything a walk left unmarked, both of which go through a plan.
+    /// Internal: callers go through [`Dag::remove_where_drop`], which selects
+    /// what to remove without needing a handle the caller may no longer hold.
     fn remove(&mut self, id: NodeId) -> Option<N> {
         let index = self.resolve(id)?;
         let slot = &mut self.nodes[index];
         let weight = slot.weight.take()?;
-        slot.generation = slot.generation.wrapping_add(1);
         // The incident edges are unlinked from the node at their far end, and
         // this slot's own lists are emptied for the insertion that reuses it.
         let dependents = core::mem::take(&mut slot.dependents);
@@ -368,18 +341,21 @@ impl<N> Dag<N> {
     }
 
     /// Resolve a handle to a slot index, or `None` when it names no node.
+    ///
+    /// A handle is only ever used while its node lives — the caller holding it
+    /// is what keeps the node alive — so a vacant slot means the handle never
+    /// came from this graph.
     fn resolve(&self, id: NodeId) -> Option<usize> {
         let index = id.index as usize;
-        let slot = self.nodes.get(index)?;
-        (slot.generation == id.generation && slot.weight.is_some()).then_some(index)
+        self.nodes
+            .get(index)
+            .filter(|slot| slot.weight.is_some())
+            .map(|_| index)
     }
 
     /// Build the handle for a live slot.
     fn node_id(&self, index: u32) -> NodeId {
-        NodeId {
-            index,
-            generation: self.nodes[index as usize].generation,
-        }
+        NodeId { index }
     }
 
     /// Whether `to` depends on `from`, both already resolved to slot indices.
@@ -437,8 +413,8 @@ impl<N> Dag<N> {
     /// Fill [`Dag::order`] with `root` and every node reachable from it by
     /// following dependents, in dependency order.
     ///
-    /// The list is built before anything is removed, so unlinking edges as the
-    /// removals proceed cannot disturb it.
+    /// The list is built before the caller acts on it, so a weight mutated as
+    /// the walk proceeds cannot disturb it.
     fn plan_dependents(&mut self, root: NodeId) {
         self.order.clear();
         let Some(root_index) = self.resolve(root) else {
@@ -473,28 +449,6 @@ impl<N> Dag<N> {
         self.order = order;
     }
 
-    /// Fill [`Dag::order`] with every live node the walk `stamp` left unmarked.
-    fn plan_unmarked(&mut self, stamp: u32) {
-        self.order.clear();
-        self.order.extend(
-            (0..self.nodes.len())
-                .filter(|&index| {
-                    self.nodes[index].weight.is_some() && self.visited.get(index) != Some(&stamp)
-                })
-                .map(|index| index as u32),
-        );
-    }
-
-    /// Remove every slot [`Dag::order`] lists, dropping the weights.
-    fn drop_planned(&mut self) {
-        let order = core::mem::take(&mut self.order);
-        for &index in &order {
-            let id = self.node_id(index);
-            self.remove(id);
-        }
-        self.order = order;
-    }
-
     /// Take a stamp that no mark in `visited` carries yet, growing the array to
     /// cover the nodes if needed.
     fn next_stamp(&mut self) -> u32 {
@@ -517,20 +471,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_removed_slot_is_reused_with_a_new_generation() {
+    fn a_removed_slot_is_reused() {
         let mut dag = Dag::new();
         let first = dag.insert("first");
         assert_eq!(first.index(), 0);
         assert_eq!(dag.get(first), Some(&"first"));
 
         assert_eq!(dag.remove(first), Some("first"));
-        assert_eq!(dag.get(first), None, "the handle is stale");
+        assert_eq!(dag.get(first), None, "the slot is vacant");
 
+        // The handle is the slot, so the next node to occupy it answers to the
+        // same handle. A caller only ever holds a handle while its node lives,
+        // which is what keeps this from being a stale-handle hazard.
         let second = dag.insert("second");
         assert_eq!(second.index(), first.index(), "the slot is reused");
-        assert_ne!(second, first, "but not the handle");
         assert_eq!(dag.get(second), Some(&"second"));
-        assert_eq!(dag.get(first), None, "the old handle names nothing");
     }
 
     #[test]
@@ -647,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_dependents_keeps_what_the_removed_nodes_depend_on() {
+    fn removing_where_leaves_the_nodes_that_were_not_selected() {
         let mut dag = Dag::new();
         let base = dag.insert("base");
         let middle = dag.insert("middle");
@@ -656,31 +611,40 @@ mod tests {
         dag.add_edge(base, middle).unwrap();
         dag.add_edge(middle, root).unwrap();
 
-        dag.remove_dependents_drop(middle);
+        let removed = dag.remove_where_drop(|&name| name == "middle");
+        assert_eq!(removed, 1);
         assert_eq!(dag.get(base), Some(&"base"), "the node it depends on stays");
         assert_eq!(dag.get(outside), Some(&"outside"));
         assert_eq!(dag.get(middle), None);
-        assert_eq!(dag.get(root), None, "everything built from it goes");
-        assert_eq!(dag.len(), 2);
+        assert_eq!(
+            dag.get(root),
+            Some(&"root"),
+            "a dependent is not removed with its dependency"
+        );
+        assert_eq!(dag.len(), 3);
     }
 
+    /// A sweep selects from the weights present when it starts, so a weight
+    /// whose drop changes what is collectable is only seen by the next call.
     #[test]
-    fn a_walk_back_from_the_roots_keeps_only_what_they_need() {
+    fn removing_where_reports_the_count_so_a_caller_can_sweep_to_a_fixpoint() {
         let mut dag = Dag::new();
-        let leaf = dag.insert("leaf");
-        let middle = dag.insert("middle");
-        let root = dag.insert("root");
-        let unrelated = dag.insert("unrelated");
-        dag.add_edge(leaf, middle).unwrap();
-        dag.add_edge(middle, root).unwrap();
+        // `first` and `second` are both selected; `third` is not, but the
+        // closure counts how many sweeps it takes to reach one that removes
+        // nothing.
+        dag.insert("first");
+        dag.insert("second");
+        dag.insert("keep");
+        let mut sweeps = 0;
+        loop {
+            sweeps += 1;
+            let removed = dag.remove_where_drop(|&name| name != "keep");
+            if removed == 0 {
+                break;
+            }
+        }
 
-        // Everything down from `root` is kept, including `root` itself.
-        let stamp = dag.mark_dependencies_where(|&name| name == "root");
-        dag.remove_unmarked_drop(stamp);
-        assert!(dag.get(root).is_some());
-        assert!(dag.get(middle).is_some());
-        assert!(dag.get(leaf).is_some());
-        assert!(dag.get(unrelated).is_none(), "only the unmarked node goes");
-        assert_eq!(dag.len(), 3);
+        assert_eq!(sweeps, 2, "one sweep removed the two, the next found none");
+        assert_eq!(dag.len(), 1);
     }
 }

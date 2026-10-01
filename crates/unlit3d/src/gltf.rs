@@ -21,7 +21,7 @@
 //! ```
 //!
 //! The document is inserted piece by piece — images, then materials, then
-//! meshes — and the pieces are unloaded the same way:
+//! meshes — and each piece is a handle that keeps its resources alive:
 //!
 //! ```no_run
 //! # use unlit3d::gltf::UnlitGltf;
@@ -33,9 +33,10 @@
 //! let meshes = gltf.insert_meshes(source, world);
 //! let entities = gltf.spawn_default_scene(world, &meshes, &materials);
 //! // ... render ...
-//! gltf.unload_materials(source, world, &materials);
-//! gltf.unload_meshes(source, world, &meshes);
-//! gltf.unload_images(source, world, &images);
+//! // Giving the handles up makes their resources collectable.
+//! drop(materials);
+//! drop(meshes);
+//! drop(images);
 //! # Ok(()) }
 //! ```
 //!
@@ -103,9 +104,10 @@
 //! tangents. A mesh whose primitive uses techniques outside this subset
 //! still uploads and spawns — it just renders without them.
 //!
-//! Every handle returned here must be given back to the matching `unload_*`
-//! call when the resource is no longer wanted; the graph does not otherwise
-//! drop what a handle names.
+//! Every handle returned here keeps what it names alive: the next
+//! [`MeshSource::maintain`](crate::mesh_source::MeshSource::maintain) collects
+//! a resource once the last handle to it — and the last resource depending on
+//! it — is gone, so giving up a handle is the unload.
 //!
 //! `UnlitGltf::load("model.glb")` in the examples above opens a local file —
 //! see [`UnlitGltf::load`] and [`UnlitGltf::from_bytes`] for how a document
@@ -166,8 +168,8 @@ pub struct UnlitGltf {
 
 /// A texture uploaded from a glTF image.
 ///
-/// Produced by [`UnlitGltf::insert_image`] / [`UnlitGltf::insert_images`],
-/// given back to [`UnlitGltf::unload_image`] / [`UnlitGltf::unload_images`].
+/// Produced by [`UnlitGltf::insert_image`] / [`UnlitGltf::insert_images`].
+/// Dropping the handle makes the texture collectable by the next maintain.
 #[derive(Clone, Debug)]
 pub struct GltfImage {
     /// The index of the image in the glTF document.
@@ -189,8 +191,8 @@ pub struct GltfImage {
 /// A material bind group built from a glTF material's base-color texture.
 ///
 /// Produced by [`UnlitGltf::insert_material`] /
-/// [`UnlitGltf::insert_materials`], given back to
-/// [`UnlitGltf::unload_material`] / [`UnlitGltf::unload_materials`].
+/// [`UnlitGltf::insert_materials`]. Dropping the handle makes the bind group
+/// collectable; the view and sampler it names are the caller's own handles.
 #[derive(Clone, Debug)]
 pub struct GltfMaterial {
     /// The index of the material in the glTF document.
@@ -205,8 +207,8 @@ pub struct GltfMaterial {
 
 /// A mesh uploaded from one glTF primitive.
 ///
-/// Produced by [`UnlitGltf::insert_mesh`] / [`UnlitGltf::insert_meshes`],
-/// given back to [`UnlitGltf::unload_mesh`] / [`UnlitGltf::unload_meshes`].
+/// Produced by [`UnlitGltf::insert_mesh`] / [`UnlitGltf::insert_meshes`].
+/// Dropping the handle makes the mesh collectable by the next maintain.
 ///
 /// The key is derived from the primitive's own attributes and is the key the
 /// mesh was uploaded with; spawning an entity from this handle reuses the same
@@ -452,22 +454,6 @@ impl UnlitGltf {
             .collect()
     }
 
-    /// Unload `image` — the texture and its default view — from the graph.
-    ///
-    /// Materials sampling the texture are removed as well: they depend on it,
-    /// so they cannot outlive it. Unload materials before their images if the
-    /// handles must stay valid.
-    pub fn unload_image(&self, source: &mut MeshSource, world: &World, image: &GltfImage) {
-        MeshSource::graph(world, source.context()).remove(image.texture);
-    }
-
-    /// Unload every image named by `images`.
-    pub fn unload_images(&self, source: &mut MeshSource, world: &World, images: &[GltfImage]) {
-        for image in images {
-            self.unload_image(source, world, image);
-        }
-    }
-
     // -- materials ------------------------------------------------------------
 
     /// Build the material bind group for `material` and return its handle.
@@ -514,19 +500,19 @@ impl UnlitGltf {
             let texture = {
                 let graph = MeshSource::graph(world, source.context());
                 graph
-                    .get(image.texture)
+                    .get(&image.texture)
                     .expect("the image's texture is in the graph")
                     .clone()
             };
             let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
             let mut graph = MeshSource::graph(world, source.context());
-            let view = graph.insert_strong(view, None);
-            graph.add_dependency(view, image.texture);
+            let view = graph.insert(view, None);
+            graph.add_dependency(&view, &image.texture);
             view
         };
 
         let bind_group = source
-            .allocate_unlit_material(world, &key, view, sampler)
+            .allocate_unlit_material(world, &key, view.clone(), sampler.clone())
             .expect("a base-color variant builds a material bind group");
         Some(GltfMaterial {
             material,
@@ -555,26 +541,6 @@ impl UnlitGltf {
         (0..self.document.materials().len())
             .map(|material| self.insert_material(source, world, material, images))
             .collect()
-    }
-
-    /// Unload `material` — its bind group, view and sampler — from the graph.
-    pub fn unload_material(&self, source: &mut MeshSource, world: &World, material: &GltfMaterial) {
-        source.remove_material(world, material.bind_group.clone());
-        let mut graph = MeshSource::graph(world, source.context());
-        graph.remove(material.view);
-        graph.remove(material.sampler);
-    }
-
-    /// Unload every material named by `materials`, skipping the `None` ones.
-    pub fn unload_materials(
-        &self,
-        source: &mut MeshSource,
-        world: &World,
-        materials: &[Option<GltfMaterial>],
-    ) {
-        for material in materials.iter().flatten() {
-            self.unload_material(source, world, material);
-        }
     }
 
     // -- meshes ---------------------------------------------------------------
@@ -694,18 +660,6 @@ impl UnlitGltf {
             }
         }
         meshes
-    }
-
-    /// Unload `mesh` from the graph.
-    pub fn unload_mesh(&self, source: &mut MeshSource, world: &World, mesh: &GltfMesh) {
-        source.remove_mesh(world, mesh.mesh.clone());
-    }
-
-    /// Unload every mesh named by `meshes`.
-    pub fn unload_meshes(&self, source: &mut MeshSource, world: &World, meshes: &[GltfMesh]) {
-        for mesh in meshes {
-            self.unload_mesh(source, world, mesh);
-        }
     }
 
     // -- skins ----------------------------------------------------------------

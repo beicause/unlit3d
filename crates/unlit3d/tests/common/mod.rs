@@ -126,15 +126,15 @@ impl TestGpu {
         texture: wgpu::Texture,
     ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
         let mut graph = self.graph(world);
-        let texture_id = graph.insert_strong(texture, None);
+        let texture_id = graph.insert(texture, None);
         let view = TextureExt::create_view(
             graph
-                .get(texture_id)
+                .get(&texture_id)
                 .expect("the texture was just inserted"),
             &wgpu::TextureViewDescriptor::default(),
         );
-        let view_id = graph.insert_strong(view, None);
-        graph.add_dependency(view_id, texture_id);
+        let view_id = graph.insert(view, None);
+        graph.add_dependency(&view_id, &texture_id);
         (texture_id, view_id)
     }
 
@@ -200,13 +200,14 @@ impl TestGpu {
 
     /// Free `mesh` through the source.
     pub fn remove_mesh(&self, world: &World, mesh: GpuMesh) {
-        self.with_mesh_source(world, |source, world| source.remove_mesh(world, mesh));
+        self.with_mesh_source(world, |source, _| source.remove_mesh(mesh));
     }
 
     /// Run the source's once-per-frame pass over the resource graph.
     ///
-    /// Removal only marks nodes; a test that asserts a node is gone drives
-    /// the collection by hand the way a frame's `build_scene` would.
+    /// Giving up a handle only drops a reference; a test that asserts a node
+    /// is gone drives the collection by hand the way a frame's `build_scene`
+    /// would.
     pub fn maintain(&self, world: &World) {
         self.with_mesh_source(world, |source, world| source.maintain(world));
     }
@@ -320,7 +321,7 @@ impl TestGpu {
         let ft = create_render_target(&device, COLOR_FORMAT, WIDTH, HEIGHT, samples);
         let (_, color_view) = self.register_texture(world, ft.color.clone());
         let depth_view = with_depth.then(|| {
-            self.graph(world).insert_strong(
+            self.graph(world).insert(
                 TextureExt::create_view(&ft.depth, &wgpu::TextureViewDescriptor::default()),
                 None,
             )
@@ -329,7 +330,7 @@ impl TestGpu {
         // needs it bound; without it the draws would go straight to the
         // single-sampled color view.
         let msaa_view = ft.msaa.as_ref().map(|msaa| {
-            self.graph(world).insert_strong(
+            self.graph(world).insert(
                 TextureExt::create_view(msaa, &wgpu::TextureViewDescriptor::default()),
                 None,
             )
@@ -359,13 +360,13 @@ impl TestGpu {
         let ft = create_render_target(&device, COLOR_FORMAT, size.0, size.1, samples);
         let (_, color_view) = self.register_texture(world, ft.color.clone());
         let depth_view = with_depth.then(|| {
-            self.graph(world).insert_strong(
+            self.graph(world).insert(
                 TextureExt::create_view(&ft.depth, &wgpu::TextureViewDescriptor::default()),
                 None,
             )
         });
         let msaa_view = ft.msaa.as_ref().map(|msaa| {
-            self.graph(world).insert_strong(
+            self.graph(world).insert(
                 TextureExt::create_view(msaa, &wgpu::TextureViewDescriptor::default()),
                 None,
             )

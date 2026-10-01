@@ -940,25 +940,28 @@ async fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
     let ctx = Ctx::headless().await;
     let mut graph = ResourceGraph::new();
 
-    let base = graph.insert_strong(uniform(&ctx.device, "test::base"), None);
+    let base = graph.insert(uniform(&ctx.device, "test::base"), None);
 
     // A dependent whose recipe records that it ran: rebuilding is driven
     // purely by the graph.
     let rebuilt = Rc::new(RefCell::new(false));
     let seen = Rc::clone(&rebuilt);
     let device = ctx.device.clone();
-    let dependent = graph.insert_strong(
+    let dependent = graph.insert(
         uniform(&ctx.device, "test::dependent"),
-        Some(Rebuild::new(move |graph| {
-            assert!(
-                graph.get(base).is_some(),
-                "the dependency is rebuilt before its dependent"
-            );
-            *seen.borrow_mut() = true;
-            Resource::Buffer(uniform(&device, "test::rebuilt"))
+        Some(Rebuild::new({
+            let base = base.clone();
+            move |graph| {
+                assert!(
+                    graph.get(&base).is_some(),
+                    "the dependency is rebuilt before its dependent"
+                );
+                *seen.borrow_mut() = true;
+                Resource::Buffer(uniform(&device, "test::rebuilt"))
+            }
         })),
     );
-    graph.add_dependency(dependent, base);
+    graph.add_dependency(&dependent, &base);
 
     // A no-op pass leaves a clean graph alone, recipes and all.
     graph.maintain();
@@ -966,7 +969,7 @@ async fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
 
     // Swapping the base must dirty the dependent, which the next pass then
     // rebuilds in dependency order.
-    graph.replace(base, uniform(&ctx.device, "test::base2"));
+    graph.replace(&base, uniform(&ctx.device, "test::base2"));
     graph.maintain();
 
     assert!(*rebuilt.borrow());

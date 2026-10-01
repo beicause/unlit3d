@@ -66,7 +66,7 @@ pub use unlit_wgpu::resources::Rebuild;
 /// holds each in one, a device without them — WebGL2 — holds the same bytes in
 /// a texture. A pipeline that binds them asks the handle for its binding
 /// resource and never has to know which it is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalResources {
     /// The camera uniform buffer.
     pub camera: ResourceId<wgpu::Buffer>,
@@ -96,14 +96,14 @@ impl GlobalResources {
     pub(crate) fn declare_dependencies(
         &self,
         graph: &mut unlit_wgpu::resources::ResourceGraph,
-        group: ResourceId<wgpu::BindGroup>,
+        group: &ResourceId<wgpu::BindGroup>,
     ) {
-        graph.add_dependency(group, self.camera);
-        graph.add_dependency(group, self.globals);
-        graph.add_dependency(group, self.metadata);
-        graph.add_dependency(group, self.joints);
-        graph.add_dependency(group, self.morph_weights);
-        graph.add_dependency(group, self.morph_deltas);
+        graph.add_dependency(group, &self.camera);
+        graph.add_dependency(group, &self.globals);
+        graph.add_dependency(group, &self.metadata);
+        graph.add_dependency(group, &self.joints);
+        graph.add_dependency(group, &self.morph_weights);
+        graph.add_dependency(group, &self.morph_deltas);
     }
 }
 
@@ -213,7 +213,7 @@ impl DrawKey {
         Self {
             surface,
             vertex_buffers: mesh.vertex_layout.clone(),
-            index_format: mesh.parts.index_buffer.map(|(_, format)| format),
+            index_format: mesh.parts.index_buffer.as_ref().map(|(_, format)| *format),
         }
     }
 }

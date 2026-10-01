@@ -40,11 +40,11 @@
 //!
 //! // The UI's per-texture resources join the caller's ledger.
 //! let mut graph = ResourceGraph::new();
-//! let camera_id = graph.insert_strong(camera, None);
-//! let globals_id = graph.insert_strong(globals, None);
-//! let group_id = graph.insert_strong(global_group, None);
-//! graph.add_dependency(group_id, camera_id);
-//! graph.add_dependency(group_id, globals_id);
+//! let camera_id = graph.insert(camera, None);
+//! let globals_id = graph.insert(globals, None);
+//! let group_id = graph.insert(global_group, None);
+//! graph.add_dependency(&group_id, &camera_id);
+//! graph.add_dependency(&group_id, &globals_id);
 //!
 //! let mut ui = EguiIntegration::new(device, group_id, pipeline);
 //! let mut input = egui::RawInput::default();
@@ -383,7 +383,7 @@ struct UiDraw {
 /// because a material bind group samples the view. They are two nodes with an
 /// edge between them, so a patched texture and everything built from it stay
 /// the same resources.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct TextureSlot {
     /// The texture egui's deltas are written into.
     texture: ResourceId<wgpu::Texture>,
@@ -515,7 +515,7 @@ impl EguiIntegration {
     fn bind_group<'a>(
         &self,
         graph: &'a ResourceGraph,
-        id: ResourceId<wgpu::BindGroup>,
+        id: &ResourceId<wgpu::BindGroup>,
     ) -> &'a wgpu::BindGroup {
         graph
             .get(id)
@@ -571,34 +571,23 @@ impl EguiIntegration {
         }
     }
 
-    /// Release every graph node the integration registered, and forget its
-    /// bookkeeping.
+    /// Forget every graph node the integration registered, and its bookkeeping.
     ///
-    /// Call this when the integration leaves the frame for good, before its
-    /// `EguiIntegration` value is dropped: the nodes it inserted — the two
-    /// geometry buffers, every texture, view, sampler and material — are
-    /// strong nodes the graph cannot collect on its own.
+    /// The ids this drops are the last references the graph holds to the two
+    /// geometry buffers, every texture, view, sampler and material, so the next
+    /// [`ResourceGraph::maintain`] collects them — and, once the material nodes
+    /// go, the views and textures they were the last holders of. No graph is
+    /// needed here: giving a resource up is dropping its id.
     ///
-    /// Only the removals are marked here; the caller drops them with a
-    /// [`ResourceGraph::maintain`] pass. After this the integration is back to
-    /// its freshly built state and may be reused against the same graph.
-    pub fn release(&mut self, graph: &mut ResourceGraph) {
-        for slot in self.textures.values() {
-            graph.remove(slot.texture);
-        }
+    /// After this the integration is back to its freshly built state and may be
+    /// reused against the same graph.
+    pub fn release(&mut self) {
         self.textures.clear();
         self.texture_options.clear();
         self.materials.clear();
-        for &(_, id) in &self.samplers {
-            graph.remove(id);
-        }
         self.samplers.clear();
-        if let Some(node) = self.vertex_node.take() {
-            graph.remove(node);
-        }
-        if let Some(node) = self.index_node.take() {
-            graph.remove(node);
-        }
+        self.vertex_node = None;
+        self.index_node = None;
         self.vertices = None;
         self.indices = None;
         self.vertex_capacity = 0;
@@ -610,16 +599,14 @@ impl EguiIntegration {
     /// Move the integration onto `pipeline`, keeping every node it registered.
     ///
     /// A different render target specializes the pipeline differently, and the
-    /// materials were created from the old pipeline's material layout, so they
-    /// are dropped here — but only they: the textures, views, samplers and
+    /// materials were created from the old pipeline's material layout, so their
+    /// ids are dropped here — but only they: the textures, views, samplers and
     /// geometry buffers do not depend on the target, and egui will not resend
     /// its font atlas after a rebuild, so discarding them would both leak the
     /// old nodes and leave the new integration unable to draw text. The next
-    /// [`Self::update`] rebuilds each missing material from the new layout.
-    pub fn retarget(&mut self, graph: &mut ResourceGraph, pipeline: SpecializedUnlitPipeline) {
-        for &(_, id) in &self.materials {
-            graph.remove(id);
-        }
+    /// [`Self::update`] rebuilds each missing material from the new layout, and
+    /// the next [`ResourceGraph::maintain`] collects the old ones.
+    pub fn retarget(&mut self, pipeline: SpecializedUnlitPipeline) {
         self.materials.clear();
         self.draws.clear();
         self.pipeline = pipeline;
@@ -690,7 +677,7 @@ impl EguiIntegration {
         let positions_size = (self.frame_vertices * POSITION_STRIDE) as u64;
         let uv_colors_size = (self.frame_vertices * UV_COLOR_STRIDE) as u64;
         let pipeline = &self.pipeline.pipeline;
-        let global = self.bind_group(graph, self.global_group);
+        let global = self.bind_group(graph, &self.global_group);
         for draw in &self.draws {
             // Each draw carries its own scissor rectangle, so consecutive
             // draws sharing one are what the recorder's deduplication is for.
@@ -735,16 +722,16 @@ impl EguiIntegration {
                 usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.vertex_node = Some(match self.vertex_node {
+            self.vertex_node = Some(match self.vertex_node.take() {
                 // A grow replaces the buffer in its existing node, so no stale
                 // node is left strongly holding the old buffer.
                 Some(node) => {
                     graph
-                        .replace(node, buffer.clone())
+                        .replace(&node, buffer.clone())
                         .expect("the vertex node is still registered");
                     node
                 }
-                None => graph.insert_strong(buffer.clone(), None),
+                None => graph.insert(buffer.clone(), None),
             });
             self.vertices = Some(buffer);
         }
@@ -758,14 +745,14 @@ impl EguiIntegration {
                 usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
-            self.index_node = Some(match self.index_node {
+            self.index_node = Some(match self.index_node.take() {
                 Some(node) => {
                     graph
-                        .replace(node, buffer.clone())
+                        .replace(&node, buffer.clone())
                         .expect("the index node is still registered");
                     node
                 }
-                None => graph.insert_strong(buffer.clone(), None),
+                None => graph.insert(buffer.clone(), None),
             });
             self.indices = Some(buffer);
         }
@@ -783,7 +770,7 @@ impl EguiIntegration {
             options,
         };
         let index = self.materials.iter().position(|(seen, _)| *seen == key)?;
-        graph.get(self.materials[index].1)
+        graph.get(&self.materials[index].1)
     }
 
     /// Build the material bind group for (`id`, `options`) if it does not
@@ -808,7 +795,7 @@ impl EguiIntegration {
         if self.materials.iter().any(|(seen, _)| *seen == key) {
             return;
         }
-        let Some(slot) = self.textures.get(&id).copied() else {
+        let Some(slot) = self.textures.get(&id).cloned() else {
             return;
         };
         let sampler_id = self.sampler(graph, options);
@@ -821,15 +808,16 @@ impl EguiIntegration {
             return;
         };
         let device = self.device.clone();
-        let view_id = slot.view;
+        let view_id = slot.view.clone();
+        let sampler_for_build = sampler_id.clone();
         let build = move |graph: &ResourceGraph| {
             let view = graph
-                .get(view_id)
+                .get(&view_id)
                 .expect("the texture view is in the graph")
                 .view()
                 .clone();
             let sampler = graph
-                .get(sampler_id)
+                .get(&sampler_for_build)
                 .expect("the sampler is in the graph")
                 .clone();
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -849,9 +837,9 @@ impl EguiIntegration {
         };
         let group = build(graph);
         let rebuild = Rebuild::new(move |graph| Resource::BindGroup(build(graph)));
-        let id = graph.insert_strong(group, Some(rebuild));
-        graph.add_dependency(id, slot.view);
-        graph.add_dependency(id, sampler_id);
+        let id = graph.insert(group, Some(rebuild));
+        graph.add_dependency(&id, &slot.view);
+        graph.add_dependency(&id, &sampler_id);
         self.materials.push((key, id));
     }
 
@@ -861,8 +849,8 @@ impl EguiIntegration {
         graph: &mut ResourceGraph,
         options: egui::TextureOptions,
     ) -> ResourceId<wgpu::Sampler> {
-        if let Some(&(_, id)) = self.samplers.iter().find(|(seen, _)| *seen == options) {
-            return id;
+        if let Some((_, id)) = self.samplers.iter().find(|(seen, _)| *seen == options) {
+            return id.clone();
         }
         let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("ui::sampler"),
@@ -872,8 +860,8 @@ impl EguiIntegration {
             min_filter: texture_filter(options.minification),
             ..Default::default()
         });
-        let id = graph.insert_strong(sampler, None);
-        self.samplers.push((options, id));
+        let id = graph.insert(sampler, None);
+        self.samplers.push((options, id.clone()));
         id
     }
 
@@ -893,19 +881,15 @@ impl EguiIntegration {
             }
         }
         for &id in &delta.free {
-            // The texture is the root of the slot's subtree: removing it drops
-            // the view, and with it every material that samples the view — the
-            // graph propagates the removal along the dependency edges. Removing
-            // only the view instead would leave the texture strongly held and
-            // never collected. The nodes go at the next
-            // [`ResourceGraph::maintain`].
-            if let Some(slot) = self.textures.remove(&id) {
-                graph.remove(slot.texture);
-            }
+            // Dropping the slot drops the ids to the texture and its view, so
+            // the next [`ResourceGraph::maintain`] collects them — and the
+            // materials that were built from the view, since the view's
+            // reference count reaches zero with the slot's. The materials'
+            // own entries go here, before that pass, so egui reusing the
+            // (texture, options) pair rebuilds a material rather than finding
+            // a stale one.
+            self.textures.remove(&id);
             self.texture_options.remove(&id);
-            // A material whose nodes were removed no longer resolves; drop
-            // its bookkeeping entry so it can be rebuilt if egui reuses the
-            // (texture, options) pair.
             self.materials.retain(|(key, _)| key.texture != id);
         }
     }
@@ -940,7 +924,7 @@ impl EguiIntegration {
                 let Some(slot) = self.textures.get(&id) else {
                     return;
                 };
-                let Some(texture) = graph.get(slot.texture) else {
+                let Some(texture) = graph.get(&slot.texture) else {
                     return;
                 };
                 queue.write_texture(
@@ -973,9 +957,9 @@ impl EguiIntegration {
                 queue.write_texture(texture.as_image_copy(), pixels, layout, size);
                 let view =
                     TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-                let texture_id = graph.insert_strong(texture, None);
-                let view_id = graph.insert_strong(view, None);
-                graph.add_dependency(view_id, texture_id);
+                let texture_id = graph.insert(texture, None);
+                let view_id = graph.insert(view, None);
+                graph.add_dependency(&view_id, &texture_id);
                 self.textures.insert(
                     id,
                     TextureSlot {

@@ -723,11 +723,10 @@ async fn node_hierarchy_translates_the_quad() {
                 world.despawn(entity);
             }
         }
-        gpu.with_mesh_source(&world, |source, world| {
-            gltf.unload_materials(source, world, &materials);
-            gltf.unload_meshes(source, world, &meshes);
-            gltf.unload_images(source, world, &images);
-        });
+        // Giving up the handles is the unload; the next maintain collects.
+        drop(materials);
+        drop(meshes);
+        drop(images);
         gpu.maintain(&world);
         px
     };
@@ -920,11 +919,10 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
                 world.despawn(entity);
             }
         }
-        gpu.with_mesh_source(&world, |source, world| {
-            gltf.unload_materials(source, world, &materials);
-            gltf.unload_meshes(source, world, &meshes);
-            gltf.unload_images(source, world, &images);
-        });
+        // Giving up the handles is the unload; the next maintain collects.
+        drop(materials);
+        drop(meshes);
+        drop(images);
         gpu.maintain(&world);
         px
     };
@@ -982,11 +980,10 @@ async fn unload_empties_the_frame() {
             world.despawn(entity);
         }
     }
-    gpu.with_mesh_source(&world, |source, world| {
-        gltf.unload_materials(source, world, &materials);
-        gltf.unload_meshes(source, world, &meshes);
-        gltf.unload_images(source, world, &images);
-    });
+    // Giving up the handles is the unload; the next maintain collects.
+    drop(materials);
+    drop(meshes);
+    drop(images);
     gpu.maintain(&world);
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_after");

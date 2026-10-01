@@ -109,13 +109,14 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
     );
 }
 
-/// Removing a mesh frees everything the mesh own, including the per-mesh
+/// Removing a mesh frees everything the mesh owns, including the per-mesh
 /// uniform that only feeds its bind group.
 ///
-/// That uniform is a graph *orphan*: the mesh's buffers were built into the
-/// bind group, not out of it, so the removal walk from the buffers reaches the
-/// group but never the uniform. `remove_mesh` collects it through the graph's
-/// cleanup, leaving the graph exactly as it was before the mesh existed.
+/// That uniform is a graph *orphan*: nothing but the mesh's bind group ever
+/// names it, and the group's own references are what kept it alive. Giving the
+/// mesh up drops the last id to the root, and one `maintain` follows the chain
+/// down — root, then the parts it held, then the uniform only they held —
+/// leaving the graph exactly as it was before the mesh existed.
 async fn removing_a_mesh_leaves_no_resource_behind() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
@@ -132,8 +133,9 @@ async fn removing_a_mesh_leaves_no_resource_behind() {
         "allocating a mesh should add resources"
     );
 
+    // Giving the mesh up drops the last id to its root; the frame's own
+    // maintain is what collects it.
     gpu.remove_mesh(&world, mesh);
-    // The removal is a mark; the frame's own maintain is what drops it.
     gpu.maintain(&world);
 
     assert_eq!(
@@ -144,7 +146,7 @@ async fn removing_a_mesh_leaves_no_resource_behind() {
     // The warmed-up mesh and the source's own resources are untouched.
     assert!(
         gpu.graph(&world)
-            .get(baseline_mesh.parts.vertex_buffers[0].1)
+            .get(&baseline_mesh.parts.vertex_buffers[0].1)
             .is_some()
     );
 }

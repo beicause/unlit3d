@@ -46,12 +46,12 @@ mesh 路径之上增加 glTF 加载器，见下文。
   随帧一起传递，而不是让每个源各自重新发现。
 - **构建与录制是两个阶段。** 源在 `build_scene` 期间往图里注册资源并暂存上传；录制
   阶段只读取已经产出的场景，因此源自身状态与资源图之间永远不会产生借用冲突。
-- **资源图每帧只在构建阶段维护一次。** `replace` 与 `remove` 都只做标记；源在自己的
-  上传之后、组装帧之前调用一次 `ResourceGraph::maintain`，一趟之内丢弃待移除项、回收
-  孤儿资源并按依赖序重建脏的绑定组。不绘制任何东西的帧同样会维护；场景之外的路径
-  ——交换链尺寸变化、acquire——则显式维护，而不是把旧资源留到下一次场景构建。
-- 源自己的 GPU 资源由源释放；`despawn_source` 会在销毁实体前把释放排队，因为资源图
-  无法察觉到实体消失。
+- **资源图每帧只在构建阶段维护一次。** `replace` 只做标记；源在自己的上传之后、组装帧
+  之前调用一次 `ResourceGraph::maintain`，一趟之内回收已无任何持有的资源并按依赖序
+  重建脏的绑定组。不绘制任何东西的帧同样会维护；场景之外的路径——交换链尺寸变化、
+  acquire——则显式维护，而不是把旧资源留到下一次场景构建。
+- 源的 GPU 资源恰好在还有句柄指名它时存活，因此销毁源实体即丢弃其句柄，下一次
+  `maintain` 回收余下部分。无需记住任何释放调用。
 
 **每个源自带状态与其可跨帧复用的 `Scene`。** egui 的 `Context`、字体图集、UI 自己的
 UBO 都归 UI 源所有；3D 的管线、网格池、元数据、剔除缓存都归 mesh 源所有。「3D 主场景」
@@ -214,8 +214,8 @@ active 相机时，帧会被清空，什么都不绘制。
 - `insert_image` / `insert_material` / `insert_mesh` 把一个图像、材质或网格上传进目标
   帧源的资源图并返回句柄；批量版本（`insert_images`、`insert_materials`、
   `insert_meshes`）一次上传文档里的一切，与文档自身的索引对齐。
-- `unload_*` 只移除其句柄所指的东西——批量版本接受句柄切片；材质必须先于它采样的
-  图像卸载，因为纹理不能比依赖它的材质活得更久。没有任何隐式回收。
+- 交出句柄只让其所指变得可回收：材质的绑定组与材质同寿，它采样的纹理视图也由材质
+  持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
 - `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
   的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`、已上传的
   `GpuMesh`、该网格的 `UnlitPipeline`、以材质基础色因子着色的 `InstanceColor`，
@@ -387,7 +387,7 @@ let (color_view, depth_view) = world
         let source = source.as_mut::<MeshSource>().unwrap();
         let color_view = source.register_texture_and_default_view(&world, ft.color).1;
         let depth_view = MeshSource::graph(&world, ctx)
-            .insert_strong(
+            .insert(
                 TextureExt::create_view(
                     &ft.depth,
                     &wgpu::TextureViewDescriptor::default(),

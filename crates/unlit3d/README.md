@@ -64,16 +64,16 @@ given, in the order each source declares through
   and stages uploads during `build_scene`; recording only reads the scenes it
   already produced, so no borrow conflict ever arises between a source's own
   state and the graph.
-- **The graph is maintained once per frame, in the build phase.** `replace` and
-  `remove` only mark; the source calls `ResourceGraph::maintain` exactly once,
-  after its uploads and before it assembles the frame, so removals are dropped,
-  orphans collected and dirty bind groups rebuilt in one pass. A frame that
+- **The graph is maintained once per frame, in the build phase.** `replace` only
+  marks; the source calls `ResourceGraph::maintain` exactly once, after its
+  uploads and before it assembles the frame, so the resources nothing holds any
+  more are collected and the dirty bind groups rebuilt in one pass. A frame that
   draws nothing still maintains, and the paths outside the scene — a surface
   resize, a swap-chain acquire — maintain explicitly rather than holding the
   old resources until the next scene build.
-- A source's later GPU resources are its own to release; [`despawn_source`](source::despawn_source)
-  queues the release before despawning, because the graph cannot notice an
-  entity going away.
+- A source's GPU resources live exactly as long as some handle names them, so
+  despawning a source's entity drops its handles and the next `maintain`
+  collects what that leaves. There is no release call to remember.
 
 **Each source carries its own state and its own `Scene`, reusable across
 frames.** egui's `Context`, font atlas and the UI's own UBO belong to the UI
@@ -316,10 +316,10 @@ What it does is patch the world you already render:
   or mesh into the target source's resource graph and return a handle; the
   batch versions (`insert_images`, `insert_materials`, `insert_meshes`) upload
   everything the document has, aligned with the document's own indices.
-- `unload_*` removes exactly what its handles name — the batch versions take a
-  slice of handles, and a material must be unloaded before the image it
-  samples, because the texture cannot outlive the material that depends on it.
-  Nothing is reclaimed implicitly.
+- Giving up a handle makes exactly what it names collectable: the material's
+  bind group lives while the material does, and the texture view it samples is
+  held by the material too, so dropping the material's handle is enough to
+  release both. The next `maintain` reclaims them.
 - `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
   mesh (or every node reachable from the default scene): one entity per
   primitive, each carrying the node's world-space [`Transform`](components::Transform), the uploaded
@@ -537,7 +537,7 @@ let (color_view, depth_view) = world
         let source = source.as_mut::<MeshSource>().unwrap();
         let color_view = source.register_texture_and_default_view(&world, ft.color).1;
         let depth_view = MeshSource::graph(&world, ctx)
-            .insert_strong(
+            .insert(
                 TextureExt::create_view(
                     &ft.depth,
                     &wgpu::TextureViewDescriptor::default(),

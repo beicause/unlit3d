@@ -152,19 +152,19 @@ impl Renderer {
         // reinterprets its texture — an sRGB view over a non-sRGB swap-chain
         // image — is what a pipeline has to match, so its format wins over the
         // texture's own.
-        let color = color_view.map(|id| {
+        let color = color_view.as_ref().map(|id| {
             graph
                 .get(id)
                 .expect("color_view is a texture view in the graph")
                 .clone()
         });
-        let depth = depth_view.map(|id| {
+        let depth = depth_view.as_ref().map(|id| {
             graph
                 .get(id)
                 .expect("depth_view is a texture view in the graph")
                 .clone()
         });
-        let msaa = msaa_view.map(|id| {
+        let msaa = msaa_view.as_ref().map(|id| {
             graph
                 .get(id)
                 .expect("msaa_view is a texture view in the graph")
@@ -332,12 +332,15 @@ impl Renderer {
             .expect("the context's resource graph exists");
         let color = self
             .color_view
+            .as_ref()
             .map(|id| graph.get(id).expect("bound color view").clone());
         let depth = self
             .depth_view
+            .as_ref()
             .map(|id| graph.get(id).expect("bound depth view").clone());
         let msaa = self
             .msaa_view
+            .as_ref()
             .map(|id| graph.get(id).expect("bound msaa view").clone());
         RenderAttachments::from_views(color, depth, msaa)
     }

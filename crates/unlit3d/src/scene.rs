@@ -200,7 +200,7 @@ where
             // The material decides both how the draw is grouped and which bind
             // group it binds, so it is read once and both are taken from it.
             let (sort_key, material_bg) = match material {
-                Some(material) => (material.sort_key(), Some(material.bind_group_id)),
+                Some(material) => (material.sort_key(), Some(material.bind_group_id.clone())),
                 None => (0, None),
             };
             self.push(
@@ -237,7 +237,7 @@ where
             None => {
                 let context = FamilyContext {
                     device: self.frame.device,
-                    resources: self.frame.resources,
+                    resources: self.frame.resources.clone(),
                 };
                 let desc = self
                     .factory
@@ -254,7 +254,7 @@ where
         // and the material beside it, so the key is filled in here where all
         // three are already in hand.
         let handles_key = DrawHandlesKey {
-            mesh: gpu_mesh.parts.root,
+            mesh: gpu_mesh.parts.root.clone(),
             shape: DrawShape {
                 indexed: gpu_mesh.indexed,
                 count: gpu_mesh.count,
@@ -405,7 +405,7 @@ pub(crate) fn collect_and_sort_visible(
 /// scene of many entities sharing a few meshes would otherwise deep-clone a
 /// handful of wgpu handles per entity per frame, and clone them into a set it
 /// immediately drops again.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DrawHandlesKey {
     /// The mesh's root node, which names its buffers and bind group.
     pub(crate) mesh: ResourceId<Virtual>,

@@ -4,7 +4,7 @@
 //! [`MeshSource`](crate::mesh_source::MeshSource) each frame to build the
 //! draw commands.
 
-use std::sync::Arc;
+use std::rc::Rc;
 
 use arrayvec::ArrayVec;
 use unlit_ecs::Entity;
@@ -141,10 +141,9 @@ pub struct MeshParts {
     ///
     /// It holds no GPU resource of its own and is the mesh's only lifetime
     /// entry point: the vertex and index buffers and the bind group a caller
-    /// supplied are all weak nodes registered under it, so
-    /// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) frees the whole
-    /// mesh by removing this one node and collecting the parts it leaves
-    /// behind.
+    /// supplied are all nodes this one depends on, so dropping the last
+    /// [`GpuMesh`] naming the root leaves the root — and with it the parts
+    /// nothing else holds — for the next `maintain` to collect.
     pub root: ResourceId<Virtual>,
 
     /// Vertex buffers, each tagged with its slot index, in slot order.
@@ -190,8 +189,10 @@ pub struct MeshParts {
 ///
 /// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
 /// [`MeshSource::allocate_unlit_mesh`](crate::mesh_source::MeshSource::allocate_unlit_mesh).
-/// The mesh is ready to draw immediately and the handle stays valid until
-/// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh) is called with it.
+/// The mesh is ready to draw immediately, and it lives as long as some
+/// [`GpuMesh`] names it: dropping the last handle makes it collectable by the
+/// next `maintain`, after which the pool ranges it held are handed back with
+/// [`MeshSource::remove_mesh`](crate::mesh_source::MeshSource::remove_mesh).
 ///
 /// The fields here are the ones a per-entity walk reads while culling and
 /// resolving the visible set. Everything only drawing reads lives in
@@ -213,7 +214,7 @@ pub struct GpuMesh {
     /// duplicate every buffer id per entity and give each its own set of
     /// resources to free. The parts are immutable once the mesh is uploaded, so
     /// sharing them costs no synchronization on the frame path.
-    pub parts: Arc<MeshParts>,
+    pub parts: Rc<MeshParts>,
 
     /// The vertex layout of the draw, slot by slot.
     ///
@@ -414,9 +415,9 @@ pub type UnlitPipeline = GpuRenderPipeline<UnlitPipelineKey>;
 /// [`MeshSource::allocate_material`](crate::mesh_source::MeshSource::allocate_material) for a
 /// caller's own layout, or by
 /// [`MeshSource::allocate_unlit_material`](crate::mesh_source::MeshSource::allocate_unlit_material)
-/// for the built-in shader's base-color texture and sampler. The handle stays
-/// valid until [`MeshSource::remove_material`](crate::mesh_source::MeshSource::remove_material)
-/// is called with it.
+/// for the built-in shader's base-color texture and sampler. The bind group
+/// lives as long as some handle names it; dropping the last one makes it
+/// collectable by the next `maintain`.
 #[derive(Clone, Debug)]
 pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).

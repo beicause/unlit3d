@@ -102,8 +102,8 @@ fn render_ui_with(
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph.insert_strong(camera.clone(), None);
-    let globals_id = graph.insert_strong(globals.clone(), None);
+    let camera_id = graph.insert(camera.clone(), None);
+    let globals_id = graph.insert(globals.clone(), None);
     // The test target is sRGB: the UI converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
     // from its layout, and the UI draws with it.
@@ -114,12 +114,12 @@ fn render_ui_with(
         ..Default::default()
     };
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
-    let global_group_id = graph.insert_strong(
+    let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals),
         None,
     );
-    graph.add_dependency(global_group_id, camera_id);
-    graph.add_dependency(global_group_id, globals_id);
+    graph.add_dependency(&global_group_id, &camera_id);
+    graph.add_dependency(&global_group_id, &globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     // egui positions its vertices in points, and the projection maps points
@@ -416,10 +416,11 @@ async fn user_image_uploads_and_renders() {
 /// cycles do not grow the graph.
 ///
 /// egui frees a texture when the last handle to it goes away, which is how a
-/// user's own image is released. A slot is a subtree — the texture, the view a
-/// material samples, and the material — and releasing only the view leaves the
-/// texture strongly held in the graph, so every freed egui texture is a GPU
-/// texture leaked for the life of the frame.
+/// user's own image is released. A slot is a chain — the texture, the view a
+/// material samples, and the material — and each link is kept alive only by the
+/// reference the next one holds, so one `maintain` follows the whole chain down
+/// and collects it. If any link were still referenced after the free, every
+/// freed egui texture would be a GPU texture leaked for the life of the frame.
 ///
 /// The leak is invisible in one cycle, so this runs two identical ones and
 /// compares: a leak accumulates one slot per cycle.
@@ -432,17 +433,17 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph.insert_strong(camera.clone(), None);
-    let globals_id = graph.insert_strong(globals.clone(), None);
+    let camera_id = graph.insert(camera.clone(), None);
+    let globals_id = graph.insert(globals.clone(), None);
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
-    let global_group_id = graph.insert_strong(
+    let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals),
         None,
     );
-    graph.add_dependency(global_group_id, camera_id);
-    graph.add_dependency(global_group_id, globals_id);
+    graph.add_dependency(&global_group_id, &camera_id);
+    graph.add_dependency(&global_group_id, &globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();
@@ -509,17 +510,17 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
     let camera = uniform_buffer(&ctx.device, "ui::camera", view_size());
     let globals = uniform_buffer(&ctx.device, "ui::globals", globals_size());
     let mut graph = ResourceGraph::new();
-    let camera_id = graph.insert_strong(camera.clone(), None);
-    let globals_id = graph.insert_strong(globals.clone(), None);
+    let camera_id = graph.insert(camera.clone(), None);
+    let globals_id = graph.insert(globals.clone(), None);
     let mut ui_opts = ui_options(&ctx.device, true);
     ui_opts.color_target.format = COLOR_FORMAT;
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
-    let global_group_id = graph.insert_strong(
+    let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals),
         None,
     );
-    graph.add_dependency(global_group_id, camera_id);
-    graph.add_dependency(global_group_id, globals_id);
+    graph.add_dependency(&global_group_id, &camera_id);
+    graph.add_dependency(&global_group_id, &globals_id);
     let mut ui = EguiIntegration::new(&ctx.device, global_group_id, pipeline);
     let egui_ctx = egui::Context::default();
     let viewport = screen.size_in_points();
@@ -553,8 +554,9 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
          caller-owned nodes; got {before}"
     );
 
-    ui.release(&mut graph);
-    // Release only marks the nodes; the frame's own maintain drops them.
+    ui.release();
+    // Release only drops the integration's ids; the frame's own maintain
+    // collects what that left unreferenced.
     graph.maintain();
 
     assert_eq!(

@@ -177,8 +177,8 @@ impl WindowSurface {
             sample_count,
         );
         let mut graph = context_graph(world, renderer);
-        let depth_view = graph.insert_strong(view_resource(&depth), None);
-        let msaa_view = msaa.map(|texture| graph.insert_strong(view_resource(&texture), None));
+        let depth_view = graph.insert(view_resource(&depth), None);
+        let msaa_view = msaa.map(|texture| graph.insert(view_resource(&texture), None));
         drop(graph);
 
         Self {
@@ -243,9 +243,9 @@ impl WindowSurface {
             create_attachments(&device, self.color_format, width, height, self.sample_count);
         let mut graph = context_graph(world, renderer);
         graph
-            .replace(self.depth_view, view_resource(&depth))
+            .replace(&self.depth_view, view_resource(&depth))
             .expect("the depth view is in the graph");
-        if let (Some(id), Some(texture)) = (self.msaa_view, msaa) {
+        if let (Some(id), Some(texture)) = (self.msaa_view.as_ref(), msaa) {
             graph
                 .replace(id, view_resource(&texture))
                 .expect("the multisample view is in the graph");
@@ -269,23 +269,16 @@ impl WindowSurface {
     /// chain but not the window, the scene or the GPU context.
     pub fn release(self, world: &World, renderer: &mut Renderer) {
         // The swap chain's image is the bound render target, so it is unset
-        // before its view goes: an id left naming a removed view is not merely
-        // dangling, because the graph recycles its slot — the renderer would
-        // then either panic on a missing view or, worse, draw into whatever
-        // unrelated texture took the slot.
+        // first: the graph reaches the views only through the ids held here,
+        // and it is about to give them up.
         renderer.unset_render_target(world);
 
-        let mut graph = context_graph(world, renderer);
-        if let Some(id) = self.color_view {
-            graph.remove(id);
-        }
-        graph.remove(self.depth_view);
-        if let Some(id) = self.msaa_view {
-            graph.remove(id);
-        }
-        // The removals are marked above; this drops them before the swap chain
-        // they name is gone.
-        graph.maintain();
+        // Giving up the ids is the whole removal. Dropping them — with the
+        // surface whose images they view — leaves the graph's pass below to
+        // collect the three views, before anything can be left naming a swap
+        // chain that is gone.
+        drop(self);
+        context_graph(world, renderer).maintain();
     }
 
     /// Acquire the next frame and bind it as the renderer's render target.
@@ -320,17 +313,22 @@ impl WindowSurface {
         // one, and a skipped frame leaves the id — and the target bound to it —
         // untouched.
         let view = color_view_resource(&surface_texture.texture, self.color_format);
-        let color = match self.color_view {
+        let color = match self.color_view.as_ref() {
             Some(id) => {
                 context_graph(world, renderer)
                     .replace(id, view)
                     .expect("the color view is in the graph");
-                id
+                id.clone()
             }
-            None => context_graph(world, renderer).insert_strong(view, None),
+            None => context_graph(world, renderer).insert(view, None),
         };
         self.color_view = Some(color);
-        renderer.set_render_target(world, Some(color), Some(self.depth_view), self.msaa_view);
+        renderer.set_render_target(
+            world,
+            self.color_view.clone(),
+            Some(self.depth_view.clone()),
+            self.msaa_view.clone(),
+        );
         // Replacing the color view marked every reader dirty; drop the old
         // frame's view now rather than holding it until the next scene build.
         context_graph(world, renderer).maintain();

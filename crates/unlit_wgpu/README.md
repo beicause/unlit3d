@@ -36,13 +36,12 @@ checks that combination separately.
 ## What is in the box
 
 - [`resources`] — a dependency-tracked graph of the GPU resources a frame uses.
-  Resources are created, replaced and removed through it, and the graph
+  Resources are inserted, replaced and given up through it, and the graph
   propagates "dirty" state to dependents so that derived resources (bind groups,
   pipelines) are rebuilt lazily. Replacing a resource marks everything
-  transitively built from it dirty, removing one marks its dependents, and a
-  single `maintain` pass per frame drops the removals, collects the orphans and
-  runs the rebuild recipes. Virtual nodes own no handle and serve as aggregation
-  roots.
+  transitively built from it dirty, and a single `maintain` pass per frame
+  collects the resources no handle holds any more and runs the rebuild recipes.
+  Virtual nodes own no handle and serve as aggregation roots.
 - [`mesh`] — vertex compression (`Snorm16x4` positions, `Snorm16x2` UVs,
   `Unorm8x4` colors, `Uint16x4` joints, `Unorm16x4` weights) and the
   [`MeshMetadata`](mesh::MeshMetadata) decode parameters that make the compact formats usable in a
@@ -445,23 +444,27 @@ graph:
   `get` returns that resource directly with no variant matching, and `replace`
   accepts only the same type, so an id cannot come to mean a different kind of
   resource. Where the type cannot be known at compile time — dependency sets,
-  dirty-resource walks, the return value of a removal — the erased
+  dirty-resource walks, a stored field handed back to the graph — the erased
   `ResourceId<Resource>` is still used.
 - **Insertion is immediate.** Inserting creates the node and returns its id,
   dependencies are declared one at a time with `add_dependency`, and there is no
-  intermediate state waiting to be finished. Handles carry a generation, so
-  after a node is removed its slot may be reused but a stale id resolves to
-  nothing rather than coming to mean whatever took the slot. A dependency on an
-  invalid id fails in place rather than returning an error: that is a caller
-  error, and it can only be surfaced where it is declared.
+  intermediate state waiting to be finished. A dependency that cannot be
+  recorded — a cycle — panics where it is declared rather than returning an
+  error: that is a caller error, and it can only be surfaced there.
+- **A handle is a reference.** `ResourceId` is a counted handle, not a bare
+  index: cloning one takes another reference to the resource and dropping one
+  gives it up. A resource lives exactly while some id names it, so there is no
+  removal call and no handle that goes stale. A dependency holds a reference
+  too, which is what lets a resource built only to feed a consumer live exactly
+  as long as that consumer does.
 - **Tracking is precise, updates are lazy.** `replace` only marks a resource
-  dirty — the resources depending on it need updating too — and `remove` only
-  marks a resource and everything depending on it for removal. Nothing happens
-  at the point of the change. A frame calls
+  dirty — the resources depending on it need updating too. Nothing happens at
+  the point of the change. A frame calls
   [`ResourceGraph::maintain`](resources::ResourceGraph::maintain) exactly once,
-  before it reads any resource: that one pass drops what was removed, collects
-  what nothing alive is built from any more, and rebuilds the dirty resources in
-  dependency order. Uploading new bytes into an existing buffer dirties nothing;
+  before it reads any resource: that one pass collects the resources nothing
+  holds any more — following the references a collected node releases, so a
+  whole chain goes in one call — and rebuilds the dirty resources in dependency
+  order. Uploading new bytes into an existing buffer dirties nothing;
   reallocating it dirties only what actually consumed the old handle.
 - **A rebuild is a recipe, not a callback at the call site.** A resource the
   graph can rebuild is inserted with a [`Rebuild`](resources::Rebuild) closure
@@ -675,7 +678,7 @@ synchronized to the GPU automatically when the frame renders, with no upload API
 to remember. This differs from the lazy dependency-graph updates in
 [Resources](#resources-one-dependency-tracked-graph), which the user triggers
 through one `maintain` call per frame, after a buffer or other resource is
-replaced or removed.
+replaced or given up.
 
 A frame's uploads and the render pass consuming them are recorded into one
 encoder, so a frame is one submission, which keeps rendering's completion

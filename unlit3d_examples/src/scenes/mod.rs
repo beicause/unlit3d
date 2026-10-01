@@ -570,7 +570,5 @@ pub fn allocate_offset_cube_mesh(
 
 /// Free `mesh` through the source, releasing its pool ranges.
 pub fn remove_mesh(world: &World, source_entity: Entity, mesh: GpuMesh) {
-    with_mesh_source(world, source_entity, |source, world| {
-        source.remove_mesh(world, mesh)
-    });
+    with_mesh_source(world, source_entity, |source, _| source.remove_mesh(mesh));
 }

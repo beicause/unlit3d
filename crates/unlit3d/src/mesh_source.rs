@@ -16,7 +16,7 @@ use arrayvec::ArrayVec;
 use core::any::TypeId;
 use core::ops::DerefMut;
 use hashbrown::HashMap;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use unlit_ecs::{TypeIdHashMap, World};
 use unlit_wgpu::array_pool::ArrayPool;
@@ -182,8 +182,10 @@ fn create_unlit_global_group(
     needs_joints: bool,
     needs_morphs: bool,
 ) -> wgpu::BindGroup {
-    let camera = graph.get(resources.camera).expect("camera buffer exists");
-    let globals = graph.get(resources.globals).expect("globals buffer exists");
+    let camera = graph.get(&resources.camera).expect("camera buffer exists");
+    let globals = graph
+        .get(&resources.globals)
+        .expect("globals buffer exists");
 
     // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
     // whenever a global buffer is replaced, and the optional entries depend on
@@ -201,7 +203,7 @@ fn create_unlit_global_group(
         entries.push(wgpu::BindGroupEntry {
             binding: MESH_METADATA_BINDING,
             resource: graph
-                .get(resources.metadata)
+                .get(&resources.metadata)
                 .expect("metadata array exists")
                 .binding_resource(),
         });
@@ -213,7 +215,7 @@ fn create_unlit_global_group(
         entries.push(wgpu::BindGroupEntry {
             binding: JOINTS_BINDING,
             resource: graph
-                .get(resources.joints)
+                .get(&resources.joints)
                 .expect("joints array exists")
                 .binding_resource(),
         });
@@ -222,14 +224,14 @@ fn create_unlit_global_group(
         entries.push(wgpu::BindGroupEntry {
             binding: MORPH_WEIGHTS_BINDING,
             resource: graph
-                .get(resources.morph_weights)
+                .get(&resources.morph_weights)
                 .expect("morph weights array exists")
                 .binding_resource(),
         });
         entries.push(wgpu::BindGroupEntry {
             binding: MORPH_DELTAS_BINDING,
             resource: graph
-                .get(resources.morph_deltas)
+                .get(&resources.morph_deltas)
                 .expect("morph deltas array exists")
                 .binding_resource(),
         });
@@ -269,8 +271,8 @@ fn register_concrete(
         // The first build is eager: a node has to hold a resource of the kind
         // its typed id names, and only the rebuilds that follow are deferred.
         let bind_group: wgpu::BindGroup = rebuild.build(graph);
-        let id = graph.insert_strong(bind_group, Some(rebuild));
-        buffers.declare_dependencies(graph, id);
+        let id = graph.insert(bind_group, Some(rebuild));
+        buffers.declare_dependencies(graph, &id);
         RegisteredGlobal { id }
     });
 
@@ -424,7 +426,7 @@ impl RenderPipelineFactory<UnlitOptions> for UnlitFactory {
         let needs_joints = options.needs_joints();
         let needs_morphs = options.needs_morphs();
         let device = context.device.clone();
-        let resources = context.resources;
+        let resources = context.resources.clone();
 
         // Only the recipe is handed back: the group itself is built when the
         // pipeline is registered, and rebuilt from the graph afterwards.
@@ -433,7 +435,7 @@ impl RenderPipelineFactory<UnlitOptions> for UnlitFactory {
                 &device,
                 &layout,
                 graph,
-                resources,
+                resources.clone(),
                 needs_metadata,
                 needs_joints,
                 needs_morphs,
@@ -623,7 +625,7 @@ impl MeshSource {
             .expect("the context names the world's resource graph");
 
         // Camera uniform buffer.
-        let camera_buf = graph.insert_strong(
+        let camera_buf = graph.insert(
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::camera"),
                 size: size_of::<View>() as u64,
@@ -635,7 +637,7 @@ impl MeshSource {
 
         // Globals uniform buffer.
         let globals = Globals::default();
-        let globals_buf = graph.insert_strong(
+        let globals_buf = graph.insert(
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("unlit3d::globals"),
                 size: size_of::<Globals>() as u64,
@@ -660,7 +662,7 @@ impl MeshSource {
             1,
             array_max_dimension,
         );
-        let metadata_buf = graph.insert_strong(metadata_array.handle(), None);
+        let metadata_buf = graph.insert(metadata_array.handle(), None);
         let joints_array = Array::new(
             &device,
             Some("unlit3d::pose::joints"),
@@ -668,7 +670,7 @@ impl MeshSource {
             1,
             array_max_dimension,
         );
-        let joints_buf = graph.insert_strong(joints_array.handle(), None);
+        let joints_buf = graph.insert(joints_array.handle(), None);
         let morph_weights_array = Array::new(
             &device,
             Some("unlit3d::pose::morph_weights"),
@@ -676,7 +678,7 @@ impl MeshSource {
             1,
             array_max_dimension,
         );
-        let morph_weights_buf = graph.insert_strong(morph_weights_array.handle(), None);
+        let morph_weights_buf = graph.insert(morph_weights_array.handle(), None);
         // The morph displacements are pooled rather than indexed: a mesh's
         // slice is as long as it has vertices, so it takes a sub-allocation
         // like a vertex stream rather than a fixed slot like an entry.
@@ -687,16 +689,16 @@ impl MeshSource {
             1,
             array_max_dimension,
         );
-        let morph_deltas_buf = graph.insert_strong(morph_deltas_pool.handle(), None);
+        let morph_deltas_buf = graph.insert(morph_deltas_pool.handle(), None);
 
         // Initial upload of camera and globals.
         queue.write_buffer(
-            graph.get(camera_buf).expect("just inserted"),
+            graph.get(&camera_buf).expect("just inserted"),
             0,
             View::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO).as_bytes(),
         );
         queue.write_buffer(
-            graph.get(globals_buf).expect("just inserted"),
+            graph.get(&globals_buf).expect("just inserted"),
             0,
             globals.as_bytes(),
         );
@@ -711,7 +713,7 @@ impl MeshSource {
             wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             size_of::<u32>() as u64 * 1024,
         );
-        let index_pool_id = graph.insert_strong(index_pool.buffer().clone(), None);
+        let index_pool_id = graph.insert(index_pool.buffer().clone(), None);
         let vertex_pool = VertexStreamPool::new(
             &device,
             "unlit3d::mesh::vertices",
@@ -974,10 +976,10 @@ impl MeshSource {
             ArrayVec::<(u32, ResourceId<wgpu::Buffer>), MAX_VERTEX_BUFFERS>::new();
         let mut layouts = Vec::with_capacity(vertex_buffers.len());
         for desc in vertex_buffers {
-            // A weak node: the mesh's virtual root is built from it, so the
-            // buffer lives exactly as long as the root does.
-            let id = Self::graph(world, self.context).insert_weak(desc.buffer, None);
-            vertex_slots.push((desc.slot, id));
+            // The mesh's virtual root is built from it, so the buffer lives
+            // exactly as long as the root does.
+            let id = Self::graph(world, self.context).insert(desc.buffer, None);
+            vertex_slots.push((desc.slot, id.clone()));
             // The layout is owned by the mesh so a family can key on it
             // without reading the description again.
             layouts.push((
@@ -994,7 +996,7 @@ impl MeshSource {
 
         let index_buffer = index_buffer.map(|(buffer, format)| {
             // Weak for the same reason as the vertex buffers.
-            let id = Self::graph(world, self.context).insert_weak(buffer, None);
+            let id = Self::graph(world, self.context).insert(buffer, None);
             (id, format)
         });
 
@@ -1021,13 +1023,13 @@ impl MeshSource {
         };
 
         // A bind group the caller supplied — a custom pipeline's per-mesh data
-        // — is a weak node under the mesh's root, so removing the mesh frees
-        // it with the rest of its parts. The pools a mesh's own data lives in
+        // — hangs under the mesh's root, so giving the mesh up frees it with
+        // the rest of its parts. The pools a mesh's own data lives in
         // are deliberately not dependencies: a pooled resource changes when its
         // pool grows, and a dependency would rebuild every group of every mesh
         // sharing the pool for nothing.
-        let bind_group_id = bind_group
-            .map(|bind_group| Self::graph(world, self.context).insert_weak(bind_group, None));
+        let bind_group_id =
+            bind_group.map(|bind_group| Self::graph(world, self.context).insert(bind_group, None));
 
         // The entry is owned whether or not the pipeline reads it: a draw that
         // reads no metadata simply leaves the index unused. A slot a removed
@@ -1052,26 +1054,26 @@ impl MeshSource {
         };
         self.metadata_dirty = true;
 
-        // Every part of the mesh is registered weak and dependency-free, so
-        // the strong virtual root below is the one node that keeps them all
-        // alive: removing it orphans them for the next `maintain` to collect.
-        // The root is built from the parts, which is also what makes a
-        // replaced part mark it dirty.
+        // The virtual root below is the one node that keeps the parts alive:
+        // each part is registered on its own and the root is built from all of
+        // them, so dropping the last id to the root leaves the parts nothing
+        // else holds for the next `maintain` to collect. Depending on the
+        // parts is also what makes a replaced part mark the root dirty.
         let mut graph = Self::graph(world, self.context);
-        let root = graph.insert_strong(Virtual, None);
-        for id in buffers.iter().copied() {
-            graph.add_dependency(root, id);
+        let root = graph.insert(Virtual, None);
+        for id in &buffers {
+            graph.add_dependency(&root, id);
         }
-        if let Some((id, _format)) = index_buffer {
-            graph.add_dependency(root, id);
+        if let Some((id, _format)) = &index_buffer {
+            graph.add_dependency(&root, id);
         }
-        if let Some(id) = bind_group_id {
-            graph.add_dependency(root, id);
+        if let Some(id) = &bind_group_id {
+            graph.add_dependency(&root, id);
         }
         drop(graph);
 
         GpuMesh {
-            parts: Arc::new(MeshParts {
+            parts: Rc::new(MeshParts {
                 root,
                 vertex_buffers: vertex_slots,
                 index_buffer,
@@ -1279,9 +1281,9 @@ impl MeshSource {
                 continue;
             }
             let id = self.vertex_node(world, layout);
-            self.sync_vertex_node(world, id, layout);
+            self.sync_vertex_node(world, &id, layout);
             let buffer = Self::graph(world, self.context)
-                .get(id)
+                .get(&id)
                 .expect("the stream's node exists")
                 .clone();
             queue.write_buffer(
@@ -1333,10 +1335,10 @@ impl MeshSource {
                     .expect("the index pool grows with the mesh");
                 {
                     let mut graph = Self::graph(world, self.context);
-                    Self::sync_pool_node(&self.index_pool, self.index_pool_id, &mut graph);
+                    Self::sync_pool_node(&self.index_pool, &self.index_pool_id, &mut graph);
                     queue.write_buffer(
                         graph
-                            .get(self.index_pool_id)
+                            .get(&self.index_pool_id)
                             .expect("the index pool node exists"),
                         u64::from(range.offset()),
                         &data,
@@ -1344,7 +1346,7 @@ impl MeshSource {
                 }
                 let first = range.offset() / index_format_size(format);
                 (
-                    Some((self.index_pool_id, format)),
+                    Some((self.index_pool_id.clone(), format)),
                     index_count,
                     true,
                     Some(range.allocation()),
@@ -1390,7 +1392,7 @@ impl MeshSource {
         // ranges are known once the pools have been allocated above. The handle
         // is freshly built and shared with nothing, so it is uniquely owned
         // here and can be patched in place.
-        let parts = Arc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
+        let parts = Rc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
 
         // The source binds the per-instance buffer at [INSTANCE_SLOT] for
         // every draw, so the mesh's layout declares that slot even though the
@@ -1447,13 +1449,13 @@ impl MeshSource {
         texture: wgpu::Texture,
     ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
         let mut graph = Self::graph(world, self.context);
-        let texture_id = graph.insert_strong(texture, None);
+        let texture_id = graph.insert(texture, None);
         let view = TextureExt::create_view(
-            graph.get(texture_id).expect("texture exists"),
+            graph.get(&texture_id).expect("texture exists"),
             &wgpu::TextureViewDescriptor::default(),
         );
-        let view_id = graph.insert_strong(view, None);
-        graph.add_dependency(view_id, texture_id);
+        let view_id = graph.insert(view, None);
+        graph.add_dependency(&view_id, &texture_id);
         (texture_id, view_id)
     }
 
@@ -1467,7 +1469,7 @@ impl MeshSource {
         let sampler = self
             .device(world)
             .create_sampler(&descriptor.unwrap_or_default());
-        Self::graph(world, self.context).insert_strong(sampler, None)
+        Self::graph(world, self.context).insert(sampler, None)
     }
 
     /// Allocate the unlit material bind group from an existing base-colour
@@ -1511,12 +1513,12 @@ impl MeshSource {
             world,
             move |graph| {
                 let view = graph
-                    .get(view_id)
+                    .get(&view_id)
                     .expect("the view is in the graph")
                     .view()
                     .clone();
                 let sampler = graph
-                    .get(sampler_id)
+                    .get(&sampler_id)
                     .expect("the sampler is in the graph")
                     .clone();
                 let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 2>::new();
@@ -1568,9 +1570,9 @@ impl MeshSource {
         };
         let mut graph = Self::graph(world, self.context);
         let rebuild = Rebuild::new(move |graph| Resource::BindGroup(build(graph)));
-        let bind_group_id = graph.insert_strong(bind_group, Some(rebuild));
+        let bind_group_id = graph.insert(bind_group, Some(rebuild));
         for dependency in dependencies {
-            graph.add_dependency(bind_group_id, dependency);
+            graph.add_dependency(&bind_group_id, &dependency);
         }
 
         GpuMaterial { bind_group_id }
@@ -1579,15 +1581,16 @@ impl MeshSource {
     /// Free `mesh` and every resource it owns, and drop its mesh-metadata
     /// entry.
     ///
-    /// Every resource of the mesh is registered under its virtual root, so
-    /// removing that one node and collecting the parts it orphans frees the
-    /// whole mesh: its bind group and the per-mesh uniform that only fed that
-    /// bind group. A mesh uploaded through
-    /// [`allocate_unlit_mesh`](MeshSource::allocate_unlit_mesh) keeps its
-    /// vertices and indices in pools the source shares between meshes; those
-    /// allocations are handed back here, and the pool buffers outlive the mesh.
-    /// A mesh uploaded with [`allocate_mesh`](MeshSource::allocate_mesh) owns
-    /// its buffers, and they die with it.
+    /// The whole mesh hangs off its virtual root: the parts are held by the
+    /// root and by nothing else, so dropping `mesh` — the last holder of the
+    /// root — makes them collectable, and the next
+    /// [`Self::maintain`](MeshSource::maintain) frees the root, its bind group
+    /// and the per-mesh uniform that only fed that bind group. A mesh uploaded
+    /// through [`allocate_unlit_mesh`](MeshSource::allocate_unlit_mesh) keeps
+    /// its vertices and indices in pools the source shares between meshes;
+    /// those allocations are handed back here, and the pool buffers outlive the
+    /// mesh. A mesh uploaded with [`allocate_mesh`](MeshSource::allocate_mesh)
+    /// owns its buffers, and they die with it.
     ///
     /// Its metadata slot is freed and reused by a mesh allocated later, so
     /// removing meshes does not grow the array a long-lived source uploads.
@@ -1595,16 +1598,10 @@ impl MeshSource {
     /// does not shrink the metadata buffer: it grows to the largest array it
     /// has ever held and stays there.
     ///
-    /// Removing a mesh while the world still holds its handle is a programming
-    /// error the caller has to avoid: nothing detects the stale handle.
-    pub fn remove_mesh(&mut self, world: &World, mesh: GpuMesh) {
-        {
-            // The root was the only node built from the parts, so marking it
-            // removed makes every part an orphan for the next
-            // [`Self::maintain`] to collect.
-            Self::graph(world, self.context).remove(mesh.parts.root);
-        }
-
+    /// Any other [`GpuMesh`] value sharing this mesh's parts keeps it alive:
+    /// the parts are reference-counted, so a caller that cloned the handle
+    /// before calling this still reads a live mesh.
+    pub fn remove_mesh(&mut self, mesh: GpuMesh) {
         if let Some(vertex) = mesh.parts.vertex_allocation {
             self.vertex_pool.release(vertex);
         }
@@ -1627,13 +1624,13 @@ impl MeshSource {
     /// Free the bind group `material` names, together with everything built
     /// from it.
     ///
-    /// The material's own resources — the texture view and sampler it was
-    /// built from — are the caller's and stay in the graph: remove them
-    /// separately if nothing else reads them. The [`GpuMaterial`] handle must
-    /// not be used afterwards. The node is dropped by the next
-    /// [`Self::maintain`], which also collects whatever only fed it.
-    pub fn remove_material(&mut self, world: &World, material: GpuMaterial) {
-        Self::graph(world, self.context).remove(material.bind_group_id);
+    /// Giving up the handle is the removal: the bind group node is collected by
+    /// the next [`Self::maintain`](MeshSource::maintain) once nothing else
+    /// holds it. The material's own resources — the texture view and sampler it
+    /// was built from — are the caller's and stay in the graph; drop their ids
+    /// separately if nothing else reads them.
+    pub fn remove_material(&mut self, material: GpuMaterial) {
+        drop(material);
     }
 
     // -- poses -----------------------------------------------------------------
@@ -1734,7 +1731,7 @@ impl MeshSource {
             self.context,
             "unlit3d::pose::joints",
             &mut self.joints_array,
-            self.joints_buf,
+            &self.joints_buf,
             &device,
             needed,
         );
@@ -1745,8 +1742,9 @@ impl MeshSource {
     /// Grow the frame's morph-displacement array if a mesh outgrew it, and
     /// upload the pooled slices through the frame's encoder.
     ///
-    /// Allocating or removing a mesh marks the pool dirty, so the upload lands
-    /// in the next frame together with the draws that read it. The resource is
+    /// Allocating or removing a mesh marks the array dirty, so the upload
+    /// lands in the next frame together with the draws that read it. The
+    /// resource is
     /// replaced only when it is too small, so a steady scene rewrites in place
     /// and rebuilds no bind group.
     fn upload_morph_deltas(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
@@ -1759,7 +1757,7 @@ impl MeshSource {
             // A replaced array invalidates every global group bound to it; the
             // next maintain rebuilds them.
             Self::graph(world, self.context)
-                .replace(self.morph_deltas_buf, self.morph_deltas_pool.handle())
+                .replace(&self.morph_deltas_buf, self.morph_deltas_pool.handle())
                 .expect("the morph-displacement array's node exists");
         }
     }
@@ -1774,7 +1772,7 @@ impl MeshSource {
             self.context,
             "unlit3d::pose::morph_weights",
             &mut self.morph_weights_array,
-            self.morph_weights_buf,
+            &self.morph_weights_buf,
             &device,
             needed,
         );
@@ -1788,12 +1786,12 @@ impl MeshSource {
     /// recipe see them.
     fn global_resources(&self) -> GlobalResources {
         GlobalResources {
-            camera: self.camera_buf,
-            globals: self.globals_buf,
-            metadata: self.metadata_buf,
-            joints: self.joints_buf,
-            morph_weights: self.morph_weights_buf,
-            morph_deltas: self.morph_deltas_buf,
+            camera: self.camera_buf.clone(),
+            globals: self.globals_buf.clone(),
+            metadata: self.metadata_buf.clone(),
+            joints: self.joints_buf.clone(),
+            morph_weights: self.morph_weights_buf.clone(),
+            morph_deltas: self.morph_deltas_buf.clone(),
         }
     }
 
@@ -1809,7 +1807,7 @@ impl MeshSource {
         ctx: RenderContext,
         label: &str,
         array: &mut Array,
-        node: ResourceId<ArrayHandle>,
+        node: &ResourceId<ArrayHandle>,
         device: &wgpu::Device,
         needed: u64,
     ) {
@@ -1829,10 +1827,10 @@ impl MeshSource {
 
     /// Bring the resource graph up to date for this frame.
     ///
-    /// Drops the resources marked removed, collects orphans, then rebuilds
-    /// every dirty node whose recipe the graph holds — the global bind groups
-    /// among them. Called once per built scene, at the point before the frame
-    /// reads any of those groups.
+    /// Collects the resources nothing holds any more, then rebuilds every
+    /// dirty node whose recipe the graph holds — the global bind groups among
+    /// them. Called once per built scene, at the point before the frame reads
+    /// any of those groups.
     pub fn maintain(&mut self, world: &World) {
         Self::graph(world, self.context).maintain();
     }
@@ -1841,7 +1839,7 @@ impl MeshSource {
     /// encoder.
     fn upload_camera(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder, view: &View) {
         let buffer = Self::graph(world, self.context)
-            .get(self.camera_buf)
+            .get(&self.camera_buf)
             .expect("camera buffer exists")
             .clone();
         self.camera_staging
@@ -1852,7 +1850,7 @@ impl MeshSource {
     /// encoder.
     fn upload_globals(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
         let buffer = Self::graph(world, self.context)
-            .get(self.globals_buf)
+            .get(&self.globals_buf)
             .expect("globals buffer exists")
             .clone();
         self.globals_staging.write(
@@ -1906,7 +1904,7 @@ impl MeshSource {
             self.context,
             "unlit3d::mesh_metadata",
             &mut self.metadata_array,
-            self.metadata_buf,
+            &self.metadata_buf,
             &device,
             needed,
         );
@@ -1924,16 +1922,16 @@ impl MeshSource {
         world: &World,
         layout: &VertexBufferLayoutDesc,
     ) -> ResourceId<wgpu::Buffer> {
-        if let Some(&id) = self.vertex_pool_ids.get(layout) {
-            return id;
+        if let Some(id) = self.vertex_pool_ids.get(layout) {
+            return id.clone();
         }
         let buffer = self
             .vertex_pool
             .buffer(layout)
             .expect("the layout was allocated a buffer")
             .clone();
-        let id = Self::graph(world, self.context).insert_strong(buffer, None);
-        self.vertex_pool_ids.insert(layout.clone(), id);
+        let id = Self::graph(world, self.context).insert(buffer, None);
+        self.vertex_pool_ids.insert(layout.clone(), id.clone());
         id
     }
 
@@ -1944,7 +1942,7 @@ impl MeshSource {
     fn sync_vertex_node(
         &mut self,
         world: &World,
-        id: ResourceId<wgpu::Buffer>,
+        id: &ResourceId<wgpu::Buffer>,
         layout: &VertexBufferLayoutDesc,
     ) {
         let buffer = self
@@ -1970,7 +1968,7 @@ impl MeshSource {
     /// per-mesh resource at all — so replacing one marks nothing else dirty. A
     /// dependency added onto a pool buffer makes every grow rebuild it, which
     /// is why there must not be one.
-    fn sync_pool_node(pool: &BufferPool, id: ResourceId<wgpu::Buffer>, graph: &mut ResourceGraph) {
+    fn sync_pool_node(pool: &BufferPool, id: &ResourceId<wgpu::Buffer>, graph: &mut ResourceGraph) {
         if graph.get(id) != Some(pool.buffer()) {
             graph
                 .replace(id, pool.buffer().clone())
@@ -2015,10 +2013,10 @@ impl MeshSource {
             &mut self.visible_meshes_cache,
             &mut self.visible_cache,
         );
-        let (pipelines, buffers) = (&mut self.pipelines, resources);
+        let (pipelines, buffers) = (&mut self.pipelines, resources.clone());
         let ctx = self.context;
         let mut graph = Self::graph(world, ctx);
-        let mut register = |desc| register_concrete(pipelines, &mut graph, buffers, desc);
+        let mut register = |desc| register_concrete(pipelines, &mut graph, buffers.clone(), desc);
 
         collect_and_sort_visible(
             SceneFrame {
@@ -2054,7 +2052,7 @@ impl MeshSource {
             profiling::scope!("mesh_source.assemble.handles");
             let graph = Self::graph(world, self.context);
             for entry in &self.visible_cache {
-                let key = entry.handles_key;
+                let key = entry.handles_key.clone();
                 if handles.contains_key(&key) {
                     continue;
                 }
@@ -2066,27 +2064,29 @@ impl MeshSource {
                 let mesh_bg = mesh
                     .parts
                     .bind_group_id
+                    .as_ref()
                     .map(|id| graph.get(id).expect("mesh bind group exists").clone());
 
                 let material_bg = key
                     .material
+                    .as_ref()
                     .map(|id| graph.get(id).expect("material bind group exists").clone());
 
                 let mut vertex_buffers = ArrayVec::new();
-                for &(slot, buffer) in &mesh.parts.vertex_buffers {
+                for (slot, buffer) in &mesh.parts.vertex_buffers {
                     let buffer = graph
                         .get(buffer)
                         .expect("mesh vertex buffer exists")
                         .clone();
                     // A mesh binds its vertex buffers whole; the draw's range
                     // is what picks the mesh's slice out of the pool.
-                    vertex_buffers.push((slot, buffer.clone(), 0..buffer.size()));
+                    vertex_buffers.push((*slot, buffer.clone(), 0..buffer.size()));
                 }
 
-                let index_buffer = mesh.parts.index_buffer.map(|(buffer, format)| {
+                let index_buffer = mesh.parts.index_buffer.as_ref().map(|(buffer, format)| {
                     (
                         graph.get(buffer).expect("mesh index buffer exists").clone(),
-                        format,
+                        *format,
                     )
                 });
 
@@ -2116,7 +2116,7 @@ impl MeshSource {
                     global: registered
                         .global
                         .as_ref()
-                        .map(|global| graph.get(global.id).expect("global group exists").clone()),
+                        .map(|global| graph.get(&global.id).expect("global group exists").clone()),
                 }
             }));
         }
@@ -2270,10 +2270,10 @@ impl FrameSource for MeshSource {
             self.upload_instances(world, encoder);
         }
 
-        // Settle the graph for this frame: drop what was removed, collect
-        // orphans and rebuild what the uploads above marked dirty. This is the
-        // one point the frame maintains, and it runs after every replacement
-        // and before anything reads a bind group.
+        // Settle the graph for this frame: collect what nothing holds any more
+        // and rebuild what the uploads above marked dirty. This is the one
+        // point the frame maintains, and it runs after every replacement and
+        // before anything reads a bind group.
         {
             profiling::scope!("mesh_source.maintain");
             self.maintain(world);
@@ -2291,46 +2291,6 @@ impl FrameSource for MeshSource {
 
     fn order(&self) -> FrameOrder {
         FrameOrder::MESH
-    }
-
-    /// Remove every node this source registered: its own uniform buffers, the
-    /// pools that hold the meshes, and the global bind group of every
-    /// registered pipeline.
-    ///
-    /// The nodes are the source's, not a caller's: a mesh or material a caller
-    /// still holds a handle for is released first by
-    /// [`MeshSource::remove_mesh`]/[`MeshSource::remove_material`], and the
-    /// handles must not be used after this.
-    fn release(&mut self, world: &World) {
-        {
-            let mut graph = Self::graph(world, self.context);
-
-            // The pipelines' global groups are strong nodes in their own right,
-            // so removing the buffers they depend on would leave them behind.
-            for registered in &self.pipelines {
-                if let Some(global) = &registered.global {
-                    graph.remove(global.id);
-                }
-            }
-            // The pools, the two uniform buffers and the frame's two pose
-            // arrays. Every mesh part hangs off a mesh's own virtual root, which
-            // the caller removed with its handle; anything left over is an
-            // orphan of those nodes and is collected by the maintain below.
-            graph.remove(self.camera_buf);
-            graph.remove(self.globals_buf);
-            graph.remove(self.metadata_buf);
-            graph.remove(self.joints_buf);
-            graph.remove(self.morph_weights_buf);
-            graph.remove(self.morph_deltas_buf);
-            graph.remove(self.index_pool_id);
-            for id in self.vertex_pool_ids.values() {
-                graph.remove(*id);
-            }
-        }
-        self.maintain(world);
-
-        self.pipelines.clear();
-        self.vertex_pool_ids.clear();
     }
 }
 
@@ -2464,17 +2424,17 @@ mod tests {
             let mut graph = world
                 .get_mut::<ResourceGraph>(ctx.graph)
                 .expect("the context's graph");
-            let color = graph.insert_strong(
+            let color = graph.insert(
                 TextureExt::create_view(&ft.color, &wgpu::TextureViewDescriptor::default()),
                 None,
             );
-            let depth = graph.insert_strong(
+            let depth = graph.insert(
                 TextureExt::create_view(&ft.depth, &wgpu::TextureViewDescriptor::default()),
                 None,
             );
             let attachments = RenderAttachments::from_views(
-                graph.get(color).cloned(),
-                graph.get(depth).cloned(),
+                graph.get(&color).cloned(),
+                graph.get(&depth).cloned(),
                 None,
             );
             FrameTarget {
@@ -2750,7 +2710,7 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         assert!(
             h.source
-                .allocate_unlit_material(&h.world, &standard, view, sampler)
+                .allocate_unlit_material(&h.world, &standard, view.clone(), sampler.clone())
                 .is_some()
         );
         assert!(
@@ -2784,15 +2744,22 @@ mod tests {
             .source
             .pipelines
             .iter()
-            .map(|registered| registered.global.as_ref().expect("has a global group").id)
+            .map(|registered| {
+                registered
+                    .global
+                    .as_ref()
+                    .expect("has a global group")
+                    .id
+                    .clone()
+            })
             .collect();
-        for (index, &id) in ids.iter().enumerate() {
+        for (index, id) in ids.iter().enumerate() {
             assert!(
                 MeshSource::graph(&h.world, ctx).get(id).is_some(),
                 "pipeline {index}'s global group is in the graph"
             );
             // No two pipelines share one: each binds its own layout.
-            assert!(!ids[..index].contains(&id));
+            assert!(!ids[..index].contains(id));
         }
     }
 
@@ -2820,12 +2787,12 @@ mod tests {
 
         let material = h
             .source
-            .allocate_unlit_material(&h.world, &h.key, view, sampler)
+            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
             .expect("the standard variant reads a base-color texture");
         let ctx = h.source.context();
         assert!(
             MeshSource::graph(&h.world, ctx)
-                .get(material.bind_group_id)
+                .get(&material.bind_group_id)
                 .is_some()
         );
     }
@@ -2854,30 +2821,27 @@ mod tests {
         let ctx = h.source.context();
 
         // The root is the mesh's lifetime entry point; the mesh's vertices,
-        // indices and displacements live in pools, so those are strong nodes
-        // the source owns and survive the mesh — what the mesh loses is its
-        // share of them, which `remove_mesh` hands back.
+        // indices and displacements live in pools, so those are nodes the
+        // source owns and survive the mesh — what the mesh loses is its share
+        // of them, which `remove_mesh` hands back.
         let before = MeshSource::graph(&h.world, ctx).len();
         let index_pool_free = h.source.index_pool.free_space();
         assert!(matches!(
-            MeshSource::graph(&h.world, ctx).get(mesh.parts.root),
+            MeshSource::graph(&h.world, ctx).get(&mesh.parts.root),
             Some(Virtual)
         ));
-        let root = mesh.parts.root;
         assert!(
             mesh.parts.morph_deltas_allocation.is_some(),
             "a morphing mesh holds a displacement range"
         );
 
-        h.source.remove_mesh(&h.world, mesh);
-        // Removal only marks the root; the nodes go at the frame's own
-        // maintain, which is what this drives by hand.
+        // Giving the mesh up drops the last id to its root; the nodes go at
+        // the frame's own maintain, which is what this drives by hand. No id
+        // to the root is kept: an id is a strong reference, so holding one
+        // would keep the very node this test watches the graph collect.
+        h.source.remove_mesh(mesh);
         h.source.maintain(&h.world);
 
-        assert!(
-            MeshSource::graph(&h.world, ctx).get(root).is_none(),
-            "root removed"
-        );
         assert!(
             MeshSource::graph(&h.world, ctx).len() < before,
             "the graph shrank"
@@ -2910,9 +2874,13 @@ mod tests {
         // must not take the shared buffers with it, so they sit outside the
         // root and the root holds only what is the mesh's own.
         let dependencies: Vec<_> = MeshSource::graph(&h.world, ctx)
-            .dependencies(mesh.parts.root)
+            .dependencies(&mesh.parts.root)
             .collect();
-        let bind_group = mesh.parts.bind_group_id.expect("the mesh has a group");
+        let bind_group = mesh
+            .parts
+            .bind_group_id
+            .clone()
+            .expect("the mesh has a group");
         assert!(
             dependencies.contains(&bind_group.erase()),
             "the bind group is under the root"
@@ -2923,7 +2891,7 @@ mod tests {
             "the index pool is not under the root"
         );
         assert!(
-            MeshSource::graph(&h.world, ctx).get(pool).is_some(),
+            MeshSource::graph(&h.world, ctx).get(&pool).is_some(),
             "the index pool survives"
         );
     }
@@ -2936,7 +2904,7 @@ mod tests {
         let first_index = first.parts.metadata_index;
         assert_ne!(first_index, second.parts.metadata_index);
 
-        h.source.remove_mesh(&h.world, first);
+        h.source.remove_mesh(first);
         let reused = h.tri_mesh();
 
         assert_eq!(
@@ -2953,26 +2921,28 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         let material = h
             .source
-            .allocate_unlit_material(&h.world, &h.key, view, sampler)
+            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
             .expect("the standard variant reads a base-color texture");
 
-        h.source.remove_material(&h.world, material.clone());
+        // The material handle is given up outright: an id is a strong
+        // reference, so a clone kept here would keep the bind group alive and
+        // the assertion below would have nothing to observe.
+        let before = MeshSource::graph(&h.world, ctx).len();
+        h.source.remove_material(material);
         h.source.maintain(&h.world);
 
         assert!(
-            MeshSource::graph(&h.world, ctx)
-                .get(material.bind_group_id)
-                .is_none(),
+            MeshSource::graph(&h.world, ctx).len() < before,
             "the bind group is gone"
         );
         // The view and sampler are the caller's, so removing the material
         // that reads them leaves them alone.
         assert!(
-            MeshSource::graph(&h.world, ctx).get(view).is_some(),
+            MeshSource::graph(&h.world, ctx).get(&view).is_some(),
             "the view stays"
         );
         assert!(
-            MeshSource::graph(&h.world, ctx).get(sampler).is_some(),
+            MeshSource::graph(&h.world, ctx).get(&sampler).is_some(),
             "the sampler stays"
         );
     }
@@ -2986,9 +2956,15 @@ mod tests {
         let second = h.tri_mesh();
 
         // Both name the pool's node, and each names its own slice of it.
-        let pool = h.source.index_pool_id;
-        assert_eq!(first.parts.index_buffer.map(|(id, _)| id), Some(pool));
-        assert_eq!(second.parts.index_buffer.map(|(id, _)| id), Some(pool));
+        let pool = h.source.index_pool_id.clone();
+        assert_eq!(
+            first.parts.index_buffer.as_ref().map(|(id, _)| id.clone()),
+            Some(pool.clone())
+        );
+        assert_eq!(
+            second.parts.index_buffer.as_ref().map(|(id, _)| id.clone()),
+            Some(pool)
+        );
         assert_ne!(first.first, second.first, "the slices do not overlap");
 
         // The ranges tile the pool in allocation order.
@@ -3010,7 +2986,7 @@ mod tests {
         let mut h = harness();
         let first = h.tri_mesh();
         let first_offset = first.first;
-        h.source.remove_mesh(&h.world, first);
+        h.source.remove_mesh(first);
 
         let again = h.tri_mesh();
         assert_eq!(
@@ -3024,7 +3000,12 @@ mod tests {
         let mut h = harness();
         let ctx = h.source.context();
         let first = h.tri_mesh();
-        let first_node = first.parts.index_buffer.expect("the mesh is indexed").0;
+        let first_node = first
+            .parts
+            .index_buffer
+            .clone()
+            .expect("the mesh is indexed")
+            .0;
         let first_offset = first.first;
 
         // Enough meshes to push the pool past its starting size.
@@ -3036,9 +3017,12 @@ mod tests {
 
         // The node still names the pool, and the graph holds the buffer the
         // pool currently does: a mesh needs no update after a grow.
-        assert_eq!(last.parts.index_buffer.map(|(id, _)| id), Some(first_node));
         assert_eq!(
-            MeshSource::graph(&h.world, ctx).get(first_node),
+            last.parts.index_buffer.as_ref().map(|(id, _)| id.clone()),
+            Some(first_node.clone())
+        );
+        assert_eq!(
+            MeshSource::graph(&h.world, ctx).get(&first_node),
             Some(h.source.index_pool.buffer()),
             "the node follows the pool's buffer"
         );
@@ -3091,7 +3075,7 @@ mod tests {
         {
             assert_eq!(first_id, second_id, "the streams share a buffer");
             assert!(
-                MeshSource::graph(&h.world, ctx).get(*first_id).is_some(),
+                MeshSource::graph(&h.world, ctx).get(first_id).is_some(),
                 "the stream's node holds a buffer"
             );
         }
@@ -3213,7 +3197,7 @@ mod tests {
         let mut h = harness();
         let first = h.tri_mesh();
         let vertex_offset = first.base_vertex;
-        h.source.remove_mesh(&h.world, first);
+        h.source.remove_mesh(first);
 
         let again = h.tri_mesh();
         assert_eq!(
@@ -3231,7 +3215,7 @@ mod tests {
             .parts
             .vertex_buffers
             .iter()
-            .map(|(_, id)| *id)
+            .map(|(_, id)| id.clone())
             .collect();
         let base_vertex = first.base_vertex;
 
@@ -3257,7 +3241,7 @@ mod tests {
                 .buffer(layout)
                 .expect("the layout has a buffer");
             assert_eq!(
-                MeshSource::graph(&h.world, ctx).get(*node),
+                MeshSource::graph(&h.world, ctx).get(node),
                 Some(pool_buffer),
                 "the node follows the pool's buffer"
             );
@@ -3421,12 +3405,12 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         let shared = h
             .source
-            .allocate_unlit_material(&h.world, &h.key, view, sampler)
+            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
             .expect("the standard variant reads a base-color texture");
         let (view, sampler) = test_material_resources(&mut h);
         let other = h
             .source
-            .allocate_unlit_material(&h.world, &h.key, view, sampler)
+            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
             .expect("the standard variant reads a base-color texture");
         assert_ne!(shared.sort_key(), other.sort_key());
 
@@ -3667,7 +3651,7 @@ mod tests {
 
         // A fifth entry outgrows four, so the buffer grows again.
         let before = MeshSource::graph(&h.world, ctx)
-            .get(h.source.metadata_buf)
+            .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
@@ -3678,21 +3662,21 @@ mod tests {
             "growing past four reaches six (4 * 1.5)"
         );
         assert_ne!(
-            MeshSource::graph(&h.world, ctx).get(h.source.metadata_buf),
+            MeshSource::graph(&h.world, ctx).get(&h.source.metadata_buf),
             before.as_ref(),
             "growth replaced the buffer"
         );
 
         // A sixth entry fits in six, so the buffer is left alone.
         let before = MeshSource::graph(&h.world, ctx)
-            .get(h.source.metadata_buf)
+            .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 6, "six entries fit");
         assert_eq!(
-            MeshSource::graph(&h.world, ctx).get(h.source.metadata_buf),
+            MeshSource::graph(&h.world, ctx).get(&h.source.metadata_buf),
             before.as_ref(),
             "no growth means the same buffer, so no global group is rebuilt"
         );
@@ -3708,7 +3692,7 @@ mod tests {
 
         // Removing the mesh clears its entry in the array, so the array
         // reaches the GPU again on the next frame.
-        h.source.remove_mesh(&h.world, mesh);
+        h.source.remove_mesh(mesh);
         assert!(h.source.metadata_dirty, "removing a mesh marks the array");
         let encoder = h.encoder();
         h.source.upload_metadata(&h.world, &mut { encoder });
@@ -4001,7 +3985,7 @@ mod tests {
     /// Releasing the source removes the nodes it registered, so a program that
     /// mounts and unmounts sources does not grow the graph forever.
     #[test]
-    fn releasing_the_source_removes_the_nodes_it_registered() {
+    fn dropping_the_source_releases_the_nodes_it_registered() {
         let mut h = harness();
         let ctx = h.source.context();
         // A drawn frame, so the pools, the mesh parts and the global bind
@@ -4009,7 +3993,7 @@ mod tests {
         let mesh = h.tri_mesh();
         h.world
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
-        h.world.spawn((
+        let drawn = h.world.spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
@@ -4018,29 +4002,48 @@ mod tests {
         h.source.build_scene(&h.world, ctx, &mut encoder);
 
         let before = MeshSource::graph(&h.world, ctx).len();
+        // Read the ids out before the source goes: once it is dropped there is
+        // no `h.source` left to name them.
+        let camera_buf = h.source.camera_buf.clone();
+        let index_pool_id = h.source.index_pool_id.clone();
+
         // The camera/globals/metadata buffers, the index pool and the global
         // bind group are the source's own; the mesh's parts hang off its root.
-        h.source.remove_mesh(&h.world, mesh);
-        h.source.release(&h.world);
+        // Despawning the drawn entity and giving the local handle up leaves the
+        // mesh root unheld, and dropping the source gives up everything it
+        // registered itself.
+        h.world.despawn(drawn);
+        drop(mesh);
+        drop(h.source);
+        MeshSource::graph(&h.world, ctx).maintain();
         let after = MeshSource::graph(&h.world, ctx).len();
 
         assert!(
             after < before,
-            "releasing must shrink the graph: {after} was {before}"
+            "dropping the source must shrink the graph: {after} was {before}"
         );
-        // What the context itself spawned — the target's views — is all that
-        // should be left, plus nothing the source registered.
+        // The two ids this test still holds are strong references of their
+        // own, so what they name outlives the source that registered it. That
+        // is the point of a counted handle: the resource goes when the last id
+        // does, not when its creator does.
+        assert!(
+            MeshSource::graph(&h.world, ctx).get(&camera_buf).is_some(),
+            "a held id keeps the source's camera buffer alive"
+        );
         assert!(
             MeshSource::graph(&h.world, ctx)
-                .get(h.source.camera_buf)
-                .is_none(),
-            "the source's camera buffer is gone"
+                .get(&index_pool_id)
+                .is_some(),
+            "a held id keeps the index pool alive"
         );
+
+        // Giving those ids up is what lets the graph collect them.
+        drop(camera_buf);
+        drop(index_pool_id);
+        MeshSource::graph(&h.world, ctx).maintain();
         assert!(
-            MeshSource::graph(&h.world, ctx)
-                .get(h.source.index_pool_id)
-                .is_none(),
-            "the index pool is gone"
+            MeshSource::graph(&h.world, ctx).len() < after,
+            "the last ids going is what frees the source's resources"
         );
     }
 
