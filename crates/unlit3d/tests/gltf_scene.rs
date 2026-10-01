@@ -87,25 +87,23 @@ fn quad_document(doc: &QuadDoc) -> Vec<u8> {
         material.push_str(",\"doubleSided\":true");
     }
     let json = format!(
-        concat!(
-            "{{\"asset\":{{\"version\":\"2.0\"}},\"scene\":0,",
-            "\"scenes\":[{{\"nodes\":[0]}}],",
-            "\"nodes\":[{{\"children\":[1]}},{{\"mesh\":0,\"translation\":[{},{},{}]}}],",
-            "\"meshes\":[{{\"primitives\":[{{\"attributes\":{{{}}},",
-            "\"indices\":2,\"material\":0}}]}}],",
-            "\"materials\":[{{{}}}]{},",
-            "\"accessors\":[",
-            "{{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",",
-            "\"min\":[-1.8,-1.35,0.0],\"max\":[1.8,1.35,0.0]}},",
-            "{{\"bufferView\":1,\"componentType\":5126,\"count\":4,\"type\":\"VEC2\"}},",
-            "{{\"bufferView\":2,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}}],",
-            "\"bufferViews\":[",
-            "{{\"buffer\":0,\"byteOffset\":{},\"byteLength\":48,\"target\":34962}},",
-            "{{\"buffer\":0,\"byteOffset\":{},\"byteLength\":32,\"target\":34962}},",
-            "{{\"buffer\":0,\"byteOffset\":{},\"byteLength\":12,\"target\":34963}},",
-            "{{\"buffer\":0,\"byteOffset\":{},\"byteLength\":80}}],",
-            "\"buffers\":[{{\"byteLength\":{},\"uri\":\"data:application/octet-stream;base64,{}\"}}]}}"
-        ),
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        "scenes":[{{"nodes":[0]}}],
+        "nodes":[{{"children":[1]}},{{"mesh":0,"translation":[{},{},{}]}}],
+        "meshes":[{{"primitives":[{{"attributes":{{{}}},
+        "indices":2,"material":0}}]}}],
+        "materials":[{{{}}}]{},
+        "accessors":[
+        {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
+        "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]}},
+        {{"bufferView":1,"componentType":5126,"count":4,"type":"VEC2"}},
+        {{"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}}],
+        "bufferViews":[
+        {{"buffer":0,"byteOffset":{},"byteLength":48,"target":34962}},
+        {{"buffer":0,"byteOffset":{},"byteLength":32,"target":34962}},
+        {{"buffer":0,"byteOffset":{},"byteLength":12,"target":34963}},
+        {{"buffer":0,"byteOffset":{},"byteLength":80}}],
+        "buffers":[{{"byteLength":{},"uri":"data:application/octet-stream;base64,{}"}}]}}"#,
         doc.translation[0],
         doc.translation[1],
         doc.translation[2],
@@ -156,39 +154,34 @@ fn camera() -> Camera {
 /// flat colour and a test can count it.
 fn skinned_document(joint_translation: [f32; 3]) -> Vec<u8> {
     format!(
-        concat!(
-            "{{\"asset\":{{\"version\":\"2.0\"}},\"scene\":0,",
-            "\"scenes\":[{{\"nodes\":[0]}}],",
-            "\"nodes\":[{{\"mesh\":0,\"skin\":0}},",
-            "{{\"name\":\"joint\",\"translation\":[{},{},{}]}}],",
-            "\"skins\":[{{\"joints\":[1],\"inverseBindMatrices\":3}}],",
-            "\"meshes\":[{{\"primitives\":[{{\"attributes\":",
-            "{{\"POSITION\":0,\"JOINTS_0\":1,\"WEIGHTS_0\":2,\"COLOR_0\":5}},",
-            "\"indices\":4,\"material\":0}}]}}],",
-            "\"materials\":[{{\"pbrMetallicRoughness\":{{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}}}}],",
-            "\"accessors\":[",
-            "{{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",",
-            "\"min\":[-1.8,-1.35,0.0],\"max\":[1.8,1.35,0.0]}},",
-            "{{\"bufferView\":1,\"componentType\":5123,\"count\":4,\"type\":\"VEC4\"}},",
-            "{{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC4\"}},",
-            "{{\"bufferView\":3,\"componentType\":5126,\"count\":1,\"type\":\"MAT4\"}},",
-            "{{\"bufferView\":4,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}},",
-            "{{\"bufferView\":5,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\",",
-            "\"normalized\":true}}],",
-            "\"bufferViews\":[",
-            "{{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48,\"target\":34962}},",
-            "{{\"buffer\":0,\"byteOffset\":48,\"byteLength\":32,\"target\":34962}},",
-            "{{\"buffer\":0,\"byteOffset\":80,\"byteLength\":64,\"target\":34962}},",
-            "{{\"buffer\":0,\"byteOffset\":144,\"byteLength\":64}},",
-            "{{\"buffer\":0,\"byteOffset\":208,\"byteLength\":12,\"target\":34963}},",
-            "{{\"buffer\":0,\"byteOffset\":220,\"byteLength\":16,\"target\":34962}}],",
-            "\"buffers\":[{{\"byteLength\":236,",
-            "\"uri\":\"data:application/octet-stream;base64,{}\"}}]}}"
-        ),
-        joint_translation[0],
-        joint_translation[1],
-        joint_translation[2],
-        SKINNED_BIN_BASE64,
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        "scenes":[{{"nodes":[0]}}],
+        "nodes":[{{"mesh":0,"skin":0}},
+        {{"name":"joint","translation":[{},{},{}]}}],
+        "skins":[{{"joints":[1],"inverseBindMatrices":3}}],
+        "meshes":[{{"primitives":[{{"attributes":
+        {{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2,"COLOR_0":5}},
+        "indices":4,"material":0}}]}}],
+        "materials":[{{"pbrMetallicRoughness":{{"baseColorFactor":[1.0,1.0,1.0,1.0]}}}}],
+        "accessors":[
+        {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
+        "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]}},
+        {{"bufferView":1,"componentType":5123,"count":4,"type":"VEC4"}},
+        {{"bufferView":2,"componentType":5126,"count":4,"type":"VEC4"}},
+        {{"bufferView":3,"componentType":5126,"count":1,"type":"MAT4"}},
+        {{"bufferView":4,"componentType":5123,"count":6,"type":"SCALAR"}},
+        {{"bufferView":5,"componentType":5121,"count":4,"type":"VEC4",
+        "normalized":true}}],
+        "bufferViews":[
+        {{"buffer":0,"byteOffset":0,"byteLength":48,"target":34962}},
+        {{"buffer":0,"byteOffset":48,"byteLength":32,"target":34962}},
+        {{"buffer":0,"byteOffset":80,"byteLength":64,"target":34962}},
+        {{"buffer":0,"byteOffset":144,"byteLength":64}},
+        {{"buffer":0,"byteOffset":208,"byteLength":12,"target":34963}},
+        {{"buffer":0,"byteOffset":220,"byteLength":16,"target":34962}}],
+        "buffers":[{{"byteLength":236,
+        "uri":"data:application/octet-stream;base64,{}"}}]}}"#,
+        joint_translation[0], joint_translation[1], joint_translation[2], SKINNED_BIN_BASE64,
     )
     .into_bytes()
 }
@@ -207,37 +200,35 @@ const MORPHED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZmbmP83MrD8AAA
 /// The glTF JSON of a quad whose two morph targets each empty the frame when
 /// fully weighted.
 fn morphed_document() -> Vec<u8> {
-    let json = concat!(
-        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,",
-        "\"scenes\":[{\"nodes\":[0]}],",
-        "\"nodes\":[{\"mesh\":0}],",
-        "\"meshes\":[{\"weights\":[0.0,0.0],\"primitives\":[{\"attributes\":",
-        "{\"POSITION\":0,\"COLOR_0\":2},\"indices\":1,\"material\":0,",
-        "\"targets\":[{\"POSITION\":3},{\"POSITION\":4}]}]}],",
-        "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}}],",
-        "\"accessors\":[",
-        "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",",
-        "\"min\":[-1.8,-1.35,0.0],\"max\":[1.8,1.35,0.0]},",
-        "{\"bufferView\":1,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"},",
-        "{\"bufferView\":2,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\",",
-        "\"normalized\":true},",
-        "{\"bufferView\":3,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},",
-        "{\"bufferView\":4,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"}],",
-        "\"bufferViews\":[",
-        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48,\"target\":34962},",
-        "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":12,\"target\":34963},",
-        "{\"buffer\":0,\"byteOffset\":60,\"byteLength\":16,\"target\":34962},",
-        "{\"buffer\":0,\"byteOffset\":76,\"byteLength\":48},",
-        "{\"buffer\":0,\"byteOffset\":124,\"byteLength\":48}],",
-        "\"buffers\":[{\"byteLength\":172,",
-        "\"uri\":\"data:application/octet-stream;base64,"
-    );
+    let json = r#"{"asset":{"version":"2.0"},"scene":0,
+ "scenes":[{"nodes":[0]}],
+ "nodes":[{"mesh":0}],
+ "meshes":[{"weights":[0.0,0.0],"primitives":[{"attributes":
+ {"POSITION":0,"COLOR_0":2},"indices":1,"material":0,
+ "targets":[{"POSITION":3},{"POSITION":4}]}]}],
+ "materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,1.0]}}],
+ "accessors":[
+ {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
+ "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]},
+ {"bufferView":1,"componentType":5123,"count":6,"type":"SCALAR"},
+ {"bufferView":2,"componentType":5121,"count":4,"type":"VEC4",
+ "normalized":true},
+ {"bufferView":3,"componentType":5126,"count":4,"type":"VEC3"},
+ {"bufferView":4,"componentType":5126,"count":4,"type":"VEC3"}],
+ "bufferViews":[
+ {"buffer":0,"byteOffset":0,"byteLength":48,"target":34962},
+ {"buffer":0,"byteOffset":48,"byteLength":12,"target":34963},
+ {"buffer":0,"byteOffset":60,"byteLength":16,"target":34962},
+ {"buffer":0,"byteOffset":76,"byteLength":48},
+ {"buffer":0,"byteOffset":124,"byteLength":48}],
+ "buffers":[{"byteLength":172,
+ "uri":"data:application/octet-stream;base64,"#;
 
-    // The base64 blob is a constant, not a literal a `concat!` can splice, so
+    // The base64 blob is a constant, not a literal a raw string can splice, so
     // the document is closed around it here.
     let mut document = String::from(json);
     document.push_str(MORPHED_BIN_BASE64);
-    document.push_str("\"}]}");
+    document.push_str(r#""}]}"#);
     document.into_bytes()
 }
 
@@ -489,34 +480,32 @@ fn reversed_document(double_sided: bool) -> Vec<u8> {
         ""
     };
     let json = format!(
-        concat!(
-            "{{\"asset\":{{\"version\":\"2.0\"}},\"scene\":0,",
-            "\"scenes\":[{{\"nodes\":[0]}}],",
-            "\"nodes\":[{{\"mesh\":0}}],",
-            "\"meshes\":[{{\"primitives\":[{{\"attributes\":",
-            "{{\"POSITION\":0,\"COLOR_0\":1}},\"indices\":2,\"material\":0}}]}}],",
-            "\"materials\":[{{\"pbrMetallicRoughness\":",
-            "{{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}}{sided}}}],",
-            "\"accessors\":[",
-            "{{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",",
-            "\"min\":[-1.8,-1.35,0.0],\"max\":[1.8,1.35,0.0]}},",
-            "{{\"bufferView\":1,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\",",
-            "\"normalized\":true}},",
-            "{{\"bufferView\":2,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}}],",
-            "\"bufferViews\":[",
-            "{{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48,\"target\":34962}},",
-            "{{\"buffer\":0,\"byteOffset\":48,\"byteLength\":16,\"target\":34962}},",
-            "{{\"buffer\":0,\"byteOffset\":64,\"byteLength\":12,\"target\":34963}}],",
-            "\"buffers\":[{{\"byteLength\":76,",
-            "\"uri\":\"data:application/octet-stream;base64,"
-        ),
+        r#"{{"asset":{{"version":"2.0"}},"scene":0,
+        "scenes":[{{"nodes":[0]}}],
+        "nodes":[{{"mesh":0}}],
+        "meshes":[{{"primitives":[{{"attributes":
+        {{"POSITION":0,"COLOR_0":1}},"indices":2,"material":0}}]}}],
+        "materials":[{{"pbrMetallicRoughness":
+        {{"baseColorFactor":[1.0,1.0,1.0,1.0]}}{sided}}}],
+        "accessors":[
+        {{"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
+        "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]}},
+        {{"bufferView":1,"componentType":5121,"count":4,"type":"VEC4",
+        "normalized":true}},
+        {{"bufferView":2,"componentType":5123,"count":6,"type":"SCALAR"}}],
+        "bufferViews":[
+        {{"buffer":0,"byteOffset":0,"byteLength":48,"target":34962}},
+        {{"buffer":0,"byteOffset":48,"byteLength":16,"target":34962}},
+        {{"buffer":0,"byteOffset":64,"byteLength":12,"target":34963}}],
+        "buffers":[{{"byteLength":76,
+        "uri":"data:application/octet-stream;base64,"#,
         sided = sided
     );
 
-    // The base64 blob is a constant, not a literal a `concat!` can splice.
+    // The base64 blob is a constant, not a literal a raw string can splice.
     let mut document = json;
     document.push_str(REVERSED_BIN_BASE64);
-    document.push_str("\"}]}");
+    document.push_str(r#""}]}"#);
     document.into_bytes()
 }
 
