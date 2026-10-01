@@ -101,7 +101,7 @@
 //! drop what a handle names.
 //!
 //! `UnlitGltf::load("model.glb")` in the examples above opens a local file —
-//! see [`UnlitGltf::load`] and [`UnlitGltf::from_buffer`] for how a document
+//! see [`UnlitGltf::load`] and [`UnlitGltf::from_bytes`] for how a document
 //! reaches the module in the first place.
 
 use std::path::Path;
@@ -125,7 +125,7 @@ const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 
 /// A loaded glTF document, ready to be patched into another world.
 ///
-/// Construct with [`Self::load`] or [`Self::from_buffer`]. The document is
+/// Construct with [`Self::load`] or [`Self::from_bytes`]. The document is
 /// parsed and its buffers and images decoded eagerly; no GPU resource exists
 /// until an `insert_*` call uploads one into some world's
 /// [`MeshSource`].
@@ -219,7 +219,7 @@ impl UnlitGltf {
     /// arrive as embedded data URIs or, for a GLB, the `BIN` chunk; images
     /// must be embedded too (as data URIs or buffer views), because there is
     /// no base URI to resolve external references against.
-    pub fn from_buffer(bytes: &[u8]) -> Result<Self, gltf::Error> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, gltf::Error> {
         let (document, buffers, images) = gltf::import_slice(bytes)?;
         Ok(Self::from_parts(document, buffers, images))
     }
@@ -1784,7 +1784,7 @@ mod tests {
     fn a_double_sided_material_culls_nothing() {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 
-        let single = UnlitGltf::from_buffer(&sided_document(false))
+        let single = UnlitGltf::from_bytes(&sided_document(false))
             .expect("the single-sided document parses");
         assert_eq!(
             single
@@ -1797,7 +1797,7 @@ mod tests {
         );
 
         let double =
-            UnlitGltf::from_buffer(&sided_document(true)).expect("the sided document parses");
+            UnlitGltf::from_bytes(&sided_document(true)).expect("the sided document parses");
         assert_eq!(
             double
                 .pipeline_key(&device, 0, 0)
@@ -1812,10 +1812,10 @@ mod tests {
     #[test]
     fn culling_alone_distinguishes_the_two_sided_variants() {
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let single = UnlitGltf::from_buffer(&sided_document(false))
+        let single = UnlitGltf::from_bytes(&sided_document(false))
             .expect("the single-sided document parses")
             .pipeline_key(&device, 0, 0);
-        let double = UnlitGltf::from_buffer(&sided_document(true))
+        let double = UnlitGltf::from_bytes(&sided_document(true))
             .expect("the double-sided document parses")
             .pipeline_key(&device, 0, 0);
         assert_ne!(
@@ -1830,7 +1830,7 @@ mod tests {
 
     #[test]
     fn a_morph_target_makes_the_key_read_displacements() {
-        let gltf = UnlitGltf::from_buffer(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
+        let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
             .expect("the morphed document parses");
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let key = gltf.pipeline_key(&device, 0, 0);
@@ -1841,7 +1841,7 @@ mod tests {
     fn a_target_without_positions_does_not_make_the_mesh_morph() {
         // A normals-only target displaces nothing this loader reads, so the
         // mesh stays in the rigid path rather than drawing an empty morph.
-        let gltf = UnlitGltf::from_buffer(&morphed_document(None, None, &[None]))
+        let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[None]))
             .expect("the morphed document parses");
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let key = gltf.pipeline_key(&device, 0, 0);
@@ -1851,7 +1851,7 @@ mod tests {
 
     #[test]
     fn a_node_overrides_the_mesh_weights() {
-        let gltf = UnlitGltf::from_buffer(&morphed_document(
+        let gltf = UnlitGltf::from_bytes(&morphed_document(
             Some(&[0.25]),
             Some(&[0.75]),
             &[Some([0.0, 1.0, 0.0])],
@@ -1859,7 +1859,7 @@ mod tests {
         .expect("the morphed document parses");
         assert_eq!(gltf.morph_weights(0), vec![0.75]);
 
-        let gltf = UnlitGltf::from_buffer(&morphed_document(
+        let gltf = UnlitGltf::from_bytes(&morphed_document(
             Some(&[0.25]),
             None,
             &[Some([1.0, 0.0, 0.0])],
@@ -1873,7 +1873,7 @@ mod tests {
         // A document that states fewer weights than it has targets would make
         // the renderer reject the mesh, so the shortfall is padded with the
         // undeformed weight rather than passed on.
-        let gltf = UnlitGltf::from_buffer(&morphed_document(
+        let gltf = UnlitGltf::from_bytes(&morphed_document(
             Some(&[0.5]),
             None,
             &[Some([0.0, 1.0, 0.0]), Some([1.0, 0.0, 0.0])],
@@ -1882,7 +1882,7 @@ mod tests {
         assert_eq!(gltf.morph_weights(0), vec![0.5, 0.0]);
 
         // And one that states more is truncated, for the same reason.
-        let gltf = UnlitGltf::from_buffer(&morphed_document(
+        let gltf = UnlitGltf::from_bytes(&morphed_document(
             Some(&[0.5, 1.0]),
             None,
             &[Some([0.0, 1.0, 0.0])],
@@ -1893,7 +1893,7 @@ mod tests {
 
     #[test]
     fn a_mesh_without_targets_starts_undeformed() {
-        let gltf = UnlitGltf::from_buffer(&morphed_document(None, None, &[]))
+        let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[]))
             .expect("the morphed document parses");
         assert!(gltf.morph_weights(0).is_empty());
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -1912,7 +1912,7 @@ mod tests {
         // matrix's inverse and every joint matrix comes out the identity: the
         // pose a document uploads at rest has to leave the mesh exactly where
         // it is.
-        let gltf = UnlitGltf::from_buffer(&skinned_document([0.0, 0.0, 0.0]))
+        let gltf = UnlitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
         let pose = gltf.skin_pose(0);
         assert_eq!(pose.matrices.len(), 1, "the skin has one joint");
@@ -1929,7 +1929,7 @@ mod tests {
         // node that sits somewhere else pulls the vertices it weights to
         // itself: the pose is the joint's world matrix against its bind
         // matrix, not the identity.
-        let gltf = UnlitGltf::from_buffer(&skinned_document([3.0, -2.0, 1.0]))
+        let gltf = UnlitGltf::from_bytes(&skinned_document([3.0, -2.0, 1.0]))
             .expect("the skinned document parses");
         let pose = gltf.skin_pose(0);
         assert!(
@@ -1946,7 +1946,7 @@ mod tests {
     fn a_skinned_primitive_uploads_its_joint_stream() {
         // The key reads joints and the mesh is uploaded with them, so the
         // variant the primitive draws never asks for a stream it does not have.
-        let gltf = UnlitGltf::from_buffer(&skinned_document([0.0, 0.0, 0.0]))
+        let gltf = UnlitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let key = gltf.pipeline_key(&device, 0, 0);
@@ -1957,7 +1957,7 @@ mod tests {
 
     #[test]
     fn a_node_without_a_skin_has_no_pose() {
-        let gltf = UnlitGltf::from_buffer(&skinned_document([0.0, 0.0, 0.0]))
+        let gltf = UnlitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
         assert_eq!(gltf.skin_joint_count(0), Some(1));
         assert_eq!(gltf.skin_joint_count(1), None);
