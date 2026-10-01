@@ -226,10 +226,17 @@ active 相机时，帧会被清空，什么都不绘制。
   `UnlitGltf::skin_pose` 由关节节点的世界变换与 skin 的逆绑定矩阵构建出文档的静止
   pose（每个关节一个矩阵）作为起点，`UnlitGltf::skin_joint_count` 报告某节点的 skin 有几个
   关节。
+- 网格若声明了位移位置的形变目标，该 primitive 会连这些位移一起上传并按形变绘制：
+  `spawn_node` / `spawn_default_scene` 为该节点生成一个 `MorphWeights` 实体，并在网格上放置
+  `MorphBinding`，因此写入该实体的权重就是调用方形变网格的方式。`UnlitGltf::morph_weights`
+  返回节点的起始权重——节点自身给出 `weights` 时用它，否则用网格的，未加权的目标为零——
+  并按「位移位置的目标个数」补齐或截断，这正是渲染器要求的长度。只位移法线或切线的目标
+  不计入也不上传，因此当网格的所有目标都不位移本加载器所读的数据时，它会以未形变的方式
+  绘制，而不是走形变路径。
 
 支持加载：位置、UV、顶点色、关节、权重与索引；基础色纹理及采样它们的材质；混合
-（`alphaMode: BLEND`）与裁剪（`alphaMode: MASK`）材质；蒙皮 primitive；以及按世界变换累加
-的节点层级。暂不支持：形变目标、法线、切线与动画。网格上传所用的管线 key 总是由
+（`alphaMode: BLEND`）与裁剪（`alphaMode: MASK`）材质；蒙皮 primitive；位移位置的形变目标；
+以及按世界变换累加的节点层级。暂不支持：法线与切线形变、法线、切线与动画。网格上传所用的管线 key 总是由
 primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它绘制所用的变体绝不会
 要求网格不存在的流。
 

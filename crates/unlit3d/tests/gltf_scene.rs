@@ -188,6 +188,147 @@ fn skinned_document(joint_translation: [f32; 3]) -> Vec<u8> {
     .into_bytes()
 }
 
+/// A quad with two positional morph targets, weighted `[0, 0]` on its mesh.
+///
+/// The buffer holds the positions (f32), the indices (u16), one red vertex
+/// colour per vertex, and the two targets' per-vertex displacements: the first
+/// pulls every vertex onto the origin, so a full weight collapses the quad to
+/// nothing, and the second pushes every vertex well past the viewport, so a
+/// full weight takes it off-screen. Either target at weight `1.0` therefore
+/// empties the frame, which is what makes a blended weight tell apart from an
+/// unblended one.
+const MORPHED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZmbmP83MrD8AAAAAZmbmv83MrD8AAAAAAAABAAIAAAACAAMA/wAA//8AAP//AAD//wAA/2Zm5j/NzKw/AAAAAGZm5r/NzKw/AAAAAGZm5r/NzKy/AAAAAGZm5j/NzKy/AAAAAAAAAEEAAABBAAAAAAAAAEEAAABBAAAAAAAAAEEAAABBAAAAAAAAAEEAAABBAAAAAA==";
+
+/// The glTF JSON of a quad whose two morph targets each empty the frame when
+/// fully weighted.
+fn morphed_document() -> Vec<u8> {
+    let json = concat!(
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,",
+        "\"scenes\":[{\"nodes\":[0]}],",
+        "\"nodes\":[{\"mesh\":0}],",
+        "\"meshes\":[{\"weights\":[0.0,0.0],\"primitives\":[{\"attributes\":",
+        "{\"POSITION\":0,\"COLOR_0\":2},\"indices\":1,\"material\":0,",
+        "\"targets\":[{\"POSITION\":3},{\"POSITION\":4}]}]}],",
+        "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}}],",
+        "\"accessors\":[",
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",",
+        "\"min\":[-1.8,-1.35,0.0],\"max\":[1.8,1.35,0.0]},",
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"},",
+        "{\"bufferView\":2,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\",",
+        "\"normalized\":true},",
+        "{\"bufferView\":3,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"},",
+        "{\"bufferView\":4,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\"}],",
+        "\"bufferViews\":[",
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48,\"target\":34962},",
+        "{\"buffer\":0,\"byteOffset\":48,\"byteLength\":12,\"target\":34963},",
+        "{\"buffer\":0,\"byteOffset\":60,\"byteLength\":16,\"target\":34962},",
+        "{\"buffer\":0,\"byteOffset\":76,\"byteLength\":48},",
+        "{\"buffer\":0,\"byteOffset\":124,\"byteLength\":48}],",
+        "\"buffers\":[{\"byteLength\":172,",
+        "\"uri\":\"data:application/octet-stream;base64,"
+    );
+
+    // The base64 blob is a constant, not a literal a `concat!` can splice, so
+    // the document is closed around it here.
+    let mut document = String::from(json);
+    document.push_str(MORPHED_BIN_BASE64);
+    document.push_str("\"}]}");
+    document.into_bytes()
+}
+
+/// A morphed quad follows its weights: spawning binds the mesh to a weight
+/// entity holding the document's starting weights, and writing that entity
+/// blends the targets into the geometry.
+///
+/// The weights are a component of an entity of their own — the one the spawn
+/// created — so writing it is how a caller animates a morph.
+async fn a_morphed_quad_follows_its_weights() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let gltf = UnlitGltf::from_buffer(&morphed_document()).expect("the embedded document parses");
+
+    assert_eq!(
+        gltf.morph_weights(0),
+        vec![0.0, 0.0],
+        "the mesh's own weights are the starting pose"
+    );
+
+    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
+    let materials = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_materials(source, world, &images)
+    });
+    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+    assert!(
+        meshes[0]
+            .key
+            .options
+            .flags
+            .contains(unlit_wgpu::pipeline::UnlitFlags::MORPH_POSITIONS),
+        "the primitive declares targets, so the key reads displacements"
+    );
+
+    let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    assert_eq!(entities.len(), 1, "one mesh node draws one entity");
+
+    let weights_entity = {
+        let (_, binding) = world
+            .query::<&MorphBinding>()
+            .next()
+            .expect("a morphed mesh binds to a weight entity");
+        binding.weights
+    };
+    assert_eq!(
+        world
+            .get::<MorphWeights>(weights_entity)
+            .expect("the weight entity carries a `MorphWeights`")
+            .weights,
+        vec![0.0, 0.0],
+        "the spawn starts at the document's weights"
+    );
+
+    world.spawn((camera(),));
+    let target = gpu.bind_offscreen_target(&world, "test::gltf_morphed");
+
+    let read = |gpu: &TestGpu| {
+        gpu.render(&world);
+        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+    };
+    let undeformed = read(&gpu);
+    let red = count_colour(&undeformed, [255, 0, 0], 4);
+    assert!(
+        red > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the unweighted quad covers the frame (red = {red})"
+    );
+
+    // The first target collapses the quad onto a point, so weighting it fully
+    // must empty the frame.
+    world
+        .get_mut::<MorphWeights>(weights_entity)
+        .expect("the weight entity carries a `MorphWeights`")
+        .weights = vec![1.0, 0.0];
+    let collapsed = read(&gpu);
+    assert_eq!(
+        count_colour(&collapsed, [255, 0, 0], 4),
+        0,
+        "a fully weighted collapsing target leaves nothing drawn"
+    );
+
+    // The second target pushes the quad past the viewport, so it empties the
+    // frame too — by different geometry than the first, which is what shows
+    // the two weights address their own target's displacements.
+    world
+        .get_mut::<MorphWeights>(weights_entity)
+        .expect("the weight entity carries a `MorphWeights`")
+        .weights = vec![0.0, 1.0];
+    let displaced = read(&gpu);
+    assert_eq!(
+        count_colour(&displaced, [255, 0, 0], 4),
+        0,
+        "a fully weighted displacement target takes the quad off-screen"
+    );
+}
+
 /// A skinned quad follows its joint: at rest it covers the frame, and moving
 /// the joint entity slides the quad across it.
 ///
@@ -646,6 +787,7 @@ gpu_tests! {
     a_blended_material_composites_over_the_frame,
     a_masked_material_discards_fragments_below_its_cutoff,
     a_skinned_quad_follows_its_joint,
+    a_morphed_quad_follows_its_weights,
     unload_empties_the_frame,
 }
 

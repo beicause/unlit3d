@@ -339,12 +339,24 @@ What it does is patch the world you already render:
   joint, from the joint nodes' world transforms and the skin's inverse bind
   matrices — as a starting point, and `UnlitGltf::skin_joint_count` reports how
   many joints a node's skin has.
+- A primitive whose mesh declares a morph target that displaces positions is
+  uploaded with those displacements and drawn morphed: `spawn_node` /
+  `spawn_default_scene` create a [`MorphWeights`](components::MorphWeights) entity for the node and
+  put a [`MorphBinding`](components::MorphBinding) on the mesh, so writing that entity's weights is
+  how a caller morphs the mesh. `UnlitGltf::morph_weights` returns the node's
+  starting weights — the node's own `weights` when it states them, the mesh's
+  otherwise, and zero for a target left unweighted — padded or truncated to the
+  number of targets that displace positions, which is the length the renderer
+  requires. A target that displaces only normals or tangents is not counted and
+  not uploaded, so a mesh whose every target displaces nothing this loader
+  reads draws undeformed rather than through the morph path.
 
 What loads: positions, UVs, vertex colors, joints, weights and indices;
 base-color textures and the materials that sample them; blended
 (`alphaMode: BLEND`) and cut-off (`alphaMode: MASK`) materials; skinned
-primitives; and node hierarchies, accumulated into world transforms. What does
-not yet: morph targets, normals, tangents and animations.
+primitives; positional morph targets; and node hierarchies, accumulated into
+world transforms. What does not yet: normal and tangent morphs, normals,
+tangents and animations.
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `UnlitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.

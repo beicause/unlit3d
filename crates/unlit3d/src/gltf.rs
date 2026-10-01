@@ -86,10 +86,14 @@
 //! `JOINTS_0` and `WEIGHTS_0` uploads its actual joint stream and draws
 //! skinned; [`UnlitGltf::skin_pose`] turns the node's skin into the
 //! [`SkinPose`] its joints deform by, and spawning such a node creates the
-//! pose entity its mesh binds to. Everything else a glTF document can carry is
-//! ignored: no morph targets, normals, tangents, double-sided rendering or
-//! animations. A mesh whose primitive uses techniques outside this subset
-//! still uploads and spawns — it just renders without them.
+//! pose entity its mesh binds to. A primitive whose mesh declares a morph
+//! target that displaces positions uploads those displacements and spawns with
+//! a [`MorphBinding`] to a [`MorphWeights`] entity holding the node's starting
+//! weights — see [`UnlitGltf::morph_weights`] — so writing that entity is how
+//! a caller morphs the mesh. Everything else a glTF document can carry is
+//! ignored: no normals, tangents, double-sided rendering or animations. A mesh
+//! whose primitive uses techniques outside this subset still uploads and
+//! spawns — it just renders without them.
 //!
 //! Every handle returned here must be given back to the matching `unload_*`
 //! call when the resource is no longer wanted; the graph does not otherwise
@@ -102,10 +106,10 @@
 use std::path::Path;
 
 use crate::components::{
-    Camera, GpuMaterial, GpuMesh, InstanceColor, SkinBinding, SkinPose, Transform, UnlitPipeline,
-    ZSortedDrawing,
+    Camera, GpuMaterial, GpuMesh, InstanceColor, MorphBinding, MorphWeights, SkinBinding, SkinPose,
+    Transform, UnlitPipeline, ZSortedDrawing,
 };
-use crate::mesh::UnlitMeshDesc;
+use crate::mesh::{UnlitMeshDesc, UnlitMorphTarget};
 use crate::mesh_source::{MeshSource, UnlitPipelineKey};
 use unlit_ecs::{
     ArchetypeBuilder,
@@ -240,8 +244,10 @@ impl UnlitGltf {
     /// The key always carries the position and instance streams. It reads the
     /// UV and base-color-texture streams when the primitive carries
     /// `TEXCOORD_0` *and* its material declares a base-color texture, the
-    /// vertex-color stream when the primitive carries `COLOR_0`, and the joint
-    /// stream when it carries both `JOINTS_0` and `WEIGHTS_0`. A material
+    /// vertex-color stream when the primitive carries `COLOR_0`, the joint
+    /// stream when it carries both `JOINTS_0` and `WEIGHTS_0`, and the morph
+    /// displacement stream when it declares a target that displaces
+    /// positions. A material
     /// whose `alphaMode` is `BLEND` also blends, so the key is drawn with
     /// [`wgpu::BlendState::ALPHA_BLENDING`], and one whose `alphaMode` is
     /// `MASK` carries [`UnlitFlags::ALPHA_CUTOFF`] so its fragments are
@@ -271,6 +277,12 @@ impl UnlitGltf {
             && primitive.get(&gltf::Semantic::Weights(0)).is_some()
         {
             flags |= UnlitFlags::VERTEX_JOINTS;
+        }
+        // Only position displacements are read, so a target that carries
+        // none is skipped rather than drawn as a no-op: a mesh whose targets
+        // all displace normals deforms nothing here.
+        if morph_target_count(&primitive) > 0 {
+            flags |= UnlitFlags::MORPH_POSITIONS;
         }
         let mut options = UnlitOptions::standard(device).with_flags(flags);
         // The texture the material samples decides whether the base-color
@@ -548,6 +560,17 @@ impl UnlitGltf {
         let weights: Option<Vec<[f32; 4]>> = reader
             .read_weights(0)
             .map(|weights| weights.into_f32().collect());
+        // The displacements a morph target applies, one flat array per target
+        // that displaces positions — the count the key was built from, so a
+        // target of normals only is dropped here just as it was there.
+        let morphs: Vec<Vec<[f32; 3]>> = reader
+            .read_morph_targets()
+            .filter_map(|(positions, _, _)| positions.map(|deltas| deltas.collect::<Vec<_>>()))
+            .collect();
+        let morph_targets: Vec<UnlitMorphTarget<'_>> = morphs
+            .iter()
+            .map(|positions| UnlitMorphTarget { positions })
+            .collect();
 
         let gpu_mesh = source.allocate_unlit_mesh(
             world,
@@ -586,7 +609,7 @@ impl UnlitGltf {
                             .as_deref()
                             .expect("the key reads joints, so the primitive has WEIGHTS_0")
                     }),
-                morph_targets: &[],
+                morph_targets: &morph_targets,
             },
         );
 
@@ -687,6 +710,37 @@ impl UnlitGltf {
         Some(self.node(node).skin()?.joints().count())
     }
 
+    /// The morph weights a node's mesh starts at, one per target that
+    /// displaces positions.
+    ///
+    /// glTF lets a node override the mesh's own weights, so a node states them
+    /// first and the mesh's `weights` is the fallback; a mesh that states
+    /// neither starts at zero, which is to say undeformed. The vector is as
+    /// long as the deforming target list, so it is always the right length for
+    /// the [`MorphWeights`] a spawned mesh binds to — a document that states
+    /// fewer weights than it has targets is padded, and one that states more is
+    /// truncated, because the renderer rejects a mismatch.
+    ///
+    /// Returns an empty vector for a node whose mesh has no positional morph
+    /// targets.
+    pub fn morph_weights(&self, node: usize) -> Vec<f32> {
+        let Some(mesh) = self.node(node).mesh() else {
+            return Vec::new();
+        };
+        let node_weights = self.node(node).weights();
+        let mut weights = node_weights
+            .or_else(|| mesh.weights())
+            .map(<[f32]>::to_vec)
+            .unwrap_or_default();
+        let count = mesh
+            .primitives()
+            .map(|primitive| morph_target_count(&primitive))
+            .max()
+            .unwrap_or(0);
+        weights.resize(count, 0.0);
+        weights
+    }
+
     // -- spawning -------------------------------------------------------------
 
     /// Spawn the entities that draw `node`'s mesh into `world`.
@@ -721,8 +775,10 @@ impl UnlitGltf {
         let mut entities = Vec::new();
         // One pose entity per skinned node, shared by every primitive it
         // draws: the joints are the node's skin, and two primitives of one
-        // mesh deform together.
+        // mesh deform together. The morph weights get an entity of their own
+        // for the same reason — they are the node's, not the primitive's.
         let mut pose: Option<Entity> = None;
+        let mut morphs: Option<Entity> = None;
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
                 let mesh_handle = meshes
@@ -757,6 +813,17 @@ impl UnlitGltf {
                         *pose.get_or_insert_with(|| world.spawn((self.skin_pose(node.index()),)));
                     SkinBinding::new(pose)
                 });
+                let morphed = mesh_handle
+                    .key
+                    .options
+                    .flags
+                    .contains(UnlitFlags::MORPH_POSITIONS);
+                let morph_binding = morphed.then(|| {
+                    let weights = *morphs.get_or_insert_with(|| {
+                        world.spawn((MorphWeights::new(self.morph_weights(node.index())),))
+                    });
+                    MorphBinding::new(weights)
+                });
                 // The components a primitive carries vary by material,
                 // skin and blend mode, so the bundle is assembled rather than
                 // written as a tuple: an absent material is a component left
@@ -770,6 +837,9 @@ impl UnlitGltf {
                     bundle.push(material.bind_group.clone());
                 }
                 if let Some(binding) = binding {
+                    bundle.push(binding);
+                }
+                if let Some(binding) = morph_binding {
                     bundle.push(binding);
                 }
                 if z_sorted {
@@ -1160,6 +1230,21 @@ fn textured_key(device: &wgpu::Device, filtering: bool, cutoff: bool) -> UnlitPi
 /// Returns `None` for every other `alphaMode`, for which there is nothing to
 /// cut. The value is the material's own `alphaCutoff`, or the spec's default
 /// when the material leaves it out.
+/// How many of a primitive's morph targets displace positions.
+///
+/// A target may displace only normals or tangents; those are ignored here, and
+/// a target that carries no positions at all would contribute nothing to a
+/// displacement array, so it is not counted and the mesh is not uploaded as
+/// morphing. The count is therefore of the targets that *do* displace, in the
+/// order they appear — which is the order the shader's weights are indexed in,
+/// not the document's own target indices.
+fn morph_target_count(primitive: &gltf::Primitive<'_>) -> usize {
+    primitive
+        .morph_targets()
+        .filter(|target| target.positions().is_some())
+        .count()
+}
+
 fn alpha_cutoff(material: &gltf::Material<'_>) -> Option<f32> {
     (material.alpha_mode() == gltf::material::AlphaMode::Mask)
         .then(|| material.alpha_cutoff().unwrap_or(DEFAULT_ALPHA_CUTOFF))
@@ -1496,6 +1581,204 @@ mod tests {
         glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
         glb.extend_from_slice(&bin);
         glb
+    }
+
+    /// A GLB holding one triangle whose mesh declares `targets` positions
+    /// morph targets and states `mesh_weights` on the mesh, optionally
+    /// overridden by `node_weights` on the node that draws it.
+    ///
+    /// Each target displaces a single vertex by `[0, 1, 0]`-ish amounts so a
+    /// wrong target stride reads the wrong displacement. A target passed as
+    /// `None` declares no positions at all, which is how a normals-only target
+    /// is written here.
+    fn morphed_document(
+        mesh_weights: Option<&[f32]>,
+        node_weights: Option<&[f32]>,
+        targets: &[Option<[f32; 3]>],
+    ) -> Vec<u8> {
+        let mut bin = Vec::new();
+        let mut views: Vec<String> = Vec::new();
+        let mut add = |bin: &mut Vec<u8>, bytes: &[u8], target: Option<u32>| {
+            while !bin.len().is_multiple_of(4) {
+                bin.push(0);
+            }
+            let target = target.map_or(String::new(), |target| format!(r#", "target": {target}"#));
+            views.push(format!(
+                r#"{{ "buffer": 0, "byteOffset": {}, "byteLength": {}{target} }}"#,
+                bin.len(),
+                bytes.len()
+            ));
+            bin.extend_from_slice(bytes);
+            views.len() - 1
+        };
+
+        let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let mut accessors = vec![format!(
+            r#"{{ "bufferView": {}, "componentType": 5126, "count": 3, "type": "VEC3",
+                 "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }}"#,
+            add(&mut bin, &positions, Some(34962))
+        )];
+        // One accessor per target that displaces, in target order.
+        let mut displacement_accessors = Vec::new();
+        for target in targets {
+            let Some(delta) = target else {
+                continue;
+            };
+            let mut deltas = [0.0f32; 9];
+            deltas[3] = delta[0];
+            deltas[4] = delta[1];
+            deltas[5] = delta[2];
+            let bytes: Vec<u8> = deltas.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let view = add(&mut bin, &bytes, None);
+            displacement_accessors.push(accessors.len());
+            accessors.push(format!(
+                r#"{{ "bufferView": {view}, "componentType": 5126, "count": 3, "type": "VEC3" }}"#
+            ));
+        }
+        let indices: Vec<u8> = [0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let index_accessor = accessors.len();
+        accessors.push(format!(
+            r#"{{ "bufferView": {}, "componentType": 5123, "count": 3, "type": "SCALAR" }}"#,
+            add(&mut bin, &indices, Some(34963))
+        ));
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+
+        // A target that carries no positions is declared as an empty object,
+        // which is what glTF allows and what the loader must skip.
+        let target_json: Vec<String> = targets
+            .iter()
+            .enumerate()
+            .map(|(index, target)| match target {
+                Some(_) => format!(r#"{{"POSITION":{}}}"#, displacement_accessors[index]),
+                None => "{}".to_string(),
+            })
+            .collect();
+        let mesh_weights = mesh_weights
+            .map(|weights| {
+                let list: Vec<String> = weights.iter().map(|w| w.to_string()).collect();
+                format!(r#","weights":[{}]"#, list.join(","))
+            })
+            .unwrap_or_default();
+        let node_weights = node_weights
+            .map(|weights| {
+                let list: Vec<String> = weights.iter().map(|w| w.to_string()).collect();
+                format!(r#","weights":[{}]"#, list.join(","))
+            })
+            .unwrap_or_default();
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "scene":0,
+                "scenes":[{{"nodes":[0]}}],
+                "nodes":[{{"mesh":0{node_weights}}}],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0}},
+                                            "indices":{index_accessor},
+                                            "targets":[{}]}}]{mesh_weights}}}],
+                "accessors":[{}],
+                "bufferViews":[{}],
+                "buffers":[{{"byteLength":{}}}]}}"#,
+            target_json.join(", "),
+            accessors.join(", "),
+            views.join(", "),
+            bin.len(),
+        );
+        let mut json = json.into_bytes();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut glb = Vec::new();
+        glb.extend_from_slice(&0x4654_6C67u32.to_le_bytes());
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+        glb.extend_from_slice(&bin);
+        glb
+    }
+
+    #[test]
+    fn a_morph_target_makes_the_key_read_displacements() {
+        let gltf = UnlitGltf::from_buffer(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
+            .expect("the morphed document parses");
+        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let key = gltf.pipeline_key(&device, 0, 0);
+        assert!(key.options.flags.contains(UnlitFlags::MORPH_POSITIONS));
+    }
+
+    #[test]
+    fn a_target_without_positions_does_not_make_the_mesh_morph() {
+        // A normals-only target displaces nothing this loader reads, so the
+        // mesh stays in the rigid path rather than drawing an empty morph.
+        let gltf = UnlitGltf::from_buffer(&morphed_document(None, None, &[None]))
+            .expect("the morphed document parses");
+        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let key = gltf.pipeline_key(&device, 0, 0);
+        assert!(!key.options.flags.contains(UnlitFlags::MORPH_POSITIONS));
+        assert!(gltf.morph_weights(0).is_empty());
+    }
+
+    #[test]
+    fn a_node_overrides_the_mesh_weights() {
+        let gltf = UnlitGltf::from_buffer(&morphed_document(
+            Some(&[0.25]),
+            Some(&[0.75]),
+            &[Some([0.0, 1.0, 0.0])],
+        ))
+        .expect("the morphed document parses");
+        assert_eq!(gltf.morph_weights(0), vec![0.75]);
+
+        let gltf = UnlitGltf::from_buffer(&morphed_document(
+            Some(&[0.25]),
+            None,
+            &[Some([1.0, 0.0, 0.0])],
+        ))
+        .expect("the morphed document parses");
+        assert_eq!(gltf.morph_weights(0), vec![0.25]);
+    }
+
+    #[test]
+    fn morph_weights_are_padded_to_the_target_count() {
+        // A document that states fewer weights than it has targets would make
+        // the renderer reject the mesh, so the shortfall is padded with the
+        // undeformed weight rather than passed on.
+        let gltf = UnlitGltf::from_buffer(&morphed_document(
+            Some(&[0.5]),
+            None,
+            &[Some([0.0, 1.0, 0.0]), Some([1.0, 0.0, 0.0])],
+        ))
+        .expect("the morphed document parses");
+        assert_eq!(gltf.morph_weights(0), vec![0.5, 0.0]);
+
+        // And one that states more is truncated, for the same reason.
+        let gltf = UnlitGltf::from_buffer(&morphed_document(
+            Some(&[0.5, 1.0]),
+            None,
+            &[Some([0.0, 1.0, 0.0])],
+        ))
+        .expect("the morphed document parses");
+        assert_eq!(gltf.morph_weights(0), vec![0.5]);
+    }
+
+    #[test]
+    fn a_mesh_without_targets_starts_undeformed() {
+        let gltf = UnlitGltf::from_buffer(&morphed_document(None, None, &[]))
+            .expect("the morphed document parses");
+        assert!(gltf.morph_weights(0).is_empty());
+        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        assert!(
+            !gltf
+                .pipeline_key(&device, 0, 0)
+                .options
+                .flags
+                .contains(UnlitFlags::MORPH_POSITIONS)
+        );
     }
 
     #[test]
