@@ -28,6 +28,7 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+  gltf                   a skinned fox and a morph-target cube animated over six frames
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
@@ -37,7 +38,10 @@ frame sequence, so the stored snapshots still verify it. `mesh_topologies` and
 `transparent_zsorted` are the exceptions: they are not ported from a test but
 add the coverage the ported scenes lack — every primitive topology drawn both
 indexed and non-indexed, and overlapping translucent draws whose composite
-depends on both the z-sort and the blend state.
+depends on both the z-sort and the blend state. `gltf` is the other exception:
+it draws the glTF documents in `unlit3d_asset_files/assets` through
+`UnlitGltf`, so the loader's skinning and morph-target animation are checked
+against real assets rather than the hand-written ones the unit tests use.
 
 Every scene is built with the same public `unlit3d` API any caller would use —
 nothing in the example reaches into the crates' internals.

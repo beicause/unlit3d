@@ -236,10 +236,18 @@ active 相机时，帧会被清空，什么都不绘制。
 - 材质为 `doubleSided` 的 primitive 从两面绘制：该管线变体去掉剔除模式，于是单面变体本会
   丢弃的背面会被光栅化。变体的其他部分都不变，因为 unlit 片元着色器不读法线——没有背面
   法线需要反转，也没有光照方程需要求值。
+- 文档中的动画按需采样而非自动播放：`UnlitGltf::animation_count`、
+  `UnlitGltf::animation_name` 与 `UnlitGltf::animation_duration` 描述它含有的片段，
+  `UnlitGltf::apply_animation(world, clip, time, &spawned)` 在选定的时间求值其中一个。
+  它把每条通道（`STEP`、`LINEAR` 或 `CUBICSPLINE`，旋转走球面插值）采样进被动画节点的局部
+  变换，沿节点层级重新组合出世界矩阵，再把结果写到生成实体读取它的地方：每个被动画节点的
+  `Transform`（以及继承其变化的子孙节点）、每个因关节移动而跟随的网格的 `SkinPose`、以及
+  权重通道所指的每个 `MorphWeights`。它接受 `&World`，因此调用方在已经持有 world 的任何
+  地方都能驱动它，并且不会碰传入 `&[GltfNode]` 之外的任何东西。
 
 支持加载：位置、UV、顶点色、关节、权重与索引；基础色纹理及采样它们的材质；混合
 （`alphaMode: BLEND`）、裁剪（`alphaMode: MASK`）与双面材质；蒙皮 primitive；位移位置的形变目标；
-以及按世界变换累加的节点层级。暂不支持：法线与切线形变、法线、切线与动画。网格上传所用的管线 key 总是由
+按世界变换累加的节点层级；以及驱动它们的动画。暂不支持：法线与切线形变、法线与切线。网格上传所用的管线 key 总是由
 primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它绘制所用的变体绝不会
 要求网格不存在的流。
 

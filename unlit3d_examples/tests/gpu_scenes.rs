@@ -290,6 +290,22 @@ async fn instanced_skinned_morph_matches_its_snapshots() {
     .await;
 }
 
+async fn gltf_matches_its_snapshots() {
+    compare_scene(
+        &scenes::gltf::SCENE,
+        SCENE_TOLERANCE,
+        &snapshots![
+            "gltf/frame_00.webp",
+            "gltf/frame_01.webp",
+            "gltf/frame_02.webp",
+            "gltf/frame_03.webp",
+            "gltf/frame_04.webp",
+            "gltf/frame_05.webp",
+        ],
+    )
+    .await;
+}
+
 async fn spin_cube_matches_its_snapshot() {
     compare_scene(
         &scenes::spin_cube::SCENE,
@@ -353,6 +369,7 @@ gpu_tests! {
     ecs_skinned_matches_its_snapshots,
     ecs_morphed_matches_its_snapshots,
     instanced_skinned_morph_matches_its_snapshots,
+    gltf_matches_its_snapshots,
     spin_cube_matches_its_snapshot,
     mesh_and_ui_matches_its_snapshot,
     ui_only_matches_its_snapshot,

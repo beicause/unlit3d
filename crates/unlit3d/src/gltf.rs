@@ -92,8 +92,15 @@
 //! weights — see [`UnlitGltf::morph_weights`] — so writing that entity is how
 //! a caller morphs the mesh. A `doubleSided` material rasterizes its back
 //! faces instead of culling them, so its geometry draws from either side.
-//! Everything else a glTF document can carry is ignored: no normals, tangents
-//! or animations. A mesh whose primitive uses techniques outside this subset
+//! A document's animations are sampled on demand:
+//! [`UnlitGltf::animation_count`], [`UnlitGltf::animation_name`] and
+//! [`UnlitGltf::animation_duration`] describe what the document carries, and
+//! [`UnlitGltf::apply_animation`] samples one at a time into the entities a
+//! spawn produced — moving each animated node's children with it, rebuilding
+//! the skin poses and writing the morph weights the clip targets. Nothing
+//! plays by itself; the caller picks the time.
+//! Everything else a glTF document can carry is ignored: no normals or
+//! tangents. A mesh whose primitive uses techniques outside this subset
 //! still uploads and spawns — it just renders without them.
 //!
 //! Every handle returned here must be given back to the matching `unload_*`
@@ -112,6 +119,8 @@ use crate::components::{
 };
 use crate::mesh::{UnlitMeshDesc, UnlitMorphTarget};
 use crate::mesh_source::{MeshSource, UnlitPipelineKey};
+use gltf::animation::util::ReadOutputs;
+use gltf::animation::{Interpolation, Property};
 use unlit_ecs::{
     ArchetypeBuilder,
     prelude::{Entity, World},
@@ -141,6 +150,18 @@ pub struct UnlitGltf {
     /// itself: decomposing drops shear, and the view matrix of a node whose
     /// ancestors shear has to keep it.
     node_matrices: Vec<glam::Mat4>,
+    /// The parent of every node, indexed by node index; `None` at a root.
+    ///
+    /// glTF nodes list their children rather than their parent, so the table
+    /// is built by walking every `children` list once. Animation recomposes
+    /// the world matrices through it.
+    parents: Vec<Option<usize>>,
+    /// The local-space transform of every node, indexed by node index.
+    ///
+    /// This is what an animation channel overwrites: a channel targets one
+    /// node's local translation, rotation or scale, and the world matrices are
+    /// then recomposed from these locals and [`Self::parents`].
+    locals: Vec<Transform>,
 }
 
 /// A texture uploaded from a glTF image.
@@ -202,6 +223,26 @@ pub struct GltfMesh {
     pub mesh: GpuMesh,
 }
 
+/// The entities a spawned glTF node consists of.
+///
+/// Produced by [`UnlitGltf::spawn_node`] / [`UnlitGltf::spawn_default_scene`]
+/// and given back to [`UnlitGltf::apply_animation`], which drives the node's
+/// transform, its [`SkinPose`] and its [`MorphWeights`] through the entities
+/// this names.
+#[derive(Clone, Debug)]
+pub struct GltfNode {
+    /// The index of the node in the glTF document.
+    pub node: usize,
+    /// One entity per primitive of the node's mesh; empty for a node with no
+    /// mesh.
+    pub entities: Vec<Entity>,
+    /// The entity holding the node's [`SkinPose`], when the node is skinned.
+    pub pose: Option<Entity>,
+    /// The entity holding the node's [`MorphWeights`], when the node's mesh
+    /// has morph targets.
+    pub weights: Option<Entity>,
+}
+
 impl UnlitGltf {
     /// Load a glTF document from `path`, decoding its buffers and images.
     ///
@@ -229,7 +270,9 @@ impl UnlitGltf {
         buffers: Vec<gltf::buffer::Data>,
         images: Vec<gltf::image::Data>,
     ) -> Self {
-        let node_matrices = node_world_matrices(&document);
+        let parents = node_parents(&document);
+        let locals = node_locals(&document);
+        let node_matrices = node_world_matrices(&document, &parents);
         let node_transforms = node_matrices.iter().map(|&m| decompose(m)).collect();
         Self {
             document,
@@ -237,6 +280,8 @@ impl UnlitGltf {
             images,
             node_transforms,
             node_matrices,
+            parents,
+            locals,
         }
     }
 
@@ -684,6 +729,15 @@ impl UnlitGltf {
     /// The returned pose has one matrix per joint of the skin, in the order the
     /// mesh's joint indices address them.
     pub fn skin_pose(&self, node: usize) -> SkinPose {
+        self.skin_pose_with_matrices(node, &self.node_matrices)
+    }
+
+    /// The [`SkinPose`] a node's skin deforms by, evaluated against a given
+    /// set of node world matrices.
+    ///
+    /// [`Self::skin_pose`] evaluates the rest pose; [`Self::apply_animation`]
+    /// evaluates one where the joints have been animated.
+    fn skin_pose_with_matrices(&self, node: usize, matrices: &[glam::Mat4]) -> SkinPose {
         let node_data = self.node(node);
         let Some(skin) = node_data.skin() else {
             return SkinPose::default();
@@ -697,19 +751,19 @@ impl UnlitGltf {
         // matrix has to come back out of the joint's: a joint's inverse bind
         // matrix already encodes the joint's rest transform, and the mesh node
         // moves the whole skinned result.
-        let world_to_mesh = self.node_matrices[node].inverse();
-        let matrices: Vec<glam::Mat4> = skin
+        let world_to_mesh = matrices[node].inverse();
+        let poses: Vec<glam::Mat4> = skin
             .joints()
             .enumerate()
             .map(|(joint, joint_node)| {
-                let joint_world = self.node_matrices[joint_node.index()];
+                let joint_world = matrices[joint_node.index()];
                 let bind = inverse_bind.as_ref().map_or(glam::Mat4::IDENTITY, |ibm| {
                     *ibm.get(joint).expect("one inverse bind matrix per joint")
                 });
                 world_to_mesh * joint_world * bind
             })
             .collect();
-        SkinPose::new(matrices)
+        SkinPose::new(poses)
     }
 
     /// The number of joints a node's skin has.
@@ -751,11 +805,206 @@ impl UnlitGltf {
         weights
     }
 
+    // -- animation ------------------------------------------------------------
+
+    /// The number of animations the document carries.
+    pub fn animation_count(&self) -> usize {
+        self.document.animations().count()
+    }
+
+    /// The name of an animation, or `None` when it carries none.
+    ///
+    /// # Panics
+    ///
+    /// If `animation` is out of bounds.
+    pub fn animation_name(&self, animation: usize) -> Option<&str> {
+        self.animation(animation).name()
+    }
+
+    /// The duration of an animation in seconds: the latest input keyframe
+    /// across all of its samplers.
+    ///
+    /// # Panics
+    ///
+    /// If `animation` is out of bounds.
+    pub fn animation_duration(&self, animation: usize) -> f32 {
+        let animation = self.animation(animation);
+        let mut duration: f32 = 0.0;
+        for channel in animation.channels() {
+            let reader = channel.reader(|buffer| Some(&self.buffers[buffer.index()]));
+            if let Some(inputs) = reader.read_inputs()
+                && let Some(last) = inputs.last()
+            {
+                duration = duration.max(last);
+            }
+        }
+        duration
+    }
+
+    /// Drive an animation to `time` seconds, writing what it moves back into
+    /// the world.
+    ///
+    /// `nodes` is the list [`Self::spawn_node`] /
+    /// [`Self::spawn_default_scene`] returned: for every node it names, the
+    /// animated world transform is written into the entity's [`Transform`],
+    /// a skinned node's [`SkinPose`] is rebuilt against the animated joints,
+    /// and a morphed node's [`MorphWeights`] are set to the sampled weights.
+    ///
+    /// `world` is borrowed shared, not mutable: components are written through
+    /// the world's interior mutability, so the same call site can keep reading
+    /// the world while it animates.
+    ///
+    /// A channel's inputs outside its keyframe range clamp to the nearest end,
+    /// and translation, scale and rotation interpolate by the sampler's
+    /// `interpolation`: `STEP` holds the previous keyframe, `LINEAR` blends
+    /// (with a spherical blend for a rotation) and `CUBICSPLINE` evaluates the
+    /// Hermite spline through the frame's tangents. A node no channel targets
+    /// keeps its rest transform, and a node that is neither spawned nor an
+    /// ancestor of one costs nothing.
+    ///
+    /// # Panics
+    ///
+    /// If `animation` is out of bounds.
+    pub fn apply_animation(&self, world: &World, animation: usize, time: f32, nodes: &[GltfNode]) {
+        let animation = self.animation(animation);
+        let count = self.parents.len();
+        let mut locals = self.locals.clone();
+        let mut animated = vec![false; count];
+        let mut weights: Vec<Option<Vec<f32>>> = vec![None; count];
+
+        for channel in animation.channels() {
+            let node = channel.target().node().index();
+            let property = channel.target().property();
+            let interpolation = channel.sampler().interpolation();
+            let reader = channel.reader(|buffer| Some(&self.buffers[buffer.index()]));
+            let Some(inputs) = reader.read_inputs() else {
+                continue;
+            };
+            let times: Vec<f32> = inputs.collect();
+            // Interpolation needs an interval to work in, and the spec
+            // requires at least two keyframes anyway.
+            if times.len() < 2 {
+                continue;
+            }
+            let Some(outputs) = reader.read_outputs() else {
+                continue;
+            };
+            let required = times.len() * interpolation_stride(interpolation);
+            match (property, outputs) {
+                (Property::Translation, ReadOutputs::Translations(values)) => {
+                    let values: Vec<[f32; 3]> = values.collect();
+                    if values.len() < required {
+                        continue;
+                    }
+                    locals[node].translation =
+                        sample_vec3(interpolation, &times, &values, time).into();
+                    animated[node] = true;
+                }
+                (Property::Scale, ReadOutputs::Scales(values)) => {
+                    let values: Vec<[f32; 3]> = values.collect();
+                    if values.len() < required {
+                        continue;
+                    }
+                    locals[node].scale = sample_vec3(interpolation, &times, &values, time).into();
+                    animated[node] = true;
+                }
+                (Property::Rotation, ReadOutputs::Rotations(rotations)) => {
+                    let values: Vec<[f32; 4]> = rotations.into_f32().collect();
+                    if values.len() < required {
+                        continue;
+                    }
+                    locals[node].rotation = sample_rotation(interpolation, &times, &values, time);
+                    animated[node] = true;
+                }
+                (Property::MorphTargetWeights, ReadOutputs::MorphTargetWeights(outputs)) => {
+                    let values: Vec<f32> = outputs.into_f32().collect();
+                    let targets = self.morph_weights(node).len();
+                    let needed = times.len() * targets * interpolation_stride(interpolation);
+                    if targets == 0 || values.len() < needed {
+                        continue;
+                    }
+                    weights[node] = Some(sample_weights(
+                        interpolation,
+                        &times,
+                        &values,
+                        targets,
+                        time,
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        if !animated.iter().any(|&moved| moved) && weights.iter().all(Option::is_none) {
+            return;
+        }
+
+        // A node whose ancestor moved has moved too, even when no channel
+        // names it: mark the descendants before recomposing.
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (node, parent) in self.parents.iter().enumerate() {
+            if let Some(parent) = parent {
+                children[*parent].push(node);
+            }
+        }
+        let mut dirty = animated.clone();
+        let mut stack: Vec<usize> = (0..count).filter(|&node| dirty[node]).collect();
+        while let Some(node) = stack.pop() {
+            for &child in &children[node] {
+                if !dirty[child] {
+                    dirty[child] = true;
+                    stack.push(child);
+                }
+            }
+        }
+
+        let mut matrices = self.node_matrices.clone();
+        for &node in &node_order(&self.document, &self.parents) {
+            if !dirty[node] {
+                continue;
+            }
+            let local = glam::Mat4::from(locals[node].compute_matrix());
+            matrices[node] = match self.parents[node] {
+                Some(parent) => matrices[parent] * local,
+                None => local,
+            };
+        }
+
+        for handle in nodes {
+            let node = handle.node;
+            if dirty[node] {
+                let transform = decompose(matrices[node]);
+                for &entity in &handle.entities {
+                    let _ = world.with_mut::<Transform, _>(entity, |current| {
+                        *current = transform.clone();
+                    });
+                }
+            }
+            if let Some(entity) = handle.pose {
+                let pose = self.skin_pose_with_matrices(node, &matrices);
+                let _ = world.with_mut::<SkinPose, _>(entity, |current| *current = pose.clone());
+            }
+            if let (Some(entity), Some(sampled)) = (handle.weights, weights[node].as_ref()) {
+                let _ = world.with_mut::<MorphWeights, _>(entity, |current| {
+                    current.weights = sampled.clone();
+                });
+            }
+        }
+    }
+
+    fn animation(&self, animation: usize) -> gltf::animation::Animation<'_> {
+        self.document
+            .animations()
+            .nth(animation)
+            .expect("glTF animation index in bounds")
+    }
+
     // -- spawning -------------------------------------------------------------
 
     /// Spawn the entities that draw `node`'s mesh into `world`.
     ///
-    /// Returns one entity per primitive of the node's mesh — each carrying the
+    /// Returns a [`GltfNode`] naming one entity per primitive of the node's
+    /// mesh — each carrying the
     /// node's world-space [`Transform`], the uploaded [`GpuMesh`], the
     /// pipeline for the mesh's key and an [`InstanceColor`] tinted with the
     /// material's base-color factor. A primitive whose key reads a base-color
@@ -779,7 +1028,8 @@ impl UnlitGltf {
         node: usize,
         meshes: &[GltfMesh],
         materials: &[Option<GltfMaterial>],
-    ) -> Vec<Entity> {
+    ) -> GltfNode {
+        let index = node;
         let transform = self.node_transforms[node].clone();
         let node = self.node(node);
         let mut entities = Vec::new();
@@ -858,7 +1108,12 @@ impl UnlitGltf {
                 entities.push(world.spawn(bundle));
             }
         }
-        entities
+        GltfNode {
+            node: index,
+            entities,
+            pose,
+            weights: morphs,
+        }
     }
 
     /// Spawn the [`Camera`] a node carries, placed by the node's world
@@ -903,12 +1158,14 @@ impl UnlitGltf {
         },)))
     }
 
-    /// Spawn one entity per primitive of every node reachable from the
-    /// document's default scene.
+    /// Spawn every node reachable from the document's default scene.
     ///
-    /// Nodes are visited root-first and each subtree fully; every node with a
-    /// mesh contributes its primitives exactly where its world-space transform
-    /// sits in the hierarchy.
+    /// Returns one [`GltfNode`] per visited node, in the order the walk
+    /// reaches them; a node with no mesh has none of its own but is still
+    /// returned, so the list maps a document node to its entities. Nodes are
+    /// visited root-first and each subtree fully; every node with a mesh
+    /// contributes its primitives exactly where its world-space transform sits
+    /// in the hierarchy.
     ///
     /// # Panics
     ///
@@ -919,18 +1176,18 @@ impl UnlitGltf {
         world: &mut World,
         meshes: &[GltfMesh],
         materials: &[Option<GltfMaterial>],
-    ) -> Vec<Entity> {
+    ) -> Vec<GltfNode> {
         let scene = self
             .document
             .default_scene()
             .expect("the glTF document declares a default scene");
-        let mut entities = Vec::new();
+        let mut nodes = Vec::new();
         let mut stack: Vec<usize> = scene.nodes().map(|node| node.index()).collect();
         while let Some(node) = stack.pop() {
-            entities.extend(self.spawn_node(world, node, meshes, materials));
+            nodes.push(self.spawn_node(world, node, meshes, materials));
             stack.extend(self.node(node).children().map(|child| child.index()));
         }
-        entities
+        nodes
     }
 
     /// The inserted material a primitive draws with.
@@ -1341,39 +1598,73 @@ fn projection_matrix(camera: &gltf::camera::Camera<'_>, aspect_ratio: f32) -> gl
     }
 }
 
-/// The world-space matrix of every node, indexed by node index.
+/// The parent of every node, indexed by node index; `None` at a root.
 ///
-/// The parent table is built from each node's children list (glTF nodes have
-/// no parent handle), then world matrices are accumulated root-first so a
-/// child always sees its parent's matrix before its own is computed.
-/// Hierarchies are traversed iteratively so arbitrarily deep scenes cannot
-/// overflow the stack.
-fn node_world_matrices(document: &gltf::Document) -> Vec<glam::Mat4> {
+/// glTF nodes have no parent handle, so the table is built from each node's
+/// children list, which is the document's own statement of the hierarchy.
+fn node_parents(document: &gltf::Document) -> Vec<Option<usize>> {
     let mut parents = vec![None; document.nodes().len()];
     for node in document.nodes() {
         for child in node.children() {
             parents[child.index()] = Some(node.index());
         }
     }
+    parents
+}
 
+/// The local-space transform of every node, indexed by node index.
+///
+/// A matrix-form node transform is composed back into translation, rotation
+/// and scale so that an animation can address a single one of them; the
+/// decomposition is lossy for shear, which a `Transform` cannot carry.
+fn node_locals(document: &gltf::Document) -> Vec<Transform> {
+    document
+        .nodes()
+        .map(|node| decompose(glam::Mat4::from_cols_array_2d(&node.transform().matrix())))
+        .collect()
+}
+
+/// The world-space matrix of every node, indexed by node index.
+///
+/// World matrices are accumulated root-first so a child always sees its
+/// parent's matrix before its own is computed. Hierarchies are traversed
+/// iteratively so arbitrarily deep scenes cannot overflow the stack.
+fn node_world_matrices(document: &gltf::Document, parents: &[Option<usize>]) -> Vec<glam::Mat4> {
     let mut world = vec![glam::Mat4::IDENTITY; document.nodes().len()];
+    for &root in &node_order(document, parents) {
+        let node_data = document.nodes().nth(root).expect("node index in bounds");
+        let local = glam::Mat4::from_cols_array_2d(&node_data.transform().matrix());
+        world[root] = match parents[root] {
+            Some(parent) => world[parent] * local,
+            None => local,
+        };
+    }
+    world
+}
+
+/// The node indices in an order where every node follows its parent.
+///
+/// The order is the same whether a node's own local matrix is the document's
+/// or one an animation replaced it with, so recomposing from it can reuse the
+/// cached `parents` table.
+fn node_order(document: &gltf::Document, parents: &[Option<usize>]) -> Vec<usize> {
     let roots: Vec<usize> = (0..document.nodes().len())
         .filter(|&index| parents[index].is_none())
         .collect();
-    for root in roots {
-        let mut stack = vec![root];
-        while let Some(node) = stack.pop() {
-            let node_data = document.nodes().nth(node).expect("node index in bounds");
-            let local = glam::Mat4::from_cols_array_2d(&node_data.transform().matrix());
-            world[node] = match parents[node] {
-                Some(parent) => world[parent] * local,
-                None => local,
-            };
-            stack.extend(node_data.children().map(|child| child.index()));
-        }
+    let mut order = Vec::with_capacity(document.nodes().len());
+    let mut stack = roots;
+    while let Some(node) = stack.pop() {
+        order.push(node);
+        stack.extend(
+            document
+                .nodes()
+                .nth(node)
+                .expect("node index in bounds")
+                .children()
+                .map(|child| child.index()),
+        );
     }
-
-    world
+    order
 }
 
 /// Split a world-space matrix into the parts an entity's
@@ -1406,6 +1697,211 @@ fn axis_or_identity(axis: glam::Vec3, length: f32) -> glam::Vec3 {
         axis / length
     } else {
         glam::Vec3::X // direction is meaningless along a zero-length axis
+    }
+}
+
+/// How many values a keyframe stores under an interpolation.
+///
+/// A cubic spline stores three — in-tangent, value, out-tangent — and every
+/// other interpolation stores one.
+fn interpolation_stride(interpolation: Interpolation) -> usize {
+    match interpolation {
+        Interpolation::CubicSpline => 3,
+        Interpolation::Step | Interpolation::Linear => 1,
+    }
+}
+
+/// The keyframe interval `time` falls in, clamped to the keyframes' range.
+///
+/// Returns the left frame's index, always in `0..times.len() - 1` so a caller
+/// can read both ends of the interval, and the fraction of the way through it.
+fn keyframe(times: &[f32], time: f32) -> (usize, f32) {
+    let last = times.len() - 1;
+    if time <= times[0] {
+        return (0, 0.0);
+    }
+    if time >= times[last] {
+        return (last - 1, 1.0);
+    }
+    let frame = times
+        .partition_point(|&key| key <= time)
+        .saturating_sub(1)
+        .min(last - 1);
+    let span = times[frame + 1] - times[frame];
+    let t = if span > 0.0 {
+        (time - times[frame]) / span
+    } else {
+        0.0
+    };
+    (frame, t)
+}
+
+/// The keyframe a step interpolation holds at `time`: the latest one at or
+/// before it, so the value jumps when `time` reaches the next.
+fn step_frame(times: &[f32], time: f32) -> usize {
+    times.partition_point(|&key| key <= time).saturating_sub(1)
+}
+
+/// A glTF `translation` or `scale` sampled at `time`.
+fn sample_vec3(
+    interpolation: Interpolation,
+    times: &[f32],
+    values: &[[f32; 3]],
+    time: f32,
+) -> [f32; 3] {
+    let stride = interpolation_stride(interpolation);
+    match interpolation {
+        Interpolation::Step => values[step_frame(times, time) * stride],
+        Interpolation::Linear => {
+            let (frame, t) = keyframe(times, time);
+            glam::Vec3::from(values[frame])
+                .lerp(glam::Vec3::from(values[frame + 1]), t)
+                .to_array()
+        }
+        Interpolation::CubicSpline => {
+            let (frame, t) = keyframe(times, time);
+            cubic_vec3(
+                glam::Vec3::from(values[frame * 3 + 1]),
+                glam::Vec3::from(values[frame * 3 + 2]),
+                glam::Vec3::from(values[(frame + 1) * 3 + 1]),
+                glam::Vec3::from(values[(frame + 1) * 3]),
+                t,
+                times[frame + 1] - times[frame],
+            )
+            .to_array()
+        }
+    }
+}
+
+/// A glTF `rotation` sampled at `time`, always a unit quaternion.
+///
+/// A linear rotation blends spherically, the spec's own requirement; a cubic
+/// one interpolates each component and renormalizes.
+fn sample_rotation(
+    interpolation: Interpolation,
+    times: &[f32],
+    values: &[[f32; 4]],
+    time: f32,
+) -> glam::Quat {
+    let stride = interpolation_stride(interpolation);
+    match interpolation {
+        Interpolation::Step => quat(values[step_frame(times, time) * stride]),
+        Interpolation::Linear => {
+            let (frame, t) = keyframe(times, time);
+            quat(values[frame]).slerp(quat(values[frame + 1]), t)
+        }
+        Interpolation::CubicSpline => {
+            let (frame, t) = keyframe(times, time);
+            let value = cubic_vec4(
+                glam::Vec4::from(values[frame * 3 + 1]),
+                glam::Vec4::from(values[frame * 3 + 2]),
+                glam::Vec4::from(values[(frame + 1) * 3 + 1]),
+                glam::Vec4::from(values[(frame + 1) * 3]),
+                t,
+                times[frame + 1] - times[frame],
+            );
+            quat(value.to_array())
+        }
+    }
+}
+
+/// A glTF `weights` channel sampled at `time`, one weight per morph target.
+///
+/// A cubic keyframe groups its tangents and values kind-first — every
+/// in-tangent, then every value, then every out-tangent — which is a different
+/// layout from the one the node channels use.
+fn sample_weights(
+    interpolation: Interpolation,
+    times: &[f32],
+    values: &[f32],
+    targets: usize,
+    time: f32,
+) -> Vec<f32> {
+    match interpolation {
+        Interpolation::Step => {
+            let frame = step_frame(times, time);
+            values[frame * targets..(frame + 1) * targets].to_vec()
+        }
+        Interpolation::Linear => {
+            let (frame, t) = keyframe(times, time);
+            let a = &values[frame * targets..(frame + 1) * targets];
+            let b = &values[(frame + 1) * targets..(frame + 2) * targets];
+            a.iter().zip(b).map(|(&a, &b)| a + (b - a) * t).collect()
+        }
+        Interpolation::CubicSpline => {
+            let (frame, t) = keyframe(times, time);
+            let span = times[frame + 1] - times[frame];
+            let base = frame * 3 * targets;
+            let next = (frame + 1) * 3 * targets;
+            (0..targets)
+                .map(|target| {
+                    cubic_f32(
+                        values[base + targets + target],
+                        values[base + 2 * targets + target],
+                        values[next + targets + target],
+                        values[next + target],
+                        t,
+                        span,
+                    )
+                })
+                .collect()
+        }
+    }
+}
+
+/// One segment of a cubic Hermite spline, the spec's `CUBICSPLINE` formula.
+fn cubic_f32(v0: f32, b0: f32, v1: f32, a1: f32, t: f32, span: f32) -> f32 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    (2.0 * t3 - 3.0 * t2 + 1.0) * v0
+        + span * (t3 - 2.0 * t2 + t) * b0
+        + (-2.0 * t3 + 3.0 * t2) * v1
+        + span * (t3 - t2) * a1
+}
+
+/// [`cubic_f32`] over three components.
+fn cubic_vec3(
+    v0: glam::Vec3,
+    b0: glam::Vec3,
+    v1: glam::Vec3,
+    a1: glam::Vec3,
+    t: f32,
+    span: f32,
+) -> glam::Vec3 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    (2.0 * t3 - 3.0 * t2 + 1.0) * v0
+        + span * (t3 - 2.0 * t2 + t) * b0
+        + (-2.0 * t3 + 3.0 * t2) * v1
+        + span * (t3 - t2) * a1
+}
+
+/// [`cubic_f32`] over four components.
+fn cubic_vec4(
+    v0: glam::Vec4,
+    b0: glam::Vec4,
+    v1: glam::Vec4,
+    a1: glam::Vec4,
+    t: f32,
+    span: f32,
+) -> glam::Vec4 {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    (2.0 * t3 - 3.0 * t2 + 1.0) * v0
+        + span * (t3 - 2.0 * t2 + t) * b0
+        + (-2.0 * t3 + 3.0 * t2) * v1
+        + span * (t3 - t2) * a1
+}
+
+/// A unit quaternion from the `[x, y, z, w]` a glTF rotation stores, falling
+/// back to the identity when the value is degenerate.
+fn quat(value: [f32; 4]) -> glam::Quat {
+    let quat = glam::Quat::from_xyzw(value[0], value[1], value[2], value[3]);
+    let length = quat.length();
+    if length > f32::EPSILON {
+        quat / length
+    } else {
+        glam::Quat::IDENTITY
     }
 }
 
@@ -1977,5 +2473,582 @@ mod tests {
         assert_eq!(rows.len(), wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
         assert_eq!(&rows[..8], &[7; 8]);
         assert_eq!(&rows[8..], &vec![0; 256 - 8][..]);
+    }
+    // -- animation ------------------------------------------------------------
+
+    /// Asserts a keyframe pair matches, allowing for the float fraction.
+    fn assert_keyframe(actual: (usize, f32), expected: (usize, f32)) {
+        assert_eq!(actual.0, expected.0, "{actual:?} vs {expected:?}");
+        assert!(
+            (actual.1 - expected.1).abs() < 1e-6,
+            "{actual:?} vs {expected:?}"
+        );
+    }
+
+    /// 4-aligns `bin`, records a bufferView for `bytes` and returns its index.
+    fn add_view(
+        bin: &mut Vec<u8>,
+        views: &mut Vec<String>,
+        bytes: &[u8],
+        target: Option<u32>,
+    ) -> usize {
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+        let target = target.map_or(String::new(), |target| format!(r#", "target": {target}"#));
+        views.push(format!(
+            r#"{{ "buffer": 0, "byteOffset": {}, "byteLength": {}{target} }}"#,
+            bin.len(),
+            bytes.len()
+        ));
+        bin.extend_from_slice(bytes);
+        views.len() - 1
+    }
+
+    /// Wraps a JSON document and its binary chunk into a GLB.
+    fn glb(json: String, bin: &[u8]) -> Vec<u8> {
+        let mut json = json.into_bytes();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut glb = Vec::new();
+        glb.extend_from_slice(&0x4654_6C67u32.to_le_bytes());
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+        glb.extend_from_slice(bin);
+        glb
+    }
+
+    /// The `min` and `max` a glTF accessor needs, as a JSON fragment.
+    fn bounds(times: &[f32]) -> String {
+        let min = times.first().copied().unwrap_or(0.0);
+        let max = times.last().copied().unwrap_or(0.0);
+        format!(r#", "min": [{min}], "max": [{max}]"#)
+    }
+
+    /// Adds the triangle both an animated mesh and a static one draw, and
+    /// pushes its position and index accessors, returning the index accessor.
+    fn add_triangle(
+        bin: &mut Vec<u8>,
+        views: &mut Vec<String>,
+        accessors: &mut Vec<String>,
+    ) -> usize {
+        let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let position = add_view(bin, views, &positions, Some(34962));
+        accessors.push(format!(
+            r#"{{ "bufferView": {position}, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }}"#
+        ));
+        let index_accessor = accessors.len();
+        let indices: Vec<u8> = [0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let index = add_view(bin, views, &indices, Some(34963));
+        accessors.push(format!(
+            r#"{{ "bufferView": {index}, "componentType": 5123, "count": 3, "type": "SCALAR" }}"#
+        ));
+        index_accessor
+    }
+
+    /// A GLB whose node 0 carries a translation animation and whose child node
+    /// 1 — drawing a triangle — carries a rotation animation.
+    ///
+    /// One document therefore exercises both node paths and the parent-to-child
+    /// recomposition. `translations` and `rotations` hold one entry per
+    /// keyframe, except under `CUBICSPLINE`, where each keyframe contributes
+    /// its in-tangent, value and out-tangent in that order.
+    fn parented_animated_document(
+        interpolation: &str,
+        times: &[f32],
+        translations: &[[f32; 3]],
+        rotations: &[[f32; 4]],
+    ) -> Vec<u8> {
+        let mut bin = Vec::new();
+        let mut views: Vec<String> = Vec::new();
+        let mut accessors: Vec<String> = Vec::new();
+
+        let input_bytes: Vec<u8> = times.iter().flat_map(|t| t.to_le_bytes()).collect();
+        let input = add_view(&mut bin, &mut views, &input_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {input}, "componentType": 5126, "count": {}, "type": "SCALAR"{} }}"#,
+            times.len(),
+            bounds(times),
+        ));
+        let translation_bytes: Vec<u8> = translations
+            .iter()
+            .flatten()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let translation = add_view(&mut bin, &mut views, &translation_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {translation}, "componentType": 5126, "count": {}, "type": "VEC3" }}"#,
+            translations.len()
+        ));
+        let rotation_bytes: Vec<u8> = rotations
+            .iter()
+            .flatten()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let rotation = add_view(&mut bin, &mut views, &rotation_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {rotation}, "componentType": 5126, "count": {}, "type": "VEC4" }}"#,
+            rotations.len()
+        ));
+        let index_accessor = add_triangle(&mut bin, &mut views, &mut accessors);
+
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "scene":0,
+                "scenes":[{{"nodes":[0]}}],
+                "nodes":[{{"children":[1]}},{{"mesh":0}}],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":3}},"indices":{index_accessor}}}]}}],
+                "accessors":[{}],
+                "bufferViews":[{}],
+                "buffers":[{{"byteLength":{}}}],
+                "animations":[{{"name":"walk",
+                    "channels":[{{"sampler":0,"target":{{"node":0,"path":"translation"}}}},
+                                {{"sampler":1,"target":{{"node":1,"path":"rotation"}}}}],
+                    "samplers":[{{"input":0,"interpolation":"{interpolation}","output":1}},
+                                {{"input":0,"interpolation":"{interpolation}","output":2}}]}}]}}"#,
+            accessors.join(", "),
+            views.join(", "),
+            bin.len(),
+        );
+        glb(json, &bin)
+    }
+
+    /// A GLB holding one skinned triangle whose single joint node carries a
+    /// translation animation.
+    fn animated_skinned_document(times: &[f32], translations: &[[f32; 3]]) -> Vec<u8> {
+        let mut bin = Vec::new();
+        let mut views: Vec<String> = Vec::new();
+        let mut accessors: Vec<String> = Vec::new();
+
+        let input_bytes: Vec<u8> = times.iter().flat_map(|t| t.to_le_bytes()).collect();
+        let input = add_view(&mut bin, &mut views, &input_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {input}, "componentType": 5126, "count": {}, "type": "SCALAR"{} }}"#,
+            times.len(),
+            bounds(times),
+        ));
+        let translation_bytes: Vec<u8> = translations
+            .iter()
+            .flatten()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let translation = add_view(&mut bin, &mut views, &translation_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {translation}, "componentType": 5126, "count": {}, "type": "VEC3" }}"#,
+            translations.len()
+        ));
+
+        let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let position = add_view(&mut bin, &mut views, &positions, Some(34962));
+        accessors.push(format!(
+            r#"{{ "bufferView": {position}, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }}"#
+        ));
+        let joints: Vec<u8> = (0..3)
+            .flat_map(|_| [0u16, 0, 0, 0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let joint = add_view(&mut bin, &mut views, &joints, Some(34962));
+        accessors.push(format!(
+            r#"{{ "bufferView": {joint}, "componentType": 5123, "count": 3, "type": "VEC4" }}"#
+        ));
+        let weights: Vec<u8> = (0..3)
+            .flat_map(|_| [1.0f32, 0.0, 0.0, 0.0])
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let weight = add_view(&mut bin, &mut views, &weights, Some(34962));
+        accessors.push(format!(
+            r#"{{ "bufferView": {weight}, "componentType": 5126, "count": 3, "type": "VEC4" }}"#
+        ));
+        let identity: Vec<u8> = [
+            1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+        let bind = add_view(&mut bin, &mut views, &identity, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {bind}, "componentType": 5126, "count": 1, "type": "MAT4" }}"#
+        ));
+        let index_accessor = accessors.len();
+        let indices: Vec<u8> = [0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let index = add_view(&mut bin, &mut views, &indices, Some(34963));
+        accessors.push(format!(
+            r#"{{ "bufferView": {index}, "componentType": 5123, "count": 3, "type": "SCALAR" }}"#
+        ));
+
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "scene":0,
+                "scenes":[{{"nodes":[0]}}],
+                "nodes":[{{"mesh":0,"skin":0}},{{"name":"joint"}}],
+                "skins":[{{"joints":[1],"inverseBindMatrices":5}}],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":2,"JOINTS_0":3,"WEIGHTS_0":4}},
+                                            "indices":{index_accessor}}}]}}],
+                "accessors":[{}],
+                "bufferViews":[{}],
+                "buffers":[{{"byteLength":{}}}],
+                "animations":[{{"name":"walk",
+                    "channels":[{{"sampler":0,"target":{{"node":1,"path":"translation"}}}}],
+                    "samplers":[{{"input":0,"interpolation":"LINEAR","output":1}}]}}]}}"#,
+            accessors.join(", "),
+            views.join(", "),
+            bin.len(),
+        );
+        glb(json, &bin)
+    }
+
+    /// A GLB holding one triangle with a single morph target whose weight the
+    /// document animates.
+    fn animated_morphed_document(times: &[f32], weights: &[f32]) -> Vec<u8> {
+        let mut bin = Vec::new();
+        let mut views: Vec<String> = Vec::new();
+        let mut accessors: Vec<String> = Vec::new();
+
+        let input_bytes: Vec<u8> = times.iter().flat_map(|t| t.to_le_bytes()).collect();
+        let input = add_view(&mut bin, &mut views, &input_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {input}, "componentType": 5126, "count": {}, "type": "SCALAR"{} }}"#,
+            times.len(),
+            bounds(times),
+        ));
+        let weight_bytes: Vec<u8> = weights.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let weight = add_view(&mut bin, &mut views, &weight_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {weight}, "componentType": 5126, "count": {}, "type": "SCALAR" }}"#,
+            weights.len()
+        ));
+
+        let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let position = add_view(&mut bin, &mut views, &positions, Some(34962));
+        accessors.push(format!(
+            r#"{{ "bufferView": {position}, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 0.0] }}"#
+        ));
+        let mut deltas = [0.0f32; 9];
+        deltas[4] = 1.0;
+        let delta_bytes: Vec<u8> = deltas.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let delta = add_view(&mut bin, &mut views, &delta_bytes, None);
+        accessors.push(format!(
+            r#"{{ "bufferView": {delta}, "componentType": 5126, "count": 3, "type": "VEC3" }}"#
+        ));
+        let index_accessor = accessors.len();
+        let indices: Vec<u8> = [0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let index = add_view(&mut bin, &mut views, &indices, Some(34963));
+        accessors.push(format!(
+            r#"{{ "bufferView": {index}, "componentType": 5123, "count": 3, "type": "SCALAR" }}"#
+        ));
+
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "scene":0,
+                "scenes":[{{"nodes":[0]}}],
+                "nodes":[{{"mesh":0}}],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":2}},"indices":{index_accessor},
+                                            "targets":[{{"POSITION":3}}]}}]}}],
+                "accessors":[{}],
+                "bufferViews":[{}],
+                "buffers":[{{"byteLength":{}}}],
+                "animations":[{{"name":"walk",
+                    "channels":[{{"sampler":0,"target":{{"node":0,"path":"weights"}}}}],
+                    "samplers":[{{"input":0,"interpolation":"LINEAR","output":1}}]}}]}}"#,
+            accessors.join(", "),
+            views.join(", "),
+            bin.len(),
+        );
+        glb(json, &bin)
+    }
+
+    #[test]
+    fn a_keyframe_clamps_past_either_end_and_splits_the_span() {
+        let times = [0.0, 1.0, 3.0];
+        assert_keyframe(keyframe(&times, -1.0), (0, 0.0));
+        assert_keyframe(keyframe(&times, 0.0), (0, 0.0));
+        assert_keyframe(keyframe(&times, 0.5), (0, 0.5));
+        assert_keyframe(keyframe(&times, 2.0), (1, 0.5));
+        // The end of the range sits at the end of the last segment: the
+        // returned index names the segment, not the keyframe.
+        assert_keyframe(keyframe(&times, 3.0), (1, 1.0));
+        assert_keyframe(keyframe(&times, 4.0), (1, 1.0));
+    }
+
+    #[test]
+    fn a_step_holds_the_keyframe_before_the_time() {
+        let times = [0.0, 1.0, 3.0];
+        assert_eq!(step_frame(&times, -1.0), 0);
+        assert_eq!(step_frame(&times, 0.0), 0);
+        assert_eq!(step_frame(&times, 0.9), 0);
+        assert_eq!(step_frame(&times, 1.0), 1);
+        assert_eq!(step_frame(&times, 2.9), 1);
+        assert_eq!(step_frame(&times, 3.0), 2);
+        assert_eq!(step_frame(&times, 9.0), 2);
+    }
+
+    #[test]
+    fn a_linear_translation_blends_between_its_keyframes() {
+        let times = [0.0, 2.0];
+        let values = [[0.0, 0.0, 0.0], [4.0, 2.0, 0.0]];
+        let sample = |time| sample_vec3(Interpolation::Linear, &times, &values, time);
+        assert_eq!(sample(1.0), [2.0, 1.0, 0.0]);
+        // Outside the keyframe range the value clamps to the nearest end.
+        assert_eq!(sample(-5.0), [0.0, 0.0, 0.0]);
+        assert_eq!(sample(99.0), [4.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn a_step_translation_jumps_at_the_next_keyframe() {
+        let times = [0.0, 1.0];
+        let values = [[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]];
+        assert_eq!(
+            sample_vec3(Interpolation::Step, &times, &values, 0.999),
+            [0.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            sample_vec3(Interpolation::Step, &times, &values, 1.0),
+            [5.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn a_cubic_translation_follows_its_tangents() {
+        // Two keyframes, each written as (in-tangent, value, out-tangent). The
+        // first in-tangent and the last out-tangent never enter the formula.
+        let times = [0.0, 1.0];
+        let values = [
+            [9.0, 9.0, 9.0],
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [9.0, 9.0, 9.0],
+        ];
+        let sample = |time| sample_vec3(Interpolation::CubicSpline, &times, &values, time);
+        assert_eq!(sample(0.0), [0.0, 0.0, 0.0]);
+        assert_eq!(sample(1.0), [4.0, 0.0, 0.0]);
+        assert_eq!(sample(0.5), [1.875, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_linear_rotation_slerps_toward_its_keyframe() {
+        let quarter = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let values = [
+            [0.0, 0.0, 0.0, 1.0],
+            [quarter.x, quarter.y, quarter.z, quarter.w],
+        ];
+        let half = sample_rotation(Interpolation::Linear, &[0.0, 1.0], &values, 0.5);
+        let eighth = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
+        assert!(half.dot(eighth).abs() > 1.0 - 1e-6, "{half:?}");
+    }
+
+    #[test]
+    fn a_linear_rotation_takes_the_short_way_around() {
+        // +170° to -170° is a 20° step through 180°, not a 340° one.
+        let a = glam::Quat::from_rotation_z(170f32.to_radians());
+        let b = glam::Quat::from_rotation_z((-170f32).to_radians());
+        let values = [[a.x, a.y, a.z, a.w], [b.x, b.y, b.z, b.w]];
+        let mid = sample_rotation(Interpolation::Linear, &[0.0, 1.0], &values, 0.5);
+        let expected = glam::Quat::from_rotation_z(180f32.to_radians());
+        assert!(mid.dot(expected).abs() > 1.0 - 1e-5, "{mid:?}");
+    }
+
+    #[test]
+    fn a_cubic_rotation_stays_a_unit_quaternion() {
+        let times = [0.0, 1.0];
+        let values = [
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.5, 0.0],
+            [0.0, 0.0, -0.5, 0.0],
+            [
+                0.0,
+                0.0,
+                std::f32::consts::FRAC_1_SQRT_2,
+                std::f32::consts::FRAC_1_SQRT_2,
+            ],
+            [0.0, 0.0, 0.0, 0.0],
+        ];
+        let value = sample_rotation(Interpolation::CubicSpline, &times, &values, 0.5);
+        assert!((value.length() - 1.0).abs() < 1e-5, "{value:?}");
+    }
+
+    #[test]
+    fn a_linear_weight_blend_is_per_target() {
+        let times = [0.0, 2.0];
+        // Two targets per keyframe: 0, 10 then 2, 20.
+        let values = [0.0, 10.0, 2.0, 20.0];
+        assert_eq!(
+            sample_weights(Interpolation::Linear, &times, &values, 2, 1.0),
+            vec![1.0, 15.0]
+        );
+    }
+
+    #[test]
+    fn a_cubic_weight_blend_reads_its_kind_first_layout() {
+        // One target, two keyframes. A cubic keyframe groups every in-tangent,
+        // then every value, then every out-tangent, so the second keyframe's
+        // value sits after both keyframes' in-tangent and value blocks.
+        let times = [0.0, 1.0];
+        let values = [0.0, 1.0, 2.0, 3.0, 9.0, 4.0];
+        assert_eq!(
+            sample_weights(Interpolation::CubicSpline, &times, &values, 1, 0.5),
+            vec![4.875]
+        );
+    }
+
+    #[test]
+    fn an_animation_reports_its_name_and_duration() {
+        let gltf = UnlitGltf::from_bytes(&parented_animated_document(
+            "LINEAR",
+            &[0.0, 1.5, 4.0],
+            &[[0.0; 3]; 3],
+            &[[0.0, 0.0, 0.0, 1.0]; 3],
+        ))
+        .expect("the animated document parses");
+        assert_eq!(gltf.animation_count(), 1);
+        assert_eq!(gltf.animation_name(0), Some("walk"));
+        assert!((gltf.animation_duration(0) - 4.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_animation_moves_a_node_and_carries_its_child() {
+        let gltf = UnlitGltf::from_bytes(&parented_animated_document(
+            "LINEAR",
+            &[0.0, 2.0],
+            &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            &[
+                [0.0, 0.0, 0.0, 1.0],
+                [
+                    0.0,
+                    0.0,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                    std::f32::consts::FRAC_1_SQRT_2,
+                ],
+            ],
+        ))
+        .expect("the animated document parses");
+        let mut world = World::new();
+        let parent = world.spawn((Transform::default(),));
+        let child = world.spawn((Transform::default(),));
+        let nodes = [
+            GltfNode {
+                node: 0,
+                entities: vec![parent],
+                pose: None,
+                weights: None,
+            },
+            GltfNode {
+                node: 1,
+                entities: vec![child],
+                pose: None,
+                weights: None,
+            },
+        ];
+        gltf.apply_animation(&world, 0, 1.0, &nodes);
+        // The parent's own channel moves it...
+        assert_eq!(
+            world
+                .get::<Transform>(parent)
+                .expect("the parent carries a transform")
+                .translation,
+            glam::Vec3::new(2.0, 0.0, 0.0)
+        );
+        // ...and the child, which no translation channel names, inherits it
+        // along with the quarter turn its own channel reaches at the midpoint.
+        let child = world
+            .get::<Transform>(child)
+            .expect("the child carries a transform");
+        assert_eq!(child.translation, glam::Vec3::new(2.0, 0.0, 0.0));
+        let quarter = glam::Quat::from_rotation_z(std::f32::consts::FRAC_PI_4);
+        assert!(child.rotation.dot(quarter).abs() > 1.0 - 1e-5, "{child:?}");
+    }
+
+    #[test]
+    fn apply_animation_holds_a_step_keyframe() {
+        let gltf = UnlitGltf::from_bytes(&parented_animated_document(
+            "STEP",
+            &[0.0, 2.0],
+            &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+            &[[0.0, 0.0, 0.0, 1.0]; 2],
+        ))
+        .expect("the animated document parses");
+        let mut world = World::new();
+        let parent = world.spawn((Transform::default(),));
+        let nodes = [GltfNode {
+            node: 0,
+            entities: vec![parent],
+            pose: None,
+            weights: None,
+        }];
+        gltf.apply_animation(&world, 0, 1.999, &nodes);
+        assert_eq!(
+            world
+                .get::<Transform>(parent)
+                .expect("the parent carries a transform")
+                .translation,
+            glam::Vec3::ZERO
+        );
+    }
+
+    #[test]
+    fn apply_animation_rebuilds_a_skin_pose() {
+        let gltf = UnlitGltf::from_bytes(&animated_skinned_document(
+            &[0.0, 2.0],
+            &[[0.0, 0.0, 0.0], [4.0, 0.0, 0.0]],
+        ))
+        .expect("the animated skinned document parses");
+        let mut world = World::new();
+        let mesh = world.spawn((Transform::default(),));
+        let pose = world.spawn((SkinPose::default(),));
+        let nodes = [GltfNode {
+            node: 0,
+            entities: vec![mesh],
+            pose: Some(pose),
+            weights: None,
+        }];
+        gltf.apply_animation(&world, 0, 1.0, &nodes);
+        let pose = world
+            .get::<SkinPose>(pose)
+            .expect("the pose entity carries a pose");
+        assert!(
+            pose.matrices[0].abs_diff_eq(
+                glam::Mat4::from_translation(glam::Vec3::new(2.0, 0.0, 0.0)),
+                1e-6
+            ),
+            "{}",
+            pose.matrices[0]
+        );
+    }
+
+    #[test]
+    fn apply_animation_writes_morph_weights() {
+        let gltf = UnlitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.0, 2.0]))
+            .expect("the animated morphed document parses");
+        let mut world = World::new();
+        let mesh = world.spawn((Transform::default(),));
+        let weights = world.spawn((MorphWeights::new(vec![0.0]),));
+        let nodes = [GltfNode {
+            node: 0,
+            entities: vec![mesh],
+            pose: None,
+            weights: Some(weights),
+        }];
+        gltf.apply_animation(&world, 0, 1.0, &nodes);
+        let weights = world
+            .get::<MorphWeights>(weights)
+            .expect("the weights entity carries weights");
+        assert_eq!(weights.weights, vec![1.0]);
     }
 }

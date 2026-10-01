@@ -18,6 +18,7 @@
 //! `unlit3d_asset_files` submodule still verify them.
 
 pub mod animated;
+pub mod gltf;
 pub mod instanced_skinned_morph;
 pub mod mesh_and_ui;
 pub mod mesh_topologies;
@@ -133,6 +134,7 @@ pub static SCENES: &[&SceneDef] = &[
     &skinned::SCENE,
     &morphed::SCENE,
     &instanced_skinned_morph::SCENE,
+    &gltf::SCENE,
     &mesh_topologies::SCENE,
     &transparent::SCENE,
 ];

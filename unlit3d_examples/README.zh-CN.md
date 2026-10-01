@@ -25,6 +25,7 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
+  gltf                   a skinned fox and a morph-target cube animated over six frames
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
@@ -32,7 +33,9 @@ Scenes:
 每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此存储的快照仍然
 能验证它。`mesh_topologies` 与 `transparent_zsorted` 是两个例外：它们并非从测试移植而
 来，而是补上移植场景所缺的覆盖——每种图元拓扑各画一次索引与非索引，以及重叠的半透明
-绘制，其合成结果同时取决于 z 排序与混合状态。场景全部用公开的 `unlit3d` API 构建——
+绘制，其合成结果同时取决于 z 排序与混合状态。`gltf` 是另一个例外：它通过 `UnlitGltf`
+绘制 `unlit3d_asset_files/assets` 下的 glTF 文档，因此加载器的蒙皮与形变目标动画是拿
+真实资产来检验的，而不是单元测试里手写的那些。场景全部用公开的 `unlit3d` API 构建——
 示例没有任何一处触碰到 crate 的内部实现。
 
 ## 运行方式

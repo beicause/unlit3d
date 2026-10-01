@@ -325,6 +325,113 @@ async fn a_morphed_quad_follows_its_weights() {
     );
 }
 
+/// The skinned quad's buffer plus its animation: two keyframe times (f32) and
+/// the joint's translation at each, the second taking it off-screen.
+const ANIMATED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZmbmP83MrD8AAAAAZmbmv83MrD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAQACAAAAAgADAP8AAP//AAD//wAA//8AAP8AAAAAAAAAQAAAAAAAAAAAAAAAAAAAoMAAAAAAAAAAAA==";
+
+/// The glTF JSON of the skinned quad, animated: the joint node carries a
+/// translation channel whose keyframes put it at the origin at `t = 0` and a
+/// whole screen to the left at `t = 2`.
+///
+/// The mesh node itself is never animated, so the quad only leaves the frame
+/// because `apply_animation` recomposed the joint and rebuilt the skin pose
+/// against it.
+fn animated_skinned_document() -> Vec<u8> {
+    let json = r#"{"asset":{"version":"2.0"},"scene":0,
+ "scenes":[{"nodes":[0]}],
+ "nodes":[{"mesh":0,"skin":0},{"name":"joint"}],
+ "skins":[{"joints":[1],"inverseBindMatrices":3}],
+ "meshes":[{"primitives":[{"attributes":
+ {"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2,"COLOR_0":5},
+ "indices":4,"material":0}]}],
+ "materials":[{"pbrMetallicRoughness":{"baseColorFactor":[1.0,1.0,1.0,1.0]}}],
+ "accessors":[
+ {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3",
+ "min":[-1.8,-1.35,0.0],"max":[1.8,1.35,0.0]},
+ {"bufferView":1,"componentType":5123,"count":4,"type":"VEC4"},
+ {"bufferView":2,"componentType":5126,"count":4,"type":"VEC4"},
+ {"bufferView":3,"componentType":5126,"count":1,"type":"MAT4"},
+ {"bufferView":4,"componentType":5123,"count":6,"type":"SCALAR"},
+ {"bufferView":5,"componentType":5121,"count":4,"type":"VEC4",
+ "normalized":true},
+ {"bufferView":6,"componentType":5126,"count":2,"type":"SCALAR",
+ "min":[0.0],"max":[2.0]},
+ {"bufferView":7,"componentType":5126,"count":2,"type":"VEC3"}],
+ "bufferViews":[
+ {"buffer":0,"byteOffset":0,"byteLength":48,"target":34962},
+ {"buffer":0,"byteOffset":48,"byteLength":32,"target":34962},
+ {"buffer":0,"byteOffset":80,"byteLength":64,"target":34962},
+ {"buffer":0,"byteOffset":144,"byteLength":64},
+ {"buffer":0,"byteOffset":208,"byteLength":12,"target":34963},
+ {"buffer":0,"byteOffset":220,"byteLength":16,"target":34962},
+ {"buffer":0,"byteOffset":236,"byteLength":8},
+ {"buffer":0,"byteOffset":244,"byteLength":24}],
+ "animations":[{"name":"walk",
+ "channels":[{"sampler":0,"target":{"node":1,"path":"translation"}}],
+ "samplers":[{"input":6,"interpolation":"LINEAR","output":7}]}],
+ "buffers":[{"byteLength":268,
+ "uri":"data:application/octet-stream;base64,"#;
+
+    // The base64 blob is a constant, not a literal a raw string can splice, so
+    // the document is closed around it here.
+    let mut document = String::from(json);
+    document.push_str(ANIMATED_BIN_BASE64);
+    document.push_str(r#""}]}"#);
+    document.into_bytes()
+}
+
+/// An animation drives the drawn geometry: at `t = 0` the skinned quad covers
+/// the frame, and by `t = 2` its animated joint has carried it off-screen.
+///
+/// This is the whole path in one assertion: a channel samples, the hierarchy
+/// recomposes, the skin pose is rebuilt against the animated matrices, and the
+/// renderer draws the result.
+async fn an_animation_moves_the_drawn_mesh() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let gltf =
+        UnlitGltf::from_bytes(&animated_skinned_document()).expect("the embedded document parses");
+
+    assert_eq!(gltf.animation_count(), 1, "the document carries one clip");
+    assert_eq!(gltf.animation_name(0), Some("walk"));
+    assert!(
+        (gltf.animation_duration(0) - 2.0).abs() < 1e-6,
+        "the clip ends at its last keyframe"
+    );
+
+    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
+    let materials = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_materials(source, world, &images)
+    });
+    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+    let nodes = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    world.spawn((camera(),));
+    let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
+
+    let read = |gpu: &TestGpu, time: f32| {
+        gltf.apply_animation(&world, 0, time, &nodes);
+        gpu.render(&world);
+        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+    };
+
+    let rest = read(&gpu, 0.0);
+    let red = count_colour(&rest, [255, 0, 0], 4);
+    assert!(
+        red > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the quad covers the frame at the animation's start (red = {red})"
+    );
+
+    // The joint's second keyframe takes it past the viewport's edge, so the
+    // quad it skins follows it out of the frame.
+    let moved = read(&gpu, 2.0);
+    assert_eq!(
+        count_colour(&moved, [255, 0, 0], 4),
+        0,
+        "the animation carries the skinned quad off-screen"
+    );
+}
+
 /// A skinned quad follows its joint: at rest it covers the frame, and moving
 /// the joint entity slides the quad across it.
 ///
@@ -611,8 +718,10 @@ async fn node_hierarchy_translates_the_quad() {
         );
         // Drop what the document added and despawn its entities, so the next
         // closure starts from the same empty world.
-        for entity in entities {
-            world.despawn(entity);
+        for node in entities {
+            for entity in node.entities {
+                world.despawn(entity);
+            }
         }
         gpu.with_mesh_source(&world, |source, world| {
             gltf.unload_materials(source, world, &materials);
@@ -718,8 +827,12 @@ async fn a_blended_material_composites_over_the_frame() {
         .query::<&ZSortedDrawing>()
         .map(|(entity, _)| entity)
         .collect();
+    let spawned: Vec<Entity> = entities
+        .iter()
+        .flat_map(|node| node.entities.iter().copied())
+        .collect();
     assert_eq!(
-        z_sorted, entities,
+        z_sorted, spawned,
         "a blended primitive spawns with ZSortedDrawing"
     );
 
@@ -801,8 +914,10 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
             HEIGHT,
             texel_bytes(&target_handle),
         );
-        for entity in entities {
-            world.despawn(entity);
+        for node in entities {
+            for entity in node.entities {
+                world.despawn(entity);
+            }
         }
         gpu.with_mesh_source(&world, |source, world| {
             gltf.unload_materials(source, world, &materials);
@@ -861,8 +976,10 @@ async fn unload_empties_the_frame() {
         "the quad draws before unloading"
     );
 
-    for entity in entities {
-        world.despawn(entity);
+    for node in entities {
+        for entity in node.entities {
+            world.despawn(entity);
+        }
     }
     gpu.with_mesh_source(&world, |source, world| {
         gltf.unload_materials(source, world, &materials);
@@ -899,6 +1016,7 @@ gpu_tests! {
     a_blended_material_composites_over_the_frame,
     a_masked_material_discards_fragments_below_its_cutoff,
     a_skinned_quad_follows_its_joint,
+    an_animation_moves_the_drawn_mesh,
     a_morphed_quad_follows_its_weights,
     a_double_sided_material_draws_back_faces,
     unload_empties_the_frame,

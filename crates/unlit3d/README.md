@@ -355,13 +355,25 @@ What it does is patch the world you already render:
   variant would discard are rasterized instead. Nothing else about the variant
   changes, because the unlit fragment shader reads no normal — there is no
   back-face normal to reverse and no lighting equation to evaluate.
+- A document's animations are sampled rather than played:
+  `UnlitGltf::animation_count`, `UnlitGltf::animation_name` and
+  `UnlitGltf::animation_duration` describe the clips it carries, and
+  `UnlitGltf::apply_animation(world, clip, time, &spawned)` evaluates one at a
+  chosen time. It samples each channel — `STEP`, `LINEAR` or `CUBICSPLINE`, with
+  rotations slerped — into the animated nodes' local transforms, recomposes the
+  world matrices down the node hierarchy, and writes the result where the
+  spawned entities read it: each animated node's [`Transform`](components::Transform) (and
+  its descendants', which inherit the change), every [`SkinPose`](components::SkinPose) whose mesh
+  follows a moved joint, and every [`MorphWeights`](components::MorphWeights) a weight channel names.
+  It takes `&World`, so a caller drives it from wherever it already has one, and
+  it touches nothing the passed `&[GltfNode]` does not name.
 
 What loads: positions, UVs, vertex colors, joints, weights and indices;
 base-color textures and the materials that sample them; blended
 (`alphaMode: BLEND`), cut-off (`alphaMode: MASK`) and double-sided materials;
-skinned primitives; positional morph targets; and node hierarchies, accumulated
-into world transforms. What does not yet: normal and tangent morphs, normals,
-tangents and animations.
+skinned primitives; positional morph targets; node hierarchies, accumulated
+into world transforms; and the animations that drive them. What does not yet:
+normal and tangent morphs, normals and tangents.
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `UnlitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.

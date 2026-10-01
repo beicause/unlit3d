@@ -73,7 +73,8 @@ Not supported: lighting and shadows, and post-processing.
   patches its images, materials and meshes into the resource graph of a world
   you already render, unloads them again, and spawns the entities that draw the
   document's default scene. Node hierarchies, cameras, skinned and morphed
-  primitives, and blended or cut-off materials all come across.
+  primitives, blended or cut-off materials, and the document's animations —
+  sampled at a time you choose — all come across.
 - **Persistent, pooled GPU resources.** Draws work with raw `wgpu` resources;
   they live across frames, are rebuilt only when needed, and share and reuse the
   buffers uploads go through.
