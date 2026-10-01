@@ -21,13 +21,13 @@ use std::sync::Arc;
 use unlit_ecs::{TypeIdHashMap, World};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
-use unlit_wgpu::globals::{Globals, View};
+use unlit_wgpu::globals::{Globals, MaterialCutoff, View};
 use unlit_wgpu::mesh::{
     JointMatrix, MeshInstance, MeshMetadata, PoseBase, compress_weights, index_fits_u16,
 };
 use unlit_wgpu::pipeline::{
-    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    INSTANCE_SLOT, JOINTS_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
+    ALPHA_CUTOFF_BINDING, BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING,
+    FRAME_BINDING, INSTANCE_SLOT, JOINTS_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
     MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
     supports_storage_buffers,
 };
@@ -1492,9 +1492,76 @@ impl MeshSource {
         view_id: ResourceId<TextureView>,
         sampler_id: ResourceId<wgpu::Sampler>,
     ) -> Option<GpuMaterial> {
+        self.allocate_unlit_material_with(world, key, view_id, sampler_id, None)
+    }
+
+    /// Allocate the unlit material bind group for a variant that cuts its
+    /// fragments off at `cutoff`, and return its [GpuMaterial] handle.
+    ///
+    /// The cutoff is one material's own value, so it gets a uniform of its own
+    /// rather than a pipeline of its own — see
+    /// [`UnlitFlags::ALPHA_CUTOFF`](unlit_wgpu::pipeline::UnlitFlags::ALPHA_CUTOFF).
+    /// The buffer is a weak node depended on by the bind group, so removing
+    /// the material frees it at the next [`Self::maintain`] and the caller
+    /// never hands it back separately.
+    ///
+    /// Returns `None` when the key's options read no base-color texture, so
+    /// the variant binds no material group to put the cutoff in.
+    ///
+    /// # Panics
+    ///
+    /// If the key's options do not carry `ALPHA_CUTOFF`, whose binding is the
+    /// only place the value can go; if `view_id` or `sampler_id` is not a
+    /// texture view or sampler in the graph.
+    pub fn allocate_unlit_material_with_cutoff(
+        &mut self,
+        world: &World,
+        key: &UnlitPipelineKey,
+        view_id: ResourceId<TextureView>,
+        sampler_id: ResourceId<wgpu::Sampler>,
+        cutoff: f32,
+    ) -> Option<GpuMaterial> {
         if !key.options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) {
             return None;
         }
+        let device = self.device(world);
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("unlit3d::material::cutoff"),
+            size: size_of::<MaterialCutoff>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // A uniform the size of one struct: the value is written once and
+        // never grows, so it needs no staging ring.
+        self.queue(world)
+            .write_buffer(&buffer, 0, MaterialCutoff::new(cutoff).as_bytes());
+        let cutoff_id = Self::graph(world, self.context).insert_weak(buffer, None);
+        self.allocate_unlit_material_with(world, key, view_id, sampler_id, Some(cutoff_id))
+    }
+
+    /// The material group of `key`, binding `cutoff`'s uniform when the
+    /// variant declares one.
+    fn allocate_unlit_material_with(
+        &mut self,
+        world: &World,
+        key: &UnlitPipelineKey,
+        view_id: ResourceId<TextureView>,
+        sampler_id: ResourceId<wgpu::Sampler>,
+        cutoff: Option<ResourceId<wgpu::Buffer>>,
+    ) -> Option<GpuMaterial> {
+        if !key.options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) {
+            return None;
+        }
+        // The uniform and the binding that reads it are two halves of one
+        // decision: a variant that declares no cutoff binding has nowhere to
+        // put the buffer, and one that declares it has to be given a value.
+        assert_eq!(
+            cutoff.is_some(),
+            key.options.flags.contains(UnlitFlags::ALPHA_CUTOFF),
+            "a material that cuts its fragments off is allocated with \
+             `allocate_unlit_material_with_cutoff`, and one that does not \
+             with `allocate_unlit_material`"
+        );
         let layout = key
             .options
             .bind_group_layouts(&self.device(world))
@@ -1503,9 +1570,15 @@ impl MeshSource {
             .expect("the base-color variant declares a material group");
 
         let device = self.device(world).clone();
-        // The recipe reads the view and the sampler back out of the graph each
-        // time it runs, so replacing either one rebuilds the group from the
-        // current handle rather than the one captured here.
+        // The recipe reads the view, the sampler and the cutoff back out of
+        // the graph each time it runs, so replacing any of them rebuilds the
+        // group from the current handle rather than the one captured here.
+        let mut dependencies = ArrayVec::<ResourceId, 3>::new();
+        dependencies.push(view_id.erase());
+        dependencies.push(sampler_id.erase());
+        if let Some(cutoff_id) = cutoff {
+            dependencies.push(cutoff_id.erase());
+        }
         Some(self.allocate_material(
             world,
             move |graph| {
@@ -1518,22 +1591,34 @@ impl MeshSource {
                     .get(sampler_id)
                     .expect("the sampler is in the graph")
                     .clone();
+                let cutoff_buffer = cutoff.map(|cutoff_id| {
+                    graph
+                        .get(cutoff_id)
+                        .expect("the cutoff buffer is in the graph")
+                        .clone()
+                });
+                let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 3>::new();
+                entries.push(wgpu::BindGroupEntry {
+                    binding: BASE_COLOR_TEXTURE_BINDING,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                });
+                entries.push(wgpu::BindGroupEntry {
+                    binding: BASE_COLOR_SAMPLER_BINDING,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                });
+                if let Some(buffer) = &cutoff_buffer {
+                    entries.push(wgpu::BindGroupEntry {
+                        binding: ALPHA_CUTOFF_BINDING,
+                        resource: buffer.as_entire_binding(),
+                    });
+                }
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("unlit3d::material::bind_group"),
                     layout: &layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: BASE_COLOR_TEXTURE_BINDING,
-                            resource: wgpu::BindingResource::TextureView(&view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: BASE_COLOR_SAMPLER_BINDING,
-                            resource: wgpu::BindingResource::Sampler(&sampler),
-                        },
-                    ],
+                    entries: &entries,
                 })
             },
-            [view_id.erase(), sampler_id.erase()],
+            dependencies,
         ))
     }
 

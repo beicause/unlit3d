@@ -24,7 +24,7 @@ const IMG_OFFSET: u32 = 92; // the 80-byte PNG
 const BIN_LENGTH: u32 = 172;
 
 /// How a document is shaped: where the mesh node sits, whether the
-/// material samples a texture, and whether it blends.
+/// material samples a texture, and how it handles alpha.
 struct QuadDoc {
     /// The mesh node's local translation.
     translation: [f32; 3],
@@ -34,6 +34,9 @@ struct QuadDoc {
     /// `true`: the material states `alphaMode: BLEND` and a half-opaque
     /// base-color factor.
     blend: bool,
+    /// `Some(cutoff)`: the material states `alphaMode: MASK` with that
+    /// `alphaCutoff`, and a half-opaque base-color factor to compare against.
+    mask: Option<f32>,
 }
 
 /// The glTF JSON for one quad, as bytes for [`UnlitGltf::from_buffer`].
@@ -43,7 +46,13 @@ struct QuadDoc {
 /// in the XY plane, CCW when seen from +Z.
 fn quad_document(doc: &QuadDoc) -> Vec<u8> {
     let mut attributes = "\"POSITION\":0".to_string();
-    let alpha = if doc.blend { 0.5 } else { 1.0 };
+    // A half-opaque factor halves every fragment's alpha, which is what both
+    // a blend and a cutoff have something to say about.
+    let alpha = if doc.blend || doc.mask.is_some() {
+        0.5
+    } else {
+        1.0
+    };
     let mut material =
         format!("\"pbrMetallicRoughness\":{{\"baseColorFactor\":[1.0,1.0,1.0,{alpha}]");
     let mut textures = String::new();
@@ -59,6 +68,9 @@ fn quad_document(doc: &QuadDoc) -> Vec<u8> {
     material.push('}');
     if doc.blend {
         material.push_str(",\"alphaMode\":\"BLEND\"");
+    }
+    if let Some(cutoff) = doc.mask {
+        material.push_str(&format!(",\"alphaMode\":\"MASK\",\"alphaCutoff\":{cutoff}"));
     }
     let json = format!(
         concat!(
@@ -131,6 +143,7 @@ async fn textured_quad_renders_four_colours() {
         translation: [0.0, 0.0, 0.0],
         textured: true,
         blend: false,
+        mask: None,
     }))
     .expect("the embedded document parses");
 
@@ -182,6 +195,7 @@ async fn node_hierarchy_translates_the_quad() {
             translation,
             textured: true,
             blend: false,
+            mask: None,
         }))
         .expect("the embedded document parses");
         let images =
@@ -240,6 +254,7 @@ async fn untextured_material_draws_flat() {
         translation: [0.0, 0.0, 0.0],
         textured: false,
         blend: false,
+        mask: None,
     }))
     .expect("the embedded document parses");
     let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
@@ -283,6 +298,7 @@ async fn a_blended_material_composites_over_the_frame() {
         translation: [0.0, 0.0, 0.0],
         textured: false,
         blend: true,
+        mask: None,
     }))
     .expect("the embedded document parses");
 
@@ -332,6 +348,94 @@ async fn a_blended_material_composites_over_the_frame() {
     );
 }
 
+/// A material with `alphaMode: MASK` draws binary coverage: every fragment
+/// whose alpha falls below the cutoff is discarded, so the quad disappears
+/// whole when the cutoff clears its alpha and covers the frame when it does
+/// not. Nothing is composited either way, so the quad needs no z-sort.
+async fn a_masked_material_discards_fragments_below_its_cutoff() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+
+    let mut render_with_cutoff = |cutoff: f32| -> Vec<u8> {
+        let gltf = UnlitGltf::from_buffer(&quad_document(&QuadDoc {
+            translation: [0.0, 0.0, 0.0],
+            textured: true,
+            blend: false,
+            mask: Some(cutoff),
+        }))
+        .expect("the embedded document parses");
+
+        // The cutoff is a uniform the material binds, not a variant of its
+        // own: the key only declares that fragments are cut off.
+        let key = gpu.with_mesh_source(&world, |source, world| {
+            gltf.pipeline_key(&source.device(world), 0, 0)
+        });
+        assert!(
+            key.options
+                .flags
+                .contains(unlit_wgpu::pipeline::UnlitFlags::ALPHA_CUTOFF),
+            "an alphaMode MASK material cuts its fragments off"
+        );
+        assert!(
+            key.options.color_target.blend.is_none(),
+            "a cut-off material does not blend"
+        );
+
+        let images =
+            gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
+        let materials = gpu.with_mesh_source(&world, |source, world| {
+            gltf.insert_materials(source, world, &images)
+        });
+        let meshes =
+            gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+        let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+        assert!(
+            world.query::<&ZSortedDrawing>().next().is_none(),
+            "a cut-off material draws opaque coverage, so it needs no sort"
+        );
+
+        let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_masked_quad");
+        world.spawn((camera(),));
+        gpu.render(&world);
+        let px = read_texture_bytes(
+            &ctx,
+            &target_handle,
+            WIDTH,
+            HEIGHT,
+            texel_bytes(&target_handle),
+        );
+        for entity in entities {
+            world.despawn(entity);
+        }
+        gpu.with_mesh_source(&world, |source, world| {
+            gltf.unload_materials(source, world, &materials);
+            gltf.unload_meshes(source, world, &meshes);
+            gltf.unload_images(source, world, &images);
+        });
+        gpu.maintain(&world);
+        px
+    };
+
+    // The material's factor is half opaque, so a cutoff above it discards the
+    // whole quad and one below it keeps every fragment.
+    let drawn = render_with_cutoff(0.25);
+    let quarter = (WIDTH * HEIGHT / 4) as usize;
+    let red = count_colour(&drawn, [255, 0, 0], 0);
+    assert!(
+        red > quarter - 1_024 && red < quarter + 1_024,
+        "a cutoff below the quad's alpha keeps the red quarter: {red} texels"
+    );
+    let discarded = render_with_cutoff(0.75);
+    // The frame clears to black with no `RenderLoadOps` in the world, so a
+    // quad that drew nothing leaves the whole frame on the background.
+    assert_eq!(
+        count_pixels_off_background(&discarded, [0.0, 0.0, 0.0], 2),
+        0,
+        "a cutoff above the quad's alpha discards every fragment"
+    );
+}
+
 /// Unloading every resource empties the frame again.
 async fn unload_empties_the_frame() {
     let ctx = Ctx::headless().await;
@@ -341,6 +445,7 @@ async fn unload_empties_the_frame() {
         translation: [0.0, 0.0, 0.0],
         textured: true,
         blend: false,
+        mask: None,
     }))
     .expect("the embedded document parses");
     let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
@@ -395,6 +500,7 @@ gpu_tests! {
     node_hierarchy_translates_the_quad,
     untextured_material_draws_flat,
     a_blended_material_composites_over_the_frame,
+    a_masked_material_discards_fragments_below_its_cutoff,
     unload_empties_the_frame,
 }
 

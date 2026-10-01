@@ -325,12 +325,17 @@ What it does is patch the world you already render:
   the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
   material is `alphaMode: BLEND` is also marked
   [`ZSortedDrawing`](components::ZSortedDrawing), so the renderer composites it
-  back-to-front after the opaque geometry.
+  back-to-front after the opaque geometry. A `alphaMode: MASK` material instead
+  draws binary coverage: the fragment shader discards every fragment whose alpha
+  falls below the material's `alphaCutoff` (0.5 when the document leaves it
+  out), so the pipeline carries `UnlitFlags::ALPHA_CUTOFF`, the material binds
+  its cutoff as a uniform, and the primitive needs neither blending nor a sort.
 
 What loads: positions, UVs, vertex colors and indices; base-color textures and
-the materials that sample them; blended (`alphaMode: BLEND`) materials; and node
-hierarchies, accumulated into world transforms. What does not yet: skinning,
-morph targets, normals, tangents and alpha cutoff (`alphaMode: MASK`).
+the materials that sample them; blended (`alphaMode: BLEND`) and cut-off
+(`alphaMode: MASK`) materials; and node hierarchies, accumulated into world
+transforms. What does not yet: skinning, morph targets, normals, tangents and
+animations.
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `UnlitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.

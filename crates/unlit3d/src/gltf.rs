@@ -80,10 +80,13 @@
 //! The unlit renderer draws static meshes with a base-color texture and an
 //! instance tint, and composites a material whose `alphaMode` is `BLEND` —
 //! straight alpha, drawn z-sorted so overlapping surfaces layer correctly.
-//! Everything else a glTF document can carry is ignored: no skinning, morph
-//! targets, normals, tangents, alpha cutoff (`MASK`), double-sided rendering
-//! or animations. A mesh whose primitive uses techniques outside this subset
-//! still uploads and spawns — it just renders without them.
+//! A `MASK` material cuts its fragments off below its `alphaCutoff` instead,
+//! so it draws binary coverage: opaque where the texel is opaque enough and
+//! absent everywhere else, blending with nothing. Everything else a glTF
+//! document can carry is ignored: no skinning, morph targets, normals,
+//! tangents, double-sided rendering or animations. A mesh whose primitive uses
+//! techniques outside this subset still uploads and spawns — it just renders
+//! without them.
 //!
 //! Every handle returned here must be given back to the matching `unload_*`
 //! call when the resource is no longer wanted; the graph does not otherwise
@@ -103,6 +106,10 @@ use crate::mesh_source::{MeshSource, UnlitPipelineKey};
 use unlit_ecs::prelude::{Entity, World};
 use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions};
 use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
+
+/// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
+/// out.
+const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 
 /// A loaded glTF document, ready to be patched into another world.
 ///
@@ -228,7 +235,9 @@ impl UnlitGltf {
     /// `TEXCOORD_0` *and* its material declares a base-color texture, and the
     /// vertex-color stream when the primitive carries `COLOR_0`. A material
     /// whose `alphaMode` is `BLEND` also blends, so the key is drawn with
-    /// [`wgpu::BlendState::ALPHA_BLENDING`]; everything else follows
+    /// [`wgpu::BlendState::ALPHA_BLENDING`], and one whose `alphaMode` is
+    /// `MASK` carries [`UnlitFlags::ALPHA_CUTOFF`] so its fragments are
+    /// discarded below the cutoff; everything else follows
     /// [`UnlitOptions::standard`], so the key is exactly what
     /// [`Self::insert_mesh`] uploads with.
     pub fn pipeline_key(
@@ -263,6 +272,14 @@ impl UnlitGltf {
         // alpha, which is exactly what `ALPHA_BLENDING` composites.
         if material.alpha_mode() == gltf::material::AlphaMode::Blend {
             options.color_target.blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+        }
+        // A `MASK` material is not a translucent one: its fragments are either
+        // drawn whole or discarded, so it neither blends nor needs the
+        // back-to-front sort a blended one does. The cutoff itself is one
+        // material's own value, bound by the material rather than baked into
+        // the variant — see [`Self::insert_material`].
+        if texture.is_some() && alpha_cutoff(&material).is_some() {
+            options.flags |= UnlitFlags::ALPHA_CUTOFF;
         }
         UnlitPipelineKey::new(options)
     }
@@ -386,7 +403,8 @@ impl UnlitGltf {
         // texture; build the bind group against exactly that variant. Its
         // layout is the filtering one only when the image can be filtered, and
         // the sampler has to be non-filtering in step with it.
-        let key = textured_key(&source.device(world), image.filtering);
+        let cutoff = alpha_cutoff(&data);
+        let key = textured_key(&source.device(world), image.filtering, cutoff.is_some());
         let descriptor = sampler_descriptor(&info.texture().sampler());
         let descriptor = if image.filtering {
             descriptor
@@ -414,9 +432,13 @@ impl UnlitGltf {
             view
         };
 
-        let bind_group = source
-            .allocate_unlit_material(world, &key, view, sampler)
-            .expect("a base-color variant builds a material bind group");
+        let bind_group = match cutoff {
+            Some(cutoff) => {
+                source.allocate_unlit_material_with_cutoff(world, &key, view, sampler, cutoff)
+            }
+            None => source.allocate_unlit_material(world, &key, view, sampler),
+        }
+        .expect("a base-color variant builds a material bind group");
         Some(GltfMaterial {
             material,
             bind_group,
@@ -1012,19 +1034,29 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
 
 /// The key a material bind group is built against: the base-color variant.
 ///
-/// Only `BASE_COLOR_TEXTURE` and `texture_filtering` shape the material group's
-/// layout, so any key carrying them works; this is the one a
+/// Only `BASE_COLOR_TEXTURE`, `texture_filtering` and `ALPHA_CUTOFF` shape the
+/// material group's layout, so any key carrying them works; this is the one a
 /// base-color-textured primitive's [`UnlitGltf::pipeline_key`] derives to.
-fn textured_key(device: &wgpu::Device, filtering: bool) -> UnlitPipelineKey {
+fn textured_key(device: &wgpu::Device, filtering: bool, cutoff: bool) -> UnlitPipelineKey {
+    let mut flags = UnlitFlags::VERTEX_POSITION
+        | UnlitFlags::VERTEX_INSTANCE
+        | UnlitFlags::VERTEX_UV
+        | UnlitFlags::BASE_COLOR_TEXTURE;
+    flags.set(UnlitFlags::ALPHA_CUTOFF, cutoff);
     UnlitPipelineKey::new(UnlitOptions {
         texture_filtering: filtering,
-        ..UnlitOptions::standard(device).with_flags(
-            UnlitFlags::VERTEX_POSITION
-                | UnlitFlags::VERTEX_INSTANCE
-                | UnlitFlags::VERTEX_UV
-                | UnlitFlags::BASE_COLOR_TEXTURE,
-        )
+        ..UnlitOptions::standard(device).with_flags(flags)
     })
+}
+
+/// The alpha a `MASK` material's fragments are cut off at.
+///
+/// Returns `None` for every other `alphaMode`, for which there is nothing to
+/// cut. The value is the material's own `alphaCutoff`, or the spec's default
+/// when the material leaves it out.
+fn alpha_cutoff(material: &gltf::Material<'_>) -> Option<f32> {
+    (material.alpha_mode() == gltf::material::AlphaMode::Mask)
+        .then(|| material.alpha_cutoff().unwrap_or(DEFAULT_ALPHA_CUTOFF))
 }
 
 /// Translate a glTF sampler to wgpu terms.
