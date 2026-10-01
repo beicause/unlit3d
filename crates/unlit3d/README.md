@@ -231,9 +231,9 @@ free.
 The instance range is what keeps a merged draw correct: instance-stepped
 attributes are fetched at the instance's ordinal, and the instance buffer is
 packed in visible order, so instances `a..b` read exactly the records the
-separate draws would have read. Per-instance data — the transform, base color
-and pose base — lives in that stream, so merging changes nothing any instance
-reads.
+separate draws would have read. Per-instance data — the transform, base color,
+joint and morph bases, cutoff and metadata index — lives in that stream, so
+merging changes nothing any instance reads.
 
 Opaque draws are depth-tested with blending off, so their order is not
 observable and merging them is safe. Z-sorted entries never merge, with each
@@ -253,8 +253,9 @@ it is privileged: a caller's own family is registered through the same
 <details>
 <summary>What the built-in variant supports, and where pose data lives</summary>
 
-- The variant's flags cover position, UV, vertex color, per-instance transform
-  and color, base-color texture, skinning and morph targets. The pipeline is
+- The variant's flags cover position, UV, vertex color, each per-instance field
+  separately (transform, color, joint base, morph base, metadata index), the
+  base-color texture and cutoff, skinning and morph targets. The pipeline is
   then specialized for the frame's target by `unlit_wgpu`'s
   [`SurfaceSpecializer`](unlit_wgpu::specialize::SurfaceSpecializer).
 - Joint matrices and morph weights are **not** in the mesh's bind group. Meshes
@@ -267,8 +268,11 @@ it is privileged: a caller's own family is registered through the same
     Every visible instance's joint matrices are packed into one array and its
     morph weights into another.
   - **The locating information goes into the instance stream.** Each instance's
-    per-instance record carries a pose base (`Uint32x2`: the joint-matrix base
-    and the weight base), which the shader uses to find its own slice.
+    per-instance record carries a joint-matrix base and, separately, a morph
+    weight base (two `Uint32`s, since skinning and morphing are independent),
+    which the shader uses to find its own slice. The record also carries the
+    base color, the cutoff an `alphaMode: MASK` fragment is compared against,
+    and the mesh metadata index.
     Per-instance-stepped attributes are addressed by instance index, so merging
     into an instanced draw changes nothing any instance reads — several
     instances of one mesh can fold into a single draw while each keeps its own
@@ -328,8 +332,10 @@ What it does is patch the world you already render:
   back-to-front after the opaque geometry. A `alphaMode: MASK` material instead
   draws binary coverage: the fragment shader discards every fragment whose alpha
   falls below the material's `alphaCutoff` (0.5 when the document leaves it
-  out), so the pipeline carries `UnlitFlags::ALPHA_CUTOFF`, the material binds
-  its cutoff as a uniform, and the primitive needs neither blending nor a sort.
+  out), so the pipeline carries `UnlitFlags::ALPHA_CUTOFF`, the spawned entity
+  carries an [`InstanceCutoff`](components::InstanceCutoff) whose value travels
+  in the per-instance stream, and the primitive needs neither blending nor a
+  sort.
 - A primitive carrying both `JOINTS_0` and `WEIGHTS_0` is uploaded with its
   joint stream and drawn skinned: `spawn_node`/`spawn_default_scene` create a
   [`SkinPose`](components::SkinPose) entity for the node's skin and put a
