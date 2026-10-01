@@ -90,10 +90,11 @@
 //! target that displaces positions uploads those displacements and spawns with
 //! a [`MorphBinding`] to a [`MorphWeights`] entity holding the node's starting
 //! weights — see [`UnlitGltf::morph_weights`] — so writing that entity is how
-//! a caller morphs the mesh. Everything else a glTF document can carry is
-//! ignored: no normals, tangents, double-sided rendering or animations. A mesh
-//! whose primitive uses techniques outside this subset still uploads and
-//! spawns — it just renders without them.
+//! a caller morphs the mesh. A `doubleSided` material rasterizes its back
+//! faces instead of culling them, so its geometry draws from either side.
+//! Everything else a glTF document can carry is ignored: no normals, tangents
+//! or animations. A mesh whose primitive uses techniques outside this subset
+//! still uploads and spawns — it just renders without them.
 //!
 //! Every handle returned here must be given back to the matching `unload_*`
 //! call when the resource is no longer wanted; the graph does not otherwise
@@ -1234,11 +1235,6 @@ fn textured_key(device: &wgpu::Device, filtering: bool, cutoff: bool) -> UnlitPi
     })
 }
 
-/// The alpha a `MASK` material's fragments are cut off at.
-///
-/// Returns `None` for every other `alphaMode`, for which there is nothing to
-/// cut. The value is the material's own `alphaCutoff`, or the spec's default
-/// when the material leaves it out.
 /// How many of a primitive's morph targets displace positions.
 ///
 /// A target may displace only normals or tangents; those are ignored here, and
@@ -1254,6 +1250,11 @@ fn morph_target_count(primitive: &gltf::Primitive<'_>) -> usize {
         .count()
 }
 
+/// The alpha a `MASK` material's fragments are cut off at.
+///
+/// Returns `None` for every other `alphaMode`, for which there is nothing to
+/// cut. The value is the material's own `alphaCutoff`, or the spec's default
+/// when the material leaves it out.
 fn alpha_cutoff(material: &gltf::Material<'_>) -> Option<f32> {
     (material.alpha_mode() == gltf::material::AlphaMode::Mask)
         .then(|| material.alpha_cutoff().unwrap_or(DEFAULT_ALPHA_CUTOFF))
