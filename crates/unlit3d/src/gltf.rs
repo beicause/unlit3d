@@ -40,7 +40,7 @@
 //! ```
 //!
 //! Spawning entities never spawns a camera: the renderer draws with the first
-//! [`Camera`](crate::components::Camera) in the world, so one belongs to the
+//! [`Camera`] in the world, so one belongs to the
 //! caller. A document that ships its own cameras can offer one with
 //! [`UnlitGltf::spawn_camera`], which is worth doing only for a world that has
 //! none.
@@ -82,11 +82,14 @@
 //! straight alpha, drawn z-sorted so overlapping surfaces layer correctly.
 //! A `MASK` material cuts its fragments off below its `alphaCutoff` instead,
 //! so it draws binary coverage: opaque where the texel is opaque enough and
-//! absent everywhere else, blending with nothing. Everything else a glTF
-//! document can carry is ignored: no skinning, morph targets, normals,
-//! tangents, double-sided rendering or animations. A mesh whose primitive uses
-//! techniques outside this subset still uploads and spawns — it just renders
-//! without them.
+//! absent everywhere else, blending with nothing. A primitive carrying both
+//! `JOINTS_0` and `WEIGHTS_0` uploads its actual joint stream and draws
+//! skinned; [`UnlitGltf::skin_pose`] turns the node's skin into the
+//! [`SkinPose`] its joints deform by, and spawning such a node creates the
+//! pose entity its mesh binds to. Everything else a glTF document can carry is
+//! ignored: no morph targets, normals, tangents, double-sided rendering or
+//! animations. A mesh whose primitive uses techniques outside this subset
+//! still uploads and spawns — it just renders without them.
 //!
 //! Every handle returned here must be given back to the matching `unload_*`
 //! call when the resource is no longer wanted; the graph does not otherwise
@@ -99,11 +102,15 @@
 use std::path::Path;
 
 use crate::components::{
-    Camera, GpuMaterial, GpuMesh, InstanceColor, Transform, UnlitPipeline, ZSortedDrawing,
+    Camera, GpuMaterial, GpuMesh, InstanceColor, SkinBinding, SkinPose, Transform, UnlitPipeline,
+    ZSortedDrawing,
 };
 use crate::mesh::UnlitMeshDesc;
 use crate::mesh_source::{MeshSource, UnlitPipelineKey};
-use unlit_ecs::prelude::{Entity, World};
+use unlit_ecs::{
+    ArchetypeBuilder,
+    prelude::{Entity, World},
+};
 use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions};
 use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
 
@@ -116,7 +123,7 @@ const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
 /// Construct with [`Self::load`] or [`Self::from_buffer`]. The document is
 /// parsed and its buffers and images decoded eagerly; no GPU resource exists
 /// until an `insert_*` call uploads one into some world's
-/// [`MeshSource`](crate::mesh_source::MeshSource).
+/// [`MeshSource`].
 pub struct UnlitGltf {
     document: gltf::Document,
     buffers: Vec<gltf::buffer::Data>,
@@ -232,8 +239,9 @@ impl UnlitGltf {
     ///
     /// The key always carries the position and instance streams. It reads the
     /// UV and base-color-texture streams when the primitive carries
-    /// `TEXCOORD_0` *and* its material declares a base-color texture, and the
-    /// vertex-color stream when the primitive carries `COLOR_0`. A material
+    /// `TEXCOORD_0` *and* its material declares a base-color texture, the
+    /// vertex-color stream when the primitive carries `COLOR_0`, and the joint
+    /// stream when it carries both `JOINTS_0` and `WEIGHTS_0`. A material
     /// whose `alphaMode` is `BLEND` also blends, so the key is drawn with
     /// [`wgpu::BlendState::ALPHA_BLENDING`], and one whose `alphaMode` is
     /// `MASK` carries [`UnlitFlags::ALPHA_CUTOFF`] so its fragments are
@@ -255,6 +263,14 @@ impl UnlitGltf {
         }
         if primitive.get(&gltf::Semantic::Colors(0)).is_some() {
             flags |= UnlitFlags::VERTEX_COLOR;
+        }
+        // The joint stream is only useful with a skin, and a document can
+        // carry `JOINTS_0`/`WEIGHTS_0` without one. Requiring both keeps a
+        // mesh whose node names no skin in the opaque, undeformed path.
+        if primitive.get(&gltf::Semantic::Joints(0)).is_some()
+            && primitive.get(&gltf::Semantic::Weights(0)).is_some()
+        {
+            flags |= UnlitFlags::VERTEX_JOINTS;
         }
         let mut options = UnlitOptions::standard(device).with_flags(flags);
         // The texture the material samples decides whether the base-color
@@ -526,6 +542,12 @@ impl UnlitGltf {
             .read_colors(0)
             .map(|colors| colors.into_rgba_u8().collect());
         let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
+        let joints: Option<Vec<[u16; 4]>> = reader
+            .read_joints(0)
+            .map(|joints| joints.into_u16().collect());
+        let weights: Option<Vec<[f32; 4]>> = reader
+            .read_weights(0)
+            .map(|weights| weights.into_f32().collect());
 
         let gpu_mesh = source.allocate_unlit_mesh(
             world,
@@ -546,8 +568,24 @@ impl UnlitGltf {
                             .expect("the key reads colors, so the primitive has COLOR_0")
                     }),
                 indices: indices.as_deref(),
-                joints: None,
-                weights: None,
+                joints: key
+                    .options
+                    .flags
+                    .contains(UnlitFlags::VERTEX_JOINTS)
+                    .then(|| {
+                        joints
+                            .as_deref()
+                            .expect("the key reads joints, so the primitive has JOINTS_0")
+                    }),
+                weights: key
+                    .options
+                    .flags
+                    .contains(UnlitFlags::VERTEX_JOINTS)
+                    .then(|| {
+                        weights
+                            .as_deref()
+                            .expect("the key reads joints, so the primitive has WEIGHTS_0")
+                    }),
                 morph_targets: &[],
             },
         );
@@ -586,6 +624,69 @@ impl UnlitGltf {
         }
     }
 
+    // -- skins ----------------------------------------------------------------
+
+    /// The [`SkinPose`] of a node's skin, at the node's rest transform.
+    ///
+    /// A document carries a skin as a list of joint nodes and one inverse bind
+    /// matrix per joint; the pose a renderer wants is a matrix per joint, which
+    /// is what this builds:
+    ///
+    /// ```text
+    /// joint matrix = inverse(mesh node world) * joint node world * inverse bind matrix
+    /// ```
+    ///
+    /// The pose is the *rest* pose — the document's node transforms as loaded,
+    /// which is the transform each joint was bound in, so the deformation is
+    /// the identity everywhere. A caller that animates joints moves the joint
+    /// nodes and rebuilds the pose, or writes the matrices itself; what this
+    /// gives is a valid pose to start from and the joint count the mesh's
+    /// joint indices address.
+    ///
+    /// `node` is the node the mesh is attached to, whose skin the pose comes
+    /// from. A node with no skin, or a skin with no `inverseBindMatrices`, gets
+    /// matrices that deform nothing: the identity per joint, which is what a
+    /// skin bound at rest means.
+    ///
+    /// The returned pose has one matrix per joint of the skin, in the order the
+    /// mesh's joint indices address them.
+    pub fn skin_pose(&self, node: usize) -> SkinPose {
+        let node_data = self.node(node);
+        let Some(skin) = node_data.skin() else {
+            return SkinPose::default();
+        };
+        let reader = skin.reader(|buffer| Some(&self.buffers[buffer.index()]));
+        let inverse_bind: Option<Vec<glam::Mat4>> = reader.read_inverse_bind_matrices().map(|m| {
+            m.map(|matrix| glam::Mat4::from_cols_array_2d(&matrix))
+                .collect()
+        });
+        // A skinned mesh is deformed in its own space, so the mesh node's world
+        // matrix has to come back out of the joint's: a joint's inverse bind
+        // matrix already encodes the joint's rest transform, and the mesh node
+        // moves the whole skinned result.
+        let world_to_mesh = self.node_matrices[node].inverse();
+        let matrices: Vec<glam::Mat4> = skin
+            .joints()
+            .enumerate()
+            .map(|(joint, joint_node)| {
+                let joint_world = self.node_matrices[joint_node.index()];
+                let bind = inverse_bind.as_ref().map_or(glam::Mat4::IDENTITY, |ibm| {
+                    *ibm.get(joint).expect("one inverse bind matrix per joint")
+                });
+                world_to_mesh * joint_world * bind
+            })
+            .collect();
+        SkinPose::new(matrices)
+    }
+
+    /// The number of joints a node's skin has.
+    ///
+    /// `None` when the node names no skin, so a caller can walk a document
+    /// without asking first.
+    pub fn skin_joint_count(&self, node: usize) -> Option<usize> {
+        Some(self.node(node).skin()?.joints().count())
+    }
+
     // -- spawning -------------------------------------------------------------
 
     /// Spawn the entities that draw `node`'s mesh into `world`.
@@ -597,7 +698,10 @@ impl UnlitGltf {
     /// texture also carries the matching [`GpuMaterial`]. A blended primitive
     /// ([`gltf::material::AlphaMode::Blend`]) also carries
     /// [`ZSortedDrawing`], so it is drawn after the opaque geometry and
-    /// composited back-to-front. Children are not spawned; use
+    /// composited back-to-front. A skinned primitive (one whose key reads
+    /// joints) carries a [`SkinBinding`] to the node's [`SkinPose`], which is
+    /// spawned on an entity of its own so several meshes can share it — see
+    /// [`Self::skin_pose`]. Children are not spawned; use
     /// [`Self::spawn_default_scene`] for the whole scene.
     ///
     /// # Panics
@@ -615,6 +719,10 @@ impl UnlitGltf {
         let transform = self.node_transforms[node].clone();
         let node = self.node(node);
         let mut entities = Vec::new();
+        // One pose entity per skinned node, shared by every primitive it
+        // draws: the joints are the node's skin, and two primitives of one
+        // mesh deform together.
+        let mut pose: Option<Entity> = None;
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
                 let mesh_handle = meshes
@@ -639,37 +747,35 @@ impl UnlitGltf {
                     .contains(UnlitFlags::BASE_COLOR_TEXTURE)
                     .then(|| self.primitive_material(primitive, materials));
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
-                let bundle = (
-                    transform.clone(),
-                    mesh_handle.mesh.clone(),
-                    UnlitPipeline::new(mesh_handle.key.clone()),
-                    InstanceColor::new(tint),
-                );
-                match (material, z_sorted) {
-                    (Some(material), true) => entities.push(world.spawn((
-                        bundle.0,
-                        bundle.1,
-                        bundle.2,
-                        material.bind_group.clone(),
-                        bundle.3,
-                        ZSortedDrawing,
-                    ))),
-                    (Some(material), false) => entities.push(world.spawn((
-                        bundle.0,
-                        bundle.1,
-                        bundle.2,
-                        material.bind_group.clone(),
-                        bundle.3,
-                    ))),
-                    (None, true) => entities.push(world.spawn((
-                        bundle.0,
-                        bundle.1,
-                        bundle.2,
-                        bundle.3,
-                        ZSortedDrawing,
-                    ))),
-                    (None, false) => entities.push(world.spawn(bundle)),
+                let skinned = mesh_handle
+                    .key
+                    .options
+                    .flags
+                    .contains(UnlitFlags::VERTEX_JOINTS);
+                let binding = skinned.then(|| {
+                    let pose =
+                        *pose.get_or_insert_with(|| world.spawn((self.skin_pose(node.index()),)));
+                    SkinBinding::new(pose)
+                });
+                // The components a primitive carries vary by material,
+                // skin and blend mode, so the bundle is assembled rather than
+                // written as a tuple: an absent material is a component left
+                // out, not a `None` the renderer would have to look through.
+                let mut bundle = ArchetypeBuilder::new();
+                bundle.push(transform.clone());
+                bundle.push(mesh_handle.mesh.clone());
+                bundle.push(UnlitPipeline::new(mesh_handle.key.clone()));
+                bundle.push(InstanceColor::new(tint));
+                if let Some(material) = material {
+                    bundle.push(material.bind_group.clone());
                 }
+                if let Some(binding) = binding {
+                    bundle.push(binding);
+                }
+                if z_sorted {
+                    bundle.push(ZSortedDrawing);
+                }
+                entities.push(world.spawn(bundle));
             }
         }
         entities
@@ -1297,6 +1403,157 @@ mod tests {
             .map(|bytes| f32::from_le_bytes(*bytes))
             .collect::<Vec<_>>();
         assert_eq!(channels, vec![0.0, 0.5, 1.0, 0.0]);
+    }
+
+    /// A GLB holding one skinned triangle: node 0 draws mesh 0 under skin 0,
+    /// whose single joint is node 1 at `translation`.
+    ///
+    /// The buffer carries the positions, the joint indices and weights that
+    /// name the joint, the skin's inverse bind matrix (the identity, so the
+    /// joint's own transform is what moves the vertex) and the index buffer.
+    /// The JSON is written out by hand rather than through a serializer,
+    /// because the crate carries no JSON dependency beyond the loader's own.
+    fn skinned_document(translation: [f32; 3]) -> Vec<u8> {
+        let mut bin = Vec::new();
+        let mut views: Vec<String> = Vec::new();
+        let mut add = |bin: &mut Vec<u8>, bytes: &[u8], target: Option<u32>| {
+            while !bin.len().is_multiple_of(4) {
+                bin.push(0);
+            }
+            let target = target.map_or(String::new(), |target| format!(r#", "target": {target}"#));
+            views.push(format!(
+                r#"{{ "buffer": 0, "byteOffset": {}, "byteLength": {}{target} }}"#,
+                bin.len(),
+                bytes.len()
+            ));
+            bin.extend_from_slice(bytes);
+            views.len() - 1
+        };
+
+        let positions: Vec<u8> = [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        let position_view = add(&mut bin, &positions, Some(34962));
+        let joints: Vec<u8> = (0..3)
+            .flat_map(|_| [0u16, 0, 0, 0])
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let joint_view = add(&mut bin, &joints, Some(34962));
+        let weights: Vec<u8> = (0..3)
+            .flat_map(|_| [1.0f32, 0.0, 0.0, 0.0])
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let weight_view = add(&mut bin, &weights, Some(34962));
+        let identity: Vec<u8> = [
+            1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]
+        .iter()
+        .flat_map(|f| f.to_le_bytes())
+        .collect();
+        let bind_view = add(&mut bin, &identity, None);
+        let indices: Vec<u8> = [0u16, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+        let index_view = add(&mut bin, &indices, Some(34963));
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},
+                "scene":0,
+                "scenes":[{{"nodes":[0]}}],
+                "nodes":[{{"mesh":0,"skin":0}},
+                         {{"name":"joint","translation":[{x},{y},{z}]}}],
+                "skins":[{{"joints":[1],"inverseBindMatrices":3}}],
+                "meshes":[{{"primitives":[{{"attributes":{{"POSITION":0,"JOINTS_0":1,"WEIGHTS_0":2}},
+                                            "indices":4}}]}}],
+                "accessors":[{{"bufferView":{position_view},"componentType":5126,"count":3,
+                               "type":"VEC3","min":[0.0,0.0,0.0],"max":[1.0,1.0,0.0]}},
+                             {{"bufferView":{joint_view},"componentType":5123,"count":3,"type":"VEC4"}},
+                             {{"bufferView":{weight_view},"componentType":5126,"count":3,"type":"VEC4"}},
+                             {{"bufferView":{bind_view},"componentType":5126,"count":1,"type":"MAT4"}},
+                             {{"bufferView":{index_view},"componentType":5123,"count":3,"type":"SCALAR"}}],
+                "bufferViews":[{}],
+                "buffers":[{{"byteLength":{}}}]}}"#,
+            views.join(", "),
+            bin.len(),
+            x = translation[0],
+            y = translation[1],
+            z = translation[2],
+        );
+        let mut json = json.into_bytes();
+        while !json.len().is_multiple_of(4) {
+            json.push(b' ');
+        }
+        let mut glb = Vec::new();
+        glb.extend_from_slice(&0x4654_6C67u32.to_le_bytes());
+        glb.extend_from_slice(&2u32.to_le_bytes());
+        glb.extend_from_slice(&((12 + 8 + json.len() + 8 + bin.len()) as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x4E4F_534Au32.to_le_bytes());
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&0x004E_4942u32.to_le_bytes());
+        glb.extend_from_slice(&bin);
+        glb
+    }
+
+    #[test]
+    fn a_rest_skin_pose_deforms_nothing() {
+        // The joint sits at rest, so its world matrix is the inverse bind
+        // matrix's inverse and every joint matrix comes out the identity: the
+        // pose a document uploads at rest has to leave the mesh exactly where
+        // it is.
+        let gltf = UnlitGltf::from_buffer(&skinned_document([0.0, 0.0, 0.0]))
+            .expect("the skinned document parses");
+        let pose = gltf.skin_pose(0);
+        assert_eq!(pose.matrices.len(), 1, "the skin has one joint");
+        assert!(
+            pose.matrices[0].abs_diff_eq(glam::Mat4::IDENTITY, 1e-6),
+            "{}",
+            pose.matrices[0]
+        );
+    }
+
+    #[test]
+    fn a_joint_away_from_its_bind_pose_moves_the_mesh() {
+        // An inverse bind matrix records where a joint was *bound*, so a joint
+        // node that sits somewhere else pulls the vertices it weights to
+        // itself: the pose is the joint's world matrix against its bind
+        // matrix, not the identity.
+        let gltf = UnlitGltf::from_buffer(&skinned_document([3.0, -2.0, 1.0]))
+            .expect("the skinned document parses");
+        let pose = gltf.skin_pose(0);
+        assert!(
+            pose.matrices[0].abs_diff_eq(
+                glam::Mat4::from_translation(glam::Vec3::new(3.0, -2.0, 1.0)),
+                1e-6
+            ),
+            "{}",
+            pose.matrices[0]
+        );
+    }
+
+    #[test]
+    fn a_skinned_primitive_uploads_its_joint_stream() {
+        // The key reads joints and the mesh is uploaded with them, so the
+        // variant the primitive draws never asks for a stream it does not have.
+        let gltf = UnlitGltf::from_buffer(&skinned_document([0.0, 0.0, 0.0]))
+            .expect("the skinned document parses");
+        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let key = gltf.pipeline_key(&device, 0, 0);
+        assert!(key.options.flags.contains(UnlitFlags::VERTEX_JOINTS));
+        assert!(key.options.flags.contains(UnlitFlags::VERTEX_POSITION));
+        assert!(!key.options.flags.contains(UnlitFlags::VERTEX_UV));
+    }
+
+    #[test]
+    fn a_node_without_a_skin_has_no_pose() {
+        let gltf = UnlitGltf::from_buffer(&skinned_document([0.0, 0.0, 0.0]))
+            .expect("the skinned document parses");
+        assert_eq!(gltf.skin_joint_count(0), Some(1));
+        assert_eq!(gltf.skin_joint_count(1), None);
+        assert!(gltf.skin_pose(1).matrices.is_empty());
     }
 
     #[test]

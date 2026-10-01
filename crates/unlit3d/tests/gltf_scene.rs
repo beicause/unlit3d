@@ -23,6 +23,15 @@ const IDX_OFFSET: u32 = 80; // 6 × u16
 const IMG_OFFSET: u32 = 92; // the 80-byte PNG
 const BIN_LENGTH: u32 = 172;
 
+/// A second buffer: one quad skinned to a single joint, four vertices with
+/// positions (f32), joint indices (u16), weights (f32), an inverse bind
+/// matrix (f32), six indices (u16) and one red vertex colour per vertex.
+///
+/// The inverse bind matrix is the identity, so the joint is *bound* at the
+/// origin and any transform on the joint node moves the quad by exactly that
+/// transform — which is what makes a rest pose and a moved joint tell apart.
+const SKINNED_BIN_BASE64: &str = "Zmbmv83MrL8AAAAAZmbmP83MrL8AAAAAZmbmP83MrD8AAAAAZmbmv83MrD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAACAPwAAAQACAAAAAgADAP8AAP//AAD//wAA//8AAP8=";
+
 /// How a document is shaped: where the mesh node sits, whether the
 /// material samples a texture, and how it handles alpha.
 struct QuadDoc {
@@ -131,6 +140,141 @@ fn camera() -> Camera {
         glam::Vec3::ZERO,
         WIDTH as f32 / HEIGHT as f32,
     )
+}
+
+/// The glTF JSON of one quad skinned to a single joint, whose node sits at
+/// `joint_translation`.
+///
+/// The mesh node sits at the origin, so the joint's world transform is
+/// exactly `joint_translation` and the pose is the matrix that moves the quad
+/// by it. The mesh carries a red vertex colour, so the quad it draws is one
+/// flat colour and a test can count it.
+fn skinned_document(joint_translation: [f32; 3]) -> Vec<u8> {
+    format!(
+        concat!(
+            "{{\"asset\":{{\"version\":\"2.0\"}},\"scene\":0,",
+            "\"scenes\":[{{\"nodes\":[0]}}],",
+            "\"nodes\":[{{\"mesh\":0,\"skin\":0}},",
+            "{{\"name\":\"joint\",\"translation\":[{},{},{}]}}],",
+            "\"skins\":[{{\"joints\":[1],\"inverseBindMatrices\":3}}],",
+            "\"meshes\":[{{\"primitives\":[{{\"attributes\":",
+            "{{\"POSITION\":0,\"JOINTS_0\":1,\"WEIGHTS_0\":2,\"COLOR_0\":5}},",
+            "\"indices\":4,\"material\":0}}]}}],",
+            "\"materials\":[{{\"pbrMetallicRoughness\":{{\"baseColorFactor\":[1.0,1.0,1.0,1.0]}}}}],",
+            "\"accessors\":[",
+            "{{\"bufferView\":0,\"componentType\":5126,\"count\":4,\"type\":\"VEC3\",",
+            "\"min\":[-1.8,-1.35,0.0],\"max\":[1.8,1.35,0.0]}},",
+            "{{\"bufferView\":1,\"componentType\":5123,\"count\":4,\"type\":\"VEC4\"}},",
+            "{{\"bufferView\":2,\"componentType\":5126,\"count\":4,\"type\":\"VEC4\"}},",
+            "{{\"bufferView\":3,\"componentType\":5126,\"count\":1,\"type\":\"MAT4\"}},",
+            "{{\"bufferView\":4,\"componentType\":5123,\"count\":6,\"type\":\"SCALAR\"}},",
+            "{{\"bufferView\":5,\"componentType\":5121,\"count\":4,\"type\":\"VEC4\",",
+            "\"normalized\":true}}],",
+            "\"bufferViews\":[",
+            "{{\"buffer\":0,\"byteOffset\":0,\"byteLength\":48,\"target\":34962}},",
+            "{{\"buffer\":0,\"byteOffset\":48,\"byteLength\":32,\"target\":34962}},",
+            "{{\"buffer\":0,\"byteOffset\":80,\"byteLength\":64,\"target\":34962}},",
+            "{{\"buffer\":0,\"byteOffset\":144,\"byteLength\":64}},",
+            "{{\"buffer\":0,\"byteOffset\":208,\"byteLength\":12,\"target\":34963}},",
+            "{{\"buffer\":0,\"byteOffset\":220,\"byteLength\":16,\"target\":34962}}],",
+            "\"buffers\":[{{\"byteLength\":236,",
+            "\"uri\":\"data:application/octet-stream;base64,{}\"}}]}}"
+        ),
+        joint_translation[0],
+        joint_translation[1],
+        joint_translation[2],
+        SKINNED_BIN_BASE64,
+    )
+    .into_bytes()
+}
+
+/// A skinned quad follows its joint: at rest it covers the frame, and moving
+/// the joint entity slides the quad across it.
+///
+/// The pose is a component of its own entity — the one `spawn_default_scene`
+/// created and the drawn mesh binds to — so writing it is how a caller
+/// animates the skin.
+async fn a_skinned_quad_follows_its_joint() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+
+    // The joint at rest: the pose's own matrix is the identity, so the quad
+    // is exactly where the document put it.
+    let gltf = UnlitGltf::from_buffer(&skinned_document([0.0, 0.0, 0.0]))
+        .expect("the embedded document parses");
+    assert_eq!(gltf.skin_joint_count(0), Some(1), "the skin has one joint");
+
+    let images = gpu.with_mesh_source(&world, |source, world| gltf.insert_images(source, world));
+    let materials = gpu.with_mesh_source(&world, |source, world| {
+        gltf.insert_materials(source, world, &images)
+    });
+    let meshes = gpu.with_mesh_source(&world, |source, world| gltf.insert_meshes(source, world));
+    assert!(
+        meshes[0]
+            .key
+            .options
+            .flags
+            .contains(unlit_wgpu::pipeline::UnlitFlags::VERTEX_JOINTS),
+        "the primitive declares JOINTS_0, so the key reads joints"
+    );
+
+    let entities = gltf.spawn_default_scene(&mut world, &meshes, &materials);
+    assert_eq!(entities.len(), 1, "one mesh node draws one entity");
+
+    // The drawn entity names the pose entity the spawn created, and that
+    // entity holds the rest pose: the identity, one matrix per joint.
+    let pose = {
+        let (_, binding) = world
+            .query::<&SkinBinding>()
+            .next()
+            .expect("a skinned mesh binds to a pose");
+        binding.pose
+    };
+    let rest = world
+        .get::<SkinPose>(pose)
+        .expect("the pose entity carries a `SkinPose`")
+        .matrices
+        .clone();
+    assert_eq!(rest.len(), 1, "one joint, one matrix");
+    assert!(
+        rest[0].abs_diff_eq(glam::Mat4::IDENTITY, 1e-6),
+        "the rest pose deforms nothing: {}",
+        rest[0]
+    );
+
+    world.spawn((camera(),));
+    let target = gpu.bind_offscreen_target(&world, "test::gltf_skinned");
+
+    let read = |gpu: &TestGpu| {
+        gpu.render(&world);
+        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+    };
+    let before = read(&gpu);
+    let red = count_colour(&before, [255, 0, 0], 4);
+    assert!(
+        red > (WIDTH * HEIGHT * 85 / 100) as usize,
+        "the skinned quad covers the frame at rest (red = {red})"
+    );
+
+    // Move the joint a whole screen to the left: the quad follows it, and the
+    // right side of the frame is left empty.
+    *world
+        .get_mut::<SkinPose>(pose)
+        .expect("the pose entity carries a `SkinPose`") =
+        SkinPose::new(vec![glam::Mat4::from_translation(glam::Vec3::new(
+            -5.0, 0.0, 0.0,
+        ))]);
+    let after = read(&gpu);
+    let red_after = count_colour(&after, [255, 0, 0], 4);
+    assert!(
+        red_after < red,
+        "moving the joint must move the geometry (before = {red}, after = {red_after})"
+    );
+    assert_eq!(
+        red_after, 0,
+        "a joint moved past the viewport takes the quad with it"
+    );
 }
 
 /// A textured quad covers the frame in four colour quarters: the rows of
@@ -501,6 +645,7 @@ gpu_tests! {
     untextured_material_draws_flat,
     a_blended_material_composites_over_the_frame,
     a_masked_material_discards_fragments_below_its_cutoff,
+    a_skinned_quad_follows_its_joint,
     unload_empties_the_frame,
 }
 

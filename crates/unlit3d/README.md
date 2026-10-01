@@ -330,12 +330,21 @@ What it does is patch the world you already render:
   falls below the material's `alphaCutoff` (0.5 when the document leaves it
   out), so the pipeline carries `UnlitFlags::ALPHA_CUTOFF`, the material binds
   its cutoff as a uniform, and the primitive needs neither blending nor a sort.
+- A primitive carrying both `JOINTS_0` and `WEIGHTS_0` is uploaded with its
+  joint stream and drawn skinned: `spawn_node`/`spawn_default_scene` create a
+  [`SkinPose`](components::SkinPose) entity for the node's skin and put a
+  [`SkinBinding`](components::SkinBinding) on the mesh, so writing that pose's
+  matrices is how a caller animates the skeleton.
+  `UnlitGltf::skin_pose` builds the document's rest pose — one matrix per
+  joint, from the joint nodes' world transforms and the skin's inverse bind
+  matrices — as a starting point, and `UnlitGltf::skin_joint_count` reports how
+  many joints a node's skin has.
 
-What loads: positions, UVs, vertex colors and indices; base-color textures and
-the materials that sample them; blended (`alphaMode: BLEND`) and cut-off
-(`alphaMode: MASK`) materials; and node hierarchies, accumulated into world
-transforms. What does not yet: skinning, morph targets, normals, tangents and
-animations.
+What loads: positions, UVs, vertex colors, joints, weights and indices;
+base-color textures and the materials that sample them; blended
+(`alphaMode: BLEND`) and cut-off (`alphaMode: MASK`) materials; skinned
+primitives; and node hierarchies, accumulated into world transforms. What does
+not yet: morph targets, normals, tangents and animations.
 The pipeline key a mesh is uploaded with is always derived from the primitive's
 own attributes (see `UnlitGltf::pipeline_key`),
 so the variant it draws with never asks for a stream the mesh does not have.

@@ -220,10 +220,16 @@ active 相机时，帧会被清空，什么都不绘制。
   的顺序混合它。`alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
   `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线带上 `UnlitFlags::ALPHA_CUTOFF`，
   材质以 uniform 绑定自己的裁剪值，该 primitive 既不需要混合也不需要排序。
+- 同时带有 `JOINTS_0` 与 `WEIGHTS_0` 的 primitive 会上传其关节流并按蒙皮绘制：
+  `spawn_node` / `spawn_default_scene` 为该节点的 skin 生成一个 `SkinPose` 实体，并在网格上
+  放置 `SkinBinding`，因此写入该 pose 的矩阵就是调用方驱动骨架的方式。
+  `UnlitGltf::skin_pose` 由关节节点的世界变换与 skin 的逆绑定矩阵构建出文档的静止
+  pose（每个关节一个矩阵）作为起点，`UnlitGltf::skin_joint_count` 报告某节点的 skin 有几个
+  关节。
 
-支持加载：位置、UV、顶点色与索引；基础色纹理及采样它们的材质；混合
-（`alphaMode: BLEND`）与裁剪（`alphaMode: MASK`）材质；以及按世界变换累加的节点层级。
-暂不支持：蒙皮、形变目标、法线、切线与动画。网格上传所用的管线 key 总是由
+支持加载：位置、UV、顶点色、关节、权重与索引；基础色纹理及采样它们的材质；混合
+（`alphaMode: BLEND`）与裁剪（`alphaMode: MASK`）材质；蒙皮 primitive；以及按世界变换累加
+的节点层级。暂不支持：形变目标、法线、切线与动画。网格上传所用的管线 key 总是由
 primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它绘制所用的变体绝不会
 要求网格不存在的流。
 
