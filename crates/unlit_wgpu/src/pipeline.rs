@@ -49,6 +49,11 @@ pub const MATERIAL_GROUP: u32 = 1;
 pub const BASE_COLOR_TEXTURE_BINDING: u32 = 0;
 /// Binding slot of the base-color sampler in the material group.
 pub const BASE_COLOR_SAMPLER_BINDING: u32 = 1;
+/// Binding slot of the material's alpha cutoff uniform in the material group.
+///
+/// See [`UnlitFlags::ALPHA_CUTOFF`]: the value is a uniform rather than a part
+/// of the pipeline's variant, so one pipeline serves every cutoff.
+pub const ALPHA_CUTOFF_BINDING: u32 = 2;
 /// Bind-group index of the mesh group.
 ///
 /// The built-in unlit variants bind nothing here: every input they read is in
@@ -195,6 +200,20 @@ bitflags::bitflags! {
         /// [`Self::BASE_COLOR_LUMINANCE`] does; alpha is coverage, so it
         /// never converts.
         const BASE_COLOR_LUMINANCE_ALPHA = 1 << 12;
+        /// Discard a fragment whose alpha is below the material's cutoff.
+        ///
+        /// The cutoff itself is a uniform the material group binds at
+        /// [`ALPHA_CUTOFF_BINDING`] — a
+        /// [`MaterialCutoff`](crate::globals::MaterialCutoff) — rather than a
+        /// part of the variant: a flag only switches a code path, and a cutoff
+        /// baked into the options would compile one pipeline per distinct
+        /// value, because the options are the pipeline key.
+        ///
+        /// Only meaningful together with [`Self::BASE_COLOR_TEXTURE`]: an
+        /// untextured fragment's alpha is the instance color's, and a caller
+        /// that wants those cut off can write the alpha it wants into the
+        /// instance color instead of paying for a binding.
+        const ALPHA_CUTOFF = 1 << 13;
     }
 }
 
@@ -423,7 +442,7 @@ impl UnlitOptions {
     ///
     /// Every name appears, so the composed variant never sees a name it does
     /// not know.
-    pub fn features(&self) -> [(&'static str, bool); 13] {
+    pub fn features(&self) -> [(&'static str, bool); 14] {
         [
             (
                 "VERTEX_POSITION",
@@ -471,7 +490,17 @@ impl UnlitOptions {
                 "BASE_COLOR_LUMINANCE_ALPHA",
                 self.flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA),
             ),
+            (
+                "ALPHA_CUTOFF",
+                self.flags.contains(UnlitFlags::ALPHA_CUTOFF),
+            ),
         ]
+    }
+
+    /// Whether this variant reads a per-material alpha cutoff and so binds the
+    /// material group's uniform for it.
+    pub fn needs_alpha_cutoff(&self) -> bool {
+        self.flags.contains(UnlitFlags::ALPHA_CUTOFF)
     }
 
     /// Whether this variant deforms its vertices by joint matrices and so
@@ -765,32 +794,50 @@ impl UnlitOptions {
             .flags
             .contains(UnlitFlags::BASE_COLOR_TEXTURE)
             .then(|| {
+                let mut entries =
+                    arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 3>::new();
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: BASE_COLOR_TEXTURE_BINDING,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float {
+                            filterable: self.texture_filtering,
+                        },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                });
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: BASE_COLOR_SAMPLER_BINDING,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: if self.texture_filtering {
+                        wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
+                    } else {
+                        wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+                    },
+                    count: None,
+                });
+                // The cutoff is one material's value, so it belongs beside the
+                // texture it cuts — and a variant that does not cut off
+                // anything declares no binding for it.
+                if self.needs_alpha_cutoff() {
+                    entries.push(wgpu::BindGroupLayoutEntry {
+                        binding: ALPHA_CUTOFF_BINDING,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: Some(
+                                <crate::globals::MaterialCutoff as const_shader_layout::ShaderLayout>::SIZE,
+                            ),
+                        },
+                        count: None,
+                    });
+                }
                 device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("unlit_wgpu::unlit::material"),
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: BASE_COLOR_TEXTURE_BINDING,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float {
-                                    filterable: self.texture_filtering,
-                                },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: BASE_COLOR_SAMPLER_BINDING,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: if self.texture_filtering {
-                                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
-                            } else {
-                                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
-                            },
-                            count: None,
-                        },
-                    ],
+                    entries: &entries,
                 })
             });
 
@@ -958,7 +1005,8 @@ fn default_depth_stencil_state() -> wgpu::DepthStencilState {
 /// # Panics
 /// If the flags contradict each other: a channel cannot be uncompressed
 /// without being read, the base-color texture is sampled with the per-vertex
-/// UV, and only one luminance layout can expand a sampled texel.
+/// UV, only one luminance layout can expand a sampled texel, and a cutoff
+/// compares the alpha of a texel that has to be sampled.
 #[cfg(feature = "unlit")]
 fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
     let flags = options.flags;
@@ -1015,6 +1063,11 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
         "a base-color texel has one channel or two, so \
          `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` are \
          mutually exclusive"
+    );
+    assert!(
+        !flags.contains(UnlitFlags::ALPHA_CUTOFF) || flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
+        "the alpha the fragment cuts off is the sampled texel's, so \
+         `ALPHA_CUTOFF` requires `BASE_COLOR_TEXTURE`"
     );
 
     let main_path = wesl::syntax::ModulePath::new(
@@ -1207,10 +1260,21 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                                         &[UnlitFlags::empty()]
                                                     };
                                                 for luminance in luminance_layouts {
-                                                    variants.push(UnlitOptions {
-                                                        flags: flags | *luminance,
-                                                        ..UnlitOptions::standard_shape()
-                                                    });
+                                                    // A cutoff compares a
+                                                    // sampled texel's alpha,
+                                                    // so only a textured
+                                                    // variant can cut.
+                                                    for cutoff in [false, true] {
+                                                        if cutoff && !base_color_texture {
+                                                            continue;
+                                                        }
+                                                        let mut flags = flags | *luminance;
+                                                        flags.set(UnlitFlags::ALPHA_CUTOFF, cutoff);
+                                                        variants.push(UnlitOptions {
+                                                            flags,
+                                                            ..UnlitOptions::standard_shape()
+                                                        });
+                                                    }
                                                 }
                                             }
                                         }
@@ -1293,6 +1357,36 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         );
     }
 
+    /// The cutoff is read by the fragment that discards, so the variant has
+    /// to bind it, and a variant that never cuts binds nothing.
+    #[test]
+    fn alpha_cutoff_flag_discards_a_fragment_below_the_cutoff() {
+        let composed = |flags: UnlitFlags| {
+            let options = UnlitOptions {
+                flags: UnlitOptions::standard_shape().flags | flags,
+                ..UnlitOptions::standard_shape()
+            };
+            compose_builtin(&options).expect("compose")
+        };
+
+        let plain = composed(UnlitFlags::empty());
+        assert!(
+            !plain.contains("material_cutoff.cutoff"),
+            "an opaque material keeps every fragment it is given"
+        );
+
+        let cut = composed(UnlitFlags::ALPHA_CUTOFF);
+        assert!(
+            cut.contains("var<uniform> material_cutoff:") && cut.contains("MaterialCutoff {"),
+            "the cutoff is one material's own value, so it is bound"
+        );
+        assert!(
+            cut.contains("if color.a < material_cutoff.cutoff"),
+            "a fragment below the cutoff is dropped rather than blended"
+        );
+        assert!(cut.contains("discard"), "dropped fragments write nothing");
+    }
+
     /// The luminance layouts describe a sampled texel, so they are meaningless
     /// without one and cannot both describe the same texel.
     #[test]
@@ -1319,6 +1413,17 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             flags: UnlitOptions::standard_shape().flags
                 | UnlitFlags::BASE_COLOR_LUMINANCE
                 | UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA,
+            ..UnlitOptions::standard_shape()
+        };
+        let _ = compose_builtin(&options);
+    }
+
+    #[test]
+    #[should_panic(expected = "`ALPHA_CUTOFF` requires `BASE_COLOR_TEXTURE`")]
+    fn a_cutoff_without_a_texture_is_rejected() {
+        let options = UnlitOptions {
+            flags: (UnlitOptions::standard_shape().flags & !UnlitFlags::BASE_COLOR_TEXTURE)
+                | UnlitFlags::ALPHA_CUTOFF,
             ..UnlitOptions::standard_shape()
         };
         let _ = compose_builtin(&options);

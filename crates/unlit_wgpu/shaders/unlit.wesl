@@ -40,6 +40,8 @@
 //   BASE_COLOR_LUMINANCE_ALPHA  the base-color texture stores luminance and
 //                        alpha; sample them into RGB and alpha and decode the
 //                        luminance from sRGB
+//   ALPHA_CUTOFF         discard a fragment whose alpha is below the
+//                        material's cutoff, bound as a uniform
 //
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
@@ -50,6 +52,8 @@
 //   group 0  binding 5  morph_deltas  `array<f32>`           [MORPH_POSITIONS]
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
+//   group 1  binding 2  material_cutoff `material::MaterialCutoff` uniform
+//                                                                [ALPHA_CUTOFF]
 //
 //   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
 //                      decoded through `mesh_meta`, followed by the joint pair
@@ -88,6 +92,7 @@
 
 import package::array_access;
 import package::globals;
+import package::material;
 import package::mesh_compression;
 import package::mesh_metadata;
 import package::view;
@@ -97,6 +102,7 @@ import package::view;
 
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(0) var base_color_tex: texture_2d<f32>;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
+@if(ALPHA_CUTOFF) @group(1) @binding(2) var<uniform> material_cutoff: material::MaterialCutoff;
 
 struct VertexInput {
     /// Per-vertex position: full precision, or compressed to Snorm16x4
@@ -344,6 +350,14 @@ fn fragment_color(in: VertexOut) -> vec4<f32> {
 @fragment
 public fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let color = fragment_color(in);
+    // A cut-off material draws binary coverage: it writes depth and color like
+    // an opaque one wherever the texel is opaque enough, and writes nothing at
+    // all elsewhere, so it needs no blending and no back-to-front sort.
+    @if(ALPHA_CUTOFF) {
+        if color.a < material_cutoff.cutoff {
+            discard;
+        }
+    }
     // An sRGB-aware target encodes whatever it is given, so hand it linear
     // light and let its own encode produce the color the caller asked for.
     // Only RGB converts: alpha is coverage, not color.

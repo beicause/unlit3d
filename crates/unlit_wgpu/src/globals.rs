@@ -1,7 +1,9 @@
-//! Frame-wide uniforms shared by every pipeline.
+//! Uniforms the built-in pipelines bind.
 //!
-//! Both structs are bound as `var<uniform>` and are mirrored by the
-//! `view.wesl` / `globals.wesl` modules of the built-in WESL package.
+//! [`View`] and [`Globals`] are frame-wide and are mirrored by the
+//! `view.wesl` / `globals.wesl` modules of the built-in WESL package;
+//! [`MaterialCutoff`] is one material's own value, mirrored by
+//! `material.wesl`. Every struct is bound as `var<uniform>`.
 
 /// Camera state for one view.
 ///
@@ -80,5 +82,58 @@ impl Default for Globals {
             frame_count: 0,
             pad0: 0,
         }
+    }
+}
+
+/// The alpha a material's fragments are cut off at.
+///
+/// Mirrors `material.wesl::MaterialCutoff`, and is bound by the
+/// built-in unlit variant that carries
+/// [`UnlitFlags::ALPHA_CUTOFF`](crate::pipeline::UnlitFlags::ALPHA_CUTOFF): a
+/// fragment whose alpha is below the value is discarded, which is how a
+/// material with a binary alpha — foliage, a grille, a cut-out label — draws
+/// without blending and without depth sorting.
+///
+/// The value is a uniform rather than a part of the pipeline's variant so that
+/// one pipeline serves every cutoff: a variant is part of the pipeline key, so
+/// a cutoff baked into it would compile one pipeline per distinct value.
+#[repr(C)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    zerocopy_derive::FromBytes,
+    zerocopy_derive::Immutable,
+    zerocopy_derive::IntoBytes,
+    zerocopy_derive::KnownLayout,
+    const_shader_layout::ShaderLayoutCompat,
+)]
+pub struct MaterialCutoff {
+    /// The alpha a fragment has to reach to be drawn.
+    pub cutoff: f32,
+    /// Explicit tail padding: the WGSL struct size rounds up to 16 bytes.
+    pub pad0: f32,
+    /// Explicit tail padding, continued.
+    pub pad1: f32,
+    /// Explicit tail padding, continued.
+    pub pad2: f32,
+}
+
+impl MaterialCutoff {
+    /// The value one material is cut off at.
+    pub fn new(cutoff: f32) -> Self {
+        Self {
+            cutoff,
+            pad0: 0.0,
+            pad1: 0.0,
+            pad2: 0.0,
+        }
+    }
+}
+
+impl From<f32> for MaterialCutoff {
+    fn from(cutoff: f32) -> Self {
+        Self::new(cutoff)
     }
 }
