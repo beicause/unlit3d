@@ -127,7 +127,8 @@ use unlit_ecs::{
     ArchetypeBuilder,
     prelude::{Entity, World},
 };
-use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions};
+use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
+use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions, UnlitVertexChannels};
 use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
@@ -340,20 +341,27 @@ impl UnlitGltf {
     ) -> UnlitPipelineKey {
         let primitive = self.primitive(mesh, primitive);
         let material = primitive.material();
-        // The transform and the tint are per-instance for every primitive, and
-        // a compressed position or UV decodes through the instance's metadata
-        // index, so every glTF variant reads at least those three fields of the
-        // instance record.
-        let mut flags = UnlitFlags::VERTEX_POSITION
-            | UnlitFlags::INSTANCE_TRANSFORM
-            | UnlitFlags::INSTANCE_COLOR
-            | UnlitFlags::INSTANCE_METADATA;
+        // Every glTF primitive carries a position, and the channels beyond it
+        // are the ones the primitive's own attributes name. The transform and
+        // the tint are per-instance for every primitive, and a compressed
+        // position or UV decodes through the instance's metadata index, so
+        // every glTF variant reads the instance stream — which is what
+        // [`UnlitOptions::standard`] already says.
+        let mut channels = UnlitVertexChannels {
+            position: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: false,
+            },
+            uv_color: UvColorFlags::empty(),
+        };
+        let mut flags = UnlitFlags::empty();
         let texture = material.pbr_metallic_roughness().base_color_texture();
         if primitive.get(&gltf::Semantic::TexCoords(0)).is_some() && texture.is_some() {
-            flags |= UnlitFlags::VERTEX_UV | UnlitFlags::BASE_COLOR_TEXTURE;
+            channels.uv_color |= UvColorFlags::UV;
+            flags |= UnlitFlags::BASE_COLOR_TEXTURE;
         }
         if primitive.get(&gltf::Semantic::Colors(0)).is_some() {
-            flags |= UnlitFlags::VERTEX_COLOR;
+            channels.uv_color |= UvColorFlags::COLOR;
         }
         // The joint stream is only useful with a skin, and a document can
         // carry `JOINTS_0`/`WEIGHTS_0` without one. Requiring both keeps a
@@ -361,18 +369,17 @@ impl UnlitGltf {
         if primitive.get(&gltf::Semantic::Joints(0)).is_some()
             && primitive.get(&gltf::Semantic::Weights(0)).is_some()
         {
-            // A skinned draw reads its joint-matrix base out of the instance
-            // stream, so the joint stream implies the instance field.
-            flags |= UnlitFlags::VERTEX_JOINTS | UnlitFlags::INSTANCE_JOINTS;
+            channels.position.joints = true;
         }
         // Only position displacements are read, so a target that carries
         // none is skipped rather than drawn as a no-op: a mesh whose targets
         // all displace normals deforms nothing here.
         if morph_target_count(&primitive) > 0 {
-            // Likewise, a morphed draw reads its weight base per instance.
-            flags |= UnlitFlags::MORPH_POSITIONS | UnlitFlags::INSTANCE_MORPH;
+            flags |= UnlitFlags::MORPH_POSITIONS;
         }
-        let mut options = UnlitOptions::standard(device).with_flags(flags);
+        let mut options = UnlitOptions::standard(device)
+            .with_flags(flags)
+            .with_vertex_channels(channels);
         // The texture the material samples decides whether the base-color
         // binding is a filtering one: the pipeline and the material bind group
         // have to agree, or the group does not fit the pipeline.
@@ -599,6 +606,7 @@ impl UnlitGltf {
         let primitive = self.primitive(mesh, primitive);
         let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
         let flags = key.options.flags;
+        let vertex = key.options.vertex;
 
         let positions: Vec<[f32; 3]> = reader
             .read_positions()
@@ -606,29 +614,30 @@ impl UnlitGltf {
             .collect();
         // Read only the streams the key names: an attribute the key does not
         // read is not uploaded, so decoding it would be wasted work.
-        let uvs: Option<Vec<[f32; 2]>> = flags.contains(UnlitFlags::VERTEX_UV).then(|| {
+        let uvs: Option<Vec<[f32; 2]>> = vertex.uv_color.contains(UvColorFlags::UV).then(|| {
             reader
                 .read_tex_coords(0)
                 .expect("the key reads uvs, so the primitive has TEXCOORD_0")
                 .into_f32()
                 .collect()
         });
-        let colors: Option<Vec<[u8; 4]>> = flags.contains(UnlitFlags::VERTEX_COLOR).then(|| {
-            reader
-                .read_colors(0)
-                .expect("the key reads colors, so the primitive has COLOR_0")
-                .into_rgba_u8()
-                .collect()
-        });
+        let colors: Option<Vec<[u8; 4]>> =
+            vertex.uv_color.contains(UvColorFlags::COLOR).then(|| {
+                reader
+                    .read_colors(0)
+                    .expect("the key reads colors, so the primitive has COLOR_0")
+                    .into_rgba_u8()
+                    .collect()
+            });
         let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
-        let joints: Option<Vec<[u16; 4]>> = flags.contains(UnlitFlags::VERTEX_JOINTS).then(|| {
+        let joints: Option<Vec<[u16; 4]>> = vertex.position.joints.then(|| {
             reader
                 .read_joints(0)
                 .expect("the key reads joints, so the primitive has JOINTS_0")
                 .into_u16()
                 .collect()
         });
-        let weights: Option<Vec<[f32; 4]>> = flags.contains(UnlitFlags::VERTEX_JOINTS).then(|| {
+        let weights: Option<Vec<[f32; 4]>> = vertex.position.joints.then(|| {
             reader
                 .read_weights(0)
                 .expect("the key reads joints, so the primitive has WEIGHTS_0")
@@ -1090,11 +1099,7 @@ impl UnlitGltf {
                     .contains(UnlitFlags::BASE_COLOR_TEXTURE)
                     .then(|| self.primitive_material(primitive, &resources.materials));
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
-                let skinned = mesh_handle
-                    .key
-                    .options
-                    .flags
-                    .contains(UnlitFlags::VERTEX_JOINTS);
+                let skinned = mesh_handle.key.options.vertex.position.joints;
                 let binding = skinned.then(|| {
                     let pose =
                         *pose.get_or_insert_with(|| world.spawn((self.skin_pose(node.index()),)));
@@ -1468,19 +1473,24 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
 ///
 /// Only `BASE_COLOR_TEXTURE` and `texture_filtering` shape the material group's
 /// layout, so any key carrying them works; this is the one a base-color-textured
-/// primitive's [`UnlitGltf::pipeline_key`] derives to. The instance flags a draw
-/// adds do not enter the material group, and wgpu deduplicates identical layout
-/// descriptors, so the group fits the pipeline whatever else its key reads.
+/// primitive's [`UnlitGltf::pipeline_key`] derives to. The per-vertex channels a
+/// draw adds do not enter the material group, and wgpu deduplicates identical
+/// layout descriptors, so the group fits the pipeline whatever else its key
+/// reads.
 fn textured_key(device: &wgpu::Device, filtering: bool) -> UnlitPipelineKey {
-    let flags = UnlitFlags::VERTEX_POSITION
-        | UnlitFlags::INSTANCE_TRANSFORM
-        | UnlitFlags::INSTANCE_COLOR
-        | UnlitFlags::INSTANCE_METADATA
-        | UnlitFlags::VERTEX_UV
-        | UnlitFlags::BASE_COLOR_TEXTURE;
+    let flags = UnlitFlags::BASE_COLOR_TEXTURE;
+    let vertex = UnlitVertexChannels {
+        position: PositionStreamChannels {
+            position: Some(ChannelEncoding::CompressedPosition),
+            joints: false,
+        },
+        uv_color: UvColorFlags::UV,
+    };
     UnlitPipelineKey::new(UnlitOptions {
         texture_filtering: filtering,
-        ..UnlitOptions::standard(device).with_flags(flags)
+        ..UnlitOptions::standard(device)
+            .with_flags(flags)
+            .with_vertex_channels(vertex)
     })
 }
 
@@ -2402,9 +2412,9 @@ mod tests {
             .expect("the skinned document parses");
         let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let key = gltf.pipeline_key(&device, 0, 0);
-        assert!(key.options.flags.contains(UnlitFlags::VERTEX_JOINTS));
-        assert!(key.options.flags.contains(UnlitFlags::VERTEX_POSITION));
-        assert!(!key.options.flags.contains(UnlitFlags::VERTEX_UV));
+        assert!(key.options.vertex.position.joints);
+        assert!(key.options.vertex.position.position.is_some());
+        assert!(!key.options.vertex.uv_color.contains(UvColorFlags::UV));
     }
 
     #[test]

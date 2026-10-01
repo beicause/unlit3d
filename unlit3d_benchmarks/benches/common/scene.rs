@@ -12,7 +12,8 @@
 
 use glam::{Quat, Vec3};
 use unlit_wgpu::capabilities::DeviceCapabilities;
-use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions};
+use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
+use unlit_wgpu::pipeline::{UnlitOptions, UnlitVertexChannels};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SurfaceKey;
 use unlit3d::prelude::*;
@@ -62,10 +63,15 @@ impl Frame {
             // No base-color texture, so the material group goes unused and the
             // choice of filtering cannot be observed.
             texture_filtering: true,
-            flags: UnlitFlags::VERTEX_POSITION
-                | UnlitFlags::VERTEX_COLOR
-                | UnlitFlags::INSTANCE_TRANSFORM
-                | UnlitFlags::INSTANCE_METADATA,
+            flags: unlit_wgpu::pipeline::UnlitFlags::empty(),
+            vertex: UnlitVertexChannels {
+                position: PositionStreamChannels {
+                    position: Some(ChannelEncoding::CompressedPosition),
+                    joints: false,
+                },
+                uv_color: UvColorFlags::COLOR,
+            },
+            instances: true,
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             color_target: wgpu::ColorTargetState {

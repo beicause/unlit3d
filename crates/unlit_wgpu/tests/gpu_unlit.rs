@@ -15,12 +15,13 @@ mod common;
 use common::*;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    MeshInstance, MeshMetadata, compress_indices, compress_positions, quantize_colors,
+    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    compress_indices, compress_positions, quantize_colors,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
-    SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
+    SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitVertexChannels,
 };
 use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
@@ -142,8 +143,10 @@ impl GpuMesh {
     ) -> Self {
         let stream = options.uv_color_stream();
         let mut metadata = MeshMetadata::default();
-        let compressed_positions = options.flags.contains(UnlitFlags::VERTEX_POSITION)
-            && !options.flags.contains(UnlitFlags::UNCOMPRESSED_POSITION);
+        let compressed_positions = matches!(
+            options.vertex.position.position,
+            Some(ChannelEncoding::CompressedPosition)
+        );
         let packed_positions: Vec<_> = if compressed_positions {
             compress_positions(positions, &mut metadata).collect()
         } else {
@@ -157,17 +160,14 @@ impl GpuMesh {
         let vertex_usage = wgpu::BufferUsages::VERTEX;
         // An uncompressed position needs no decode parameters, so it is
         // uploaded exactly as the caller supplies it.
-        let positions_buffer = options
-            .flags
-            .contains(UnlitFlags::VERTEX_POSITION)
-            .then(|| {
-                let bytes = if compressed_positions {
-                    packed_positions.as_bytes()
-                } else {
-                    positions.as_bytes()
-                };
-                uploaded(ctx, bytes, vertex_usage, format!("{label}::positions"))
-            });
+        let positions_buffer = options.vertex.position.position.is_some().then(|| {
+            let bytes = if compressed_positions {
+                packed_positions.as_bytes()
+            } else {
+                positions.as_bytes()
+            };
+            uploaded(ctx, bytes, vertex_usage, format!("{label}::positions"))
+        });
         // The stream writer compresses and writes into the mapped buffer in
         // one step, so no intermediate byte buffer exists.
         let uv_color_buffer = (!stream.is_empty()).then(|| {
@@ -187,8 +187,8 @@ impl GpuMesh {
 
         // Indices only address geometry, so a position-less variant draws its
         // point range unindexed.
-        let indices = (options.flags.contains(UnlitFlags::VERTEX_POSITION) && !indices.is_empty())
-            .then(|| {
+        let indices =
+            (options.vertex.position.position.is_some() && !indices.is_empty()).then(|| {
                 let narrowed: Vec<u16> = compress_indices(indices).expect("indices").collect();
                 let buffer = uploaded(
                     ctx,
@@ -589,14 +589,21 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 }
 
 /// The vertex-color variant the pixel tests use.
+///
+/// `standard` already reads a compressed position and the instance stream; this
+/// narrows its channels to the vertex color alone — no UV, so no base-color
+/// texture either, which the flags drop through the setter that keeps the
+/// device's array path.
 fn vertex_color_options(device: &wgpu::Device) -> UnlitOptions {
-    UnlitOptions::standard(device).with_flags(
-        UnlitFlags::VERTEX_POSITION
-            | UnlitFlags::VERTEX_COLOR
-            | UnlitFlags::INSTANCE_TRANSFORM
-            | UnlitFlags::INSTANCE_COLOR
-            | UnlitFlags::INSTANCE_METADATA,
-    )
+    UnlitOptions::standard(device)
+        .with_flags(UnlitFlags::empty())
+        .with_vertex_channels(UnlitVertexChannels {
+            position: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: false,
+            },
+            uv_color: UvColorFlags::COLOR,
+        })
 }
 
 async fn renders_a_cube_over_the_clear_color() {
@@ -790,7 +797,14 @@ async fn instanced_cubes_match_snapshot() {
 async fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless().await;
     let options = UnlitOptions::standard(&ctx.device)
-        .with_flags(UnlitFlags::INSTANCE_TRANSFORM | UnlitFlags::INSTANCE_COLOR);
+        .with_flags(UnlitFlags::empty())
+        .with_vertex_channels(UnlitVertexChannels {
+            position: PositionStreamChannels {
+                position: None,
+                joints: false,
+            },
+            uv_color: UvColorFlags::empty(),
+        });
     let fixture = fixture(&ctx, &options, 1);
     assert!(
         fixture.mesh.positions.is_none(),

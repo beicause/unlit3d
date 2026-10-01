@@ -79,9 +79,11 @@
 //! ```
 
 use crate::globals::View;
+use crate::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
 use crate::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, MATERIAL_GROUP,
     POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
+    UnlitVertexChannels,
 };
 use crate::resources::{Rebuild, Resource, ResourceGraph, ResourceId, TextureExt, TextureView};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
@@ -97,7 +99,11 @@ use hashbrown::HashMap;
 /// conversion deals with the target instead.
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Bytes one [`UnlitFlags::UNCOMPRESSED_POSITION`] vertex occupies.
+/// Bytes one uncompressed-position vertex occupies.
+///
+/// The UI writes positions at full precision, so this is
+/// [`ChannelEncoding::UncompressedPosition`]'s format rather than the standard
+/// variant's compressed one.
 const POSITION_STRIDE: usize = wgpu::VertexFormat::Float32x3.size() as usize;
 
 /// Bytes one UV-and-color vertex occupies: `Float32x2` then `Unorm8x4`.
@@ -200,15 +206,21 @@ fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
     // Full-precision screen-space vertices carrying a premultiplied color and
     // a texture coordinate: no compression, no per-instance stream.
     //
+    // The instance stream is the one thing here the geometry does not decide:
+    // the UI's draws bind no instance buffer at all, and a pipeline that
+    // declared the slot would reject every draw that does not bind it.
+    options.vertex = UnlitVertexChannels {
+        position: PositionStreamChannels {
+            position: Some(ChannelEncoding::UncompressedPosition),
+            joints: false,
+        },
+        uv_color: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
+    };
+    options.instances = false;
     // The flags are assigned through the device mask, so the ones the device
     // decides survive: the UI reads no array, but which resource an array
     // *would* come from is the device's answer rather than the UI's.
-    let flags = UnlitFlags::VERTEX_POSITION
-        | UnlitFlags::UNCOMPRESSED_POSITION
-        | UnlitFlags::VERTEX_UV
-        | UnlitFlags::UNCOMPRESSED_UV
-        | UnlitFlags::VERTEX_COLOR
-        | UnlitFlags::BASE_COLOR_TEXTURE;
+    let flags = UnlitFlags::BASE_COLOR_TEXTURE;
     options.flags = (options.flags & UnlitFlags::DEVICE_MASK) | flags;
     if srgb_to_linear_output {
         options.flags |= UnlitFlags::SRGB_TO_LINEAR_OUTPUT;
@@ -1047,16 +1059,23 @@ mod tests {
     #[test]
     fn ui_variant_is_screen_space_and_uncompressed() {
         let options = ui_options_for_tests(false);
-        let flags = options.flags;
-        assert!(flags.contains(UnlitFlags::VERTEX_POSITION));
-        assert!(flags.contains(UnlitFlags::UNCOMPRESSED_POSITION));
-        assert!(flags.contains(UnlitFlags::VERTEX_UV));
-        assert!(flags.contains(UnlitFlags::UNCOMPRESSED_UV));
-        assert!(flags.contains(UnlitFlags::VERTEX_COLOR));
-        assert!(flags.contains(UnlitFlags::BASE_COLOR_TEXTURE));
-        // Nothing per-instance: the vertices are already in the projection's
-        // space, and nothing is compressed, so nothing needs decoding.
-        assert!(!flags.intersects(UnlitFlags::INSTANCE_MASK));
+        let vertex = options.vertex;
+        assert_eq!(
+            vertex.position.position,
+            Some(ChannelEncoding::UncompressedPosition),
+            "screen-space vertices are written at full precision"
+        );
+        assert!(!vertex.position.joints, "a UI mesh is never skinned");
+        assert_eq!(
+            vertex.uv_color,
+            UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR
+        );
+        assert!(options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE));
+        // No per-instance stream: the vertices are already in the projection's
+        // space, nothing is compressed, so nothing needs decoding — and a
+        // pipeline that declared the slot would reject a draw that binds no
+        // instance buffer.
+        assert!(!options.instances);
         assert!(!options.needs_metadata());
         // Overlaid rather than depth-tested. The base options carry a depth
         // state, so the UI's overlaid state is the one left behind.

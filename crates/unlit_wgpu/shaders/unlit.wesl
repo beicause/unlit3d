@@ -54,6 +54,13 @@
 //   ALPHA_CUTOFF         discard a fragment whose alpha is below the
 //                        instance's cutoff
 //
+// The `VERTEX_*` names are the geometry's answer rather than a variant's: a
+// pipeline reads them off the vertex buffers its draws are recorded with, so
+// every draw of a mesh carries the channels that mesh's buffers hold. The five
+// `INSTANCE_*` names are one decision between them — whether the pass binds a
+// per-instance stream at all — because every instance reads the fields it
+// needs from a record that always carries them.
+//
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
 //   group 0  binding 2  mesh_meta     `array<MeshMetadata>` decode parameters

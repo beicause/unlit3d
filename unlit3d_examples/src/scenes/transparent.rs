@@ -16,7 +16,8 @@
 //! round and fail the snapshot rather than happening to look right.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
-use unlit_wgpu::pipeline::UnlitFlags;
+use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
+use unlit_wgpu::pipeline::UnlitVertexChannels;
 use unlit3d::prelude::*;
 
 /// How far in front of the panes the camera sits.
@@ -90,8 +91,8 @@ fn build(
     // still occlude them.
     // Both variants read the instance tint: the backdrop is tinted through it,
     // and every pane's tint is its own.
-    let opaque_key = UnlitPipelineKey::new(super::tinted_options(&device));
-    let mut translucent = super::tinted_options(&device);
+    let opaque_key = UnlitPipelineKey::new(super::unlit_options(&device));
+    let mut translucent = super::unlit_options(&device);
     translucent.color_target.blend = Some(wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::SrcAlpha,
@@ -114,14 +115,17 @@ fn build(
         depth.depth_write_enabled = Some(false);
     }
     // The translucent variant reads no per-vertex colour: each pane's tint is
-    // its own instance colour, so one mesh serves all of them. The flags go in
-    // through the setter, which keeps the array path the device needs.
-    translucent = translucent.with_flags(
-        UnlitFlags::VERTEX_POSITION
-            | UnlitFlags::INSTANCE_TRANSFORM
-            | UnlitFlags::INSTANCE_COLOR
-            | UnlitFlags::INSTANCE_METADATA,
-    );
+    // its own instance colour, so one mesh serves all of them. The instance
+    // stream is the one thing left, and `standard` reads it already.
+    translucent = translucent
+        .with_flags(unlit_wgpu::pipeline::UnlitFlags::empty())
+        .with_vertex_channels(UnlitVertexChannels {
+            position: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: false,
+            },
+            uv_color: UvColorFlags::empty(),
+        });
     let translucent_key = UnlitPipelineKey::new(translucent);
 
     let source_entity = spawn_source(world, source);

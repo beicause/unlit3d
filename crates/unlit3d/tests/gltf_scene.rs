@@ -446,11 +446,7 @@ async fn a_skinned_quad_follows_its_joint() {
     let resources =
         gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     assert!(
-        resources.meshes[0]
-            .key
-            .options
-            .flags
-            .contains(unlit_wgpu::pipeline::UnlitFlags::VERTEX_JOINTS),
+        resources.meshes[0].key.options.vertex.position.joints,
         "the primitive declares JOINTS_0, so the key reads joints"
     );
 

@@ -351,17 +351,23 @@ pub fn aim_camera(
 ///
 /// The scene's key is built from these — the same options the snapshot tests
 /// the scenes came from were drawn with. A scene whose instances carry a tint
-/// adds [`UnlitFlags::INSTANCE_COLOR`](unlit_wgpu::pipeline::UnlitFlags::INSTANCE_COLOR)
-/// to the returned flags.
+/// needs nothing added: the tint rides the same per-instance record as the
+/// transform, so a variant that reads instances reads the tint too.
 pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
-    use unlit_wgpu::pipeline::UnlitFlags;
+    use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
+    use unlit_wgpu::pipeline::{UnlitFlags, UnlitVertexChannels};
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
-    // A compressed position decodes through the instance's metadata index,
-    // so the variant declares the instance stream's metadata field too.
-    let flags = UnlitFlags::VERTEX_POSITION
-        | UnlitFlags::VERTEX_COLOR
-        | UnlitFlags::INSTANCE_TRANSFORM
-        | UnlitFlags::INSTANCE_METADATA;
+    // `standard` already reads a compressed position and the instance stream,
+    // which is where the transform and the metadata index a compressed channel
+    // decodes by come from; this adds the per-vertex color, the one channel of
+    // the two streams the variant wants that `standard` does not imply.
+    let vertex = UnlitVertexChannels {
+        position: PositionStreamChannels {
+            position: Some(ChannelEncoding::CompressedPosition),
+            joints: false,
+        },
+        uv_color: UvColorFlags::COLOR,
+    };
     UnlitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
@@ -383,21 +389,14 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
             count: 1,
             ..Default::default()
         },
-        // The device's own array path survives the variant's flags.
-        ..UnlitOptions::standard(device).with_flags(flags)
+        // The device's own array path survives the variant's flags. The
+        // base-color texture goes with it: these scenes draw untextured
+        // geometry, and a texture is sampled with a UV this variant does not
+        // carry.
+        ..UnlitOptions::standard(device)
+            .with_flags(UnlitFlags::empty())
+            .with_vertex_channels(vertex)
     }
-}
-
-/// [`unlit_options`] plus the per-instance tint.
-///
-/// For a scene whose instances carry an
-/// [`InstanceColor`]: the tint is read from
-/// the instance stream, so the variant has to declare that attribute, and a
-/// scene that never tints should not spend the bytes.
-pub fn tinted_options(device: &wgpu::Device) -> UnlitOptions {
-    let mut options = unlit_options(device);
-    options.flags |= unlit_wgpu::pipeline::UnlitFlags::INSTANCE_COLOR;
-    options
 }
 
 /// Unlit options for a variant that deforms its vertices.
@@ -408,15 +407,14 @@ pub fn tinted_options(device: &wgpu::Device) -> UnlitOptions {
 /// camera as an undeformed one.
 pub fn deformation_options(device: &wgpu::Device, joints: bool, morphs: bool) -> UnlitOptions {
     use unlit_wgpu::pipeline::UnlitFlags;
-    let mut options = tinted_options(device);
-    // A deforming draw reads its base out of the instance stream, and each
-    // half of the pose has a field of its own: skinning reads the joint base,
-    // morphing the morph base.
+    let mut options = unlit_options(device);
+    // A deforming draw reads its base out of the instance stream, which the
+    // variant already reads.
     if joints {
-        options.flags |= UnlitFlags::VERTEX_JOINTS | UnlitFlags::INSTANCE_JOINTS;
+        options.vertex.position.joints = true;
     }
     if morphs {
-        options.flags |= UnlitFlags::MORPH_POSITIONS | UnlitFlags::INSTANCE_MORPH;
+        options.flags |= UnlitFlags::MORPH_POSITIONS;
     }
     options
 }

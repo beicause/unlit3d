@@ -105,7 +105,7 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     // Every cell is tinted through its instance colour.
-    let key = UnlitPipelineKey::new(super::tinted_options(&source.device(world)));
+    let key = UnlitPipelineKey::new(super::unlit_options(&source.device(world)));
     let source_entity = spawn_source(world, source);
 
     let camera_entity = world.spawn((orbit_camera(0, size),));

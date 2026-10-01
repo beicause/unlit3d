@@ -27,7 +27,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     INSTANCE_SLOT, JOINTS_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
     MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
-    supports_storage_buffers,
+    UnlitVertexChannels, supports_storage_buffers,
 };
 use unlit_wgpu::resources::{
     Resource, ResourceGraph, ResourceId, TextureExt, TextureView, Virtual,
@@ -286,8 +286,8 @@ fn register_concrete(
 /// the mesh's index buffer.
 ///
 /// The mesh layout is not injective — two meshes whose raw attributes differ
-/// but imply the same [UnlitFlags] rewrite the options to the same thing — so
-/// the canonical form is the specialized options themselves, and those meshes
+/// but carry the same channels rewrite the options to the same thing — so the
+/// canonical form is the specialized options themselves, and those meshes
 /// share one compiled pipeline.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct UnlitDrawKey {
@@ -315,17 +315,14 @@ impl SpecializerKey for UnlitDrawKey {
     type Canonical = UnlitOptions;
 }
 
-/// The flag set a mesh's vertex layout implies, from every slot it declares.
+/// The per-vertex channels a mesh's vertex layout carries, from every slot it
+/// declares.
 ///
 /// A mesh's vertex layout cannot imply the morph flag — the displacements are
 /// storage data rather than attributes — so morph channels come from the
 /// entity's own key, like the material and target flags.
-fn unlit_flags_for_layout(layout: &[(u32, VertexBufferLayoutDesc)]) -> UnlitFlags {
-    layout
-        .iter()
-        .fold(UnlitFlags::empty(), |flags, (slot, buffer)| {
-            flags | UnlitFlags::for_vertex_buffer(*slot, buffer)
-        })
+fn vertex_channels_for_layout(layout: &[(u32, VertexBufferLayoutDesc)]) -> UnlitVertexChannels {
+    UnlitVertexChannels::for_vertex_layout(layout)
 }
 
 /// The per-entity options the built-in unlit family draws with.
@@ -373,10 +370,11 @@ fn strip_index_format(
 /// The descriptor starts from the entity's own options, so one family serves
 /// entities that differ in material or target policy. The target-dependent
 /// fields are rewritten by [SurfaceSpecializer], the same specializer the core
-/// crate uses for that dimension, and only the mesh-derived bits of
-/// [UnlitFlags::MESH_MASK] are replaced. The canonical key the cache indexes
-/// on is the resulting options: two draws whose specialized options agree
-/// share one compiled pipeline.
+/// crate uses for that dimension, and only the per-vertex channels are
+/// replaced: they are the mesh's own answer, which the entity cannot know
+/// before it has a mesh. The canonical key the cache indexes on is the
+/// resulting options: two draws whose specialized options agree share one
+/// compiled pipeline.
 #[derive(Clone, Copy, Debug, Default)]
 struct UnlitDrawSpecializer;
 
@@ -389,8 +387,7 @@ impl Specializer<UnlitOptions> for UnlitDrawSpecializer {
         // same options rather than reimplemented, so the three fields it owns
         // cannot drift from the ones a surface-only family would write.
         SurfaceSpecializer.specialize(key.surface, options);
-        options.flags =
-            (options.flags & !UnlitFlags::MESH_MASK) | unlit_flags_for_layout(&key.vertex_buffers);
+        options.vertex = vertex_channels_for_layout(&key.vertex_buffers);
         // The index width comes from the mesh rather than from the caller's
         // options: the source picks the narrowest format a mesh's vertex count
         // fits, and widens it while baking in a pool offset on a device
@@ -2280,6 +2277,7 @@ mod tests {
     use crate::scene::DrawShape;
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
+    use unlit_wgpu::mesh::UvColorFlags;
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
     use unlit_wgpu::scene::DrawRange;
 
@@ -2451,9 +2449,9 @@ mod tests {
     /// A variant of the standard one that reads no UV — so no base-color
     /// texture either — and therefore packs its vertices differently.
     fn uv_less_options(device: &wgpu::Device) -> UnlitOptions {
-        use unlit_wgpu::pipeline::UnlitFlags;
         let mut options = UnlitOptions::standard(device);
-        options.flags &= !(UnlitFlags::VERTEX_UV | UnlitFlags::BASE_COLOR_TEXTURE);
+        options.vertex.uv_color = UvColorFlags::empty();
+        options.flags &= !UnlitFlags::BASE_COLOR_TEXTURE;
         options
     }
 
@@ -2463,11 +2461,10 @@ mod tests {
     /// The UV and colour channels are dropped so the mesh below carries only
     /// the geometry a morph needs.
     fn morph_options(device: &wgpu::Device) -> UnlitOptions {
-        use unlit_wgpu::pipeline::UnlitFlags;
         let mut options = UnlitOptions::standard(device);
         options.flags |= UnlitFlags::MORPH_POSITIONS;
-        options.flags &=
-            !(UnlitFlags::VERTEX_UV | UnlitFlags::VERTEX_COLOR | UnlitFlags::BASE_COLOR_TEXTURE);
+        options.vertex.uv_color = UvColorFlags::empty();
+        options.flags &= !UnlitFlags::BASE_COLOR_TEXTURE;
         options
     }
 
@@ -2682,10 +2679,14 @@ mod tests {
             },
         );
         assert!(
-            unlit_flags_for_layout(&standard_mesh.vertex_layout).contains(UnlitFlags::VERTEX_UV)
+            vertex_channels_for_layout(&standard_mesh.vertex_layout)
+                .uv_color
+                .contains(UvColorFlags::UV)
         );
         assert!(
-            !unlit_flags_for_layout(&uv_less_mesh.vertex_layout).contains(UnlitFlags::VERTEX_UV)
+            !vertex_channels_for_layout(&uv_less_mesh.vertex_layout)
+                .uv_color
+                .contains(UvColorFlags::UV)
         );
 
         // A material is built against the key's layout: the standard variant
