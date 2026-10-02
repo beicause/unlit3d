@@ -356,9 +356,16 @@ impl UnlitGltf {
         };
         let mut flags = UnlitFlags::empty();
         let texture = material.pbr_metallic_roughness().base_color_texture();
-        if primitive.get(&gltf::Semantic::TexCoords(0)).is_some() && texture.is_some() {
+        // Whether the material's base-color texture is sampled is a property
+        // of the draw's material rather than of the shader variant a caller
+        // picks, so it is [`UnlitOptions::base_color_texture`] rather than a
+        // flag — but the two answers have to agree with whether the primitive
+        // carries the UV to sample with, and `standard` already says yes, so
+        // this clears it when there is no texture to sample.
+        let base_color_texture =
+            primitive.get(&gltf::Semantic::TexCoords(0)).is_some() && texture.is_some();
+        if base_color_texture {
             channels.uv_color |= UvColorFlags::UV;
-            flags |= UnlitFlags::BASE_COLOR_TEXTURE;
         }
         if primitive.get(&gltf::Semantic::Colors(0)).is_some() {
             channels.uv_color |= UvColorFlags::COLOR;
@@ -378,6 +385,7 @@ impl UnlitGltf {
             flags |= UnlitFlags::MORPH_POSITIONS;
         }
         let mut options = UnlitOptions::standard(device)
+            .with_base_color_texture(base_color_texture)
             .with_flags(flags)
             .with_vertex_channels(channels);
         // The texture the material samples decides whether the base-color
@@ -1095,8 +1103,7 @@ impl UnlitGltf {
                 let material = mesh_handle
                     .key
                     .options
-                    .flags
-                    .contains(UnlitFlags::BASE_COLOR_TEXTURE)
+                    .base_color_texture
                     .then(|| self.primitive_material(primitive, &resources.materials));
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
                 let skinned = mesh_handle.key.options.vertex.position.joints;
@@ -1471,14 +1478,13 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
 
 /// The key a material bind group is built against: the base-color variant.
 ///
-/// Only `BASE_COLOR_TEXTURE` and `texture_filtering` shape the material group's
-/// layout, so any key carrying them works; this is the one a base-color-textured
-/// primitive's [`UnlitGltf::pipeline_key`] derives to. The per-vertex channels a
-/// draw adds do not enter the material group, and wgpu deduplicates identical
-/// layout descriptors, so the group fits the pipeline whatever else its key
-/// reads.
+/// Only [`UnlitOptions::base_color_texture`] and `texture_filtering` shape the
+/// material group's layout, so any key carrying them works; this is the one a
+/// base-color-textured primitive's [`UnlitGltf::pipeline_key`] derives to. The
+/// per-vertex channels a draw adds do not enter the material group, and wgpu
+/// deduplicates identical layout descriptors, so the group fits the pipeline
+/// whatever else its key reads.
 fn textured_key(device: &wgpu::Device, filtering: bool) -> UnlitPipelineKey {
-    let flags = UnlitFlags::BASE_COLOR_TEXTURE;
     let vertex = UnlitVertexChannels {
         position: PositionStreamChannels {
             position: Some(ChannelEncoding::CompressedPosition),
@@ -1489,7 +1495,7 @@ fn textured_key(device: &wgpu::Device, filtering: bool) -> UnlitPipelineKey {
     UnlitPipelineKey::new(UnlitOptions {
         texture_filtering: filtering,
         ..UnlitOptions::standard(device)
-            .with_flags(flags)
+            .with_base_color_texture(true)
             .with_vertex_channels(vertex)
     })
 }

@@ -389,12 +389,12 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
             count: 1,
             ..Default::default()
         },
-        // The device's own array path survives the variant's flags. The
-        // base-color texture goes with it: these scenes draw untextured
+        // The base-color texture is off: these scenes draw untextured
         // geometry, and a texture is sampled with a UV this variant does not
         // carry.
         ..UnlitOptions::standard(device)
             .with_flags(UnlitFlags::empty())
+            .with_base_color_texture(false)
             .with_vertex_channels(vertex)
     }
 }

@@ -541,10 +541,10 @@ WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
 
 两条路径保持相同的绑定编号、字节布局与元素顺序，差异因此被限制在资源类型上。
 用哪条由设备决定：[`UnlitOptions::standard`](pipeline::UnlitOptions::standard) 依据
-设备 limits 设置 `UnlitFlags::TEXEL_ARRAY`。自建变体的调用者应通过
-[`UnlitOptions::with_flags`](pipeline::UnlitOptions::with_flags) 设置 flags，它会保留
-设备给出的答案——直接赋值 `flags` 会把它丢掉，进而向没有 storage buffer 的设备索要
-一个会被拒绝的绑定。
+设备 limits 设置 `texel_arrays`。自建变体的调用者用同样的方式设置它——通过
+[`UnlitOptions::with_texel_arrays`](pipeline::UnlitOptions::with_texel_arrays)，
+或直接从 `standard` 起步——于是永远不会向没有 storage buffer 的设备索要一个
+会被拒绝的绑定。
 
 每个 buffer 绑定都写明 `min_binding_size`，其中 uniform 的大小必须是 16 的整数倍。
 缺少 `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED` 的设备——WebGL2 与 ANGLE 的 GLES——会

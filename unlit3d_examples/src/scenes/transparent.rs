@@ -116,9 +116,11 @@ fn build(
     }
     // The translucent variant reads no per-vertex colour: each pane's tint is
     // its own instance colour, so one mesh serves all of them. The instance
-    // stream is the one thing left, and `standard` reads it already.
+    // stream is the one thing left, and `standard` reads it already. It
+    // samples no texture either, so its base-color variant is off.
     translucent = translucent
         .with_flags(unlit_wgpu::pipeline::UnlitFlags::empty())
+        .with_base_color_texture(false)
         .with_vertex_channels(UnlitVertexChannels {
             position: PositionStreamChannels {
                 position: Some(ChannelEncoding::CompressedPosition),

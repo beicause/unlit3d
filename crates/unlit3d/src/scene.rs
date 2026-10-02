@@ -226,7 +226,8 @@ where
         z_sorted: bool,
     ) {
         let instance = mesh.instance;
-        let draw = DrawKey::for_mesh(self.frame.surface, gpu_mesh);
+        let draw =
+            DrawKey::for_mesh(self.frame.surface, gpu_mesh).with_material(material_bg.is_some());
         let key = S::Key::from((pipeline.key().clone(), draw));
         let ordinal = self
             .variants

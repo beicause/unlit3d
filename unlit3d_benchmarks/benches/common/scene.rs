@@ -63,6 +63,8 @@ impl Frame {
             // No base-color texture, so the material group goes unused and the
             // choice of filtering cannot be observed.
             texture_filtering: true,
+            base_color_texture: false,
+            texel_arrays: false,
             flags: unlit_wgpu::pipeline::UnlitFlags::empty(),
             vertex: UnlitVertexChannels {
                 position: PositionStreamChannels {

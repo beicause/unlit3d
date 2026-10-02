@@ -205,6 +205,19 @@ pub struct DrawKey {
     /// the pipeline's `strip_index_format` from the draw rather than ask the
     /// caller to predict it.
     pub index_format: Option<wgpu::IndexFormat>,
+    /// Whether the draw binds a material group at [`MATERIAL_GROUP`].
+    ///
+    /// The base-color texture is sampled from the material group, so whether a
+    /// variant reads one is the draw's answer: an entity carrying a material
+    /// binds the group, one without one does not. The entity's own key,
+    /// [`UnlitOptions::base_color_texture`](unlit_wgpu::pipeline::UnlitOptions::base_color_texture),
+    /// decides it too — the two have to
+    /// agree, or the group does not fit the pipeline — and carrying it on the
+    /// draw as well is what lets a family specialize the variant from what the
+    /// frame actually binds.
+    ///
+    /// [`MATERIAL_GROUP`]: unlit_wgpu::pipeline::MATERIAL_GROUP
+    pub material: bool,
 }
 
 impl DrawKey {
@@ -214,7 +227,18 @@ impl DrawKey {
             surface,
             vertex_buffers: mesh.vertex_layout.clone(),
             index_format: mesh.parts.index_buffer.as_ref().map(|(_, format)| *format),
+            material: false,
         }
+    }
+
+    /// Whether the draw binds a material group.
+    ///
+    /// A family that specializes the base-color-texture answer from the frame
+    /// sets this from the material the draw binds; users recording draws by
+    /// hand leave it at the default unless they bind one themselves.
+    pub fn with_material(mut self, material: bool) -> Self {
+        self.material = material;
+        self
     }
 }
 

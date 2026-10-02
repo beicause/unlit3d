@@ -217,11 +217,10 @@ fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
         uv_color: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
     };
     options.instances = false;
-    // The flags are assigned through the device mask, so the ones the device
-    // decides survive: the UI reads no array, but which resource an array
-    // *would* come from is the device's answer rather than the UI's.
-    let flags = UnlitFlags::BASE_COLOR_TEXTURE;
-    options.flags = (options.flags & UnlitFlags::DEVICE_MASK) | flags;
+    // The UI samples every texture it draws with through a material group —
+    // it never draws an untextured glyph — so the base-color variant is
+    // unconditional here.
+    options.base_color_texture = true;
     if srgb_to_linear_output {
         options.flags |= UnlitFlags::SRGB_TO_LINEAR_OUTPUT;
     }
@@ -1070,7 +1069,7 @@ mod tests {
             vertex.uv_color,
             UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR
         );
-        assert!(options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE));
+        assert!(options.base_color_texture);
         // No per-instance stream: the vertices are already in the projection's
         // space, nothing is compressed, so nothing needs decoding — and a
         // pipeline that declared the slot would reject a draw that binds no

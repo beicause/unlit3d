@@ -468,12 +468,12 @@ fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
             count: 1,
             ..Default::default()
         },
-        // `with_flags` keeps the array path `standard` chose for the device
-        // while clearing the base-color texture: these tests draw untextured
-        // geometry, and a texture is sampled with a UV this variant does not
-        // carry.
+        // `with_flags` clears the flags `standard` set, and the base-color
+        // variant is off too: these tests draw untextured geometry, and a
+        // texture is sampled with a UV this variant does not carry.
         ..UnlitOptions::standard(device)
             .with_flags(UnlitFlags::empty())
+            .with_base_color_texture(false)
             .with_vertex_channels(vertex)
     }
 }

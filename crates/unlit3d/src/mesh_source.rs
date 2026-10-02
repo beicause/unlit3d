@@ -26,8 +26,8 @@ use unlit_wgpu::mesh::{JointMatrix, MeshInstance, MeshMetadata, compress_weights
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     INSTANCE_SLOT, JOINTS_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
-    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
-    UnlitVertexChannels, supports_storage_buffers,
+    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitVertexChannels,
+    supports_storage_buffers,
 };
 use unlit_wgpu::resources::{
     Resource, ResourceGraph, ResourceId, TextureExt, TextureView, Virtual,
@@ -295,6 +295,9 @@ pub(crate) struct UnlitDrawKey {
     surface: SurfaceKey,
     vertex_buffers: VertexLayout,
     index_format: Option<wgpu::IndexFormat>,
+    /// Whether the draw binds a material group — which decides, at draw time,
+    /// whether the variant samples a base-color texture.
+    material: bool,
 }
 
 impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
@@ -304,6 +307,7 @@ impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
             surface: draw.surface,
             vertex_buffers: draw.vertex_buffers,
             index_format: draw.index_format,
+            material: draw.material,
         }
     }
 }
@@ -320,7 +324,7 @@ impl SpecializerKey for UnlitDrawKey {
 ///
 /// A mesh's vertex layout cannot imply the morph flag — the displacements are
 /// storage data rather than attributes — so morph channels come from the
-/// entity's own key, like the material and target flags.
+/// entity's own key, like the target flags.
 fn vertex_channels_for_layout(layout: &[(u32, VertexBufferLayoutDesc)]) -> UnlitVertexChannels {
     UnlitVertexChannels::for_vertex_layout(layout)
 }
@@ -388,6 +392,13 @@ impl Specializer<UnlitOptions> for UnlitDrawSpecializer {
         // cannot drift from the ones a surface-only family would write.
         SurfaceSpecializer.specialize(key.surface, options);
         options.vertex = vertex_channels_for_layout(&key.vertex_buffers);
+        // Whether the draw samples a base-color texture is the draw's own
+        // answer: it binds a material group exactly when its entity carries
+        // one. The entity's options declared the same thing, so this only
+        // resolves the two to one answer — but it is the frame's binding that
+        // wins, because the options an entity carries may not have been right
+        // for a mesh another entity shares.
+        options.base_color_texture = key.material;
         // The index width comes from the mesh rather than from the caller's
         // options: the source picks the narrowest format a mesh's vertex count
         // fits, and widens it while baking in a pool offset on a device
@@ -1479,7 +1490,7 @@ impl MeshSource {
         view_id: ResourceId<TextureView>,
         sampler_id: ResourceId<wgpu::Sampler>,
     ) -> Option<GpuMaterial> {
-        if !key.options.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE) {
+        if !key.options.base_color_texture {
             return None;
         }
         let layout = key
@@ -2278,6 +2289,7 @@ mod tests {
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
     use unlit_wgpu::mesh::UvColorFlags;
+    use unlit_wgpu::pipeline::UnlitFlags;
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
     use unlit_wgpu::scene::DrawRange;
 
@@ -2451,7 +2463,7 @@ mod tests {
     fn uv_less_options(device: &wgpu::Device) -> UnlitOptions {
         let mut options = UnlitOptions::standard(device);
         options.vertex.uv_color = UvColorFlags::empty();
-        options.flags &= !UnlitFlags::BASE_COLOR_TEXTURE;
+        options.base_color_texture = false;
         options
     }
 
@@ -2464,7 +2476,7 @@ mod tests {
         let mut options = UnlitOptions::standard(device);
         options.flags |= UnlitFlags::MORPH_POSITIONS;
         options.vertex.uv_color = UvColorFlags::empty();
-        options.flags &= !UnlitFlags::BASE_COLOR_TEXTURE;
+        options.base_color_texture = false;
         options
     }
 

@@ -129,17 +129,14 @@ bitflags::bitflags! {
     ///
     /// What a variant reads *per vertex* is not here: those channels are
     /// [`UnlitVertexChannels`], which a pipeline derives from the vertex
-    /// buffers its draws are recorded with, and whether it reads the
-    /// per-instance stream at all is [`UnlitOptions::instances`] — a source
-    /// binds one per-instance buffer for every draw that reads it, so nothing
-    /// about the stream is left to specialize on.
+    /// buffers its draws are recorded with. Neither is what it reads from the
+    /// material group — [`UnlitOptions::base_color_texture`], which a draw
+    /// answers by whether it binds a material at all — nor whether it reads
+    /// the per-instance stream, [`UnlitOptions::instances`], nor which
+    /// resource its arrays come from, [`UnlitOptions::texel_arrays`]. What is
+    /// left is what a caller decides about the variant itself.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
     pub struct UnlitFlags: u32 {
-        /// Sample a base-color texture from the material group.
-        ///
-        /// The texture is sampled with the per-vertex UV, so this requires
-        /// [`UvColorFlags::UV`].
-        const BASE_COLOR_TEXTURE = 1 << 10;
         /// The color target is sRGB-aware: it encodes the values written to
         /// it, so the fragment converts them from sRGB to linear first.
         ///
@@ -157,28 +154,15 @@ bitflags::bitflags! {
         /// that addresses this instance's slice is a field of the per-instance
         /// record, so it requires [`UnlitOptions::instances`] too.
         const MORPH_POSITIONS = 1 << 13;
-        /// Read the arrays that would otherwise be `var<storage, read>` from
-        /// 2D textures instead.
-        ///
-        /// A device without storage buffers — WebGL2 has none, and rejects a
-        /// bind-group layout naming one — can still read a flat array through
-        /// `textureLoad`, so the same variant is available there with its
-        /// arrays in textures. The arrays keep their binding numbers and their
-        /// byte layout; only the resource type and the read change.
-        ///
-        /// This is a property of the device rather than of a draw, so it is
-        /// deliberately outside the bits a mesh's vertex layout decides:
-        /// specializing a draw by its layout must not clear it.
-        const TEXEL_ARRAY = 1 << 14;
         /// The base-color texture stores *luminance*: one channel, sampled
         /// into every color channel.
         ///
         /// Required by neither of the other material flags, but only
-        /// meaningful together with [`Self::BASE_COLOR_TEXTURE`] — without a
-        /// texture there is nothing to expand. The sampled value is expanded
-        /// to `vec3(l)` and decoded from sRGB on the way, because a luminance
-        /// image cannot be uploaded in an sRGB format: WebGPU offers the
-        /// transfer function only for four-channel `Rgba8UnormSrgb` and
+        /// meaningful together with [`UnlitOptions::base_color_texture`] —
+        /// without a texture there is nothing to expand. The sampled value is
+        /// expanded to `vec3(l)` and decoded from sRGB on the way, because a
+        /// luminance image cannot be uploaded in an sRGB format: WebGPU offers
+        /// the transfer function only for four-channel `Rgba8UnormSrgb` and
         /// `Bgra8UnormSrgb`, so a one-channel texture has to carry the encoded
         /// value and let the shader decode it.
         const BASE_COLOR_LUMINANCE = 1 << 15;
@@ -186,10 +170,10 @@ bitflags::bitflags! {
         /// holding `l` and `a`, sampled into the color and the alpha channel.
         ///
         /// Mutually exclusive with [`Self::BASE_COLOR_LUMINANCE`], and like
-        /// it only meaningful together with [`Self::BASE_COLOR_TEXTURE`]. The
-        /// luminance half decodes from sRGB exactly as
-        /// [`Self::BASE_COLOR_LUMINANCE`] does; alpha is coverage, so it
-        /// never converts.
+        /// it only meaningful together with
+        /// [`UnlitOptions::base_color_texture`]. The luminance half decodes
+        /// from sRGB exactly as [`Self::BASE_COLOR_LUMINANCE`] does; alpha is
+        /// coverage, so it never converts.
         const BASE_COLOR_LUMINANCE_ALPHA = 1 << 16;
         /// Discard a fragment whose alpha is below the instance's cutoff.
         ///
@@ -206,17 +190,6 @@ bitflags::bitflags! {
         /// way.
         const ALPHA_CUTOFF = 1 << 17;
     }
-}
-
-#[cfg(feature = "unlit")]
-impl UnlitFlags {
-    /// The flags that describe the *device* rather than the variant.
-    ///
-    /// A caller building a variant of its own replaces every other flag, but
-    /// these have to survive: they say how the device can be read from, and
-    /// clearing one asks a device for something it may reject outright. Use
-    /// [`UnlitOptions::with_flags`] to assign flags without losing them.
-    pub const DEVICE_MASK: UnlitFlags = UnlitFlags::TEXEL_ARRAY;
 }
 
 /// The per-vertex channels the built-in shader variant reads.
@@ -340,7 +313,16 @@ pub struct UnlitOptions {
     /// The per-vertex channels are [`Self::vertex`] instead: they follow the
     /// geometry rather than the caller's intent.
     pub flags: UnlitFlags,
-    /// The per-vertex channels the variant reads.
+    /// Whether the variant samples a base-color texture from the material
+    /// group.
+    ///
+    /// A draw binds a material group exactly when its entity carries a
+    /// material, so this follows the draw rather than the caller's intent:
+    /// specializing a draw replaces it with whether that draw binds a
+    /// material at all. A variant that samples a texture also needs the
+    /// per-vertex UV to sample it with ([`UvColorFlags::UV`]).
+    pub base_color_texture: bool,
+    /// Whether the variant reads the per-vertex channels.
     ///
     /// Every draw recorded with the pipeline carries the channels its vertex
     /// buffers hold, so this is the geometry's answer rather than a caller's
@@ -357,6 +339,21 @@ pub struct UnlitOptions {
     /// vertices that are already in world space, and clearing this leaves the
     /// slot undeclared so such a pass need not bind a buffer it never reads.
     pub instances: bool,
+    /// Whether the variant reads its arrays from 2D textures rather than
+    /// storage buffers.
+    ///
+    /// A device without storage buffers — WebGL2 has none, and rejects a
+    /// bind-group layout naming one — can still read a flat array through
+    /// `textureLoad`, so the same variant is available there with its arrays
+    /// in textures. The arrays keep their binding numbers and their byte
+    /// layout; only the resource type and the read change.
+    ///
+    /// This is a property of the device rather than of a draw, so it is not a
+    /// [`UnlitFlags`] bit a draw's specialization could clear:
+    /// [`Self::standard`] sets it from the device's limits, and a caller that
+    /// builds its options by hand may set it either way. Only the combination
+    /// that asks for a storage buffer on a device without them is rejected.
+    pub texel_arrays: bool,
     /// Whether the base-color texture binding is filterable.
     ///
     /// A filtering binding accepts a sampler that interpolates between
@@ -431,24 +428,42 @@ impl UnlitOptions {
         if let Some(depth_stencil) = &mut options.depth_stencil {
             depth_stencil.format = default_depth_stencil_format(device);
         }
-        options
-            .flags
-            .set(UnlitFlags::TEXEL_ARRAY, !supports_storage_buffers(device));
+        options.texel_arrays = !supports_storage_buffers(device);
         options
     }
 
-    /// Replace this variant's flags, keeping the ones the *device* decides.
+    /// Replace this variant's flags.
     ///
-    /// Most flags describe the variant — the channels it reads, its material,
-    /// its output — and a caller building a different one wants to say so
-    /// outright. [`UnlitFlags::TEXEL_ARRAY`] is not like the rest: it says how
-    /// the device can be read from, not what the variant is, and a caller that
-    /// cleared it would ask a storage-less device for a binding it rejects.
-    /// Assigning `flags` directly is therefore easy to get wrong, and this is
-    /// the setter that cannot.
+    /// The flags left are the ones a caller decides about the variant itself;
+    /// what follows the geometry, the draw's material or the device is a field
+    /// of its own rather than a bit here, so assigning `flags` outright cannot
+    /// lose one of them.
     #[must_use]
     pub fn with_flags(mut self, flags: UnlitFlags) -> Self {
-        self.flags = (self.flags & UnlitFlags::DEVICE_MASK) | (flags & !UnlitFlags::DEVICE_MASK);
+        self.flags = flags;
+        self
+    }
+
+    /// Whether the variant samples a base-color texture from the material
+    /// group.
+    ///
+    /// A pipeline that specializes its draws overwrites this itself — a draw
+    /// binds a material group exactly when its entity carries one — so this is
+    /// for a caller that records draws against a material group of its own.
+    #[must_use]
+    pub fn with_base_color_texture(mut self, base_color_texture: bool) -> Self {
+        self.base_color_texture = base_color_texture;
+        self
+    }
+
+    /// Whether the variant reads its arrays from textures rather than storage
+    /// buffers.
+    ///
+    /// [`Self::standard`] already answers this from the device's limits, so a
+    /// caller only needs it to force one path or the other.
+    #[must_use]
+    pub fn with_texel_arrays(mut self, texel_arrays: bool) -> Self {
+        self.texel_arrays = texel_arrays;
         self
     }
 
@@ -493,7 +508,8 @@ impl UnlitOptions {
             // through the instance's metadata index, so the instance stream is
             // read too, and every instance reads the fields it needs — the
             // tint included — from a record that always carries them.
-            flags: UnlitFlags::BASE_COLOR_TEXTURE,
+            flags: UnlitFlags::empty(),
+            base_color_texture: true,
             vertex: UnlitVertexChannels {
                 position: PositionStreamChannels {
                     position: Some(ChannelEncoding::CompressedPosition),
@@ -502,6 +518,9 @@ impl UnlitOptions {
                 uv_color: UvColorFlags::UV | UvColorFlags::COLOR,
             },
             instances: true,
+            // The array path is the device's answer rather than the shape's:
+            // [`Self::standard`] fills this in from the device's limits.
+            texel_arrays: false,
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
@@ -529,10 +548,11 @@ impl UnlitOptions {
     /// The WESL `@if` features the variant asks for, paired with their state.
     ///
     /// Every name appears, so the composed variant never sees a name it does
-    /// not know. The per-vertex names come from [`Self::vertex`] and the
-    /// per-instance ones from [`Self::instances`] rather than from
-    /// [`Self::flags`]: they are the geometry's and the pass's answers, and the
-    /// flags left are the ones a caller decides.
+    /// not know. The per-vertex names come from [`Self::vertex`], the material
+    /// one from [`Self::base_color_texture`] and the instance ones from
+    /// [`Self::instances`] rather than from [`Self::flags`]: they are the
+    /// geometry's, the draw's and the pass's answers, and the flags left are
+    /// the ones a caller decides.
     pub fn features(&self) -> [(&'static str, bool); 18] {
         [
             ("VERTEX_POSITION", self.vertex.position.position.is_some()),
@@ -557,10 +577,7 @@ impl UnlitOptions {
             ("INSTANCE_JOINTS", self.instances),
             ("INSTANCE_MORPH", self.instances),
             ("INSTANCE_METADATA", self.instances),
-            (
-                "BASE_COLOR_TEXTURE",
-                self.flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
-            ),
+            ("BASE_COLOR_TEXTURE", self.base_color_texture),
             (
                 "SRGB_TO_LINEAR_OUTPUT",
                 self.flags.contains(UnlitFlags::SRGB_TO_LINEAR_OUTPUT),
@@ -570,7 +587,7 @@ impl UnlitOptions {
                 "MORPH_POSITIONS",
                 self.flags.contains(UnlitFlags::MORPH_POSITIONS),
             ),
-            ("TEXEL_ARRAY", self.flags.contains(UnlitFlags::TEXEL_ARRAY)),
+            ("TEXEL_ARRAY", self.texel_arrays),
             (
                 "BASE_COLOR_LUMINANCE",
                 self.flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE),
@@ -604,7 +621,7 @@ impl UnlitOptions {
     }
 
     /// Whether this variant reads the arrays through
-    /// [`UnlitFlags::TEXEL_ARRAY`] instead of storage buffers.
+    /// [`Self::texel_arrays`] instead of storage buffers.
     ///
     /// A device with no storage buffers cannot bind one at all, so this is what
     /// decides whether the four array bindings are storage buffers or textures.
@@ -612,7 +629,7 @@ impl UnlitOptions {
     /// its options by hand may set it either way, and only the combination that
     /// asks for a storage buffer on a device without them is rejected.
     pub fn uses_texel_arrays(&self) -> bool {
-        self.flags.contains(UnlitFlags::TEXEL_ARRAY)
+        self.texel_arrays
     }
 
     /// Reject options whose array path the device cannot serve.
@@ -637,8 +654,8 @@ impl UnlitOptions {
             !reads_an_array || self.uses_texel_arrays() || supports_storage_buffers(device),
             "this variant reads its arrays from storage buffers, but the device has none \
              (its `max_storage_buffers_per_shader_stage` is 0, as WebGL2's is): set \
-             `UnlitFlags::TEXEL_ARRAY`, or start from `UnlitOptions::standard`, which does it \
-             from the device"
+             `UnlitOptions::texel_arrays`, or start from `UnlitOptions::standard`, which does \
+             it from the device"
         );
     }
 
@@ -858,38 +875,35 @@ impl UnlitOptions {
             })
         };
 
-        let material = self
-            .flags
-            .contains(UnlitFlags::BASE_COLOR_TEXTURE)
-            .then(|| {
-                let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 2>::new();
-                entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: BASE_COLOR_TEXTURE_BINDING,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float {
-                            filterable: self.texture_filtering,
-                        },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let material = self.base_color_texture.then(|| {
+            let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 2>::new();
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: BASE_COLOR_TEXTURE_BINDING,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float {
+                        filterable: self.texture_filtering,
                     },
-                    count: None,
-                });
-                entries.push(wgpu::BindGroupLayoutEntry {
-                    binding: BASE_COLOR_SAMPLER_BINDING,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: if self.texture_filtering {
-                        wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
-                    } else {
-                        wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
-                    },
-                    count: None,
-                });
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("unlit_wgpu::unlit::material"),
-                    entries: &entries,
-                })
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
             });
+            entries.push(wgpu::BindGroupLayoutEntry {
+                binding: BASE_COLOR_SAMPLER_BINDING,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: if self.texture_filtering {
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
+                } else {
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering)
+                },
+                count: None,
+            });
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("unlit_wgpu::unlit::material"),
+                entries: &entries,
+            })
+        });
 
         // The built-in variants bind nothing at the mesh group: every input
         // they read is in the global group or on the instance stream. The
@@ -1136,10 +1150,9 @@ fn default_depth_stencil_state() -> wgpu::DepthStencilState {
 fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
     let flags = options.flags;
     assert!(
-        !flags.contains(UnlitFlags::BASE_COLOR_TEXTURE)
-            || options.vertex.uv_color.contains(UvColorFlags::UV),
+        !options.base_color_texture || options.vertex.uv_color.contains(UvColorFlags::UV),
         "the base-color texture is sampled with the per-vertex UV, so \
-         `BASE_COLOR_TEXTURE` requires a UV channel"
+         sampling one requires a UV channel"
     );
     assert!(
         !options.vertex.position.joints || options.vertex.position.position.is_some(),
@@ -1172,10 +1185,10 @@ fn compose_builtin(options: &UnlitOptions) -> Result<String, ComposeError> {
     assert!(
         !flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE)
             && !flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA)
-            || flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
+            || options.base_color_texture,
         "the luminance flags describe how a sampled base-color texel \
          expands, so `BASE_COLOR_LUMINANCE` and \
-         `BASE_COLOR_LUMINANCE_ALPHA` require `BASE_COLOR_TEXTURE`"
+         `BASE_COLOR_LUMINANCE_ALPHA` require a sampled base-color texture"
     );
     assert!(
         !(flags.contains(UnlitFlags::BASE_COLOR_LUMINANCE)
@@ -1272,9 +1285,9 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
 
     /// Every vertex-channel and flag combination that composes.
     ///
-    /// `BASE_COLOR_TEXTURE` implies a UV, and the joint and morph channels
-    /// imply the position they deform, so the invalid combinations are
-    /// skipped; so is a variant that reads a per-instance field without an
+    /// A sampled base-color texture implies a UV, and the joint and morph
+    /// channels imply the position they deform, so the invalid combinations
+    /// are skipped; so is a variant that reads a per-instance field without an
     /// instance stream. Each surviving combination is then enumerated once per
     /// luminance layout, because those describe the sampled texel rather than
     /// the vertex layout and so are orthogonal to everything above — but only
@@ -1325,6 +1338,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                             uv_color: *uv_color,
                                         },
                                         instances,
+                                        base_color_texture,
+                                        texel_arrays: texel_array,
                                         ..UnlitOptions::standard_shape()
                                     };
                                     // A deforming draw reads its base from the
@@ -1344,9 +1359,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                         continue;
                                     }
                                     let mut flags = UnlitFlags::empty();
-                                    flags.set(UnlitFlags::BASE_COLOR_TEXTURE, base_color_texture);
                                     flags.set(UnlitFlags::MORPH_POSITIONS, morph_positions);
-                                    flags.set(UnlitFlags::TEXEL_ARRAY, texel_array);
                                     // A texel is expanded by one of the two
                                     // luminance layouts, or not at all, and
                                     // only a sampled texel can be expanded.
@@ -1508,12 +1521,12 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     #[test]
     #[should_panic(
         expected = "`BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` require \
-                    `BASE_COLOR_TEXTURE`"
+                    a sampled base-color texture"
     )]
     fn a_luminance_layout_without_a_texture_is_rejected() {
         let options = UnlitOptions {
-            flags: (UnlitOptions::standard_shape().flags & !UnlitFlags::BASE_COLOR_TEXTURE)
-                | UnlitFlags::BASE_COLOR_LUMINANCE,
+            base_color_texture: false,
+            flags: UnlitFlags::BASE_COLOR_LUMINANCE,
             ..UnlitOptions::standard_shape()
         };
         let _ = compose_builtin(&options);
@@ -1791,11 +1804,10 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             assert!(!wgsl.contains("@if"), "variant {options:?} kept @if");
 
             let vertex = options.vertex;
-            let flags = options.flags;
             // Each channel appears exactly when the geometry carries it.
             assert_eq!(
                 wgsl.contains("base_color_tex"),
-                flags.contains(UnlitFlags::BASE_COLOR_TEXTURE),
+                options.base_color_texture,
                 "variant {options:?}"
             );
             let compressed_uv = vertex.uv_color.contains(UvColorFlags::UV)
@@ -1915,7 +1927,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         for options in [
             // The base-color texture is sampled with the per-vertex UV.
             UnlitOptions {
-                flags: shape().flags | UnlitFlags::BASE_COLOR_TEXTURE,
+                base_color_texture: true,
                 vertex: channels(compressed, false, UvColorFlags::empty()),
                 ..shape()
             },
@@ -2003,7 +2015,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         // The screen-space channels: full precision, and no per-instance
         // stream.
         let options = UnlitOptions {
-            flags: UnlitFlags::BASE_COLOR_TEXTURE,
+            base_color_texture: true,
             vertex: UnlitVertexChannels {
                 position: PositionStreamChannels {
                     position: Some(ChannelEncoding::UncompressedPosition),

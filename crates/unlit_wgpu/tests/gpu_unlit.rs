@@ -387,30 +387,27 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
         &indices,
     );
 
-    let material = options
-        .flags
-        .contains(UnlitFlags::BASE_COLOR_TEXTURE)
-        .then(|| {
-            let texture = checkerboard_texture(ctx);
-            ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("test::material"),
-                layout: &pipeline
-                    .descriptor()
-                    .bind_group_layouts(&ctx.device)
-                    .material
-                    .expect("a textured variant has a material layout"),
-                entries: &[
-                    bg_entry(
-                        BASE_COLOR_TEXTURE_BINDING,
-                        wgpu::BindingResource::TextureView(texture.view.view()),
-                    ),
-                    bg_entry(
-                        BASE_COLOR_SAMPLER_BINDING,
-                        wgpu::BindingResource::Sampler(&texture.sampler),
-                    ),
-                ],
-            })
-        });
+    let material = options.base_color_texture.then(|| {
+        let texture = checkerboard_texture(ctx);
+        ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("test::material"),
+            layout: &pipeline
+                .descriptor()
+                .bind_group_layouts(&ctx.device)
+                .material
+                .expect("a textured variant has a material layout"),
+            entries: &[
+                bg_entry(
+                    BASE_COLOR_TEXTURE_BINDING,
+                    wgpu::BindingResource::TextureView(texture.view.view()),
+                ),
+                bg_entry(
+                    BASE_COLOR_SAMPLER_BINDING,
+                    wgpu::BindingResource::Sampler(&texture.sampler),
+                ),
+            ],
+        })
+    });
 
     SceneFixture {
         has_depth: options.depth_stencil.is_some(),
@@ -592,11 +589,11 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
 ///
 /// `standard` already reads a compressed position and the instance stream; this
 /// narrows its channels to the vertex color alone — no UV, so no base-color
-/// texture either, which the flags drop through the setter that keeps the
-/// device's array path.
+/// texture either, which the base-color field drops outright.
 fn vertex_color_options(device: &wgpu::Device) -> UnlitOptions {
     UnlitOptions::standard(device)
         .with_flags(UnlitFlags::empty())
+        .with_base_color_texture(false)
         .with_vertex_channels(UnlitVertexChannels {
             position: PositionStreamChannels {
                 position: Some(ChannelEncoding::CompressedPosition),
@@ -798,6 +795,7 @@ async fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless().await;
     let options = UnlitOptions::standard(&ctx.device)
         .with_flags(UnlitFlags::empty())
+        .with_base_color_texture(false)
         .with_vertex_channels(UnlitVertexChannels {
             position: PositionStreamChannels {
                 position: None,

@@ -618,11 +618,11 @@ which resource arrived.
 Both paths keep the binding numbers, the byte layout and the element order, so
 the difference stays confined to the resource type. Which one is used follows
 the device: [`UnlitOptions::standard`](pipeline::UnlitOptions::standard) sets
-`UnlitFlags::TEXEL_ARRAY` from the device's limits. A caller building a variant
-of its own sets its flags through
-[`UnlitOptions::with_flags`](pipeline::UnlitOptions::with_flags), which keeps the
-device's answer — assigning `flags` outright would drop it and ask a
-storage-less device for a binding it rejects.
+`texel_arrays` from the device's limits. A caller building a variant of its own
+sets it the same way — through
+[`UnlitOptions::with_texel_arrays`](pipeline::UnlitOptions::with_texel_arrays),
+or by starting from `standard` — so a storage-less device is never asked for a
+binding it rejects.
 
 Every buffer binding states its `min_binding_size`, and a uniform one states a
 size that is a multiple of 16. A device without
