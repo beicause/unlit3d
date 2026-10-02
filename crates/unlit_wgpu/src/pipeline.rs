@@ -153,10 +153,10 @@ impl UnlitVertexChannels {
     /// The channels of a layout that carries none: no position, no joints, and
     /// an empty UV-and-color stream.
     ///
-    /// A variant built from this reads no vertex attribute at all, which is
-    /// only useful together with an instance stream — a variant reading
-    /// nothing composes a `VertexInput` struct with no members, which is not
-    /// valid WGSL.
+    /// A variant built from this reads no per-vertex attribute at all — the
+    /// geometry is a single point at the instance origin — which is what point,
+    /// particle and impostor draws want. The instance record is unconditional,
+    /// so a `VertexInput` struct always has members.
     pub const fn empty() -> Self {
         Self {
             position: PositionStreamChannels {
@@ -467,12 +467,13 @@ impl UnlitVariant {
     /// Every name appears, so the composed variant never sees a name it does
     /// not know. The per-vertex names come from [`Self::channels`], the material
     /// one from [`Self::base_color_texture`] and the policy ones from
-    /// [`Self::options`]. The five instance names are constant: the built-in
-    /// vertex stream always declares and binds an instance buffer.
+    /// [`Self::options`]. The per-instance record is not conditional at all, so
+    /// it contributes no names here: the built-in vertex stream always
+    /// declares and binds an instance buffer.
     ///
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
-    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 18] {
+    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 13] {
         [
             ("VERTEX_POSITION", self.channels.position.position.is_some()),
             (
@@ -496,11 +497,6 @@ impl UnlitVariant {
                 "VERTEX_COLOR",
                 self.channels.uv_color.contains(UvColorFlags::COLOR),
             ),
-            ("INSTANCE_TRANSFORM", true),
-            ("INSTANCE_COLOR", true),
-            ("INSTANCE_JOINTS", true),
-            ("INSTANCE_MORPH", true),
-            ("INSTANCE_METADATA", true),
             ("BASE_COLOR_TEXTURE", self.base_color_texture),
             ("SRGB_TO_LINEAR_OUTPUT", self.options.srgb_to_linear_output),
             ("VERTEX_JOINTS", self.channels.position.joints),
@@ -1770,8 +1766,8 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                     candidate.needs_joints(),
                     "variant {candidate:?}"
                 );
-                // The instance stream is bound for every variant, so the fields
-                // it carries appear whether or not the shader reads them.
+                // The instance record is unconditional, so its fields are
+                // declared as plain attributes with no condition on them.
                 assert!(
                     vertex_input.contains("joints_base:"),
                     "variant {candidate:?} declares no instance stream"

@@ -261,7 +261,7 @@ pub struct MeshMetadata {
 /// differently: the joints and morph weights a draw deforms by are per-instance
 /// state, so they cannot live in the mesh's own bind group. Skinning and
 /// morphing are independent, so the two bases are separate fields rather than
-/// the lanes of one vector — a variant that only skins declares no weight base.
+/// the lanes of one vector — a variant that only skins reads no weight base.
 ///
 /// Vertex attributes are addressed by the explicit offsets of
 /// [`crate::pipeline::UnlitVariant::vertex_buffer_layouts`], not by WGSL

@@ -18,20 +18,6 @@
 //                        the mesh metadata
 //   VERTEX_COLOR         read a per-vertex color and multiply it into the
 //                        base color
-//   INSTANCE_TRANSFORM   read the per-instance model matrix and transform the
-//                        vertex by it; without it every vertex is already in
-//                        world space, which is what a screen-space draw wants
-//   INSTANCE_COLOR       read the per-instance base color; without it the base
-//                        color is white
-//   INSTANCE_JOINTS      read the per-instance joint-matrix base, so the
-//                        [VERTEX_JOINTS] deformation knows which instance's
-//                        matrices to apply
-//   INSTANCE_MORPH       read the per-instance morph-weight base, so the
-//                        [MORPH_POSITIONS] deformation knows which instance's
-//                        weights to apply
-//   INSTANCE_METADATA    read the per-instance index of the mesh's metadata
-//                        entry, which carries the decode parameters and the
-//                        draw addressing
 //   BASE_COLOR_TEXTURE   sample the material base-color texture
 //   SRGB_TO_LINEAR_OUTPUT  the fragment's color values are sRGB-encoded and
 //                        the target expects linear values, so convert the
@@ -56,10 +42,10 @@
 //
 // The `VERTEX_*` names are the geometry's answer rather than a variant's: a
 // pipeline reads them off the vertex buffers its draws are recorded with, so
-// every draw of a mesh carries the channels that mesh's buffers hold. The five
-// `INSTANCE_*` names are one decision between them — whether the pass binds a
-// per-instance stream at all — because every instance reads the fields it
-// needs from a record that always carries them.
+// every draw of a mesh carries the channels that mesh's buffers hold. The
+// per-instance record is unconditional: every built-in variant declares and
+// binds the instance stream, because the family always has an instance buffer
+// to bind — a draw with no instance state of its own binds the identity record.
 //
 //   group 0  binding 0  camera        `view::View` uniform
 //   group 0  binding 1  frame         `globals::Globals` uniform
@@ -76,12 +62,12 @@
 //                      Uint16x4 indices + Unorm16x4 weights [VERTEX_JOINTS]
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
 //                      plus color Unorm8x4 [VERTEX_COLOR]
-//   slot 2  instance   Float32x4x3 model matrix      [INSTANCE_TRANSFORM]
-//                      + Unorm8x4 base color          [INSTANCE_COLOR]
-//                      + Uint32 joint base            [INSTANCE_JOINTS]
-//                      + Uint32 metadata index        [INSTANCE_METADATA]
+//   slot 2  instance   Float32x4x3 model matrix
+//                      + Unorm8x4 base color
+//                      + Uint32 joint base
+//                      + Uint32 metadata index
 //                      + Float32 alpha cutoff         [ALPHA_CUTOFF]
-//                      + Uint32 morph base            [INSTANCE_MORPH]
+//                      + Uint32 morph base
 //                      stepped per instance
 //
 // Every array the shader reads is frame-wide and lives in the global group, so
@@ -98,15 +84,15 @@
 // none of the optional bindings at all.
 //
 // The instance stream is one record layout whose attributes each serve one
-// function, so a variant declares exactly the ones it reads and they are all
-// the same record's fields. The record is a struct rather than a loose bag of
-// attributes because the frame holds one buffer of records for every visible
-// instance, whatever variant draws it: the stride is the whole record, and a
-// variant that reads two fields still declares them at their own offsets.
+// function, and every variant declares the whole record: the frame holds one
+// buffer of records for every visible instance, whatever variant draws it, so
+// the stride is the whole record and the fields a variant does not read cost
+// nothing but a declared attribute. The record is a struct rather than a loose
+// bag of attributes for that reason — a variant that reads two fields still
+// declares them at their own offsets.
 //
 // The metadata index is per-instance data like the pose bases, so the instance
-// stream carries it: `@builtin(instance_index)` addresses the same record, and
-// a variant that reads metadata therefore requires [INSTANCE_METADATA]. The
+// stream carries it: `@builtin(instance_index)` addresses the same record. The
 // same holds for the alpha cutoff and the two pose bases: they are per-instance
 // state, so they cannot live in the mesh's or the material's bind group, which
 // one draw can share with differently-posed and differently-cut instances.
@@ -142,12 +128,12 @@ struct VertexInput {
 
     /// Per-instance affine model matrix: one column per location, with each
     /// column's `.w` holding the translation component.
-    @if(INSTANCE_TRANSFORM) @location(3) model_0: vec4<f32>,
-    @if(INSTANCE_TRANSFORM) @location(4) model_1: vec4<f32>,
-    @if(INSTANCE_TRANSFORM) @location(5) model_2: vec4<f32>,
+    @location(3) model_0: vec4<f32>,
+    @location(4) model_1: vec4<f32>,
+    @location(5) model_2: vec4<f32>,
     /// Per-instance base color, Unorm8x4, unpacked to `0..=1` by the vertex
     /// format.
-    @if(INSTANCE_COLOR) @location(6) base_color: vec4<f32>,
+    @location(6) base_color: vec4<f32>,
 
     /// Joint indices, Uint16x4. They address data rather than interpolate, so
     /// they are never normalized, and they are part of the position stream
@@ -158,18 +144,18 @@ struct VertexInput {
 
     /// Per-instance joint-matrix base, Uint32: the instance's first joint
     /// matrix in the frame's shared array.
-    @if(INSTANCE_JOINTS) @location(9) joints_base: u32,
+    @location(9) joints_base: u32,
 
     /// Per-instance index of the mesh's entry in the frame's metadata array,
     /// which carries the decode parameters and the draw addressing.
-    @if(INSTANCE_METADATA) @location(10) metadata_index: u32,
+    @location(10) metadata_index: u32,
 
     /// Per-instance alpha cutoff, Float32: a fragment below it is discarded.
     @if(ALPHA_CUTOFF) @location(11) cutoff: f32,
 
     /// Per-instance morph-weight base, Uint32: the instance's first weight in
     /// the frame's shared array.
-    @if(INSTANCE_MORPH) @location(12) morph_base: u32,
+    @location(12) morph_base: u32,
 }
 
 struct VertexOut {
@@ -307,20 +293,13 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
         local = skin_position(local, in.joints, in.weights, in.joints_base);
     }
 
-    // Without an instance transform nothing places the vertex: the positions
-    // are already in world space, which is what screen-space draws such as a
-    // UI pass want.
-    var world = local;
-    @if(INSTANCE_TRANSFORM) {
-        world = transform_point(in.model_0, in.model_1, in.model_2, local);
-    }
+    // The instance transform always places the vertex, so a screen-space draw
+    // such as a UI pass binds the identity record and the transform is a no-op.
+    let world = transform_point(in.model_0, in.model_1, in.model_2, local);
 
     var out: VertexOut;
     out.clip = camera.clip_from_world * vec4<f32>(world, 1.0);
-    out.color = vec4<f32>(1.0, 1.0, 1.0, 1.0);
-    @if(INSTANCE_COLOR) {
-        out.color = in.base_color;
-    }
+    out.color = in.base_color;
     @if(ALPHA_CUTOFF) {
         out.cutoff = in.cutoff;
     }
