@@ -206,6 +206,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         last_frame: Instant::now(),
         initial_size: args.size.unwrap_or(scene.size),
         initial_scene: scene,
+        selector_pos: None,
     };
 
     // Native runs the loop on this thread. The web hands the app to the
@@ -270,6 +271,9 @@ struct App {
     initial_size: (u32, u32),
     /// The scene the example starts with; a switch replaces it.
     initial_scene: &'static scenes::SceneDef,
+    /// Where the selector window was left, so a scene switch can rebuild it
+    /// at the same place.
+    selector_pos: Option<egui::Pos2>,
 }
 
 /// The GPU context a scene draws with, requested asynchronously.
@@ -656,6 +660,12 @@ impl App {
         let size = window.inner_size();
         let size = (size.width.max(1), size.height.max(1));
 
+        // The selector's position survives a switch in the shell rather than
+        // the scene: egui remembers it in the context the scene's world
+        // carries, and that context is rebuilt with the scene. Read before the
+        // `&mut self.scene` borrow below — `Pos2` is `Copy`.
+        let selector_pos = self.selector_pos;
+
         let scene = match &mut self.scene {
             // Kept across a suspension, so the world's state survives it.
             Some(scene) => scene,
@@ -679,6 +689,7 @@ impl App {
                         sequence_step: def.step_seconds,
                     },
                     def,
+                    selector_pos,
                 ));
                 if let Some(window) = &self.window {
                     window.set_title(&format!("unlit3d — {}", def.title));
@@ -796,6 +807,14 @@ impl App {
             return;
         }
 
+        // The selector window keeps where the user left it: egui remembers the
+        // position in the context this scene's world carries, so the shell
+        // reads it here — before a switch drops that world — to rebuild the
+        // new scene's selector in the same place. The layout a frame left
+        // stands until this frame's panels have run, so the position read is
+        // the user's latest.
+        self.selector_pos = self.scene.as_ref().and_then(Scene::selector_position);
+
         // A switch requested by the selector panel is handled before the frame
         // is drawn: the next redraw presents the new scene.
         let switch = self.scene.as_mut().and_then(|scene| scene.take_switch());
@@ -864,6 +883,7 @@ impl Scene {
         size: (u32, u32),
         options: scenes::SceneOptions,
         def: &'static scenes::SceneDef,
+        selector_pos: Option<egui::Pos2>,
     ) -> Self {
         let mut world = World::new();
         let context = spawn_context(
@@ -909,7 +929,7 @@ impl Scene {
         }
 
         if options.selector {
-            mount_selector(&mut world, switch, def);
+            mount_selector(&mut world, switch, def, selector_pos);
             mount_frame_rate(&mut world, frame_rate);
             // The browser is the one platform with a page to make fullscreen,
             // and a page can still be denied it — an `iframe` without the
@@ -992,6 +1012,22 @@ impl Scene {
         self.pending.take()
     }
 
+    /// Where the selector window was last laid out, or `None` before it has
+    /// been shown once.
+    ///
+    /// The window's rectangle is remembered by egui, in this scene's context;
+    /// the shell reads it from here so a scene switch — which rebuilds that
+    /// context — can rebuild the window in the same place.
+    fn selector_position(&self) -> Option<egui::Pos2> {
+        // Several sources share the world; only the UI one holds egui's
+        // window memory, so skip every other source's entity.
+        self.world.query::<&Source>().find_map(|(_, source)| {
+            let ui = source.as_ref::<UiSource>()?;
+            ui.context()
+                .memory(|memory| memory.area_rect(SELECTOR_WINDOW).map(|rect| rect.min))
+        })
+    }
+
     /// Whether the fullscreen button asked for a change, clearing the request.
     ///
     /// Read once per frame by the windowed loop, which is what serves it; the
@@ -1028,14 +1064,31 @@ impl Scene {
     }
 }
 
+/// The scene-selector window's title, which is also its egui area id: the
+/// shell reads the window's remembered rectangle by this same id.
+const SELECTOR_WINDOW: &str = "scenes";
+
+/// Where the selector window opens when no position was carried over — the
+/// first build of a session.
+const SELECTOR_POS: egui::Pos2 = egui::Pos2::new(16.0, 430.0);
+
 /// Mount the windowed shell's scene-selector panel.
 ///
 /// The panel lists every scene and writes its choice into the [`SceneSwitch`]
 /// component, which the frame loop reads once after the frame's advance.
-fn mount_selector(world: &mut World, switch: Entity, current: &'static scenes::SceneDef) {
+fn mount_selector(
+    world: &mut World,
+    switch: Entity,
+    current: &'static scenes::SceneDef,
+    initial: Option<egui::Pos2>,
+) {
     world.spawn((UiPanel::new(move |world, _entity, ui| {
-        egui::Window::new("scenes")
-            .default_pos([16.0, 430.0])
+        // The id is set explicitly: `Window::new` derives it from the title's
+        // `Atoms` text, whose hash differs from a plain string id, so the
+        // shell's read of the remembered rect below would never match.
+        egui::Window::new(SELECTOR_WINDOW)
+            .id(egui::Id::new(SELECTOR_WINDOW))
+            .default_pos(initial.unwrap_or(SELECTOR_POS))
             .show(ui.ctx(), |ui| {
                 ui.label(format!("{} — {}", current.title, current.description));
                 ui.separator();
@@ -1173,6 +1226,10 @@ fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
     egui::Area::new(egui::Id::new(FRAME_RATE_AREA))
         .anchor(egui::Align2::CENTER_TOP, [0.0, OVERLAY_MARGIN])
         .interactable(false)
+        // The readout is an overlay, not a window: a scene panel dragged over
+        // the same corner must not cover it, so it sits in the layer above the
+        // one windows are drawn in.
+        .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.add(egui::Label::new(egui::RichText::new(text).monospace()).extend());
@@ -1254,6 +1311,10 @@ fn fullscreen_button(ui: &mut egui::Ui, active: bool) -> bool {
             egui::Align2::RIGHT_TOP,
             [-OVERLAY_MARGIN, fullscreen_button_top(ui.ctx())],
         )
+        // The button is an overlay, not a window: a scene panel dragged over
+        // the corner must not cover it, so it sits in the layer above the one
+        // windows are drawn in.
+        .order(egui::Order::Foreground)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
                 .show(ui, |ui| {

@@ -143,6 +143,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
             sequence_step: None,
         },
         def,
+        None,
     );
 
     let (world, renderer) = (&scene.world, scene.renderer);
@@ -225,6 +226,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
             sequence_step: None,
         },
         def,
+        None,
     );
 
     let (world, renderer) = (&scene.world, scene.renderer);

@@ -125,31 +125,57 @@ fn build(
 
     if ui {
         world.spawn((UiPanel::new(move |world, _entity, ui| {
-            egui::Window::new("unlit3d").show(ui.ctx(), |ui| {
-                let frames = world.get::<FrameCount>(cube).map_or(0, |frames| frames.0);
-                ui.label(format!("frame {frames}"));
-                ui.label("The cube spins behind this panel.");
+            // The id is set explicitly: `Window::new` derives it from the
+            // title's `Atoms` text, whose hash differs from a plain string
+            // id, so other panels could not find this window's rect.
+            egui::Window::new("unlit3d")
+                .id(egui::Id::new("unlit3d"))
+                .show(ui.ctx(), |ui| {
+                    let frames = world.get::<FrameCount>(cube).map_or(0, |frames| frames.0);
+                    ui.label(format!("frame {frames}"));
+                    ui.label("The cube spins behind this panel.");
 
-                let spinning = world.get::<Spin>(cube).is_some_and(|spin| spin.spinning);
-                let mut spinning_now = spinning;
-                if ui.checkbox(&mut spinning_now, "Spin").changed() {
-                    let _ = world.with_mut::<Spin, _>(cube, |spin| spin.spinning = spinning_now);
-                }
+                    let spinning = world.get::<Spin>(cube).is_some_and(|spin| spin.spinning);
+                    let mut spinning_now = spinning;
+                    if ui.checkbox(&mut spinning_now, "Spin").changed() {
+                        let _ =
+                            world.with_mut::<Spin, _>(cube, |spin| spin.spinning = spinning_now);
+                    }
 
-                let mut speed = world
-                    .get::<Spin>(cube)
-                    .map_or(SPIN, |spin| spin.radians_per_second);
-                if ui
-                    .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
-                    .changed()
-                {
-                    let _ = world.with_mut::<Spin, _>(cube, |spin| spin.radians_per_second = speed);
-                }
+                    let mut speed = world
+                        .get::<Spin>(cube)
+                        .map_or(SPIN, |spin| spin.radians_per_second);
+                    if ui
+                        .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
+                        .changed()
+                    {
+                        let _ =
+                            world.with_mut::<Spin, _>(cube, |spin| spin.radians_per_second = speed);
+                    }
 
-                if ui.button("Reset the spin").clicked() {
-                    let _ = world.with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
-                }
-            });
+                    if ui.button("Reset the spin").clicked() {
+                        let _ = world.with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
+                    }
+
+                    // The world's input state, read out under the panel's own
+                    // controls: what makes the events visible next to the UI
+                    // they also drive. One window, so no second title bar can
+                    // ever sit on top of this one and be painted as the window
+                    // the user is working in.
+                    ui.separator();
+                    let held = world
+                        .query::<&InputState>()
+                        .next()
+                        .is_some_and(|(_, state)| state.pointer_down);
+                    ui.label(if held { "pointer: down" } else { "pointer: up" });
+                    match world.get::<CameraOrbit>(camera) {
+                        Some(orbit) => ui.label(format!(
+                            "azimuth {:.2}, elevation {:.2}",
+                            orbit.azimuth, orbit.elevation
+                        )),
+                        None => ui.label("no camera state"),
+                    };
+                });
         }),));
     }
     // The second panel shows the world's input state, which is what makes the
@@ -175,6 +201,23 @@ fn build(
             }
             return;
         };
+
+        // A press or drag over one of the panels drives the panel, not the
+        // camera: the UI publishes an [`InputCapture`] resource each frame
+        // with what it claimed of the frame's input, and a pointer behaviour
+        // yields to it. The claim is broad — it is `true` whenever the pointer
+        // hangs over a panel, let alone drags one — so a gesture that started
+        // on the scene keeps working even when it sweeps over a panel. The
+        // contact is dropped here too, so a press that ends over a UI never
+        // leaves a drag behind for the scene.
+        let over_ui = world
+            .query::<&InputCapture>()
+            .next()
+            .is_some_and(|(_, capture)| capture.pointer);
+        if over_ui {
+            let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
+            return;
+        }
 
         match event.action {
             PointerAction::Pressed => {
@@ -210,27 +253,6 @@ fn build(
             PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
         }
     }),));
-
-    if ui {
-        world.spawn((UiPanel::new(move |world, _entity, ui| {
-            egui::Window::new("input")
-                .default_pos([16.0, 300.0])
-                .show(ui.ctx(), |ui| {
-                    let held = world
-                        .query::<&InputState>()
-                        .next()
-                        .is_some_and(|(_, state)| state.pointer_down);
-                    ui.label(if held { "pointer: down" } else { "pointer: up" });
-                    match world.get::<CameraOrbit>(camera) {
-                        Some(orbit) => ui.label(format!(
-                            "azimuth {:.2}, elevation {:.2}",
-                            orbit.azimuth, orbit.elevation
-                        )),
-                        None => ui.label("no camera state"),
-                    };
-                });
-        }),));
-    }
 
     SceneControl {
         advance: Box::new(move |world, _frame, delta_time, frame_size| {
