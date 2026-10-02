@@ -4,15 +4,18 @@
 //! context the window's position lives in — so the shell reads the window's
 //! last rectangle before dropping the old scene and hands it to the new one as
 //! its opening position. These tests pin both halves of that hand-off.
+//!
+//! The file uses the harness `gpu_scenes.rs` uses, so the same binary runs
+//! natively and as the module a wasm test page loads.
 
+use unlit_wgpu_test_util::{Ctx, gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
 use unlit3d_examples::scenes::{self, SceneOptions};
 use unlit3d_examples::{FIXED_STEP, Scene};
 
-#[test]
-fn selector_window_is_laid_out_after_a_frame() {
-    let ctx = pollster::block_on(unlit_wgpu_test_util::Ctx::headless());
+async fn selector_window_is_laid_out_after_a_frame() {
+    let ctx = Ctx::headless().await;
     let size = (960, 720);
     let mut scene = scene(&ctx, size, None);
     bind(&mut scene, &ctx, size);
@@ -28,9 +31,8 @@ fn selector_window_is_laid_out_after_a_frame() {
     );
 }
 
-#[test]
-fn selector_window_opens_where_the_previous_scene_left_it() {
-    let ctx = pollster::block_on(unlit_wgpu_test_util::Ctx::headless());
+async fn selector_window_opens_where_the_previous_scene_left_it() {
+    let ctx = Ctx::headless().await;
     let size = (960, 720);
 
     // A position a user might have dragged the window to; the shell would
@@ -51,7 +53,7 @@ fn selector_window_opens_where_the_previous_scene_left_it() {
 }
 
 /// A scene with the selector mounted, opened at `initial`.
-fn scene(ctx: &unlit_wgpu_test_util::Ctx, size: (u32, u32), initial: Option<egui::Pos2>) -> Scene {
+fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Pos2>) -> Scene {
     Scene::new(
         ctx.device.clone(),
         ctx.queue.clone(),
@@ -70,7 +72,7 @@ fn scene(ctx: &unlit_wgpu_test_util::Ctx, size: (u32, u32), initial: Option<egui
 }
 
 /// Bind an offscreen target the way the snapshot tests do, so `render` draws.
-fn bind(scene: &mut Scene, ctx: &unlit_wgpu_test_util::Ctx, size: (u32, u32)) {
+fn bind(scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
     let (world, renderer) = (&scene.world, scene.renderer);
     world
         .with_mut::<Renderer, _>(renderer, |renderer| {
@@ -90,3 +92,10 @@ fn selector_position(scene: &Scene) -> Option<egui::Pos2> {
         })
     })
 }
+
+gpu_tests! {
+    selector_window_is_laid_out_after_a_frame,
+    selector_window_opens_where_the_previous_scene_left_it,
+}
+
+gpu_test_main!(all_tests());
