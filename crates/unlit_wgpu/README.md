@@ -23,7 +23,7 @@ dependency on the ECS layer; the ECS-integrated API built on it is
 
 | Feature | Default | Provides |
 |---------|---------|----------|
-| `unlit` | yes | [`pipeline`] — `SpecializedUnlitPipeline`, `UnlitOptions`, the `UnlitFlags` variant bits, and the WESL module they compose |
+| `unlit` | yes | [`pipeline`] — `SpecializedUnlitPipeline`, `UnlitOptions`, `UnlitVariant`, and the WESL module they compose |
 | `egui` | no | the `ui` module: an egui backend that draws tessellated egui output as ordinary screen-space draws. Implies `unlit` |
 
 With `--no-default-features` the crate keeps its general facilities — the
@@ -73,11 +73,10 @@ checks that combination separately.
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening
   entry point, and [`create_render_target`](render_attachments::create_render_target) for an offscreen frame.
-- [`specialize`] — variant caching: a [`Specializer`](specialize::Specializer)
-  rewrites a [`PipelineDescriptor`](specialize::PipelineDescriptor) for a key,
-  and [`Variants`](specialize::Variants) compiles and reuses one
-  [`SpecializedPipeline`](specialize::SpecializedPipeline) per key, with a
-  canonical map for keys that are not injective.
+- [`specialize`] — variant caching: a [`PipelineVariant`](specialize::PipelineVariant)
+  builds a [`PipelineDescriptor`](specialize::PipelineDescriptor), and
+  [`Variants`](specialize::Variants) compiles and reuses one
+  [`SpecializedPipeline`](specialize::SpecializedPipeline) per variant.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
   the crate draws with, plus the built-in unlit pipeline under the `unlit`
   feature.
@@ -97,14 +96,15 @@ mesh compression, every bind group and the draw.
 # {
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    MeshInstance, MeshMetadata, compress_indices, compress_positions,
+    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    compress_indices, compress_positions,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
-    UV_COLOR_SLOT, UnlitOptions, SpecializedUnlitPipeline,
+    UV_COLOR_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
-use unlit_wgpu::specialize::SpecializedPipeline;
+use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
@@ -129,12 +129,32 @@ struct Example {
 impl Example {
     /// Build the pipeline, the geometry and every bind group.
     fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Example {
-        // 1. Pick the shader variant. Each flag adds both a shader code path
-        //    and the matching vertex attributes / bindings. The pipeline is
-        //    built for `standard`'s target: an `Rgba8UnormSrgb` color format
-        //    with 4x MSAA, which is what the render target uses below.
+        // 1. Describe the draw. One variant names one exact pipeline: the
+        //    caller's policy, the vertex channels the geometry actually has,
+        //    whether a material and morph targets are bound, and the target
+        //    the pipeline renders into. Equal variants share one compiled
+        //    pipeline, so the variant doubles as the cache key.
         let options = UnlitOptions::standard(device);
-        let pipeline = SpecializedPipeline::create(device, options.clone());
+        let surface = SurfaceKey {
+            color_format: options.color_target.format,
+            depth_stencil_format: options.depth_stencil.as_ref().map(|depth| depth.format),
+            sample_count: options.multisample.count,
+        };
+        let variant = UnlitVariant {
+            options,
+            surface,
+            channels: UnlitVertexChannels {
+                position: PositionStreamChannels {
+                    position: Some(ChannelEncoding::CompressedPosition),
+                    joints: false,
+                },
+                uv_color: UvColorFlags::UV | UvColorFlags::COLOR,
+            },
+            base_color_texture: true,
+            morph: false,
+            strip_index_format: None,
+        };
+        let pipeline = SpecializedPipeline::create(device, variant.clone());
 
         // 2. Compress the mesh. Positions and UVs become 16-bit normalized
         //    integers relative to a bounding box; the decode parameters go
@@ -172,7 +192,7 @@ impl Example {
         // The UV-and-color slot uses the same path, except that the stream
         // compresses the raw attributes and interleaves them in attribute
         // order as it writes, so they are never materialized in a `Vec<u8>`.
-        let stream = options.uv_color_stream();
+        let stream = variant.uv_color_stream();
         let uv_color = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uv_color"),
             size: stream.byte_len(packed_positions.len()) as u64,
@@ -237,7 +257,7 @@ impl Example {
         });
 
         // 5. The material group: the base-color texture and its sampler. Only
-        //    present because `base_color_texture` is enabled.
+        //    present because the variant sets `base_color_texture`.
         let (texture_view, sampler) = checkerboard(device, queue);
         let material = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material"),
@@ -416,7 +436,8 @@ The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
 caller binds (`globals`, `view`, `mesh_metadata` and the `mesh_compression`
 decode functions); the `unlit` feature adds the built-in entry shader, which
-`SpecializedUnlitPipeline` composes into the variant `UnlitOptions` selects.
+`SpecializedUnlitPipeline` composes the built-in entry shader with the
+[`UnlitVariant`](pipeline::UnlitVariant) a draw resolves.
 
 A caller who wants their own entry shader composes it directly with
 [`wesl`](https://docs.rs/wesl): [`shader`] is a WESL `StaticPackage`, so
@@ -519,7 +540,7 @@ already bound, so a scene whose entries are ordered to keep neighbouring draws
 alike costs one state change per run rather than one per draw. That ordering is
 the higher layer's job, not this crate's: `Scene` records what it is given.
 
-### Pipeline specialization: a key, a specializer, a cached pipeline
+### Pipeline specialization: a variant, a blueprint, a cached pipeline
 
 <details>
 <summary>Why the cache is shaped this way</summary>
@@ -527,70 +548,60 @@ the higher layer's job, not this crate's: `Scene` records what it is given.
 Compiling a pipeline is expensive and the result is valid for one exact
 configuration, yet one **blueprint** derives many concrete pipelines across
 dimensions like the render target, the vertex layout and the blend state.
-Automating "compile once per configuration, then reuse" needs three concepts:
+Automating "compile once per configuration, then reuse" needs two concepts:
 
-- A **key** (`SpecializerKey`) names one configuration. A key may be
-  **injective** — distinct keys necessarily mean distinct blueprints, as a render
-  target does — or it may not be: a key can carry information the blueprint does
-  not depend on, such as a mesh's raw vertex attributes, of which the shader
-  reads only a few formats. A non-injective key therefore also has a **canonical
-  form** (`Canonical`): two keys with the same canonical form share one pipeline.
-- A **specializer** (`Specializer`) is a pure function that applies a key to a
-  blueprint, rewriting it in place, and reports the key's canonical form.
-- A **cached pipeline** (`Variants`) ties the two together: it caches compiled
-  results by key, storing the variants in creation order and returning their
-  index.
+- A **variant** (`PipelineVariant`) is the complete, hashable identity of one
+  configuration. It is the cache key *and* the recipe for the blueprint:
+  `descriptor` turns it into the blueprint to compile. A variant must be
+  **injective** — equal variants build equal blueprints, and draws whose
+  blueprints differ resolve to different variants — which is what lets the cache
+  be a single map from variant to index. A variant may be its own blueprint
+  (`type Descriptor = Self`), as the built-in unlit one is.
+- A **blueprint** (`PipelineDescriptor<P>`) is the wgpu state that compiles into
+  a pipeline of type `P`. Caching has nothing to do with the kind of pipeline,
+  so `P` is not fixed: a render pipeline is a
+  `PipelineDescriptor<wgpu::RenderPipeline>` and a compute pipeline a
+  `PipelineDescriptor<wgpu::ComputePipeline>`, both sharing one `Variants`
+  cache type.
 
-**The blueprint is `PipelineDescriptor<P>`, parameterized over the pipeline it
-compiles into.** Caching a variant has nothing to do with the kind of pipeline,
-so `P` is not fixed: a render pipeline is a
-`PipelineDescriptor<wgpu::RenderPipeline>` and a compute pipeline a
-`PipelineDescriptor<wgpu::ComputePipeline>`, both sharing one cache and one set
-of specializers.
+**The cache is one map, with no canonical form.** Because a variant carries
+everything its blueprint depends on, `Variants` needs neither a second level
+nor a normalization step: the first lookup is the only lookup. The blueprint
+itself is not the key because a blueprint cannot be hashed (its compilation
+constants hold `f64`), and because "memoize on a small key" is the whole point
+of these types: a family has finitely many variants, and a lookup is cheaper
+than comparing a whole blueprint field by field. Variants are never evicted,
+matching the bounded-variant assumption.
 
-**A specializer takes no `device` parameter**, so it can only be a pure
-"key to blueprint rewrite" and cannot compile anything. This is exactly why a
-blueprint has to be a **semantic description** (such as `UnlitOptions`) rather
-than a mirror of a wgpu descriptor: the latter holds handles like
-`ShaderModule` that need a device to create. WESL composition and the actual
-wgpu calls therefore both stay inside the blueprint's `create`.
+**A blueprint is a semantic description, not a mirror of a wgpu descriptor.**
+A blueprint holds handles like `ShaderModule` that need a device to create, so
+WESL composition and the actual wgpu calls both stay inside the blueprint's
+`create`, and the blueprint is built as late as the compile needs it.
 
-**The cache has two levels but no cache of the whole blueprint.** The first
-level maps the caller's key to a variant index, the second maps the canonical
-form to a variant index; when the key is injective the second is never
-consulted. The blueprint itself is not the key because a blueprint cannot be
-hashed (its compilation constants hold `f64`), and because "memoize on a small
-key" is the whole point of these types: a family has finitely many keys, and a
-lookup is cheaper than comparing a whole blueprint field by field. Variants are
-never evicted, matching the bounded-key assumption; as a backstop for the
-two-level cache's correctness, debug builds check that one canonical form always
-yields one blueprint.
-
-**Specializing for a render target is not the built-in shader's private
-business.** A pipeline's color format, sample count and depth format have to
-match the attachments of the pass it is used in. That holds for any pipeline,
-whoever wrote the blueprint. This dimension is therefore a general specializer,
-[`SurfaceSpecializer`](specialize::SurfaceSpecializer), acting on any blueprint
-that implements [`SurfaceTarget`](specialize::SurfaceTarget): the built-in unlit
-pipeline and a custom one each implement that trait, rather than the built-in
-pipeline monopolizing the logic in a private function. "A target with no depth
-attachment" is also legal, so the depth state follows the target optionally: in
-that case the blueprint must carry **no** depth state rather than keeping a
-stale format.
+**Handling a render target is a family's business, not the framework's.** A
+pipeline's color format, sample count and depth format have to match the
+attachments of the pass it is used in, so a variant that draws into a target
+folds the target into itself. [`SurfaceKey`](specialize::SurfaceKey) names such
+a target and [`SurfaceTarget`](specialize::SurfaceTarget) is the capability a
+blueprint implements to apply one — but the cache never sees either. It is not
+the framework's job to guess which part of a variant is the target, and a
+compute pipeline has none. "A target with no depth attachment" is legal too, so
+a blueprint applies the target optionally and carries **no** depth state rather
+than keeping a stale format.
 
 </details>
 
 **A bind-group layout is not pipeline state.** The built-in unlit pipeline's
-three layouts (global, material, mesh) follow entirely from the blueprint, and
-can be used standalone without compiling anything — to describe a material's
-binding interface, say — so they are derived from the blueprint on demand rather
-than stored beside the compiled product, which avoids a second source of truth
+three layouts (global, material, mesh) follow entirely from the variant, and can
+be used standalone without compiling anything — to describe a material's binding
+interface, say — so they are derived from the variant on demand rather than
+stored beside the compiled product, which avoids a second source of truth
 drifting from the blueprint.
 
 **The built-in pipeline has no privileges.** It is an ordinary user of the same
-mechanism: its blueprint `UnlitOptions` implements `PipelineDescriptor`, and
+mechanism: `UnlitVariant` is its own blueprint (its `PipelineDescriptor`), and
 `SpecializedUnlitPipeline` is nothing more than the alias
-`SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>`. There is no second
+`SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>`. There is no second
 compilation path laid down for the built-in shader. Registering it with the
 higher layer's family mechanism is
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
@@ -617,12 +628,10 @@ which resource arrived.
 
 Both paths keep the binding numbers, the byte layout and the element order, so
 the difference stays confined to the resource type. Which one is used follows
-the device: [`UnlitOptions::standard`](pipeline::UnlitOptions::standard) sets
-`texel_arrays` from the device's limits. A caller building a variant of its own
-sets it the same way — through
-[`UnlitOptions::with_texel_arrays`](pipeline::UnlitOptions::with_texel_arrays),
-or by starting from `standard` — so a storage-less device is never asked for a
-binding it rejects.
+the device: [`UnlitVariant`](pipeline::UnlitVariant) reads the device's limits
+when it compiles the pipeline, so a storage-less device is never asked for a
+binding it rejects. The choice is a property of the device a pipeline is
+compiled on rather than of the variant, so it is never part of the cache key.
 
 Every buffer binding states its `min_binding_size`, and a uniform one states a
 size that is a multiple of 16. A device without

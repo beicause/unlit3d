@@ -22,20 +22,23 @@ use unlit_ecs::{TypeIdHashMap, World};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
-use unlit_wgpu::mesh::{JointMatrix, MeshInstance, MeshMetadata, compress_weights, index_fits_u16};
+use unlit_wgpu::mesh::{
+    ChannelEncoding, JointMatrix, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    compress_weights, index_fits_u16,
+};
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     INSTANCE_SLOT, JOINTS_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
-    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitVertexChannels,
-    supports_storage_buffers,
+    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitVariant,
+    UnlitVertexChannels, supports_storage_buffers,
 };
 use unlit_wgpu::resources::{
     Resource, ResourceGraph, ResourceId, TextureExt, TextureView, Virtual,
 };
 use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
 use unlit_wgpu::specialize::{
-    PipelineDescriptor, SpecializedPipeline, Specializer, SpecializerKey, SurfaceKey,
-    SurfaceSpecializer, VertexAttributes, VertexBufferLayoutDesc, VertexLayout,
+    PipelineVariant, SpecializedPipeline, SurfaceKey, VertexAttributes, VertexBufferLayoutDesc,
+    VertexLayout,
 };
 use unlit_wgpu::staging::StagingBuffer;
 use unlit_wgpu::texel_array::{Array, ArrayHandle};
@@ -49,8 +52,8 @@ use crate::components::{
 use crate::culling::VisibleMesh;
 use crate::mesh::{MeshDesc, UnlitMeshDesc};
 use crate::pipeline::{
-    DrawKey, FamilyContext, GlobalResources, Rebuild, RegisteredGlobal, RegisteredRenderPipeline,
-    RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
+    DrawContext, FamilyContext, GlobalResources, Rebuild, RegisteredGlobal,
+    RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
 };
 use crate::scene::{
     AnyFamily, DrawHandlesKey, EntryHandles, Family, RenderPipelineHandles, SceneFrame,
@@ -281,50 +284,12 @@ fn register_concrete(
     RenderPipelineId::new((pipelines.len() - 1) as u32)
 }
 
-/// The full specialization key of the built-in unlit family: the entity's
-/// options, the frame's target, the mesh's vertex layout and the format of
-/// the mesh's index buffer.
-///
-/// The mesh layout is not injective — two meshes whose raw attributes differ
-/// but carry the same channels rewrite the options to the same thing — so the
-/// canonical form is the specialized options themselves, and those meshes
-/// share one compiled pipeline.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct UnlitDrawKey {
-    options: UnlitOptions,
-    surface: SurfaceKey,
-    vertex_buffers: VertexLayout,
-    index_format: Option<wgpu::IndexFormat>,
-    /// Whether the draw binds a material group — which decides, at draw time,
-    /// whether the variant samples a base-color texture.
-    material: bool,
-}
-
-impl From<(UnlitPipelineKey, DrawKey)> for UnlitDrawKey {
-    fn from((key, draw): (UnlitPipelineKey, DrawKey)) -> Self {
-        Self {
-            options: key.options,
-            surface: draw.surface,
-            vertex_buffers: draw.vertex_buffers,
-            index_format: draw.index_format,
-            material: draw.material,
-        }
-    }
-}
-
-impl SpecializerKey for UnlitDrawKey {
-    // The raw mesh layout is not part of the descriptor, so the primary key
-    // alone is not injective; the canonical form below is.
-    const IS_CANONICAL: bool = false;
-    type Canonical = UnlitOptions;
-}
-
 /// The per-vertex channels a mesh's vertex layout carries, from every slot it
 /// declares.
 ///
-/// A mesh's vertex layout cannot imply the morph flag — the displacements are
-/// storage data rather than attributes — so morph channels come from the
-/// entity's own key, like the target flags.
+/// A mesh's vertex layout cannot imply morphing — the displacements are storage
+/// data rather than attributes — so the morph flag is resolved from the mesh's
+/// target count instead.
 fn vertex_channels_for_layout(layout: &[(u32, VertexBufferLayoutDesc)]) -> UnlitVertexChannels {
     UnlitVertexChannels::for_vertex_layout(layout)
 }
@@ -348,10 +313,28 @@ impl UnlitPipelineKey {
 }
 
 impl RenderPipelineKey for UnlitPipelineKey {
-    type Descriptor = UnlitOptions;
+    type Variant = UnlitVariant;
 
-    fn base_descriptor(&self) -> UnlitOptions {
-        self.options.clone()
+    fn variant(&self, draw: &DrawContext<'_>) -> UnlitVariant {
+        // Every fact the pipeline depends on beyond the caller own options
+        // is resolved here, from the draw itself: the frame target, the
+        // channels the mesh vertex layout carries, whether the draw binds a
+        // material, whether the mesh morphs, and the width of the index
+        // buffer a strip topology has to declare.
+        let index_format = draw
+            .mesh
+            .parts
+            .index_buffer
+            .as_ref()
+            .map(|(_, format)| *format);
+        UnlitVariant {
+            options: self.options.clone(),
+            surface: draw.surface,
+            channels: vertex_channels_for_layout(&draw.mesh.vertex_layout),
+            base_color_texture: draw.material.is_some(),
+            morph: draw.mesh.morph_targets > 0,
+            strip_index_format: strip_index_format(self.options.primitive.topology, index_format),
+        }
     }
 }
 
@@ -368,71 +351,33 @@ fn strip_index_format(
     index_format.filter(|_| topology.is_strip())
 }
 
-/// Specializes the built-in unlit pipeline per entity options, frame target,
-/// mesh layout and index format.
-///
-/// The descriptor starts from the entity's own options, so one family serves
-/// entities that differ in material or target policy. The target-dependent
-/// fields are rewritten by [SurfaceSpecializer], the same specializer the core
-/// crate uses for that dimension, and only the per-vertex channels are
-/// replaced: they are the mesh's own answer, which the entity cannot know
-/// before it has a mesh. The canonical key the cache indexes on is the
-/// resulting options: two draws whose specialized options agree share one
-/// compiled pipeline.
-#[derive(Clone, Copy, Debug, Default)]
-struct UnlitDrawSpecializer;
-
-impl Specializer<UnlitOptions> for UnlitDrawSpecializer {
-    type Key = UnlitDrawKey;
-
-    fn specialize(&self, key: UnlitDrawKey, options: &mut UnlitOptions) -> UnlitOptions {
-        *options = key.options;
-        // The target dimension is the core crate's specializer, applied to the
-        // same options rather than reimplemented, so the three fields it owns
-        // cannot drift from the ones a surface-only family would write.
-        SurfaceSpecializer.specialize(key.surface, options);
-        options.vertex = vertex_channels_for_layout(&key.vertex_buffers);
-        // Whether the draw samples a base-color texture is the draw's own
-        // answer: it binds a material group exactly when its entity carries
-        // one. The entity's options declared the same thing, so this only
-        // resolves the two to one answer — but it is the frame's binding that
-        // wins, because the options an entity carries may not have been right
-        // for a mesh another entity shares.
-        options.base_color_texture = key.material;
-        // The index width comes from the mesh rather than from the caller's
-        // options: the source picks the narrowest format a mesh's vertex count
-        // fits, and widens it while baking in a pool offset on a device
-        // without `base_vertex`, so only the resolved mesh knows it.
-        options.primitive.strip_index_format =
-            strip_index_format(options.primitive.topology, key.index_format);
-        options.clone()
-    }
-}
-
 /// Describes a specialized
 /// [SpecializedUnlitPipeline](unlit_wgpu::pipeline::SpecializedUnlitPipeline)
 /// the way the source registers it.
 ///
 /// This is what keeps the built-in pipeline an ordinary client of the family
-/// machinery: it packages the shader's layouts and a closure over the
-/// shader's global bindings — the camera, globals and, for variants that read
+/// machinery: it packages the shader layouts and a closure over the
+/// shader global bindings — the camera, globals and, for variants that read
 /// a compressed channel, the metadata buffer.
 struct UnlitFactory;
 
-impl RenderPipelineFactory<UnlitOptions> for UnlitFactory {
+impl RenderPipelineFactory<UnlitVariant> for UnlitFactory {
     fn descriptor(
         &self,
         context: &FamilyContext<'_>,
-        value: &SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>,
+        value: &SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>,
     ) -> RegisteredRenderPipeline {
-        // The layouts are a function of the options the variant was compiled
+        // The layouts are a function of the variant the pipeline was compiled
         // from, so they are derived here rather than stored with the pipeline.
+        // Only the global group is registered: the material group is the
+        // material own, built by `allocate_unlit_material`, and the built-in
+        // variants bind nothing at the mesh group.
         let layouts = value.descriptor().bind_group_layouts(context.device);
         let layout = layouts.global;
-        let options = value.descriptor();
-        let needs_metadata = options.needs_metadata();
-        let needs_joints = options.needs_joints();
-        let needs_morphs = options.needs_morphs();
+        let variant = value.descriptor();
+        let needs_metadata = variant.needs_metadata();
+        let needs_joints = variant.needs_joints();
+        let needs_morphs = variant.needs_morphs();
         let device = context.device.clone();
         let resources = context.resources.clone();
 
@@ -452,8 +397,6 @@ impl RenderPipelineFactory<UnlitOptions> for UnlitFactory {
         RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
             global: Some(rebuild),
-            material_layout: layouts.material,
-            mesh_layout: layouts.mesh,
         }
     }
 }
@@ -846,32 +789,28 @@ impl MeshSource {
     /// Register a pipeline family for the key type `K`.
     ///
     /// This is the only way a pipeline enters the source, for the built-in
-    /// unlit shader and a caller's own alike. The key type is the family's
+    /// unlit shader and a caller own alike. The key type is the family
     /// identity: entities draw with it when they carry a
     /// [GpuRenderPipeline](crate::components::GpuRenderPipeline) of that type, and registering a
     /// second family for the same key type is a programming error.
     ///
     /// A family compiles nothing on registration: its concrete pipelines are
-    /// built lazily, the first time a draw resolves a variant key, and are
-    /// appended to the source's pipeline list in resolution order.
+    /// built lazily, the first time a draw resolves a variant, and are
+    /// appended to the source pipeline list in resolution order.
     ///
     /// [`MeshSource::register_unlit_family`] is the built-in unlit family; a
-    /// caller registers their own by supplying the [Specializer] that rewrites
-    /// its descriptors and the [RenderPipelineFactory] that describes the
-    /// compiled result. A pipeline with nothing to specialize on supplies a
-    /// specializer that rewrites nothing and a key that carries its base
-    /// descriptor.
+    /// caller registers their own by supplying the key whose
+    /// [RenderPipelineKey::variant] resolves a draw into a variant, and the
+    /// [RenderPipelineFactory] that describes the compiled result.
     ///
     /// # Panics
     ///
     /// If a family is already registered for `K`.
-    pub fn register_family<K, D, S, F>(&mut self, world: &World, specializer: S, factory: F)
+    pub fn register_family<K, F>(&mut self, world: &World, factory: F)
     where
-        K: RenderPipelineKey<Descriptor = D> + 'static,
-        D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
-        S: Specializer<D> + 'static,
-        S::Key: From<(K, DrawKey)>,
-        F: RenderPipelineFactory<D> + 'static,
+        K: RenderPipelineKey + 'static,
+        F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>
+            + 'static,
     {
         let key = TypeId::of::<K>();
         assert!(
@@ -880,11 +819,7 @@ impl MeshSource {
         );
         self.families.insert(
             key,
-            Box::new(Family::<D, S, F, K>::new(
-                &self.device(world),
-                specializer,
-                factory,
-            )),
+            Box::new(Family::<K, F>::new(&self.device(world), factory)),
         );
     }
 
@@ -905,11 +840,7 @@ impl MeshSource {
     ///
     /// If the unlit family is already registered.
     pub fn register_unlit_family(&mut self, world: &World) {
-        self.register_family::<UnlitPipelineKey, _, _, _>(
-            world,
-            UnlitDrawSpecializer,
-            UnlitFactory,
-        );
+        self.register_family::<UnlitPipelineKey, _>(world, UnlitFactory);
     }
 
     // -- mesh allocation -------------------------------------------------------
@@ -1126,18 +1057,17 @@ impl MeshSource {
     /// same [`MeshDesc`] a caller could build by hand, and shares the
     /// compression in [unlit_wgpu::mesh] with anyone else who wants it.
     ///
-    /// Which channels are packed is the key's own vertex layout: a slice for a
-    /// channel the variant does not declare is left out, so the buffer always
-    /// matches what the shader reads.
-    ///
+    /// Which channels are packed follows the slices the caller passes: a
+    /// channel with no slice is left out, and the mesh's vertex layout records
+    /// exactly the channels that were packed, so the pipeline it is later
+    /// drawn with reads back the same shape.
     /// # Panics
     ///
     /// If the input slices are empty or of mismatched length (see the
-    /// compressors in [unlit_wgpu::mesh]); if the key's options read no
-    /// compressed channel and so declare no mesh-metadata group; if the key
-    /// declares the joint channel but [`UnlitMeshDesc::joints`] or
-    /// [`UnlitMeshDesc::weights`] is `None`; or if the key declares morph
-    /// positions but [`UnlitMeshDesc::morph_deltas`] is `None`.
+    /// compressors in [unlit_wgpu::mesh]); if only one of
+    /// [`UnlitMeshDesc::joints`] and [`UnlitMeshDesc::weights`] is `Some`; or
+    /// if [`UnlitMeshDesc::morph_deltas`] is present but does not hold three
+    /// components per vertex and target.
     pub fn allocate_unlit_mesh(
         &mut self,
         world: &World,
@@ -1157,17 +1087,51 @@ impl MeshSource {
             morph_deltas,
         } = desc;
 
-        // The key's options say what the mesh's streams look like: the pure
-        // layout builders below are the same ones the family's factory uses, so
-        // the two cannot drift. The built-in variants bind nothing at the mesh
-        // group, so the mesh carries no bind group of its own: every input it
-        // reads is in the global group or on the instance stream.
-        let options = &key.options;
-        // The streams are the key's, not the caller's: a buffer has to be
-        // packed the way the shader reading it declares its vertex layout, so
-        // a channel the key does not read is left out.
-        let position_stream = options.position_stream();
-        let uv_color_stream = options.uv_color_stream();
+        // Which channels the mesh carries is the caller's answer, not the
+        // key's: the options are pure policy, so the streams are derived from
+        // the slices the caller actually passed. A channel with no slice is
+        // left out, and the pipeline the mesh is later drawn with reads that
+        // same layout back off the mesh.
+        //
+        // The streams are always packed in their compressed encodings: a
+        // caller that wants to upload full-precision vertices builds its own
+        // buffers and its own variant instead, the way the UI path does.
+        assert_eq!(
+            joints.is_some(),
+            weights.is_some(),
+            "a mesh's joints and weights come as a pair, so one cannot be present without the other"
+        );
+        let mut uv_color = UvColorFlags::empty();
+        if uvs.is_some() {
+            uv_color |= UvColorFlags::UV;
+        }
+        if colors.is_some() {
+            uv_color |= UvColorFlags::COLOR;
+        }
+        let channels = UnlitVertexChannels {
+            position: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: joints.is_some() && weights.is_some(),
+            },
+            uv_color,
+        };
+        // The variant is built only to read the streams and layouts the
+        // channels imply. Its surface, material and strip index format play no
+        // part in any of those, so they are left at placeholders.
+        let variant = UnlitVariant {
+            options: key.options.clone(),
+            surface: SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: None,
+                sample_count: 1,
+            },
+            channels,
+            base_color_texture: false,
+            morph: morph_deltas.is_some(),
+            strip_index_format: None,
+        };
+        let position_stream = variant.position_stream();
+        let uv_color_stream = variant.uv_color_stream();
 
         // The joint pair belongs to the position stream, so a skinned mesh's
         // stream is wider by it and no separate buffer exists. A variant that
@@ -1175,7 +1139,7 @@ impl MeshSource {
         // caller's joint indices and weights exactly as a compressed variant
         // needs its UVs. A variant that reads none ignores joints it was
         // handed, as it ignores UVs it does not declare.
-        let skinned = options.needs_joints();
+        let skinned = variant.needs_joints();
         let (packed_joints, packed_weights) = if skinned {
             let joints = joints.expect("a variant that reads joints needs the mesh's joints");
             let weights = weights.expect("a variant that reads joints needs the mesh's weights");
@@ -1225,7 +1189,7 @@ impl MeshSource {
         // per-instance pose state the frame's global group binds. The source
         // pools them into the frame-wide array, so what it hands over is the
         // raw data rather than a resource.
-        let morph_deltas = options.needs_morphs().then(|| {
+        let morph_deltas = variant.needs_morphs().then(|| {
             let morph_deltas = morph_deltas.expect(
                 "a variant that reads morph positions needs the mesh's morph displacements",
             );
@@ -1244,7 +1208,7 @@ impl MeshSource {
         // The vertex layout the key's options declare, slot for slot. An empty
         // stream still gets a buffer entry — the pipeline simply declares no
         // attributes for that slot — so the mesh's layout matches the key's.
-        let vertex_layouts = options.vertex_buffer_layouts();
+        let vertex_layouts = variant.vertex_buffer_layouts();
         let layout_of = |slot: u32| -> VertexBufferLayoutDesc {
             vertex_layouts
                 .get(slot as usize)
@@ -1474,10 +1438,11 @@ impl MeshSource {
     /// texture view and sampler, and return its [GpuMaterial] handle.
     ///
     /// Only the bind group is built. `view_id` and `sampler_id` name resources
-    /// the caller has already put in the graph, and they become the group's
-    /// dependencies, so replacing either marks it dirty. Returns `None` when
-    /// the key's options read no base-color texture, so the variant binds no
-    /// material group to put them in.
+    /// the caller has already put in the graph, and they become the group
+    /// dependencies, so replacing either marks it dirty. Whether a draw
+    /// samples the texture is the draw own answer — it is what decides the
+    /// variant — so a caller that wants a material calls this, and one that
+    /// does not leaves it out.
     ///
     /// # Panics
     ///
@@ -1489,16 +1454,8 @@ impl MeshSource {
         key: &UnlitPipelineKey,
         view_id: ResourceId<TextureView>,
         sampler_id: ResourceId<wgpu::Sampler>,
-    ) -> Option<GpuMaterial> {
-        if !key.options.base_color_texture {
-            return None;
-        }
-        let layout = key
-            .options
-            .bind_group_layouts(&self.device(world))
-            .material
-            .clone()
-            .expect("the base-color variant declares a material group");
+    ) -> GpuMaterial {
+        let layout = key.options.material_bind_group_layout(&self.device(world));
 
         let device = self.device(world).clone();
         // The recipe reads the view and the sampler back out of the graph each
@@ -1507,7 +1464,7 @@ impl MeshSource {
         let mut dependencies = ArrayVec::<ResourceId, 2>::new();
         dependencies.push(view_id.erase());
         dependencies.push(sampler_id.erase());
-        Some(self.allocate_material(
+        self.allocate_material(
             world,
             move |graph| {
                 let view = graph
@@ -1535,7 +1492,7 @@ impl MeshSource {
                 })
             },
             dependencies,
-        ))
+        )
     }
 
     /// Build a material bind group with `build` and return its [GpuMaterial]
@@ -1548,7 +1505,7 @@ impl MeshSource {
     /// dependency is replaced, so it has to read whatever it binds back out of
     /// the graph rather than capture a handle. The layout is the material layout
     /// of the pipeline the material is for —
-    /// [`UnlitOptions::bind_group_layouts`](unlit_wgpu::pipeline::UnlitOptions::bind_group_layouts)
+    /// [`UnlitVariant::bind_group_layouts`](unlit_wgpu::pipeline::UnlitVariant::bind_group_layouts)
     /// for the built-in shader, or the one a custom pipeline registered.
     ///
     /// # Panics
@@ -2289,7 +2246,6 @@ mod tests {
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
     use unlit_wgpu::mesh::UvColorFlags;
-    use unlit_wgpu::pipeline::UnlitFlags;
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
     use unlit_wgpu::scene::DrawRange;
 
@@ -2458,32 +2414,20 @@ mod tests {
             .collect()
     }
 
-    /// A variant of the standard one that reads no UV — so no base-color
-    /// texture either — and therefore packs its vertices differently.
-    fn uv_less_options(device: &wgpu::Device) -> UnlitOptions {
+    /// A second policy that differs from the standard one in a field the
+    /// pipeline is specialized on, so it resolves to its own variant.
+    fn alternative_options(device: &wgpu::Device) -> UnlitOptions {
         let mut options = UnlitOptions::standard(device);
-        options.vertex.uv_color = UvColorFlags::empty();
-        options.base_color_texture = false;
-        options
-    }
-
-    /// Options for a variant that reads morph displacements, which is the only
-    /// built-in variant that still binds a mesh group.
-    ///
-    /// The UV and colour channels are dropped so the mesh below carries only
-    /// the geometry a morph needs.
-    fn morph_options(device: &wgpu::Device) -> UnlitOptions {
-        let mut options = UnlitOptions::standard(device);
-        options.flags |= UnlitFlags::MORPH_POSITIONS;
-        options.vertex.uv_color = UvColorFlags::empty();
-        options.base_color_texture = false;
+        options.srgb_to_linear_output = true;
         options
     }
 
     /// A triangle mesh with one morph target, for the tests that need the
     /// mesh group a morphing variant binds.
     fn morph_mesh(harness: &mut Harness) -> GpuMesh {
-        let key = UnlitPipelineKey::new(morph_options(&harness.source.device(&harness.world)));
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(
+            &harness.source.device(&harness.world),
+        ));
         // One target displacing all three vertices by the same amount, packed
         // vertex-major: three components per vertex.
         let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
@@ -2531,11 +2475,6 @@ mod tests {
             .1;
         let sampler = harness.source.register_sampler(&harness.world, None);
         (view, sampler)
-    }
-
-    /// A raw-layout key for `mesh` on `surface`.
-    fn draw_key(surface: SurfaceKey, mesh: &GpuMesh) -> DrawKey {
-        DrawKey::for_mesh(surface, mesh)
     }
 
     #[test]
@@ -2661,16 +2600,15 @@ mod tests {
     }
 
     #[test]
-    fn a_unlit_mesh_is_built_from_its_keys_options() {
+    fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
         let mut h = harness();
-        let standard = UnlitPipelineKey::new(UnlitOptions::standard(&h.source.device(&h.world)));
-        let uv_less = UnlitPipelineKey::new(uv_less_options(&h.source.device(&h.world)));
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(&h.source.device(&h.world)));
 
-        // Each mesh packs the channels its own key reads, not the last
-        // registered family's.
-        let standard_mesh = h.source.allocate_unlit_mesh(
+        // The mesh packs the channels the caller passed, not the ones the key
+        // used to declare: the options are pure policy now.
+        let textured = h.source.allocate_unlit_mesh(
             &h.world,
-            &standard,
+            &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -2679,40 +2617,33 @@ mod tests {
                 ..Default::default()
             },
         );
-        let uv_less_mesh = h.source.allocate_unlit_mesh(
+        let bare = h.source.allocate_unlit_mesh(
             &h.world,
-            &uv_less,
+            &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-                uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-                colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
                 indices: Some(&[0u32, 1, 2]),
                 ..Default::default()
             },
         );
-        assert!(
-            vertex_channels_for_layout(&standard_mesh.vertex_layout)
-                .uv_color
-                .contains(UvColorFlags::UV)
-        );
-        assert!(
-            !vertex_channels_for_layout(&uv_less_mesh.vertex_layout)
-                .uv_color
-                .contains(UvColorFlags::UV)
-        );
+        let textured_channels = vertex_channels_for_layout(&textured.vertex_layout);
+        assert!(textured_channels.uv_color.contains(UvColorFlags::UV));
+        assert!(textured_channels.uv_color.contains(UvColorFlags::COLOR));
+        let bare_channels = vertex_channels_for_layout(&bare.vertex_layout);
+        assert!(!bare_channels.uv_color.contains(UvColorFlags::UV));
+        assert!(!bare_channels.uv_color.contains(UvColorFlags::COLOR));
 
-        // A material is built against the key's layout: the standard variant
-        // samples a base-color texture, the UV-less one does not.
+        // A material can be built for either: whether a draw samples it is the
+        // draw's own answer — it binds the group or it does not.
         let (view, sampler) = test_material_resources(&mut h);
+        let material = h
+            .source
+            .allocate_unlit_material(&h.world, &key, view, sampler);
+        let ctx = h.source.context();
         assert!(
-            h.source
-                .allocate_unlit_material(&h.world, &standard, view.clone(), sampler.clone())
+            MeshSource::graph(&h.world, ctx)
+                .get(&material.bind_group_id)
                 .is_some()
-        );
-        assert!(
-            h.source
-                .allocate_unlit_material(&h.world, &uv_less, view, sampler)
-                .is_none()
         );
     }
 
@@ -2781,28 +2712,14 @@ mod tests {
         let mut h = harness();
         let (view, sampler) = test_material_resources(&mut h);
 
-        let material = h
-            .source
-            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
-            .expect("the standard variant reads a base-color texture");
+        let material =
+            h.source
+                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
         let ctx = h.source.context();
         assert!(
             MeshSource::graph(&h.world, ctx)
                 .get(&material.bind_group_id)
                 .is_some()
-        );
-    }
-
-    #[test]
-    fn a_variant_without_a_base_color_texture_allocates_no_material() {
-        let mut h = harness();
-        let key = UnlitPipelineKey::new(uv_less_options(&h.source.device(&h.world)));
-        let (view, sampler) = test_material_resources(&mut h);
-
-        assert!(
-            h.source
-                .allocate_unlit_material(&h.world, &key, view, sampler)
-                .is_none()
         );
     }
 
@@ -2915,10 +2832,9 @@ mod tests {
         let mut h = harness();
         let ctx = h.source.context();
         let (view, sampler) = test_material_resources(&mut h);
-        let material = h
-            .source
-            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
-            .expect("the standard variant reads a base-color texture");
+        let material =
+            h.source
+                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
 
         // Giving the handle up is the whole of it: an id is a strong
         // reference, so a clone kept here would keep the bind group alive and
@@ -3327,14 +3243,15 @@ mod tests {
         let mut h = harness();
         // A second key whose specialized options differ, so it resolves to its
         // own concrete pipeline.
-        let uv_less_key = UnlitPipelineKey::new(uv_less_options(&h.source.device(&h.world)));
+        let alternative_key =
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
 
         // Warm both variants, first key first, so their pipeline ids follow
         // the order they were resolved in.
         let standard_mesh = h.tri_mesh();
-        let uv_less_mesh = h.source.allocate_unlit_mesh(
+        let alternative_mesh = h.source.allocate_unlit_mesh(
             &h.world,
-            &uv_less_key,
+            &alternative_key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
                 uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
@@ -3350,10 +3267,10 @@ mod tests {
             standard_mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let warm_uv_less = h.world.spawn((
+        let warm_alternative = h.world.spawn((
             Transform::default(),
-            uv_less_mesh.clone(),
-            UnlitPipeline::new(uv_less_key.clone()),
+            alternative_mesh.clone(),
+            UnlitPipeline::new(alternative_key.clone()),
         ));
         h.source
             .collect_and_sort_visible(&h.world, &camera, surface);
@@ -3368,19 +3285,19 @@ mod tests {
             .source
             .visible_cache
             .iter()
-            .find(|entry| entry.mesh.entity == warm_uv_less)
+            .find(|entry| entry.mesh.entity == warm_alternative)
             .expect("the uv-less entity is visible")
             .pipeline_id;
         assert!(first_id < second_id);
         assert!(h.world.despawn(warm_standard));
-        assert!(h.world.despawn(warm_uv_less));
+        assert!(h.world.despawn(warm_alternative));
 
         // Spawn the later-drawn entity first: draw order is the pipeline id,
         // not the spawn order.
         let second = h.world.spawn((
             Transform::default(),
-            uv_less_mesh,
-            UnlitPipeline::new(uv_less_key),
+            alternative_mesh,
+            UnlitPipeline::new(alternative_key),
         ));
         let first = h.world.spawn((
             Transform::default(),
@@ -3399,15 +3316,13 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         let (view, sampler) = test_material_resources(&mut h);
-        let shared = h
-            .source
-            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
-            .expect("the standard variant reads a base-color texture");
+        let shared =
+            h.source
+                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
         let (view, sampler) = test_material_resources(&mut h);
-        let other = h
-            .source
-            .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone())
-            .expect("the standard variant reads a base-color texture");
+        let other =
+            h.source
+                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
         assert_ne!(shared.sort_key(), other.sort_key());
 
         let a = h.world.spawn((
@@ -3533,7 +3448,7 @@ mod tests {
             })
             .collect();
         other.vertex_layout = VertexLayout::new(layout);
-        assert_ne!(draw_key(surface, &other), draw_key(surface, &standard));
+        assert_ne!(other.vertex_layout, standard.vertex_layout);
 
         h.world.spawn((
             Transform::default(),
@@ -3576,7 +3491,7 @@ mod tests {
             })
             .collect();
         twin.vertex_layout = VertexLayout::new(layout);
-        assert_ne!(draw_key(surface, &twin), draw_key(surface, &base));
+        assert_ne!(twin.vertex_layout, base.vertex_layout);
 
         h.world.spawn((
             Transform::default(),
@@ -3722,7 +3637,7 @@ mod tests {
         let mut h = harness();
         // A variant that binds no material group, so the frame needs no
         // material to be a complete draw.
-        let key = UnlitPipelineKey::new(uv_less_options(&h.source.device(&h.world)));
+        let key = UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
         let mesh = h.source.allocate_unlit_mesh(
             &h.world,
             &key,
@@ -3776,7 +3691,7 @@ mod tests {
     #[test]
     fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         let mut h = harness();
-        let key = UnlitPipelineKey::new(uv_less_options(&h.source.device(&h.world)));
+        let key = UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
         // Both meshes are indexed and share the pool's index buffer, so what
         // tells their draws apart is the slice each one names.
         let first = h.source.allocate_unlit_mesh(

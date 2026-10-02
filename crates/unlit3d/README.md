@@ -146,9 +146,9 @@ pipeline: which concrete pipeline an entity needs depends on the frame's render
 target, the mesh's vertex layout and — for a strip topology, whose pipeline
 must declare the width of the index buffer it binds — the mesh's index format,
 none of them known at spawn time. A *family*
-closes that gap — it pairs a `Variants` cache with a `Specializer` and a
-[`RenderPipelineFactory`](pipeline::RenderPipelineFactory), and resolves one key to a
-concrete pipeline per frame.
+closes that gap — it holds a `Variants` cache and a
+[`RenderPipelineFactory`](pipeline::RenderPipelineFactory), deriving each draw's
+variant from the draw itself and resolving it to a concrete pipeline per frame.
 
 [`GpuMesh`](components::GpuMesh) is deliberately small: it holds only the fields
 a per-entity walk reads while culling and resolving, with the buffers a draw
@@ -180,30 +180,29 @@ with no active camera the frame is cleared and nothing is drawn.
 A family connects "what the entity wants" to `unlit_wgpu`'s variant cache:
 
 - [`RenderPipelineKey`](pipeline::RenderPipelineKey) both locates the family
-  (registration and lookup are by key type) and supplies the blueprint
-  (`base_descriptor`). Because the blueprint travels with the component, one
-  family can serve entities that start from different blueprints; and because
-  the key is the component itself, the renderer never has to hand out a family
-  handle.
-- [`DrawKey`](pipeline::DrawKey) carries the dimensions the entity's own key
-  does not express, those tied to this particular draw: the render target, the
-  mesh's vertex layout and the format of the mesh's index buffer. The index
-  format is there because a strip topology's pipeline has to declare the width
-  its draw binds, and only the mesh knows it — the source picks the narrowest
-  format a mesh's vertex count fits, and widens it while baking in a pool
-  offset on a device without `base_vertex`. It combines with the entity's own
-  key into `Specializer::Key`, and the way they combine (`From`) is the
-  family's own decision. **Which dimensions to specialize on is therefore the
-  family's freedom**: the built-in unlit family specializes on options plus
-  target plus vertex layout plus index format, and a custom family can
-  specialize on anything.
-- The blueprint is **lazily evaluated**: it is asked of the key only on a cache
-  miss, when a compilation is actually about to happen.
+  (registration and lookup are by key type) and resolves a draw into the variant
+  it needs (`variant`). Because the key travels with the component, one family
+  can serve entities that start from different policies; and because the key is
+  the component itself, the renderer never has to hand out a family handle.
+- The variant is **derived from the draw**, not declared up front: the
+  [`DrawContext`](pipeline::DrawContext) hands the key the frame's render
+  target, the mesh's vertex layout and its index format, and the key folds each
+  of them where it belongs — the target into `UnlitVariant::surface`, the
+  vertex layout into `channels`, the index format (and topology) into
+  `strip_index_format`. The index format matters because a strip topology's
+  pipeline has to declare the width its draw binds, and only the mesh knows it —
+  the source picks the narrowest format a mesh's vertex count fits, and widens it
+  while baking in a pool offset on a device without `base_vertex`. **Which
+  dimensions to specialize on is therefore the family's freedom**: the built-in
+  unlit family specializes on its policy plus the target, the vertex layout and
+  the index format, and a custom family can specialize on anything.
+- The blueprint is **lazily evaluated**: the variant is asked of the key only on
+  a cache miss, when a compilation is actually about to happen.
 - Once the family has compiled a pipeline,
   [`RenderPipelineFactory`](pipeline::RenderPipelineFactory) turns it into the
   [`RegisteredRenderPipeline`](pipeline::RegisteredRenderPipeline) the renderer
-  registers — the compiled pipeline, the three bind-group layouts and the global
-  group's rebuild recipe. It and `unlit_wgpu`'s
+  registers — the compiled pipeline and the global group's rebuild recipe. It and
+  `unlit_wgpu`'s
   [`RenderPipelineDesc`](unlit_wgpu::specialize::RenderPipelineDesc) are an
   **output/input** pair, with one compilation between them.
 
@@ -253,11 +252,11 @@ it is privileged: a caller's own family is registered through the same
 <details>
 <summary>What the built-in variant supports, and where pose data lives</summary>
 
-- The variant's flags cover position, UV, vertex color, each per-instance field
-  separately (transform, color, joint base, morph base, metadata index), the
-  base-color texture and cutoff, skinning and morph targets. The pipeline is
-  then specialized for the frame's target by `unlit_wgpu`'s
-  [`SurfaceSpecializer`](unlit_wgpu::specialize::SurfaceSpecializer).
+- The variant follows the mesh: whether its position, UV and color channels are
+  present, whether they arrive compressed, whether it is skinned or morphed, and
+  whether a material is bound — plus the caller's policy and the frame's target.
+  The five per-instance fields (transform, color, joint base, morph base,
+  metadata index) are always bound rather than switched off one by one.
 - Joint matrices and morph weights are **not** in the mesh's bind group. Meshes
   and instances are many-to-one: the same mesh can be drawn by several entities,
   and each entity's pose usually differs. A bind group is bound per mesh and
@@ -336,7 +335,7 @@ What it does is patch the world you already render:
   back-to-front after the opaque geometry. A `alphaMode: MASK` material instead
   draws binary coverage: the fragment shader discards every fragment whose alpha
   falls below the material's `alphaCutoff` (0.5 when the document leaves it
-  out), so the pipeline carries `UnlitFlags::ALPHA_CUTOFF`, the spawned entity
+  out), so the pipeline's `UnlitOptions::alpha_cutoff` is set, the spawned entity
   carries an [`InstanceCutoff`](components::InstanceCutoff) whose value travels
   in the per-instance stream, and the primitive needs neither blending nor a
   sort.
@@ -396,9 +395,9 @@ ones as the half-float formats of the same width, and 32-bit float ones as
 float format comes in three channels. Two consequences are worth knowing: a
 grayscale texture carries its luminance in the red channel — WebGPU has neither
 a luminance format nor a component swizzle — so the unlit shader's
-`BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` flags expand it to
-RGB(A) and decode the luminance from sRGB, which `UnlitGltf::pipeline_key` sets
-for exactly those uploads; and `Rgba32Float` is `unfilterable-float` on devices
+`BaseColorChannels::Luminance` and `BaseColorChannels::LuminanceAlpha` expand it
+to RGB(A) and decode the luminance from sRGB, which `UnlitGltf::pipeline_key`
+picks for exactly those uploads; and `Rgba32Float` is `unfilterable-float` on devices
 without `Features::FLOAT32_FILTERABLE`, in which case the material binds a
 non-filtering sampler and `UnlitOptions::texture_filtering` specializes the
 bind-group layout to match.
@@ -524,7 +523,7 @@ let (mesh, material) = world
 world.spawn((
     Transform::default(),
     mesh,
-    material.unwrap(),
+    material,
     UnlitPipeline::new(key),
 ));
 

@@ -23,23 +23,13 @@ fn camera() -> Camera {
     )
 }
 
-/// A skinned mesh with no joint stream is rejected rather than drawn
-/// undeformed.
-async fn skinning_without_skin_data_panics() {
-    let ctx = Ctx::headless().await;
-    let mut world = World::new();
-    let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
-    gpu.allocate_deformed_cube_mesh(&world, &key, None, None, None);
-}
-
 /// A skinned mesh drawn without a pose entity is rejected rather than deformed
 /// by whatever the frame packed for somebody else.
 async fn skinning_without_a_pose_binding_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
+    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
     let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
 
     world.spawn((camera(),));
@@ -53,7 +43,7 @@ async fn meshes_can_share_one_skin_pose() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, true, false));
+    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
     let (first, skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
     let (second, _) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
 
@@ -103,8 +93,6 @@ async fn meshes_can_share_one_skin_pose() {
 // The registry both runners drive: `cargo nextest` natively, and a
 // browser through the wasm export `gpu_test_main!` adds.
 gpu_tests! {
-    #[should_panic(expected = "a variant that reads joints needs the mesh's joints")]
-    skinning_without_skin_data_panics,
     #[should_panic(expected = "a skinned mesh needs a `SkinBinding`")]
     skinning_without_a_pose_binding_panics,
     meshes_can_share_one_skin_pose,

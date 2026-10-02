@@ -253,12 +253,8 @@ async fn a_morphed_quad_follows_its_weights() {
     let resources =
         gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     assert!(
-        resources.meshes[0]
-            .key
-            .options
-            .flags
-            .contains(unlit_wgpu::pipeline::UnlitFlags::MORPH_POSITIONS),
-        "the primitive declares targets, so the key reads displacements"
+        resources.meshes[0].mesh.morph_targets > 0,
+        "the primitive declares targets, so the uploaded mesh reads displacements"
     );
 
     let entities = gltf.spawn_default_scene(&mut world, &resources);
@@ -446,8 +442,8 @@ async fn a_skinned_quad_follows_its_joint() {
     let resources =
         gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     assert!(
-        resources.meshes[0].key.options.vertex.position.joints,
-        "the primitive declares JOINTS_0, so the key reads joints"
+        resources.meshes[0].mesh.skinned,
+        "the primitive declares JOINTS_0, so the uploaded mesh reads joints"
     );
 
     let entities = gltf.spawn_default_scene(&mut world, &resources);
@@ -847,9 +843,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
             gltf.pipeline_key(&source.device(world), 0, 0)
         });
         assert!(
-            key.options
-                .flags
-                .contains(unlit_wgpu::pipeline::UnlitFlags::ALPHA_CUTOFF),
+            key.options.alpha_cutoff,
             "an alphaMode MASK material cuts its fragments off"
         );
         assert!(

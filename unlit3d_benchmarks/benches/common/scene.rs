@@ -12,8 +12,7 @@
 
 use glam::{Quat, Vec3};
 use unlit_wgpu::capabilities::DeviceCapabilities;
-use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
-use unlit_wgpu::pipeline::{UnlitOptions, UnlitVertexChannels};
+use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SurfaceKey;
 use unlit3d::prelude::*;
@@ -57,23 +56,18 @@ impl Frame {
         let mut source = MeshSource::new(&world, context);
 
         // The smallest variant the built-in shader has: no material group, no
-        // depth, one vertex stream. That keeps a benchmark's per-entity work on
-        // the frame path rather than on binding a fuller material.
+        // depth. The options are pure policy; the geometry a draw reads follows
+        // the slices its mesh is built from, so the mesh below with positions
+        // and colors is the whole of the shape. That keeps a benchmark's
+        // per-entity work on the frame path rather than on binding a fuller
+        // material.
         let key = UnlitPipelineKey::new(UnlitOptions {
             // No base-color texture, so the material group goes unused and the
             // choice of filtering cannot be observed.
+            srgb_to_linear_output: false,
+            base_color: BaseColorChannels::Rgba,
+            alpha_cutoff: false,
             texture_filtering: true,
-            base_color_texture: false,
-            texel_arrays: false,
-            flags: unlit_wgpu::pipeline::UnlitFlags::empty(),
-            vertex: UnlitVertexChannels {
-                position: PositionStreamChannels {
-                    position: Some(ChannelEncoding::CompressedPosition),
-                    joints: false,
-                },
-                uv_color: UvColorFlags::COLOR,
-            },
-            instances: true,
             primitive: wgpu::PrimitiveState::default(),
             depth_stencil: None,
             color_target: wgpu::ColorTargetState {

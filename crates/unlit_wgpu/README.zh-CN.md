@@ -19,7 +19,7 @@
 
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
-| `unlit` | 是 | `pipeline::SpecializedUnlitPipeline`、`pipeline::UnlitOptions`、`UnlitFlags` 变体位，以及它们所组合的 WESL 模块 |
+| `unlit` | 是 | `pipeline::SpecializedUnlitPipeline`、`pipeline::UnlitOptions`、`pipeline::UnlitVariant`，以及它们所组合的 WESL 模块 |
 | `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端。隐含 `unlit` |
 
 使用 `--no-default-features` 时，本 crate 保留其通用设施——资源图、网格压缩、偏移
@@ -55,9 +55,9 @@
   区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏
   帧的 `create_render_target`。
-- `specialize` —— 变体缓存：`Specializer` 按 key 改写
-  `PipelineDescriptor`，`Variants` 则为每个 key 编译并复用一个
-  `SpecializedPipeline`；对非单射的 key 另有一张规范形式映射表。
+- `specialize` —— 变体缓存：`PipelineVariant` 构造出
+  `PipelineDescriptor`，`Variants` 则为每个变体编译并复用一个
+  `SpecializedPipeline`。
 - `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位；在
   `unlit` feature 下还包含内置 unlit 管线。
 - `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
@@ -74,14 +74,15 @@
 # {
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    MeshInstance, MeshMetadata, compress_indices, compress_positions,
+    ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    compress_indices, compress_positions,
 };
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
-    UV_COLOR_SLOT, UnlitOptions, SpecializedUnlitPipeline,
+    UV_COLOR_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
-use unlit_wgpu::specialize::SpecializedPipeline;
+use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
@@ -106,12 +107,32 @@ struct Example {
 impl Example {
     /// Build the pipeline, the geometry and every bind group.
     fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Example {
-        // 1. Pick the shader variant. Each flag adds both a shader code path
-        //    and the matching vertex attributes / bindings. The pipeline is
-        //    built for `standard`'s target: an `Rgba8UnormSrgb` color format
-        //    with 4x MSAA, which is what the render target uses below.
+        // 1. Describe the draw. One variant names one exact pipeline: the
+        //    caller's policy, the vertex channels the geometry actually has,
+        //    whether a material and morph targets are bound, and the target
+        //    the pipeline renders into. Equal variants share one compiled
+        //    pipeline, so the variant doubles as the cache key.
         let options = UnlitOptions::standard(device);
-        let pipeline = SpecializedPipeline::create(device, options.clone());
+        let surface = SurfaceKey {
+            color_format: options.color_target.format,
+            depth_stencil_format: options.depth_stencil.as_ref().map(|depth| depth.format),
+            sample_count: options.multisample.count,
+        };
+        let variant = UnlitVariant {
+            options,
+            surface,
+            channels: UnlitVertexChannels {
+                position: PositionStreamChannels {
+                    position: Some(ChannelEncoding::CompressedPosition),
+                    joints: false,
+                },
+                uv_color: UvColorFlags::UV | UvColorFlags::COLOR,
+            },
+            base_color_texture: true,
+            morph: false,
+            strip_index_format: None,
+        };
+        let pipeline = SpecializedPipeline::create(device, variant.clone());
 
         // 2. Compress the mesh. Positions and UVs become 16-bit normalized
         //    integers relative to a bounding box; the decode parameters go
@@ -149,7 +170,7 @@ impl Example {
         // The UV-and-color slot uses the same path, except that the stream
         // compresses the raw attributes and interleaves them in attribute
         // order as it writes, so they are never materialized in a `Vec<u8>`.
-        let stream = options.uv_color_stream();
+        let stream = variant.uv_color_stream();
         let uv_color = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uv_color"),
             size: stream.byte_len(packed_positions.len()) as u64,
@@ -214,7 +235,7 @@ impl Example {
         });
 
         // 5. The material group: the base-color texture and its sampler. Only
-        //    present because `base_color_texture` is enabled.
+        //    present because the variant sets `base_color_texture`.
         let (texture_view, sampler) = checkerboard(device, queue);
         let material = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material"),
@@ -392,7 +413,8 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
 调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata` 与
 `mesh_compression` 解码函数）；`unlit` feature 额外加入内置入口着色器，由
-`pipeline::SpecializedUnlitPipeline` 组合成 `pipeline::UnlitOptions` 所选的变体。
+`pipeline::SpecializedUnlitPipeline` 把内置入口着色器与一次绘制解析出的
+`pipeline::UnlitVariant` 组合起来。
 
 若要编写自己的入口着色器，请直接用 [`wesl`](https://docs.rs/wesl) 组合它：`shader`
 是一个 WESL `StaticPackage`，因此 `wesl::resolver::PackageResolver` 可以针对内置
@@ -472,55 +494,52 @@ for draw in scene.draws {
 状态只需一次切换而不是每条绘制一次。这个排列是更高层的职责，不属于本 crate：
 `Scene` 只按给定顺序录制。
 
-### 管线特化：键、特化器、缓存的管线
+### 管线特化：一个变体、一份蓝图、一条缓存的管线
 
 <details>
-<summary>为什么缓存是这个形状</summary>
+<summary>缓存为何是这种形状</summary>
 
-管线的编译昂贵，且只在一种精确配置下有效；同一份**蓝图**却会在渲染目标、顶点布局、
-混合状态等维度上派生出多条具体管线。把「按配置编译一次、之后复用」自动化，只需要
-三个概念：
+编译管线代价高昂，且结果只在一种精确配置下有效；同一份**蓝图**却会在渲染目标、
+顶点布局、混合状态等维度上派生出多条具体管线。把「按配置编译一次、之后复用」自动化，
+只需要两个概念：
 
-- **键**（`SpecializerKey`）命名一种配置。键可能是**单射**的——不同键必然对应不同
-  蓝图，如渲染目标；也可能不是——键携带蓝图并不依赖的信息，如网格的原始顶点属性
-  （着色器只关心其中几个格式）。非单射的键因此另有一个**规范形式**（`Canonical`）：
-  规范形式相同的两个键共用一条管线。
-- **特化器**（`Specializer`）是纯函数，把一个键作用到蓝图上就地改写，并回报该键的
-  规范形式。
-- **缓存的管线**（`Variants`）把前两者绑在一起：按键缓存编译结果，变体以创建顺序存为
-  数组并返回其下标。
+- **变体**（`PipelineVariant`）是一种配置的完整可哈希身份。它既是缓存键，*也是*
+  蓝图的配方：`descriptor` 把它变成要编译的蓝图。变体必须**单射**——相等的变体构造
+  出相等的蓝图，蓝图不同的绘制解析到不同的变体——这正是缓存得以是从变体到下标的单层
+  映射的原因。变体可以就是自己的蓝图（`type Descriptor = Self`），内置 unlit 即是
+  如此。
+- **蓝图**（`PipelineDescriptor<P>`）是编译成类型 `P` 的管线的 wgpu 状态。缓存与
+  管线种类无关，所以 `P` 不该被写死：渲染管线是
+  `PipelineDescriptor<wgpu::RenderPipeline>`，计算管线是
+  `PipelineDescriptor<wgpu::ComputePipeline>`，两者共用同一个 `Variants` 缓存类型。
 
-**蓝图是 `PipelineDescriptor<P>`，以编译出的管线类型 `P` 为参数。** 缓存一条变体与
-管线种类无关，所以 `P` 不该被写死：渲染管线是 `PipelineDescriptor<wgpu::RenderPipeline>`，
-计算管线是 `PipelineDescriptor<wgpu::ComputePipeline>`，两者共用同一个缓存与同一套特化。
+**缓存是单层映射，没有规范形式。** 因为变体携带了蓝图所依赖的一切，`Variants` 既不
+需要第二级，也不需要规范化步骤：第一次查表就是唯一一次。不以蓝图本身为键，是因为蓝图
+不可哈希（编译期常量含 `f64`），而且「用一个小键做记忆化」正是这套类型存在的意义——
+一个家族的变体有限，查表比逐字段比较整份蓝图便宜。变体永不淘汰，这与「变体有限」的
+前提一致。
 
-**特化器没有 `device` 参数**，因此它只能是「键 → 蓝图改写」的纯函数，不能编译任何
-东西。这正是蓝图必须是**语义描述**（如 `UnlitOptions`）而不能是 wgpu 描述符镜像的
-原因：后者持有 `ShaderModule` 等需要用 device 创建的句柄。WESL 组合与真正的 wgpu
-调用因此都留在蓝图的 `create` 里。
+**蓝图是语义描述，不是 wgpu 描述符的镜像。** 蓝图持有 `ShaderModule` 等需要用 device
+创建的句柄，因此 WESL 组合与真正的 wgpu 调用都留在蓝图的 `create` 里，蓝图在编译需要
+它时才被构造。
 
-**缓存分两级，但没有「整份蓝图」的缓存。** 一级是调用方的键到变体下标，二级是规范
-形式到变体下标；键为单射时二级永不被查询。不以蓝图本身为键，是因为蓝图不可哈希
-（编译期常量含 `f64`），而且「用一个小键做记忆化」正是这套类型存在的意义——一个
-家族的键有限，查表比逐字段比较整份蓝图便宜。变体永不淘汰，这与「键有限」的前提一致；
-作为两级缓存正确性的兜底，调试构建下会校验「同一规范形式必须产生同一蓝图」。
-
-**针对渲染目标特化不是内置着色器的私事。** 管线的颜色格式、采样数与深度格式必须与
-它所在 pass 的附件匹配，这对任何管线都成立，与蓝图由谁所写无关。这一维度因此是一个
-通用特化器 `SurfaceSpecializer`，作用在实现了 `SurfaceTarget` 的任意蓝图上：内置
-unlit 与自定义管线各自实现该 trait，而不是由内置管线用私有函数独占这份逻辑。「目标
-没有深度附件」也是合法用法，故深度状态随目标可选：此时蓝图必须**不带**深度状态，
-而不是留着一个过期的格式。
+**针对渲染目标特化是家族的事，不是框架的事。** 管线的颜色格式、采样数与深度格式必须与
+它所在 pass 的附件匹配，因此渲染进某个目标的变体会把该目标折进自身。
+[`SurfaceKey`](specialize::SurfaceKey) 命名这样一个目标，
+[`SurfaceTarget`](specialize::SurfaceTarget) 则是蓝图实现以应用它的能力——但缓存从
+不认识这两者。框架不该去猜变体的哪一部分是目标，而计算管线根本没有目标。「目标没有
+深度附件」也是合法用法，故蓝图按需应用目标：此时它**不带**深度状态，而不是留着一个
+过期的格式。
 
 </details>
 
 **绑定组的布局不是管线的状态。** 内置 unlit 的三个布局（全局、材质、网格）完全由
-蓝图决定，且能在不编译任何东西的情况下独立使用——比如描述一条材质的绑定接口——因此
-它们按需从蓝图推导，而不是与编译产物并排存一份，避免布局与蓝图两份真相漂移。
+变体决定，且能在不编译任何东西的情况下独立使用——比如描述一条材质的绑定接口——因此
+它们按需从变体推导，而不是与编译产物并排存一份，避免布局与蓝图两份真相漂移。
 
-**内置管线没有特权。** 它只是同一套机制的一个普通使用者：其蓝图 `UnlitOptions` 实现
-`PipelineDescriptor`，而 `SpecializedUnlitPipeline` 不过是
-`SpecializedPipeline<wgpu::RenderPipeline, UnlitOptions>` 的别名。不存在第二条专为
+**内置管线没有特权。** 它只是同一套机制的一个普通使用者：`UnlitVariant` 就是它自己的
+蓝图（即其 `PipelineDescriptor`），而 `SpecializedUnlitPipeline` 不过是
+`SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>` 的别名。不存在第二条专为
 内置着色器铺设的编译路径。把它注册进更高层的家族机制，是
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
 的事。
@@ -540,11 +559,9 @@ WebGL2 在这里不满足基线：GLES 3.0 完全没有 SSBO，`wgpu` 报告的
 于是着色器主体只写一遍，只有那个模块知道到达的是哪种资源。
 
 两条路径保持相同的绑定编号、字节布局与元素顺序，差异因此被限制在资源类型上。
-用哪条由设备决定：[`UnlitOptions::standard`](pipeline::UnlitOptions::standard) 依据
-设备 limits 设置 `texel_arrays`。自建变体的调用者用同样的方式设置它——通过
-[`UnlitOptions::with_texel_arrays`](pipeline::UnlitOptions::with_texel_arrays)，
-或直接从 `standard` 起步——于是永远不会向没有 storage buffer 的设备索要一个
-会被拒绝的绑定。
+用哪条由设备决定：[`UnlitVariant`](pipeline::UnlitVariant) 在编译管线时读取设备
+limits，于是永远不会向没有 storage buffer 的设备索要一个会被拒绝的绑定。这一选择属于
+编译管线的设备而非变体，因此从不进入缓存键。
 
 每个 buffer 绑定都写明 `min_binding_size`，其中 uniform 的大小必须是 16 的整数倍。
 缺少 `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED` 的设备——WebGL2 与 ANGLE 的 GLES——会

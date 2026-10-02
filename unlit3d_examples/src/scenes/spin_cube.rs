@@ -91,9 +91,7 @@ fn build(
                     ..Default::default()
                 }),
             );
-            let material = source
-                .allocate_unlit_material(world, &key, view, sampler)
-                .expect("the standard options read a base-color texture");
+            let material = source.allocate_unlit_material(world, &key, view, sampler);
             (mesh, material)
         })
         .expect("the source entity exists");

@@ -346,28 +346,16 @@ pub fn aim_camera(
         .expect("the entity carries a camera");
 }
 
-/// Unlit options for the ported ECS scenes: vertex colour + per-instance
-/// transform, no texture, no MSAA, with reverse-z depth.
+/// Unlit options for the ported ECS scenes: per-instance transform and tint,
+/// no texture, no MSAA, with reverse-z depth.
 ///
-/// The scene's key is built from these — the same options the snapshot tests
-/// the scenes came from were drawn with. A scene whose instances carry a tint
-/// needs nothing added: the tint rides the same per-instance record as the
-/// transform, so a variant that reads instances reads the tint too.
+/// The options are pure policy, so they say nothing about the geometry a draw
+/// carries: which vertex channels a mesh packs follows the slices its caller
+/// uploads, and which of them a draw reads follows the mesh it draws. The tint
+/// rides the same per-instance record as the transform, so a draw that reads
+/// instances reads the tint too.
 pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
-    use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
-    use unlit_wgpu::pipeline::{UnlitFlags, UnlitVertexChannels};
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
-    // `standard` already reads a compressed position and the instance stream,
-    // which is where the transform and the metadata index a compressed channel
-    // decodes by come from; this adds the per-vertex color, the one channel of
-    // the two streams the variant wants that `standard` does not imply.
-    let vertex = UnlitVertexChannels {
-        position: PositionStreamChannels {
-            position: Some(ChannelEncoding::CompressedPosition),
-            joints: false,
-        },
-        uv_color: UvColorFlags::COLOR,
-    };
     UnlitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
@@ -389,34 +377,8 @@ pub fn unlit_options(device: &wgpu::Device) -> UnlitOptions {
             count: 1,
             ..Default::default()
         },
-        // The base-color texture is off: these scenes draw untextured
-        // geometry, and a texture is sampled with a UV this variant does not
-        // carry.
         ..UnlitOptions::standard(device)
-            .with_flags(UnlitFlags::empty())
-            .with_base_color_texture(false)
-            .with_vertex_channels(vertex)
     }
-}
-
-/// Unlit options for a variant that deforms its vertices.
-///
-/// `joints` adds the joint stream and the joint-matrix binding; `morphs` adds
-/// the morph-delta and morph-weight bindings. Both start from
-/// [`unlit_options`], so a deformed scene draws the same cube under the same
-/// camera as an undeformed one.
-pub fn deformation_options(device: &wgpu::Device, joints: bool, morphs: bool) -> UnlitOptions {
-    use unlit_wgpu::pipeline::UnlitFlags;
-    let mut options = unlit_options(device);
-    // A deforming draw reads its base out of the instance stream, which the
-    // variant already reads.
-    if joints {
-        options.vertex.position.joints = true;
-    }
-    if morphs {
-        options.flags |= UnlitFlags::MORPH_POSITIONS;
-    }
-    options
 }
 
 /// A rig of `joint_count` joints, all at rest, returned as joint matrices.

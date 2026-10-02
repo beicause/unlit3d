@@ -216,9 +216,8 @@ impl TestGpu {
     /// Allocate a cube through the source under `key`, carrying the joint
     /// stream and morph displacements the variant reads.
     ///
-    /// The key must be a variant that declares the matching channels — the
-    /// joint stream for joints, the morph bindings for displacements — which
-    /// is what a test of either path builds with [`deformation_options`].
+    /// The key is pure policy: which channels the mesh ends up with is decided
+    /// here, from the joints and displacements the caller passes.
     ///
     /// The pose itself is not here: the joints and weights a frame deforms by
     /// live in components of their own, so a test that animates one attaches
@@ -432,21 +431,12 @@ impl TestGpu {
 /// transform, and one record carries every field, so there is nothing to add
 /// for a test that tints: the variant reads the tint because it reads
 /// instances at all.
-fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
-    use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
-    use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions, UnlitVertexChannels};
+///
+/// The options are pure policy: they say nothing about the channels a mesh
+/// carries. Those follow the slices `allocate_deformed_cube_mesh` uploads, so a
+/// deformed test and a plain one share these options.
+pub fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
     use unlit_wgpu::render_attachments::default_depth_stencil_format;
-    // `standard` already reads a compressed position and the instance stream,
-    // which is where the transform and the metadata index a compressed channel
-    // decodes by come from; this adds the per-vertex color, the one channel of
-    // the two streams the variant wants that `standard` does not imply.
-    let vertex = UnlitVertexChannels {
-        position: PositionStreamChannels {
-            position: Some(ChannelEncoding::CompressedPosition),
-            joints: false,
-        },
-        uv_color: UvColorFlags::COLOR,
-    };
     unlit_wgpu::pipeline::UnlitOptions {
         primitive: wgpu::PrimitiveState {
             cull_mode: Some(wgpu::Face::Back),
@@ -468,42 +458,12 @@ fn unlit_options(device: &wgpu::Device) -> unlit_wgpu::pipeline::UnlitOptions {
             count: 1,
             ..Default::default()
         },
-        // `with_flags` clears the flags `standard` set, and the base-color
-        // variant is off too: these tests draw untextured geometry, and a
-        // texture is sampled with a UV this variant does not carry.
-        ..UnlitOptions::standard(device)
-            .with_flags(UnlitFlags::empty())
-            .with_base_color_texture(false)
-            .with_vertex_channels(vertex)
+        ..unlit_wgpu::pipeline::UnlitOptions::standard(device)
     }
 }
 
 /// The raw channels of one mesh: `(positions, uvs, colors, indices)`.
 pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
-
-/// Unlit options for a variant that deforms its vertices.
-///
-/// `joints` adds the joint stream and the joint-matrix binding; `morphs` adds
-/// the morph-delta and morph-weight bindings. Both start from
-/// [`unlit_options`], so a deformed test draws the same cube under the same
-/// camera as an undeformed one.
-pub fn deformation_options(
-    device: &wgpu::Device,
-    joints: bool,
-    morphs: bool,
-) -> unlit_wgpu::pipeline::UnlitOptions {
-    use unlit_wgpu::pipeline::UnlitFlags;
-    let mut options = unlit_options(device);
-    // A deforming draw reads its base out of the instance stream, which the
-    // variant already reads.
-    if joints {
-        options.vertex.position.joints = true;
-    }
-    if morphs {
-        options.flags |= UnlitFlags::MORPH_POSITIONS;
-    }
-    options
-}
 
 /// A rig of `joint_count` joints, all at rest, returned as joint matrices.
 ///

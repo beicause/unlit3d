@@ -10,10 +10,10 @@ pub mod common;
 use arrayvec::ArrayVec;
 use common::*;
 use unlit_wgpu::specialize::{
-    RenderPipelineDesc, SpecializedPipeline, Specializer, SpecializerKey,
+    PipelineVariant, RenderPipelineDesc, SpecializedPipeline, VertexLayout,
 };
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
-use unlit3d::pipeline::{FamilyContext, RenderPipelineFactory};
+use unlit3d::pipeline::{DrawContext, FamilyContext, RenderPipelineFactory};
 use unlit3d::prelude::*;
 
 /// An interleaved `position + colour` vertex, matching `VERTEX` in the WGSL
@@ -129,55 +129,68 @@ impl core::hash::Hash for CustomPipelineKey {
 }
 
 impl RenderPipelineKey for CustomPipelineKey {
+    type Variant = CustomVariant;
+
+    fn variant(&self, draw: &DrawContext<'_>) -> CustomVariant {
+        CustomVariant {
+            descriptor: self.descriptor.clone(),
+            vertex_layout: draw.mesh.vertex_layout.clone(),
+            index_format: draw.mesh.parts.index_buffer.as_ref().map(|(_, f)| *f),
+        }
+    }
+}
+
+/// The concrete pipeline a custom draw resolves to.
+///
+/// It carries what the family itself decided to specialize on -- the shared
+/// descriptor, the mesh's vertex layout and its index format -- so the
+/// framework never has to know what a custom family cares about. The mesh
+/// layout is already part of the descriptor's [RenderPipelineDesc] pipeline
+/// layout, and the mesh bind group is bound per draw, so neither is a field
+/// here.
+///
+/// A variant has to be hashable, and a [RenderPipelineDesc] is not -- it
+/// carries a shader module and a pipeline layout -- so equality is identity on
+/// the shared descriptor, exactly as it is for the key.
+#[derive(Clone)]
+struct CustomVariant {
+    descriptor: std::sync::Arc<RenderPipelineDesc>,
+    vertex_layout: VertexLayout,
+    index_format: Option<wgpu::IndexFormat>,
+}
+
+impl PartialEq for CustomVariant {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.descriptor, &other.descriptor)
+            && self.vertex_layout == other.vertex_layout
+            && self.index_format == other.index_format
+    }
+}
+
+impl Eq for CustomVariant {}
+
+impl core::hash::Hash for CustomVariant {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        core::hash::Hash::hash(&std::sync::Arc::as_ptr(&self.descriptor), state);
+        core::hash::Hash::hash(&self.vertex_layout, state);
+        core::hash::Hash::hash(&self.index_format, state);
+    }
+}
+
+impl core::fmt::Debug for CustomVariant {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("CustomVariant")
+            .field("vertex_layout", &self.vertex_layout)
+            .field("index_format", &self.index_format)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PipelineVariant<wgpu::RenderPipeline> for CustomVariant {
     type Descriptor = RenderPipelineDesc;
 
-    fn base_descriptor(&self) -> RenderPipelineDesc {
+    fn descriptor(&self, _device: &wgpu::Device) -> RenderPipelineDesc {
         self.descriptor.as_ref().clone()
-    }
-}
-
-/// The variant key of a family that rewrites nothing.
-///
-/// It pairs the entity's [CustomPipelineKey] -- which supplied the base
-/// descriptor -- with the [DrawKey] the draw resolved to, so two entities
-/// needing the same concrete pipeline share a variant.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct DrawOnlyKey {
-    key: CustomPipelineKey,
-    draw: DrawKey,
-}
-
-impl core::fmt::Debug for DrawOnlyKey {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("DrawOnlyKey").finish_non_exhaustive()
-    }
-}
-
-impl From<(CustomPipelineKey, DrawKey)> for DrawOnlyKey {
-    fn from((key, draw): (CustomPipelineKey, DrawKey)) -> Self {
-        Self { key, draw }
-    }
-}
-
-impl SpecializerKey for DrawOnlyKey {
-    // The base descriptor already carries everything that distinguishes this
-    // family's pipelines, so distinct keys are distinct descriptors and the
-    // secondary cache is never consulted.
-    const IS_CANONICAL: bool = true;
-    type Canonical = Self;
-}
-
-/// A specializer that rewrites nothing: every key compiles the descriptor its
-/// [CustomPipelineKey] reported, because nothing about the draw can change
-/// this pipeline.
-#[derive(Clone, Copy, Debug, Default)]
-struct DrawOnlySpecializer;
-
-impl Specializer<RenderPipelineDesc> for DrawOnlySpecializer {
-    type Key = DrawOnlyKey;
-
-    fn specialize(&self, key: DrawOnlyKey, _descriptor: &mut RenderPipelineDesc) -> DrawOnlyKey {
-        key
     }
 }
 
@@ -339,29 +352,6 @@ impl RenderPipelineFactory<RenderPipelineDesc> for NoBindingFactory {
         RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
             global: None,
-            material_layout: None,
-            mesh_layout: None,
-        }
-    }
-}
-
-/// A factory that attaches a mesh bind-group layout to the pipelines it
-/// describes, for a family whose specializer changes nothing else.
-struct MeshLayoutFactory {
-    mesh_layout: wgpu::BindGroupLayout,
-}
-
-impl RenderPipelineFactory<RenderPipelineDesc> for MeshLayoutFactory {
-    fn descriptor(
-        &self,
-        _context: &FamilyContext<'_>,
-        value: &SpecializedPipeline<wgpu::RenderPipeline, RenderPipelineDesc>,
-    ) -> RegisteredRenderPipeline {
-        RegisteredRenderPipeline {
-            pipeline: value.pipeline.clone(),
-            global: None,
-            material_layout: None,
-            mesh_layout: Some(self.mesh_layout.clone()),
         }
     }
 }
@@ -384,11 +374,7 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
         let device = source.device(world);
         let queue = source.queue(world);
         let key = CustomPipelineKey::new(custom_pipeline(&device));
-        source.register_family::<CustomPipelineKey, _, _, _>(
-            world,
-            DrawOnlySpecializer,
-            NoBindingFactory,
-        );
+        source.register_family::<CustomPipelineKey, _>(world, NoBindingFactory);
         let pipeline = GpuRenderPipeline::new(key);
 
         // Upload the triangle as one interleaved vertex buffer in slot 0.
@@ -480,14 +466,12 @@ async fn one_pipeline_draws_many_meshes() {
     let (pipeline, red, green) = gpu.with_mesh_source(&world, |source, world| {
         let device = source.device(world);
         let queue = source.queue(world);
-        // The family's factory attaches the mesh layout; the specializer
-        // adds nothing, so one pipeline serves both meshes.
+        // NoBindingFactory returns the compiled pipeline as-is, so one
+        // pipeline serves both meshes; the tint each draw reads comes from the
+        // per-mesh bind group the mesh was allocated with.
         let desc = tinted_pipeline(&device, &layout);
-        let factory = MeshLayoutFactory {
-            mesh_layout: layout.clone(),
-        };
         let key = CustomPipelineKey::new(desc);
-        source.register_family::<CustomPipelineKey, _, _, _>(world, DrawOnlySpecializer, factory);
+        source.register_family::<CustomPipelineKey, _>(world, NoBindingFactory);
         let pipeline = GpuRenderPipeline::new(key);
 
         // The two meshes upload identical geometry and differ only in the

@@ -8,19 +8,17 @@
 //!
 //! ```
 //! # use unlit_wgpu::globals::Globals;
-//! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, UnlitOptions};
+//! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING};
 //! # use unlit_wgpu::resources::ResourceGraph;
-//! # use unlit_wgpu::specialize::SpecializedPipeline;
-//! # use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
+//! # use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
+//! # use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant};
 //! # use zerocopy::IntoBytes;
 //! # fn frame(device: &wgpu::Device, queue: &wgpu::Queue, ctx: &egui::Context,
-//! #          color_format: wgpu::TextureFormat, multisample: wgpu::MultisampleState) {
+//! #          surface: SurfaceKey) {
 //! // The caller owns the globals: a camera uniform (written every frame with
 //! // `screen_view`), a frame-globals uniform, and the bind group binding both.
-//! let mut options = ui_options(device, /* the target encodes sRGB: */ true);
-//! options.color_target.format = color_format;
-//! options.multisample = multisample;
-//! let pipeline = SpecializedPipeline::create(device, options);
+//! let variant = ui_variant(device, /* the target encodes sRGB: */ true, surface);
+//! let pipeline = SpecializedPipeline::create(device, variant);
 //! let camera = uniform_buffer(device, "ui::camera");
 //! let globals = uniform_buffer(device, "ui::globals");
 //! let global_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -79,11 +77,11 @@
 //! ```
 
 use crate::globals::View;
-use crate::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
+use crate::mesh::{ChannelEncoding, MeshInstance, PositionStreamChannels, UvColorFlags};
 use crate::pipeline::{
-    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, MATERIAL_GROUP,
-    POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags, UnlitOptions,
-    UnlitVertexChannels,
+    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GLOBAL_GROUP, INSTANCE_SLOT,
+    MATERIAL_GROUP, POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitOptions,
+    UnlitVariant, UnlitVertexChannels,
 };
 use crate::resources::{Rebuild, Resource, ResourceGraph, ResourceId, TextureExt, TextureView};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
@@ -91,6 +89,7 @@ use crate::specialize::SurfaceKey;
 use crate::staging::StagingBuffer;
 use core::ops::Range;
 use hashbrown::HashMap;
+use zerocopy::IntoBytes;
 
 /// egui's own texture format: gamma-space RGBA, never sRGB-aware.
 ///
@@ -174,56 +173,52 @@ pub fn screen_view(viewport_points: [f32; 2]) -> View {
 /// `srgb_to_linear_output` is the caller's call, not this function's: it
 /// depends on the target's format, which this function never sees. Set it
 /// when the target encodes sRGB.
-pub fn ui_options(device: &wgpu::Device, srgb_to_linear_output: bool) -> UnlitOptions {
-    let mut options = UnlitOptions::standard(device);
-    apply_ui_settings(&mut options, srgb_to_linear_output);
-    options
-}
-
-/// The UI variant's options for a frame that draws into `surface`.
 ///
-/// Equivalent to [`ui_options`] followed by
-/// [`SurfaceSpecializer`](crate::specialize::SurfaceSpecializer), which is what
-/// makes the result usable as-is: the color format, the sample count and the
-/// depth state all match the target, so a caller never has to remember to
-/// specialize. The sRGB flag is still the caller's call, since it describes the
-/// fragment's own encoding rather than the attachment's format.
-pub fn ui_options_for_surface(
+/// Every UI draw has the same shape: full-precision screen-space vertices
+/// carrying a premultiplied color and a texture coordinate, no skinning and no
+/// morph target, and a base-color texture sampled through a material group.
+/// What changes with the target is the surface the variant carries, so this is
+/// the only place a UI variant is built.
+pub fn ui_variant(
     device: &wgpu::Device,
     srgb_to_linear_output: bool,
     surface: SurfaceKey,
-) -> UnlitOptions {
-    use crate::specialize::{Specializer as _, SurfaceSpecializer};
-
-    let mut options = ui_options(device, srgb_to_linear_output);
-    SurfaceSpecializer.specialize(surface, &mut options);
-    options
+) -> UnlitVariant {
+    let mut options = UnlitOptions::standard(device);
+    apply_ui_settings(&mut options, srgb_to_linear_output);
+    UnlitVariant {
+        options,
+        surface,
+        channels: ui_channels(),
+        base_color_texture: true,
+        morph: false,
+        strip_index_format: None,
+    }
 }
 
-/// Apply the UI variant's device-independent settings — flags, culling,
-/// blending and the overlaid depth behavior — to a standard options set.
-fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
-    // Full-precision screen-space vertices carrying a premultiplied color and
-    // a texture coordinate: no compression, no per-instance stream.
-    //
-    // The instance stream is the one thing here the geometry does not decide:
-    // the UI's draws bind no instance buffer at all, and a pipeline that
-    // declared the slot would reject every draw that does not bind it.
-    options.vertex = UnlitVertexChannels {
+/// The per-vertex channels a UI mesh is packed with.
+///
+/// The UI writes positions at full precision and needs no skinning, and every
+/// vertex carries a texture coordinate and a premultiplied color. A caller
+/// packing a UI mesh builds its streams to match this.
+pub fn ui_channels() -> UnlitVertexChannels {
+    UnlitVertexChannels {
         position: PositionStreamChannels {
             position: Some(ChannelEncoding::UncompressedPosition),
             joints: false,
         },
         uv_color: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
-    };
-    options.instances = false;
-    // The UI samples every texture it draws with through a material group —
-    // it never draws an untextured glyph — so the base-color variant is
-    // unconditional here.
-    options.base_color_texture = true;
-    if srgb_to_linear_output {
-        options.flags |= UnlitFlags::SRGB_TO_LINEAR_OUTPUT;
     }
+}
+
+/// Apply the UI's device-independent policy — the output conversion, culling,
+/// blending and the overlaid depth behavior — to a standard options set.
+///
+/// The geometry the UI draws with is not policy and lives in
+/// [`ui_channels`] and the variant: an encoding, a skin or a morph target is
+/// a property of the mesh, not of what the caller picked.
+fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
+    options.srgb_to_linear_output = srgb_to_linear_output;
     // No culling: egui does not guarantee a consistent winding order across
     // the primitives it emits, so neither face can be discarded safely.
     // (`UnlitOptions::standard` culls back faces for closed meshes; the UI is
@@ -244,9 +239,9 @@ fn apply_ui_settings(options: &mut UnlitOptions, srgb_to_linear_output: bool) {
         },
     });
     // The UI overlays whatever the pass holds, so it neither tests nor writes
-    // depth. `SurfaceSpecializer` later decides whether the target has a depth
-    // attachment at all; a state left here is the overlaid one, and a target
-    // without depth drops it.
+    // depth. Whether the target has a depth attachment at all is decided by
+    // the surface the variant carries; a state left here is the overlaid one,
+    // and a target without depth drops it.
     if let Some(depth_stencil) = &mut options.depth_stencil {
         depth_stencil.depth_write_enabled = Some(false);
         depth_stencil.depth_compare = Some(wgpu::CompareFunction::Always);
@@ -294,8 +289,6 @@ fn pack_geometry(
     indices: &mut Vec<u8>,
     draws: &mut Vec<UiDraw>,
 ) {
-    use zerocopy::IntoBytes;
-
     // The split between the two streams is the frame's own vertex count, which
     // is what `scene` reads back. It is *not* the buffer's capacity: that is
     // usually larger, and splitting on it would write the UVs and colors
@@ -443,6 +436,13 @@ pub struct EguiIntegration {
     vertex_node: Option<ResourceId<wgpu::Buffer>>,
     /// Graph node of the index buffer, replaced in place when it grows.
     index_node: Option<ResourceId<wgpu::Buffer>>,
+    /// One default [`MeshInstance`], bound at [`INSTANCE_SLOT`] by every
+    /// draw.
+    ///
+    /// The built-in pipeline always declares the instance stream, and a UI
+    /// draw reads no instance state, so one identity record serves every draw.
+    /// It never changes, so it needs no graph node.
+    instance: wgpu::Buffer,
     /// Vertices the vertex buffer holds room for.
     vertex_capacity: usize,
     /// Indices the index buffer holds room for.
@@ -471,6 +471,29 @@ pub struct EguiIntegration {
 struct MaterialKey {
     texture: egui::TextureId,
     options: egui::TextureOptions,
+}
+
+/// A one-element buffer holding the identity [`MeshInstance`].
+///
+/// The built-in unlit pipeline declares the instance stream for every variant,
+/// so a draw that binds nothing at [`INSTANCE_SLOT`] is rejected. A UI draw
+/// reads no instance state — its vertices are already in screen space — so one
+/// default record satisfies the slot for every draw the integration records.
+fn default_instance(device: &wgpu::Device) -> wgpu::Buffer {
+    let instance = MeshInstance::default();
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ui::instance"),
+        size: size_of::<MeshInstance>() as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: true,
+    });
+    buffer
+        .slice(..)
+        .get_mapped_range_mut()
+        .expect("mapped at creation")
+        .copy_from_slice(instance.as_bytes());
+    buffer.unmap();
+    buffer
 }
 
 impl EguiIntegration {
@@ -506,6 +529,7 @@ impl EguiIntegration {
             indices: None,
             vertex_node: None,
             index_node: None,
+            instance: default_instance(device),
             vertex_capacity: 0,
             index_capacity: 0,
             frame_vertices: 0,
@@ -601,6 +625,7 @@ impl EguiIntegration {
         self.index_node = None;
         self.vertices = None;
         self.indices = None;
+        self.instance = default_instance(&self.device);
         self.vertex_capacity = 0;
         self.index_capacity = 0;
         self.frame_vertices = 0;
@@ -704,6 +729,7 @@ impl EguiIntegration {
             let entry = DrawEntry::new(pipeline, DrawRange::indexed(draw.indices.clone()))
                 .with_bind_group(GLOBAL_GROUP, global)
                 .with_bind_group(MATERIAL_GROUP, material)
+                .with_vertex_buffer(INSTANCE_SLOT, &self.instance)
                 .with_vertex_buffer_range(POSITION_SLOT, vertices, 0..positions_size)
                 .with_vertex_buffer_range(
                     UV_COLOR_SLOT,
@@ -810,14 +836,12 @@ impl EguiIntegration {
             return;
         };
         let sampler_id = self.sampler(graph, options);
-        let Some(layout) = self
+        let layout = self
             .pipeline
             .descriptor()
             .bind_group_layouts(&self.device)
             .material
-        else {
-            return;
-        };
+            .expect("the UI variant always samples a base-color texture");
         let device = self.device.clone();
         let view_id = slot.view.clone();
         let sampler_for_build = sampler_id.clone();
@@ -1046,8 +1070,8 @@ fn scissor_rect(clip_rect: egui::Rect, screen: ScreenDescriptor) -> ScissorRect 
 mod tests {
     use super::*;
 
-    /// A UI options set for tests that have no device. Only the fields these
-    /// tests assert on matter, so the depth-stencil format is the
+    /// The UI options for a device-free test. Only the policy these tests
+    /// assert on matters, so the depth-stencil format is the
     /// device-independent placeholder.
     fn ui_options_for_tests(srgb_to_linear_output: bool) -> UnlitOptions {
         let mut options = UnlitOptions::standard_shape();
@@ -1055,31 +1079,52 @@ mod tests {
         options
     }
 
+    /// A UI variant over the device-free options, for tests that assert on
+    /// what a variant derives rather than on a compiled pipeline.
+    fn ui_variant_for_tests(srgb_to_linear_output: bool) -> UnlitVariant {
+        UnlitVariant {
+            options: ui_options_for_tests(srgb_to_linear_output),
+            surface: SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: None,
+                sample_count: 1,
+            },
+            channels: ui_channels(),
+            base_color_texture: true,
+            morph: false,
+            strip_index_format: None,
+        }
+    }
+
     #[test]
     fn ui_variant_is_screen_space_and_uncompressed() {
-        let options = ui_options_for_tests(false);
-        let vertex = options.vertex;
+        let variant = ui_variant_for_tests(false);
+        let channels = variant.channels;
         assert_eq!(
-            vertex.position.position,
+            channels.position.position,
             Some(ChannelEncoding::UncompressedPosition),
             "screen-space vertices are written at full precision"
         );
-        assert!(!vertex.position.joints, "a UI mesh is never skinned");
+        assert!(!channels.position.joints, "a UI mesh is never skinned");
         assert_eq!(
-            vertex.uv_color,
+            channels.uv_color,
             UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR
         );
-        assert!(options.base_color_texture);
-        // No per-instance stream: the vertices are already in the projection's
-        // space, nothing is compressed, so nothing needs decoding — and a
-        // pipeline that declared the slot would reject a draw that binds no
-        // instance buffer.
-        assert!(!options.instances);
-        assert!(!options.needs_metadata());
+        assert!(variant.base_color_texture);
+        // Nothing is compressed, so no draw decodes through a metadata index:
+        // the instance stream carries no per-mesh state the UI would read.
+        assert!(!variant.needs_metadata());
+        assert!(!variant.needs_joints());
+        assert!(!variant.needs_morphs());
+        // The instance stream is declared for every unlit variant, so a UI
+        // draw binds the default record.
+        assert!(variant.vertex_buffer_layouts()[INSTANCE_SLOT as usize].is_some());
+        let options = &variant.options;
         // Overlaid rather than depth-tested. The base options carry a depth
         // state, so the UI's overlaid state is the one left behind.
         let depth_stencil = options
             .depth_stencil
+            .as_ref()
             .expect("the base options carry a depth state");
         assert_eq!(depth_stencil.depth_write_enabled, Some(false));
         assert_eq!(
@@ -1096,16 +1141,8 @@ mod tests {
     /// target's format, not the UI.
     #[test]
     fn srgb_flag_follows_the_parameter() {
-        assert!(
-            !ui_options_for_tests(false)
-                .flags
-                .contains(UnlitFlags::SRGB_TO_LINEAR_OUTPUT)
-        );
-        assert!(
-            ui_options_for_tests(true)
-                .flags
-                .contains(UnlitFlags::SRGB_TO_LINEAR_OUTPUT)
-        );
+        assert!(!ui_options_for_tests(false).srgb_to_linear_output);
+        assert!(ui_options_for_tests(true).srgb_to_linear_output);
     }
 
     /// The projection maps the viewport's corners onto clip space, with Y

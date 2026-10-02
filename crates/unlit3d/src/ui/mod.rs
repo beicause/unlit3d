@@ -44,7 +44,7 @@ use unlit_wgpu::resources::{ResourceGraph, ResourceId};
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
-use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options_for_surface};
+use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
@@ -229,8 +229,8 @@ impl UiSource {
         // A UI drawn into an sRGB target encodes its own output in gamma space,
         // so the fragment converts to linear; the same call the winit path
         // makes for its swap chain.
-        let options = ui_options_for_surface(device, surface.color_format.is_srgb(), surface);
-        let pipeline = SpecializedPipeline::create(device, options.clone());
+        let variant = ui_variant(device, surface.color_format.is_srgb(), surface);
+        let pipeline = SpecializedPipeline::create(device, variant);
 
         match &mut self.gpu {
             Some(gpu) => {

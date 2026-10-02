@@ -482,9 +482,10 @@ impl InstanceColor {
 /// at different alphas. Entities without this component leave the cutoff at
 /// zero, which no alpha falls below, and so discard nothing.
 ///
-/// The component only supplies the value the shader compares against; the
-/// variant that discards anything is the one carrying
-/// [`UnlitFlags::ALPHA_CUTOFF`](unlit_wgpu::pipeline::UnlitFlags::ALPHA_CUTOFF).
+/// The component only supplies the value the shader compares against; a
+/// pipeline only reads it when its
+/// [`UnlitOptions::alpha_cutoff`](unlit_wgpu::pipeline::UnlitOptions::alpha_cutoff)
+/// is set, which decides whether the stream carries the attribute at all.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InstanceCutoff {
     /// Alpha a fragment has to reach to be drawn.

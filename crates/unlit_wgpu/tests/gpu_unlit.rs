@@ -21,16 +21,15 @@ use unlit_wgpu::mesh::{
 use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
     GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_METADATA_BINDING, POSITION_SLOT,
-    SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitFlags, UnlitOptions, UnlitVertexChannels,
+    SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitOptions, UnlitVariant, UnlitVertexChannels,
+    supports_storage_buffers,
 };
 use unlit_wgpu::render_attachments::{
     RenderAttachments, create_render_target, depth_clear, stencil_clear,
 };
 use unlit_wgpu::resources::{TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
-use unlit_wgpu::specialize::{
-    SpecializedPipeline, Specializer as _, SurfaceKey, SurfaceSpecializer,
-};
+use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey, SurfaceTarget};
 use unlit_wgpu::texel_array::Array;
 use unlit_wgpu_test_util::{Tolerance, gpu_test_main, gpu_tests, snapshot};
 use zerocopy::IntoBytes;
@@ -128,23 +127,23 @@ struct GpuMesh {
 }
 
 impl GpuMesh {
-    /// Compress and upload the channels `options` enables, narrowing
+    /// Compress and upload the channels `variant` declares, narrowing
     /// `indices` to `u16`. Channels the variant does not declare are neither
     /// compressed nor uploaded, so a position-less variant has no position
     /// buffer at all. An empty `indices` slice uploads no index buffer.
     fn upload(
         ctx: &Ctx,
         label: &str,
-        options: &UnlitOptions,
+        variant: &UnlitVariant,
         positions: &[[f32; 3]],
         uvs: &[[f32; 2]],
         colors: &[[u8; 4]],
         indices: &[u32],
     ) -> Self {
-        let stream = options.uv_color_stream();
+        let stream = variant.uv_color_stream();
         let mut metadata = MeshMetadata::default();
         let compressed_positions = matches!(
-            options.vertex.position.position,
+            variant.channels.position.position,
             Some(ChannelEncoding::CompressedPosition)
         );
         let packed_positions: Vec<_> = if compressed_positions {
@@ -160,7 +159,7 @@ impl GpuMesh {
         let vertex_usage = wgpu::BufferUsages::VERTEX;
         // An uncompressed position needs no decode parameters, so it is
         // uploaded exactly as the caller supplies it.
-        let positions_buffer = options.vertex.position.position.is_some().then(|| {
+        let positions_buffer = variant.channels.position.position.is_some().then(|| {
             let bytes = if compressed_positions {
                 packed_positions.as_bytes()
             } else {
@@ -188,7 +187,7 @@ impl GpuMesh {
         // Indices only address geometry, so a position-less variant draws its
         // point range unindexed.
         let indices =
-            (options.vertex.position.position.is_some() && !indices.is_empty()).then(|| {
+            (variant.channels.position.position.is_some() && !indices.is_empty()).then(|| {
                 let narrowed: Vec<u16> = compress_indices(indices).expect("indices").collect();
                 let buffer = uploaded(
                     ctx,
@@ -363,31 +362,39 @@ struct SceneFixture {
     multisample: wgpu::MultisampleState,
 }
 
-/// Build the built-in pipeline for `options`, upload the cube and — when the
+/// Build the built-in pipeline for `variant`, upload the cube and — when the
 /// variant samples a base-color texture — create its material bind group.
-fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture {
-    // The pipeline is built for the test's render target, so its color format
-    // and multisample state come from here rather than the options' defaults.
-    let mut options = options.clone();
-    options.color_target.format = COLOR_FORMAT;
-    options.multisample = wgpu::MultisampleState {
-        count: sample_count,
-        ..Default::default()
+///
+/// The variant's surface is rewritten for the test's render target: the color
+/// format and sample count come from here, while the depth-stencil format
+/// follows the variant's depth state, so a variant with one is built for a
+/// target that has a depth attachment and a depth-less variant for one that
+/// does not.
+fn fixture(ctx: &Ctx, variant: &UnlitVariant, sample_count: u32) -> SceneFixture {
+    let mut variant = variant.clone();
+    variant.surface = SurfaceKey {
+        color_format: COLOR_FORMAT,
+        depth_stencil_format: variant
+            .options
+            .depth_stencil
+            .as_ref()
+            .map(|state| state.format),
+        sample_count,
     };
-    let pipeline = SpecializedPipeline::create(&ctx.device, options.clone());
+    let pipeline = SpecializedPipeline::create(&ctx.device, variant.clone());
 
     let (positions, uvs, colors, indices) = cube();
     let mesh = GpuMesh::upload(
         ctx,
         "test::cube",
-        &options,
+        &variant,
         &positions,
         &uvs,
         &colors,
         &indices,
     );
 
-    let material = options.base_color_texture.then(|| {
+    let material = variant.base_color_texture.then(|| {
         let texture = checkerboard_texture(ctx);
         ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("test::material"),
@@ -410,11 +417,14 @@ fn fixture(ctx: &Ctx, options: &UnlitOptions, sample_count: u32) -> SceneFixture
     });
 
     SceneFixture {
-        has_depth: options.depth_stencil.is_some(),
+        has_depth: variant.options.depth_stencil.is_some(),
         pipeline,
         mesh,
         material,
-        multisample: options.multisample,
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
     }
 }
 
@@ -479,10 +489,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         Some("test::mesh_meta"),
         size_of::<MeshMetadata>() as u64,
         1,
-        fixture
-            .pipeline
-            .descriptor()
-            .uses_texel_arrays()
+        (!supports_storage_buffers(&ctx.device))
             .then(|| ctx.device.limits().max_texture_dimension_2d),
     );
     metadata_array.write(&ctx.queue, fixture.mesh.metadata.as_bytes());
@@ -514,7 +521,6 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         wgpu::BufferUsages::VERTEX,
     );
     let instance_count = instances.len() as u32;
-    let instanced = fixture.pipeline.descriptor().reads_instances();
     let range = match &fixture.mesh.indices {
         Some((_, count)) => DrawRange::Indexed {
             indices: 0..*count,
@@ -536,11 +542,9 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     // displacements, and every other per-mesh input rides the instance stream
     // or the global group. A morphed variant would bind its displacements at
     // [MESH_GROUP] here.
-    // Per-instance data places the geometry, so the slot is bound only when
-    // the variant reads it. A variant without it draws one instance.
-    if instanced {
-        draw = draw.with_vertex_buffer(INSTANCE_SLOT, &instance_data);
-    }
+    // Per-instance data places the geometry; every built-in variant declares
+    // and reads the instance stream, so the slot is always bound.
+    draw = draw.with_vertex_buffer(INSTANCE_SLOT, &instance_data);
     if let Some(positions) = &fixture.mesh.positions {
         draw = draw.with_vertex_buffer(POSITION_SLOT, positions);
     }
@@ -585,27 +589,51 @@ fn placed_cube(base_color: [f32; 4]) -> MeshInstance {
     placed(0.7, 0.6, glam::Vec3::new(0.0, 0.2, 0.0), base_color)
 }
 
+/// A variant built for the test's render target from `options` and the draw
+/// facts the test supplies.
+fn variant(
+    options: UnlitOptions,
+    channels: UnlitVertexChannels,
+    base_color_texture: bool,
+    morph: bool,
+) -> UnlitVariant {
+    let surface = SurfaceKey {
+        color_format: COLOR_FORMAT,
+        depth_stencil_format: options.depth_stencil.as_ref().map(|state| state.format),
+        sample_count: options.multisample.count,
+    };
+    UnlitVariant {
+        options,
+        surface,
+        channels,
+        base_color_texture,
+        morph,
+        strip_index_format: None,
+    }
+}
+
 /// The vertex-color variant the pixel tests use.
 ///
-/// `standard` already reads a compressed position and the instance stream; this
-/// narrows its channels to the vertex color alone — no UV, so no base-color
-/// texture either, which the base-color field drops outright.
-fn vertex_color_options(device: &wgpu::Device) -> UnlitOptions {
-    UnlitOptions::standard(device)
-        .with_flags(UnlitFlags::empty())
-        .with_base_color_texture(false)
-        .with_vertex_channels(UnlitVertexChannels {
+/// The standard policy with its channels narrowed to the vertex color alone —
+/// no UV, so no base-color texture either.
+fn vertex_color_variant(device: &wgpu::Device) -> UnlitVariant {
+    variant(
+        UnlitOptions::standard(device),
+        UnlitVertexChannels {
             position: PositionStreamChannels {
                 position: Some(ChannelEncoding::CompressedPosition),
                 joints: false,
             },
             uv_color: UvColorFlags::COLOR,
-        })
+        },
+        false,
+        false,
+    )
 }
 
 async fn renders_a_cube_over_the_clear_color() {
     let ctx = Ctx::headless().await;
-    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
+    let fixture = fixture(&ctx, &vertex_color_variant(&ctx.device), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
 
     assert_eq!(frame.width, WIDTH);
@@ -634,7 +662,7 @@ async fn renders_a_cube_over_the_clear_color() {
 
 async fn base_color_reaches_the_frame() {
     let ctx = Ctx::headless().await;
-    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
+    let fixture = fixture(&ctx, &vertex_color_variant(&ctx.device), 4);
 
     let brightest = |base_color: [f32; 4]| {
         let frame = render(&ctx, &fixture, &[placed_cube(base_color)]);
@@ -657,7 +685,7 @@ async fn base_color_reaches_the_frame() {
 
 async fn depth_ordering_hides_the_far_instance() {
     let ctx = Ctx::headless().await;
-    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
+    let fixture = fixture(&ctx, &vertex_color_variant(&ctx.device), 4);
 
     // A far red cube and a near green one, drawn far-first so a missing depth
     // test would let the far cube show through.
@@ -689,7 +717,7 @@ async fn msaa_produces_more_partial_coverage_than_no_msaa() {
     // Pixels that are neither fully clear nor fully covered: the
     // antialiased silhouette, which a single-sample render cannot produce.
     let partial = |sample_count: u32| {
-        let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), sample_count);
+        let fixture = fixture(&ctx, &vertex_color_variant(&ctx.device), sample_count);
         let frame = render(&ctx, &fixture, std::slice::from_ref(&instance));
         frame
             .as_chunks::<4>()
@@ -712,7 +740,7 @@ async fn msaa_produces_more_partial_coverage_than_no_msaa() {
 
 async fn unlit_cube_matches_snapshot() {
     let ctx = Ctx::headless().await;
-    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
+    let fixture = fixture(&ctx, &vertex_color_variant(&ctx.device), 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0, 0.85, 0.4, 1.0])]);
     assert_image_snapshot(
         snapshot!("unlit_cube.webp"),
@@ -727,7 +755,7 @@ async fn unlit_cube_matches_snapshot() {
 /// its own color.
 async fn instanced_cubes_match_snapshot() {
     let ctx = Ctx::headless().await;
-    let fixture = fixture(&ctx, &vertex_color_options(&ctx.device), 4);
+    let fixture = fixture(&ctx, &vertex_color_variant(&ctx.device), 4);
 
     // A row of cubes at different depths, each with its own base color, all
     // drawn by one instanced draw call.
@@ -793,17 +821,19 @@ async fn instanced_cubes_match_snapshot() {
 /// where the per-instance transform puts it.
 async fn position_less_variant_draws_points_at_instance_origins() {
     let ctx = Ctx::headless().await;
-    let options = UnlitOptions::standard(&ctx.device)
-        .with_flags(UnlitFlags::empty())
-        .with_base_color_texture(false)
-        .with_vertex_channels(UnlitVertexChannels {
+    let variant = variant(
+        UnlitOptions::standard(&ctx.device),
+        UnlitVertexChannels {
             position: PositionStreamChannels {
                 position: None,
                 joints: false,
             },
             uv_color: UvColorFlags::empty(),
-        });
-    let fixture = fixture(&ctx, &options, 1);
+        },
+        false,
+        false,
+    );
+    let fixture = fixture(&ctx, &variant, 1);
     assert!(
         fixture.mesh.positions.is_none(),
         "a position-less variant must not upload a position buffer"
@@ -849,8 +879,19 @@ async fn position_less_variant_draws_points_at_instance_origins() {
 
 async fn textured_cube_matches_snapshot() {
     let ctx = Ctx::headless().await;
-    let options = UnlitOptions::standard(&ctx.device);
-    let fixture = fixture(&ctx, &options, 4);
+    let variant = variant(
+        UnlitOptions::standard(&ctx.device),
+        UnlitVertexChannels {
+            position: PositionStreamChannels {
+                position: Some(ChannelEncoding::CompressedPosition),
+                joints: false,
+            },
+            uv_color: UvColorFlags::UV | UvColorFlags::COLOR,
+        },
+        true,
+        false,
+    );
+    let fixture = fixture(&ctx, &variant, 4);
     let instance = placed(0.8, 0.6, glam::Vec3::ZERO, [1.0, 1.0, 1.0, 1.0]);
     let frame = render(&ctx, &fixture, &[instance]);
     assert_image_snapshot_with_tolerance(
@@ -996,27 +1037,24 @@ async fn resource_graph_rebuilds_a_dependent_after_a_resource_change() {
 /// a UI-only or overlay-only pass needs.
 async fn a_color_only_target_draws_a_cube() {
     let ctx = Ctx::headless().await;
-    // Specialize for the depth-less target the same way a caller would, then
-    // build the pipeline from the result.
-    let mut options = vertex_color_options(&ctx.device);
-    SurfaceSpecializer.specialize(
-        SurfaceKey {
-            color_format: COLOR_FORMAT,
-            depth_stencil_format: None,
-            sample_count: 4,
-        },
-        &mut options,
-    );
+    // Specialize the policy for the depth-less target the same way a caller
+    // would, then build the pipeline from the result.
+    let mut variant = vertex_color_variant(&ctx.device);
+    variant.options.set_surface(SurfaceKey {
+        color_format: COLOR_FORMAT,
+        depth_stencil_format: None,
+        sample_count: 4,
+    });
     assert!(
-        options.depth_stencil.is_none(),
+        variant.options.depth_stencil.is_none(),
         "a depth-less target yields a depth-less pipeline"
     );
     assert!(
-        !fixture(&ctx, &options, 4).has_depth,
+        !fixture(&ctx, &variant, 4).has_depth,
         "so the fixture's pass declares no depth attachment"
     );
 
-    let fixture = fixture(&ctx, &options, 4);
+    let fixture = fixture(&ctx, &variant, 4);
     let frame = render(&ctx, &fixture, &[placed_cube([1.0; 4])]);
 
     // The cube reached the frame: some pixel is brighter than the clear color.

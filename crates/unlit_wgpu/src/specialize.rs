@@ -2,50 +2,27 @@
 //!
 //! Three types carry it:
 //!
-//! - a [SpecializerKey] names one configuration,
-//! - a [Specializer] rewrites a blueprint (a [PipelineDescriptor]) for a key
-//!   and reports the key's canonical form, and
+//! - a [PipelineVariant] is the complete, hashable identity of one compiled
+//!   value and builds the [PipelineDescriptor] it compiles from,
 //! - [Variants] caches the [SpecializedPipeline]s that result, handing the same
-//!   index back the next time a key is asked for.
+//!   index back the next time a variant is asked for, and
+//! - a [PipelineDescriptor] is the blueprint itself: owned wgpu state that
+//!   compiles into a pipeline of type `P`.
 //!
-//! The blueprint is supplied on each call rather than stored, so one cache can
-//! serve keys that each carry their own base, and a cache hit does not clone
-//! one.
+//! A variant is the cache key, so it must be injective: equal variants build
+//! equal descriptors, and draws whose descriptors differ resolve to different
+//! variants. Because a variant carries everything its descriptor depends on,
+//! the cache is one map -- no canonical form, no second level.
+//!
+//! There is no full-descriptor cache. A [RenderPipelineDesc] cannot be hashed
+//! -- its compilation constants hold f64 -- and memoizing on a small key is
+//! the point of the type: a family has finitely many variants, and a lookup is
+//! cheaper than comparing whole descriptors. Cached variants are never
+//! evicted, matching the bounded-variant assumption.
 //!
 //! [PipelineDescriptor] is generic over the pipeline it compiles, so one cache
 //! serves a render pipeline and a compute pipeline alike: the descriptor is the
 //! only thing that knows which of the two it builds.
-//!
-//! # The two-level cache
-//!
-//! A key is not always injective. A key may carry information that does not
-//! reach the descriptor -- the raw vertex attributes of a mesh, say, of which
-//! only the formats the shader reads matter. Two such keys must share one
-//! compiled value, so [Variants] keeps two maps:
-//!
-//! - the primary map from the caller's key to a variant index, and
-//! - the canonical map from the key's canonical form to a variant index.
-//!
-//! When [SpecializerKey::IS_CANONICAL] is true the key is injective, the
-//! canonical map is never consulted, and the primary map alone is the cache.
-//! When it is false, a primary miss consults the canonical map: on a hit the
-//! variant is reused, and in debug builds the cached descriptor is checked
-//! against the freshly specialized one, which catches a specializer that
-//! derived different descriptors from one canonical key.
-//!
-//! There is no full-descriptor cache. A [RenderPipelineDesc] cannot be hashed
-//! -- its compilation constants hold f64 -- and memoizing on a small key is
-//! the point of the type: a family has finitely many keys, and a lookup is
-//! cheaper than comparing whole descriptors. Cached variants are never
-//! evicted, matching the bounded-key assumption.
-//!
-//! # Canonical keys
-//!
-//! A key that is injective sets [SpecializerKey::IS_CANONICAL] to true and its
-//! [SpecializerKey::Canonical] to itself: [SurfaceKey], the render target a
-//! pipeline is built for, is one such key. A key that carries information no
-//! descriptor depends on keeps the two apart, as the built-in unlit family does
-//! for a mesh's raw vertex attributes.
 
 use core::hash::Hash;
 use std::sync::Arc;
@@ -60,15 +37,15 @@ use crate::util::Hashed;
 
 /// A blueprint that compiles into a pipeline of type `P`.
 ///
-/// A specializer rewrites one of these in place, and [Variants] caches the
-/// result. Comparable so a cached variant can be checked against a freshly
-/// specialized one.
+/// A [PipelineVariant] builds one of these and [Variants] caches the result.
+/// Not comparable or hashable: it may hold wgpu handles and `f64` constants,
+/// which is why the variant -- not the blueprint -- is the cache key.
 ///
 /// Deliberately not `Send`/`Sync`: a descriptor holds wgpu handles, which are
 /// not thread-safe on the web. A cache and the device it creates against live
 /// together and never cross threads, so requiring it would only rule the web
 /// backend out.
-pub trait PipelineDescriptor<P>: Clone + PartialEq {
+pub trait PipelineDescriptor<P>: Clone {
     /// Compile this blueprint into a pipeline.
     fn create(&self, device: &wgpu::Device) -> P;
 }
@@ -77,7 +54,8 @@ pub trait PipelineDescriptor<P>: Clone + PartialEq {
 ///
 /// This is what a cache hands out: the pipeline to bind, and the descriptor it
 /// was built from, which the renderer reads to discover the bind-group layouts
-/// and vertex streams the pipeline expects.
+/// and vertex streams the pipeline expects. A compiled pipeline does not expose
+/// those, so the blueprint is kept beside it rather than re-derived.
 #[derive(Clone, Debug)]
 pub struct SpecializedPipeline<P, D> {
     /// The compiled pipeline.
@@ -101,92 +79,68 @@ impl<P, D: PipelineDescriptor<P>> SpecializedPipeline<P, D> {
     }
 }
 
-/// A pure function from a small key to a descriptor rewrite.
-pub trait Specializer<D>: 'static {
-    /// The key that names one configuration.
-    type Key: SpecializerKey;
+/// The complete, hashable identity of one compiled pipeline, and the recipe
+/// for its blueprint.
+///
+/// This is the cache key, so it carries exactly the information the descriptor
+/// depends on -- no more, no less -- and must be injective: equal variants
+/// build equal descriptors, and draws whose descriptors differ resolve to
+/// different variants. Equal keys then share one compiled pipeline, which is
+/// why [Variants] needs only a single map.
+///
+/// A variant may be its own descriptor (`type Descriptor = Self`), as the
+/// built-in unlit family does, or describe a larger one it does not own.
+pub trait PipelineVariant<P>: Clone + Hash + Eq + 'static {
+    /// The blueprint this variant compiles.
+    type Descriptor: PipelineDescriptor<P>;
 
-    /// Rewrite the descriptor for the key and return the key in canonical
-    /// form.
-    fn specialize(&self, key: Self::Key, descriptor: &mut D) -> Canonical<Self::Key>;
+    /// Build this variant's blueprint. Called only on a cache miss.
+    ///
+    /// `device` is there for variants whose blueprint depends on device
+    /// capabilities; the cache itself is built for one device.
+    fn descriptor(&self, device: &wgpu::Device) -> Self::Descriptor;
 }
 
-/// A key a [Specializer] accepts.
-pub trait SpecializerKey: Clone + Hash + Eq {
-    /// True iff [Self::Canonical] = Self, i.e. distinct keys always mean
-    /// distinct descriptors and the secondary cache can be skipped.
-    const IS_CANONICAL: bool;
-
-    /// The part of the key that actually reaches the descriptor. Two keys with
-    /// equal canonical forms map to the same variant.
-    type Canonical: Hash + Eq;
-}
-
-/// The canonical form of a [SpecializerKey].
-pub type Canonical<T> = <T as SpecializerKey>::Canonical;
-
-/// A cache of the [SpecializedPipeline]s one descriptor family compiles. At
-/// most one pipeline is created per key.
+/// A cache of the [SpecializedPipeline]s one family compiles. At most one
+/// pipeline is created per variant.
 ///
 /// The variants are stored in creation order; [Self::specialize] returns their
-/// index. The cache never evicts: keys are assumed bounded, so a family that
-/// specializes on the mesh's vertex layout, say, holds one variant per
+/// index. The cache never evicts: a family has finitely many variants, so one
+/// that specializes on the mesh's vertex layout, say, holds one pipeline per
 /// distinct layout it has seen.
-pub struct Variants<P, D: PipelineDescriptor<P>, S: Specializer<D>> {
+pub struct Variants<P, V: PipelineVariant<P>> {
     /// The device variants are created on.
     device: wgpu::Device,
-    /// The rewrite applied to every key.
-    specializer: S,
-    /// The primary cache: caller key to variant index.
-    primary: HashMap<S::Key, u32>,
-    /// The canonical cache: canonical key to variant index.
-    canonical: HashMap<Canonical<S::Key>, u32>,
-    /// The created variants, indexed by the returned variant.
-    variants: Vec<SpecializedPipeline<P, D>>,
+    /// The cache: variant to index into `variants`.
+    keys: HashMap<V, u32>,
+    /// The created variants, indexed by the returned index.
+    variants: Vec<SpecializedPipeline<P, V::Descriptor>>,
 }
 
-impl<P, D: PipelineDescriptor<P>, S: Specializer<D>> Variants<P, D, S> {
+impl<P, V: PipelineVariant<P>> Variants<P, V> {
     /// Create an empty cache.
-    pub fn new(device: &wgpu::Device, specializer: S) -> Self {
+    pub fn new(device: &wgpu::Device) -> Self {
         Self {
             device: device.clone(),
-            specializer,
-            primary: HashMap::new(),
-            canonical: HashMap::new(),
+            keys: HashMap::new(),
             variants: Vec::new(),
         }
     }
 
-    /// The variant for the key, creating it on first use.
+    /// The index of the variant's pipeline, creating it on first use.
     ///
-    /// Creates at most one value per key. For a non-canonical key, keys that
-    /// share a canonical form share a variant. `base` supplies the blueprint
-    /// the key is specialized from and is called only on a cache miss, so a
-    /// hit never clones one.
-    pub fn specialize(&mut self, base: impl FnOnce() -> D, key: S::Key) -> u32 {
-        if let Some(&index) = self.primary.get(&key) {
+    /// Creates at most one pipeline per variant; the blueprint is built only
+    /// on a cache miss.
+    pub fn specialize(&mut self, variant: V) -> u32 {
+        if let Some(&index) = self.keys.get(&variant) {
             return index;
         }
 
-        let mut descriptor = base();
-        let canonical_key = self.specializer.specialize(key.clone(), &mut descriptor);
-
-        let index = if S::Key::IS_CANONICAL {
-            self.create_variant(descriptor)
-        } else if let Some(&index) = self.canonical.get(&canonical_key) {
-            debug_assert!(
-                self.variants[index as usize].descriptor() == &descriptor,
-                "a specializer produced descriptors that differ for one canonical key; \
-                 the key must not carry information the descriptor does not depend on"
-            );
-            index
-        } else {
-            let index = self.create_variant(descriptor);
-            self.canonical.insert(canonical_key, index);
-            index
-        };
-
-        self.primary.insert(key, index);
+        let descriptor = variant.descriptor(&self.device);
+        let specialized = SpecializedPipeline::create(&self.device, descriptor);
+        let index = u32::try_from(self.variants.len()).expect("variant count fits in u32");
+        self.variants.push(specialized);
+        self.keys.insert(variant, index);
         index
     }
 
@@ -194,16 +148,8 @@ impl<P, D: PipelineDescriptor<P>, S: Specializer<D>> Variants<P, D, S> {
     ///
     /// # Panics
     /// If the index was not returned by [Self::specialize].
-    pub fn get(&self, variant: u32) -> &SpecializedPipeline<P, D> {
-        &self.variants[variant as usize]
-    }
-
-    /// Create a variant from the descriptor and return its index.
-    fn create_variant(&mut self, descriptor: D) -> u32 {
-        let variant = SpecializedPipeline::create(&self.device, descriptor);
-        let index = u32::try_from(self.variants.len()).expect("variant count fits in u32");
-        self.variants.push(variant);
-        index
+    pub fn get(&self, index: u32) -> &SpecializedPipeline<P, V::Descriptor> {
+        &self.variants[index as usize]
     }
 }
 
@@ -537,40 +483,16 @@ impl SurfaceKey {
     }
 }
 
-impl SpecializerKey for SurfaceKey {
-    // Every field lands in the descriptor, so distinct keys are distinct
-    // descriptors and the secondary cache is never consulted.
-    const IS_CANONICAL: bool = true;
-    type Canonical = Self;
-}
-
 /// A descriptor whose pipeline is only valid for one render target.
 ///
 /// A pipeline's color format, sample count and depth-stencil format must match
 /// the attachments its pass renders into, so a descriptor that names them has
-/// to be rewritten when the target changes. Implementing this is what lets a
-/// descriptor be specialized by [SurfaceSpecializer], whichever kind of
-/// pipeline it compiles.
+/// to be rewritten when the target changes. Implementing this lets a variant
+/// apply a [SurfaceKey] to the blueprint it builds, whichever kind of pipeline
+/// it compiles; the framework itself neither knows nor caches the target.
 pub trait SurfaceTarget {
     /// Rewrite this descriptor's target-dependent fields for `surface`.
     fn set_surface(&mut self, surface: SurfaceKey);
-}
-
-/// Specializes any [SurfaceTarget] descriptor for a render target.
-///
-/// The descriptor decides which fields the target reaches; this only supplies
-/// the key and its canonical form, so one specializer serves every kind of
-/// pipeline that draws into an attachment.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SurfaceSpecializer;
-
-impl<D: SurfaceTarget> Specializer<D> for SurfaceSpecializer {
-    type Key = SurfaceKey;
-
-    fn specialize(&self, key: SurfaceKey, descriptor: &mut D) -> SurfaceKey {
-        descriptor.set_surface(key);
-        key
-    }
 }
 
 impl SurfaceTarget for RenderPipelineDesc {
@@ -607,12 +529,12 @@ mod tests {
 
     use super::*;
 
-    /// A blueprint a specializer rewrites.
+    /// A blueprint a variant builds.
     #[derive(Clone, Debug, PartialEq)]
     struct TestDescriptor {
         /// The value every variant starts from.
         base: u32,
-        /// The value the specializer writes.
+        /// The value the variant's id becomes.
         rewritten: u32,
     }
 
@@ -626,110 +548,56 @@ mod tests {
         }
     }
 
-    /// An injective key: its id is exactly what reaches the descriptor.
+    /// A variant whose id is exactly what reaches the descriptor.
     #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct TestKey {
+    struct TestVariant {
         id: u32,
     }
 
-    impl SpecializerKey for TestKey {
-        const IS_CANONICAL: bool = true;
-        type Canonical = u32;
-    }
+    impl PipelineVariant<TestPipeline> for TestVariant {
+        type Descriptor = TestDescriptor;
 
-    /// A key that is not injective: only its canonical form reaches the
-    /// descriptor.
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct NonCanonicalKey {
-        raw: u32,
-        canonical: u32,
-    }
-
-    impl SpecializerKey for NonCanonicalKey {
-        const IS_CANONICAL: bool = false;
-        type Canonical = u32;
-    }
-
-    /// Writes the key's id into the descriptor.
-    struct TestSpecializer;
-
-    impl Specializer<TestDescriptor> for TestSpecializer {
-        type Key = TestKey;
-
-        fn specialize(&self, key: TestKey, descriptor: &mut TestDescriptor) -> u32 {
-            descriptor.rewritten = key.id;
-            key.id
+        fn descriptor(&self, _device: &wgpu::Device) -> TestDescriptor {
+            TestDescriptor {
+                base: 7,
+                rewritten: self.id,
+            }
         }
     }
 
-    /// Writes the key's canonical form into the descriptor.
-    struct CanonicalizingSpecializer;
-
-    impl Specializer<TestDescriptor> for CanonicalizingSpecializer {
-        type Key = NonCanonicalKey;
-
-        fn specialize(&self, key: NonCanonicalKey, descriptor: &mut TestDescriptor) -> u32 {
-            descriptor.rewritten = key.canonical;
-            key.canonical
-        }
-    }
-
-    /// Writes the key's raw value into the descriptor while reporting the
-    /// canonical one: two keys with one canonical form disagree.
-    struct LiarSpecializer;
-
-    impl Specializer<TestDescriptor> for LiarSpecializer {
-        type Key = NonCanonicalKey;
-
-        fn specialize(&self, key: NonCanonicalKey, descriptor: &mut TestDescriptor) -> u32 {
-            descriptor.rewritten = key.raw;
-            key.canonical
-        }
-    }
-
-    fn base() -> TestDescriptor {
-        TestDescriptor {
-            base: 7,
-            rewritten: 0,
-        }
-    }
-
-    fn variants<S: Specializer<TestDescriptor>>(
-        specializer: S,
-    ) -> Variants<TestPipeline, TestDescriptor, S> {
+    fn variants() -> Variants<TestPipeline, TestVariant> {
         let (device, _queue) = crate::util::test::noop_device();
-        Variants::new(&device, specializer)
+        Variants::new(&device)
     }
 
     /// How many variants the cache has created.
-    fn created<P, D: PipelineDescriptor<P>, S: Specializer<D>>(
-        variants: &Variants<P, D, S>,
-    ) -> usize {
+    fn created<P, V: PipelineVariant<P>>(variants: &Variants<P, V>) -> usize {
         variants.variants.len()
     }
 
     #[test]
-    fn variant_is_created_once_per_key() {
-        let mut variants = variants(TestSpecializer);
+    fn variant_is_created_once_per_variant() {
+        let mut variants = variants();
 
-        let first = variants.specialize(base, TestKey { id: 1 });
-        let again = variants.specialize(base, TestKey { id: 1 });
-        assert_eq!(first, again, "the same key reuses its variant");
+        let first = variants.specialize(TestVariant { id: 1 });
+        let again = variants.specialize(TestVariant { id: 1 });
+        assert_eq!(first, again, "the same variant reuses its pipeline");
         assert_eq!(created(&variants), 1);
 
-        let second = variants.specialize(base, TestKey { id: 2 });
-        assert_ne!(first, second, "a different key gets a new variant");
+        let second = variants.specialize(TestVariant { id: 2 });
+        assert_ne!(first, second, "a different variant gets a new pipeline");
         assert_eq!(created(&variants), 2);
     }
 
     #[test]
-    fn variants_do_not_mutate_the_base() {
-        let mut variants = variants(TestSpecializer);
+    fn each_variant_keeps_its_own_descriptor() {
+        let mut variants = variants();
 
-        let first = variants.specialize(base, TestKey { id: 1 });
-        let second = variants.specialize(base, TestKey { id: 2 });
+        let first = variants.specialize(TestVariant { id: 1 });
+        let second = variants.specialize(TestVariant { id: 2 });
 
-        // Each create saw base plus its own key, not the previous rewrite.
+        // The blueprint is built from the variant alone, so one miss cannot
+        // leak into another.
         assert_eq!(
             variants.get(first).descriptor(),
             &TestDescriptor {
@@ -744,74 +612,6 @@ mod tests {
                 rewritten: 2,
             }
         );
-    }
-
-    #[test]
-    fn non_canonical_keys_share_a_canonical_variant() {
-        let mut variants = variants(CanonicalizingSpecializer);
-
-        let first = variants.specialize(
-            base,
-            NonCanonicalKey {
-                raw: 1,
-                canonical: 9,
-            },
-        );
-        let second = variants.specialize(
-            base,
-            NonCanonicalKey {
-                raw: 2,
-                canonical: 9,
-            },
-        );
-
-        assert_eq!(first, second, "one canonical form, one variant");
-        assert_eq!(created(&variants), 1);
-
-        let third = variants.specialize(
-            base,
-            NonCanonicalKey {
-                raw: 3,
-                canonical: 10,
-            },
-        );
-        assert_ne!(first, third, "a new canonical form gets a new variant");
-        assert_eq!(created(&variants), 2);
-    }
-
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "differ for one canonical key")]
-    fn canonical_variant_is_checked_against_the_descriptor() {
-        let mut variants = variants(LiarSpecializer);
-
-        variants.specialize(
-            base,
-            NonCanonicalKey {
-                raw: 1,
-                canonical: 5,
-            },
-        );
-        variants.specialize(
-            base,
-            NonCanonicalKey {
-                raw: 2,
-                canonical: 5,
-            },
-        );
-    }
-
-    #[test]
-    fn variant_is_created_once_per_canonical_key() {
-        let mut variants = variants(TestSpecializer);
-
-        let first = variants.specialize(base, TestKey { id: 3 });
-        let again = variants.specialize(base, TestKey { id: 3 });
-        let other = variants.specialize(base, TestKey { id: 4 });
-
-        assert_eq!(first, again);
-        assert_ne!(first, other);
-        assert_eq!(created(&variants), 2);
     }
 
     const MINIMAL_WGSL: &str = "\
@@ -912,49 +712,6 @@ fn main() {
         assert_eq!(round_tripped.attributes, layout.attributes);
     }
 
-    /// A key that names no configuration, for a specializer that rewrites
-    /// nothing.
-    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-    struct UnitKey;
-
-    impl SpecializerKey for UnitKey {
-        const IS_CANONICAL: bool = true;
-        type Canonical = Self;
-    }
-
-    /// A specializer that leaves the descriptor alone.
-    struct IdentitySpecializer;
-
-    impl Specializer<RenderPipelineDesc> for IdentitySpecializer {
-        type Key = UnitKey;
-
-        fn specialize(&self, key: UnitKey, _descriptor: &mut RenderPipelineDesc) -> UnitKey {
-            key
-        }
-    }
-
-    #[test]
-    fn a_render_pipeline_variant_is_cached() {
-        let (device, _queue) = crate::util::test::noop_device();
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("test::shader"),
-            source: wgpu::ShaderSource::Wgsl(MINIMAL_WGSL.into()),
-        });
-        let targets = [Some(wgpu::ColorTargetState {
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
-            blend: None,
-            write_mask: wgpu::ColorWrites::ALL,
-        })];
-        let source = source_descriptor(&module, &targets);
-        let descriptor = RenderPipelineDesc::from_wgpu(&source);
-        let mut variants = Variants::new(&device, IdentitySpecializer);
-
-        let first = variants.specialize(|| descriptor.clone(), UnitKey);
-        let again = variants.specialize(|| descriptor.clone(), UnitKey);
-        assert_eq!(first, again);
-        assert_eq!(created(&variants), 1);
-    }
-
     /// The pipeline type parameter is what makes the cache pipeline-agnostic:
     /// a descriptor that compiles a compute pipeline caches through the same
     /// [Variants] a render descriptor does.
@@ -990,29 +747,36 @@ fn main() {
             }
         }
 
-        /// Rewrites the workgroup size, reporting it as the canonical form.
-        struct WorkgroupSpecializer;
+        /// A variant whose workgroup size is exactly what reaches the
+        /// descriptor.
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        struct WorkgroupVariant {
+            workgroup: u32,
+        }
 
-        impl Specializer<ComputeDesc> for WorkgroupSpecializer {
-            type Key = TestKey;
+        impl PipelineVariant<wgpu::ComputePipeline> for WorkgroupVariant {
+            type Descriptor = ComputeDesc;
 
-            fn specialize(&self, key: TestKey, descriptor: &mut ComputeDesc) -> u32 {
-                descriptor.workgroup = key.id;
-                key.id
+            fn descriptor(&self, _device: &wgpu::Device) -> ComputeDesc {
+                ComputeDesc {
+                    workgroup: self.workgroup,
+                }
             }
         }
 
         let (device, _queue) = crate::util::test::noop_device();
-        let mut variants = Variants::new(&device, WorkgroupSpecializer);
-        let base = || ComputeDesc { workgroup: 1 };
+        let mut variants = Variants::new(&device);
 
-        let first = variants.specialize(base, TestKey { id: 8 });
+        let first = variants.specialize(WorkgroupVariant { workgroup: 8 });
         assert_eq!(
-            variants.specialize(base, TestKey { id: 8 }),
+            variants.specialize(WorkgroupVariant { workgroup: 8 }),
             first,
             "one variant per workgroup size"
         );
-        assert_ne!(variants.specialize(base, TestKey { id: 16 }), first);
+        assert_ne!(
+            variants.specialize(WorkgroupVariant { workgroup: 16 }),
+            first
+        );
         assert_eq!(created(&variants), 2);
     }
 

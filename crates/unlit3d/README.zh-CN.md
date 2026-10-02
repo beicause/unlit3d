@@ -99,9 +99,9 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 一个可渲染实体携带 `GpuMesh`、`GpuMaterial` 与 `GpuRenderPipeline`。`GpuRenderPipeline` 携带的
 是 *key* 而不是已编译的管线：某个实体需要哪条具体管线，取决于该帧的渲染目标、网格的
 顶点布局，以及——对 strip 拓扑而言，其管线必须声明所绑定索引缓冲的宽度——网格的索引
-格式；这些在生成实体时都不知道。*家族（family）* 弥合了这个缺口——它把
-`Variants` 缓存与 `Specializer`、`RenderPipelineFactory` 配在一起，每帧把一个 key 解析为
-一条具体管线。
+格式；这些在生成实体时都不知道。*家族（family）* 弥合了这个缺口——它持有一个
+`Variants` 缓存与一个 `RenderPipelineFactory`，从绘制本身推导出每个绘制的变体，每帧把它
+解析为一条具体管线。
 
 `GpuMesh` 刻意做得很小：它只保留剔除与解析时逐实体遍历会读的字段，绘制要绑定的缓冲区
 则放在共享的 `MeshParts` 句柄之后。剔除与解析会访问每个实体，而列是连续内存，遍历时会把
@@ -122,20 +122,20 @@ active 相机时，帧会被清空，什么都不绘制。
 
 家族把「实体要什么」接到 `unlit_wgpu` 的变体缓存上：
 
-- `RenderPipelineKey` 既定位家族（按 key 类型注册与查找），又提供蓝图
-  （`base_descriptor`）。蓝图随组件走，一个家族因此能服务起始蓝图不同的实体；又因为
-  key 就是组件本身，渲染器不必对外发放家族句柄。
-- `DrawKey` 承载实体自身 key 没有表达的、与本次绘制有关的维度：渲染目标、网格的顶点
-  布局，以及网格索引缓冲的格式。索引格式之所以在这里，是因为 strip 拓扑的管线必须声明
-  其绘制所绑定的索引宽度，而只有网格知道这个宽度——格式由 source 挑：取该网格顶点数能
-  容纳的最窄格式，并在没有 `base_vertex` 的设备上烘入池偏移时把它加宽。它由实体自己的
-  key 与 `DrawKey` 组合成 `Specializer::Key`，组合方式（`From`）由家族自己决定。**按什么
-  维度特化因此是家族的自由**：内置 unlit 按「选项 + 目标 + 顶点布局 + 索引格式」特化，
-  自定义家族可以是任何东西。
-- 蓝图**延迟求值**：只在缓存未命中、真正要编译时才向 key 索取。
+- `RenderPipelineKey` 既定位家族（按 key 类型注册与查找），又把一次绘制解析成所需的变体
+  （`variant`）。key 随组件走，一个家族因此能服务策略不同的实体；又因为 key 就是组件
+  本身，渲染器不必对外发放家族句柄。
+- 变体是从**绘制本身**推导的，而不是事先声明：`DrawContext` 把本帧的渲染目标、网格的
+  顶点布局与其索引格式交给 key，key 再把它们各归其位——目标进 `UnlitVariant::surface`，
+  顶点布局进 `channels`，索引格式（与拓扑）进 `strip_index_format`。索引格式之所以重要，
+  是因为 strip 拓扑的管线必须声明其绘制所绑定的索引宽度，而只有网格知道这个宽度——格式
+  由 source 挑：取该网格顶点数能容纳的最窄格式，并在没有 `base_vertex` 的设备上烘入池
+  偏移时把它加宽。**按什么维度特化因此是家族的自由**：内置 unlit 按其策略加上目标、顶点
+  布局与索引格式特化，自定义家族可以是任何东西。
+- 蓝图**延迟求值**：只在缓存未命中、真正要编译时才向 key 索取变体。
 - 家族编译出管线后，由 `RenderPipelineFactory` 把它转成渲染器要注册的
-  `RegisteredRenderPipeline`——已编译管线、三个绑定组的布局、全局组的重建配方。它与
-  `unlit_wgpu` 的 `RenderPipelineDesc` 是一对**输出/输入**，两者之间隔着一次编译。
+  `RegisteredRenderPipeline`——已编译管线与全局组的重建配方。它与 `unlit_wgpu` 的
+  `RenderPipelineDesc` 是一对**输出/输入**，两者之间隔着一次编译。
 
 `unlit3d` 只处理渲染管线，故其管线类型一律显式带 `Render` 字样（`GpuRenderPipeline`、
 `RenderPipelineKey`、`RenderPipelineId`、`RenderPipelineFactory`、
@@ -171,9 +171,9 @@ active 相机时，帧会被清空，什么都不绘制。
 <details>
 <summary>内置变体支持什么，以及姿势数据放在哪里</summary>
 
-- 变体的标志覆盖位置、UV、顶点色、逐实例的每个字段（变换、颜色、关节基址、形变
-  基址、元数据索引）、基础色纹理与裁剪、蒙皮与形变目标。管线随后由 `unlit_wgpu` 的
-  `SurfaceSpecializer` 针对本帧的渲染目标特化。
+- 变体跟随网格：位置、UV、顶点色通道是否存在，是否以压缩形式到达，是否蒙皮或形变，
+  以及是否绑定材质——再加上调用方的策略与本帧的目标。五个逐实例字段（变换、颜色、关节
+  基址、形变基址、元数据索引）恒被绑定，而不是逐个开关。
 - 关节矩阵与形变权重**不在** mesh 自己的绑定组里。mesh 与实例是多对一：同一个 mesh
   可以被多个实体绘制，而每个实体的姿势通常不同。绑定组是按 mesh 绑定的，无法表达
   逐实例状态；逐实例各建一个绑定组同样不可取——那等于每帧每实例都重建绑定组。因此
@@ -225,7 +225,7 @@ active 相机时，帧会被清空，什么都不绘制。
   以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
   primitive 还会带上 `ZSortedDrawing` 标记，于是渲染器在绘制完不透明几何之后按由远及近
   的顺序混合它。`alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
-  `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线带上 `UnlitFlags::ALPHA_CUTOFF`，
+  `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `UnlitOptions::alpha_cutoff` 被置位，
   生成的实体带上 `InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
 - 同时带有 `JOINTS_0` 与 `WEIGHTS_0` 的 primitive 会上传其关节流并按蒙皮绘制：
   `spawn_node` / `spawn_default_scene` 为该节点的 skin 生成一个 `SkinPose` 实体，并在网格上
@@ -262,8 +262,8 @@ primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它�
 律拓宽成 RGBA8：8 位布局上传为 `R8Unorm`/`Rg8Unorm`/`Rgba8UnormSrgb`，16 位上传为同宽
 度的半浮点格式，32 位浮点上传为 `Rgba32Float`；三通道布局则补一个通道，因为 sRGB 与浮
 点格式都没有三通道的。两个后果值得一提：灰度纹理把亮度放在红通道里——WebGPU 既没有亮度
-格式也没有分量重排——因此 unlit 着色器的 `BASE_COLOR_LUMINANCE` 与
-`BASE_COLOR_LUMINANCE_ALPHA` 标志会把它展开成 RGB(A) 并把亮度从 sRGB 解码，
+格式也没有分量重排——因此 unlit 着色器的 `BaseColorChannels::Luminance` 与
+`BaseColorChannels::LuminanceAlpha` 会把它展开成 RGB(A) 并把亮度从 sRGB 解码，
 `UnlitGltf::pipeline_key` 正好为这类上传设置它们；以及 `Rgba32Float` 在缺
 少 `Features::FLOAT32_FILTERABLE` 的设备上是 `unfilterable-float`，此时材质绑定不可过滤
 的采样器，并由 `UnlitOptions::texture_filtering` 特化绑定组布局来匹配。
@@ -373,7 +373,7 @@ let (mesh, material) = world
 world.spawn((
     Transform::default(),
     mesh,
-    material.unwrap(),
+    material,
     UnlitPipeline::new(key),
 ));
 

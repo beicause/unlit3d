@@ -127,8 +127,7 @@ use unlit_ecs::{
     ArchetypeBuilder,
     prelude::{Entity, World},
 };
-use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
-use unlit_wgpu::pipeline::{UnlitFlags, UnlitOptions, UnlitVertexChannels};
+use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
@@ -318,21 +317,17 @@ impl UnlitGltf {
 
     /// The [`UnlitPipelineKey`] the primitive renders with.
     ///
-    /// The key always carries the position and instance streams. It reads the
-    /// UV and base-color-texture streams when the primitive carries
-    /// `TEXCOORD_0` *and* its material declares a base-color texture, the
-    /// vertex-color stream when the primitive carries `COLOR_0`, the joint
-    /// stream when it carries both `JOINTS_0` and `WEIGHTS_0`, and the morph
-    /// displacement stream when it declares a target that displaces
-    /// positions. A material
-    /// whose `alphaMode` is `BLEND` also blends, so the key is drawn with
-    /// [`wgpu::BlendState::ALPHA_BLENDING`], and one whose `alphaMode` is
-    /// `MASK` carries [`UnlitFlags::ALPHA_CUTOFF`] so its fragments are
-    /// discarded below the cutoff — [`Self::spawn_node`] writes that cutoff
-    /// into the instance the node spawns. A `doubleSided` material turns
-    /// back-face culling off, so its geometry is drawn from either side;
-    /// everything else follows [`UnlitOptions::standard`], so the key is
-    /// exactly what [`Self::insert_mesh`] uploads with.
+    /// The key carries only what a caller picks: the texture filtering the
+    /// material's base-color texture needs, the luminance expansion that
+    /// texture's format calls for, whether a `BLEND` material blends and
+    /// whether a `MASK` one cuts. Everything geometric — which vertex
+    /// channels the primitive carries, whether it samples its base-color
+    /// texture, whether it skins or morphs — is a property of the draw, so
+    /// [`Self::insert_mesh`] uploads the streams the primitive's own
+    /// attributes declare and the variant a draw resolves derives the rest
+    /// from the mesh it draws. A `doubleSided` material turns back-face
+    /// culling off, so its geometry is drawn from either side; everything
+    /// else follows [`UnlitOptions::standard`].
     pub fn pipeline_key(
         &self,
         device: &wgpu::Device,
@@ -341,63 +336,20 @@ impl UnlitGltf {
     ) -> UnlitPipelineKey {
         let primitive = self.primitive(mesh, primitive);
         let material = primitive.material();
-        // Every glTF primitive carries a position, and the channels beyond it
-        // are the ones the primitive's own attributes name. The transform and
-        // the tint are per-instance for every primitive, and a compressed
-        // position or UV decodes through the instance's metadata index, so
-        // every glTF variant reads the instance stream — which is what
-        // [`UnlitOptions::standard`] already says.
-        let mut channels = UnlitVertexChannels {
-            position: PositionStreamChannels {
-                position: Some(ChannelEncoding::CompressedPosition),
-                joints: false,
-            },
-            uv_color: UvColorFlags::empty(),
-        };
-        let mut flags = UnlitFlags::empty();
-        let texture = material.pbr_metallic_roughness().base_color_texture();
-        // Whether the material's base-color texture is sampled is a property
-        // of the draw's material rather than of the shader variant a caller
-        // picks, so it is [`UnlitOptions::base_color_texture`] rather than a
-        // flag — but the two answers have to agree with whether the primitive
-        // carries the UV to sample with, and `standard` already says yes, so
-        // this clears it when there is no texture to sample.
-        let base_color_texture =
-            primitive.get(&gltf::Semantic::TexCoords(0)).is_some() && texture.is_some();
-        if base_color_texture {
-            channels.uv_color |= UvColorFlags::UV;
-        }
-        if primitive.get(&gltf::Semantic::Colors(0)).is_some() {
-            channels.uv_color |= UvColorFlags::COLOR;
-        }
-        // The joint stream is only useful with a skin, and a document can
-        // carry `JOINTS_0`/`WEIGHTS_0` without one. Requiring both keeps a
-        // mesh whose node names no skin in the opaque, undeformed path.
-        if primitive.get(&gltf::Semantic::Joints(0)).is_some()
-            && primitive.get(&gltf::Semantic::Weights(0)).is_some()
-        {
-            channels.position.joints = true;
-        }
-        // Only position displacements are read, so a target that carries
-        // none is skipped rather than drawn as a no-op: a mesh whose targets
-        // all displace normals deforms nothing here.
-        if morph_target_count(&primitive) > 0 {
-            flags |= UnlitFlags::MORPH_POSITIONS;
-        }
-        let mut options = UnlitOptions::standard(device)
-            .with_base_color_texture(base_color_texture)
-            .with_flags(flags)
-            .with_vertex_channels(channels);
+        let mut options = UnlitOptions::standard(device);
         // The texture the material samples decides whether the base-color
         // binding is a filtering one: the pipeline and the material bind group
         // have to agree, or the group does not fit the pipeline.
-        if let Some(info) = &texture {
+        let texture = material.pbr_metallic_roughness().base_color_texture();
+        if samples_base_color_texture(&primitive)
+            && let Some(info) = &texture
+        {
             let image = info.texture().source().index();
             options.texture_filtering = self.image_filtering(image, device);
             // A one- or two-channel texture uploads in a format that cannot
             // decode sRGB for itself, so the shader expands the texel and
             // decodes the luminance instead.
-            options.flags |= self.image_luminance(image);
+            options.base_color = self.image_luminance(image);
         }
         // glTF base colors and textures are straight (non-premultiplied)
         // alpha, which is exactly what `ALPHA_BLENDING` composites.
@@ -410,7 +362,7 @@ impl UnlitGltf {
         // per-instance state, so it rides the instance stream rather than the
         // material group — see [`Self::spawn_node`].
         if alpha_cutoff(&material).is_some() {
-            options.flags |= UnlitFlags::ALPHA_CUTOFF;
+            options.alpha_cutoff = true;
         }
         // A `doubleSided` material is visible from behind, so its back faces
         // are rasterized rather than culled. Nothing else about the variant
@@ -554,9 +506,7 @@ impl UnlitGltf {
             view
         };
 
-        let bind_group = source
-            .allocate_unlit_material(world, &key, view.clone(), sampler.clone())
-            .expect("a base-color variant builds a material bind group");
+        let bind_group = source.allocate_unlit_material(world, &key, view.clone(), sampler.clone());
         Some(GltfMaterial {
             material,
             bind_group,
@@ -591,13 +541,12 @@ impl UnlitGltf {
     /// Upload the primitive into `source`'s resource graph and return its
     /// handle.
     ///
-    /// The key is derived from the primitive's own attributes (see
-    /// [`Self::pipeline_key`]): TEXCOORD_0 and a base-color-textured material
-    /// enable the UV and base-color-texture streams, COLOR_0 the vertex-color
-    /// stream, positions and an instance stream always, JOINTS_0 and WEIGHTS_0
-    /// the joint stream and a position-displacing morph target the displacement
-    /// stream. A primitive read with streams its attributes do not declare
-    /// would panic, so the derivation is the only safe choice here. Normals and
+    /// Which streams are uploaded follows the primitive's own attributes:
+    /// `TEXCOORD_0` with a base-color-textured material enables the UV stream,
+    /// `COLOR_0` the vertex-color stream, `JOINTS_0` and `WEIGHTS_0` the joint
+    /// stream, and a position-displacing morph target the displacement stream.
+    /// A primitive read with streams its attributes do not declare would
+    /// panic, so the derivation is the only safe choice here. Normals and
     /// tangents are ignored (see the module docs).
     ///
     /// # Panics
@@ -613,52 +562,53 @@ impl UnlitGltf {
         let key = self.pipeline_key(&source.device(world), mesh, primitive);
         let primitive = self.primitive(mesh, primitive);
         let reader = primitive.reader(|buffer| Some(&self.buffers[buffer.index()]));
-        let flags = key.options.flags;
-        let vertex = key.options.vertex;
 
         let positions: Vec<[f32; 3]> = reader
             .read_positions()
             .expect("a glTF primitive carries its POSITION attribute")
             .collect();
-        // Read only the streams the key names: an attribute the key does not
-        // read is not uploaded, so decoding it would be wasted work.
-        let uvs: Option<Vec<[f32; 2]>> = vertex.uv_color.contains(UvColorFlags::UV).then(|| {
+        // Read only the streams the primitive declares: an attribute it does
+        // not carry is not uploaded, so decoding it would be wasted work.
+        let uvs: Option<Vec<[f32; 2]>> = samples_base_color_texture(&primitive).then(|| {
             reader
                 .read_tex_coords(0)
-                .expect("the key reads uvs, so the primitive has TEXCOORD_0")
+                .expect("the primitive samples a texture, so it has TEXCOORD_0")
                 .into_f32()
                 .collect()
         });
-        let colors: Option<Vec<[u8; 4]>> =
-            vertex.uv_color.contains(UvColorFlags::COLOR).then(|| {
+        let colors: Option<Vec<[u8; 4]>> = primitive
+            .get(&gltf::Semantic::Colors(0))
+            .is_some()
+            .then(|| {
                 reader
                     .read_colors(0)
-                    .expect("the key reads colors, so the primitive has COLOR_0")
+                    .expect("the primitive has COLOR_0")
                     .into_rgba_u8()
                     .collect()
             });
         let indices: Option<Vec<u32>> = reader.read_indices().map(|i| i.into_u32().collect());
-        let joints: Option<Vec<[u16; 4]>> = vertex.position.joints.then(|| {
+        let skinned = primitive.get(&gltf::Semantic::Joints(0)).is_some()
+            && primitive.get(&gltf::Semantic::Weights(0)).is_some();
+        let joints: Option<Vec<[u16; 4]>> = skinned.then(|| {
             reader
                 .read_joints(0)
-                .expect("the key reads joints, so the primitive has JOINTS_0")
+                .expect("the primitive has JOINTS_0")
                 .into_u16()
                 .collect()
         });
-        let weights: Option<Vec<[f32; 4]>> = vertex.position.joints.then(|| {
+        let weights: Option<Vec<[f32; 4]>> = skinned.then(|| {
             reader
                 .read_weights(0)
-                .expect("the key reads joints, so the primitive has WEIGHTS_0")
+                .expect("the primitive has WEIGHTS_0")
                 .into_f32()
                 .collect()
         });
-        // The displacements the key's morph stream reads, packed the way a
+        // The displacements the mesh's morph stream reads, packed the way a
         // mesh wants them: for each vertex, every position-displacing target in
         // order, three components each. Writing straight into the packed array
         // keeps one allocation for the whole thing, however many targets the
-        // primitive declares; a target of normals alone is skipped here just as
-        // it was when the key was built.
-        let morph_deltas = flags.contains(UnlitFlags::MORPH_POSITIONS).then(|| {
+        // primitive declares; a target of normals alone is skipped here.
+        let morph_deltas = (morph_target_count(&primitive) > 0).then(|| {
             let target_count = morph_target_count(&primitive);
             let mut deltas = vec![0.0; positions.len() * target_count * 3];
             let mut target = 0;
@@ -1047,12 +997,12 @@ impl UnlitGltf {
     /// mesh — each carrying the
     /// node's world-space [`Transform`], the uploaded [`GpuMesh`], the
     /// pipeline for the mesh's key and an [`InstanceColor`] tinted with the
-    /// material's base-color factor. A primitive whose key reads a base-color
-    /// texture also carries the matching [`GpuMaterial`]. A blended primitive
-    /// ([`gltf::material::AlphaMode::Blend`]) also carries
+    /// material's base-color factor. A primitive that samples its material's
+    /// base-color texture also carries the matching [`GpuMaterial`]. A blended
+    /// primitive ([`gltf::material::AlphaMode::Blend`]) also carries
     /// [`ZSortedDrawing`], so it is drawn after the opaque geometry and
-    /// composited back-to-front. A skinned primitive (one whose key reads
-    /// joints) carries a [`SkinBinding`] to the node's [`SkinPose`], which is
+    /// composited back-to-front. A skinned primitive (one whose mesh carries a
+    /// joint stream) carries a [`SkinBinding`] to the node's [`SkinPose`], which is
     /// spawned on an entity of its own so several meshes can share it — see
     /// [`Self::skin_pose`]. Children are not spawned; use
     /// [`Self::spawn_default_scene`] for the whole scene.
@@ -1061,7 +1011,7 @@ impl UnlitGltf {
     ///
     /// If the node's mesh (or a mesh it shares primitives with) was not
     /// inserted into `resources`, or a primitive's material is `None` there
-    /// while its key reads a base-color texture.
+    /// while it samples a base-color texture.
     pub fn spawn_node(
         &self,
         world: &mut World,
@@ -1100,23 +1050,16 @@ impl UnlitGltf {
                 // read before the primitive is handed to the material lookup,
                 // which takes it by value.
                 let cutoff = alpha_cutoff(&primitive.material());
-                let material = mesh_handle
-                    .key
-                    .options
-                    .base_color_texture
+                let material = samples_base_color_texture(&primitive)
                     .then(|| self.primitive_material(primitive, &resources.materials));
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
-                let skinned = mesh_handle.key.options.vertex.position.joints;
+                let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
                     let pose =
                         *pose.get_or_insert_with(|| world.spawn((self.skin_pose(node.index()),)));
                     SkinBinding::new(pose)
                 });
-                let morphed = mesh_handle
-                    .key
-                    .options
-                    .flags
-                    .contains(UnlitFlags::MORPH_POSITIONS);
+                let morphed = mesh_handle.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
                     let weights = *morphs.get_or_insert_with(|| {
                         world.spawn((MorphWeights::new(self.morph_weights(node.index())),))
@@ -1205,7 +1148,7 @@ impl UnlitGltf {
                 .get(index)
                 .and_then(Option::as_ref)
                 .expect("every material a spawned mesh reads must have been inserted"),
-            None => panic!("a primitive whose key samples a texture must name a material"),
+            None => panic!("a primitive that samples a texture must name a material"),
         }
     }
 
@@ -1237,20 +1180,20 @@ impl UnlitGltf {
     }
 
     /// How image `image`'s texels have to be expanded once sampled: nothing for
-    /// a texture that already carries RGB, and the matching luminance flag for
-    /// one carrying a single luma channel, or luma and alpha.
+    /// a texture that already carries RGB, and the matching base-color layout
+    /// for one carrying a single luma channel, or luma and alpha.
     ///
     /// Both bit depths are affected. Neither `R8Unorm` nor `R16Float` can
     /// decode sRGB for itself — WebGPU attaches the transfer function only to
     /// four-channel formats — so the shader does it, on the assumption the
     /// grayscale source is sRGB-encoded just as an RGB one would be.
-    fn image_luminance(&self, image: usize) -> UnlitFlags {
+    fn image_luminance(&self, image: usize) -> BaseColorChannels {
         match self.images[image].format {
-            gltf::image::Format::R8 | gltf::image::Format::R16 => UnlitFlags::BASE_COLOR_LUMINANCE,
+            gltf::image::Format::R8 | gltf::image::Format::R16 => BaseColorChannels::Luminance,
             gltf::image::Format::R8G8 | gltf::image::Format::R16G16 => {
-                UnlitFlags::BASE_COLOR_LUMINANCE_ALPHA
+                BaseColorChannels::LuminanceAlpha
             }
-            _ => UnlitFlags::empty(),
+            _ => BaseColorChannels::Rgba,
         }
     }
 
@@ -1476,28 +1419,34 @@ fn write_channel(format: wgpu::TextureFormat, slot: usize, value: f32, scratch: 
     }
 }
 
-/// The key a material bind group is built against: the base-color variant.
+/// The key a material bind group is built against.
 ///
-/// Only [`UnlitOptions::base_color_texture`] and `texture_filtering` shape the
-/// material group's layout, so any key carrying them works; this is the one a
-/// base-color-textured primitive's [`UnlitGltf::pipeline_key`] derives to. The
-/// per-vertex channels a draw adds do not enter the material group, and wgpu
-/// deduplicates identical layout descriptors, so the group fits the pipeline
-/// whatever else its key reads.
+/// Only `texture_filtering` shapes the material group's layout, so any key
+/// carrying it works; this is the one a base-color-textured primitive's
+/// [`UnlitGltf::pipeline_key`] derives to. The per-vertex channels a draw adds
+/// do not enter the material group, and wgpu deduplicates identical layout
+/// descriptors, so the group fits the pipeline whatever else its key reads.
 fn textured_key(device: &wgpu::Device, filtering: bool) -> UnlitPipelineKey {
-    let vertex = UnlitVertexChannels {
-        position: PositionStreamChannels {
-            position: Some(ChannelEncoding::CompressedPosition),
-            joints: false,
-        },
-        uv_color: UvColorFlags::UV,
-    };
     UnlitPipelineKey::new(UnlitOptions {
         texture_filtering: filtering,
         ..UnlitOptions::standard(device)
-            .with_base_color_texture(true)
-            .with_vertex_channels(vertex)
     })
+}
+
+/// Whether a primitive samples its material's base-color texture.
+///
+/// A texture is sampled with the per-vertex UV, so a primitive that carries no
+/// `TEXCOORD_0` cannot sample one and is drawn untextured even when its
+/// material declares a texture. The answer is a property of the draw — the
+/// material it names and the attributes it carries — rather than of anything a
+/// caller picks, which is why it is derived here rather than stored in the key.
+fn samples_base_color_texture(primitive: &gltf::Primitive<'_>) -> bool {
+    primitive.get(&gltf::Semantic::TexCoords(0)).is_some()
+        && primitive
+            .material()
+            .pbr_metallic_roughness()
+            .base_color_texture()
+            .is_some()
 }
 
 /// How many of a primitive's morph targets displace positions.
@@ -2291,18 +2240,26 @@ mod tests {
             "the two sides must be separate variants so each keeps its own pipeline"
         );
         assert_eq!(
-            single.options.flags, double.options.flags,
-            "nothing but the cull mode sets the two apart"
+            single.options.primitive.cull_mode,
+            Some(wgpu::Face::Back),
+            "a single-sided primitive culls its back faces"
         );
+        assert_eq!(
+            double.options.primitive.cull_mode, None,
+            "a double-sided material culls nothing"
+        );
+        // Nothing but the cull mode sets the two apart.
+        let mut normalized = single.options.clone();
+        normalized.primitive.cull_mode = double.options.primitive.cull_mode;
+        assert_eq!(normalized, double.options);
     }
 
     #[test]
-    fn a_morph_target_makes_the_key_read_displacements() {
+    fn a_morph_target_makes_the_mesh_morph() {
         let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[Some([0.0, 1.0, 0.0])]))
             .expect("the morphed document parses");
-        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let key = gltf.pipeline_key(&device, 0, 0);
-        assert!(key.options.flags.contains(UnlitFlags::MORPH_POSITIONS));
+        let primitive = gltf.primitive(0, 0);
+        assert_eq!(morph_target_count(&primitive), 1);
     }
 
     #[test]
@@ -2311,9 +2268,8 @@ mod tests {
         // mesh stays in the rigid path rather than drawing an empty morph.
         let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[None]))
             .expect("the morphed document parses");
-        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let key = gltf.pipeline_key(&device, 0, 0);
-        assert!(!key.options.flags.contains(UnlitFlags::MORPH_POSITIONS));
+        let primitive = gltf.primitive(0, 0);
+        assert_eq!(morph_target_count(&primitive), 0);
         assert!(gltf.morph_weights(0).is_empty());
     }
 
@@ -2364,14 +2320,7 @@ mod tests {
         let gltf = UnlitGltf::from_bytes(&morphed_document(None, None, &[]))
             .expect("the morphed document parses");
         assert!(gltf.morph_weights(0).is_empty());
-        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        assert!(
-            !gltf
-                .pipeline_key(&device, 0, 0)
-                .options
-                .flags
-                .contains(UnlitFlags::MORPH_POSITIONS)
-        );
+        assert_eq!(morph_target_count(&gltf.primitive(0, 0)), 0);
     }
 
     #[test]
@@ -2411,16 +2360,15 @@ mod tests {
     }
 
     #[test]
-    fn a_skinned_primitive_uploads_its_joint_stream() {
-        // The key reads joints and the mesh is uploaded with them, so the
-        // variant the primitive draws never asks for a stream it does not have.
+    fn a_skinned_primitive_declares_its_joint_stream() {
+        // The primitive carries JOINTS_0 and WEIGHTS_0, so the mesh is
+        // uploaded with them and the variant a draw resolves reads them.
         let gltf = UnlitGltf::from_bytes(&skinned_document([0.0, 0.0, 0.0]))
             .expect("the skinned document parses");
-        let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
-        let key = gltf.pipeline_key(&device, 0, 0);
-        assert!(key.options.vertex.position.joints);
-        assert!(key.options.vertex.position.position.is_some());
-        assert!(!key.options.vertex.uv_color.contains(UvColorFlags::UV));
+        let primitive = gltf.primitive(0, 0);
+        assert!(primitive.get(&gltf::Semantic::Joints(0)).is_some());
+        assert!(primitive.get(&gltf::Semantic::Weights(0)).is_some());
+        assert!(!samples_base_color_texture(&primitive));
     }
 
     #[test]

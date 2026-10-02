@@ -6,7 +6,7 @@
 //! as its own snapshot.
 
 use super::{
-    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
+    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, unlit_options,
 };
 use unlit3d::prelude::*;
 
@@ -44,7 +44,7 @@ fn build(
     source.register_unlit_family(world);
     // The variant that reads the joint stream: its position buffer is wider by
     // the joint pair, so a stream packed for the plain cube would misread.
-    let key = UnlitPipelineKey::new(deformation_options(&source.device(world), true, false));
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
     let source_entity = spawn_source(world, source);
 
     let (positions, uvs, colors, indices) = super::cube();

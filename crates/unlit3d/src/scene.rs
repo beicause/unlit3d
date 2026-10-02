@@ -8,13 +8,12 @@
 //! result. Nothing here compiles a pipeline until a draw first resolves it.
 
 use core::cmp::Ordering;
-use core::marker::PhantomData;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
 use unlit_ecs::{Query, TypeIdHashMap, World};
 use unlit_wgpu::resources::{ResourceId, Virtual};
-use unlit_wgpu::specialize::{PipelineDescriptor, Specializer, SurfaceKey, Variants};
+use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
 
 use unlit_wgpu::pipeline::{GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, MAX_VERTEX_BUFFERS, Scene, VertexBufferBinding};
@@ -23,7 +22,7 @@ use crate::bounds::FrustumPlanes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, ZSortedDrawing};
 use crate::culling::{VisibleMesh, collect_visible};
 use crate::pipeline::{
-    DrawKey, FamilyContext, GlobalResources, RegisteredRenderPipeline, RenderPipelineFactory,
+    DrawContext, FamilyContext, GlobalResources, RegisteredRenderPipeline, RenderPipelineFactory,
     RenderPipelineId, RenderPipelineKey,
 };
 
@@ -33,36 +32,32 @@ use crate::pipeline::{
 /// The core variant index a draw resolves to is also its index into
 /// registered, so the two lists grow in lockstep. The key type parameter is
 /// the [RenderPipelineKey] the family is registered for and the component its
-/// queries fetch.
-pub(crate) struct Family<D, S, F, K>
+/// queries fetch; the factory's descriptor type is the one the key's variant
+/// resolves to.
+pub(crate) struct Family<K, F>
 where
-    D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
-    S: Specializer<D>,
-    F: RenderPipelineFactory<D>,
+    K: RenderPipelineKey,
+    F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
 {
-    /// The variant cache, which owns the specializer and the device.
-    variants: Variants<wgpu::RenderPipeline, D, S>,
+    /// The variant cache, which owns the device.
+    variants: Variants<wgpu::RenderPipeline, K::Variant>,
     /// The factory that turns a variant into a wgpu render pipeline.
     factory: F,
     /// registered\[v\] is the wgpu render pipeline for core variant v.
     registered: Vec<RenderPipelineId>,
-    /// Names the key type without owning one.
-    _key: PhantomData<fn() -> K>,
 }
 
-impl<D, S, F, K> Family<D, S, F, K>
+impl<K, F> Family<K, F>
 where
-    D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
-    S: Specializer<D>,
-    F: RenderPipelineFactory<D>,
+    K: RenderPipelineKey,
+    F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
 {
     /// A family whose variants are described by `factory`.
-    pub(crate) fn new(device: &wgpu::Device, specializer: S, factory: F) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, factory: F) -> Self {
         Self {
-            variants: Variants::new(device, specializer),
+            variants: Variants::new(device),
             factory,
             registered: Vec::new(),
-            _key: PhantomData,
         }
     }
 }
@@ -122,21 +117,17 @@ pub(crate) struct FamilyFrame<'a> {
 /// It bundles the family's mutable state with the frame's inputs so the shared
 /// collect and resolve code can run as methods instead of threading eight
 /// arguments through a free function.
-struct Resolver<'a, 'f, D, S, F, K>
+struct Resolver<'a, 'f, K, F>
 where
-    D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
-    S: Specializer<D>,
-    F: RenderPipelineFactory<D>,
-    K: RenderPipelineKey<Descriptor = D>,
-    S::Key: From<(K, DrawKey)>,
+    K: RenderPipelineKey,
+    F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
 {
     frame: &'a FamilyFrame<'f>,
-    variants: &'a mut Variants<wgpu::RenderPipeline, D, S>,
+    variants: &'a mut Variants<wgpu::RenderPipeline, K::Variant>,
     factory: &'a F,
     registered: &'a mut Vec<RenderPipelineId>,
     visible: &'a mut Vec<VisibleEntry>,
     register: &'a mut dyn FnMut(RegisteredRenderPipeline) -> RenderPipelineId,
-    _key: PhantomData<fn() -> K>,
 }
 
 /// What a family reads from one visible entity while resolving it.
@@ -153,13 +144,10 @@ type Resolve<'a, K> = (
     Option<&'a ZSortedDrawing>,
 );
 
-impl<D, S, F, K> Resolver<'_, '_, D, S, F, K>
+impl<K, F> Resolver<'_, '_, K, F>
 where
-    D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
-    S: Specializer<D>,
-    F: RenderPipelineFactory<D>,
-    K: RenderPipelineKey<Descriptor = D>,
-    S::Key: From<(K, DrawKey)>,
+    K: RenderPipelineKey,
+    F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
 {
     /// Resolve every visible entity this family draws into [Self::visible].
     ///
@@ -199,7 +187,7 @@ where
                 <Resolve<'_, K> as Query>::fetch(state, location.row());
             // The material decides both how the draw is grouped and which bind
             // group it binds, so it is read once and both are taken from it.
-            let (sort_key, material_bg) = match material {
+            let (sort_key, material_bg) = match &material {
                 Some(material) => (material.sort_key(), Some(material.bind_group_id.clone())),
                 None => (0, None),
             };
@@ -207,6 +195,7 @@ where
                 candidate,
                 &pipeline,
                 &gpu_mesh,
+                material.as_deref(),
                 sort_key,
                 material_bg,
                 z_sorted.is_some(),
@@ -216,22 +205,34 @@ where
 
     /// Resolve one candidate's variant, registering the pipeline on first
     /// sight, and push its [VisibleEntry].
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one field per resolved draw component"
+    )]
     fn push(
         &mut self,
         mesh: VisibleMesh,
         pipeline: &GpuRenderPipeline<K>,
         gpu_mesh: &GpuMesh,
+        material: Option<&GpuMaterial>,
         sort_key: u64,
         material_bg: Option<ResourceId<wgpu::BindGroup>>,
         z_sorted: bool,
     ) {
         let instance = mesh.instance;
-        let draw =
-            DrawKey::for_mesh(self.frame.surface, gpu_mesh).with_material(material_bg.is_some());
-        let key = S::Key::from((pipeline.key().clone(), draw));
-        let ordinal = self
-            .variants
-            .specialize(|| pipeline.key().base_descriptor(), key);
+        // The frame, not the entity, knows the target, the mesh's layout and
+        // whether a material is bound, so the variant is derived from what the
+        // draw actually resolves to.
+        let draw = DrawContext {
+            surface: self.frame.surface,
+            device: self.frame.device,
+            world: self.frame.world,
+            entity: mesh.entity,
+            mesh: gpu_mesh,
+            material,
+        };
+        let variant = pipeline.key().variant(&draw);
+        let ordinal = self.variants.specialize(variant);
 
         let pipeline_id = match self.registered.get(ordinal as usize) {
             Some(&id) => id,
@@ -287,13 +288,10 @@ pub(crate) trait AnyFamily {
     );
 }
 
-impl<D, S, F, K> AnyFamily for Family<D, S, F, K>
+impl<K, F> AnyFamily for Family<K, F>
 where
-    D: PipelineDescriptor<wgpu::RenderPipeline> + 'static,
-    S: Specializer<D>,
-    F: RenderPipelineFactory<D>,
-    K: RenderPipelineKey<Descriptor = D>,
-    S::Key: From<(K, DrawKey)>,
+    K: RenderPipelineKey,
+    F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
 {
     fn collect_and_resolve(
         &mut self,
@@ -301,14 +299,13 @@ where
         visible: &mut Vec<VisibleEntry>,
         register: &mut dyn FnMut(RegisteredRenderPipeline) -> RenderPipelineId,
     ) {
-        Resolver {
+        Resolver::<K, F> {
             frame,
             variants: &mut self.variants,
             factory: &self.factory,
             registered: &mut self.registered,
             visible,
             register,
-            _key: PhantomData,
         }
         .collect();
     }

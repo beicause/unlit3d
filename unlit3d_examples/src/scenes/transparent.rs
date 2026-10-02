@@ -16,8 +16,6 @@
 //! round and fail the snapshot rather than happening to look right.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
-use unlit_wgpu::mesh::{ChannelEncoding, PositionStreamChannels, UvColorFlags};
-use unlit_wgpu::pipeline::UnlitVertexChannels;
 use unlit3d::prelude::*;
 
 /// How far in front of the panes the camera sits.
@@ -114,20 +112,9 @@ fn build(
         // behind it. The panes are composited among themselves by draw order.
         depth.depth_write_enabled = Some(false);
     }
-    // The translucent variant reads no per-vertex colour: each pane's tint is
-    // its own instance colour, so one mesh serves all of them. The instance
-    // stream is the one thing left, and `standard` reads it already. It
-    // samples no texture either, so its base-color variant is off.
-    translucent = translucent
-        .with_flags(unlit_wgpu::pipeline::UnlitFlags::empty())
-        .with_base_color_texture(false)
-        .with_vertex_channels(UnlitVertexChannels {
-            position: PositionStreamChannels {
-                position: Some(ChannelEncoding::CompressedPosition),
-                joints: false,
-            },
-            uv_color: UvColorFlags::empty(),
-        });
+    // The pane mesh carries positions and indices only: no UV, no color. The
+    // draw derives exactly those channels back off the mesh, and each pane's
+    // tint is its own instance colour, so one mesh serves all of them.
     let translucent_key = UnlitPipelineKey::new(translucent);
 
     let source_entity = spawn_source(world, source);

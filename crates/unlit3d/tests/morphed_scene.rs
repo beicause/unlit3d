@@ -45,22 +45,13 @@ fn camera() -> Camera {
     )
 }
 
-/// A morph variant with no targets is rejected rather than drawn undeformed.
-async fn morphing_without_targets_panics() {
-    let ctx = Ctx::headless().await;
-    let mut world = World::new();
-    let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
-    gpu.allocate_deformed_cube_mesh(&world, &key, None, None, None);
-}
-
 /// A mesh whose weights do not match its target count is rejected rather than
 /// read past the end of the packed pose.
 async fn mismatched_morph_weight_count_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
+    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     // Two targets, one weight: the shader would loop past the end of the pose.
@@ -83,7 +74,7 @@ async fn morphing_without_a_weight_binding_panics() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
+    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
@@ -99,7 +90,7 @@ async fn meshes_can_share_one_morph_weights() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
-    let key = UnlitPipelineKey::new(deformation_options(&ctx.device, false, true));
+    let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
     let (positions, _uvs, _colors, _indices) = cube();
     let deltas = morph_deltas(&positions);
     let first = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas.clone()));
@@ -145,8 +136,6 @@ async fn meshes_can_share_one_morph_weights() {
 // The registry both runners drive: `cargo nextest` natively, and a
 // browser through the wasm export `gpu_test_main!` adds.
 gpu_tests! {
-    #[should_panic(expected = "a variant that reads morph positions needs the mesh's morph displacements")]
-    morphing_without_targets_panics,
     #[should_panic(expected = "a mesh's morph weights must hold one weight per morph target")]
     mismatched_morph_weight_count_panics,
     #[should_panic(expected = "a mesh with morph targets needs a `MorphBinding`")]

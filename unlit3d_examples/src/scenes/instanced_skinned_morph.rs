@@ -11,8 +11,8 @@
 //! sequence is what proves a merged draw still reads each instance's own pose.
 
 use super::{
-    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
-    morph_deltas, rest_pose,
+    BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, morph_deltas,
+    rest_pose, unlit_options,
 };
 use unlit3d::prelude::*;
 
@@ -50,7 +50,7 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     // The variant that reads both the joint stream and the morph bindings.
-    let key = UnlitPipelineKey::new(deformation_options(&source.device(world), true, true));
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
     let source_entity = spawn_source(world, source);
 
     let (positions, uvs, colors, indices) = super::cube();

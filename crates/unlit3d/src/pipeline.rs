@@ -6,13 +6,12 @@
 //! [GpuRenderPipeline](crate::components::GpuRenderPipeline).
 //!
 //! A [RegisteredRenderPipeline] is everything the renderer needs to draw with a
-//! wgpu render pipeline: the pipeline itself, the bind-group layouts its
-//! draws agree with, and -- for a pipeline that reads the source's own
-//! camera, globals or metadata buffers -- a way to rebuild its global bind
-//! group when those buffers change. Nothing here is specific to the built-in
-//! unlit shader: the unlit family is registered through the same
-//! [MeshSource::register_family](crate::mesh_source::MeshSource::register_family) a caller's
-//! own family uses, and supplies its own factory like anyone else.
+//! wgpu render pipeline: the pipeline itself and -- for a pipeline that reads
+//! the source's own camera, globals or metadata buffers -- a way to rebuild
+//! its global bind group when those buffers change. Nothing here is specific
+//! to the built-in unlit shader: the unlit family is registered through the
+//! same [register_family](crate::mesh_source::MeshSource::register_family) a
+//! caller's own family uses, and supplies its own factory like anyone else.
 //!
 //! # Render pipeline keys and families
 //!
@@ -21,31 +20,34 @@
 //! concrete pipeline an entity needs depends on the frame's render target and
 //! on the mesh's vertex layout, neither of which is known when the entity is
 //! spawned. A *family* closes that gap. It pairs a [Variants](unlit_wgpu::specialize::Variants) cache with a
-//! [Specializer](unlit_wgpu::specialize::Specializer) and a [RenderPipelineFactory], queries the world for the entities
-//! that carry its key type, and resolves each to a concrete pipeline. The
-//! renderer registers every family under the [TypeId](core::any::TypeId) of
-//! its key type; [crate::scene] drives them all once per frame. A family's
-//! variant is compiled and registered the first time a key is seen, and later
-//! frames reuse it.
+//! [RenderPipelineFactory], queries the world for the entities that carry its
+//! key type, and resolves each to a concrete pipeline. The renderer registers
+//! every family under the [TypeId](core::any::TypeId) of its key type;
+//! [crate::scene] drives them all once per frame. A family's variant is
+//! compiled and registered the first time a key is seen, and later frames
+//! reuse it.
 //!
-//! The entity, not the renderer, chooses its base descriptor: a
-//! [RenderPipelineKey] reports the blueprint ([RenderPipelineKey::base_descriptor]) its
-//! variants start from, so one family can draw entities whose base options
-//! differ. The blueprint is supplied to [Variants::specialize](unlit_wgpu::specialize::Variants::specialize) lazily and only
-//! on a cache miss.
+//! The entity, not the renderer, chooses its variant: a [RenderPipelineKey]
+//! reports -- through [RenderPipelineKey::variant] -- the full, hashable
+//! description of the pipeline its entity needs, derived from the entity's
+//! own options and from the [DrawContext] the frame hands it. The context is
+//! the frame's answer to everything an entity cannot know before it has a
+//! mesh: the target, the mesh's vertex layout and index format, and whether a
+//! material group is bound. Because the key derives that description rather
+//! than carrying a base descriptor, one family serves entities that differ in
+//! material or target policy, and the cache key is canonical by construction.
 //!
 //! Geometry is described by [crate::mesh::MeshDesc], which lists vertex buffers
 //! tagged with the slot a pipeline expects them in and carries the layout each
 //! buffer has. The renderer assumes no vertex layout, so a mesh can carry any
 //! combination of attributes and a family can specialize on it at draw time.
 
-use core::hash::Hash;
-
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::resources::ResourceId;
-use unlit_wgpu::specialize::{PipelineDescriptor, SpecializedPipeline, SurfaceKey, VertexLayout};
+use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::texel_array::ArrayHandle;
 
-use crate::components::GpuMesh;
+use crate::components::{GpuMaterial, GpuMesh};
 
 pub use unlit_wgpu::resources::Rebuild;
 
@@ -63,7 +65,7 @@ pub use unlit_wgpu::resources::Rebuild;
 ///
 /// The three arrays are [`ArrayHandle`]s rather than buffers because which
 /// resource holds them follows from the device: a device with storage buffers
-/// holds each in one, a device without them — WebGL2 — holds the same bytes in
+/// holds each in one, a device without them -- WebGL2 -- holds the same bytes in
 /// a texture. A pipeline that binds them asks the handle for its binding
 /// resource and never has to know which it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,11 +109,11 @@ impl GlobalResources {
     }
 }
 
-/// A pipeline and the layouts its draws agree with.
+/// A pipeline and the global bind group it draws with.
 ///
-/// This is what a [RenderPipelineFactory] returns and what the renderer registers.
-/// Every concrete pipeline in the renderer is described this way, the built-in
-/// unlit ones included.
+/// This is what a [RenderPipelineFactory] returns and what the renderer
+/// registers. Every concrete pipeline in the renderer is described this way,
+/// the built-in unlit ones included.
 pub struct RegisteredRenderPipeline {
     /// The compiled render pipeline.
     pub pipeline: wgpu::RenderPipeline,
@@ -123,18 +125,6 @@ pub struct RegisteredRenderPipeline {
     /// None for a pipeline that binds nothing at that index -- a shader
     /// with no uniform or storage inputs, say.
     pub global: Option<Rebuild>,
-
-    /// The layout a material bind group must be built from, bound at
-    /// [MATERIAL_GROUP](unlit_wgpu::pipeline::MATERIAL_GROUP).
-    ///
-    /// None for a pipeline whose draws bind no material group.
-    pub material_layout: Option<wgpu::BindGroupLayout>,
-
-    /// The layout a mesh bind group must be built from, bound at
-    /// [MESH_GROUP](unlit_wgpu::pipeline::MESH_GROUP).
-    ///
-    /// None for a pipeline whose draws bind no per-mesh group.
-    pub mesh_layout: Option<wgpu::BindGroupLayout>,
 }
 
 impl core::fmt::Debug for RegisteredRenderPipeline {
@@ -142,8 +132,6 @@ impl core::fmt::Debug for RegisteredRenderPipeline {
         f.debug_struct("RegisteredRenderPipeline")
             .field("pipeline", &self.pipeline)
             .field("global", &self.global)
-            .field("material_layout", &self.material_layout)
-            .field("mesh_layout", &self.mesh_layout)
             .finish()
     }
 }
@@ -163,83 +151,52 @@ pub struct FamilyContext<'a> {
     pub resources: GlobalResources,
 }
 
-/// The base descriptor an entity's pipeline variants start from.
+/// The pipeline an entity draws with, as the entity's own key describes it.
 ///
 /// A [GpuRenderPipeline](crate::components::GpuRenderPipeline) component carries a key of this type. It selects the family
 /// the entity draws with -- the family registered for this key type -- and
-/// supplies the blueprint that family's
-/// [Specializer](unlit_wgpu::specialize::Specializer) rewrites into the
-/// concrete descriptor. Because the key carries the base, one family can serve
-/// entities that begin from different descriptors; because it is the component
-/// itself, the renderer never hands out a family handle.
-pub trait RenderPipelineKey: Clone + Hash + Eq + 'static {
-    /// The descriptor this key's variants are specialized from.
-    type Descriptor: PipelineDescriptor<wgpu::RenderPipeline>;
+/// derives, from the entity's options and the frame's [DrawContext], the full
+/// description of the variant it needs. Because the key derives that
+/// description rather than reporting a separate base descriptor, the variant
+/// it returns is itself the cache key: equal variants compile to equal
+/// pipelines, and no canonicalization step is needed.
+pub trait RenderPipelineKey: 'static {
+    /// The full, hashable description of the pipeline this key resolves to.
+    type Variant: PipelineVariant<wgpu::RenderPipeline>;
 
-    /// The blueprint this key's variant is specialized from. Called only when
-    /// the key's variant is compiled for the first time.
-    fn base_descriptor(&self) -> Self::Descriptor;
+    /// The variant this key needs for the draw described by `draw`.
+    ///
+    /// Called once per visible entity per frame, and the result is hashed to
+    /// find the compiled pipeline, so it should be cheap and derive every
+    /// field the compiled pipeline depends on.
+    fn variant(&self, draw: &DrawContext<'_>) -> Self::Variant;
 }
 
-/// Everything that can change which concrete pipeline an entity needs beyond
-/// the entity's own [RenderPipelineKey].
+/// Everything about a draw that an entity's [RenderPipelineKey] cannot know
+/// before the frame resolves it.
 ///
-/// The mesh's vertex layout is held as a [VertexLayout], a shared handle with
-/// its hash precomputed, because this key is rebuilt and hashed once per
-/// visible entity per frame: the inline layout it replaces was the frame's
-/// single largest cost once a scene had many entities sharing few meshes.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct DrawKey {
+/// A key is a component, spawned before it has a mesh; the concrete pipeline it
+/// needs, though, depends on the mesh's vertex layout and index format, on the
+/// frame's render target, and on whether the draw binds a material group. The
+/// frame fills this context in and hands it to [RenderPipelineKey::variant], so
+/// the entity can derive its variant from what the frame actually draws with.
+///
+/// Every field is read-only: a key derives its variant from the context, never
+/// mutates it.
+pub struct DrawContext<'a> {
     /// The frame's render target.
     pub surface: SurfaceKey,
-    /// The mesh's vertex layout, slot by slot.
-    pub vertex_buffers: VertexLayout,
-    /// The format of the mesh's index buffer, or `None` when the mesh draws
-    /// its vertices in order without one.
-    ///
-    /// A strip topology's pipeline has to declare the index width its draw
-    /// binds, and only the mesh knows it: the source picks the narrowest
-    /// format the mesh's vertex count fits, and on a device without
-    /// `base_vertex` it can widen a mesh's indices while baking in the pool
-    /// offset. Carrying the resolved format here is what lets a family derive
-    /// the pipeline's `strip_index_format` from the draw rather than ask the
-    /// caller to predict it.
-    pub index_format: Option<wgpu::IndexFormat>,
-    /// Whether the draw binds a material group at [`MATERIAL_GROUP`].
-    ///
-    /// The base-color texture is sampled from the material group, so whether a
-    /// variant reads one is the draw's answer: an entity carrying a material
-    /// binds the group, one without one does not. The entity's own key,
-    /// [`UnlitOptions::base_color_texture`](unlit_wgpu::pipeline::UnlitOptions::base_color_texture),
-    /// decides it too — the two have to
-    /// agree, or the group does not fit the pipeline — and carrying it on the
-    /// draw as well is what lets a family specialize the variant from what the
-    /// frame actually binds.
-    ///
-    /// [`MATERIAL_GROUP`]: unlit_wgpu::pipeline::MATERIAL_GROUP
-    pub material: bool,
-}
-
-impl DrawKey {
-    /// The key for drawing a mesh into an attachment set with `surface`.
-    pub fn for_mesh(surface: SurfaceKey, mesh: &GpuMesh) -> Self {
-        Self {
-            surface,
-            vertex_buffers: mesh.vertex_layout.clone(),
-            index_format: mesh.parts.index_buffer.as_ref().map(|(_, format)| *format),
-            material: false,
-        }
-    }
-
-    /// Whether the draw binds a material group.
-    ///
-    /// A family that specializes the base-color-texture answer from the frame
-    /// sets this from the material the draw binds; users recording draws by
-    /// hand leave it at the default unless they bind one themselves.
-    pub fn with_material(mut self, material: bool) -> Self {
-        self.material = material;
-        self
-    }
+    /// The device the pipeline is compiled on.
+    pub device: &'a wgpu::Device,
+    /// The world the entity is drawn from, for per-entity components a variant
+    /// depends on -- an alpha cutoff, say.
+    pub world: &'a World,
+    /// The entity being drawn.
+    pub entity: Entity,
+    /// The mesh the entity is drawn with.
+    pub mesh: &'a GpuMesh,
+    /// The material the draw binds, or `None` when it binds no material group.
+    pub material: Option<&'a GpuMaterial>,
 }
 
 /// A concrete pipeline's position in a source's own pipeline list.

@@ -32,7 +32,6 @@
 gpu_tests! {
     renders_a_cube_over_the_clear_color,
     #[should_panic(expected = "morphing without targets")]
-    morphing_without_targets_panics,
 }
 
 gpu_test_main!(all_tests());

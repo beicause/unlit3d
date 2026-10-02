@@ -7,8 +7,7 @@
 //! and each frame is stored as its own snapshot.
 
 use super::{
-    SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, deformation_options,
-    morph_deltas,
+    SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, morph_deltas, unlit_options,
 };
 use unlit3d::prelude::*;
 
@@ -44,7 +43,7 @@ fn build(
     source.register_unlit_family(world);
     // The variant that reads the morph bindings: its mesh group carries the
     // displacement buffer a plain cube's does not.
-    let key = UnlitPipelineKey::new(deformation_options(&source.device(world), false, true));
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
     let source_entity = spawn_source(world, source);
 
     let (positions, uvs, colors, indices) = super::cube();

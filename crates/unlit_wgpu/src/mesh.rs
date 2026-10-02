@@ -229,10 +229,7 @@ pub struct MeshMetadata {
     /// How many morph targets follow each vertex in the morph displacement
     /// array.
     ///
-    /// Zero without [`UnlitFlags::MORPH_POSITIONS`].
-    ///
-    /// [`UnlitFlags::MORPH_POSITIONS`]:
-    ///     crate::pipeline::UnlitFlags::MORPH_POSITIONS
+    /// Zero for a mesh that declares no morph targets.
     pub morph_count: u32,
     /// `xy` is the UV minimum and `zw` its extents.
     pub uv_min_and_extents: glam::Vec4,
@@ -267,7 +264,7 @@ pub struct MeshMetadata {
 /// the lanes of one vector — a variant that only skins declares no weight base.
 ///
 /// Vertex attributes are addressed by the explicit offsets of
-/// [`crate::pipeline::UnlitOptions::vertex_buffer_layouts`], not by WGSL
+/// [`crate::pipeline::UnlitVariant::vertex_buffer_layouts`], not by WGSL
 /// shader-layout rules, so this type makes no `const_shader_layout` claim;
 /// that the offsets line up is asserted by a test instead.
 ///

@@ -12,11 +12,13 @@ mod common;
 
 use common::*;
 use unlit_wgpu::globals::Globals;
-use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline};
+use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline, UnlitVariant};
+use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::render_attachments::{create_render_target, depth_clear, stencil_clear};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::specialize::SpecializedPipeline;
-use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_options};
+use unlit_wgpu::specialize::SurfaceKey;
+use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant};
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests, snapshot};
 
 /// The UI's logical layout, in points. The physical target scales with the
@@ -107,12 +109,7 @@ fn render_ui_with(
     // The test target is sRGB: the UI converts its output to linear light.
     // The pipeline is built once and shared: the global bind group is created
     // from its layout, and the UI draws with it.
-    let mut ui_opts = ui_options(&ctx.device, true);
-    ui_opts.color_target.format = COLOR_FORMAT;
-    ui_opts.multisample = wgpu::MultisampleState {
-        count: SAMPLES,
-        ..Default::default()
-    };
+    let ui_opts = ui_variant_for_target(&ctx.device);
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals),
@@ -186,6 +183,19 @@ fn render_ui_with(
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.
+/// The UI variant the tests build, for the test's render target.
+fn ui_variant_for_target(device: &wgpu::Device) -> UnlitVariant {
+    ui_variant(
+        device,
+        true,
+        SurfaceKey {
+            color_format: COLOR_FORMAT,
+            depth_stencil_format: Some(default_depth_stencil_format(device)),
+            sample_count: SAMPLES,
+        },
+    )
+}
+
 fn uniform_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
@@ -435,8 +445,7 @@ async fn freeing_a_texture_releases_its_graph_nodes() {
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
-    let mut ui_opts = ui_options(&ctx.device, true);
-    ui_opts.color_target.format = COLOR_FORMAT;
+    let ui_opts = ui_variant_for_target(&ctx.device);
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals),
@@ -512,8 +521,7 @@ async fn releasing_the_integration_returns_its_graph_nodes() {
     let mut graph = ResourceGraph::new();
     let camera_id = graph.insert(camera.clone(), None);
     let globals_id = graph.insert(globals.clone(), None);
-    let mut ui_opts = ui_options(&ctx.device, true);
-    ui_opts.color_target.format = COLOR_FORMAT;
+    let ui_opts = ui_variant_for_target(&ctx.device);
     let pipeline = SpecializedPipeline::create(&ctx.device, ui_opts.clone());
     let global_group_id = graph.insert(
         global_group(&ctx.device, &pipeline, &camera, &globals),
