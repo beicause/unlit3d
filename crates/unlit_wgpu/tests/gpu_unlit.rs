@@ -31,6 +31,7 @@ use unlit_wgpu::resources::{TextureExt, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey, SurfaceTarget};
 use unlit_wgpu::texel_array::Array;
+use unlit_wgpu::util::Hashed;
 use unlit_wgpu_test_util::{Tolerance, gpu_test_main, gpu_tests, snapshot};
 use zerocopy::IntoBytes;
 
@@ -603,7 +604,7 @@ fn variant(
         sample_count: options.multisample.count,
     };
     UnlitVariant {
-        options,
+        options: Hashed::new(options),
         surface,
         channels,
         base_color_texture,
@@ -1040,7 +1041,7 @@ async fn a_color_only_target_draws_a_cube() {
     // Specialize the policy for the depth-less target the same way a caller
     // would, then build the pipeline from the result.
     let mut variant = vertex_color_variant(&ctx.device);
-    variant.options.set_surface(SurfaceKey {
+    variant.set_surface(SurfaceKey {
         color_format: COLOR_FORMAT,
         depth_stencil_format: None,
         sample_count: 4,

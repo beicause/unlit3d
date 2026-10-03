@@ -17,6 +17,8 @@ use crate::render_attachments::default_depth_stencil_format;
 use crate::specialize::{
     PipelineDescriptor, PipelineVariant, SurfaceKey, SurfaceTarget, VertexBufferLayoutDesc,
 };
+#[cfg(feature = "unlit")]
+use crate::util::Hashed;
 
 /// Binding slot of the camera uniform in the global bind group.
 pub const CAMERA_BINDING: u32 = 0;
@@ -444,8 +446,11 @@ impl UnlitOptions {
 #[cfg(feature = "unlit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct UnlitVariant {
-    /// The caller's policy.
-    pub options: UnlitOptions,
+    /// The caller's policy, with its hash computed once. The variant is the
+    /// cache key, so the stored word is what every per-frame lookup hashes;
+    /// rewrite the policy through [`Hashed::update`] rather than the value
+    /// itself, so the word follows the change.
+    pub options: Hashed<UnlitOptions>,
     /// The render target the pipeline is built for.
     pub surface: SurfaceKey,
     /// The per-vertex channels the mesh's layout carries.
@@ -870,8 +875,10 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
 
         // The caller's policy is the base; the target and the mesh's strip
         // index format are applied here, because the variant carries them
-        // rather than the caller.
-        let mut options = self.options.clone();
+        // rather than the caller. The rewrite starts from a plain clone: the
+        // variant's word describes the policy it was keyed on, and the target
+        // is applied after hashing rather than into it.
+        let mut options = (*self.options).clone();
         options.set_surface(self.surface);
         options.primitive.strip_index_format = self.strip_index_format;
 
@@ -1055,6 +1062,17 @@ impl SurfaceTarget for UnlitOptions {
     }
 }
 
+#[cfg(feature = "unlit")]
+impl SurfaceTarget for UnlitVariant {
+    /// The variant's policy is hashed, so the rewrite goes through
+    /// [`Hashed::update`] rather than a mutable borrow of the options: the
+    /// stored word follows the changed fields, and the variant stays its own
+    /// valid cache key.
+    fn set_surface(&mut self, surface: SurfaceKey) {
+        self.options.update(|options| options.set_surface(surface));
+    }
+}
+
 /// The depth-stencil state a target with a depth attachment starts from: the
 /// reverse-z convention, with the format filled in from the attachment.
 #[cfg(feature = "unlit")]
@@ -1150,7 +1168,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         morph: bool,
     ) -> UnlitVariant {
         UnlitVariant {
-            options,
+            options: Hashed::new(options),
             surface: surface(),
             channels,
             base_color_texture,
@@ -1243,8 +1261,10 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                                 // cut — textured or not.
                                 for alpha_cutoff in [false, true] {
                                     let mut candidate = base.clone();
-                                    candidate.options.base_color = *base_color;
-                                    candidate.options.alpha_cutoff = alpha_cutoff;
+                                    candidate.options.update(|options| {
+                                        options.base_color = *base_color;
+                                        options.alpha_cutoff = alpha_cutoff;
+                                    });
                                     variants.push(candidate);
                                 }
                             }

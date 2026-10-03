@@ -87,6 +87,7 @@ use crate::resources::{Rebuild, Resource, ResourceGraph, ResourceId, TextureExt,
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
 use crate::specialize::SurfaceKey;
 use crate::staging::StagingBuffer;
+use crate::util::Hashed;
 use core::ops::Range;
 use hashbrown::HashMap;
 use zerocopy::IntoBytes;
@@ -187,7 +188,7 @@ pub fn ui_variant(
     let mut options = UnlitOptions::standard(device);
     apply_ui_settings(&mut options, srgb_to_linear_output);
     UnlitVariant {
-        options,
+        options: Hashed::new(options),
         surface,
         channels: ui_channels(),
         base_color_texture: true,
@@ -1085,7 +1086,7 @@ mod tests {
     /// what a variant derives rather than on a compiled pipeline.
     fn ui_variant_for_tests(srgb_to_linear_output: bool) -> UnlitVariant {
         UnlitVariant {
-            options: ui_options_for_tests(srgb_to_linear_output),
+            options: Hashed::new(ui_options_for_tests(srgb_to_linear_output)),
             surface: SurfaceKey {
                 color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 depth_stencil_format: None,

@@ -26,6 +26,11 @@ type FixedHasher = FixedState;
 /// values differ, and a hash collision only costs the comparison that would
 /// have run anyway. The hasher is fixed rather than chosen per instance for the
 /// same reason — equal values have to keep hashing alike for the check to hold.
+///
+/// There is no `DerefMut`: editing the value through one would leave the
+/// stored word stale, and equal values with different words would compare
+/// unequal. A mutation goes through [`Hashed::update`] instead, which
+/// recomputes the word after the value changes.
 #[derive(Clone, Debug)]
 pub struct Hashed<V> {
     /// The value's hash.
@@ -46,6 +51,18 @@ impl<V: Hash> Hashed<V> {
     /// The hash [`Self::new`] computed.
     pub fn hash(&self) -> u64 {
         self.hash
+    }
+
+    /// Rewrite the value in place and recompute the stored word.
+    ///
+    /// The closure receives the value itself, so a caller can apply one of the
+    /// value type's own mutating methods — a `set_`-style rewrite, say — and
+    /// leave the word in step with the value it describes. The recomputation
+    /// costs what [`Self::new`] does, so this is the way to change a value
+    /// that is already built, not a cheaper one.
+    pub fn update(&mut self, rewrite: impl FnOnce(&mut V)) {
+        rewrite(&mut self.value);
+        self.hash = FixedHasher::default().hash_one(&self.value);
     }
 }
 
@@ -118,6 +135,18 @@ mod tests {
 
         assert_eq!(*hashed, vec![1, 2, 3]);
         assert_eq!(hashed.len(), 3);
+    }
+
+    /// An update rewrites the value and recomputes the word, so the record
+    /// stays equal to one built fresh from the rewritten value.
+    #[test]
+    fn an_update_rehashes_the_rewritten_value() {
+        let mut hashed = Hashed::new(1u32);
+        hashed.update(|value| *value = 2);
+
+        assert_eq!(hashed, Hashed::new(2u32));
+        assert_eq!(hashed.hash(), FixedHasher::default().hash_one(2u32));
+        assert_eq!(*hashed, 2);
     }
 
     /// The stored word is the hash of the value, computed the same way

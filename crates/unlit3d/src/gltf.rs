@@ -2248,9 +2248,12 @@ mod tests {
             double.options.primitive.cull_mode, None,
             "a double-sided material culls nothing"
         );
-        // Nothing but the cull mode sets the two apart.
+        // Nothing but the cull mode sets the two apart. The options are
+        // hashed, so the rewrite goes through `update`: the word follows the
+        // changed field and the equality check stays sound.
         let mut normalized = single.options.clone();
-        normalized.primitive.cull_mode = double.options.primitive.cull_mode;
+        normalized
+            .update(|options| options.primitive.cull_mode = double.options.primitive.cull_mode);
         assert_eq!(normalized, double.options);
     }
 

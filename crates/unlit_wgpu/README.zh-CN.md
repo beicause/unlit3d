@@ -63,6 +63,7 @@
 - `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
   而不必遍历值本身；当每帧 key 的成员较大时，这让 key 保持廉价。哈希来自
   `foldhash` 的定种子哈希器——hashbrown 自身的映射正是构建在这一族之上的。
+  更新值要走 `update`：它会在改写后重算哈希字，而不是让旧字失效。
 - `ui` —— egui 后端，在 `egui` feature 下提供。其顶点把位置打包为平面的
   `Float32x2` 二元组；第三个零分量由着色器补上。
 
@@ -85,6 +86,7 @@ use unlit_wgpu::pipeline::{
     UV_COLOR_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
+use unlit_wgpu::util::Hashed;
 use unlit_wgpu::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
@@ -121,7 +123,7 @@ impl Example {
             sample_count: options.multisample.count,
         };
         let variant = UnlitVariant {
-            options,
+            options: Hashed::new(options),
             surface,
             channels: UnlitVertexChannels {
                 position: PositionStreamChannels {

@@ -42,6 +42,7 @@ use unlit_wgpu::specialize::{
 };
 use unlit_wgpu::staging::StagingBuffer;
 use unlit_wgpu::texel_array::{Array, ArrayHandle};
+use unlit_wgpu::util::Hashed;
 use unlit_wgpu::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
 
@@ -301,14 +302,20 @@ fn vertex_channels_for_layout(layout: &[(u32, VertexBufferLayoutDesc)]) -> Unlit
 /// type is how the source finds the family it draws with.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct UnlitPipelineKey {
-    /// The options the entity's variants are specialized from.
-    pub options: UnlitOptions,
+    /// The options the entity's variants are specialized from, with their hash
+    /// computed once. Every per-frame lookup clones this record whole, so the
+    /// variants it resolves to share the stored word instead of recomputing
+    /// it; rewrite the options through [`Hashed::update`], never the value
+    /// itself.
+    pub options: Hashed<UnlitOptions>,
 }
 
 impl UnlitPipelineKey {
     /// A key whose variants start from `options`.
     pub fn new(options: UnlitOptions) -> Self {
-        Self { options }
+        Self {
+            options: Hashed::new(options),
+        }
     }
 }
 

@@ -84,6 +84,8 @@ checks that combination separately.
   front: hashing it writes the stored word instead of walking the value, which
   keeps a per-frame key cheap when its members are large. The hash comes from
   `foldhash`'s fixed-seed hasher, the same family hashbrown's own maps build on.
+  Mutating the value goes through [`update`](util::Hashed::update), which
+  recomputes the word rather than letting it go stale.
 - `ui` — the egui backend, under the `egui` feature. Its vertices pack their
   positions as planar `Float32x2` pairs; the shader supplies the zero third.
 
@@ -107,6 +109,7 @@ use unlit_wgpu::pipeline::{
     UV_COLOR_SLOT, SpecializedUnlitPipeline, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
 use unlit_wgpu::specialize::{SpecializedPipeline, SurfaceKey};
+use unlit_wgpu::util::Hashed;
 use unlit_wgpu::render_attachments::{
     color_clear, create_render_target, depth_clear, stencil_clear,
 };
@@ -143,7 +146,7 @@ impl Example {
             sample_count: options.multisample.count,
         };
         let variant = UnlitVariant {
-            options,
+            options: Hashed::new(options),
             surface,
             channels: UnlitVertexChannels {
                 position: PositionStreamChannels {
