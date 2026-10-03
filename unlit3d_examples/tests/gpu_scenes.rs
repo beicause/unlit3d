@@ -126,14 +126,14 @@ const UI_TOLERANCE: Tolerance = Tolerance {
 /// rendered at a different aspect than the scene's own snapshots, and it scales
 /// the scene's full content — cube, panel, and every anti-aliased edge between
 /// them — into 480x720. A rasterizer that rounds those scaled edges differently
-/// scatters over the whole frame instead of a few outlines, and on Metal that
-/// scatter measured 73.90, under the shared bar of 75 while differing from the
-/// baseline by a mean of 0.15 per channel: the same edge rounding every
-/// tolerance here absorbs, just spread wider. 70 keeps the bar clear of that
-/// scatter and still far above a real regression, which moves whole regions and
-/// scores in the negative tens.
+/// scatters over the whole frame instead of a few outlines, and the scatter
+/// depends on the driver: on Metal it measured 73.90, under the shared bar of 75
+/// while differing from the baseline by a mean of 0.15 per channel, and on
+/// Mesa's RADV 65.12 — the same edge rounding every tolerance here absorbs, just
+/// spread wider. 60 keeps the bar clear of that scatter and still far above a
+/// real regression, which moves whole regions and scores in the negative tens.
 const LETTERBOX_TOLERANCE: Tolerance = Tolerance {
-    min_score: Some(70.0),
+    min_score: Some(60.0),
     max_outliers: Some(0.02),
     channel_delta: 8,
 };
