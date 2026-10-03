@@ -92,8 +92,7 @@
 //! collects them. A part shared by two roots therefore outlives either one
 //! alone.
 
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use crate::dag::{Dag, EdgeError, NodeId};
 
@@ -492,10 +491,10 @@ impl<R> core::fmt::Debug for ResourceId<R> {
 }
 
 /// The strong reference count of one node is the number of [`ResourceId`]s that
-/// name it plus the number of nodes built from it, which is exactly what [`Rc`]
-/// already counts.
+/// name it plus the number of nodes built from it, which is exactly what
+/// [`Arc`] already counts.
 ///
-/// Every node holds a [`Weak`] handle to the [`Rc<()>`](Rc) token its ids
+/// Every node holds a [`Weak`] handle to the [`Arc<()>`](Arc) token its ids
 /// carry, so cloning an id clones the token — one more strong reference — and
 /// dropping it releases the token, with no counter of our own to keep. A
 /// dependent holds one more clone on behalf of each dependency it declared, so
@@ -503,10 +502,12 @@ impl<R> core::fmt::Debug for ResourceId<R> {
 /// [`Weak`] in the node takes no reference, so [`ResourceGraph::maintain`] can
 /// read the live count back without keeping the node alive itself.
 ///
-/// The token is an [`Rc`] and not an [`Arc`] because a graph and every id to it
-/// live on the one thread that owns the world they sit in; see
-/// [`ResourceGraph`].
-type StrongRef = Rc<()>;
+/// The token is an [`Arc`] and not an `Rc` because an id may cross to another
+/// thread even though the graph it names does not: an [`Arc`] makes every id
+/// `Send` and `Sync`, so one can be handed to a worker while the graph stays
+/// where it is. The graph itself is not `Send`: it holds wgpu handles and runs
+/// its recipes, so it stays on the one thread that owns the world it sits in.
+type StrongRef = Arc<()>;
 type StrongRefs = Weak<()>;
 
 #[derive(Debug)]
@@ -629,11 +630,11 @@ impl ResourceGraph {
         resource: R,
         rebuild: Option<Rebuild>,
     ) -> ResourceId<R> {
-        let strong = Rc::new(());
+        let strong = Arc::new(());
         let node = self.graph.insert(Node {
             resource: resource.into_resource(),
             dirty: false,
-            strong: Rc::downgrade(&strong),
+            strong: Arc::downgrade(&strong),
             held: Vec::new(),
             rebuild,
         });
@@ -1186,6 +1187,16 @@ mod tests {
     }
 
     // -- kinds -------------------------------------------------------------
+
+    /// An id may cross to another thread even though the graph it names may
+    /// not: the strong reference it carries is an [`Arc`], so an id is `Send`
+    /// and `Sync` whatever its kind.
+    #[test]
+    fn an_id_crosses_threads() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<ResourceId>();
+        assert_send_sync::<ResourceId<wgpu::Buffer>>();
+    }
 
     /// A typed id resolves to the resource itself, without the caller
     /// knowing which variant the node holds.
