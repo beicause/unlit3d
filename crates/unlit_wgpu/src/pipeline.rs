@@ -761,10 +761,12 @@ impl UnlitVariant {
     ///
     /// One record layout serves every variant of a frame — the source uploads a
     /// single `&[MeshInstance]` buffer and binds it at [`INSTANCE_SLOT`] for
-    /// every draw — so the stride is always the whole [`MeshInstance`] and every
-    /// field is declared, including the ones a variant's shader does not read:
-    /// an unused vertex attribute costs nothing at draw time and keeps the
-    /// layout constant across variants.
+    /// every draw — so the stride is always the whole [`MeshInstance`]. The
+    /// declared attributes mirror the shader's own input declarations: the
+    /// model matrix, the base color, the pose bases and the metadata index
+    /// unconditionally, the alpha cutoff under the feature that declares it.
+    /// A pipeline never declares an attribute the shader does not, which the
+    /// validation layers would otherwise flag on every draw.
     ///
     /// [`MeshInstance`]: crate::mesh::MeshInstance
     fn instance_layout(&self) -> VertexBufferLayoutDesc {
@@ -772,7 +774,7 @@ impl UnlitVariant {
         let field = |offset: usize| offset as u64;
         let model = core::mem::offset_of!(crate::mesh::MeshInstance, model);
         let column = core::mem::size_of::<[f32; 4]>() as u64;
-        let fields = [
+        let mut fields = vec![
             (
                 location::MODEL_0,
                 wgpu::VertexFormat::Float32x4,
@@ -809,17 +811,23 @@ impl UnlitVariant {
                     metadata_index
                 )),
             ),
-            (
+        ];
+        // The one conditional instance input: the shader declares the cutoff
+        // only under ALPHA_CUTOFF, so a variant that never cuts must not
+        // declare it either — the validation layers flag an attribute the
+        // vertex stage never touches.
+        if self.options.alpha_cutoff {
+            fields.push((
                 location::CUTOFF,
                 wgpu::VertexFormat::Float32,
                 field(core::mem::offset_of!(crate::mesh::MeshInstance, cutoff)),
-            ),
-            (
-                location::MORPH_BASE,
-                wgpu::VertexFormat::Uint32,
-                field(core::mem::offset_of!(crate::mesh::MeshInstance, morph_base)),
-            ),
-        ];
+            ));
+        }
+        fields.push((
+            location::MORPH_BASE,
+            wgpu::VertexFormat::Uint32,
+            field(core::mem::offset_of!(crate::mesh::MeshInstance, morph_base)),
+        ));
         for (shader_location, format, offset) in fields {
             attributes.push(wgpu::VertexAttribute {
                 format,
@@ -2051,21 +2059,25 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             size_of::<MeshInstance>() as u64,
             "the instance stride must step exactly one MeshInstance"
         );
+
+        let model = offset_of!(MeshInstance, model) as u64;
+        let vec4 = size_of::<[f32; 4]>() as u64;
         // The record has to be tightly packed: `IntoBytes` rejects a type with
-        // padding, so the sum of the formats is the whole stride and the last
-        // attribute ends where the record does.
-        let formats: u64 = instance
+        // padding, so the sum of the record's field formats is the whole
+        // stride. This variant cuts nothing, so its layout omits the cutoff
+        // the shader would not declare; the declared formats plus that omitted
+        // word still cover the record exactly.
+        let declared: u64 = instance
             .attributes
             .iter()
             .map(|attribute| attribute.format.size())
             .sum();
         assert_eq!(
-            formats, instance.array_stride,
+            declared + wgpu::VertexFormat::Float32.size(),
+            instance.array_stride,
             "the instance record carries no padding"
         );
 
-        let model = offset_of!(MeshInstance, model) as u64;
-        let vec4 = size_of::<[f32; 4]>() as u64;
         let expected = [
             model,
             model + vec4,
@@ -2073,7 +2085,6 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             offset_of!(MeshInstance, base_color) as u64,
             offset_of!(MeshInstance, joints_base) as u64,
             offset_of!(MeshInstance, metadata_index) as u64,
-            offset_of!(MeshInstance, cutoff) as u64,
             offset_of!(MeshInstance, morph_base) as u64,
         ];
         let actual: Vec<u64> = instance.attributes.iter().map(|a| a.offset).collect();
@@ -2082,8 +2093,6 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             "attribute offsets must line up with the MeshInstance fields"
         );
 
-        // The shader reads three matrix columns followed by the base color, the
-        // joint base, the metadata index, the cutoff and the morph base.
         let locations: Vec<u32> = instance
             .attributes
             .iter()
@@ -2098,13 +2107,12 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 location::BASE_COLOR,
                 location::JOINTS_BASE,
                 location::METADATA_INDEX,
-                location::CUTOFF,
                 location::MORPH_BASE,
             ]
         );
-        // The matrix columns are floats, the color is quantized, the cutoff is a
-        // float, and the two bases and the metadata index are integers: each
-        // addresses a slot in one of the frame's shared arrays.
+        // The matrix columns are floats, the color is quantized, and the two
+        // bases and the metadata index are integers: each addresses a slot in
+        // one of the frame's shared arrays.
         let expected_formats = [
             wgpu::VertexFormat::Float32x4,
             wgpu::VertexFormat::Float32x4,
@@ -2112,11 +2120,58 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
             wgpu::VertexFormat::Unorm8x4,
             wgpu::VertexFormat::Uint32,
             wgpu::VertexFormat::Uint32,
-            wgpu::VertexFormat::Float32,
             wgpu::VertexFormat::Uint32,
         ];
         let formats: Vec<wgpu::VertexFormat> =
             instance.attributes.iter().map(|a| a.format).collect();
         assert_eq!(formats, expected_formats, "{instance:?}");
+    }
+
+    /// A cutting variant's instance layout declares the cutoff; a plain one
+    /// omits it, matching the shader's own conditional input declaration. The
+    /// other instance inputs are unconditional in the shader, so the layout
+    /// declares them for every variant.
+    #[test]
+    fn instance_layout_declares_the_cutoff_only_when_it_cuts() {
+        let locations = |alpha_cutoff: bool| {
+            let mut options = UnlitOptions::standard_shape();
+            options.alpha_cutoff = alpha_cutoff;
+            variant(
+                options,
+                channels(None, false, UvColorFlags::COLOR),
+                false,
+                false,
+            )
+            .vertex_buffer_layouts()[INSTANCE_SLOT as usize]
+                .as_ref()
+                .expect("instance slot")
+                .attributes
+                .iter()
+                .map(|a| a.shader_location)
+                .collect::<Vec<u32>>()
+        };
+
+        let plain = [
+            location::MODEL_0,
+            location::MODEL_1,
+            location::MODEL_2,
+            location::BASE_COLOR,
+            location::JOINTS_BASE,
+            location::METADATA_INDEX,
+            location::MORPH_BASE,
+        ];
+        let mut cutting = plain.to_vec();
+        cutting.insert(6, location::CUTOFF);
+
+        assert_eq!(
+            locations(false),
+            plain,
+            "a plain variant declares no cutoff"
+        );
+        assert_eq!(
+            locations(true),
+            cutting,
+            "a cutting variant declares the cutoff"
+        );
     }
 }
