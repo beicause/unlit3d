@@ -98,12 +98,12 @@ use zerocopy::IntoBytes;
 /// conversion deals with the target instead.
 const TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Bytes one uncompressed-position vertex occupies.
+/// Bytes one planar-position vertex occupies.
 ///
-/// The UI writes positions at full precision, so this is
-/// [`ChannelEncoding::UncompressedPosition`]'s format rather than the standard
-/// variant's compressed one.
-const POSITION_STRIDE: usize = wgpu::VertexFormat::Float32x3.size() as usize;
+/// The UI writes positions at full precision and in the plane, so this is
+/// [`ChannelEncoding::PlanarPosition`]'s format: two components, with the
+/// zero third supplied by the shader rather than stored.
+const POSITION_STRIDE: usize = wgpu::VertexFormat::Float32x2.size() as usize;
 
 /// Bytes one UV-and-color vertex occupies: `Float32x2` then `Unorm8x4`.
 const UV_COLOR_STRIDE: usize =
@@ -198,13 +198,14 @@ pub fn ui_variant(
 
 /// The per-vertex channels a UI mesh is packed with.
 ///
-/// The UI writes positions at full precision and needs no skinning, and every
+/// The UI writes positions at full precision and in the plane — two components,
+/// with the shader supplying the zero third — and needs no skinning, and every
 /// vertex carries a texture coordinate and a premultiplied color. A caller
 /// packing a UI mesh builds its streams to match this.
 pub fn ui_channels() -> UnlitVertexChannels {
     UnlitVertexChannels {
         position: PositionStreamChannels {
-            position: Some(ChannelEncoding::UncompressedPosition),
+            position: Some(ChannelEncoding::PlanarPosition),
             joints: false,
         },
         uv_color: UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
@@ -320,9 +321,10 @@ fn pack_geometry(
 
         for vertex in &mesh.vertices {
             let position = vertex_cursor * POSITION_STRIDE;
-            // The third component is unused: the UI is flat.
+            // The UI is flat: two components, the shader supplies the zero
+            // third.
             vertices[position..position + POSITION_STRIDE]
-                .copy_from_slice([vertex.pos.x, vertex.pos.y, 0.0].as_bytes());
+                .copy_from_slice([vertex.pos.x, vertex.pos.y].as_bytes());
             let uv_color = uv_color_start + vertex_cursor * UV_COLOR_STRIDE;
             vertices[uv_color..uv_color + size_of::<egui::Vec2>()]
                 .copy_from_slice([vertex.uv.x, vertex.uv.y].as_bytes());
@@ -1102,8 +1104,8 @@ mod tests {
         let channels = variant.channels;
         assert_eq!(
             channels.position.position,
-            Some(ChannelEncoding::UncompressedPosition),
-            "screen-space vertices are written at full precision"
+            Some(ChannelEncoding::PlanarPosition),
+            "screen-space vertices are written at full precision and in the plane"
         );
         assert!(!channels.position.joints, "a UI mesh is never skinned");
         assert_eq!(
@@ -1326,8 +1328,8 @@ mod tests {
             .collect();
         assert_eq!(
             positions,
-            vec![0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 4.0, 0.0, 3.0, 6.0, 0.0],
-            "each position is x, y and a zero z"
+            vec![0.0, 0.0, 1.0, 2.0, 2.0, 4.0, 3.0, 6.0],
+            "each position is x and y; the shader supplies the zero z"
         );
 
         // The colors are egui's premultiplied bytes, unchanged.

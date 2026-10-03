@@ -179,12 +179,11 @@ impl UnlitVertexChannels {
             POSITION_SLOT => {
                 for attribute in &layout.attributes {
                     if attribute.shader_location == location::POSITION {
-                        channels.position.position =
-                            Some(if attribute.format == wgpu::VertexFormat::Float32x3 {
-                                ChannelEncoding::UncompressedPosition
-                            } else {
-                                ChannelEncoding::CompressedPosition
-                            });
+                        channels.position.position = Some(match attribute.format {
+                            wgpu::VertexFormat::Float32x3 => ChannelEncoding::UncompressedPosition,
+                            wgpu::VertexFormat::Float32x2 => ChannelEncoding::PlanarPosition,
+                            _ => ChannelEncoding::CompressedPosition,
+                        });
                     }
                     // The joint pair is part of this stream rather than a
                     // stream of its own: the indices are the evidence, and the
@@ -473,14 +472,21 @@ impl UnlitVariant {
     ///
     /// `texel_arrays` is the device's answer rather than the variant's, so it
     /// is passed in from the caller that read the device.
-    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 13] {
+    fn features(&self, texel_arrays: bool) -> [(&'static str, bool); 14] {
         [
             ("VERTEX_POSITION", self.channels.position.position.is_some()),
             (
                 "UNCOMPRESSED_POSITION",
                 matches!(
                     self.channels.position.position,
-                    Some(ChannelEncoding::UncompressedPosition)
+                    Some(ChannelEncoding::UncompressedPosition | ChannelEncoding::PlanarPosition)
+                ),
+            ),
+            (
+                "PLANAR_POSITION",
+                matches!(
+                    self.channels.position.position,
+                    Some(ChannelEncoding::PlanarPosition)
                 ),
             ),
             (
@@ -1180,11 +1186,12 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// [`compose_builtin`] rather than carried by the variant.
     fn all_variants() -> Vec<UnlitVariant> {
         // A position is absent — leaving the geometry a point at the instance
-        // origin — or present in one of the two encodings.
+        // origin — or present in one of the three encodings.
         let positions: &[Option<ChannelEncoding>] = &[
             None,
             Some(ChannelEncoding::CompressedPosition),
             Some(ChannelEncoding::UncompressedPosition),
+            Some(ChannelEncoding::PlanarPosition),
         ];
         // The UV-and-color stream carries a UV in either encoding, a color, or
         // both; an uncompressed UV is still a UV.
@@ -1894,6 +1901,30 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         // The instance stream is bound for every variant, so the slot exists even
         // though these channels are read entirely from full-precision attributes.
         assert!(layouts[INSTANCE_SLOT as usize].is_some());
+    }
+
+    /// A planar channel narrows its slot to the two-component format and needs
+    /// no metadata either, exactly as any other full-precision position.
+    #[test]
+    fn planar_channels_narrow_their_slots() {
+        let candidate = variant(
+            UnlitOptions::standard_shape(),
+            channels(
+                Some(ChannelEncoding::PlanarPosition),
+                false,
+                UvColorFlags::UV | UvColorFlags::UNCOMPRESSED_UV | UvColorFlags::COLOR,
+            ),
+            true,
+            false,
+        );
+        assert!(!candidate.needs_metadata());
+
+        let layouts = candidate.vertex_buffer_layouts();
+        let position = layouts[POSITION_SLOT as usize]
+            .as_ref()
+            .expect("position slot");
+        assert_eq!(position.array_stride, wgpu::VertexFormat::Float32x2.size());
+        assert_eq!(position.attributes[0].format, wgpu::VertexFormat::Float32x2);
     }
 
     #[test]

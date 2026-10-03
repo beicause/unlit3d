@@ -26,6 +26,7 @@ arrayvec.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
 egui = { workspace = true, optional = true }
+foldhash.workspace = true
 glam.workspace = true
 hashbrown.workspace = true
 smallvec.workspace = true

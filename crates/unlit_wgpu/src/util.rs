@@ -1,16 +1,18 @@
 //! Small helpers that have no better home.
 
-use core::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
+use core::hash::{BuildHasher, Hash, Hasher};
 use core::ops::Deref;
-use std::collections::hash_map::DefaultHasher;
+use foldhash::fast::FixedState;
 
 /// The hasher [`Hashed`] computes its words with.
 ///
-/// `DefaultHasher` is seeded with a fixed key, so independently built hashers
-/// agree on the hash of equal values. [`Hashed`]'s equality reads that word, so
-/// a hasher seeded per instance — `RandomState`, say — would make equal values
-/// compare unequal.
-type FixedHasher = BuildHasherDefault<DefaultHasher>;
+/// Hashbrown's own hasher, in its fixed-seed state: the crate's hash tables are
+/// hashbrown's and hash with foldhash, so a word stored this way is already in
+/// the shape those tables mix, and independently built hashers agree on the
+/// hash of equal values. [`Hashed`]'s equality reads that word, so a hasher
+/// seeded per instance — `hashbrown::DefaultHashBuilder`, whose default is a
+/// fresh `RandomState`, say — would make equal values compare unequal.
+type FixedHasher = FixedState;
 
 /// A value whose hash is computed once, up front.
 ///

@@ -82,8 +82,10 @@ checks that combination separately.
   feature.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
   front: hashing it writes the stored word instead of walking the value, which
-  keeps a per-frame key cheap when its members are large.
-- `ui` — the egui backend, under the `egui` feature.
+  keeps a per-frame key cheap when its members are large. The hash comes from
+  `foldhash`'s fixed-seed hasher, the same family hashbrown's own maps build on.
+- `ui` — the egui backend, under the `egui` feature. Its vertices pack their
+  positions as planar `Float32x2` pairs; the shader supplies the zero third.
 
 ## Example
 

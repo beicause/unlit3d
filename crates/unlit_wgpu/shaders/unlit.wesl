@@ -9,9 +9,13 @@
 // Feature flags:
 //   VERTEX_POSITION      read a per-vertex position; without it the geometry
 //                        is a single point at the instance origin
-//   UNCOMPRESSED_POSITION  the position is a full-precision `vec3<f32>` and
-//                        needs no decode; otherwise it is a compressed
-//                        `vec4<f32>` decoded through `mesh_meta`
+//   UNCOMPRESSED_POSITION  the position is full precision and needs no decode;
+//                        otherwise it is a compressed `vec4<f32>` decoded
+//                        through `mesh_meta`
+//   PLANAR_POSITION       the position is a full-precision `vec2<f32>`: the
+//                        geometry already lies in the target's plane, so the
+//                        zero third is supplied here; implies
+//                        `UNCOMPRESSED_POSITION`
 //   VERTEX_UV            read a per-vertex UV
 //   UNCOMPRESSED_UV      the UV is a full-precision `vec2<f32>` and needs no
 //                        decode; otherwise it is compressed and remapped by
@@ -57,8 +61,9 @@
 //   group 1  binding 0  base_color    base-color texture   [BASE_COLOR_TEXTURE]
 //   group 1  binding 1  base_color_sampler                 [BASE_COLOR_TEXTURE]
 //
-//   slot 0  position   Float32x3 [UNCOMPRESSED_POSITION] or Snorm16x4,
-//                      decoded through `mesh_meta`, followed by the joint pair
+//   slot 0  position   Float32x2 [PLANAR_POSITION], Float32x3
+//                      [UNCOMPRESSED_POSITION] or Snorm16x4, decoded through
+//                      `mesh_meta`, followed by the joint pair
 //                      Uint16x4 indices + Unorm16x4 weights [VERTEX_JOINTS]
 //   slot 1  uv         Float32x2 [UNCOMPRESSED_UV] or Snorm16x2,
 //                      plus color Unorm8x4 [VERTEX_COLOR]
@@ -116,9 +121,10 @@ import package::view;
 @if(BASE_COLOR_TEXTURE) @group(1) @binding(1) var base_color_sampler: sampler;
 
 struct VertexInput {
-    /// Per-vertex position: full precision, or compressed to Snorm16x4
-    /// relative to the mesh AABB.
-    @if(VERTEX_POSITION && UNCOMPRESSED_POSITION) @location(0) position: vec3<f32>,
+    /// Per-vertex position: full precision in two or three components, or
+    /// compressed to Snorm16x4 relative to the mesh AABB.
+    @if(VERTEX_POSITION && PLANAR_POSITION) @location(0) position: vec2<f32>,
+    @if(VERTEX_POSITION && UNCOMPRESSED_POSITION && !PLANAR_POSITION) @location(0) position: vec3<f32>,
     @if(VERTEX_POSITION && !UNCOMPRESSED_POSITION) @location(0) position: vec4<f32>,
 
     /// Per-vertex UV: full precision, or remapped by the mesh metadata.
@@ -257,7 +263,10 @@ public fn vs_main(in: VertexInput, @builtin(vertex_index) vertex_index: u32) -> 
     // translation. This is what point, particle and impostor draws want: the
     // per-instance data alone places the vertex.
     var local = vec3<f32>(0.0, 0.0, 0.0);
-    @if(VERTEX_POSITION && UNCOMPRESSED_POSITION) {
+    @if(VERTEX_POSITION && PLANAR_POSITION) {
+        local = vec3<f32>(in.position, 0.0);
+    }
+    @if(VERTEX_POSITION && UNCOMPRESSED_POSITION && !PLANAR_POSITION) {
         local = in.position;
     }
     @if(VERTEX_POSITION && !UNCOMPRESSED_POSITION) {

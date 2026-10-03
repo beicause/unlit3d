@@ -29,6 +29,10 @@ pub enum ChannelEncoding {
     CompressedPosition,
     /// A full-precision position: `Float32x3`.
     UncompressedPosition,
+    /// A full-precision planar position: `Float32x2`. The missing third
+    /// component reads as zero, which is what geometry that already lies in the
+    /// target's plane — a user interface's, say — would store anyway.
+    PlanarPosition,
     /// A range-remapped UV: `Snorm16x2`, decoded through
     /// [`MeshMetadata::uv_min_and_extents`].
     CompressedUv,
@@ -49,6 +53,7 @@ impl ChannelEncoding {
         match self {
             Self::CompressedPosition => wgpu::VertexFormat::Snorm16x4,
             Self::UncompressedPosition => wgpu::VertexFormat::Float32x3,
+            Self::PlanarPosition => wgpu::VertexFormat::Float32x2,
             Self::CompressedUv => wgpu::VertexFormat::Snorm16x2,
             Self::UncompressedUv => wgpu::VertexFormat::Float32x2,
             Self::Color => wgpu::VertexFormat::Unorm8x4,
@@ -933,11 +938,21 @@ impl PositionStreamWriter {
     }
 
     /// Whether the position is written full precision rather than compressed
-    /// to `Snorm16x4`.
+    /// to `Snorm16x4`. A planar position is full precision too, only two
+    /// components wide.
     pub fn uncompressed_position(&self) -> bool {
         matches!(
             self.channels.position,
-            Some(ChannelEncoding::UncompressedPosition)
+            Some(ChannelEncoding::UncompressedPosition | ChannelEncoding::PlanarPosition)
+        )
+    }
+
+    /// Whether the position is written as two components rather than three,
+    /// with the third read as zero.
+    pub fn planar_position(&self) -> bool {
+        matches!(
+            self.channels.position,
+            Some(ChannelEncoding::PlanarPosition)
         )
     }
 
@@ -1017,6 +1032,14 @@ impl PositionStreamWriter {
             let mut vertex = [0u8; MAX_POSITION_STRIDE];
             let mut len = 0;
             match write_position {
+                // A planar position stores the two components the source has;
+                // the zero third is the array padding `take` drops below.
+                Some(ChannelEncoding::PlanarPosition) => {
+                    let flat = [positions[index][0], positions[index][1]];
+                    let bytes = flat.as_bytes();
+                    vertex[len..len + bytes.len()].copy_from_slice(bytes);
+                    len += bytes.len();
+                }
                 Some(_) if uncompressed => {
                     let bytes = positions[index].as_bytes();
                     vertex[len..len + bytes.len()].copy_from_slice(bytes);
