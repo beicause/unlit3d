@@ -28,7 +28,7 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
-  gltf                   a skinned fox and a morph-target cube animated over six frames
+  gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
@@ -187,6 +187,13 @@ time: a scene whose animation was frozen as a few frames holds each one for
 `SEQUENCE_STEP` (currently 0.5 s), so the sequence is watchable rather than
 flashing past at the refresh rate. At most one sequence step is taken per
 windowed frame, so a stall does not skip frames.
+
+A scene whose animation carries its own timing declares no step at all and
+advances from the frame delta instead. `gltf` is the one such scene here: the
+fox's `Walk` and the morph cube's `Pulse` each play at their own duration,
+looping in real time, so the window shows the documents as an application would
+rather than through a six-frame sequence. The snapshot capture still walks that
+sequence, because a stored frame has to be reproducible.
 
 ### Choosing a device tier
 

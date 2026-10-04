@@ -5,16 +5,16 @@
 //! and drawn through one [`MeshSource`]: the fox's mesh is deformed by its own
 //! skeleton under the document's `Walk` animation, and the morph stress test's
 //! mesh is deformed by its eight morph targets under the document's `Pulse`
-//! animation. Each frame samples both documents at the same fraction of their
-//! animation and stores the result as its own snapshot, so a wrong joint
-//! matrix, a mispacked morph delta or a stale binding shows up as a frame that
-//! does not move the way it should.
+//! animation. In the window each clip plays at its own real duration and loops.
+//! A snapshot capture instead walks a fixed six-step sequence and stores each
+//! step as its own snapshot, so a wrong joint matrix, a mispacked morph delta
+//! or a stale binding shows up as a frame that does not move the way it should.
 
-use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE};
+use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
 
-/// The frames rendered, one snapshot each.
+/// The frames a snapshot capture freezes, one snapshot each.
 const FRAMES: usize = 6;
 
 /// The fox asset, carried in the binary so the scene needs no file at run
@@ -69,16 +69,18 @@ const MORPH_PLACEMENT: Transform = Transform {
 const CAMERA_EYE: glam::Vec3 = glam::Vec3::new(160.5, 109.0, 49.5);
 const CAMERA_TARGET: glam::Vec3 = glam::Vec3::new(4.5, 38.0, 26.5);
 
-/// The scene: two glTF documents animated over six frames, each stored as its
-/// own snapshot.
+/// The scene: two glTF documents whose clips play in real time, with six frames
+/// stored as snapshots.
 pub static SCENE: SceneDef = SceneDef {
     id: "gltf",
     title: "glTF documents",
-    description: "a skinned fox and a morph-target cube animated over six frames",
+    description: "a skinned fox and a morph-target cube playing their glTF clips",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
     frames: FRAMES as u32,
-    step_seconds: Some(SEQUENCE_STEP),
+    // The window plays each clip continuously from the frame delta; only the
+    // snapshot capture walks the fixed sequence below.
+    step_seconds: None,
     samples: 1,
     depth: true,
     ui: false,
@@ -92,7 +94,7 @@ fn build(
     context: RenderContext,
     _renderer: Entity,
     size: (u32, u32),
-    _options: SceneOptions,
+    options: SceneOptions,
 ) -> SceneControl {
     let fox = UnlitGltf::from_bytes(FOX).expect("the fox asset is a valid glTF document");
     let morph = UnlitGltf::from_bytes(MORPH).expect("the morph asset is a valid glTF document");
@@ -141,15 +143,26 @@ fn build(
     let fox_duration = fox.animation_duration(fox_animation);
     let morph_duration = morph.animation_duration(morph_animation);
 
+    // In the window each clip plays at its own real duration and loops. A
+    // snapshot capture instead walks a fixed six-step sequence, so a frame does
+    // not depend on when it was drawn.
+    let reproducible = options.reproducible;
+    let mut clock = 0.0f32;
+
     SceneControl {
-        advance: Box::new(move |world, frame, _delta, frame_size| {
-            let frame = frame as usize % FRAMES;
-            // The sequence stops one step short of the animation's end, so a
-            // loop replays it from the start instead of holding the last
-            // keyframe twice.
-            let phase = frame as f32 / FRAMES as f32;
-            fox.apply_animation(world, fox_animation, fox_duration * phase, &fox_nodes);
-            morph.apply_animation(world, morph_animation, morph_duration * phase, &morph_nodes);
+        advance: Box::new(move |world, frame, delta, frame_size| {
+            let (fox_time, morph_time) = if reproducible {
+                // The sequence stops one step short of the animation's end, so
+                // the six stored frames span the clip without repeating its
+                // first pose at the end.
+                let phase = (frame as usize % FRAMES) as f32 / FRAMES as f32;
+                (fox_duration * phase, morph_duration * phase)
+            } else {
+                clock += delta;
+                (clock % fox_duration, clock % morph_duration)
+            };
+            fox.apply_animation(world, fox_animation, fox_time, &fox_nodes);
+            morph.apply_animation(world, morph_animation, morph_time, &morph_nodes);
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the assets.
             super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);

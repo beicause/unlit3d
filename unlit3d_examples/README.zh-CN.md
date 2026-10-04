@@ -25,7 +25,7 @@ Scenes:
   ecs_skinned            a cube bent by a two-joint skin over six frames
   ecs_morphed            a cube blended by two morph targets over six frames
   instanced_skinned_morph three cubes sharing one mesh, deformed per instance
-  gltf                   a skinned fox and a morph-target cube animated over six frames
+  gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
 ```
@@ -150,6 +150,10 @@ cargo nextest run -p unlit3d_examples
 快照测试把多帧场景的每一帧紧挨着画一遍，所以一次运行逐帧匹配快照。窗口化运行则按时间
 播放：把动画冻结成若干帧的场景，每帧停留 `SEQUENCE_STEP`（当前为 0.5 秒），因此肉眼
 可看，而不是随刷新率一闪而过。窗口循环每次最多推进一帧序列，卡顿不会跳帧。
+
+自带时序的动画则不声明步长，而是按帧间隔推进。`gltf` 是这里唯一的这种场景：狐狸的
+`Walk` 与形变立方体的 `Pulse` 各自按自身时长实时循环播放，因此窗口展示的是文档在
+应用中的样子，而不是六帧序列。快照捕获仍然走那个序列，因为存下的帧必须可复现。
 
 ### 选择设备档位
 
