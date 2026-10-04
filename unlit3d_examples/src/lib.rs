@@ -271,9 +271,9 @@ struct App {
     initial_size: (u32, u32),
     /// The scene the example starts with; a switch replaces it.
     initial_scene: &'static scenes::SceneDef,
-    /// Where the selector window was left, so a scene switch can rebuild it
-    /// at the same place.
-    selector_pos: Option<egui::Pos2>,
+    /// The selector window's rectangle the last time a scene was live, so a
+    /// scene switch can rebuild it in the same place and at the same size.
+    selector_pos: Option<egui::Rect>,
 }
 
 /// The GPU context a scene draws with, requested asynchronously.
@@ -813,7 +813,7 @@ impl App {
         // new scene's selector in the same place. The layout a frame left
         // stands until this frame's panels have run, so the position read is
         // the user's latest.
-        self.selector_pos = self.scene.as_ref().and_then(Scene::selector_position);
+        self.selector_pos = self.scene.as_ref().and_then(Scene::selector_rect);
 
         // A switch requested by the selector panel is handled before the frame
         // is drawn: the next redraw presents the new scene.
@@ -883,7 +883,7 @@ impl Scene {
         size: (u32, u32),
         options: scenes::SceneOptions,
         def: &'static scenes::SceneDef,
-        selector_pos: Option<egui::Pos2>,
+        selector_pos: Option<egui::Rect>,
     ) -> Self {
         let mut world = World::new();
         let context = spawn_context(
@@ -1012,19 +1012,19 @@ impl Scene {
         self.pending.take()
     }
 
-    /// Where the selector window was last laid out, or `None` before it has
-    /// been shown once.
+    /// The selector window's rectangle the last time it was laid out, or
+    /// `None` before it has been shown once.
     ///
     /// The window's rectangle is remembered by egui, in this scene's context;
     /// the shell reads it from here so a scene switch — which rebuilds that
-    /// context — can rebuild the window in the same place.
-    fn selector_position(&self) -> Option<egui::Pos2> {
+    /// context — can rebuild the window in the same place and at the same size.
+    fn selector_rect(&self) -> Option<egui::Rect> {
         // Several sources share the world; only the UI one holds egui's
         // window memory, so skip every other source's entity.
         self.world.query::<&Source>().find_map(|(_, source)| {
             let ui = source.as_ref::<UiSource>()?;
             ui.context()
-                .memory(|memory| memory.area_rect(SELECTOR_WINDOW).map(|rect| rect.min))
+                .memory(|memory| memory.area_rect(SELECTOR_WINDOW))
         })
     }
 
@@ -1070,7 +1070,16 @@ const SELECTOR_WINDOW: &str = "scenes";
 
 /// Where the selector window opens when no position was carried over — the
 /// first build of a session.
-const SELECTOR_POS: egui::Pos2 = egui::Pos2::new(16.0, 430.0);
+///
+/// The window's bottom-right corner sits one overlay margin from the screen's,
+/// so the list opens out of the way of the frame-rate readout and the
+/// fullscreen button in the top corners. The window is seeded by its
+/// bottom-right pivot, so that corner stays put as the content decides the
+/// window's size; a window a user has dragged is carried by its whole
+/// rectangle, which a rebuild restores exactly.
+fn selector_default_pos(ctx: &egui::Context) -> egui::Pos2 {
+    ctx.content_rect().right_bottom() - egui::Vec2::splat(OVERLAY_MARGIN)
+}
 
 /// Mount the windowed shell's scene-selector panel.
 ///
@@ -1080,25 +1089,35 @@ fn mount_selector(
     world: &mut World,
     switch: Entity,
     current: &'static scenes::SceneDef,
-    initial: Option<egui::Pos2>,
+    initial: Option<egui::Rect>,
 ) {
     world.spawn((UiPanel::new(move |world, _entity, ui| {
         // The id is set explicitly: `Window::new` derives it from the title's
         // `Atoms` text, whose hash differs from a plain string id, so the
         // shell's read of the remembered rect below would never match.
-        egui::Window::new(SELECTOR_WINDOW)
-            .id(egui::Id::new(SELECTOR_WINDOW))
-            .default_pos(initial.unwrap_or(SELECTOR_POS))
-            .show(ui.ctx(), |ui| {
-                ui.label(format!("{} — {}", current.title, current.description));
-                ui.separator();
-                for scene in scenes::SCENES.iter().copied() {
-                    let selected = scene.id == current.id;
-                    if ui.selectable_label(selected, scene.title).clicked() {
-                        let _ = world.with_mut::<SceneSwitch, _>(switch, |s| s.0 = Some(scene));
-                    }
+        let window = egui::Window::new(SELECTOR_WINDOW).id(egui::Id::new(SELECTOR_WINDOW));
+        // A fresh window is seeded by its bottom-right corner, so that corner
+        // stays put while the first layout measures the content. A carried
+        // rectangle is seeded by its left-top, and its size is given too: the
+        // first frame then lays the window out at the size it last had, so the
+        // constrain step cannot drag a window whose unmeasured default size
+        // would overflow the screen.
+        let window = match initial {
+            Some(rect) => window.default_pos(rect.min).default_size(rect.size()),
+            None => window
+                .pivot(egui::Align2::RIGHT_BOTTOM)
+                .default_pos(selector_default_pos(ui.ctx())),
+        };
+        window.show(ui.ctx(), |ui| {
+            ui.label(format!("{} — {}", current.title, current.description));
+            ui.separator();
+            for scene in scenes::SCENES.iter().copied() {
+                let selected = scene.id == current.id;
+                if ui.selectable_label(selected, scene.title).clicked() {
+                    let _ = world.with_mut::<SceneSwitch, _>(switch, |s| s.0 = Some(scene));
                 }
-            });
+            }
+        });
     }),));
 }
 

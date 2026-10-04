@@ -67,7 +67,10 @@ own. The snapshot tests turn the letterbox off and draw at the scene's own size,
 so a capture is unchanged.
 
 A readout at the top of the window, centred, reports the smoothed frame rate
-and frame time. In a browser, a button in the top-right corner — sized so a
+and frame time. The scene selector opens in the bottom-right corner, its
+bottom-right held a margin from the screen's edge, and can be dragged anywhere
+from there; the rectangle it is left at is carried into the next scene when one
+is chosen. In a browser, a button in the top-right corner — sized so a
 finger can land on it — offers fullscreen: the click is the one gesture a
 browser accepts as permission, so the display can be entered and left as often
 as the button is pressed, and it is labelled for whichever the document is not. A device being held upright is then locked to landscape, so the picture
