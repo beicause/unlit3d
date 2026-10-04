@@ -2,8 +2,9 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/unlit3d_c
 
 # unlit3d_cli
 
-A command-line tool that renders glTF documents to an image. It is at an
-**early stage** along with the crates it uses.
+A command-line tool that renders glTF documents to an image. The package is
+`unlit3d_cli` and the binary it builds is `unlit3d-cli`. It is at an **early
+stage** along with the crates it uses.
 
 ## What it does
 
@@ -18,7 +19,7 @@ is `--name value` or a bare flag, and the value must be the next argument;
 its extension chooses the image format: `png`, `webp` and `jpeg` are supported.
 
 ```text
-cargo run -p unlit3d_cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2
+cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2
 ```
 
 ## Output and render size

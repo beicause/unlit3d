@@ -17,7 +17,7 @@ crate-type = ["cdylib", "rlib"]
 name = "unlit3d_examples"
 
 [[bin]]
-name = "unlit3d_examples"
+name = "unlit3d-examples"
 path = "src/main.rs"
 
 [[test]]

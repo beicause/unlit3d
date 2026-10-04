@@ -222,10 +222,9 @@ fn resolved_wasm_bindgen() -> Result<String, String> {
 /// them for wasm at all.
 fn build_workspace() -> Result<(), String> {
     // Not `--all-targets`: the example crate is a `cdylib` as well as a binary,
-    // and on `wasm32-unknown-unknown` both want to write
-    // `unlit3d_examples.wasm`, which cargo warns about as a filename collision.
-    // The binary is what a browser runs; the library exists for Android, so only
-    // the targets that never produce it are built here.
+    // and on `wasm32-unknown-unknown` the cdylib is not what a browser runs.
+    // The binary is; the library exists for Android, so only the targets that
+    // never produce it are built here.
     //
     // `xtask` is excluded because it is a host-only task runner: its HTTP server
     // reaches `async-io` and so `errno`, which does not build for this target.

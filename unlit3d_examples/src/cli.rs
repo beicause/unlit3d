@@ -17,7 +17,7 @@ use argh::FromArgs;
 use crate::scenes;
 
 /// The program name argh puts in its usage and error messages.
-const PROGRAM: &str = "unlit3d_examples";
+const PROGRAM: &str = "unlit3d-examples";
 
 /// The scene `--scene` starts from.
 fn default_scene() -> String {

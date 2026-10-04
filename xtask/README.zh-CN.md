@@ -92,8 +92,8 @@ WebGPU 只在*安全上下文*中可用，`localhost` 是安全上下文而 `fil
 位置参数会透传给 `cargo build`。
 
 这里显式指定了二进制 target，而不是交给默认的 target 选择：示例 crate 同时是
-`cdylib` 和二进制，在 `wasm32-unknown-unknown` 上两者都想写出
-`unlit3d_examples.wasm`，cargo 会就此报告输出文件名冲突。浏览器运行的是二进制。
+`cdylib` 和二进制，而在 `wasm32-unknown-unknown` 上浏览器运行的是二进制，不是
+cdylib。
 
 ### `cargo xtask build-android`
 

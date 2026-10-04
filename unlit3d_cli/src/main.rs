@@ -1,4 +1,4 @@
-//! The unlit3d_cli binary: parse the arguments, render, and write the image.
+//! The unlit3d-cli binary: parse the arguments, render, and write the image.
 
 use std::io::Write;
 use std::process::ExitCode;

@@ -14,7 +14,7 @@ use super::{RunWasmArgs, http, step};
 /// The binary crate whose example runs on the web.
 pub const EXAMPLE_CRATE: &str = "unlit3d_examples";
 /// The wasm binary `wasm-bindgen` reads and names its output after.
-pub const BINARY_NAME: &str = "unlit3d_examples";
+pub const BINARY_NAME: &str = "unlit3d-examples";
 /// The target triple the web build runs on.
 pub const TARGET: &str = "wasm32-unknown-unknown";
 /// Where the bindgen output lands, inside `target/`.
@@ -95,7 +95,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
   </head>
   <body>
     <script type="module">
-      import init from "./unlit3d_examples.js";
+      import init from "./unlit3d-examples.js";
       init();
     </script>
   </body>
@@ -122,7 +122,7 @@ pub fn run(args: &RunWasmArgs) -> Result<(), String> {
 /// The example is a library as well as a binary — Android packages the library
 /// and the binary is what a browser runs — so the bin is named explicitly.
 /// Building every target instead would build the cdylib for the web, where it
-/// is not what runs, and the two share the `unlit3d_examples.wasm` filename.
+/// is not what runs.
 ///
 /// Shared with `cargo xtask test-wasm`, which loads the same page: writing it
 /// here keeps the page under test identical to the one `run-wasm` serves.
@@ -154,7 +154,7 @@ pub fn build_example(release: bool, cargo_args: &[String]) -> Result<PathBuf, St
         .arg(BINARY_NAME);
     step::run(&mut bindgen, "wasm-bindgen")?;
 
-    // The loader is imported as `./unlit3d_examples.js`, so the page sits
+    // The loader is imported as `./unlit3d-examples.js`, so the page sits
     // beside it. Written only when absent, so a customized one survives.
     let index = out.join("index.html");
     if !index.exists() {

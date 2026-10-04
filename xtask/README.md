@@ -108,8 +108,7 @@ passed through to the `cargo build`.
 
 The binary is named explicitly rather than left to the default target selection:
 the example crate is a `cdylib` as well as a binary, and on
-`wasm32-unknown-unknown` both want to write `unlit3d_examples.wasm`, which cargo
-reports as an output filename collision. The binary is what a browser runs.
+`wasm32-unknown-unknown` the cdylib is not what a browser runs. The binary is.
 
 ### `cargo xtask build-android`
 

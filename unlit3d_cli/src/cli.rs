@@ -7,7 +7,7 @@ use argh::FromArgs;
 use crate::config::{AnimationRef, Config, DocumentConfig};
 
 /// The program name argh prints in its usage.
-const PROGRAM: &str = "unlit3d_cli";
+const PROGRAM: &str = "unlit3d-cli";
 
 /// The command-line arguments.
 ///

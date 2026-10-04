@@ -2,8 +2,8 @@
 
 # unlit3d_cli
 
-一个把 glTF 文档渲染成图片的命令行工具。与它所用的那些 crate 一样，它也处于
-**早期阶段**。
+一个把 glTF 文档渲染成图片的命令行工具。包名为 `unlit3d_cli`，构建出的可执行程序名为
+`unlit3d-cli`。与它所用的那些 crate 一样，它也处于 **早期阶段**。
 
 ## 它做什么
 
@@ -16,7 +16,7 @@
 决定图片格式：支持 `png`、`webp` 与 `jpeg`。
 
 ```text
-cargo run -p unlit3d_cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2
+cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2
 ```
 
 ## 输出大小与渲染大小
