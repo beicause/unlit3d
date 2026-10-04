@@ -98,6 +98,7 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; also the Android example, packaged as an APK. |
+| [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
 
@@ -185,8 +186,10 @@ The tests fall into three layers, by how close they sit to the code they check:
   stored in the repository, using SSIMULACRA2. The low-level API's snapshots stay
   in `unlit_wgpu`'s tests; the high-level ECS scenes' run through
   [`unlit3d_examples`](unlit3d_examples/README.md)'s `tests/gpu_scenes.rs`,
-  because the example is both the demo and the CI rendering check. Either is
-  re-blessed with `SNAPSHOT_UPDATE=1`.
+  because the example is both the demo and the CI rendering check; and
+  [`unlit3d_cli`](unlit3d_cli/README.md)'s `tests/gpu_cli.rs` renders the same
+  reference glTF scene through the command-line tool's library and compares it
+  against the same snapshots. Either is re-blessed with `SNAPSHOT_UPDATE=1`.
 
 All snapshot baselines therefore live in
 [`unlit3d_asset_files`](unlit3d_asset_files/README.md), a git submodule. It is
@@ -236,6 +239,7 @@ Per-crate notes:
 | [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | How the harness itself behaves — the snapshot comparison, and counting the pixels that differ. The GPU tests it makes possible live in the crates above. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`) and the fixed-step playback clock (`src/lib.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
+| [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
 
 A GPU is needed for the rendering crates' integration tests and for the example.
 On a headless CI runner, Mesa's `lavapipe` serves as the software Vulkan
@@ -291,6 +295,7 @@ crates/unlit3d/              the ECS-integrated rendering API
 crates/unlit_ecs/            the archetype ECS
 crates/unlit_wgpu_test_util/ the shared GPU test harness
 unlit3d_examples/            the windowed example, its scenes and their snapshot tests
+unlit3d_cli/                 the glTF-to-image command-line tool and its end-to-end test
 unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
 android/                     the Gradle project that packages the example as an APK
 xtask/                       the `cargo xtask` task runner

@@ -73,6 +73,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是打包成 APK 的 Android 示例。 |
+| [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 把 glTF 文档渲染成图片的命令行工具，由 JSON 配置文件驱动、并可被自身选项覆盖；其 `tests/gpu_cli.rs` 是端到端快照检查。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
 
@@ -141,7 +142,9 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 - **快照测试**：把一帧（或多帧序列）与存储图像做 SSIMULACRA2 感知比较。低层 API 的
   快照留在 `unlit_wgpu` 的测试里；高层 ECS 场景的快照由
   [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) 的 `tests/gpu_scenes.rs` 运行
-  （`SNAPSHOT_UPDATE=1` 重新生成），因为它既是示例也是 CI 的渲染回归检查。
+  （`SNAPSHOT_UPDATE=1` 重新生成），因为它既是示例也是 CI 的渲染回归检查；而
+  [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) 的 `tests/gpu_cli.rs` 通过命令行工具的库
+  渲染同一个参考 glTF 场景，与同一批快照比较。
 
 快照基线都在 [`unlit3d_asset_files`](unlit3d_asset_files/README.md) 这个 git submodule
 中。它被标记为 `update = none`：把本库当作 git 依赖的项目不会去拉取用不到的快照；
@@ -184,6 +187,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。其多帧快照覆盖位于 `unlit3d_examples`。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_scenes.rs` 的渲染快照。 |
+| [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
 `lavapipe` 作为软件 Vulkan 实现。wasm 那一遍不需要 GPU：浏览器会回退到软件 WebGL2。
@@ -229,6 +233,7 @@ crates/unlit3d/              与 ECS 集成的渲染 API
 crates/unlit_ecs/            archetype ECS
 crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
 unlit3d_examples/            窗口化示例、它的场景与场景的快照测试
+unlit3d_cli/                 glTF 转图片的命令行工具与端到端测试
 unlit3d_benchmarks/          帧路径基准测试与剖析运行
 android/                     把示例打包成 APK 的 Gradle 工程
 xtask/                       cargo xtask 任务执行器

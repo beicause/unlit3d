@@ -1,0 +1,45 @@
+[package]
+name = "unlit3d_cli"
+version = "0.1.0-dev.1"
+edition.workspace = true
+description = "A command-line tool that renders glTF documents to an image."
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "unlit3d_cli"
+
+[[bin]]
+name = "unlit3d_cli"
+path = "src/main.rs"
+
+[[test]]
+harness = false
+name = "gpu_cli"
+
+[dependencies]
+argh.workspace = true
+glam.workspace = true
+gltf.workspace = true
+image.workspace = true
+pollster.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.1", default-features = false, features = ["gltf"] }
+wgpu.workspace = true
+
+[dev-dependencies]
+unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.1", default-features = false, features = ["gltf"] }
+
+# The workspace builds every member's test targets for wasm too, and the export
+# `gpu_test_main!` generates expands to an attribute naming `wasm-bindgen`. The
+# end-to-end test never runs in a browser — it reads documents from disk — but
+# the target still has to compile.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true
