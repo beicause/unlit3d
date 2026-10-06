@@ -603,39 +603,6 @@ impl UnlitVariant {
              `UnlitOptions::standard`, which picks the device's array path"
         );
     }
-
-    /// The layout entry binding an array of `element_size`-byte elements.
-    ///
-    /// On the storage path it is a read-only storage buffer whose binding
-    /// minimum is one element, so the array may grow without invalidating the
-    /// layout. On the texel path it is a non-filterable float texture, which is
-    /// what `textureLoad` reads.
-    fn array_entry(
-        &self,
-        binding: u32,
-        element_size: u64,
-        texel_arrays: bool,
-    ) -> wgpu::BindGroupLayoutEntry {
-        if texel_arrays {
-            return crate::texel_array::TexelArrayLayout::binding(
-                binding,
-                wgpu::ShaderStages::VERTEX,
-            );
-        }
-        wgpu::BindGroupLayoutEntry {
-            binding,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: Some(
-                    core::num::NonZeroU64::new(element_size)
-                        .expect("an element has a non-zero size, which is a valid binding minimum"),
-                ),
-            },
-            count: None,
-        }
-    }
 }
 
 #[cfg(feature = "unlit")]
@@ -654,72 +621,18 @@ impl UnlitVariant {
     pub fn bind_group_layouts(&self, device: &wgpu::Device) -> UnlitBindGroupLayouts {
         let texel_arrays = !supports_storage_buffers(device);
         self.assert_device_supports_arrays(device, texel_arrays);
-        let global = {
-            // The group holds the frame's shared inputs: the camera, the frame
-            // globals, the mesh-metadata decode parameters, the pose arrays
-            // every instance slices into, and the morph displacements every
-            // mesh slices into. A variant that reads none of the optional ones
-            // declares no binding for them.
-            let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 6>::new();
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: CAMERA_BINDING,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(
-                        <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
-                    ),
-                },
-                count: None,
-            });
-            entries.push(wgpu::BindGroupLayoutEntry {
-                binding: FRAME_BINDING,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: Some(
-                        <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
-                    ),
-                },
-                count: None,
-            });
-            if self.needs_metadata() {
-                entries.push(self.array_entry(
-                    MESH_METADATA_BINDING,
-                    <crate::mesh::MeshMetadata as const_shader_layout::ShaderLayout>::SIZE.get(),
-                    texel_arrays,
-                ));
-            }
-            if self.needs_joints() {
-                entries.push(self.array_entry(
-                    JOINTS_BINDING,
-                    <crate::mesh::JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
-                    texel_arrays,
-                ));
-            }
-            if self.needs_morphs() {
-                entries.push(self.array_entry(
-                    MORPH_WEIGHTS_BINDING,
-                    wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
-                    texel_arrays,
-                ));
-                // One position component of one target: like every other array
-                // entry the storage binding minimum is a single element, so a
-                // mesh joining or leaving the pool never invalidates the
-                // layout.
-                entries.push(self.array_entry(
-                    MORPH_DELTAS_BINDING,
-                    wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
-                    texel_arrays,
-                ));
-            }
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("unlit_wgpu::unlit::globals"),
-                entries: &entries,
-            })
+        // The group holds the frame's shared inputs: the camera, the frame
+        // globals, the mesh-metadata decode parameters, the pose arrays every
+        // instance slices into, and the morph displacements every mesh slices
+        // into. A variant that reads none of the optional ones declares no
+        // binding for them. The builder is the same one a caller's own pipeline
+        // uses, so the built-in variants carry no private layout path.
+        let bindings = GlobalBindings {
+            metadata: self.needs_metadata(),
+            joints: self.needs_joints(),
+            morphs: self.needs_morphs(),
         };
+        let global = global_bind_group_layout(device, bindings, texel_arrays);
 
         let material = self
             .base_color_texture
@@ -992,6 +905,127 @@ impl core::fmt::Display for ComposeError {
 
 #[cfg(feature = "unlit")]
 impl std::error::Error for ComposeError {}
+
+/// Which of a source's global buffers a pipeline reads.
+///
+/// The camera and frame-globals uniforms are always bound; the three arrays are
+/// optional and a pipeline declares only the ones it reads. A caller's own
+/// pipeline passes the same description to `global_bind_group_layout` as the
+/// built-in unlit variants do, so binding the frame's shared inputs is not a
+/// privilege of the built-in shader.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct GlobalBindings {
+    /// Whether the pipeline reads the frame's mesh-metadata array.
+    pub metadata: bool,
+    /// Whether the pipeline reads the frame's joint matrices.
+    pub joints: bool,
+    /// Whether the pipeline reads the frame's morph weights and displacements.
+    pub morphs: bool,
+}
+
+/// The layout entry binding an array of `element_size`-byte elements.
+///
+/// On the storage path it is a read-only storage buffer whose binding minimum is
+/// one element, so the array may grow without invalidating the layout. On the
+/// texel path it is a non-filterable float texture, which is what
+/// `textureLoad` reads.
+pub fn array_entry(
+    binding: u32,
+    element_size: u64,
+    texel_arrays: bool,
+) -> wgpu::BindGroupLayoutEntry {
+    if texel_arrays {
+        return crate::texel_array::TexelArrayLayout::binding(binding, wgpu::ShaderStages::VERTEX);
+    }
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: Some(
+                core::num::NonZeroU64::new(element_size)
+                    .expect("an element has a non-zero size, which is a valid binding minimum"),
+            ),
+        },
+        count: None,
+    }
+}
+
+/// Build the global bind-group layout a pipeline with `bindings` declares.
+///
+/// The camera and frame-globals uniforms are always present; the arrays are
+/// present exactly when `bindings` names them. The array path is the device's
+/// answer rather than the pipeline's, so `texel_arrays` is passed in: a device
+/// with storage buffers binds each array as one, a device without them — WebGL2
+/// — binds the same bytes as a texture.
+///
+/// The built-in unlit variants build their global layout here, so a caller's own
+/// pipeline declares the same group by the same rules.
+pub fn global_bind_group_layout(
+    device: &wgpu::Device,
+    bindings: GlobalBindings,
+    texel_arrays: bool,
+) -> wgpu::BindGroupLayout {
+    let mut entries = arrayvec::ArrayVec::<wgpu::BindGroupLayoutEntry, 6>::new();
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: CAMERA_BINDING,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: Some(
+                <crate::globals::View as const_shader_layout::ShaderLayout>::SIZE,
+            ),
+        },
+        count: None,
+    });
+    entries.push(wgpu::BindGroupLayoutEntry {
+        binding: FRAME_BINDING,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: Some(
+                <crate::globals::Globals as const_shader_layout::ShaderLayout>::SIZE,
+            ),
+        },
+        count: None,
+    });
+    if bindings.metadata {
+        entries.push(array_entry(
+            MESH_METADATA_BINDING,
+            <crate::mesh::MeshMetadata as const_shader_layout::ShaderLayout>::SIZE.get(),
+            texel_arrays,
+        ));
+    }
+    if bindings.joints {
+        entries.push(array_entry(
+            JOINTS_BINDING,
+            <crate::mesh::JointMatrix as const_shader_layout::ShaderLayout>::SIZE.get(),
+            texel_arrays,
+        ));
+    }
+    if bindings.morphs {
+        entries.push(array_entry(
+            MORPH_WEIGHTS_BINDING,
+            wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
+            texel_arrays,
+        ));
+        // One position component of one target: like every other array entry
+        // the storage binding minimum is a single element, so a mesh joining or
+        // leaving the pool never invalidates the layout.
+        entries.push(array_entry(
+            MORPH_DELTAS_BINDING,
+            wgpu::BufferAddress::from(core::mem::size_of::<f32>() as u64),
+            texel_arrays,
+        ));
+    }
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("unlit_wgpu::unlit::globals"),
+        entries: &entries,
+    })
+}
 
 /// The bind-group layouts a [`SpecializedUnlitPipeline`] variant declares.
 ///
