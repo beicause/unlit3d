@@ -42,10 +42,18 @@
 //! buffer has. The renderer assumes no vertex layout, so a mesh can carry any
 //! combination of attributes and a family can specialize on it at draw time.
 
+use arrayvec::ArrayVec;
 use unlit_ecs::{Entity, World};
-use unlit_wgpu::resources::ResourceId;
+use unlit_wgpu::mesh::MeshInstance;
+use unlit_wgpu::pipeline::{
+    CAMERA_BINDING, FRAME_BINDING, GlobalBindings, INSTANCE_SLOT, JOINTS_BINDING,
+    MESH_METADATA_BINDING, MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
+    supports_storage_buffers,
+};
+use unlit_wgpu::resources::{Resource, ResourceGraph, ResourceId};
 use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::texel_array::ArrayHandle;
+use zerocopy::IntoBytes;
 
 use crate::components::{GpuMaterial, GpuMesh};
 
@@ -97,7 +105,7 @@ impl GlobalResources {
     /// different kinds.
     pub(crate) fn declare_dependencies(
         &self,
-        graph: &mut unlit_wgpu::resources::ResourceGraph,
+        graph: &mut ResourceGraph,
         group: &ResourceId<wgpu::BindGroup>,
     ) {
         graph.add_dependency(group, &self.camera);
@@ -106,6 +114,107 @@ impl GlobalResources {
         graph.add_dependency(group, &self.joints);
         graph.add_dependency(group, &self.morph_weights);
         graph.add_dependency(group, &self.morph_deltas);
+    }
+
+    /// The layout of the global bind group a pipeline with `bindings` declares.
+    ///
+    /// The camera and frame globals are always present; the arrays only when
+    /// `bindings` names them. The array path is the device's, so it is read
+    /// here. A caller's own pipeline builds its layout here and its group
+    /// through [`Self::rebuild`], exactly as the built-in unlit family does.
+    pub fn layout(&self, device: &wgpu::Device, bindings: GlobalBindings) -> wgpu::BindGroupLayout {
+        global_bind_group_layout(device, bindings, !supports_storage_buffers(device))
+    }
+
+    /// Assemble the global bind group for `layout` from the current graph.
+    ///
+    /// # Panics
+    ///
+    /// If one of the resources `bindings` names is not in the graph.
+    pub fn bind_group(
+        &self,
+        device: &wgpu::Device,
+        graph: &ResourceGraph,
+        layout: &wgpu::BindGroupLayout,
+        bindings: GlobalBindings,
+    ) -> wgpu::BindGroup {
+        let camera = graph.get(&self.camera).expect("camera buffer exists");
+        let globals = graph.get(&self.globals).expect("globals buffer exists");
+
+        // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
+        // whenever a global buffer is replaced, and the optional entries depend
+        // on the pipeline, so the group is assembled rather than truncated.
+        let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 6>::new();
+        entries.push(wgpu::BindGroupEntry {
+            binding: CAMERA_BINDING,
+            resource: camera.as_entire_binding(),
+        });
+        entries.push(wgpu::BindGroupEntry {
+            binding: FRAME_BINDING,
+            resource: globals.as_entire_binding(),
+        });
+        if bindings.metadata {
+            entries.push(wgpu::BindGroupEntry {
+                binding: MESH_METADATA_BINDING,
+                resource: graph
+                    .get(&self.metadata)
+                    .expect("metadata array exists")
+                    .binding_resource(),
+            });
+        }
+        // The pose arrays are the frame's, not a mesh's: binding them here
+        // rather than in the mesh group is what lets two instances of one mesh
+        // deform differently.
+        if bindings.joints {
+            entries.push(wgpu::BindGroupEntry {
+                binding: JOINTS_BINDING,
+                resource: graph
+                    .get(&self.joints)
+                    .expect("joints array exists")
+                    .binding_resource(),
+            });
+        }
+        if bindings.morphs {
+            entries.push(wgpu::BindGroupEntry {
+                binding: MORPH_WEIGHTS_BINDING,
+                resource: graph
+                    .get(&self.morph_weights)
+                    .expect("morph weights array exists")
+                    .binding_resource(),
+            });
+            entries.push(wgpu::BindGroupEntry {
+                binding: MORPH_DELTAS_BINDING,
+                resource: graph
+                    .get(&self.morph_deltas)
+                    .expect("morph deltas array exists")
+                    .binding_resource(),
+            });
+        }
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("unlit3d::global"),
+            layout,
+            entries: &entries,
+        })
+    }
+
+    /// A recipe that rebuilds the global bind group for `layout` whenever one
+    /// of these resources is replaced.
+    ///
+    /// The recipe reads each resource out of the graph by id, so a source that
+    /// grows or replaces a buffer gets the group rebuilt at the next maintain
+    /// without the caller doing anything. This is what a pipeline factory
+    /// returns for a pipeline that reads the frame's shared inputs.
+    pub fn rebuild(
+        &self,
+        device: &wgpu::Device,
+        layout: wgpu::BindGroupLayout,
+        bindings: GlobalBindings,
+    ) -> Rebuild {
+        let resources = self.clone();
+        let device = device.clone();
+        Rebuild::new(move |graph| {
+            Resource::BindGroup(resources.bind_group(&device, graph, &layout, bindings))
+        })
     }
 }
 
@@ -197,6 +306,102 @@ pub struct DrawContext<'a> {
     pub mesh: &'a GpuMesh,
     /// The material the draw binds, or `None` when it binds no material group.
     pub material: Option<&'a GpuMaterial>,
+}
+
+/// Where a family's per-instance vertex stream binds and how wide one record
+/// is.
+///
+/// A family declares one through [InstanceData::stream]; the source gives it a
+/// reused [InstanceBuffer](unlit_wgpu::instance_stream::InstanceBuffer) shaped
+/// by this description and binds it for the family's draws. A stride of zero
+/// means the family binds no instance stream at all.
+pub use unlit_wgpu::instance_stream::InstanceStreamDesc;
+
+/// Everything a family may read to write one instance record.
+///
+/// The record is the family's own: the built-in unlit family writes the
+/// resolved [MeshInstance], while a caller's family writes whatever its
+/// pipeline's instance-step attributes declare, reading the components it
+/// needs from the world.
+pub struct InstanceContext<'a> {
+    /// The world the entity is drawn from, for per-entity components.
+    pub world: &'a World,
+    /// The entity the record is for.
+    pub entity: Entity,
+    /// The placement, tint and frame metadata the frame resolved for the
+    /// entity, shared by every family.
+    pub instance: &'a MeshInstance,
+}
+
+/// The per-instance vertex data one family's draws read.
+///
+/// A family owns its own instance stream: every frame the source packs one
+/// record per visible instance into a buffer shaped by [Self::stream] and binds
+/// it at the declared slot. That is what lets a caller's family carry its own
+/// per-instance data -- a tint, a transform palette, a material parameter --
+/// without sharing a record layout or a buffer with the built-in unlit family,
+/// and without the built-in family having any privilege over it.
+///
+/// A family that reads no per-instance state passes the unit type.
+pub trait InstanceData: 'static {
+    /// Where the family's stream binds and how wide one record is.
+    ///
+    /// Called once when the family is registered, so it should be constant.
+    fn stream(&self) -> InstanceStreamDesc;
+
+    /// Write one record into `out`, which is exactly
+    /// `stream().array_stride` bytes long.
+    ///
+    /// Called once per visible instance per frame, in visible order.
+    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]);
+
+    /// Whether the frame has to resolve and pack skin and morph pose state
+    /// before this family's records are written.
+    ///
+    /// Only a family whose records carry pose offsets -- the built-in unlit
+    /// family, through [MeshInstance::joints_base] and
+    /// [MeshInstance::morph_base] -- needs it. The source packs nothing for a
+    /// family that says no.
+    fn needs_poses(&self) -> bool {
+        false
+    }
+}
+
+/// A family that binds no per-instance stream.
+impl InstanceData for () {
+    fn stream(&self) -> InstanceStreamDesc {
+        InstanceStreamDesc {
+            slot: 0,
+            array_stride: 0,
+        }
+    }
+
+    fn write(&mut self, _context: &InstanceContext<'_>, _out: &mut [u8]) {}
+}
+
+/// The built-in unlit family's instance record: the resolved [MeshInstance].
+///
+/// It is an ordinary [InstanceData] implementation, with no more privilege than
+/// a caller's: the unlit family reads its per-instance transform, tint, cutoff
+/// and pose offsets from the same stream mechanism any family uses.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UnlitInstance;
+
+impl InstanceData for UnlitInstance {
+    fn stream(&self) -> InstanceStreamDesc {
+        InstanceStreamDesc {
+            slot: INSTANCE_SLOT,
+            array_stride: size_of::<MeshInstance>() as u32,
+        }
+    }
+
+    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]) {
+        out.copy_from_slice(context.instance.as_bytes());
+    }
+
+    fn needs_poses(&self) -> bool {
+        true
+    }
 }
 
 /// A concrete pipeline's position in a source's own pipeline list.

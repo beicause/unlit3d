@@ -374,7 +374,8 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
         let device = source.device(world);
         let queue = source.queue(world);
         let key = CustomPipelineKey::new(custom_pipeline(&device));
-        source.register_family::<CustomPipelineKey, _>(world, NoBindingFactory);
+        // This family reads no per-instance state, so it passes the unit type.
+        source.register_family::<CustomPipelineKey, _, _>(world, NoBindingFactory, ());
         let pipeline = GpuRenderPipeline::new(key);
 
         // Upload the triangle as one interleaved vertex buffer in slot 0.
@@ -471,7 +472,7 @@ async fn one_pipeline_draws_many_meshes() {
         // per-mesh bind group the mesh was allocated with.
         let desc = tinted_pipeline(&device, &layout);
         let key = CustomPipelineKey::new(desc);
-        source.register_family::<CustomPipelineKey, _>(world, NoBindingFactory);
+        source.register_family::<CustomPipelineKey, _, _>(world, NoBindingFactory, ());
         let pipeline = GpuRenderPipeline::new(key);
 
         // The two meshes upload identical geometry and differ only in the

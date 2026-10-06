@@ -39,8 +39,9 @@ pub mod prelude {
         mesh::{JointMatrix, MeshDesc, MorphDeltas, UnlitMeshDesc, VertexBufferDesc},
         mesh_source::{MeshSource, UnlitPipelineKey},
         pipeline::{
-            FamilyContext, GlobalResources, Rebuild, RegisteredRenderPipeline,
-            RenderPipelineFactory, RenderPipelineKey,
+            FamilyContext, GlobalResources, InstanceContext, InstanceData, InstanceStreamDesc,
+            Rebuild, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
+            UnlitInstance,
         },
         renderer::Renderer,
         source::{

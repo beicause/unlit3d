@@ -23,14 +23,12 @@ use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{
-    ChannelEncoding, JointMatrix, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
+    ChannelEncoding, JointMatrix, MeshMetadata, PositionStreamChannels, UvColorFlags,
     compress_weights, index_fits_u16,
 };
 use unlit_wgpu::pipeline::{
-    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, CAMERA_BINDING, FRAME_BINDING,
-    INSTANCE_SLOT, JOINTS_BINDING, MESH_METADATA_BINDING, MORPH_DELTAS_BINDING,
-    MORPH_WEIGHTS_BINDING, POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitVariant,
-    UnlitVertexChannels, supports_storage_buffers,
+    BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GlobalBindings, POSITION_SLOT,
+    UV_COLOR_SLOT, UnlitOptions, UnlitVariant, UnlitVertexChannels, supports_storage_buffers,
 };
 use unlit_wgpu::resources::{
     Resource, ResourceGraph, ResourceId, TextureExt, TextureView, Virtual,
@@ -53,11 +51,12 @@ use crate::components::{
 use crate::culling::VisibleMesh;
 use crate::mesh::{MeshDesc, UnlitMeshDesc};
 use crate::pipeline::{
-    DrawContext, FamilyContext, GlobalResources, Rebuild, RegisteredGlobal,
-    RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
+    DrawContext, FamilyContext, GlobalResources, InstanceContext, InstanceData, Rebuild,
+    RegisteredGlobal, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId,
+    RenderPipelineKey, UnlitInstance,
 };
 use crate::scene::{
-    AnyFamily, DrawHandlesKey, EntryHandles, Family, RenderPipelineHandles, SceneFrame,
+    AnyFamily, DrawHandlesKey, EntryHandles, Family, FamilyId, RenderPipelineHandles, SceneFrame,
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target, frame_viewport};
@@ -166,85 +165,6 @@ impl IndexOffset {
 /// keeps every buffer non-empty.
 fn grown_capacity(current: u32, needed: u32) -> u32 {
     needed.max(current + current / 2).max(1)
-}
-
-/// Build the unlit shader's global bind group from the source's buffers.
-///
-/// A free function rather than a method so the rebuild recipe the pipeline is
-/// registered with can capture it without borrowing the source.
-///
-/// The buffers are read out of `graph` by id rather than captured directly:
-/// the source replaces its camera, globals and pose arrays as the frame grows,
-/// and reading the current handle is what lets one recipe serve every
-/// replacement without the source having to hand out a new one.
-fn create_unlit_global_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    graph: &ResourceGraph,
-    resources: GlobalResources,
-    needs_metadata: bool,
-    needs_joints: bool,
-    needs_morphs: bool,
-) -> wgpu::BindGroup {
-    let camera = graph.get(&resources.camera).expect("camera buffer exists");
-    let globals = graph
-        .get(&resources.globals)
-        .expect("globals buffer exists");
-
-    // An inline `ArrayVec` rather than a `Vec`: this runs on the frame path
-    // whenever a global buffer is replaced, and the optional entries depend on
-    // the variant, so the group is assembled rather than truncated.
-    let mut entries = ArrayVec::<wgpu::BindGroupEntry<'_>, 6>::new();
-    entries.push(wgpu::BindGroupEntry {
-        binding: CAMERA_BINDING,
-        resource: camera.as_entire_binding(),
-    });
-    entries.push(wgpu::BindGroupEntry {
-        binding: FRAME_BINDING,
-        resource: globals.as_entire_binding(),
-    });
-    if needs_metadata {
-        entries.push(wgpu::BindGroupEntry {
-            binding: MESH_METADATA_BINDING,
-            resource: graph
-                .get(&resources.metadata)
-                .expect("metadata array exists")
-                .binding_resource(),
-        });
-    }
-    // The pose arrays are the frame's, not a mesh's: binding them here rather
-    // than in the mesh group is what lets two instances of one mesh deform
-    // differently.
-    if needs_joints {
-        entries.push(wgpu::BindGroupEntry {
-            binding: JOINTS_BINDING,
-            resource: graph
-                .get(&resources.joints)
-                .expect("joints array exists")
-                .binding_resource(),
-        });
-    }
-    if needs_morphs {
-        entries.push(wgpu::BindGroupEntry {
-            binding: MORPH_WEIGHTS_BINDING,
-            resource: graph
-                .get(&resources.morph_weights)
-                .expect("morph weights array exists")
-                .binding_resource(),
-        });
-        entries.push(wgpu::BindGroupEntry {
-            binding: MORPH_DELTAS_BINDING,
-            resource: graph
-                .get(&resources.morph_deltas)
-                .expect("morph deltas array exists")
-                .binding_resource(),
-        });
-    }
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("unlit3d::global"),
-        layout,
-        entries: &entries,
-    })
 }
 
 /// Register one concrete pipeline and return its index in `pipelines`.
@@ -379,28 +299,18 @@ impl RenderPipelineFactory<UnlitVariant> for UnlitFactory {
         // Only the global group is registered: the material group is the
         // material own, built by `allocate_unlit_material`, and the built-in
         // variants bind nothing at the mesh group.
-        let layouts = value.descriptor().bind_group_layouts(context.device);
-        let layout = layouts.global;
+        //
+        // The layout and the recipe are the source's own general facilities,
+        // the same ones a caller's factory calls: the unlit family has no
+        // private path to the frame's shared buffers.
         let variant = value.descriptor();
-        let needs_metadata = variant.needs_metadata();
-        let needs_joints = variant.needs_joints();
-        let needs_morphs = variant.needs_morphs();
-        let device = context.device.clone();
-        let resources = context.resources.clone();
-
-        // Only the recipe is handed back: the group itself is built when the
-        // pipeline is registered, and rebuilt from the graph afterwards.
-        let rebuild = Rebuild::new(move |graph| {
-            Resource::BindGroup(create_unlit_global_group(
-                &device,
-                &layout,
-                graph,
-                resources.clone(),
-                needs_metadata,
-                needs_joints,
-                needs_morphs,
-            ))
-        });
+        let bindings = GlobalBindings {
+            metadata: variant.needs_metadata(),
+            joints: variant.needs_joints(),
+            morphs: variant.needs_morphs(),
+        };
+        let layout = context.resources.layout(context.device, bindings);
+        let rebuild = context.resources.rebuild(context.device, layout, bindings);
         RegisteredRenderPipeline {
             pipeline: value.pipeline.clone(),
             global: Some(rebuild),
@@ -481,10 +391,6 @@ pub struct MeshSource {
     /// always lands in the same encoder as the draws that read it.
     metadata_dirty: bool,
 
-    /// A reused instance-data buffer, grown as needed.
-    instance_buffer: Option<wgpu::Buffer>,
-    instance_capacity: u32,
-
     /// The frame's joint matrices, packed in visible-instance order.
     ///
     /// Reused across frames rather than reallocated: the packed data is exactly
@@ -498,7 +404,6 @@ pub struct MeshSource {
     /// submission.
     camera_staging: StagingBuffer,
     globals_staging: StagingBuffer,
-    instance_staging: StagingBuffer,
 
     /// The pool every mesh uploaded through
     /// [`MeshSource::allocate_unlit_mesh`] keeps its indices in, as one large
@@ -528,21 +433,26 @@ pub struct MeshSource {
     /// resolved the draw's surface and mesh layout.
     pipelines: Vec<RegisteredPipeline>,
 
-    /// Every pipeline family registered with this source, keyed by the
-    /// [TypeId] of its key type.
+    /// Every pipeline family registered with this source, in registration
+    /// order. A family's index in this list is the [FamilyId] its visible
+    /// entries carry.
     ///
     /// Registration compiles nothing: a family appends to
     /// [`MeshSource::pipelines`] lazily, the first time one of its variant
     /// keys is resolved.
-    families: TypeIdHashMap<Box<dyn AnyFamily>>,
+    families: Vec<Box<dyn AnyFamily>>,
+    /// The [FamilyId] of each registered family, keyed by the [TypeId] of its
+    /// key type.
+    family_ids: TypeIdHashMap<FamilyId>,
 
     // -- cached per-frame allocations ------------------------------------------
     /// Reused Vec of the meshes that passed this frame's frustum culling.
     visible_meshes_cache: Vec<VisibleMesh>,
     /// Reused Vec for visible-entity collection and per-frame sorting.
     visible_cache: Vec<VisibleEntry>,
-    /// Reused Vec for packed instance data.
-    packed_instances_cache: Vec<MeshInstance>,
+    /// Reused Vec of the instance-stream binding of each registered family,
+    /// indexed by [FamilyId].
+    family_instance_cache: Vec<Option<(u32, wgpu::Buffer)>>,
     /// Reused Vec for cloned pipeline handles while the scene is built.
     pipeline_handle_cache: Vec<RenderPipelineHandles>,
     /// The frame's interned draw handles, one per distinct
@@ -696,22 +606,20 @@ impl MeshSource {
             metadata: Vec::new(),
             free_metadata: Vec::new(),
             metadata_dirty: false,
-            instance_buffer: None,
-            instance_capacity: 0,
             packed_joints: Vec::new(),
             packed_morph_weights: Vec::new(),
             camera_staging: StagingBuffer::new(),
             globals_staging: StagingBuffer::new(),
-            instance_staging: StagingBuffer::new(),
             index_pool,
             index_pool_id,
             vertex_pool,
             vertex_pool_ids: HashMap::new(),
             pipelines: Vec::new(),
-            families: TypeIdHashMap::default(),
+            families: Vec::new(),
+            family_ids: TypeIdHashMap::default(),
             visible_meshes_cache: Vec::new(),
             visible_cache: Vec::new(),
-            packed_instances_cache: Vec::new(),
+            family_instance_cache: Vec::new(),
             pipeline_handle_cache: Vec::new(),
             entry_handle_cache: HashMap::new(),
             scene: Scene::new(),
@@ -807,27 +715,33 @@ impl MeshSource {
     ///
     /// [`MeshSource::register_unlit_family`] is the built-in unlit family; a
     /// caller registers their own by supplying the key whose
-    /// [RenderPipelineKey::variant] resolves a draw into a variant, and the
-    /// [RenderPipelineFactory] that describes the compiled result.
+    /// [RenderPipelineKey::variant] resolves a draw into a variant, the
+    /// [RenderPipelineFactory] that describes the compiled result, and the
+    /// [InstanceData] that writes its per-instance records. A family with no
+    /// per-instance state passes `()`.
     ///
     /// # Panics
     ///
     /// If a family is already registered for `K`.
-    pub fn register_family<K, F>(&mut self, world: &World, factory: F)
+    pub fn register_family<K, F, I>(&mut self, world: &World, factory: F, instances: I)
     where
         K: RenderPipelineKey + 'static,
         F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>
             + 'static,
+        I: InstanceData,
     {
         let key = TypeId::of::<K>();
         assert!(
-            !self.families.contains_key(&key),
+            !self.family_ids.contains_key(&key),
             "a pipeline family is already registered for this key type"
         );
-        self.families.insert(
-            key,
-            Box::new(Family::<K, F>::new(&self.device(world), factory)),
-        );
+        let id = FamilyId::new(self.families.len() as u32);
+        self.families.push(Box::new(Family::<K, F, I>::new(
+            &self.device(world),
+            factory,
+            instances,
+        )));
+        self.family_ids.insert(key, id);
     }
 
     /// Register the built-in unlit shader as a family.
@@ -847,7 +761,7 @@ impl MeshSource {
     ///
     /// If the unlit family is already registered.
     pub fn register_unlit_family(&mut self, world: &World) {
-        self.register_family::<UnlitPipelineKey, _>(world, UnlitFactory);
+        self.register_family::<UnlitPipelineKey, _, _>(world, UnlitFactory, UnlitInstance);
     }
 
     // -- mesh allocation -------------------------------------------------------
@@ -1229,7 +1143,6 @@ impl MeshSource {
         };
         let position_layout = layout_of(POSITION_SLOT);
         let uv_color_layout = layout_of(UV_COLOR_SLOT);
-        let instance_layout = layout_of(INSTANCE_SLOT);
 
         // The mesh's streams are the vertex pool's: one element allocation
         // covers every stream of the mesh at the same element index, which is
@@ -1363,12 +1276,10 @@ impl MeshSource {
         // here and can be patched in place.
         let parts = Rc::get_mut(&mut mesh.parts).expect("a fresh mesh handle is unshared");
 
-        // The source binds the per-instance buffer at [INSTANCE_SLOT] for
-        // every draw, so the mesh's layout declares that slot even though the
-        // buffer itself is not uploaded here. Without it the draw's key would
-        // imply no instance flags and the pipeline would ignore the instance
-        // transform.
-        let mut layouts = vec![(INSTANCE_SLOT, instance_layout)];
+        // The mesh's layout is only the vertex streams it draws from: the
+        // per-instance stream is the family's own and is bound by the source
+        // at draw time, so it is not part of the mesh's layout at all.
+        let mut layouts = Vec::new();
 
         // The mesh's slices of the pools it shares: the draw names its ranges
         // by `first` and `base_vertex`, and the allocations are handed back on
@@ -1595,7 +1506,8 @@ impl MeshSource {
     /// however many of them are visible — or deform independently.
     ///
     /// The packed offsets go into each instance's
-    /// [`MeshInstance::joints_base`] and [`MeshInstance::morph_base`], which
+    /// [`unlit_wgpu::mesh::MeshInstance::joints_base`] and
+    /// [`unlit_wgpu::mesh::MeshInstance::morph_base`], which
     /// the shader reads to find its own joints and weights.
     ///
     /// # Panics
@@ -1605,17 +1517,25 @@ impl MeshSource {
     /// the mesh's target count.
     fn pack_poses(&mut self, world: &World) {
         // Split the borrows: the packed arrays grow while the visible entries
-        // are written.
+        // are written, and the family of an entry decides whether it is packed
+        // at all.
         let Self {
             visible_cache,
             packed_joints,
             packed_morph_weights,
+            families,
             ..
         } = self;
         packed_joints.clear();
         packed_morph_weights.clear();
 
         for entry in visible_cache.iter_mut() {
+            // Only a family that reads the packed arrays pays for packing
+            // them. A caller's family may carry no skinning at all, and its
+            // entries must be left untouched.
+            if !families[entry.family.as_usize()].needs_poses() {
+                continue;
+            }
             let entity = entry.mesh.entity;
 
             let joints_base = if entry.mesh.skinned {
@@ -1812,24 +1732,35 @@ impl MeshSource {
         );
     }
 
-    /// Pack and upload the frame's instance data, staging the bytes through
-    /// the frame's encoder.
-    fn upload_instances(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
-        self.packed_instances_cache.clear();
-        self.packed_instances_cache
-            .extend(self.visible_cache.iter().map(|entry| entry.mesh.instance));
-        let buffer = self
-            .instance_buffer
-            .as_ref()
-            .expect("instance buffer exists")
-            .clone();
-        self.instance_staging.write(
-            &self.device(world),
-            encoder,
-            &buffer,
-            0,
-            self.packed_instances_cache.as_bytes(),
-        );
+    /// Pack and upload every family's per-instance data for this frame.
+    ///
+    /// Each family owns one instance stream. The records are written in
+    /// visible order, so the entry an instance index names is the entry whose
+    /// draw range covers that index.
+    fn pack_family_instances(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+        let device = self.device(world);
+        // Split the borrows: each entry is written while its family's stream
+        // grows.
+        let Self {
+            families,
+            visible_cache,
+            ..
+        } = self;
+        for family in families.iter_mut() {
+            family.begin_instances();
+        }
+        for entry in visible_cache.iter_mut() {
+            let mesh = &entry.mesh;
+            let context = InstanceContext {
+                world,
+                entity: mesh.entity,
+                instance: &mesh.instance,
+            };
+            entry.instance_index = families[entry.family.as_usize()].push_instance(&context);
+        }
+        for family in families.iter_mut() {
+            family.upload_instances(&device, encoder);
+        }
     }
 
     /// Grow the metadata buffer if the array outgrew it, and upload the array
@@ -1924,22 +1855,6 @@ impl MeshSource {
                 .replace(id, pool.buffer().clone())
                 .expect("a pool node exists");
         }
-    }
-
-    /// Grow the per-instance buffer geometrically when needed.
-    fn ensure_instance_buffer(&mut self, world: &World, count: u32) {
-        if count <= self.instance_capacity {
-            return;
-        }
-        let new_cap = grown_capacity(self.instance_capacity, count);
-        let buf = self.device(world).create_buffer(&wgpu::BufferDescriptor {
-            label: Some("unlit3d::instance"),
-            size: (new_cap as u64) * size_of::<MeshInstance>() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        self.instance_buffer = Some(buf);
-        self.instance_capacity = new_cap;
     }
 
     /// Collect entities that pass frustum culling, then sort them for drawing.
@@ -2071,11 +1986,12 @@ impl MeshSource {
             }));
         }
 
-        let instance_buf = self
-            .instance_buffer
-            .as_ref()
-            .expect("instance buffer exists")
-            .clone();
+        // One instance-stream binding per family, indexed the same way
+        // [`MeshSource::families`] is. A family with no instance stream —
+        // stride zero — carries `None`, and its draws bind no instance slot.
+        let mut family_instances = std::mem::take(&mut self.family_instance_cache);
+        family_instances.clear();
+        family_instances.extend(self.families.iter().map(|family| family.instance_binding()));
 
         // The scene keeps its allocation across frames: `clear` drops the
         // draws but not the buffer behind them.
@@ -2086,11 +2002,12 @@ impl MeshSource {
             &self.visible_cache,
             &pipeline_handles,
             &handles,
-            &instance_buf,
+            &family_instances,
         );
 
         self.pipeline_handle_cache = pipeline_handles;
         self.entry_handle_cache = handles;
+        self.family_instance_cache = family_instances;
     }
 }
 
@@ -2192,13 +2109,11 @@ impl FrameSource for MeshSource {
             self.maintain(world);
             return;
         }
-        let instance_count = self.visible_cache.len() as u32;
-
         // Resolve and pack every visible instance's pose before the instance
-        // data is written: the packed offsets are part of each instance record,
-        // so the instance stream cannot be uploaded until they are known. Each
-        // upload rebuilds the global groups itself if it had to replace its
-        // buffer.
+        // data is written: the packed offsets are part of each built-in
+        // instance record, so the instance stream cannot be uploaded until
+        // they are known. Each upload rebuilds the global groups itself if it
+        // had to replace its buffer.
         {
             profiling::scope!("mesh_source.poses.pack");
             self.pack_poses(world);
@@ -2213,11 +2128,10 @@ impl FrameSource for MeshSource {
             self.upload_morph_deltas(world, encoder);
         }
 
-        // Pack instance data into the reused scratch buffer and upload it.
+        // Pack each family's instance data into its own stream and upload it.
         {
             profiling::scope!("mesh_source.instances.upload");
-            self.ensure_instance_buffer(world, instance_count);
-            self.upload_instances(world, encoder);
+            self.pack_family_instances(world, encoder);
         }
 
         // Settle the graph for this frame: collect what nothing holds any more
@@ -2252,7 +2166,7 @@ mod tests {
     use crate::scene::DrawShape;
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use unlit_ecs::Entity;
-    use unlit_wgpu::mesh::UvColorFlags;
+    use unlit_wgpu::mesh::{MeshInstance, UvColorFlags};
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
     use unlit_wgpu::scene::DrawRange;
 
@@ -3147,13 +3061,9 @@ mod tests {
 
         // The nodes still name the streams, and each holds the buffer the pool
         // currently does for its layout: a mesh needs no update after a grow.
-        // Only the pool-backed slots count: the per-instance slot is bound by
-        // the source from its own buffer, not the pool's.
-        let stream_slots = last
-            .vertex_layout
-            .iter()
-            .filter(|(slot, _)| *slot != INSTANCE_SLOT);
-        for (node, (_, layout)) in nodes.iter().zip(stream_slots) {
+        // Every slot of the mesh's layout is pool-backed: the per-instance
+        // stream is the family's own and is not part of the layout at all.
+        for (node, (_, layout)) in nodes.iter().zip(last.vertex_layout.iter()) {
             let pool_buffer = h
                 .source
                 .vertex_pool

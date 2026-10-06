@@ -11,33 +11,56 @@ use core::cmp::Ordering;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
-use unlit_ecs::{Query, TypeIdHashMap, World};
+use unlit_ecs::{Query, World};
+use unlit_wgpu::instance_stream::InstanceBuffer;
 use unlit_wgpu::resources::{ResourceId, Virtual};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
 
-use unlit_wgpu::pipeline::{GLOBAL_GROUP, INSTANCE_SLOT, MATERIAL_GROUP, MESH_GROUP};
+use unlit_wgpu::pipeline::{GLOBAL_GROUP, MATERIAL_GROUP, MESH_GROUP};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, MAX_VERTEX_BUFFERS, Scene, VertexBufferBinding};
 
 use crate::bounds::FrustumPlanes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, ZSortedDrawing};
 use crate::culling::{VisibleMesh, collect_visible};
 use crate::pipeline::{
-    DrawContext, FamilyContext, GlobalResources, RegisteredRenderPipeline, RenderPipelineFactory,
-    RenderPipelineId, RenderPipelineKey,
+    DrawContext, FamilyContext, GlobalResources, InstanceContext, InstanceData,
+    RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
 };
 
-/// A family: a specialization cache plus the factory that turns each variant
-/// into a [RegisteredRenderPipeline].
+/// A registered family's position in the source's family list.
+///
+/// The source stores its families in registration order and indexes them by
+/// this value, so an entry can name the family that drew it without carrying a
+/// borrow or a reference-counted handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FamilyId(u32);
+
+impl FamilyId {
+    /// The id of the family registered at `index`.
+    pub(crate) fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// The id as a `usize`, for indexing the source's family list.
+    pub(crate) fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// A family: a specialization cache, the factory that turns each variant into
+/// a [RegisteredRenderPipeline], and the per-instance stream its draws read.
 ///
 /// The core variant index a draw resolves to is also its index into
 /// registered, so the two lists grow in lockstep. The key type parameter is
 /// the [RenderPipelineKey] the family is registered for and the component its
 /// queries fetch; the factory's descriptor type is the one the key's variant
-/// resolves to.
-pub(crate) struct Family<K, F>
+/// resolves to. The instance-data parameter is the family's own per-instance
+/// record layout, written once per visible instance each frame.
+pub(crate) struct Family<K, F, I>
 where
     K: RenderPipelineKey,
     F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
+    I: InstanceData,
 {
     /// The variant cache, which owns the device.
     variants: Variants<wgpu::RenderPipeline, K::Variant>,
@@ -45,19 +68,30 @@ where
     factory: F,
     /// registered\[v\] is the wgpu render pipeline for core variant v.
     registered: Vec<RenderPipelineId>,
+    /// The family's per-instance record layout and the writer that fills it.
+    instances: I,
+    /// The reused buffer one frame's records are uploaded into.
+    stream: InstanceBuffer,
+    /// The frame's records, packed in visible order. Reused between frames.
+    records: Vec<u8>,
 }
 
-impl<K, F> Family<K, F>
+impl<K, F, I> Family<K, F, I>
 where
     K: RenderPipelineKey,
     F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
+    I: InstanceData,
 {
-    /// A family whose variants are described by `factory`.
-    pub(crate) fn new(device: &wgpu::Device, factory: F) -> Self {
+    /// A family whose variants are described by `factory` and whose instances
+    /// are written by `instances`.
+    pub(crate) fn new(device: &wgpu::Device, factory: F, instances: I) -> Self {
         Self {
             variants: Variants::new(device),
             factory,
             registered: Vec::new(),
+            stream: InstanceBuffer::new(instances.stream()),
+            instances,
+            records: Vec::new(),
         }
     }
 }
@@ -73,10 +107,16 @@ where
 pub(crate) struct VisibleEntry {
     /// The culled mesh this draw came from, with its entity and placement.
     pub(crate) mesh: VisibleMesh,
+    /// The family that resolved this entry, which owns the instance stream it
+    /// reads.
+    pub(crate) family: FamilyId,
     /// The concrete pipeline this entity resolves to, an index into the
     /// source's pipeline list. Resolved before the sort and never changed by
     /// it.
     pub(crate) pipeline_id: RenderPipelineId,
+    /// This entry's record within its family's instance stream, filled in when
+    /// the stream is packed.
+    pub(crate) instance_index: u32,
     /// Groups opaque draws by material, so neighbours share a bind group.
     /// Ignored for z-sorted entries.
     pub(crate) sort_key: u64,
@@ -122,6 +162,7 @@ where
     K: RenderPipelineKey,
     F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
 {
+    family: FamilyId,
     frame: &'a FamilyFrame<'f>,
     variants: &'a mut Variants<wgpu::RenderPipeline, K::Variant>,
     factory: &'a F,
@@ -267,7 +308,11 @@ where
         };
         self.visible.push(VisibleEntry {
             mesh,
+            family: self.family,
             pipeline_id,
+            // Filled in when the family packs its instance stream; no record
+            // exists until then.
+            instance_index: 0,
             sort_key,
             depth,
             z_sorted,
@@ -282,24 +327,51 @@ pub(crate) trait AnyFamily {
     /// ones to `visible`.
     fn collect_and_resolve(
         &mut self,
+        family: FamilyId,
         frame: &FamilyFrame<'_>,
         visible: &mut Vec<VisibleEntry>,
         register: &mut dyn FnMut(RegisteredRenderPipeline) -> RenderPipelineId,
     );
+
+    /// Whether the frame has to resolve and pack skin and morph pose state for
+    /// this family's instances before they are written.
+    ///
+    /// Only a family whose records carry pose offsets needs it; the source
+    /// packs nothing for a family that says no, so a custom family never pays
+    /// for the built-in unlit family's pose arrays.
+    fn needs_poses(&self) -> bool;
+
+    /// Drop the previous frame's records, ready to pack this frame's.
+    fn begin_instances(&mut self);
+
+    /// Append one record for `context` and return its index in the stream.
+    ///
+    /// A family with no instance stream returns 0 and writes nothing.
+    fn push_instance(&mut self, context: &InstanceContext<'_>) -> u32;
+
+    /// Upload the frame's packed records through `encoder`.
+    fn upload_instances(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder);
+
+    /// The slot and buffer this family's stream binds, or `None` when it has
+    /// no stream or nothing to upload.
+    fn instance_binding(&self) -> Option<(u32, wgpu::Buffer)>;
 }
 
-impl<K, F> AnyFamily for Family<K, F>
+impl<K, F, I> AnyFamily for Family<K, F, I>
 where
     K: RenderPipelineKey,
     F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>,
+    I: InstanceData,
 {
     fn collect_and_resolve(
         &mut self,
+        family: FamilyId,
         frame: &FamilyFrame<'_>,
         visible: &mut Vec<VisibleEntry>,
         register: &mut dyn FnMut(RegisteredRenderPipeline) -> RenderPipelineId,
     ) {
         Resolver::<K, F> {
+            family,
             frame,
             variants: &mut self.variants,
             factory: &self.factory,
@@ -309,12 +381,48 @@ where
         }
         .collect();
     }
+
+    fn needs_poses(&self) -> bool {
+        self.instances.needs_poses()
+    }
+
+    fn begin_instances(&mut self) {
+        self.records.clear();
+    }
+
+    fn push_instance(&mut self, context: &InstanceContext<'_>) -> u32 {
+        let stride = self.instances.stream().array_stride as usize;
+        if stride == 0 {
+            return 0;
+        }
+        // Records are appended one stride at a time, so the index of the one
+        // about to be written is how many strides precede it.
+        let index = (self.records.len() / stride) as u32;
+        let start = self.records.len();
+        self.records.resize(start + stride, 0);
+        self.instances.write(context, &mut self.records[start..]);
+        index
+    }
+
+    fn upload_instances(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
+        self.stream.upload(device, encoder, &self.records);
+    }
+
+    fn instance_binding(&self) -> Option<(u32, wgpu::Buffer)> {
+        let desc = self.instances.stream();
+        if desc.array_stride == 0 {
+            return None;
+        }
+        self.stream
+            .buffer()
+            .map(|buffer| (desc.slot, buffer.clone()))
+    }
 }
 
 /// The caches and families one frame's draw list is assembled into.
 pub(crate) struct SceneFrame<'a> {
-    /// Every registered family, keyed by its key type.
-    pub(crate) families: &'a mut TypeIdHashMap<Box<dyn AnyFamily>>,
+    /// Every registered family, in registration order.
+    pub(crate) families: &'a mut [Box<dyn AnyFamily>],
     /// Reused buffer the frame's culled meshes land in.
     pub(crate) meshes: &'a mut Vec<VisibleMesh>,
     /// Reused buffer the sorted draw entries land in.
@@ -367,8 +475,8 @@ pub(crate) fn collect_and_sort_visible(
     };
     {
         profiling::scope!("scene.resolve");
-        for family in families.values_mut() {
-            family.collect_and_resolve(&frame, visible, register);
+        for (index, family) in families.iter_mut().enumerate() {
+            family.collect_and_resolve(FamilyId::new(index as u32), &frame, visible, register);
         }
     }
 
@@ -413,7 +521,7 @@ pub(crate) struct DrawHandlesKey {
     pub(crate) material: Option<ResourceId<wgpu::BindGroup>>,
 }
 
-/// A registered pipeline's GPU handles, indexed by [`RenderPipelineId`].
+/// A registered pipeline's GPU handles, indexed by [RenderPipelineId].
 pub(crate) struct RenderPipelineHandles {
     /// The compiled pipeline.
     pub(crate) pipeline: wgpu::RenderPipeline,
@@ -424,10 +532,10 @@ pub(crate) struct RenderPipelineHandles {
 /// The shape of one draw: what is drawn and from which source.
 ///
 /// Resolved once per entry alongside its handles, so assembling the draws
-/// names no [`GpuMesh`] and therefore needs no access to the world.
+/// names no [GpuMesh] and therefore needs no access to the world.
 ///
 /// Comparable so that two entries drawing the same geometry are recognized as
-/// one instanced draw; see [`assemble_scene`].
+/// one instanced draw; see [assemble_scene].
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DrawShape {
     /// Whether the draw is indexed; when it is not, `count` is a vertex count.
@@ -445,7 +553,7 @@ pub(crate) struct DrawShape {
 /// The resource-graph handles one interned key resolves to.
 ///
 /// These are the concrete wgpu handles a draw binds, cloned out of the graph
-/// once per distinct [`DrawHandlesKey`] per frame rather than once per entry.
+/// once per distinct [DrawHandlesKey] per frame rather than once per entry.
 pub(crate) struct EntryHandles {
     /// The mesh's bind group, if it has one.
     pub(crate) mesh_bg: Option<wgpu::BindGroup>,
@@ -479,7 +587,7 @@ fn same_draw(a: &VisibleEntry, b: &VisibleEntry) -> bool {
 /// draw's state.
 ///
 /// The entries have already been culled, resolved and sorted, and each names
-/// its resources by [`DrawHandlesKey`]; `handles` maps a key to the handles
+/// its resources by [DrawHandlesKey]; `handles` maps a key to the handles
 /// resolved for it, one entry per distinct key. Assembling is therefore a
 /// linear pass over slices that names nothing the world or the graph owns, and
 /// it resolves no handle of its own.
@@ -490,22 +598,24 @@ fn same_draw(a: &VisibleEntry, b: &VisibleEntry) -> bool {
 /// into a single instanced draw: recording costs a command and a state re-bind,
 /// so an entity that shares a mesh with the one before it is nearly free.
 ///
-/// The instance range is what keeps a merged draw correct. Instance-stepped
-/// attributes are fetched at the instance's ordinal — `firstInstance` plus its
-/// index within the draw — and the instance buffer is packed in `visible`
-/// order, so instances `a..b` read exactly the records of entries `a..b`, the
-/// same ones the separate draws would have read.
+/// The instance range is what keeps a merged draw correct. Each entry names its
+/// family's stream and its own record in it, and the records were packed in
+/// `visible` order, so the entries of a run read consecutive records of one
+/// stream. Instance-stepped attributes are fetched at the instance's ordinal —
+/// `firstInstance` plus its index within the draw — so the run reads exactly
+/// the records its entries wrote.
 ///
 /// # Panics
 ///
 /// If an entry's key has no handles in `handles`: every key the visible set
-/// carries is interned before this is called.
+/// carries is interned before this is called. If an entry names a family whose
+/// stream was not collected into `instances`.
 pub(crate) fn assemble_scene(
     scene: &mut Scene,
     visible: &[VisibleEntry],
     pipelines: &[RenderPipelineHandles],
     handles: &HashMap<DrawHandlesKey, EntryHandles>,
-    instance_buffer: &wgpu::Buffer,
+    instances: &[Option<(u32, wgpu::Buffer)>],
 ) {
     let mut start = 0;
     while start < visible.len() {
@@ -523,14 +633,20 @@ pub(crate) fn assemble_scene(
             .get(&entry.handles_key)
             .expect("every visible entry's handles were interned");
         let pipeline = &pipelines[entry.pipeline_id.as_usize()];
+        let instance = &instances[entry.family.as_usize()];
+        // The run's records are consecutive within its family's stream: the
+        // family appended them in visible order and the run is a slice of that
+        // order.
+        let base = entry.instance_index;
+        let count = (end - start) as u32;
 
         let first = shape.first;
         let range = if shape.indexed {
             DrawRange::indexed(first..first + shape.count)
                 .with_base_vertex(shape.base_vertex as i32)
-                .with_instances(start as u32..end as u32)
+                .with_instances(base..base + count)
         } else {
-            DrawRange::vertices(first..first + shape.count).with_instances(start as u32..end as u32)
+            DrawRange::vertices(first..first + shape.count).with_instances(base..base + count)
         };
 
         let mut draw = DrawEntry::new(&pipeline.pipeline, range);
@@ -549,7 +665,12 @@ pub(crate) fn assemble_scene(
         if let Some((buffer, format)) = &handle.index_buffer {
             draw = draw.with_index_buffer(buffer, *format);
         }
-        draw = draw.with_vertex_buffer(INSTANCE_SLOT, instance_buffer);
+        // The family's own instance stream, bound at the slot it declared. A
+        // family with no stream binds nothing, exactly as a caller's pipeline
+        // that declares no instance step mode expects.
+        if let Some((slot, buffer)) = instance {
+            draw = draw.with_vertex_buffer(*slot, buffer);
+        }
 
         scene.push(draw);
         start = end;
