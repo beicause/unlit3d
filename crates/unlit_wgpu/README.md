@@ -59,6 +59,9 @@ checks that combination separately.
   one upload reaches the GPU.
 - [`staging`] — host-visible staging buffers reused across frames instead of a
   fresh `queue.write_buffer` allocation per upload.
+- [`instance_stream`] — a per-instance vertex buffer that grows as needed and
+  uploads its records through the staging pool. A caller's own pipeline uses one
+  per family, so per-instance state needs no privilege from the built-in shader.
 - [`texel_array`] — a flat array of fixed-size elements bound either as one
   storage buffer or, where the device has none, as a texture the shader reads
   with `textureLoad`. Both paths keep the same bytes and the same binding
@@ -78,8 +81,9 @@ checks that combination separately.
   [`Variants`](specialize::Variants) compiles and reuses one
   [`SpecializedPipeline`](specialize::SpecializedPipeline) per variant.
 - [`pipeline`] — the binding slots, bind-group indices and vertex-buffer slots
-  the crate draws with, plus the built-in unlit pipeline under the `unlit`
-  feature.
+  the crate draws with, the `GlobalBindings` description and the global
+  bind-group layout builder every pipeline binds the frame's shared inputs
+  through, plus the built-in unlit pipeline under the `unlit` feature.
 - [`util`] — [`Hashed`](util::Hashed), a value whose hash is computed once up
   front: hashing it writes the stored word instead of walking the value, which
   keeps a per-frame key cheap when its members are large. The hash comes from
@@ -607,7 +611,10 @@ drifting from the blueprint.
 mechanism: `UnlitVariant` is its own blueprint (its `PipelineDescriptor`), and
 `SpecializedUnlitPipeline` is nothing more than the alias
 `SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>`. There is no second
-compilation path laid down for the built-in shader. Registering it with the
+compilation path laid down for the built-in shader, and the frame's shared
+inputs are equally open: `GlobalBindings` and `global_bind_group_layout` build
+the global layout any pipeline can bind, so a caller's own shader reaches the
+camera, globals and pose arrays without reimplementing the built-in layout. Registering it with the
 higher layer's family mechanism is
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md)'s
 business.

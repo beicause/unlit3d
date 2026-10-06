@@ -162,7 +162,9 @@ so a new field belongs on the side that reads it.
 [`MeshSource::register_unlit_family`](mesh_source::MeshSource::register_unlit_family)
 registers the built-in unlit family;
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family)
-registers a caller's own, which is the same route the built-in one takes. Other
+registers a caller's own, which is the same route the built-in one takes — down
+to the per-instance vertex stream the family owns and declares (see
+[The unlit pipeline](#the-unlit-pipeline)). Other
 components: [`Transform`](components::Transform), [`Camera`](components::Camera),
 [`RenderLoadOps`](components::RenderLoadOps),
 [`InstanceColor`](components::InstanceColor) and the
@@ -228,11 +230,13 @@ free.
 <summary>Why merging is always safe for opaque draws, and never for z-sorted ones</summary>
 
 The instance range is what keeps a merged draw correct: instance-stepped
-attributes are fetched at the instance's ordinal, and the instance buffer is
-packed in visible order, so instances `a..b` read exactly the records the
-separate draws would have read. Per-instance data — the transform, base color,
-joint and morph bases, cutoff and metadata index — lives in that stream, so
-merging changes nothing any instance reads.
+attributes are fetched at the instance's ordinal, and each family's instance
+stream is packed in visible order, so instances `a..b` read exactly the records
+the separate draws would have read. Per-instance data — the transform, base
+color, joint and morph bases, cutoff and metadata index for the built-in family —
+lives in that stream, so merging changes nothing any instance reads. A run only
+ever merges entries of one family, because a family owns exactly one stream and
+the pipeline it resolved to belongs to that family alone.
 
 Opaque draws are depth-tested with blending off, so their order is not
 observable and merging them is safe. Z-sorted entries never merge, with each
@@ -247,7 +251,10 @@ record order instead.
 The built-in unlit pipeline is registered as an ordinary family, and the shader
 variant an entity uses contains exactly the channels its mesh has. Nothing about
 it is privileged: a caller's own family is registered through the same
-[`MeshSource::register_family`](mesh_source::MeshSource::register_family) call.
+[`MeshSource::register_family`](mesh_source::MeshSource::register_family) call,
+owns its own per-instance vertex stream and binds the frame's shared inputs
+through the same public builders. See
+[Custom shaders and per-instance data](#custom-shaders-and-per-instance-data).
 
 <details>
 <summary>What the built-in variant supports, and where pose data lives</summary>
@@ -298,6 +305,77 @@ it is privileged: a caller's own family is registered through the same
   rather than a catchable panic.
 
 </details>
+
+## Custom shaders and per-instance data
+
+Nothing in the frame path is reserved for the built-in unlit shader. A caller's
+family registers through the same
+[`MeshSource::register_family`](mesh_source::MeshSource::register_family) call as
+the built-in one and supplies its own pipeline — a hand-written
+[`wgpu::RenderPipeline`] or a WESL module composed against the crate's public
+shader package — plus, if it needs any, its own per-instance vertex data.
+
+### Per-instance vertex data
+
+Per-instance state lives in a vertex stream, not in a bind group, because it
+differs per entity while a bind group is bound per mesh. Every family therefore
+owns one instance stream, described by
+[`InstanceData`](pipeline::InstanceData):
+
+```ignore
+pub trait InstanceData: 'static {
+    fn stream(&self) -> InstanceStreamDesc;
+    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]);
+    fn needs_poses(&self) -> bool { false }
+}
+```
+
+[`stream`](pipeline::InstanceData::stream) declares the vertex-buffer slot and
+the record stride, [`write`](pipeline::InstanceData::write) fills one record from
+the entity's components — it is handed the `World`, the entity and the built-in
+[`MeshInstance`](unlit_wgpu::mesh::MeshInstance) — and
+[`needs_poses`](pipeline::InstanceData::needs_poses) opts the family into pose
+packing, which only a family that reads the joint and morph arrays should do. A
+family that carries no instance state of its own passes `()`, whose stream is
+empty.
+
+The built-in unlit family is just an implementation of this trait
+([`UnlitInstance`](pipeline::UnlitInstance), slot
+[`INSTANCE_SLOT`](unlit_wgpu::pipeline::INSTANCE_SLOT), stride
+[`size_of::<MeshInstance>()`]) — the same interface a caller implements, with
+no private path behind it.
+
+<details>
+<summary>How a family's records reach the draw</summary>
+
+- Each frame the source asks every family to begin a new record list, then walks
+  the visible entries in sorted order and calls
+  [`write`](pipeline::InstanceData::write) for each one, recording the index it
+  landed at on the entry. A family's records therefore end up in visible order,
+  one record per entry, exactly as a merged instanced draw expects.
+- Each family's [`InstanceBuffer`](unlit_wgpu::instance_stream::InstanceBuffer)
+  grows as needed and is uploaded once per frame through the same pooled staging
+  path as the rest of the frame's data.
+- When the scene is assembled, a merged draw binds the slot its family declared
+  and starts its instance range at the first entry's record index; a family with
+  an empty stream binds nothing.
+- Because each family owns its stream, a run of mergeable entries can never span
+  two families: the pipeline identity already separates them, and each family's
+  records are contiguous within its own list.
+
+</details>
+
+### The frame's shared inputs
+
+A custom pipeline that wants the camera, the globals, or the pose and metadata
+arrays binds them through public builders rather than reimplementing the layout:
+[`GlobalResources::layout`](pipeline::GlobalResources::layout) builds the
+[`wgpu::BindGroupLayout`] from a
+[`GlobalBindings`](unlit_wgpu::pipeline::GlobalBindings) description, and
+[`GlobalResources::rebuild`](pipeline::GlobalResources::rebuild) returns the
+[`Rebuild`](pipeline::Rebuild) recipe the renderer registers, so the group is
+rebuilt whenever the arrays behind it change. The built-in unlit family is a
+caller of these same functions.
 
 ## Loading glTF documents
 

@@ -44,6 +44,8 @@
   先写入多个切片，再一次性上传到 GPU。
 - `staging` —— 跨帧复用的 host 可见 staging 缓冲，而不是每次上传都让
   `queue.write_buffer` 新分配一个。
+- `instance_stream` —— 按需增长、经 staging 池上传记录的逐实例顶点缓冲。调用者
+  自己的管线每个家族用一个，因此逐实例状态无需内置着色器给出任何特权。
 - `texel_array` —— 定长元素的平坦数组，既可以绑定为一个 storage buffer，也可以在
   设备没有 storage buffer 时绑定为纹理、由着色器用 `textureLoad` 读取。两条路径
   保持相同的字节与相同的绑定编号，因此调用者只需选一种句柄，无需按设备分支。
@@ -58,8 +60,9 @@
 - `specialize` —— 变体缓存：`PipelineVariant` 构造出
   `PipelineDescriptor`，`Variants` 则为每个变体编译并复用一个
   `SpecializedPipeline`。
-- `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位；在
-  `unlit` feature 下还包含内置 unlit 管线。
+- `pipeline` —— 本 crate 绘制所用的绑定槽位、绑定组索引与顶点缓冲槽位、
+  `GlobalBindings` 描述以及每条管线绑定本帧共享输入所用的全局绑定组布局构造函数；
+  在 `unlit` feature 下还包含内置 unlit 管线。
 - `util` —— `Hashed`，一个预先算好哈希的值：对它求哈希只需写入已存的那个字，
   而不必遍历值本身；当每帧 key 的成员较大时，这让 key 保持廉价。哈希来自
   `foldhash` 的定种子哈希器——hashbrown 自身的映射正是构建在这一族之上的。
@@ -544,7 +547,9 @@ for draw in scene.draws {
 **内置管线没有特权。** 它只是同一套机制的一个普通使用者：`UnlitVariant` 就是它自己的
 蓝图（即其 `PipelineDescriptor`），而 `SpecializedUnlitPipeline` 不过是
 `SpecializedPipeline<wgpu::RenderPipeline, UnlitVariant>` 的别名。不存在第二条专为
-内置着色器铺设的编译路径。把它注册进更高层的家族机制，是
+内置着色器铺设的编译路径；本帧的共享输入同样开放：`GlobalBindings` 与
+`global_bind_group_layout` 构造出任何管线都能绑定的全局布局，调用者自己的着色器因此
+无需重造内置布局即可读到相机、globals 与姿势数组。把它注册进更高层的家族机制，是
 [`unlit3d`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
 的事。
 

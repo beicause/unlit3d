@@ -68,6 +68,11 @@ Not supported: lighting and shadows, and post-processing.
   channels a mesh uses — position, UV, vertex color, per-instance transform and
   color, base-color texture, skinning, morph targets — and is specialized for
   the frame's target.
+- **Custom shaders and per-instance data.** A caller's own family registers
+  through the same call as the built-in one, draws with its own pipeline — a
+  hand-written `wgpu` one or a WESL module composed against the crate's public
+  shader package — and owns its own per-instance vertex stream, described by the
+  same `InstanceData` trait the built-in unlit family implements.
 - **Optional glTF loading.** The `unlit3d` `gltf` feature loads a glTF 2.0
   document into a plain record of the model — no `World`, no GPU state — and
   patches its images, materials and meshes into the resource graph of a world

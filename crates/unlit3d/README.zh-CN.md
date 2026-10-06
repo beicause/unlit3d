@@ -110,8 +110,10 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 字段应放在读取它的那一侧。
 
 `MeshSource::register_unlit_family` 注册内置的 unlit 家族；`MeshSource::register_family`
-注册调用者自己的家族，这与内置家族走的是同一条路。其他组件包括 `Transform`、
-`Camera`、`RenderLoadOps`、`InstanceColor` 以及 `ZSortedDrawing` 标记。
+注册调用者自己的家族，这与内置家族走的是同一条路——连家族自己拥有并声明的逐实例
+顶点流也不例外（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)）。其他组件
+包括 `Transform`、`Camera`、`RenderLoadOps`、`InstanceColor`
+以及 `ZSortedDrawing` 标记。
 
 一帧通过世界中第一个 **active** 的 `Camera` 绘制——`Camera::active` 为 `false` 的实体会被
 渲染器跳过。因此一个世界可以持有多个相机，逐帧切换该标志即可在它们之间切换；没有
@@ -152,10 +154,11 @@ active 相机时，帧会被清空，什么都不绘制。
 <details>
 <summary>为什么合并不透明绘制总是安全的，而 z-sorted 的永远不行</summary>
 
-实例范围是合并后仍正确的原因：逐实例步进属性按实例的序数取，而实例缓冲按可见顺序
-打包，因此 `a..b` 这些实例读到的正是分开绘制时会读到的那些记录。逐实例数据——变换、
-基础色、关节与形变基址、裁剪值、元数据索引——都在这个流里，所以合并不改变任何实例
-读到的数据。
+实例范围是合并后仍正确的原因：逐实例步进属性按实例的序数取，而每个家族的实例流
+都按可见顺序打包，因此 `a..b` 这些实例读到的正是分开绘制时会读到的那些记录。
+逐实例数据——内置家族的变换、基础色、关节与形变基址、裁剪值、元数据索引——都在这个
+流里，所以合并不改变任何实例读到的数据。一段 run 也绝不会跨两个家族：每个家族只有
+一条流，而它解析出的管线只属于该家族。
 
 不透明绘制开启深度测试且不混合，其顺序不可观测，因此合并是安全的。透明（z-sorted）
 条目永远不合并，彼此之间不合并，与任何其他条目也不合并：它们按从后到前的顺序混合，
@@ -166,7 +169,9 @@ active 相机时，帧会被清空，什么都不绘制。
 ## unlit 管线
 
 内置 unlit 管线作为普通家族注册，实体所用的着色器变体只含其网格实际拥有的通道。它
-没有任何特权：调用者自己的家族通过同一个 `MeshSource::register_family` 注册。
+没有任何特权：调用者自己的家族通过同一个 `MeshSource::register_family` 注册，
+拥有自己的逐实例顶点流，并通过同一套公开构造函数绑定本帧共享输入。见
+[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)。
 
 <details>
 <summary>内置变体支持什么，以及姿势数据放在哪里</summary>
@@ -200,6 +205,57 @@ active 相机时，帧会被清空，什么都不绘制。
   运行期错误而非可捕获的 panic。
 
 </details>
+
+## 自定义着色器与逐实例数据
+
+帧路径中没有任何东西是留给内置 unlit 着色器的。调用者的家族通过与内置家族同一个
+`MeshSource::register_family` 调用注册，并提供自己的管线——手写的
+`wgpu::RenderPipeline`，或用本 crate 公开的着色器包组合出的 WESL 模块——需要时还提供
+自己的逐实例顶点数据。
+
+### 逐实例顶点数据
+
+逐实例状态放在顶点流里而不是绑定组里，因为它随实体而异，而绑定组是按 mesh 绑定的。
+因此每个家族都拥有自己的一条实例流，由 `InstanceData` 描述：
+
+```ignore
+pub trait InstanceData: 'static {
+    fn stream(&self) -> InstanceStreamDesc;
+    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]);
+    fn needs_poses(&self) -> bool { false }
+}
+```
+
+`stream` 声明顶点缓冲槽位与记录步长，`write` 从实体的组件填出一条记录——它拿到
+`World`、实体以及内置的 `MeshInstance`——`needs_poses` 则让该家族选择加入
+姿势打包，只有真正读取关节与形变数组的家族才应如此。自身没有逐实例状态的家族传
+`()`，其流为空。
+
+内置 unlit 家族只是这个 trait 的一个实现（`UnlitInstance`，槽位 `INSTANCE_SLOT`，
+步长 `size_of::<MeshInstance>()`）——与调用者实现的接口相同，背后没有任何私有路径。
+
+<details>
+<summary>家族的记录如何到达绘制</summary>
+
+- 每帧 source 先让每个家族开始一份新的记录列表，然后按排序后的可见条目顺序遍历，
+  为每个条目调用 `write`，并把它落在的下标记在条目上。因此一个家族的记录按可见
+  顺序排列，每个条目一条，正符合合并后的实例化 draw 的预期。
+- 每个家族的 `InstanceBuffer` 按需增长，每帧通过与本帧其他数据相同的池化 staging
+  路径上传一次。
+- 组装场景时，合并后的 draw 绑定其家族声明的槽位，实例范围从首个条目的记录下标开始；
+  流为空的家族不绑定任何东西。
+- 由于每个家族拥有自己的流，一段可合并的 run 绝不会横跨两个家族：管线身份已经把它们
+  分开，而每个家族的记录在它自己的列表内连续。
+
+</details>
+
+### 本帧的共享输入
+
+想要相机、globals 或姿势与元数据数组的自定义管线，通过公开构造函数绑定它们，而无需
+自己重造布局：`GlobalResources::layout` 从 `GlobalBindings` 描述构造
+`wgpu::BindGroupLayout`，`GlobalResources::rebuild` 返回渲染器注册的
+`Rebuild` 配方，因此数组变化时该组会被重建。内置的 `UnlitFactory` 调用的正是
+同一批函数。
 
 ## 加载 glTF 文档
 
