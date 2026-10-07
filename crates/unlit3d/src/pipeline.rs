@@ -43,8 +43,9 @@
 //! combination of attributes and a family can specialize on it at draw time.
 
 use arrayvec::ArrayVec;
+use glam::Affine3A;
 use unlit_ecs::{Entity, World};
-use unlit_wgpu::mesh::MeshInstance;
+use unlit_wgpu::mesh::{JointMatrix, MeshInstance};
 use unlit_wgpu::pipeline::{
     CAMERA_BINDING, FRAME_BINDING, GlobalBindings, INSTANCE_SLOT, JOINTS_BINDING,
     MESH_METADATA_BINDING, MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
@@ -55,15 +56,18 @@ use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::texel_array::ArrayHandle;
 use zerocopy::IntoBytes;
 
-use crate::components::{GpuMaterial, GpuMesh};
+use crate::components::{
+    GpuMaterial, GpuMesh, InstanceColor, InstanceCutoff, MorphBinding, MorphWeights, SkinBinding,
+    SkinPose,
+};
 
 pub use unlit_wgpu::resources::Rebuild;
 
 /// The ids of the source's global arrays and buffers.
 ///
 /// These are the resources every pipeline can rely on the renderer keeping up
-/// to date: the camera uniform, the frame globals, the mesh-metadata array and
-/// the frame's two pose arrays.
+/// to date: the camera uniform, the frame globals, the mesh-metadata array, and
+/// the frame's joint-matrix and morph-weight arrays.
 ///
 /// A factory hands these ids to the [Rebuild] it returns, and the recipe reads
 /// the current resource out of the graph each time it runs. That indirection is
@@ -317,20 +321,120 @@ pub struct DrawContext<'a> {
 /// means the family binds no instance stream at all.
 pub use unlit_wgpu::instance_stream::InstanceStreamDesc;
 
-/// Everything a family may read to write one instance record.
+/// Everything a family may read -- and the frame arrays it may append to --
+/// while it writes one instance record.
 ///
-/// The record is the family's own: the built-in unlit family writes the
-/// resolved [MeshInstance], while a caller's family writes whatever its
-/// pipeline's instance-step attributes declare, reading the components it
-/// needs from the world.
+/// The record is the family's own: the built-in unlit family builds a
+/// [MeshInstance], while a caller's family writes whatever its pipeline's
+/// instance-step attributes declare, reading the components it needs from the
+/// world. Culling resolved only the entity and its placement; what else a draw
+/// carries, the family decides here.
+///
+/// Skin poses and morph weights are two independent things, each with its own
+/// frame array and its own pack method. A family that reads neither calls
+/// neither; a family that needs one packs only that one.
 pub struct InstanceContext<'a> {
     /// The world the entity is drawn from, for per-entity components.
     pub world: &'a World,
     /// The entity the record is for.
     pub entity: Entity,
-    /// The placement, tint and frame metadata the frame resolved for the
-    /// entity, shared by every family.
-    pub instance: &'a MeshInstance,
+    /// The entity's world transform, resolved by culling.
+    pub world_from_local: Affine3A,
+    /// The frame's joint matrices, appended to by [Self::pack_joints].
+    joints: &'a mut Vec<JointMatrix>,
+    /// The frame's morph weights, appended to by [Self::pack_morph_weights].
+    morph_weights: &'a mut Vec<f32>,
+}
+
+impl<'a> InstanceContext<'a> {
+    /// Build a context for one entity from the frame's two growing arrays.
+    pub(crate) fn new(
+        world: &'a World,
+        entity: Entity,
+        world_from_local: Affine3A,
+        joints: &'a mut Vec<JointMatrix>,
+        morph_weights: &'a mut Vec<f32>,
+    ) -> Self {
+        Self {
+            world,
+            entity,
+            world_from_local,
+            joints,
+            morph_weights,
+        }
+    }
+
+    /// Append this entity's joint matrices to the frame's array and return the
+    /// index its slice starts at.
+    ///
+    /// The matrices come from the [`SkinPose`] of the entity this one names
+    /// with a [`SkinBinding`]. A family calls this only for a skinned mesh, and
+    /// puts the returned base into the record field its shader reads.
+    ///
+    /// # Panics
+    ///
+    /// If the entity names no pose entity, if that entity carries no
+    /// [`SkinPose`], or if the pose is empty.
+    pub fn pack_joints(&mut self) -> u32 {
+        let binding = self
+            .world
+            .get::<SkinBinding>(self.entity)
+            .unwrap_or_else(|| {
+                panic!(
+                    "a skinned mesh needs a `SkinBinding` naming the entity that holds \
+                 its `SkinPose`"
+                )
+            });
+        let pose = self
+            .world
+            .get::<SkinPose>(binding.pose)
+            .unwrap_or_else(|| panic!("the entity a skinned mesh binds to carries no `SkinPose`"));
+        assert!(
+            !pose.matrices.is_empty(),
+            "a skinned mesh's pose needs at least one joint matrix"
+        );
+        let base = self.joints.len() as u32;
+        self.joints.extend_from_slice(&pose.matrices);
+        base
+    }
+
+    /// Append this entity's morph weights to the frame's array and return the
+    /// index its slice starts at.
+    ///
+    /// The weights come from the [`MorphWeights`] of the entity this one names
+    /// with a [`MorphBinding`]. `targets` is the mesh's target count, which
+    /// the weights must match. A family calls this only for a morphed mesh, and
+    /// puts the returned base into the record field its shader reads.
+    ///
+    /// # Panics
+    ///
+    /// If the entity names no weights entity, if that entity carries no
+    /// [`MorphWeights`], or if the weight count does not match `targets`.
+    pub fn pack_morph_weights(&mut self, targets: u32) -> u32 {
+        let binding = self
+            .world
+            .get::<MorphBinding>(self.entity)
+            .unwrap_or_else(|| {
+                panic!(
+                    "a mesh with morph targets needs a `MorphBinding` naming the entity \
+                 that holds its `MorphWeights`"
+                )
+            });
+        let weights = self
+            .world
+            .get::<MorphWeights>(binding.weights)
+            .unwrap_or_else(|| {
+                panic!("the entity a morphed mesh binds to carries no `MorphWeights`")
+            });
+        assert_eq!(
+            weights.weights.len() as u32,
+            targets,
+            "a mesh's morph weights must hold one weight per morph target"
+        );
+        let base = self.morph_weights.len() as u32;
+        self.morph_weights.extend_from_slice(&weights.weights);
+        base
+    }
 }
 
 /// The per-instance vertex data one family's draws read.
@@ -353,18 +457,7 @@ pub trait InstanceData: 'static {
     /// `stream().array_stride` bytes long.
     ///
     /// Called once per visible instance per frame, in visible order.
-    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]);
-
-    /// Whether the frame has to resolve and pack skin and morph pose state
-    /// before this family's records are written.
-    ///
-    /// Only a family whose records carry pose offsets -- the built-in unlit
-    /// family, through [MeshInstance::joints_base] and
-    /// [MeshInstance::morph_base] -- needs it. The source packs nothing for a
-    /// family that says no.
-    fn needs_poses(&self) -> bool {
-        false
-    }
+    fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]);
 }
 
 /// A family that binds no per-instance stream.
@@ -376,14 +469,15 @@ impl InstanceData for () {
         }
     }
 
-    fn write(&mut self, _context: &InstanceContext<'_>, _out: &mut [u8]) {}
+    fn write(&mut self, _context: &mut InstanceContext<'_>, _out: &mut [u8]) {}
 }
 
 /// The built-in unlit family's instance record: the resolved [MeshInstance].
 ///
 /// It is an ordinary [InstanceData] implementation, with no more privilege than
-/// a caller's: the unlit family reads its per-instance transform, tint, cutoff
-/// and pose offsets from the same stream mechanism any family uses.
+/// a caller's: it reads the entity's transform, tint, cutoff, mesh metadata and
+/// skin/morph state from the same world and the same pack methods any family
+/// uses, and writes the [MeshInstance] layout the built-in shader declares.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnlitInstance;
 
@@ -395,12 +489,36 @@ impl InstanceData for UnlitInstance {
         }
     }
 
-    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]) {
-        out.copy_from_slice(context.instance.as_bytes());
-    }
-
-    fn needs_poses(&self) -> bool {
-        true
+    fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
+        let world = context.world;
+        let entity = context.entity;
+        let mesh = world
+            .get::<GpuMesh>(entity)
+            .expect("every visible entity carries the mesh culling resolved");
+        let base_color = world
+            .get::<InstanceColor>(entity)
+            .map_or(glam::Vec4::ONE, |color| color.color);
+        let cutoff = world
+            .get::<InstanceCutoff>(entity)
+            .map_or(0.0, |cutoff| cutoff.cutoff);
+        // Skinning and morphing are independent: a mesh may have either, both
+        // or neither, and each packs into its own array.
+        let joints_base = if mesh.skinned {
+            context.pack_joints()
+        } else {
+            0
+        };
+        let morph_base = if mesh.morph_targets > 0 {
+            context.pack_morph_weights(mesh.morph_targets)
+        } else {
+            0
+        };
+        let instance = MeshInstance::new(context.world_from_local, base_color)
+            .with_joints_base(joints_base)
+            .with_morph_base(morph_base)
+            .with_metadata_index(mesh.parts.metadata_index)
+            .with_cutoff(cutoff);
+        out.copy_from_slice(instance.as_bytes());
     }
 }
 

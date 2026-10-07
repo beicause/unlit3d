@@ -260,7 +260,6 @@ where
         material_bg: Option<ResourceId<wgpu::BindGroup>>,
         z_sorted: bool,
     ) {
-        let instance = mesh.instance;
         // The frame, not the entity, knows the target, the mesh's layout and
         // whether a material is bound, so the variant is derived from what the
         // draw actually resolves to.
@@ -291,7 +290,7 @@ where
             }
         };
 
-        let centre = glam::Vec3A::from(instance.translation());
+        let centre = mesh.world_from_local.translation;
         let depth = (centre - glam::Vec3A::from(self.frame.camera.position)).length();
         // The handles a draw binds depend on the mesh, the shape read from it
         // and the material beside it, so the key is filled in here where all
@@ -333,21 +332,15 @@ pub(crate) trait AnyFamily {
         register: &mut dyn FnMut(RegisteredRenderPipeline) -> RenderPipelineId,
     );
 
-    /// Whether the frame has to resolve and pack skin and morph pose state for
-    /// this family's instances before they are written.
-    ///
-    /// Only a family whose records carry pose offsets needs it; the source
-    /// packs nothing for a family that says no, so a custom family never pays
-    /// for the built-in unlit family's pose arrays.
-    fn needs_poses(&self) -> bool;
-
     /// Drop the previous frame's records, ready to pack this frame's.
     fn begin_instances(&mut self);
 
     /// Append one record for `context` and return its index in the stream.
     ///
-    /// A family with no instance stream returns 0 and writes nothing.
-    fn push_instance(&mut self, context: &InstanceContext<'_>) -> u32;
+    /// A family with no instance stream returns 0 and writes nothing. The
+    /// context also carries the frame's joint-matrix and morph-weight arrays,
+    /// which the family appends to only if its records carry those offsets.
+    fn push_instance(&mut self, context: &mut InstanceContext<'_>) -> u32;
 
     /// Upload the frame's packed records through `encoder`.
     fn upload_instances(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder);
@@ -382,15 +375,11 @@ where
         .collect();
     }
 
-    fn needs_poses(&self) -> bool {
-        self.instances.needs_poses()
-    }
-
     fn begin_instances(&mut self) {
         self.records.clear();
     }
 
-    fn push_instance(&mut self, context: &InstanceContext<'_>) -> u32 {
+    fn push_instance(&mut self, context: &mut InstanceContext<'_>) -> u32 {
         let stride = self.instances.stream().array_stride as usize;
         if stride == 0 {
             return 0;

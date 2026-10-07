@@ -7,10 +7,9 @@
 
 use glam::Affine3A;
 use unlit_ecs::{Entity, World};
-use unlit_wgpu::mesh::MeshInstance;
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
-use crate::components::{GpuMesh, InstanceColor, InstanceCutoff, Transform};
+use crate::components::{GpuMesh, Transform};
 
 /// Whether a mesh whose local bounds are `aabb`, placed by
 /// `world_from_local`, lies entirely outside `frustum` and can be skipped.
@@ -22,46 +21,35 @@ pub fn is_culled(aabb: Aabb, world_from_local: &Affine3A, frustum: &FrustumPlane
     !frustum.test_obb(&Obb::from_aabb(aabb, world_from_local))
 }
 
-/// A mesh that passed culling, with its placement already resolved.
+/// A mesh that passed culling, with its placement resolved.
 ///
-/// The transform and tint are computed once here rather than once per drawing
-/// family, and a culled entity never reaches a family at all, so nothing is
-/// specialized or registered for a mesh the camera cannot see.
+/// Culling resolves only what every family needs to decide *whether* and
+/// *where* to draw: the entity and its world transform. What per-instance state
+/// a draw carries is the drawing family's own business, so it is not resolved
+/// here — a family reads the components it wants, for the entity it is given,
+/// while it packs its own instance record.
+///
+/// A culled entity never reaches a family at all, so nothing is specialized or
+/// registered for a mesh the camera cannot see.
 #[derive(Clone, Copy)]
 pub(crate) struct VisibleMesh {
     /// The entity the mesh belongs to.
     pub(crate) entity: Entity,
-    /// The model matrix and base color the draw will use.
-    pub(crate) instance: MeshInstance,
-    /// Whether the mesh's position stream carries joints, so the frame has to
-    /// resolve the pose entity it binds.
-    pub(crate) skinned: bool,
-    /// How many morph targets the mesh blends, so the frame knows whether it
-    /// needs the weights a pose entity holds.
-    pub(crate) morph_targets: u32,
+    /// The entity's world transform, resolved from its optional [Transform]
+    /// and defaulting to the identity.
+    pub(crate) world_from_local: Affine3A,
 }
 
 /// Collect every mesh entity the frustum can see into `out`, replacing its
 /// contents.
 ///
 /// An entity's placement is its optional [Transform], defaulting to the
-/// identity; its tint is its optional [InstanceColor], defaulting to white; and
-/// its cutoff is its optional [InstanceCutoff], defaulting to zero.
-/// The same resolved [MeshInstance] is what the entity is finally drawn with,
-/// so culling and drawing cannot disagree about where the mesh is.
-///
-/// The pose bases are left at zero here: they are only known once the frame has
-/// packed the poses of the meshes that passed culling, so
-/// [`MeshSource::pack_poses`](crate::mesh_source::MeshSource::pack_poses) fills
-/// them in.
+/// identity. The placement resolved here is the one the frame sorts by, and it
+/// is handed to the drawing family, so culling and drawing cannot disagree
+/// about where the mesh is.
 pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut Vec<VisibleMesh>) {
     out.clear();
-    for (entity, (mesh, transform, color, cutoff)) in world.query::<(
-        &GpuMesh,
-        Option<&Transform>,
-        Option<&InstanceColor>,
-        Option<&InstanceCutoff>,
-    )>() {
+    for (entity, (mesh, transform)) in world.query::<(&GpuMesh, Option<&Transform>)>() {
         let model = match transform {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
@@ -69,18 +57,9 @@ pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut 
         if is_culled(mesh.aabb, &model, frustum) {
             continue;
         }
-        let base_color = color.map_or(glam::Vec4::ONE, |color| color.color);
-        let cutoff = cutoff.map_or(0.0, |cutoff| cutoff.cutoff);
         out.push(VisibleMesh {
             entity,
-            // The metadata index is the mesh's, but it rides the instance
-            // record: that is what a draw reaches without a bind group of its
-            // own. Every instance of one mesh carries the same one.
-            instance: MeshInstance::new(model, base_color)
-                .with_metadata_index(mesh.parts.metadata_index)
-                .with_cutoff(cutoff),
-            skinned: mesh.skinned,
-            morph_targets: mesh.morph_targets,
+            world_from_local: model,
         });
     }
 }

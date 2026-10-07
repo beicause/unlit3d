@@ -45,9 +45,7 @@ use unlit_wgpu::vertex_pool::VertexStreamPool;
 use zerocopy::IntoBytes;
 
 use crate::bounds::Aabb;
-use crate::components::{
-    Camera, GpuMaterial, GpuMesh, MeshParts, MorphBinding, MorphWeights, SkinBinding, SkinPose,
-};
+use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts};
 use crate::culling::VisibleMesh;
 use crate::mesh::{MeshDesc, UnlitMeshDesc};
 use crate::pipeline::{
@@ -969,9 +967,11 @@ impl MeshSource {
     ///
     /// Neither mesh carries a pose: the joint matrices and morph weights a
     /// frame deforms by are per-instance state the CPU writes, so they live in
-    /// the [`SkinPose`] and [`MorphWeights`] components the mesh's entity names
-    /// through a [`SkinBinding`] and a [`MorphBinding`]. The source packs them
-    /// once per frame, so animating a mesh costs a component write and no
+    /// the [`SkinPose`](crate::components::SkinPose) and
+    /// [`MorphWeights`](crate::components::MorphWeights) components the mesh's
+    /// entity names through a [`SkinBinding`](crate::components::SkinBinding)
+    /// and a [`MorphBinding`](crate::components::MorphBinding). The frame packs
+    /// them once per frame, so animating a mesh costs a component write and no
     /// re-upload.
     ///
     /// This is a convenience over [`MeshSource::allocate_mesh`]: it builds the
@@ -1494,99 +1494,7 @@ impl MeshSource {
         }
     }
 
-    // -- poses -----------------------------------------------------------------
-
-    /// Pack every visible instance's pose into the frame's shared arrays and
-    /// record where each instance's slice starts.
-    ///
-    /// A mesh's pose is not part of its upload: the joints and weights live in
-    /// components the CPU writes, and this reads them once per frame. A mesh
-    /// names the entity holding each through a [`SkinBinding`] and a
-    /// [`MorphBinding`], so several meshes may share one pose — packing it once
-    /// however many of them are visible — or deform independently.
-    ///
-    /// The packed offsets go into each instance's
-    /// [`unlit_wgpu::mesh::MeshInstance::joints_base`] and
-    /// [`unlit_wgpu::mesh::MeshInstance::morph_base`], which
-    /// the shader reads to find its own joints and weights.
-    ///
-    /// # Panics
-    ///
-    /// If a visible mesh deforms but names no pose entity, if that entity
-    /// carries no pose component, or if a pose's weight count does not match
-    /// the mesh's target count.
-    fn pack_poses(&mut self, world: &World) {
-        // Split the borrows: the packed arrays grow while the visible entries
-        // are written, and the family of an entry decides whether it is packed
-        // at all.
-        let Self {
-            visible_cache,
-            packed_joints,
-            packed_morph_weights,
-            families,
-            ..
-        } = self;
-        packed_joints.clear();
-        packed_morph_weights.clear();
-
-        for entry in visible_cache.iter_mut() {
-            // Only a family that reads the packed arrays pays for packing
-            // them. A caller's family may carry no skinning at all, and its
-            // entries must be left untouched.
-            if !families[entry.family.as_usize()].needs_poses() {
-                continue;
-            }
-            let entity = entry.mesh.entity;
-
-            let joints_base = if entry.mesh.skinned {
-                let binding = world.get::<SkinBinding>(entity).unwrap_or_else(|| {
-                    panic!(
-                        "a skinned mesh needs a `SkinBinding` naming the entity that holds \
-                         its `SkinPose`"
-                    )
-                });
-                let pose = world.get::<SkinPose>(binding.pose).unwrap_or_else(|| {
-                    panic!("the entity a skinned mesh binds to carries no `SkinPose`")
-                });
-                assert!(
-                    !pose.matrices.is_empty(),
-                    "a skinned mesh's pose needs at least one joint matrix"
-                );
-                let base = packed_joints.len() as u32;
-                packed_joints.extend_from_slice(&pose.matrices);
-                base
-            } else {
-                0
-            };
-
-            let weights_base = if entry.mesh.morph_targets > 0 {
-                let binding = world.get::<MorphBinding>(entity).unwrap_or_else(|| {
-                    panic!(
-                        "a mesh with morph targets needs a `MorphBinding` naming the entity \
-                         that holds its `MorphWeights`"
-                    )
-                });
-                let weights = world
-                    .get::<MorphWeights>(binding.weights)
-                    .unwrap_or_else(|| {
-                        panic!("the entity a morphed mesh binds to carries no `MorphWeights`")
-                    });
-                assert_eq!(
-                    weights.weights.len() as u32,
-                    entry.mesh.morph_targets,
-                    "a mesh's morph weights must hold one weight per morph target"
-                );
-                let base = packed_morph_weights.len() as u32;
-                packed_morph_weights.extend_from_slice(&weights.weights);
-                base
-            } else {
-                0
-            };
-
-            entry.mesh.instance.joints_base = joints_base;
-            entry.mesh.instance.morph_base = weights_base;
-        }
-    }
+    // -- skin and morph arrays --------------------------------------------------
 
     /// Grow the frame's joint-matrix array if the packed data outgrew it, and
     /// upload it through the frame's encoder.
@@ -1741,23 +1649,29 @@ impl MeshSource {
     fn pack_family_instances(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
         let device = self.device(world);
         // Split the borrows: each entry is written while its family's stream
-        // grows.
+        // grows, and while the two frame arrays a family may append to grow.
         let Self {
             families,
             visible_cache,
+            packed_joints,
+            packed_morph_weights,
             ..
         } = self;
+        packed_joints.clear();
+        packed_morph_weights.clear();
         for family in families.iter_mut() {
             family.begin_instances();
         }
         for entry in visible_cache.iter_mut() {
             let mesh = &entry.mesh;
-            let context = InstanceContext {
+            let mut context = InstanceContext::new(
                 world,
-                entity: mesh.entity,
-                instance: &mesh.instance,
-            };
-            entry.instance_index = families[entry.family.as_usize()].push_instance(&context);
+                mesh.entity,
+                mesh.world_from_local,
+                packed_joints,
+                packed_morph_weights,
+            );
+            entry.instance_index = families[entry.family.as_usize()].push_instance(&mut context);
         }
         for family in families.iter_mut() {
             family.upload_instances(&device, encoder);
@@ -2113,29 +2027,23 @@ impl FrameSource for MeshSource {
         if self.visible_cache.is_empty() {
             return;
         }
-        // Resolve and pack every visible instance's pose before the instance
-        // data is written: the packed offsets are part of each built-in
-        // instance record, so the instance stream cannot be uploaded until
-        // they are known. Each upload rebuilds the global groups itself if it
-        // had to replace its buffer.
+        // Pack each family's instance data into its own stream and upload it.
+        // A family that draws skinned or morphed meshes appends their joints
+        // and weights to the frame's arrays here, while it writes its records;
+        // the arrays are then uploaded, because the records that name slices of
+        // them are what the draws read.
         {
-            profiling::scope!("mesh_source.poses.pack");
-            self.pack_poses(world);
+            profiling::scope!("mesh_source.instances.upload");
+            self.pack_family_instances(world, encoder);
         }
         {
-            profiling::scope!("mesh_source.poses.upload");
+            profiling::scope!("mesh_source.skin_morph.upload");
             self.upload_joints(world, encoder);
             self.upload_morph_weights(world, encoder);
             // The pool's upload replaces the array when it has to grow, which
             // marks every global group bound to it dirty for the maintain
             // below.
             self.upload_morph_deltas(world, encoder);
-        }
-
-        // Pack each family's instance data into its own stream and upload it.
-        {
-            profiling::scope!("mesh_source.instances.upload");
-            self.pack_family_instances(world, encoder);
         }
 
         // Settle the graph for this frame: collect what nothing holds any more
