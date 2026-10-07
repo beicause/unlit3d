@@ -240,7 +240,7 @@ fn camera(aspect: f32) -> View {
     let eye = glam::Vec3::new(0.0, 1.2, 3.2);
     let view =
         glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::new(0.0, 0.2, 0.0), glam::Vec3::Y);
-    View::new(projection * view, eye)
+    View::new(view, projection, eye)
 }
 
 /// A CPU-side mesh: positions, UVs, vertex colors and `u32` indices.

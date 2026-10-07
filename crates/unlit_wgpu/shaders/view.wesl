@@ -8,6 +8,9 @@
 public struct View {
     /// World -> clip matrix (projection * view).
     clip_from_world: mat4x4<f32>,
+    /// World -> view matrix; its first three rows are the camera's right, up
+    /// and backward axes.
+    view_from_world: mat4x4<f32>,
     /// xyz = world-space eye position; w is padding (write 1.0).
     camera_position: vec4<f32>,
 }

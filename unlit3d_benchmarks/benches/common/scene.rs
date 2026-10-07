@@ -114,9 +114,8 @@ impl Frame {
         let eye = Vec3::new(0.0, 0.0, side as f32 * 1.5 + 20.0);
         let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
         world.spawn((Camera {
-            clip_from_world: glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0)
-                * view,
-            position: eye,
+            view_from_world: view,
+            clip_from_view: glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0),
             active: true,
         },));
 

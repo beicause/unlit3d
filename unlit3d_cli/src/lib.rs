@@ -122,6 +122,13 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
             config.output.samples
         )));
     }
+    if config.camera.view.is_some() != config.camera.projection.is_some() {
+        return Err(Error::Config(
+            "camera.view and camera.projection must be given together: the camera holds \
+             its view and projection apart, so one matrix alone is not a camera"
+                .to_owned(),
+        ));
+    }
 
     let tier = DeviceTier::from_env();
     let instance =
@@ -346,10 +353,10 @@ fn with_mesh_source<R>(
 
 /// Build the camera from the configuration and the render size's aspect ratio.
 fn camera(config: &CameraConfig, render_size: (u32, u32)) -> Camera {
-    if let Some(matrix) = config.matrix {
+    if let (Some(view), Some(projection)) = (config.view, config.projection) {
         return Camera {
-            clip_from_world: Mat4::from_cols_array(&matrix),
-            position: glam::Vec3::from(config.eye),
+            view_from_world: Mat4::from_cols_array(&view),
+            clip_from_view: Mat4::from_cols_array(&projection),
             active: true,
         };
     }
@@ -365,8 +372,8 @@ fn camera(config: &CameraConfig, render_size: (u32, u32)) -> Camera {
         glam::Vec3::from(config.up),
     );
     Camera {
-        clip_from_world: projection * view,
-        position: glam::Vec3::from(config.eye),
+        view_from_world: view,
+        clip_from_view: projection,
         active: true,
     }
 }

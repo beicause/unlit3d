@@ -52,17 +52,24 @@ impl Transform {
     }
 }
 
-/// Camera state: the combined projection x view matrix and the eye position.
+/// Camera state: the view and projection transforms it draws through.
 ///
 /// The renderer queries the first **active** entity that carries this
 /// component to derive the camera uniforms and perform frustum culling. If no
 /// entity has an active [`Camera`], the frame is cleared and nothing is drawn.
+///
+/// The view and projection are kept apart rather than pre-multiplied into one
+/// clip-from-world matrix: a shader that works in view space, and the eye
+/// position the frame uniform carries, are both derivable from
+/// [`Camera::view_from_world`], while the combined matrix a vertex stage wants
+/// is one multiplication away. Storing only the product would lose the view
+/// matrix, which cannot be recovered from it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Camera {
-    /// World-to-clip matrix (projection x view).
-    pub clip_from_world: glam::Mat4,
-    /// World-space eye position.
-    pub position: glam::Vec3,
+    /// View matrix (world to view).
+    pub view_from_world: glam::Mat4,
+    /// Projection matrix (view to clip).
+    pub clip_from_view: glam::Mat4,
     /// Whether the renderer may draw through this camera.
     ///
     /// An inactive camera is kept out of the frame entirely: the renderer
@@ -70,6 +77,48 @@ pub struct Camera {
     /// hold several cameras — the ones a caller switches between — and pick
     /// one per frame by toggling this flag rather than by respawning.
     pub active: bool,
+}
+
+impl Camera {
+    /// The combined projection x view matrix (world to clip).
+    #[must_use]
+    pub fn clip_from_world(&self) -> glam::Mat4 {
+        self.clip_from_view * self.view_from_world
+    }
+
+    /// The inverse view matrix (view to world).
+    #[must_use]
+    pub fn world_from_view(&self) -> glam::Mat4 {
+        self.view_from_world.inverse()
+    }
+
+    /// The world-space eye position.
+    ///
+    /// The eye is the translation of the view-to-world matrix, so it is
+    /// derived rather than stored: keeping it as a field would be a second
+    /// source of truth for something the view matrix already says.
+    #[must_use]
+    pub fn position(&self) -> glam::Vec3 {
+        self.world_from_view().col(3).truncate()
+    }
+
+    /// The depth of a world-space point along this camera's view axis.
+    ///
+    /// This is the point's view-space depth, not its euclidean distance: a
+    /// point straight ahead is nearer than one the same euclidean distance away
+    /// but off to the side. The renderer sorts [`ZSortedDrawing`] entities by
+    /// it, so what decides their order is how deep into the scene they sit
+    /// rather than how far they are from the eye at an angle.
+    ///
+    /// The depth comes straight out of the view matrix: it is the negated view
+    /// space z, since a right-handed view space looks down its own `-z`. That
+    /// holds for any projection — perspective, orthographic, off-axis or with
+    /// an infinite far plane — because the projection decides view-to-clip, not
+    /// how deep along the axis a point is.
+    #[must_use]
+    pub fn view_depth(&self, world_point: glam::Vec3) -> f32 {
+        -self.view_from_world.transform_point3(world_point).z
+    }
 }
 
 /// The load ops a frame's pass is opened with.
@@ -440,8 +489,8 @@ impl GpuMaterial {
 /// Marker for entities whose draw order decides how they look.
 ///
 /// Entities with this component are drawn after the ones without it and
-/// sorted back-to-front by camera distance, which is what a blended draw
-/// needs to composite correctly. Entities without it are drawn in
+/// sorted back-to-front by their view-axis depth, which is what a blended
+/// draw needs to composite correctly. Entities without it are drawn in
 /// pipeline-registration order.
 ///
 /// The marker only orders draws: it selects no pipeline and changes no blend
@@ -537,17 +586,201 @@ mod tests {
 
     #[test]
     fn camera_fields_round_trip() {
+        let eye = glam::Vec3::new(0.0, 5.0, 10.0);
+        let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y);
         let c = Camera {
-            clip_from_world: glam::camera::rh::view::look_at_mat4(
-                glam::Vec3::new(0.0, 5.0, 10.0),
-                glam::Vec3::ZERO,
-                glam::Vec3::Y,
-            ),
-            position: glam::Vec3::new(0.0, 5.0, 10.0),
+            view_from_world: view,
+            clip_from_view: glam::Mat4::IDENTITY,
             active: true,
         };
-        assert_eq!(c.position, glam::Vec3::new(0.0, 5.0, 10.0));
+        assert_eq!(c.position(), eye);
+        assert_eq!(c.clip_from_world(), view);
         assert!(c.active);
+    }
+
+    /// A camera at (0, 0, 5) looking down -Z, with a standard perspective.
+    fn test_camera() -> Camera {
+        let projection = glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100.0);
+        let view = glam::camera::rh::view::look_at_mat4(
+            glam::Vec3::new(0.0, 0.0, 5.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        Camera {
+            view_from_world: view,
+            clip_from_view: projection,
+            active: true,
+        }
+    }
+
+    #[test]
+    fn view_depth_grows_away_from_the_camera() {
+        let camera = test_camera();
+        assert!((camera.view_depth(glam::Vec3::ZERO) - 5.0).abs() < 1e-4);
+        assert!((camera.view_depth(glam::Vec3::new(0.0, 0.0, 4.0)) - 1.0).abs() < 1e-4);
+    }
+
+    /// Depth is measured along the view axis, so moving a point straight to the
+    /// side leaves it at the same depth even though it gets farther from the
+    /// eye.
+    #[test]
+    fn view_depth_ignores_lateral_offset() {
+        let camera = test_camera();
+        let ahead = camera.view_depth(glam::Vec3::new(0.0, 0.0, 1.0));
+        let sideways = camera.view_depth(glam::Vec3::new(3.0, 0.0, 1.0));
+        assert!(
+            (ahead - sideways).abs() < 1e-4,
+            "a lateral offset changed the depth: {ahead} against {sideways}",
+        );
+    }
+
+    /// A camera at (0, 0, 5) looking down -Z, with an orthographic projection.
+    ///
+    /// An orthographic projection has no perspective divide, so a depth read
+    /// off the clip-space w alone would be constant.
+    fn test_orthographic_camera() -> Camera {
+        let projection =
+            glam::camera::rh::proj::directx::orthographic(-1.0, 1.0, -1.0, 1.0, 0.1, 100.0);
+        let view = glam::camera::rh::view::look_at_mat4(
+            glam::Vec3::new(0.0, 0.0, 5.0),
+            glam::Vec3::ZERO,
+            glam::Vec3::Y,
+        );
+        Camera {
+            view_from_world: view,
+            clip_from_view: projection,
+            active: true,
+        }
+    }
+
+    /// The depth follows the view axis under an orthographic projection too,
+    /// where the perspective divide carries none.
+    #[test]
+    fn orthographic_view_depth_grows_away_from_the_camera() {
+        let camera = test_orthographic_camera();
+        assert!((camera.view_depth(glam::Vec3::ZERO) - 5.0).abs() < 1e-4);
+        assert!((camera.view_depth(glam::Vec3::new(0.0, 0.0, 4.0)) - 1.0).abs() < 1e-4);
+    }
+
+    /// And it is still measured along the view axis rather than to the eye.
+    #[test]
+    fn orthographic_view_depth_ignores_lateral_offset() {
+        let camera = test_orthographic_camera();
+        let ahead = camera.view_depth(glam::Vec3::new(0.0, 0.0, 1.0));
+        let sideways = camera.view_depth(glam::Vec3::new(3.0, 0.0, 1.0));
+        assert!(
+            (ahead - sideways).abs() < 1e-4,
+            "a lateral offset changed the depth: {ahead} against {sideways}",
+        );
+    }
+
+    /// The derived view axis follows a camera that is not axis-aligned, and the
+    /// eye position is the origin the depth is measured from.
+    #[test]
+    fn view_depth_follows_an_oblique_camera() {
+        let eye = glam::Vec3::new(3.0, 4.0, 5.0);
+        let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y);
+        let projection =
+            glam::camera::rh::proj::directx::perspective_infinite_reverse(1.0, 1.0, 0.1);
+        let camera = Camera {
+            view_from_world: view,
+            clip_from_view: projection,
+            active: true,
+        };
+        // The forward axis is the eye-to-target direction, so the depth of the
+        // target is the eye-to-target distance.
+        let expected = eye.length();
+        assert!(
+            (camera.view_depth(glam::Vec3::ZERO) - expected).abs() < 1e-3,
+            "the depth of the target is not the eye distance: {} against {expected}",
+            camera.view_depth(glam::Vec3::ZERO),
+        );
+        // A point one unit along the eye-to-target direction is one unit deeper.
+        let forward = (-eye).normalize();
+        let one_deeper = camera.view_depth(forward) - camera.view_depth(glam::Vec3::ZERO);
+        assert!(
+            (one_deeper - 1.0).abs() < 1e-3,
+            "one unit along the view axis is not one unit deeper: {one_deeper}",
+        );
+    }
+
+    /// A camera at `eye` looking at `target`, with `projection`.
+    fn camera_with(projection: glam::Mat4, eye: glam::Vec3, target: glam::Vec3) -> Camera {
+        Camera {
+            view_from_world: glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y),
+            clip_from_view: projection,
+            active: true,
+        }
+    }
+
+    /// The depth agrees with the view matrix's own view axis, for every
+    /// projection.
+    ///
+    /// The cross product of the combined matrix's first two rows is not that
+    /// axis: an off-axis frustum's projection centre is shifted, so those rows
+    /// mix in the camera's right and up directions and the cross product leaves
+    /// the axis. The view matrix's z row does not.
+    #[test]
+    fn view_depth_matches_the_view_axis_for_every_projection() {
+        let eye = glam::Vec3::new(3.0, 4.0, 5.0);
+        let target = glam::Vec3::new(-1.0, 0.5, 1.0);
+        let view = glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y);
+        // A view matrix's z row is the camera's backward axis.
+        let forward = -view.row(2).truncate().normalize();
+        let projections = [
+            (
+                "perspective",
+                glam::camera::rh::proj::opengl::perspective(1.0, 1.5, 0.1, 100.0),
+            ),
+            (
+                "infinite reverse",
+                glam::camera::rh::proj::directx::perspective_infinite_reverse(1.0, 1.5, 0.1),
+            ),
+            (
+                "orthographic",
+                glam::camera::rh::proj::directx::orthographic(-2.0, 2.0, -1.0, 1.0, 0.1, 100.0),
+            ),
+            // An off-axis frustum is not symmetric about the view axis.
+            (
+                "off-axis frustum",
+                glam::camera::rh::proj::opengl::frustum(-0.4, 1.6, -0.3, 0.9, 0.1, 100.0),
+            ),
+            (
+                "off-axis orthographic",
+                glam::camera::rh::proj::opengl::orthographic(-0.5, 2.0, -0.4, 1.2, 0.1, 100.0),
+            ),
+        ];
+        for (name, projection) in projections {
+            let camera = camera_with(projection, eye, target);
+            // A shifted perspective frustum mixes the camera's right and up
+            // directions into its first two rows, which is what leaves the
+            // cross product off the axis. This pins down that the method does
+            // not lean on it.
+            if name == "off-axis frustum" {
+                let combined = camera.clip_from_world();
+                let cross = combined
+                    .row(0)
+                    .truncate()
+                    .cross(combined.row(1).truncate())
+                    .normalize();
+                assert!(
+                    cross.dot(forward).abs() < 1.0 - 1e-3,
+                    "the cross product was on the view axis, so this case tests nothing",
+                );
+            }
+            for point in [
+                target,
+                eye + forward * 4.0,
+                eye + forward * 9.0 + glam::Vec3::new(2.0, -1.0, 0.0),
+            ] {
+                let expected = forward.dot(point - eye);
+                let actual = camera.view_depth(point);
+                assert!(
+                    (actual - expected).abs() < 1e-3,
+                    "{name}: view_depth({point:?}) was {actual}, expected {expected}",
+                );
+            }
+        }
     }
 }
 

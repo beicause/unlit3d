@@ -51,7 +51,8 @@ fn reference(fox_time: f32, morph_time: f32, size: (u32, u32), scale: (f32, f32)
             up: [0.0, 1.0, 0.0],
             fov_y: 60.0,
             z_near: 0.1,
-            matrix: None,
+            view: None,
+            projection: None,
         },
         documents: vec![
             DocumentConfig {

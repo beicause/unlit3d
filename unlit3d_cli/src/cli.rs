@@ -57,9 +57,14 @@ pub struct Args {
     /// the near plane distance.
     #[argh(option)]
     pub z_near: Option<f32>,
-    /// a clip-from-world matrix, column-major, as 16 comma-separated numbers.
+    /// a view (world-to-view) matrix, column-major, as 16 comma-separated
+    /// numbers; give it together with --camera-projection-matrix.
     #[argh(option, from_str_fn(parse_matrix))]
-    pub camera_matrix: Option<[f32; 16]>,
+    pub camera_view_matrix: Option<[f32; 16]>,
+    /// a projection (view-to-clip) matrix, column-major, as 16 comma-separated
+    /// numbers; give it together with --camera-view-matrix.
+    #[argh(option, from_str_fn(parse_matrix))]
+    pub camera_projection_matrix: Option<[f32; 16]>,
     /// a glTF document to render; repeatable. Replaces the configuration list.
     #[argh(option)]
     pub document: Vec<PathBuf>,
@@ -135,15 +140,17 @@ impl Args {
         if let Some(z_near) = self.z_near {
             config.camera.z_near = z_near;
         }
-        if let Some(matrix) = self.camera_matrix {
-            config.camera.matrix = Some(matrix);
-        } else if self.eye.is_some()
+        let named_camera_field = self.eye.is_some()
             || self.target.is_some()
             || self.up.is_some()
             || self.fov_y.is_some()
-            || self.z_near.is_some()
-        {
-            config.camera.matrix = None;
+            || self.z_near.is_some();
+        if self.camera_view_matrix.is_some() || self.camera_projection_matrix.is_some() {
+            config.camera.view = self.camera_view_matrix;
+            config.camera.projection = self.camera_projection_matrix;
+        } else if named_camera_field {
+            config.camera.view = None;
+            config.camera.projection = None;
         }
         let animation = self.animation.as_deref().map(parse_animation);
         if self.document.is_empty() {
@@ -334,12 +341,14 @@ mod tests {
             "1,2,3",
         ]);
         let mut config = Config::default();
-        config.camera.matrix = Some([0.0; 16]);
+        config.camera.view = Some([0.0; 16]);
+        config.camera.projection = Some([0.0; 16]);
         arguments.apply(&mut config);
         assert_eq!(config.output.size, Some((512, 384)));
         assert_eq!(config.output.scale, (2.0, 3.0));
         assert_eq!(config.camera.eye, [1.0, 2.0, 3.0]);
-        assert_eq!(config.camera.matrix, None);
+        assert_eq!(config.camera.view, None);
+        assert_eq!(config.camera.projection, None);
     }
 
     #[test]

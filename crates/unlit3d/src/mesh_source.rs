@@ -561,7 +561,7 @@ impl MeshSource {
         queue.write_buffer(
             graph.get(&camera_buf).expect("just inserted"),
             0,
-            View::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO).as_bytes(),
+            View::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO).as_bytes(),
         );
         queue.write_buffer(
             graph.get(&globals_buf).expect("just inserted"),
@@ -1938,8 +1938,8 @@ fn frame_camera(world: &World) -> Option<Camera> {
         .query::<&Camera>()
         .find(|(_, camera)| camera.active)
         .map(|(_, camera)| Camera {
-            clip_from_world: camera.clip_from_world,
-            position: camera.position,
+            view_from_world: camera.view_from_world,
+            clip_from_view: camera.clip_from_view,
             active: camera.active,
         })
 }
@@ -2012,7 +2012,11 @@ impl FrameSource for MeshSource {
             self.globals.frame_count += 1;
             self.upload_globals(world, encoder);
 
-            let view = View::new(camera.clip_from_world, camera.position);
+            let view = View::new(
+                camera.view_from_world,
+                camera.clip_from_view,
+                camera.position(),
+            );
             self.upload_camera(world, encoder, &view);
         }
 
@@ -2105,11 +2109,21 @@ mod tests {
     impl Harness {
         /// The triangle mesh every mesh-level test allocates.
         fn tri_mesh(&mut self) -> GpuMesh {
+            self.tri_mesh_at(0.0)
+        }
+
+        /// The triangle mesh every mesh-level test allocates, with its geometry
+        /// shifted along Z so its bounds centre sits away from the entity
+        /// origin.
+        ///
+        /// A mesh whose bounds are offset from its origin is what tells a
+        /// depth that reads the bounds apart from one that reads the origin.
+        fn tri_mesh_at(&mut self, z: f32) -> GpuMesh {
             self.source.allocate_unlit_mesh(
                 &self.world,
                 &self.key,
                 UnlitMeshDesc {
-                    positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                    positions: &[[0.0, 0.0, z], [1.0, 0.0, z], [0.0, 1.0, z]],
                     uvs: Some(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
                     colors: Some(&[[255; 4], [255, 0, 0, 255], [0, 255, 0, 255]]),
                     indices: Some(&[0u32, 1, 2]),
@@ -2230,10 +2244,13 @@ mod tests {
     /// A camera at `eye` looking at the origin, with a frustum wide enough
     /// that nothing in these tests is culled.
     fn test_camera(eye: glam::Vec3) -> Camera {
-        let view = glam::camera::rh::view::look_at_mat4(eye, glam::Vec3::ZERO, glam::Vec3::Y);
         Camera {
-            clip_from_world: test_perspective() * view,
-            position: eye,
+            view_from_world: glam::camera::rh::view::look_at_mat4(
+                eye,
+                glam::Vec3::ZERO,
+                glam::Vec3::Y,
+            ),
+            clip_from_view: test_perspective(),
             active: true,
         }
     }
@@ -2355,21 +2372,21 @@ mod tests {
         // Spawned first, so a selection that ignored `active` would pick this
         // one instead of the active camera below.
         let inactive = world.spawn((Camera {
-            clip_from_world: glam::Mat4::IDENTITY,
-            position: glam::Vec3::new(1.0, 0.0, 0.0),
+            view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-1.0, 0.0, 0.0)),
+            clip_from_view: glam::Mat4::IDENTITY,
             active: true,
         },));
         world
             .with_mut::<Camera, _>(inactive, |camera| camera.active = false)
             .expect("the entity carries a camera");
         let active = world.spawn((Camera {
-            clip_from_world: glam::Mat4::IDENTITY,
-            position: glam::Vec3::new(2.0, 0.0, 0.0),
+            view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
+            clip_from_view: glam::Mat4::IDENTITY,
             active: true,
         },));
 
         let camera = frame_camera(&world).expect("a camera is active");
-        assert_eq!(camera.position, glam::Vec3::new(2.0, 0.0, 0.0));
+        assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
         assert!(camera.active);
 
         // With every camera inactive, the frame has nothing to draw through.
@@ -3065,6 +3082,149 @@ mod tests {
             .collect_and_sort_visible(&h.world, &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![far, middle, near]);
+    }
+
+    /// The depth an entry sorts by is measured at the geometry the mesh draws,
+    /// not at the entity's origin: two meshes whose bounds sit on opposite
+    /// sides of their own origin are equally deep by origin and only their
+    /// bounds can order them.
+    #[test]
+    fn z_sorted_entries_sort_by_the_mesh_bounds_not_the_entity_origin() {
+        let mut h = harness();
+        let near = h.tri_mesh_at(1.5);
+        let far = h.tri_mesh_at(-1.5);
+
+        // Both entity origins are at the same depth; only the geometry differs.
+        let translation = glam::Vec3::new(0.0, 0.0, 2.0);
+        let near_entity = h.world.spawn((
+            Transform {
+                translation,
+                ..Default::default()
+            },
+            near,
+            UnlitPipeline::new(h.key.clone()),
+            ZSortedDrawing,
+        ));
+        let far_entity = h.world.spawn((
+            Transform {
+                translation,
+                ..Default::default()
+            },
+            far,
+            UnlitPipeline::new(h.key.clone()),
+            ZSortedDrawing,
+        ));
+
+        let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
+        h.source
+            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+
+        // The far mesh is drawn first even though its entity origin is not
+        // deeper than the other's.
+        assert_eq!(drawn(&h.source), vec![far_entity, near_entity]);
+        assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
+    }
+
+    /// The depth is the distance along the camera's view axis, not the
+    /// euclidean distance to the eye: a mesh offset to the side is at the same
+    /// depth as one straight ahead.
+    #[test]
+    fn z_sorted_depth_is_measured_along_the_view_axis() {
+        let mut h = harness();
+        let mesh = h.tri_mesh();
+        let aabb = mesh.aabb;
+        let translation = glam::Vec3::ZERO;
+        let entity = h.world.spawn((
+            Transform {
+                translation,
+                ..Default::default()
+            },
+            mesh,
+            UnlitPipeline::new(h.key.clone()),
+            ZSortedDrawing,
+        ));
+
+        let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
+        h.source
+            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+
+        let entry = &h.source.visible_cache[0];
+        assert_eq!(entry.mesh.entity, entity);
+        // The geometry centre, not the entity origin.
+        let centre = translation + aabb.center;
+        assert!(
+            (entry.depth - camera.view_depth(centre)).abs() < 1e-5,
+            "the depth is not the view-axis depth: {} against {}",
+            entry.depth,
+            camera.view_depth(centre),
+        );
+        // And the view-axis depth, not the euclidean distance to the eye.
+        let euclidean = (centre - camera.position()).length();
+        assert!(
+            (entry.depth - euclidean).abs() > 1e-3,
+            "the depth is still the euclidean distance: {} against {}",
+            entry.depth,
+            euclidean,
+        );
+    }
+
+    /// A camera at `eye` looking at the origin, with an orthographic
+    /// projection.
+    ///
+    /// An orthographic projection has no perspective divide, so a depth read
+    /// off the clip-space w alone would order nothing.
+    fn test_orthographic_camera(eye: glam::Vec3) -> Camera {
+        Camera {
+            view_from_world: glam::camera::rh::view::look_at_mat4(
+                eye,
+                glam::Vec3::ZERO,
+                glam::Vec3::Y,
+            ),
+            clip_from_view: glam::camera::rh::proj::directx::orthographic(
+                -8.0, 8.0, -8.0, 8.0, 0.1, 100.0,
+            ),
+            active: true,
+        }
+    }
+
+    /// An orthographic camera still sorts z-sorted entries by view-axis depth.
+    ///
+    /// Under an orthographic projection the perspective divide is gone, so a
+    /// depth that reads the fourth row alone would report the same value for
+    /// every entry and leave their order to the sort's stability.
+    #[test]
+    fn orthographic_z_sorted_entries_sort_by_view_axis_depth() {
+        let mut h = harness();
+        let near = h.tri_mesh_at(1.5);
+        let far = h.tri_mesh_at(-1.5);
+
+        // Both entity origins are at the same depth; only the geometry differs.
+        let translation = glam::Vec3::new(0.0, 0.0, 2.0);
+        let near_entity = h.world.spawn((
+            Transform {
+                translation,
+                ..Default::default()
+            },
+            near,
+            UnlitPipeline::new(h.key.clone()),
+            ZSortedDrawing,
+        ));
+        let far_entity = h.world.spawn((
+            Transform {
+                translation,
+                ..Default::default()
+            },
+            far,
+            UnlitPipeline::new(h.key.clone()),
+            ZSortedDrawing,
+        ));
+
+        let camera = test_orthographic_camera(glam::Vec3::new(0.0, 0.0, 5.0));
+        h.source
+            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+
+        assert_eq!(drawn(&h.source), vec![far_entity, near_entity]);
+        assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
     }
 
     #[test]

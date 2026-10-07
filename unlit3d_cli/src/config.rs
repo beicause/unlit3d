@@ -67,9 +67,17 @@ pub struct CameraConfig {
     pub fov_y: f32,
     /// The near plane distance.
     pub z_near: f32,
-    /// A full clip-from-world matrix in column-major order, overriding
-    /// eye, target, up, fov_y and z_near when present.
-    pub matrix: Option<[f32; 16]>,
+    /// A view (world-to-view) matrix in column-major order.
+    ///
+    /// Set together with the projection matrix, these two override eye,
+    /// target, up, fov_y and z_near when present. The camera keeps its view
+    /// and projection apart, and a single combined matrix cannot be split back
+    /// into them, so both must be given.
+    pub view: Option<[f32; 16]>,
+    /// A projection (view-to-clip) matrix in column-major order.
+    ///
+    /// The counterpart of the view matrix; both are needed together.
+    pub projection: Option<[f32; 16]>,
 }
 
 impl Default for CameraConfig {
@@ -80,7 +88,8 @@ impl Default for CameraConfig {
             up: [0.0, 1.0, 0.0],
             fov_y: 60.0,
             z_near: 0.1,
-            matrix: None,
+            view: None,
+            projection: None,
         }
     }
 }

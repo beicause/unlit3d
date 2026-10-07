@@ -599,8 +599,8 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, aspect: f32) -> Ca
     );
     let view = glam::camera::rh::view::look_at_mat4(eye, target, glam::Vec3::Y);
     Camera {
-        clip_from_world: projection * view,
-        position: eye,
+        view_from_world: view,
+        clip_from_view: projection,
         active: true,
     }
 }

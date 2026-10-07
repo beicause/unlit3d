@@ -146,7 +146,7 @@ impl ScreenDescriptor {
 /// is theirs.
 pub fn screen_view(viewport_points: [f32; 2]) -> View {
     let [width, height] = viewport_points;
-    View::new(
+    View::from_clip_from_world(
         glam::Mat4::from_cols_array(&[
             2.0 / width,
             0.0,
