@@ -49,9 +49,14 @@ given, in the order each source declares through
 - Each source builds its own [`Scene`](unlit_wgpu::scene::Scene) in `build_scene`, then the
   renderer records every scene in order into one pass opened over the target's
   attachments. A frame is therefore one encoder and one submission.
+
 - The built-in mesh rendering is one source, [`MeshSource`](mesh_source::MeshSource), and it has no more
   privilege than a caller's own. There is no mesh-specific field or draw path in
-  the renderer.
+  the renderer: the built-in unlit family is registered through the same
+  [`MeshSource::register_family`](mesh_source::MeshSource::register_family) a
+  caller's own family uses, and everything specific to it — its key, its
+  instance record, its mesh and material helpers — lives in the
+  [`unlit`](unlit) module.
 - The GPU state — the [`wgpu::Device`], the [`wgpu::Queue`] and the
   [`ResourceGraph`](unlit_wgpu::resources::ResourceGraph) — lives in the world as
   resource components, addressed by a [`RenderContext`](source::RenderContext).
@@ -162,7 +167,7 @@ used; a mesh carrying its buffers inline would drag them through every walk for
 the sake of a few bytes of bounds. The split is by read frequency, not by kind,
 so a new field belongs on the side that reads it.
 
-[`MeshSource::register_unlit_family`](mesh_source::MeshSource::register_unlit_family)
+[`MeshSourceUnlitExt::register_unlit_family`](unlit::MeshSourceUnlitExt::register_unlit_family)
 registers the built-in unlit family;
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family)
 registers a caller's own, which is the same route the built-in one takes — down
@@ -170,7 +175,7 @@ to the per-instance vertex stream the family owns and declares (see
 [The unlit pipeline](#the-unlit-pipeline)). Other
 components: [`Transform`](components::Transform), [`Camera`](components::Camera),
 [`RenderLoadOps`](components::RenderLoadOps),
-[`InstanceColor`](components::InstanceColor) and the
+[`InstanceColor`](unlit::InstanceColor) and the
 [`ZSortedDrawing`](components::ZSortedDrawing) marker.
 
 A [`ZSortedDrawing`](components::ZSortedDrawing) entity is drawn after the
@@ -338,8 +343,9 @@ through the same public builders. See
 
 ## Custom shaders and per-instance data
 
-Nothing in the frame path is reserved for the built-in unlit shader. A caller's
-family registers through the same
+Nothing in the frame path is reserved for the built-in unlit shader: it lives
+in the [`unlit`](unlit) module as an ordinary family. A caller's family
+registers through the same
 [`MeshSource::register_family`](mesh_source::MeshSource::register_family) call as
 the built-in one and supplies its own pipeline — a hand-written
 [`wgpu::RenderPipeline`] or a WESL module composed against the crate's public
@@ -370,7 +376,7 @@ family that carries no instance state of its own passes `()`, whose stream is
 empty.
 
 The built-in unlit family is just an implementation of this trait
-([`UnlitInstance`](pipeline::UnlitInstance), slot
+([`UnlitInstance`](unlit::UnlitInstance), slot
 [`INSTANCE_SLOT`](unlit_wgpu::pipeline::INSTANCE_SLOT), stride
 [`size_of::<MeshInstance>()`]) — the same interface a caller implements, with
 no private path behind it. It is also the only place the built-in record's
@@ -467,8 +473,8 @@ What it does is patch the world you already render:
 - `spawn_node` / `spawn_default_scene` spawn the entities that draw the node's
   mesh (or every node reachable from the default scene): one entity per
   primitive, each carrying the node's world-space [`Transform`](components::Transform), the uploaded
-  [`GpuMesh`](components::GpuMesh), the [`UnlitPipeline`](components::UnlitPipeline)
-  for the mesh, an [`InstanceColor`](components::InstanceColor) tinted with the
+  [`GpuMesh`](components::GpuMesh), the [`UnlitPipeline`](unlit::UnlitPipeline)
+  for the mesh, an [`InstanceColor`](unlit::InstanceColor) tinted with the
   material's base-color factor, and — when the mesh reads a base-color texture —
   the matching [`GpuMaterial`](components::GpuMaterial). A primitive whose
   material is `alphaMode: BLEND` is also marked
@@ -477,7 +483,7 @@ What it does is patch the world you already render:
   draws binary coverage: the fragment shader discards every fragment whose alpha
   falls below the material's `alphaCutoff` (0.5 when the document leaves it
   out), so the pipeline's `UnlitOptions::alpha_cutoff` is set, the spawned entity
-  carries an [`InstanceCutoff`](components::InstanceCutoff) whose value travels
+  carries an [`InstanceCutoff`](unlit::InstanceCutoff) whose value travels
   in the per-instance stream, and the primitive needs neither blending nor a
   sort.
 - A primitive carrying both `JOINTS_0` and `WEIGHTS_0` is uploaded with its

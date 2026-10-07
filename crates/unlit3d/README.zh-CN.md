@@ -38,7 +38,9 @@ mesh 路径之上增加 glTF 加载器，见下文。
 
 - 每个源在 `build_scene` 中构建自己的 `Scene`，随后渲染器按序把所有场景录制进一个
   在目标附件之上开启的 pass。因此一帧就是一个 encoder、一次提交。
-- 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权。
+- 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：内置
+  unlit 家族通过与调用者家族相同的 `MeshSource::register_family` 注册，一切专属于它的
+  东西——它的 key、实例记录、mesh 与材质辅助方法——都住在 `unlit` 模块里。
   渲染器里没有任何 mesh 专用的字段或绘制路径。
 - GPU 状态——`wgpu::Device`、`wgpu::Queue` 与 `ResourceGraph`——作为资源组件存在于
   world 中，通过 `RenderContext` 寻址。`spawn_context` 负责生成它们并返回地址；
@@ -111,10 +113,10 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 几个字节的包围盒而让每次遍历都把它们拖一遍。拆分的依据是读取频率而不是字段类别，所以新增
 字段应放在读取它的那一侧。
 
-`MeshSource::register_unlit_family` 注册内置的 unlit 家族；`MeshSource::register_family`
+`MeshSourceUnlitExt::register_unlit_family` 注册内置的 unlit 家族；`MeshSource::register_family`
 注册调用者自己的家族，这与内置家族走的是同一条路——连家族自己拥有并声明的逐实例
 顶点流也不例外（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)）。其他组件
-包括 `Transform`、`Camera`、`RenderLoadOps`、`InstanceColor`
+包括 `Transform`、`Camera`、`RenderLoadOps`、`unlit::InstanceColor`
 以及 `ZSortedDrawing` 标记。
 
 带 `ZSortedDrawing` 的实体会在不透明实体之后绘制，并按「网格包围盒中心沿相机视线轴的
@@ -225,7 +227,8 @@ z-sorted 绘制排序与透视相机完全一致。
 
 ## 自定义着色器与逐实例数据
 
-帧路径中没有任何东西是留给内置 unlit 着色器的。调用者的家族通过与内置家族同一个
+帧路径中没有任何东西是留给内置 unlit 着色器的：它作为一个普通家族住在 `unlit` 模块里。
+调用者的家族通过与内置家族同一个
 `MeshSource::register_family` 调用注册，并提供自己的管线——手写的
 `wgpu::RenderPipeline`，或用本 crate 公开的着色器包组合出的 WESL 模块——需要时还提供
 自己的逐实例顶点数据。
@@ -317,12 +320,12 @@ impl InstanceContext<'_> {
   持有，因此丢掉材质句柄就足以释放两者，下一次 `maintain` 回收它们。
 - `spawn_node` / `spawn_default_scene` 生成绘制该节点网格（或默认场景可达的每个节点）
   的实体：每个 primitive 一个实体，各自携带节点的世界空间 `Transform`、已上传的
-  `GpuMesh`、该网格的 `UnlitPipeline`、以材质基础色因子着色的 `InstanceColor`，
+  `GpuMesh`、该网格的 `unlit::UnlitPipeline`、以材质基础色因子着色的 `unlit::InstanceColor`，
   以及——当网格读取基础色纹理时——对应的 `GpuMaterial`。`alphaMode: BLEND` 的
   primitive 还会带上 `ZSortedDrawing` 标记，于是渲染器在绘制完不透明几何之后按由远及近
   的顺序混合它。`alphaMode: MASK` 的材质则绘制二值覆盖：片元着色器丢弃 alpha 低于材质
   `alphaCutoff` 的片元（文档未给出时为 0.5），因此管线的 `UnlitOptions::alpha_cutoff` 被置位，
-  生成的实体带上 `InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
+  生成的实体带上 `unlit::InstanceCutoff`，其值走逐实例流，该 primitive 既不需要混合也不需要排序。
 - 同时带有 `JOINTS_0` 与 `WEIGHTS_0` 的 primitive 会上传其关节流并按蒙皮绘制：
   `spawn_node` / `spawn_default_scene` 为该节点的 skin 生成一个 `SkinPose` 实体，并在网格上
   放置 `SkinBinding`，因此写入该 pose 的矩阵就是调用方驱动骨架的方式。
