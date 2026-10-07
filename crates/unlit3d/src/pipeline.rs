@@ -45,21 +45,17 @@
 use arrayvec::ArrayVec;
 use glam::Affine3A;
 use unlit_ecs::{Entity, World};
-use unlit_wgpu::mesh::{JointMatrix, MeshInstance};
+use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::pipeline::{
-    CAMERA_BINDING, FRAME_BINDING, GlobalBindings, INSTANCE_SLOT, JOINTS_BINDING,
-    MESH_METADATA_BINDING, MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
+    CAMERA_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING, MESH_METADATA_BINDING,
+    MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
     supports_storage_buffers,
 };
 use unlit_wgpu::resources::{Resource, ResourceGraph, ResourceId};
 use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::texel_array::ArrayHandle;
-use zerocopy::IntoBytes;
 
-use crate::components::{
-    GpuMaterial, GpuMesh, InstanceColor, InstanceCutoff, MorphBinding, MorphWeights, SkinBinding,
-    SkinPose,
-};
+use crate::components::{GpuMaterial, GpuMesh, MorphBinding, MorphWeights, SkinBinding, SkinPose};
 
 pub use unlit_wgpu::resources::Rebuild;
 
@@ -325,7 +321,7 @@ pub use unlit_wgpu::instance_stream::InstanceStreamDesc;
 /// while it writes one instance record.
 ///
 /// The record is the family's own: the built-in unlit family builds a
-/// [MeshInstance], while a caller's family writes whatever its pipeline's
+/// [MeshInstance](unlit_wgpu::mesh::MeshInstance), while a caller's family writes whatever its pipeline's
 /// instance-step attributes declare, reading the components it needs from the
 /// world. Culling resolved only the entity and its placement; what else a draw
 /// carries, the family decides here.
@@ -470,56 +466,6 @@ impl InstanceData for () {
     }
 
     fn write(&mut self, _context: &mut InstanceContext<'_>, _out: &mut [u8]) {}
-}
-
-/// The built-in unlit family's instance record: the resolved [MeshInstance].
-///
-/// It is an ordinary [InstanceData] implementation, with no more privilege than
-/// a caller's: it reads the entity's transform, tint, cutoff, mesh metadata and
-/// skin/morph state from the same world and the same pack methods any family
-/// uses, and writes the [MeshInstance] layout the built-in shader declares.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct UnlitInstance;
-
-impl InstanceData for UnlitInstance {
-    fn stream(&self) -> InstanceStreamDesc {
-        InstanceStreamDesc {
-            slot: INSTANCE_SLOT,
-            array_stride: size_of::<MeshInstance>() as u32,
-        }
-    }
-
-    fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
-        let world = context.world;
-        let entity = context.entity;
-        let mesh = world
-            .get::<GpuMesh>(entity)
-            .expect("every visible entity carries the mesh culling resolved");
-        let base_color = world
-            .get::<InstanceColor>(entity)
-            .map_or(glam::Vec4::ONE, |color| color.color);
-        let cutoff = world
-            .get::<InstanceCutoff>(entity)
-            .map_or(0.0, |cutoff| cutoff.cutoff);
-        // Skinning and morphing are independent: a mesh may have either, both
-        // or neither, and each packs into its own array.
-        let joints_base = if mesh.skinned {
-            context.pack_joints()
-        } else {
-            0
-        };
-        let morph_base = if mesh.morph_targets > 0 {
-            context.pack_morph_weights(mesh.morph_targets)
-        } else {
-            0
-        };
-        let instance = MeshInstance::new(context.world_from_local, base_color)
-            .with_joints_base(joints_base)
-            .with_morph_base(morph_base)
-            .with_metadata_index(mesh.parts.metadata_index)
-            .with_cutoff(cutoff);
-        out.copy_from_slice(instance.as_bytes());
-    }
 }
 
 /// A concrete pipeline's position in a source's own pipeline list.

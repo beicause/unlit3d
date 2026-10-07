@@ -15,6 +15,7 @@ pub mod scene;
 pub mod source;
 #[cfg(feature = "ui")]
 pub mod ui;
+pub mod unlit;
 #[cfg(feature = "winit")]
 pub mod winit;
 
@@ -22,12 +23,15 @@ pub mod winit;
 pub mod prelude {
     #[cfg(feature = "ui")]
     pub use crate::ui::{UiPanel, UiSource};
+    pub use crate::unlit::{
+        InstanceColor, InstanceCutoff, MeshSourceUnlitExt, UnlitInstance, UnlitMeshDesc,
+        UnlitPipeline, UnlitPipelineKey,
+    };
     pub use crate::{
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
-            Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceColor, MeshParts,
-            MorphBinding, MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform,
-            UnlitPipeline, ZSortedDrawing,
+            Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MeshParts, MorphBinding, MorphWeights,
+            RenderLoadOps, SkinBinding, SkinPose, Transform, ZSortedDrawing,
         },
         culling::is_culled,
         input::{
@@ -36,12 +40,11 @@ pub mod prelude {
             PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent, TouchEvent,
             TouchPhase, WheelUnit, dispatch_input,
         },
-        mesh::{JointMatrix, MeshDesc, MorphDeltas, UnlitMeshDesc, VertexBufferDesc},
-        mesh_source::{MeshSource, UnlitPipelineKey},
+        mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
+        mesh_source::MeshSource,
         pipeline::{
             FamilyContext, GlobalResources, InstanceContext, InstanceData, InstanceStreamDesc,
             Rebuild, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
-            UnlitInstance,
         },
         renderer::Renderer,
         source::{

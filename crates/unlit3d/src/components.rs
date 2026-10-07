@@ -16,8 +16,6 @@ use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::VertexLayout;
 
 use crate::bounds::Aabb;
-use crate::mesh_source::UnlitPipelineKey;
-
 /// World-space transform (translation, rotation, scale).
 ///
 /// The renderer reads this component to position each entity in world space.
@@ -237,7 +235,7 @@ pub struct MeshParts {
 /// A handle to a mesh stored in the source's GPU resource graph.
 ///
 /// Created by [`MeshSource::allocate_mesh`](crate::mesh_source::MeshSource::allocate_mesh) or
-/// [`MeshSource::allocate_unlit_mesh`](crate::mesh_source::MeshSource::allocate_unlit_mesh).
+/// [`MeshSourceUnlitExt::allocate_unlit_mesh`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_mesh).
 /// The mesh is ready to draw immediately, and it lives as long as some
 /// [`GpuMesh`] names it: dropping the last handle makes it collectable by the
 /// next `maintain`, after which the pool ranges it held are handed back with
@@ -452,18 +450,12 @@ impl<Key> GpuRenderPipeline<Key> {
     }
 }
 
-/// The built-in unlit pipeline component.
-///
-/// It carries an [UnlitPipelineKey], which names the built-in unlit family and
-/// supplies the options the entity's variants are specialized from.
-pub type UnlitPipeline = GpuRenderPipeline<UnlitPipelineKey>;
-
 /// A handle to a material bind group in the source's GPU resource graph.
 ///
 /// Created by
 /// [`MeshSource::allocate_material`](crate::mesh_source::MeshSource::allocate_material) for a
 /// caller's own layout, or by
-/// [`MeshSource::allocate_unlit_material`](crate::mesh_source::MeshSource::allocate_unlit_material)
+/// [`MeshSourceUnlitExt::allocate_unlit_material`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_material)
 /// for the built-in shader's base-color texture and sampler. The bind group
 /// lives as long as some handle names it; dropping the last one makes it
 /// collectable by the next `maintain`.
@@ -498,62 +490,6 @@ impl GpuMaterial {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ZSortedDrawing;
 
-/// Per-instance color, multiplying the base color.
-///
-/// The renderer packs it into the per-instance vertex stream next to the model
-/// matrix, so two entities sharing a mesh can still be tinted differently.
-/// Entities without this component are drawn white.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct InstanceColor {
-    /// Base color (RGBA, unpremultiplied).
-    pub color: glam::Vec4,
-}
-
-impl Default for InstanceColor {
-    fn default() -> Self {
-        Self {
-            color: glam::Vec4::ONE,
-        }
-    }
-}
-
-impl InstanceColor {
-    /// A color component carrying `color`.
-    pub const fn new(color: glam::Vec4) -> Self {
-        Self { color }
-    }
-}
-
-/// Per-instance alpha cutoff, discarding fragments below it.
-///
-/// The renderer packs it into the per-instance vertex stream next to the model
-/// matrix, so two entities sharing a mesh and a cut-off pipeline can still cut
-/// at different alphas. Entities without this component leave the cutoff at
-/// zero, which no alpha falls below, and so discard nothing.
-///
-/// The component only supplies the value the shader compares against; a
-/// pipeline only reads it when its
-/// [`UnlitOptions::alpha_cutoff`](unlit_wgpu::pipeline::UnlitOptions::alpha_cutoff)
-/// is set, which decides whether the stream carries the attribute at all.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct InstanceCutoff {
-    /// Alpha a fragment has to reach to be drawn.
-    pub cutoff: f32,
-}
-
-impl Default for InstanceCutoff {
-    fn default() -> Self {
-        Self { cutoff: 0.0 }
-    }
-}
-
-impl InstanceCutoff {
-    /// A cutoff component discarding fragments below `cutoff`.
-    pub const fn new(cutoff: f32) -> Self {
-        Self { cutoff }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,11 +513,6 @@ mod tests {
             glam::Vec3::new(1.0, 2.0, 3.0),
         );
         assert_eq!(t.compute_matrix(), expected);
-    }
-
-    #[test]
-    fn default_instance_color_is_white() {
-        assert_eq!(InstanceColor::default().color, glam::Vec4::ONE);
     }
 
     #[test]

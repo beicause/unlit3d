@@ -116,11 +116,15 @@
 use std::path::Path;
 
 use crate::components::{
-    GpuMaterial, GpuMesh, InstanceColor, InstanceCutoff, MorphBinding, MorphWeights, SkinBinding,
-    SkinPose, Transform, UnlitPipeline, ZSortedDrawing,
+    GpuMaterial, GpuMesh, MorphBinding, MorphWeights, SkinBinding, SkinPose, Transform,
+    ZSortedDrawing,
 };
-use crate::mesh::{MorphDeltas, UnlitMeshDesc};
-use crate::mesh_source::{MeshSource, UnlitPipelineKey};
+use crate::mesh::MorphDeltas;
+use crate::mesh_source::MeshSource;
+use crate::unlit::{
+    InstanceColor, InstanceCutoff, MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline,
+    UnlitPipelineKey,
+};
 use gltf::animation::util::ReadOutputs;
 use gltf::animation::{Interpolation, Property};
 use unlit_ecs::{
