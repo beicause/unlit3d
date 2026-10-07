@@ -65,12 +65,15 @@ given, in the order each source declares through
   already produced, so no borrow conflict ever arises between a source's own
   state and the graph.
 - **The graph is maintained once per frame, in the build phase.** `replace` only
-  marks; the source calls `ResourceGraph::maintain` exactly once, after its
-  uploads and before it assembles the frame, so the resources nothing holds any
-  more are collected and the dirty bind groups rebuilt in one pass. A frame that
-  draws nothing still maintains, and the paths outside the scene — a surface
-  resize, a swap-chain acquire — maintain explicitly rather than holding the
-  old resources until the next scene build.
+  marks; the source maintains exactly once, after its uploads and before it
+  assembles the frame, so the resources nothing holds any more are collected and
+  the dirty bind groups rebuilt in one pass. A source states that point with
+  `RenderContext::maintain_scope`, a guard that maintains the graph when it
+  drops: every early return a source takes when it has nothing to draw settles
+  the graph with no call to remember, and the source drops the guard explicitly
+  where the frame is assembled. A frame that draws nothing still maintains, and
+  the paths outside the scene — a surface resize, a swap-chain acquire — maintain
+  explicitly rather than holding the old resources until the next scene build.
 - A source's GPU resources live exactly as long as some handle names them, so
   despawning a source's entity drops its handles and the next `maintain`
   collects what that leaves. There is no release call to remember.

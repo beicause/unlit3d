@@ -67,6 +67,47 @@ pub struct RenderContext {
     pub capabilities: Entity,
 }
 
+impl RenderContext {
+    /// Maintain the frame's [`ResourceGraph`] when the returned scope drops.
+    ///
+    /// Call this at the top of [`FrameSource::build_scene`] and drop the scope
+    /// before reading a resource: every return in between — including the early
+    /// ones a source takes when it has nothing to draw — settles the graph, so
+    /// no path has to remember to. The pass is the same one
+    /// [`ResourceGraph::maintain`] makes; the scope only decides when it runs.
+    ///
+    /// The scope borrows neither the graph nor the source: it holds the world
+    /// and this context's graph address, and fetches the graph when it ends, so
+    /// the code between taking the scope and dropping it is free to borrow the
+    /// graph itself, as a build does.
+    pub fn maintain_scope<'w>(self, world: &'w World) -> MaintainScope<'w> {
+        MaintainScope { world, ctx: self }
+    }
+}
+
+/// Maintains the frame's resource graph when it ends.
+///
+/// [`RenderContext::maintain_scope`] returns one. It is a scope guard rather
+/// than a call so that a frame source cannot forget the pass on a return: the
+/// guard settles the graph on every way out of the scope it lives in, and a
+/// build that has to read the graph before the end — assembling a frame from
+/// the bind groups the pass just rebuilt — drops it explicitly at that point.
+#[must_use = "the graph is maintained when the scope is dropped"]
+pub struct MaintainScope<'w> {
+    world: &'w World,
+    ctx: RenderContext,
+}
+
+impl Drop for MaintainScope<'_> {
+    fn drop(&mut self) {
+        // A missing graph is a caller error, and panicking here would be a
+        // second panic on the way out of one, so the scope does nothing.
+        if let Some(mut graph) = self.world.get_mut::<ResourceGraph>(self.ctx.graph) {
+            graph.maintain();
+        }
+    }
+}
+
 /// The render target the frame currently draws into.
 ///
 /// A source specializes every pipeline on the frame's target, but
@@ -1166,6 +1207,48 @@ mod release_tests {
         }
     }
 
+    /// A source whose build takes a maintain scope and then returns at once,
+    /// the way a source with nothing to draw does.
+    struct EarlyReturnSource {
+        context: RenderContext,
+        node: Option<ResourceId>,
+        scene: Scene,
+    }
+
+    impl FrameSource for EarlyReturnSource {
+        fn build_scene(
+            &mut self,
+            world: &World,
+            ctx: RenderContext,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+            // The scope is the whole of the build's graph handling: this source
+            // never calls `maintain`, and the return is what settles the graph.
+            let _maintain = ctx.maintain_scope(world);
+            self.context = ctx;
+            if self.node.is_none() {
+                self.node = Some(
+                    world
+                        .get_mut::<ResourceGraph>(ctx.graph)
+                        .expect("the context's graph exists")
+                        .insert(GraphResource::Virtual, None),
+                );
+            } else {
+                // A source with nothing left to draw: it gives its node up and
+                // returns, leaving the scope's drop to collect it.
+                self.node = None;
+            }
+        }
+
+        fn scene(&self) -> &Scene {
+            &self.scene
+        }
+
+        fn order(&self) -> FrameOrder {
+            FrameOrder::MESH
+        }
+    }
+
     fn noop_context(world: &mut World) -> RenderContext {
         spawn_context(
             world,
@@ -1193,7 +1276,7 @@ mod release_tests {
     }
 
     /// How many nodes the context's graph holds.
-    fn graph_len(world: &mut World, ctx: RenderContext) -> usize {
+    fn graph_len(world: &World, ctx: RenderContext) -> usize {
         world.get_mut::<ResourceGraph>(ctx.graph).unwrap().len()
     }
 
@@ -1224,7 +1307,7 @@ mod release_tests {
         );
         build_once(&mut world, entity, ctx);
         assert_eq!(
-            graph_len(&mut world, ctx),
+            graph_len(&world, ctx),
             1,
             "the source registered exactly the node it owns"
         );
@@ -1234,14 +1317,14 @@ mod release_tests {
         // Giving up the id only moves a count: the node is still there, and
         // the graph resolves it until something maintains.
         assert_eq!(
-            graph_len(&mut world, ctx),
+            graph_len(&world, ctx),
             1,
             "dropping an id does not itself remove the node"
         );
 
         maintain(&mut world, ctx);
         assert_eq!(
-            graph_len(&mut world, ctx),
+            graph_len(&world, ctx),
             0,
             "maintain collected the node nothing refers to"
         );
@@ -1265,7 +1348,7 @@ mod release_tests {
         world.despawn(entity);
         assert!(!world.contains(entity));
         maintain(&mut world, ctx);
-        assert_eq!(graph_len(&mut world, ctx), 0);
+        assert_eq!(graph_len(&world, ctx), 0);
     }
 
     /// Two sources leaving in the same frame give up their ids, and the frame's
@@ -1292,11 +1375,7 @@ mod release_tests {
         for &entity in &entities {
             build_once(&mut world, entity, ctx);
         }
-        assert_eq!(
-            graph_len(&mut world, ctx),
-            2,
-            "each source registered a node"
-        );
+        assert_eq!(graph_len(&world, ctx), 2, "each source registered a node");
 
         for &entity in &entities {
             world.despawn(entity);
@@ -1305,7 +1384,7 @@ mod release_tests {
         // Both removals only moved counts: the nodes the two sources owned are
         // still there until the frame maintains.
         assert_eq!(
-            graph_len(&mut world, ctx),
+            graph_len(&world, ctx),
             2,
             "dropping an id does not itself remove the node"
         );
@@ -1313,9 +1392,40 @@ mod release_tests {
         // The frame's one pass drops everything the two of them gave up.
         maintain(&mut world, ctx);
         assert_eq!(
-            graph_len(&mut world, ctx),
+            graph_len(&world, ctx),
             0,
             "the single maintain collected every unreferenced node"
+        );
+    }
+
+    /// A build that returns early still settles the graph: the scope a source
+    /// takes at its top maintains on the way out, so no return has to remember
+    /// the call.
+    #[test]
+    fn a_build_that_returns_early_still_maintains() {
+        let mut world = World::new();
+        let ctx = noop_context(&mut world);
+        let entity = spawn_source(
+            &mut world,
+            EarlyReturnSource {
+                context: ctx,
+                node: None,
+                scene: Scene::new(),
+            },
+        );
+
+        // The first build registers the node the source owns.
+        build_once(&mut world, entity, ctx);
+        assert_eq!(graph_len(&world, ctx), 1, "the source registered a node");
+
+        // The second build gives it up and returns at once. Nothing calls
+        // `maintain`: the scope's drop is the pass, and it collects the node
+        // the build left unreferenced.
+        build_once(&mut world, entity, ctx);
+        assert_eq!(
+            graph_len(&world, ctx),
+            0,
+            "the early return maintained the graph"
         );
     }
 }

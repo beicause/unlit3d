@@ -288,6 +288,10 @@ impl FrameSource for UiSource {
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        // Settle the graph on every way out of this build, the early return
+        // below included. The pass runs where this scope ends, once the
+        // integration has uploaded and before the scene reads a group.
+        let maintain = ctx.maintain_scope(world);
         // Cleared on every path: a frame that records this source must never
         // replay the previous frame's UI.
         self.scene.clear();
@@ -407,8 +411,11 @@ impl FrameSource for UiSource {
 
         // The frame's one rebuild pass: the uniform writes and the textures the
         // integration just uploaded marked their readers dirty, and the scene
-        // assembled below reads the rebuilt groups.
-        graph.maintain();
+        // assembled below reads the rebuilt groups. The graph borrow is given
+        // up first, because the scope takes it again to run the pass.
+        drop(graph);
+        drop(maintain);
+        let graph = Self::graph(world, ctx);
 
         let mut ui_scene = gpu.integration.scene(&graph);
         self.scene.extend(&mut ui_scene);

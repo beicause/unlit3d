@@ -1699,8 +1699,9 @@ impl MeshSource {
     ///
     /// Collects the resources nothing holds any more, then rebuilds every
     /// dirty node whose recipe the graph holds — the global bind groups among
-    /// them. Called once per built scene, at the point before the frame reads
-    /// any of those groups.
+    /// them. A built scene runs it once, at the point before the frame reads
+    /// any of those groups; [`RenderContext::maintain_scope`] is how a build
+    /// states that point without a call at each of its returns.
     pub fn maintain(&mut self, world: &World) {
         Self::graph(world, self.context).maintain();
     }
@@ -2033,9 +2034,14 @@ impl FrameSource for MeshSource {
     fn build_scene(
         &mut self,
         world: &World,
-        _ctx: RenderContext,
+        ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
+        // Settle the graph on every way out of this build, the early returns
+        // below included, rather than only on the path that draws. The pass
+        // runs where this scope ends — see the explicit drop before the frame
+        // is assembled — and on any return in between.
+        let maintain = ctx.maintain_scope(world);
         profiling::scope!("mesh_source.build");
         // The scene is cleared on every path: a frame that records it must
         // never replay the previous frame's draws, and a source with nothing
@@ -2054,8 +2060,8 @@ impl FrameSource for MeshSource {
         let Some(camera) = camera else {
             // Even a frame that draws nothing has to settle the graph: meshes
             // allocated or removed since the last frame are waiting, and the
-            // next frame's reads assume a maintained graph.
-            self.maintain(world);
+            // next frame's reads assume a maintained graph. Returning here
+            // drops the scope, which is what settles it.
             return;
         };
 
@@ -2081,7 +2087,6 @@ impl FrameSource for MeshSource {
                  frame's render target is unknown and nothing is drawn; write \
                  one by binding a render target before rendering"
             );
-            self.maintain(world);
             return;
         };
         let surface = target.surface;
@@ -2106,7 +2111,6 @@ impl FrameSource for MeshSource {
         // its allocation between frames, so a steady scene allocates nothing.
         self.collect_and_sort_visible(world, &camera, surface);
         if self.visible_cache.is_empty() {
-            self.maintain(world);
             return;
         }
         // Resolve and pack every visible instance's pose before the instance
@@ -2135,12 +2139,12 @@ impl FrameSource for MeshSource {
         }
 
         // Settle the graph for this frame: collect what nothing holds any more
-        // and rebuild what the uploads above marked dirty. This is the one
-        // point the frame maintains, and it runs after every replacement and
+        // and rebuild what the uploads above marked dirty. Dropping the scope
+        // is the one pass, and it runs here — after every replacement and
         // before anything reads a bind group.
         {
             profiling::scope!("mesh_source.maintain");
-            self.maintain(world);
+            drop(maintain);
         }
 
         {
