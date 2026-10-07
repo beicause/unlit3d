@@ -41,8 +41,12 @@ be given.
 ## Camera
 
 A camera is either built from `eye`, `target`, `up`, `fov_y` (degrees) and
-`z_near`, or set outright as a column-major 4x4 `matrix`. The matrix wins when
-both are given: it is the full clip-from-world transform, while the named fields
+`z_near`, or set outright from a pair of column-major 4x4 matrices: a view
+(world-to-view) matrix and a projection (view-to-clip) matrix, given together as
+`view` and `projection` in the configuration file or
+`--camera-view-matrix` and `--camera-projection-matrix` on the command line. The
+matrices win when both are given, since the camera holds its view and projection
+apart and one combined matrix cannot be split back into them; the named fields
 build a right-handed look-at view and a DirectX-style infinite-reverse
 projection, the same camera `unlit3d_examples` draws its scenes with.
 

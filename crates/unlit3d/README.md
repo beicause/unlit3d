@@ -132,7 +132,7 @@ cannot borrow an entity's row order within the archetype, because that row order
 is not guaranteed stable and is disturbed when components are removed.
 
 The ordering semantics a [`Scene`](unlit_wgpu::scene::Scene) already has
-internally (non-z-sorted first, then by pipeline and by material/depth) are
+internally (non-z-sorted first, then by pipeline and by material or view-axis depth) are
 unchanged; the ordering among sources is not a hard constraint forced by
 pass-level state — a scene carries the pass state it needs and resets it while
 recording — but a need of semantics like "UI composites over 3D".
@@ -173,11 +173,36 @@ components: [`Transform`](components::Transform), [`Camera`](components::Camera)
 [`InstanceColor`](components::InstanceColor) and the
 [`ZSortedDrawing`](components::ZSortedDrawing) marker.
 
+A [`ZSortedDrawing`](components::ZSortedDrawing) entity is drawn after the
+opaque ones and ordered back-to-front by the depth of its mesh's bounds centre
+along the camera's view axis — see
+[`Camera::view_depth`](components::Camera::view_depth) — so a mesh whose pivot
+is offset from its geometry still sorts by what it draws rather than by its
+origin.
+
 A frame is drawn through the first **active** [`Camera`](components::Camera) in
 the world — the renderer skips an entity whose
 [`Camera::active`](components::Camera::active) is `false`. A world can therefore
 hold several cameras and switch between them by toggling that flag per frame;
 with no active camera the frame is cleared and nothing is drawn.
+
+The camera convention is the engine's own: a **right-handed**, **Y-up** view
+space projected into WebGPU's **`[0, 1]`** clip-space depth range and drawn
+with **reverse-Z**.
+A camera holds its view and projection apart:
+[`Camera::view_from_world`](components::Camera::view_from_world) and
+[`Camera::clip_from_view`](components::Camera::clip_from_view). A caller composes
+them from any projection it likes —
+[`glam::camera::rh`](https://docs.rs/glam/latest/glam/camera/rh/index.html)
+offers both perspective and orthographic constructors — and
+[`Camera::clip_from_world`](components::Camera::clip_from_world) combines them for
+the vertex stage. The eye position is not stored: it is
+[`Camera::position`](components::Camera::position), the translation of the
+view-to-world matrix. Reverse-Z is what the built-in pipeline's `Greater` depth
+comparison and the depth clear to `0.0` expect. It is not what
+[`Camera::view_depth`](components::Camera::view_depth) reads, since that takes the
+depth straight off the view matrix: an orthographic camera sorts z-sorted draws
+exactly as a perspective one does.
 
 <details>
 <summary>Why a family sits between the entity and the pipeline cache</summary>
@@ -245,7 +270,9 @@ Opaque draws are depth-tested with blending off, so their order is not
 observable and merging them is safe. Z-sorted entries never merge, with each
 other or with anything else: they are blended back-to-front, so the order they
 are drawn in *is* the result, and a merged draw would rasterize its instances in
-record order instead.
+record order instead. Their order comes from the depth of each mesh's bounds
+centre along the camera's view axis, so it follows the geometry a mesh actually
+draws rather than its pivot or its straight-line distance to the eye.
 
 </details>
 

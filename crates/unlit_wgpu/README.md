@@ -237,7 +237,7 @@ impl Example {
         // 4. The global group: camera, frame clock, and the per-mesh decode
         //    parameters. The layouts carry each struct's shader size, so wgpu
         //    validates the bindings when the bind group is created.
-        let camera = View::new(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
+        let camera = View::from_clip_from_world(glam::Mat4::IDENTITY, glam::Vec3::ZERO);
         let globals = Globals::default();
         let camera = upload(camera.as_bytes(), wgpu::BufferUsages::UNIFORM, "camera");
         let globals = upload(globals.as_bytes(), wgpu::BufferUsages::UNIFORM, "globals");

@@ -32,10 +32,12 @@ cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unli
 
 ## 相机
 
-相机既可以由 `eye`、`target`、`up`、`fov_y`（角度）与 `z_near` 构建，也可以直接给出一个
-列主序的 4x4 `matrix`。两者都给时以矩阵为准：它是完整的 clip-from-world 变换，而命名字段
-构建的是右手系 look-at 视图与 DirectX 风格无限远反向投影，与 `unlit3d_examples` 绘制其场景
-所用的相机一致。
+相机既可以由 `eye`、`target`、`up`、`fov_y`（角度）与 `z_near` 构建，也可以直接给出
+一对列主序 4x4 矩阵：视图（world-to-view）矩阵与投影（view-to-clip）矩阵，在配置文件中为
+`view` 与 `projection`，在命令行上为 `--camera-view-matrix` 与
+`--camera-projection-matrix`。两者都给时以矩阵为准：相机把视图与投影分开保存，单个合并矩阵
+无法拆回它们；命名字段构建的是右手系 look-at 视图与 DirectX 风格无限远反向投影，与
+`unlit3d_examples` 绘制其场景所用的相机一致。
 
 ## 配置文件
 
