@@ -223,18 +223,41 @@ active 相机时，帧会被清空，什么都不绘制。
 ```ignore
 pub trait InstanceData: 'static {
     fn stream(&self) -> InstanceStreamDesc;
-    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]);
-    fn needs_poses(&self) -> bool { false }
+    fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]);
 }
 ```
 
-`stream` 声明顶点缓冲槽位与记录步长，`write` 从实体的组件填出一条记录——它拿到
-`World`、实体以及内置的 `MeshInstance`——`needs_poses` 则让该家族选择加入
-姿势打包，只有真正读取关节与形变数组的家族才应如此。自身没有逐实例状态的家族传
+`stream` 声明顶点缓冲槽位与记录步长，`write` 为一个实体填出一条记录。剔除阶段
+只把实体及其已解析的世界变换交给家族；记录里其余的字段——颜色、裁剪值、网格元数据
+索引、蒙皮或形变基址——由家族自己从 world 读取，想读什么读什么。这就是自定义的
+「收集」一侧：由家族决定收集哪些组件、记录长什么样。自身没有逐实例状态的家族传
 `()`，其流为空。
 
 内置 unlit 家族只是这个 trait 的一个实现（`UnlitInstance`，槽位 `INSTANCE_SLOT`，
 步长 `size_of::<MeshInstance>()`）——与调用者实现的接口相同，背后没有任何私有路径。
+它也是唯一构造内置记录 `MeshInstance` 的地方：那条记录属于 unlit 家族，而不属于共享
+帧路径，因此自定义家族不会拿到任何由帧代造的记录——它写的是自己管线声明的格式。
+
+### 蒙皮与形变状态
+
+蒙皮与形变是两个独立概念，因此实例上下文带的是两个各自增长的数组和两个打包方法，
+而不是一个笼统的「姿势」：
+
+```ignore
+impl InstanceContext<'_> {
+    pub fn pack_joints(&mut self) -> u32;
+    pub fn pack_morph_weights(&mut self, targets: u32) -> u32;
+}
+```
+
+`pack_joints` 把实体的关节矩阵——即其 `SkinBinding` 指名的 `SkinPose`——追加到
+本帧关节数组，并返回其切片起始下标；`pack_morph_weights` 对 `MorphBinding` 指名的
+`MorphWeights` 做同样的事，并校验权重数量与网格 target 数一致。两者都不画的家族
+两者都不调用；unlit 家族对蒙皮网格调用 `pack_joints`、对形变网格调用
+`pack_morph_weights`，把返回的两个基址写进记录。
+
+数组本身归 source 所有：由它持有、扩容，并在所有家族写完记录后每帧统一上传。家族
+只在写记录时向其中追加，这正是它们作为通用共享设施、而非 unlit 专属状态的原因。
 
 <details>
 <summary>家族的记录如何到达绘制</summary>

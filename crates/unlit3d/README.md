@@ -328,17 +328,17 @@ owns one instance stream, described by
 ```ignore
 pub trait InstanceData: 'static {
     fn stream(&self) -> InstanceStreamDesc;
-    fn write(&mut self, context: &InstanceContext<'_>, out: &mut [u8]);
-    fn needs_poses(&self) -> bool { false }
+    fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]);
 }
 ```
 
 [`stream`](pipeline::InstanceData::stream) declares the vertex-buffer slot and
-the record stride, [`write`](pipeline::InstanceData::write) fills one record from
-the entity's components — it is handed the `World`, the entity and the built-in
-[`MeshInstance`](unlit_wgpu::mesh::MeshInstance) — and
-[`needs_poses`](pipeline::InstanceData::needs_poses) opts the family into pose
-packing, which only a family that reads the joint and morph arrays should do. A
+the record stride, and [`write`](pipeline::InstanceData::write) fills one record
+for one entity. Culling hands the family only the entity and its resolved world
+transform; everything else the record carries — the tint, the cutoff, the mesh
+metadata index, a skin or morph base — the family reads from the world for
+itself, exactly as it likes. That is the collection side of customization: a
+family decides which components it collects and what its record looks like. A
 family that carries no instance state of its own passes `()`, whose stream is
 empty.
 
@@ -346,7 +346,39 @@ The built-in unlit family is just an implementation of this trait
 ([`UnlitInstance`](pipeline::UnlitInstance), slot
 [`INSTANCE_SLOT`](unlit_wgpu::pipeline::INSTANCE_SLOT), stride
 [`size_of::<MeshInstance>()`]) — the same interface a caller implements, with
-no private path behind it.
+no private path behind it. It is also the only place the built-in record's
+[`MeshInstance`](unlit_wgpu::mesh::MeshInstance) is built: that record belongs
+to the unlit family, not to the shared frame path, so a custom family is handed
+no record of the frame's making — it writes whatever its own pipeline declares.
+
+### Skin and morph state
+
+Skinning and morphing are independent concepts, so the instance context carries
+two separate growing arrays and two separate pack methods rather than one
+"pose":
+
+```ignore
+impl InstanceContext<'_> {
+    pub fn pack_joints(&mut self) -> u32;
+    pub fn pack_morph_weights(&mut self, targets: u32) -> u32;
+}
+```
+
+[`pack_joints`](pipeline::InstanceContext::pack_joints) appends the entity's
+joint matrices — the [`SkinPose`](components::SkinPose) its
+[`SkinBinding`](components::SkinBinding) names — to the frame's joint array and
+returns the index its slice starts at.
+[`pack_morph_weights`](pipeline::InstanceContext::pack_morph_weights) does the
+same for the [`MorphWeights`](components::MorphWeights) its
+[`MorphBinding`](components::MorphBinding) names, checking the weight count
+against the mesh's target count. A family that draws neither calls neither; the
+unlit family calls `pack_joints` for a skinned mesh and `pack_morph_weights`
+for a morphed one, and puts the two returned bases into its record.
+
+The arrays themselves are the source's: it owns them, grows them and uploads
+them once per frame, after every family has written its records. A family only
+appends to them while it writes, which is what keeps them a shared, general
+facility rather than unlit-specific state.
 
 <details>
 <summary>How a family's records reach the draw</summary>
@@ -370,8 +402,9 @@ no private path behind it.
 
 ### The frame's shared inputs
 
-A custom pipeline that wants the camera, the globals, or the pose and metadata
-arrays binds them through public builders rather than reimplementing the layout:
+A custom pipeline that wants the camera, the globals, or the metadata,
+joint-matrix and morph-weight arrays binds them through public builders rather
+than reimplementing the layout:
 [`GlobalResources::layout`](pipeline::GlobalResources::layout) builds the
 [`wgpu::BindGroupLayout`] from a
 [`GlobalBindings`](unlit_wgpu::pipeline::GlobalBindings) description, and
