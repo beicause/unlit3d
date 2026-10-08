@@ -258,4 +258,20 @@ fn the_stdio_server_lists_its_tools_and_renders() {
         refusals > 0,
         "a buffer without COPY_SRC is refused rather than crashing the host"
     );
+
+    // A sent event stays in the state until it is cleared, and reading the
+    // state reports it, so a caller can see what happened this frame.
+    server.tool(
+        "send_input",
+        json!({ "events": [{ "kind": "key", "key": "A", "pressed": true }] }),
+    );
+    let input = server.tool("input_state", json!({}));
+    let events = input["events"]
+        .as_array()
+        .expect("the input state lists its events");
+    assert_eq!(events.len(), 1, "the one sent event is reported: {input}");
+    assert!(
+        input.to_string().contains("\"A\""),
+        "the event names the key that was sent: {input}"
+    );
 }

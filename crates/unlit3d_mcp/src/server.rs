@@ -226,10 +226,10 @@ impl McpServer {
             .await
     }
 
-    /// The first input state.
+    /// The first input state, including the frame's events.
     #[tool(
         name = "input_state",
-        description = "Read the world's first InputState."
+        description = "Read the world's first InputState: its state and the events that arrived since they were last cleared."
     )]
     pub async fn input_state(&self) -> Result<CallToolResult, ErrorData> {
         self.command(|context| context.input_state()).await

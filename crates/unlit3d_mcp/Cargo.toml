@@ -27,7 +27,7 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync", "time"] }
 unlit_ecs = { path = "../unlit_ecs" }
 unlit_wgpu = { path = "../unlit_wgpu", default-features = false, features = ["unlit"] }
-unlit3d = { path = "../unlit3d", default-features = false, features = ["gltf"] }
+unlit3d = { path = "../unlit3d", default-features = false, features = ["gltf", "reflect"] }
 wgpu.workspace = true
 
 [lints]

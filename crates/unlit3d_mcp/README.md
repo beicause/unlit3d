@@ -16,11 +16,32 @@ not. Every tool is written against the same public API a person would use — a
 for built-in pipelines and no shortcut for the server, so anything the server can
 do, a caller can do; and anything a caller cannot do, the server cannot either.
 
-The one thing the server does add is a **component registry**: components are any
-`'static` type, so a world alone cannot name one. The registry pairs each
-supported component with an encode/decode pair, which is what turns a component
-into JSON a client can read and write. It is an ordinary public type a caller can
-extend with its own components.
+The one thing that has to be written down is which components a JSON bridge can
+name: components are any `'static` type, so a world alone cannot name one. A
+component becomes addressable by submitting an entry to a link-time table in
+`unlit3d`'s `reflect` feature — the entry pairs the type with a way in and a way
+out of JSON.
+
+For most components there is no second declaration to write: the component
+derives its own reflection with [`facet`](https://docs.rs/facet), so its struct
+fields **are** the JSON shape, and `ComponentEntry::new` (or
+`ComponentEntry::default`, for a component that has a natural default to merge a
+partial value over) turns that reflection into the codec. A field whose type glam
+or the ECS owns is reflected through a proxy from the same feature, which is why
+the server enables it. A component whose fields cannot be reflected — a GPU
+handle, a private field — reflects through a proxy instead; one that cannot be
+written makes its proxy’s conversion fail, so a write reports why rather than
+inventing a value.
+
+Entries are collected from wherever they are written, so a crate that defines its
+own components registers them itself with `inventory::submit!` — nothing has to
+be handed a registry. The table is link-time, so a crate whose entries are never
+reached from the binary is not linked in either; a binary that wants a crate’s
+components names that crate.
+
+A component is addressed by its bare type name (`Transform`) or by its
+module-qualified one (`unlit3d::components::Transform`); the latter tells two
+same-named components in different modules apart.
 
 ## Transport
 
@@ -57,9 +78,12 @@ render loop runs: it drops unreferenced resources and rebuilds dirty ones.
 `read_buffer` refuses a buffer that was not created with `COPY_SRC` rather than
 letting the device reject the copy.
 
-**Input** — `input_state` and `send_input`. Input events are pushed into the
-world's `InputState` and delivered through the same `dispatch_input` pass the
-window does, so behaviour components see them exactly as they would from a user.
+**Input** — `input_state` and `send_input`. `input_state` reports the state
+`InputState` holds, including the events that arrived since they were last
+cleared, so a caller can see what happened this frame. `send_input` pushes events
+into the world's `InputState` and delivers them through the same `dispatch_input`
+pass the window does, so behaviour components see them exactly as they would from
+a user.
 
 **Drawing** — `create_mesh`, `remove_mesh`, `render_frame`, `screenshot`,
 `load_gltf`. `create_mesh` allocates an unlit mesh from positions, optional uvs,

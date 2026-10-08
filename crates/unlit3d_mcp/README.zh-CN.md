@@ -13,9 +13,23 @@
 `unlit_wgpu` 都不知道协议的存在。内置管线没有私有通道，服务器也没有捷径：服务器能做的，
 调用者都能做；调用者做不到的，服务器也做不到。
 
-服务器唯一新增的东西是 **组件注册表**：组件是任意 `'static` 类型，因此单靠一个 world 无法
-给它命名。注册表把每个受支持的组件与一对编解码函数配对，正是它把组件变成客户端可读写的
-JSON。它是一个普通的公开类型，调用者可以用自己的组件扩展它。
+唯一必须写下来的是：一个 JSON 桥能命名哪些组件——组件是任意 `'static` 类型，因此单靠一个
+world 无法给它命名。组件通过向 `unlit3d` 的 `reflect` feature 里的一张链接期表提交条目而
+变得可寻址；条目把类型与一条进出 JSON 的通道配对。
+
+对多数组件来说，没有第二份声明要写：组件用 [`facet`](https://docs.rs/facet) 派生出
+自己的反射，于是它的结构体字段**就是** JSON 形状，`ComponentEntry::new`（对有自然默认值
+可用来合并局部值的组件则是 `ComponentEntry::default`）把这份反射变成编解码器。字段类型若
+归 glam 或 ECS 所有，则通过同一个 feature 提供的代理来反射——服务器正是因此启用它。字段
+无法反射的组件（GPU 句柄、私有字段）改为经由代理反射；不能写入的组件会让代理的转换失败，
+于是写入会报告原因，而不是编造一个值。
+
+条目从写下它的任何地方被收集，因此定义自己组件的 crate 用 `inventory::submit!` 自行注册
+——无需把注册表交给谁。这张表是链接期的，因此从未被二进制引用到的 crate，其条目也不会被链
+接进来；想要某个 crate 的组件的二进制必须指名该 crate。
+
+组件用它的裸类型名（`Transform`）或模块限定名（`unlit3d::components::Transform`）寻址；
+后者用来区分不同模块里的同名组件。
 
 ## 传输
 
@@ -44,8 +58,10 @@ tokio，二者都是本 crate 的非可选依赖；workspace 的其余部分从�
 重建脏的资源。`read_buffer` 会拒绝没有以 `COPY_SRC` 创建的缓冲，而不是让设备拒绝这次
 拷贝。
 
-**输入**——`input_state` 与 `send_input`。输入事件被推入 world 的 `InputState`，并经由
-窗口所用的同一个 `dispatch_input` 派发，因此行为组件看到它们的方式与来自用户时完全一样。
+**输入**——`input_state` 与 `send_input`。`input_state` 报告 `InputState` 持有的状态，
+其中包括自上次清除以来到达的事件，因此调用者能看到这一帧发生了什么。`send_input` 把输入
+事件推入 world 的 `InputState`，并经由窗口所用的同一个 `dispatch_input` 派发，因此行为组件
+看到它们的方式与来自用户时完全一样。
 
 **绘制**——`create_mesh`、`remove_mesh`、`render_frame`、`screenshot`、
 `load_gltf`。`create_mesh` 从位置（以及可选的 uv、颜色与索引）分配一个 unlit 网格，并

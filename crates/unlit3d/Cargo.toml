@@ -49,10 +49,13 @@ arrayvec.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
 egui = { workspace = true, optional = true }
+facet = { workspace = true, features = ["reflect"], optional = true }
+facet-json = { workspace = true, optional = true }
 glam.workspace = true
 gltf = { workspace = true, optional = true }
 half = { workspace = true, optional = true }
 hashbrown.workspace = true
+inventory = { workspace = true, optional = true }
 log.workspace = true
 profiling.workspace = true
 smallvec.workspace = true
@@ -84,6 +87,13 @@ default = ["ui", "winit"]
 ## an existing resource graph, unload them again, and spawn entities that draw
 ## the document's default scene.
 gltf = ["dep:gltf", "dep:half"]
+## Reflection: derive [facet](https://docs.rs/facet) for the components whose
+## fields cross a JSON boundary, so a component's own field list is the only
+## place those fields are written down, plus the [reflect] module, whose
+## link-time table of submitted entries turns that reflection into a codec. Off
+## by default because it is only the bridge that needs it; the engine itself
+## never reads the reflection.
+reflect = ["dep:facet", "dep:facet-json", "dep:inventory"]
 ## The [`ui`](crate::ui) module: an egui overlay drawn as a frame source, and
 ## the [`unlit_wgpu`] egui backend it draws with. The UI's frame clock
 ## is the one place that needs a browser-capable `Instant`.

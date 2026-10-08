@@ -80,6 +80,8 @@ pub mod winit;
 /// with the user's language. A key this enum does not name is [`Key::Other`],
 /// carrying the platform's own key code so no key is unreachable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum Key {
     /// The Escape key.
     Escape,
@@ -259,6 +261,8 @@ pub enum Key {
 
 /// A mouse button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum MouseButton {
     /// The primary button: usually the left one.
     Primary,
@@ -341,6 +345,7 @@ impl MouseButtons {
 /// The flags describe what is held, not what the event does with it: a plain
 /// key press while Ctrl is down carries `ctrl: true`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct Modifiers {
     /// The Alt key (Option on macOS) is held.
     pub alt: bool,
@@ -357,6 +362,8 @@ pub struct Modifiers {
 
 /// Where a touch or a wheel gesture is in its lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum TouchPhase {
     /// The gesture started on this event.
     Started,
@@ -370,6 +377,8 @@ pub enum TouchPhase {
 
 /// The unit a wheel delta is measured in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum WheelUnit {
     /// Lines of text, the usual unit of a mouse wheel.
     Line,
@@ -386,6 +395,8 @@ pub enum WheelUnit {
 /// text it commits. A consumer that only wants finished text listens for
 /// [`ImeKind::Commit`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum ImeKind {
     /// Work in progress. `text` is what the method currently shows and
     /// `active_range` is the byte range within it that is still undecided.
@@ -413,6 +424,7 @@ pub enum ImeKind {
 
 /// A key was pressed, released, or auto-repeated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct KeyEvent {
     /// Which key.
     pub key: Key,
@@ -438,6 +450,8 @@ pub struct KeyEvent {
 /// a stable touch id listens for those instead. This is the level for code
 /// that only wants where the pointer is and whether it is down.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum PointerKind {
     /// A mouse.
     Mouse,
@@ -477,6 +491,7 @@ pub enum PointerKind {
 /// corner, the same space windowing libraries report in. Scaling to
 /// logical points, if a consumer wants them, is the consumer's call.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct PointerEvent {
     /// Which device produced the event.
     pub kind: PointerKind,
@@ -509,6 +524,7 @@ pub struct PointerEvent {
 /// consumer follow several fingers at once without dropping to the
 /// touch-specific [`TouchEvent`].
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct PointerContact {
     /// Which device the contact is from.
     pub kind: PointerKind,
@@ -520,6 +536,8 @@ pub struct PointerContact {
 
 /// What a pointer did.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum PointerAction {
     /// The pointer moved.
     Moved,
@@ -554,6 +572,8 @@ pub enum PointerAction {
 /// does not have to know about buttons; this type is for the button and wheel
 /// detail that only a mouse has.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum MouseEvent {
     /// The mouse moved to `position`.
     Moved {
@@ -588,6 +608,7 @@ pub enum MouseEvent {
 
 /// A touch point changed.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct TouchEvent {
     /// Identifies the touch across its lifetime. A device numbers its
     /// simultaneous touches, so an id is only unique among touches that are
@@ -603,6 +624,7 @@ pub struct TouchEvent {
 
 /// An input method changed its composition state.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct ImeEvent {
     /// What the input method did.
     pub kind: ImeKind,
@@ -615,6 +637,8 @@ pub struct ImeEvent {
 /// key tells game controls which physical key moved. A consumer that inserts
 /// text wants this event, not the key.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+#[cfg_attr(feature = "reflect", facet(transparent))]
 pub struct TextEvent(pub String);
 
 impl Deref for TextEvent {
@@ -627,6 +651,8 @@ impl Deref for TextEvent {
 
 /// Everything a frame of input can produce.
 #[derive(Clone, Debug, PartialEq)]
+#[repr(u8)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub enum InputEvent {
     /// A key changed state.
     Key(KeyEvent),
@@ -685,6 +711,11 @@ pub enum InputEvent {
 /// assert_eq!(world.get::<CtrlPresses>(observer).unwrap().0, 1);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::InputStateProxy)
+)]
 pub struct InputState {
     events: Vec<InputEvent>,
     /// The modifier keys currently held.

@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use base64::Engine as _;
-use glam::{Mat4, Vec3};
+use glam::Vec3;
 use image::ImageEncoder as _;
 use serde_json::{Value, json};
 use unlit_ecs::ArchetypeBuilder;
@@ -19,8 +19,7 @@ use unlit_wgpu::readback::{readback_buffer, readback_texture};
 use unlit_wgpu::resources::{Resource, ResourceGraph, TextureExt};
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
-
-use crate::components::ComponentRegistry;
+use unlit3d::reflect;
 
 /// The format of the offscreen target the standalone host renders into.
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -73,8 +72,6 @@ pub struct HostContext<'a> {
     pub source: Option<Entity>,
     /// The render context spawned by spawn_context.
     pub context: RenderContext,
-    /// The component codecs.
-    pub registry: &'a ComponentRegistry,
     /// The offscreen color target, if the host renders offscreen.
     pub target: Option<&'a wgpu::Texture>,
     /// The format of [Self::target].
@@ -143,13 +140,13 @@ impl HostContext<'_> {
         json!({
             "entities": self.world.len(),
             "archetypes": self.world.archetype_count(),
-            "components": self.registry.names().collect::<Vec<_>>(),
+            "components": reflect::names().collect::<Vec<_>>(),
         })
     }
 
-    /// The component names the registry knows.
+    /// The component names the reflection table holds.
     pub(crate) fn list_components(&self) -> Value {
-        json!(self.registry.names().collect::<Vec<_>>())
+        json!(reflect::names().collect::<Vec<_>>())
     }
 
     /// Every archetype with the component names it stores.
@@ -214,7 +211,8 @@ impl HostContext<'_> {
 
     /// One component of one entity, encoded.
     pub(crate) fn get_component(&self, entity: Entity, name: &str) -> Result<Value, String> {
-        self.registry.encode(self.world, entity, name)
+        let text = reflect::encode(self.world, entity, name)?;
+        serde_json::from_str(&text).map_err(|error| error.to_string())
     }
 
     /// Overwrite one component of one entity.
@@ -224,7 +222,8 @@ impl HostContext<'_> {
         name: &str,
         value: &Value,
     ) -> Result<Value, String> {
-        self.registry.set(self.world, entity, name, value)?;
+        let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
+        reflect::set(self.world, entity, name, &patch)?;
         Ok(Value::Null)
     }
 
@@ -235,7 +234,8 @@ impl HostContext<'_> {
             .ok_or_else(|| "components must be an object".to_string())?;
         let mut builder = ArchetypeBuilder::new();
         for (name, value) in object {
-            self.registry.push(&mut builder, name, value)?;
+            let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
+            reflect::push(&mut builder, name, &patch)?;
         }
         let entity = self.world.spawn(builder);
         Ok(json!({"entity": entity.to_bits()}))
@@ -364,7 +364,7 @@ impl HostContext<'_> {
         Ok(image_value(&png, texture.width(), texture.height()))
     }
 
-    /// The first input state, encoded.
+    /// The first input state, encoded, events included.
     pub(crate) fn input_state(&self) -> Result<Value, String> {
         let entity = self
             .world
@@ -372,7 +372,8 @@ impl HostContext<'_> {
             .next()
             .map(|(entity, _)| entity)
             .ok_or_else(|| "the world has no InputState".to_string())?;
-        self.registry.encode(self.world, entity, "InputState")
+        let text = reflect::encode(self.world, entity, "InputState")?;
+        serde_json::from_str(&text).map_err(|error| error.to_string())
     }
 
     /// Push input events into the world and deliver them.
@@ -498,7 +499,6 @@ pub struct Host {
     renderer: Entity,
     source: Option<Entity>,
     context: RenderContext,
-    registry: ComponentRegistry,
     target: wgpu::Texture,
     target_format: wgpu::TextureFormat,
 }
@@ -565,7 +565,6 @@ impl Host {
             renderer,
             source: Some(source),
             context,
-            registry: ComponentRegistry::new(),
             target: target.color,
             target_format: COLOR_FORMAT,
         })
@@ -588,7 +587,6 @@ impl Host {
             renderer,
             source,
             context,
-            registry: ComponentRegistry::new(),
             target_format: target.format(),
             target,
         }
@@ -626,7 +624,6 @@ impl Host {
             renderer: self.renderer,
             source: self.source,
             context: self.context,
-            registry: &self.registry,
             target: Some(&self.target),
             target_format: self.target_format,
         };
@@ -1033,6 +1030,3 @@ fn decode_input_event(value: &Value) -> Result<InputEvent, String> {
         other => return Err(format!("unknown event kind {other:?}")),
     })
 }
-
-// Mat4 is used by the component codec module; keep the import meaningful here.
-const _: fn(Mat4) -> Mat4 = |matrix| matrix;

@@ -18,6 +18,12 @@ console_log = "1.1.0"
 const_shader_layout = { version = "0.4.2", default-features = false, features = ["derive", "glam", "std"] }
 egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
+# Reflection: a component's own field list is its codec, so nothing declares
+# those fields twice. `facet` derives the reflection, `facet-json` turns it
+# into the JSON the MCP transport speaks. Optional: only `unlit3d`'s
+# `reflect` feature pulls it in.
+facet = { version = "0.50.0-rc.7", default-features = false, features = ["std"] }
+facet-json = { version = "0.50.0-rc.7", default-features = false }
 # Hashbrown uses this as its hasher, so hashing through it matches how the
 # crate's hash tables hash; its `FixedState` seeds deterministically, which a
 # per-instance hasher does not.
@@ -27,6 +33,10 @@ gltf = { version = "1.4.1", default-features = false, features = ["import", "nam
 half = { version = "2.7.1", default-features = false }
 hashbrown = { version = "0.17.1", default-features = false, features = ["default"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Components are registered by submitting an entry to a link-time table, so a
+# crate that defines its own components registers them without a call into
+# anything: the entries are collected from wherever they are written.
+inventory = { version = "0.3", default-features = false }
 # The native half of the wasm test harness: `libtest-mimic` runs the shared
 # registry as a libtest-compatible binary, and `ureq` is the HTTP client the
 # proxy sends each test to the browser's runner with.

@@ -10,6 +10,12 @@ pub mod input;
 pub mod mesh;
 pub mod mesh_source;
 pub mod pipeline;
+/// Reflection support for the components that cross a JSON boundary.
+///
+/// The proxies here are what a reflected component's glam and ECS fields go
+/// through, and are reusable by a caller's own reflected components.
+#[cfg(feature = "reflect")]
+pub mod reflect;
 pub mod renderer;
 pub mod scene;
 pub mod source;

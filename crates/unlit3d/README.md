@@ -19,11 +19,14 @@ directly, and you are expected to know WebGPU to use it well.
 | `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain, and the winit input translation |
 | `gltf` | no | the `gltf` module: load a glTF document into an `UnlitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
+| `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
 
 With `--no-default-features` the crate keeps the ECS components, the frame
 sources, the mesh path, the pipeline abstraction and the portable [`input`]
 module — none of which depend on egui or winit. Enabling `gltf` adds the glTF
-loader on top of the same ECS and mesh path; see below.
+loader on top of the same ECS and mesh path; see below. Enabling `reflect`
+derives the reflection a JSON bridge needs, and nothing else in the engine
+changes.
 
 ## What this layer is for
 

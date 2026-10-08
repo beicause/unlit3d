@@ -325,8 +325,10 @@ pub type UnlitPipeline = GpuRenderPipeline<UnlitPipelineKey>;
 /// matrix, so two entities sharing a mesh can still be tinted differently.
 /// Entities without this component are drawn white.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct InstanceColor {
     /// Base color (RGBA, unpremultiplied).
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Vec4Proxy))]
     pub color: glam::Vec4,
 }
 
@@ -357,6 +359,7 @@ impl InstanceColor {
 /// [`UnlitOptions::alpha_cutoff`](unlit_wgpu::pipeline::UnlitOptions::alpha_cutoff)
 /// is set, which decides whether the stream carries the attribute at all.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct InstanceCutoff {
     /// Alpha a fragment has to reach to be drawn.
     pub cutoff: f32,

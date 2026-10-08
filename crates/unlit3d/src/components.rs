@@ -22,12 +22,16 @@ use crate::bounds::Aabb;
 /// A renderable entity without one is placed at the origin with an identity
 /// transform, so it is still drawn.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct Transform {
     /// Translation in world space.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Vec3Proxy))]
     pub translation: glam::Vec3,
     /// Rotation, expressed as a unit quaternion.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::QuatProxy))]
     pub rotation: glam::Quat,
     /// Scale along each local axis.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Vec3Proxy))]
     pub scale: glam::Vec3,
 }
 
@@ -63,10 +67,13 @@ impl Transform {
 /// is one multiplication away. Storing only the product would lose the view
 /// matrix, which cannot be recovered from it.
 #[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct Camera {
     /// View matrix (world to view).
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Mat4Proxy))]
     pub view_from_world: glam::Mat4,
     /// Projection matrix (view to clip).
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Mat4Proxy))]
     pub clip_from_view: glam::Mat4,
     /// Whether the renderer may draw through this camera.
     ///
@@ -143,23 +150,36 @@ impl Camera {
 /// assert_eq!(ops.depth, depth_clear());
 /// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct RenderLoadOps {
     /// The color attachment's load op.
     ///
     /// Defaults to [color_clear]; [wgpu::LoadOp::Load] draws on top of
     /// what the target already holds.
+    #[cfg_attr(
+        feature = "reflect",
+        facet(opaque, proxy = crate::reflect::ColorLoadOpProxy)
+    )]
     pub color: wgpu::LoadOp<wgpu::Color>,
     /// The depth attachment's load op.
     ///
     /// Defaults to [depth_clear], a clear to the frame's reverse-z
     /// far plane rather than an arbitrary zero: a depth attachment means the
     /// same thing however the frame is configured.
+    #[cfg_attr(
+        feature = "reflect",
+        facet(opaque, proxy = crate::reflect::DepthLoadOpProxy)
+    )]
     pub depth: wgpu::LoadOp<f32>,
     /// The stencil attachment's load op.
     ///
     /// The built-in pipelines write no stencil, so the pass discards it
     /// either way; this only says what a pass that reads stencil beforehand
     /// starts from.
+    #[cfg_attr(
+        feature = "reflect",
+        facet(opaque, proxy = crate::reflect::StencilLoadOpProxy)
+    )]
     pub stencil: wgpu::LoadOp<u32>,
 }
 
@@ -253,6 +273,11 @@ pub struct MeshParts {
 /// fields on the side of that line that reads them: a per-entity field belongs
 /// inline, a per-mesh one belongs in [`MeshParts`].
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::GpuMeshProxy)
+)]
 pub struct GpuMesh {
     /// The buffers and allocations the draw names, shared between every clone.
     ///
@@ -337,9 +362,11 @@ pub struct GpuMesh {
 /// the pose it was bound to, exactly as it ignores a UV slice it does not
 /// declare.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct SkinPose {
     /// One matrix per joint, in the order the mesh's joint indices address
     /// them.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::Mat4VecProxy))]
     pub matrices: Vec<JointMatrix>,
 }
 
@@ -365,6 +392,7 @@ impl SkinPose {
 /// A weight of zero skips its target's displacement entirely, which is how a
 /// pose blends between targets.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct MorphWeights {
     /// One weight per morph target, in target order.
     pub weights: Vec<f32>,
@@ -389,8 +417,10 @@ impl MorphWeights {
 /// A mesh whose vertex stream carries joints needs this; one whose stream does
 /// not ignores it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct SkinBinding {
     /// The entity carrying the [`SkinPose`] this mesh is drawn with.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::EntityProxy))]
     pub pose: Entity,
 }
 
@@ -408,8 +438,10 @@ impl SkinBinding {
 ///
 /// A mesh with morph targets needs this; one with none ignores it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct MorphBinding {
     /// The entity carrying the [`MorphWeights`] this mesh is drawn with.
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::EntityProxy))]
     pub weights: Entity,
 }
 
@@ -433,6 +465,11 @@ impl MorphBinding {
 /// not drawn at all. The key selects the family, so an entity whose key type
 /// no registered family uses is silently skipped.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::GpuRenderPipelineProxy)
+)]
 pub struct GpuRenderPipeline<Key> {
     /// The entity's pipeline key.
     pub(crate) key: Key,
@@ -460,6 +497,11 @@ impl<Key> GpuRenderPipeline<Key> {
 /// lives as long as some handle names it; dropping the last one makes it
 /// collectable by the next `maintain`.
 #[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::GpuMaterialProxy)
+)]
 pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).
     ///
@@ -488,6 +530,7 @@ impl GpuMaterial {
 /// The marker only orders draws: it selects no pipeline and changes no blend
 /// state, so the pipeline an entity resolves to has to blend on its own.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct ZSortedDrawing;
 
 #[cfg(test)]
