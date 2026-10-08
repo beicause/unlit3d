@@ -34,6 +34,13 @@ wgpu.workspace = true
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["snapshot"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.1", default-features = false, features = ["gltf"] }
 
+# `--mcp` serves the Model Context Protocol, which is a native command line's
+# concern: rmcp's stdio transport runs on tokio, which has no stdio to read in a
+# browser. The switch stays in the parsed arguments everywhere, so the two
+# targets differ only in what the branch does.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+unlit3d_mcp = { path = "../crates/unlit3d_mcp", version = "0.1.0-dev.1" }
+
 # The workspace builds every member's test targets for wasm too, and the export
 # `gpu_test_main!` generates expands to an attribute naming `wasm-bindgen`. The
 # end-to-end test never runs in a browser — it reads documents from disk — but

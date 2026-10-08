@@ -15,8 +15,9 @@ whole render, and command-line options override the same-named fields of it.
 
 The command line is parsed with [`argh`](https://docs.rs/argh), so every option
 is `--name value` or a bare flag, and the value must be the next argument;
-`--name=value` is not accepted. `--output` is the only required option, and
-its extension chooses the image format: `png`, `webp` and `jpeg` are supported.
+`--name=value` is not accepted. `--output` is the only required option — except
+under `--mcp`, which renders nothing — and its extension chooses the image
+format: `png`, `webp` and `jpeg` are supported.
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2
@@ -116,6 +117,19 @@ cargo nextest run -p unlit3d_cli
 
 The snapshot comparison uses SSIMULACRA2. A missing snapshot is written from the
 frame rather than failed on, and `SNAPSHOT_UPDATE=1` rewrites one that exists.
+
+## Model Context Protocol
+
+`--mcp` serves the world the tool would otherwise have rendered, over stdio, as
+a [Model Context Protocol](https://modelcontextprotocol.io) server. `--output`
+is not required in that mode, and the world starts empty — no document is loaded
+— so a client can build the scene itself. See
+[`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
+transport.
+
+```text
+cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp
+```
 
 ## License
 

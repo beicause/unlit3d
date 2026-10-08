@@ -21,6 +21,20 @@ fn main() -> ExitCode {
 
 /// Render the parsed arguments and write the image.
 fn run(args: &cli::Args) -> ExitCode {
+    // Serving MCP needs the stdio transport and a tokio runtime, neither of
+    // which a browser has; the switch is parsed everywhere but only acts here.
+    #[cfg(not(target_arch = "wasm32"))]
+    if args.mcp {
+        return match unlit3d_mcp::serve_stdio(|| {
+            pollster::block_on(unlit3d_mcp::Host::new_offscreen((960, 720), 4, true))
+        }) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                stderr(&format!("error: {error}\n"));
+                ExitCode::from(1)
+            }
+        };
+    }
     let config = match args.config() {
         Ok(config) => config,
         Err(error) => {
@@ -35,7 +49,11 @@ fn run(args: &cli::Args) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    if let Err(error) = unlit3d_cli::save(&args.output, &frame) {
+    let output = args
+        .output
+        .as_ref()
+        .expect("parse rejects a missing --output unless --mcp is given");
+    if let Err(error) = unlit3d_cli::save(output, &frame) {
         stderr(&format!("error: {error}\n"));
         return ExitCode::from(1);
     }

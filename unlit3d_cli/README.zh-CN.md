@@ -12,8 +12,8 @@
 覆盖其中同名的字段。
 
 命令行用 [`argh`](https://docs.rs/argh) 解析，因此每个选项都是 `--name value` 或裸开关，
-值必须作为下一个参数传入，不支持 `--name=value`。`--output` 是唯一必需的选项，它的扩展名
-决定图片格式：支持 `png`、`webp` 与 `jpeg`。
+值必须作为下一个参数传入，不支持 `--name=value`。`--output` 是唯一必需的选项——`--mcp`
+模式除外，它不渲染任何东西——它的扩展名决定图片格式：支持 `png`、`webp` 与 `jpeg`。
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --output frame.png --document unlit3d_asset_files/assets/Fox.glb --animation Walk --time 0.2
@@ -100,6 +100,17 @@ cargo nextest run -p unlit3d_cli
 
 快照比较使用 SSIMULACRA2。快照不存在时，它会用该帧写出一份而不是失败，`SNAPSHOT_UPDATE=1`
 则重写已存在的那份。
+
+## Model Context Protocol
+
+`--mcp` 会把工具原本要渲染的那个 world 经 stdio 服务出去，作为
+[Model Context Protocol](https://modelcontextprotocol.io) 服务器。该模式下不需要
+`--output`，且 world 从空开始——不加载任何文档——以便客户端自行搭建场景。工具与传输见
+[`unlit3d_mcp`](../crates/unlit3d_mcp/README.zh-CN.md)。
+
+```text
+cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp
+```
 
 ## 许可证
 

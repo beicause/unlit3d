@@ -21,9 +21,15 @@ pub struct Args {
     /// a JSON configuration file. Command-line options override its fields.
     #[argh(option)]
     pub config: Option<PathBuf>,
+    /// serve the Model Context Protocol over stdio instead of rendering once.
+    /// The host starts from an empty offscreen world and the tool calls build
+    /// the scene; every other option is ignored.
+    #[argh(switch)]
+    pub mcp: bool,
     /// the output image path; its extension chooses the format (png, webp or jpeg).
+    /// Required unless --mcp is given.
     #[argh(option)]
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
     /// the output image size, as WxH.
     #[argh(option, from_str_fn(parse_size))]
     pub output_size: Option<(u32, u32)>,
@@ -190,6 +196,9 @@ where
     let args: Vec<String> = args.into_iter().map(Into::into).collect();
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     match Args::from_args(&[PROGRAM], &refs) {
+        Ok(parsed) if parsed.output.is_none() && !parsed.mcp => Err(String::from(
+            "--output is required unless --mcp is given, because a render needs somewhere to write the image",
+        )),
         Ok(parsed) => Ok(Parsed::Run(Box::new(parsed))),
         Err(exit) if exit.status.is_ok() => Ok(Parsed::Help(usage())),
         Err(exit) => Err(exit.output),
@@ -289,12 +298,15 @@ mod tests {
     }
 
     #[test]
-    fn the_output_path_is_required() {
-        assert!(Args::from_args(&[PROGRAM], &[]).is_err());
+    fn the_output_path_is_required_unless_serving_mcp() {
+        assert!(parse(Vec::<String>::new()).is_err());
         assert_eq!(
             args(&["--output", "out.png"]).output,
-            PathBuf::from("out.png")
+            Some(PathBuf::from("out.png"))
         );
+        assert!(args(&["--mcp"]).mcp);
+        assert_eq!(args(&["--mcp"]).output, None);
+        assert!(parse(["--mcp"]).is_ok());
     }
 
     #[test]
