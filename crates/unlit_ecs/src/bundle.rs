@@ -21,8 +21,9 @@ use crate::column::{AnyColumn, Column};
 /// One component of a bundle, erased into the value box the archetype takes.
 pub(crate) type ErasedValue = (TypeId, Box<dyn Any>);
 
-/// A column constructor, keyed by the component type it builds for.
-pub(crate) type ColumnCtor = (TypeId, fn() -> Box<dyn AnyColumn>);
+/// A column constructor, keyed by the component type it builds for, together
+/// with that type's name.
+pub(crate) type ColumnCtor = (TypeId, &'static str, fn() -> Box<dyn AnyColumn>);
 
 /// The component types, values and column constructors of one completed bundle.
 pub(crate) type FinishedColumns = (Box<[TypeId]>, Vec<ErasedValue>, Vec<ColumnCtor>);
@@ -51,7 +52,11 @@ impl ArchetypeBuilder {
     /// Add one component.
     pub fn push<C: 'static>(&mut self, value: C) {
         self.values.push((TypeId::of::<C>(), Box::new(value)));
-        self.ctors.push((TypeId::of::<C>(), Column::<C>::eraser()));
+        self.ctors.push((
+            TypeId::of::<C>(),
+            core::any::type_name::<C>(),
+            Column::<C>::eraser(),
+        ));
     }
 
     /// Sorted component types, the component values in the same order, and one
@@ -62,7 +67,7 @@ impl ArchetypeBuilder {
             mut ctors,
         } = self;
         values.sort_unstable_by_key(|(type_id, _)| *type_id);
-        ctors.sort_unstable_by_key(|(type_id, _)| *type_id);
+        ctors.sort_unstable_by_key(|(type_id, _, _)| *type_id);
         for pair in values.windows(2) {
             assert_ne!(
                 pair[0].0, pair[1].0,

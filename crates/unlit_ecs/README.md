@@ -55,8 +55,10 @@ It is at an **early stage of development** and its API changes freely.
 [`bundle!`] macro for flattening nested tuples),
 [`Query`] and [`QueryFilter`] ([`With`], [`Without`], [`Or`], tuples),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
-[`Archetypes`] for direct storage inspection, and the specialized hash
-containers [`TypeIdHashMap`], [`EntityHashMap`] and friends.
+[`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
+component type a type-erased reader only knows by
+[`TypeId`](core::any::TypeId), and the
+specialized hash containers [`TypeIdHashMap`], [`EntityHashMap`] and friends.
 
 A query resolves the columns it needs once per archetype and then fetches rows
 through that state, so its cost is proportional to the number of *component

@@ -38,6 +38,8 @@ pub struct World {
     archetypes: Archetypes,
     /// Column constructors, one per component type that ever entered the world.
     ctors: TypeIdHashMap<fn() -> Box<dyn AnyColumn>>,
+    /// The name of every component type that ever entered the world.
+    names: TypeIdHashMap<&'static str>,
     commands: RefCell<Vec<Box<dyn Command>>>,
 }
 
@@ -57,6 +59,7 @@ impl World {
             entities: RefCell::new(Entities::default()),
             archetypes: Archetypes::new(),
             ctors: TypeIdHashMap::default(),
+            names: TypeIdHashMap::default(),
             commands: RefCell::new(Vec::new()),
         }
     }
@@ -174,8 +177,9 @@ impl World {
             "{entity:?} is already spawned"
         );
         let (types, values, ctors) = bundle.into_builder().finish();
-        for (type_id, ctor) in ctors {
+        for (type_id, name, ctor) in ctors {
             self.ctors.entry(type_id).or_insert(ctor);
+            self.names.entry(type_id).or_insert(name);
         }
         let archetype = self.archetype_for_types(&types);
         let target = self.archetypes.get_mut(archetype);
@@ -313,6 +317,19 @@ impl World {
     /// The number of archetypes, including the empty one.
     pub fn archetype_count(&self) -> usize {
         self.archetypes.len()
+    }
+
+    /// The name of a component type that has entered the world, as
+    /// [`core::any::type_name`] reported it, or `None` when no entity has ever
+    /// carried it.
+    ///
+    /// The name is what a type-erased reader — one that only has the
+    /// [`TypeId`] an [`Archetype::types`] entry carries — reports to a human.
+    /// It is the compiler's spelling (`my_crate::Velocity`), not a registered
+    /// alias.
+    #[must_use]
+    pub fn type_name(&self, type_id: TypeId) -> Option<&'static str> {
+        self.names.get(&type_id).copied()
     }
 
     // -- deferred structural changes ---------------------------------------
@@ -530,6 +547,39 @@ mod tests {
         assert_eq!(fresh.index(), reserved.index(), "the index was reused");
         assert_ne!(fresh.generation(), reserved.generation());
         assert_eq!(world.len(), 1);
+    }
+
+    #[test]
+    fn a_component_type_name_is_known_once_it_has_entered_the_world() {
+        let mut world = World::new();
+        assert_eq!(world.type_name(core::any::TypeId::of::<Marker>()), None);
+        world.spawn((Marker(1),));
+        assert_eq!(
+            world.type_name(core::any::TypeId::of::<Marker>()),
+            Some(core::any::type_name::<Marker>()),
+        );
+        assert_eq!(
+            world.type_name(core::any::TypeId::of::<Name>()),
+            None,
+            "a type no entity carried is still unknown",
+        );
+    }
+
+    #[test]
+    fn every_type_of_an_archetype_has_a_name() {
+        let mut world = World::new();
+        world.spawn((Marker(1), Name("a")));
+        let archetype = world.archetype(0).unwrap();
+        assert!(
+            archetype.types().is_empty(),
+            "the empty archetype comes first"
+        );
+        let names: Vec<&str> = world
+            .archetypes()
+            .flat_map(|archetype| archetype.types())
+            .map(|&type_id| world.type_name(type_id).expect("every type is named"))
+            .collect();
+        assert_eq!(names.len(), 2);
     }
 
     #[test]

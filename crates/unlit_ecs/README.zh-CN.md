@@ -41,7 +41,8 @@
 `World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及用于展平嵌套元组的
 `bundle!` 宏）、
 `Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、用于延迟结构变更的
-`Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`，以及
+`Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`、用于给
+只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`，以及
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
 
 查询会按 archetype 解析一次它需要的列，再通过该状态逐行取值，因此其开销与
