@@ -98,6 +98,17 @@ cargo xtask run-wasm
 调用它的 `android_main`，而命令行入口是那个二进制。两者最终进入同一个窗口化循环，
 因此示例只需要维护一个帧循环。
 
+## Model Context Protocol
+
+`--mcp` 会把示例原本要渲染的那个 world 经 stdio 服务出去，作为
+[Model Context Protocol](https://modelcontextprotocol.io) 服务器。所选场景会先被构建——
+`--scene` 仍然生效——随后客户端通过各工具读取并驱动这个 world。工具与传输见
+[`unlit3d_mcp`](../crates/unlit3d_mcp/README.zh-CN.md)。
+
+```text
+cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube
+```
+
 ## Android
 
 Android 启动的是一个 *activity*，而不是进程：activity 加载动态库，并在线程中调用它的
@@ -145,6 +156,7 @@ cargo nextest run -p unlit3d_examples
 | `--scene <ID>` | `spin_cube` | 起始场景 |
 | `--list-scenes` | 关 | 打印场景表并退出 |
 | `--size <WxH>` | 场景自己的 | 窗口初始尺寸（像素） |
+| `--mcp` | 关 | 不打开窗口，改经 stdio 服务这个 world |
 
 ### 播放节奏
 

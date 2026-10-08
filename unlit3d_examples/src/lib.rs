@@ -134,11 +134,93 @@ pub fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // Serving MCP needs the stdio transport and a tokio runtime, neither of
+    // which a browser or an activity has; the switch is parsed everywhere but
+    // only acts on the desktop.
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    if args.mcp {
+        return match serve_mcp(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                stderr(&format!("error: {error}\n"));
+                ExitCode::from(1)
+            }
+        };
+    }
+
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("an event loop");
     windowed(args, event_loop);
     ExitCode::SUCCESS
+}
+
+/// Serve the chosen scene over the Model Context Protocol on standard input
+/// and output, instead of opening a window.
+///
+/// The scene is built by the same [`Scene::new`] the windowed run uses and its
+/// frames land in an offscreen target bound by [`bind_offscreen_target`], so an
+/// MCP client drives exactly the world the example would have shown.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn serve_mcp(args: &Args) -> Result<(), String> {
+    let def = scenes::by_id(&args.scene).expect("validated by the CLI");
+    let size = args.size.unwrap_or(def.size);
+    unlit3d_mcp::serve_stdio(move || pollster::block_on(mcp_host(def, size)))
+        .map_err(|error| error.to_string())
+}
+
+/// Build the world `serve_mcp` hands to the MCP server.
+///
+/// The device is requested through the same public entry points a windowed run
+/// uses, so the host has no privileged path to the world.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+async fn mcp_host(
+    def: &'static scenes::SceneDef,
+    size: (u32, u32),
+) -> Result<unlit3d_mcp::Host, String> {
+    let (device, queue, capabilities) = unlit3d_mcp::request_device("unlit3d-examples").await?;
+    let scene = Scene::new(
+        device.clone(),
+        queue.clone(),
+        capabilities,
+        size,
+        scenes::SceneOptions {
+            ui: def.ui,
+            selector: false,
+            reproducible: false,
+            letterbox: true,
+            sequence_step: def.step_seconds,
+        },
+        def,
+        None,
+    );
+
+    let target = {
+        let world = &scene.world;
+        world
+            .with_mut::<Renderer, _>(scene.renderer, |renderer| {
+                bind_offscreen_target(world, renderer, &device, size, def.samples, def.depth)
+            })
+            .expect("the renderer is a resource entity")
+    };
+
+    let source = scene
+        .world
+        .query::<&Source>()
+        .find_map(|(entity, source)| source.as_ref::<MeshSource>().map(|_| entity));
+    let context = scene
+        .world
+        .get::<Renderer>(scene.renderer)
+        .expect("the renderer is a resource entity")
+        .context();
+
+    Ok(unlit3d_mcp::Host::from_world(
+        scene.world,
+        scene.renderer,
+        source,
+        context,
+        target,
+    ))
 }
 
 /// Bind an offscreen `size`-pixel target as the renderer's render target, and

@@ -126,6 +126,19 @@ nor a command line: the activity loads the shared library and calls its
 `android_main`, and the command-line path is the binary. Both end in the same
 windowed loop, so the example only has one frame loop to maintain.
 
+## Model Context Protocol
+
+`--mcp` serves the world the example would otherwise have rendered, over stdio,
+as a [Model Context Protocol](https://modelcontextprotocol.io) server. The
+chosen scene is built first — `--scene` still selects it — and the client then
+reads and drives that world through the tools. See
+[`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
+transport.
+
+```text
+cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube
+```
+
 ## Android
 
 Android starts an *activity*, not a process: the activity loads the shared
@@ -181,6 +194,7 @@ the value must be the next argument, so `--name=value` is not accepted.
 | `--scene <ID>` | `spin_cube` | The scene to start from |
 | `--list-scenes` | off | Print the scene table and exit |
 | `--size <WxH>` | the scene's own | Initial window size in pixels |
+| `--mcp` | off | Serve the world over stdio instead of opening a window |
 
 ### Playback pace
 

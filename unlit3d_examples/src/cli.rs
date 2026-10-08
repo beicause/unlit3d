@@ -42,6 +42,11 @@ pub struct Args {
     /// initial window size in pixels, as `WxH`; the scene's own when omitted
     #[argh(option, from_str_fn(parse_size))]
     pub size: Option<(u32, u32)>,
+
+    /// serve the scene over the Model Context Protocol on standard input and
+    /// output instead of opening a window
+    #[argh(switch)]
+    pub mcp: bool,
 }
 
 impl Default for Args {
@@ -50,6 +55,7 @@ impl Default for Args {
             scene: default_scene(),
             list_scenes: false,
             size: None,
+            mcp: false,
         }
     }
 }
@@ -102,6 +108,8 @@ impl Args {
     /// argh has already parsed each option on its own; this is the part only
     /// the combination can decide.
     fn validate(&self) -> Result<(), String> {
+        // Serving MCP still needs a scene to build, so the check stands whether
+        // the example opens a window or not.
         // A scene the example does not know is a typo worth reporting.
         if scenes::by_id(&self.scene).is_none() {
             return Err(format!(
@@ -160,6 +168,14 @@ mod tests {
         assert_eq!(args.scene, "ecs_skinned");
         assert_eq!(args.size, Some((320, 240)));
         assert!(args.list_scenes);
+        assert!(!args.mcp);
+    }
+
+    #[test]
+    fn the_mcp_switch_is_read() {
+        let args = run(&["--mcp"]).expect("the switch parses");
+        assert!(args.mcp);
+        assert_eq!(args.scene, scenes::default().id);
     }
 
     #[test]

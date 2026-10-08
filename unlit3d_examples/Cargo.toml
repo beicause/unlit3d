@@ -49,6 +49,10 @@ unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", features = ["s
 # per target: `env_logger` writes to the terminal a command line runs in.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 env_logger.workspace = true
+# `--mcp` serves the scene over the Model Context Protocol, which needs a
+# terminal's standard input and output; neither a browser nor an Android
+# activity has one.
+unlit3d_mcp = { path = "../crates/unlit3d_mcp", version = "0.1.0-dev.1" }
 
 # The GPU context is requested asynchronously, so the setup future needs a
 # driver: a blocking executor natively, the browser's task queue on the web.
