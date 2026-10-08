@@ -508,6 +508,13 @@ graph:
   that was reallocated or an array that was replaced at the moment it runs. A
   dirty node with no recipe stays dirty: the caller changed something the graph
   cannot rebuild on its own.
+- **The graph is walkable.** [`ResourceGraph::nodes`](resources::ResourceGraph::nodes)
+  lists every resource with its slot index, its
+  [`kind_name`](resources::Resource::kind_name), whether it is dirty and whether
+  the graph can rebuild it, and
+  [`ResourceGraph::id_at`](resources::ResourceGraph::id_at) resolves a slot back
+  to a handle. That is what lets an outside reader — a debug overlay, an MCP
+  server — report the graph without a private view into it.
 - **A texture view's format is recorded with the view.** This is the one
   exception to "no unnecessary wrappers": `wgpu` cannot tell a `TextureView`'s
   format from the view itself, and when an sRGB view covers a non-sRGB texture,

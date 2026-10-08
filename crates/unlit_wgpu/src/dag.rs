@@ -163,6 +163,33 @@ impl<N> Dag<N> {
         self.node_id(index)
     }
 
+    /// Every live node, as its handle and its weight, in slot order.
+    ///
+    /// Slots are recycled, so the order is by slot rather than by insertion: a
+    /// node that reused a freed slot appears where that slot is. The walk
+    /// covers the whole node array, so it costs the peak number of nodes the
+    /// graph ever held rather than the number it holds now.
+    pub fn iter(&self) -> impl Iterator<Item = (NodeId, &N)> {
+        self.nodes.iter().enumerate().filter_map(|(index, slot)| {
+            slot.weight
+                .as_ref()
+                .map(|weight| (self.node_id(index as u32), weight))
+        })
+    }
+
+    /// The handle of the node in slot `index`, or `None` when that slot is
+    /// vacant or out of range.
+    ///
+    /// A caller that kept only a node's [`index`](NodeId::index) — an index
+    /// survives where a handle cannot be stored — resolves it back through
+    /// this.
+    pub fn id_at(&self, index: usize) -> Option<NodeId> {
+        self.nodes
+            .get(index)
+            .filter(|slot| slot.weight.is_some())
+            .map(|_| self.node_id(index as u32))
+    }
+
     /// Borrow the weight of the node `id` names.
     pub fn get(&self, id: NodeId) -> Option<&N> {
         let index = self.resolve(id)?;
