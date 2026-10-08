@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 argh = "0.1.19"
 arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
 console_error_panic_hook = { version = "0.1.7", default-features = false }
 console_log = "1.1.0"
@@ -33,9 +34,15 @@ libtest-mimic = "0.8.2"
 log = { version = "0.4", default-features = false, features = ["alloc", "std"] }
 pollster = { version = "1.0.1", default-features = false }
 profiling = { version = "1.0.18", default-features = false }
+# The Model Context Protocol server. `server` provides the handler and the
+# stdio loop, `transport-io` is the stdio transport, and `macros` derives the
+# tool router from `#[tool]` methods.
+rmcp = { version = "3.5.1", default-features = false, features = ["macros", "server", "transport-io"] }
+schemars = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 smallvec = { version = "1.16.1", default-features = false, features = ["const_generics", "const_new", "union"] }
+tokio = { version = "1.53", default-features = false }
 ureq = { version = "3.4.0", default-features = false }
 wasm-bindgen = "0.2.128"
 wasm-bindgen-futures = "0.4.78"

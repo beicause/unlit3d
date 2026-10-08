@@ -229,9 +229,15 @@ fn build_workspace() -> Result<(), String> {
     // `xtask` is excluded because it is a host-only task runner: its HTTP server
     // reaches `async-io` and so `errno`, which does not build for this target.
     // Nothing in the browser or the APK depends on it.
+    //
+    // `unlit3d_mcp` is excluded for the same reason: it speaks the Model Context
+    // Protocol over a native stdio pipe, and rmcp's server side pulls `uuid` v4,
+    // whose wasm randomness source this crate does not ask for. A browser drives
+    // the world through the example's own UI, not through the protocol.
     let mut build = Command::new("cargo");
     build
         .args(["build", "--workspace", "--exclude", "xtask"])
+        .args(["--exclude", "unlit3d_mcp"])
         .args(["--target", TARGET])
         .args(["--bins", "--tests", "--benches", "--examples"]);
     step::run(&mut build, "building the workspace for wasm")
