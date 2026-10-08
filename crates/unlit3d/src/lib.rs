@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
+pub mod blit;
 pub mod bounds;
 pub mod components;
 pub mod culling;
@@ -34,6 +35,7 @@ pub mod prelude {
         UnlitPipeline, UnlitPipelineKey,
     };
     pub use crate::{
+        blit::{BlitSource, BlitTexture},
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
             Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MeshParts, MorphBinding, MorphWeights,
