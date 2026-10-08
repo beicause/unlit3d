@@ -32,7 +32,7 @@ use crate::source::{
 /// [`Renderer::render`] every frame. It owns the render target binding and the
 /// order bookkeeping; everything else a frame draws comes from its
 /// [`FrameSource`](crate::source::FrameSource) components, which are mounted
-/// with [`spawn_source`](crate::source::spawn_source) and are ordinary ECS
+/// with [`spawn_source`](crate::source::WorldSourceExt::spawn_source) and are ordinary ECS
 /// entities.
 ///
 /// ```
@@ -49,7 +49,7 @@ use crate::source::{
 ///     DeviceCapabilities::default(),
 /// );
 /// let source = MeshSource::new(&world, ctx);
-/// let mesh = spawn_source(&mut world, source);
+/// let mesh = world.spawn_source(source);
 /// let renderer = world.spawn((Renderer::new(ctx),));
 /// ```
 pub struct Renderer {

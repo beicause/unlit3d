@@ -43,7 +43,7 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();

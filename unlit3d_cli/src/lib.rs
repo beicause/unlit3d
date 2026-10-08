@@ -190,7 +190,7 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
 
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
-    let source_entity = spawn_source(&mut world, source);
+    let source_entity = world.spawn_source(source);
 
     for document in &config.documents {
         let gltf = UnlitGltf::load(&document.path)?;

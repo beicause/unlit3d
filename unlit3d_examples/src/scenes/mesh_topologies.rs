@@ -195,7 +195,7 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     let device = source.device(world);
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot

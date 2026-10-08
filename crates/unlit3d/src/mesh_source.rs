@@ -112,7 +112,7 @@ struct RegisteredPipeline {
 /// the queue and the resource graph from the world through the
 /// [`RenderContext`] it was created with. Register the families it draws with
 /// — [`MeshSourceUnlitExt::register_unlit_family`](crate::unlit::MeshSourceUnlitExt::register_unlit_family) for the built-in unlit shader — and
-/// mount it with [`spawn_source`](crate::source::spawn_source).
+/// mount it with [`spawn_source`](crate::source::WorldSourceExt::spawn_source).
 pub struct MeshSource {
     /// The world addresses of the frame's GPU state, kept so every entry point
     /// fetches the device, the queue and the graph for itself instead of

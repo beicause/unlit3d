@@ -106,7 +106,7 @@ fn build(
     source.register_unlit_family(world);
     // Every cell is tinted through its instance colour.
     let key = UnlitPipelineKey::new(super::unlit_options(&source.device(world)));
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     let camera_entity = world.spawn((orbit_camera(0, size),));
 

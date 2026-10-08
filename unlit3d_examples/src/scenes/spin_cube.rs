@@ -55,7 +55,7 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(world)));
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.

@@ -44,7 +44,7 @@ fn build(
     // The variant that reads the morph bindings: its mesh group carries the
     // displacement buffer a plain cube's does not.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     let (positions, uvs, colors, indices) = super::cube();
     let deltas = morph_deltas(&positions);

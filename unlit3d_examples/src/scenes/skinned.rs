@@ -45,7 +45,7 @@ fn build(
     // The variant that reads the joint stream: its position buffer is wider by
     // the joint pair, so a stream packed for the plain cube would misread.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));

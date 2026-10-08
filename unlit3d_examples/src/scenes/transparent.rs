@@ -117,7 +117,7 @@ fn build(
     // tint is its own instance colour, so one mesh serves all of them.
     let translucent_key = UnlitPipelineKey::new(translucent);
 
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     let (positions, uvs, colors, indices) = super::cube();
 

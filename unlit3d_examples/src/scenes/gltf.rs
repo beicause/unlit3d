@@ -101,7 +101,7 @@ fn build(
 
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so

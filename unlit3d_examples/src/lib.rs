@@ -1007,7 +1007,7 @@ impl Scene {
                     .context_mut()
                     .all_styles_mut(|style| style.animation_time = 0.0);
             }
-            spawn_source(&mut world, source_ui);
+            world.spawn_source(source_ui);
         }
 
         if options.selector {

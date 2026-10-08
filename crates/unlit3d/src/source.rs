@@ -446,18 +446,30 @@ pub fn spawn_context(
     }
 }
 
-/// Mount `source`, taking its order from [`FrameSource::order`].
-pub fn spawn_source(world: &mut World, source: impl FrameSource) -> Entity {
-    let source = Source::new(source);
-    let index = next_mount_index(world);
-    world.spawn((bump_mount(source, index),))
+/// Mounting a [`FrameSource`] on a [`World`].
+///
+/// The methods are the work the free functions did; the trait only gathers it
+/// onto the world the sources are mounted on.
+pub trait WorldSourceExt {
+    /// Mount `source`, taking its order from [`FrameSource::order`].
+    fn spawn_source(&mut self, source: impl FrameSource) -> Entity;
+
+    /// Mount `source`, recording it at `order`.
+    fn spawn_source_at(&mut self, order: FrameOrder, source: impl FrameSource) -> Entity;
 }
 
-/// Mount `source`, recording it at `order`.
-pub fn spawn_source_at(world: &mut World, order: FrameOrder, source: impl FrameSource) -> Entity {
-    let source = Source::new(source).with_order(order);
-    let index = next_mount_index(world);
-    world.spawn((bump_mount(source, index),))
+impl WorldSourceExt for World {
+    fn spawn_source(&mut self, source: impl FrameSource) -> Entity {
+        let source = Source::new(source);
+        let index = next_mount_index(self);
+        self.spawn((bump_mount(source, index),))
+    }
+
+    fn spawn_source_at(&mut self, order: FrameOrder, source: impl FrameSource) -> Entity {
+        let source = Source::new(source).with_order(order);
+        let index = next_mount_index(self);
+        self.spawn((bump_mount(source, index),))
+    }
 }
 
 /// Take the next mount index from the world's counter.
@@ -673,8 +685,8 @@ mod tests {
         );
 
         // Mounted overlay-first, so mount order is the opposite of draw order.
-        let overlay = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
-        let mesh = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let overlay = world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
+        let mesh = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
 
         let (order, ambiguous) = record_order(&world);
         assert_eq!(order, vec![mesh, overlay], "the lower order records first");
@@ -689,9 +701,9 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
 
-        let first = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
-        let second = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
-        let third = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+        let first = world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
+        let second = world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
+        let third = world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
         assert_eq!(record_order(&world).0, vec![first, second, third]);
 
         // Despawning the first leaves the other two in mount order, even
@@ -711,12 +723,8 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
 
-        let a = spawn_source_at(
-            &mut world,
-            FrameOrder::OVERLAY,
-            RecordingSource::new(FrameOrder::MESH),
-        );
-        let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let a = world.spawn_source_at(FrameOrder::OVERLAY, RecordingSource::new(FrameOrder::MESH));
+        let b = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
 
         // `a` was mounted as an overlay, so it records last despite declaring
         // `MESH` itself.
@@ -755,8 +763,8 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
 
-        let recording = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
-        let other = spawn_source(&mut world, OtherSource(Scene::new()));
+        let recording = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
+        let other = world.spawn_source(OtherSource(Scene::new()));
 
         assert!(
             world
@@ -805,8 +813,8 @@ mod tests {
 
         let mut world = World::new();
         let ctx = test_context(&mut world);
-        spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
-        spawn_source(&mut world, CountingSource(0, Scene::new()));
+        world.spawn_source(RecordingSource::new(FrameOrder::MESH));
+        world.spawn_source(CountingSource(0, Scene::new()));
 
         let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
             .0
@@ -853,14 +861,11 @@ mod tests {
         }
 
         for name in ["a", "b"] {
-            spawn_source(
-                &mut world,
-                PhasedSource {
-                    name,
-                    log: Rc::clone(&order),
-                    scene: Scene::new(),
-                },
-            );
+            world.spawn_source(PhasedSource {
+                name,
+                log: Rc::clone(&order),
+                scene: Scene::new(),
+            });
         }
 
         let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
@@ -905,8 +910,8 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
 
-        let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
-        let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let a = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
+        let b = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
 
         let (_, ambiguous) = record_order(&world);
         assert_eq!(ambiguous.len(), 1, "the two share one order");
@@ -942,9 +947,9 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
         for _ in 0..4 {
-            spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+            world.spawn_source(RecordingSource::new(FrameOrder::MESH));
         }
-        spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+        world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
 
         let mut resolved = SourceOrder::default();
         resolved.resolve(&world);
@@ -975,8 +980,8 @@ mod tests {
     fn distinct_orders_are_never_ambiguous() {
         let mut world = World::new();
         test_context(&mut world);
-        spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
-        spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+        world.spawn_source(RecordingSource::new(FrameOrder::MESH));
+        world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
 
         let (order, ambiguous) = record_order(&world);
         assert_eq!(order.len(), 2);
@@ -1028,8 +1033,8 @@ mod tests {
     fn the_ambiguity_warning_names_the_group_order_and_entities() {
         let mut world = World::new();
         test_context(&mut world);
-        let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
-        let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+        let a = world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
+        let b = world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
 
         let messages = capture_logs(|| {
             let (_, ambiguous) = record_order(&world);
@@ -1058,8 +1063,8 @@ mod tests {
     fn distinct_orders_log_nothing() {
         let mut world = World::new();
         test_context(&mut world);
-        spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
-        spawn_source(&mut world, RecordingSource::new(FrameOrder::OVERLAY));
+        world.spawn_source(RecordingSource::new(FrameOrder::MESH));
+        world.spawn_source(RecordingSource::new(FrameOrder::OVERLAY));
 
         let messages = capture_logs(|| {
             let (_, ambiguous) = record_order(&world);
@@ -1074,8 +1079,8 @@ mod tests {
     fn a_steady_frame_repeats_nothing_in_the_log() {
         let mut world = World::new();
         test_context(&mut world);
-        let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
-        let _b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let a = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
+        let _b = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
         let mut warnings = OrderWarnings::default();
 
         let messages = capture_logs(|| {
@@ -1106,8 +1111,8 @@ mod tests {
     fn re_applying_the_same_order_keeps_the_log_quiet() {
         let mut world = World::new();
         test_context(&mut world);
-        let a = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
-        let b = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+        let a = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
+        let b = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
         let mut warnings = OrderWarnings::default();
 
         let messages = capture_logs(|| {
@@ -1136,7 +1141,7 @@ mod tests {
         test_context(&mut world);
 
         let ids: Vec<Entity> = (0..3)
-            .map(|_| spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH)))
+            .map(|_| world.spawn_source(RecordingSource::new(FrameOrder::MESH)))
             .collect();
 
         let (_, ambiguous) = record_order(&world);
@@ -1153,7 +1158,7 @@ mod tests {
 
         let indices: Vec<u64> = (0..3)
             .map(|_| {
-                let entity = spawn_source(&mut world, RecordingSource::new(FrameOrder::MESH));
+                let entity = world.spawn_source(RecordingSource::new(FrameOrder::MESH));
                 world
                     .with_mut::<Source, _>(entity, |s| s.mount_index())
                     .unwrap()
@@ -1297,14 +1302,11 @@ mod release_tests {
     fn dropping_a_source_releases_the_nodes_it_owns() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = spawn_source(
-            &mut world,
-            OwningSource {
-                context: ctx,
-                node: None,
-                scene: Scene::new(),
-            },
-        );
+        let entity = world.spawn_source(OwningSource {
+            context: ctx,
+            node: None,
+            scene: Scene::new(),
+        });
         build_once(&mut world, entity, ctx);
         assert_eq!(
             graph_len(&world, ctx),
@@ -1336,14 +1338,11 @@ mod release_tests {
     fn removing_a_source_that_owns_nothing_still_removes_it() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = spawn_source(
-            &mut world,
-            OwningSource {
-                context: ctx,
-                node: None,
-                scene: Scene::new(),
-            },
-        );
+        let entity = world.spawn_source(OwningSource {
+            context: ctx,
+            node: None,
+            scene: Scene::new(),
+        });
 
         world.despawn(entity);
         assert!(!world.contains(entity));
@@ -1362,14 +1361,11 @@ mod release_tests {
         let ctx = noop_context(&mut world);
         let mut entities = Vec::new();
         for _ in 0..2 {
-            entities.push(spawn_source(
-                &mut world,
-                OwningSource {
-                    context: ctx,
-                    node: None,
-                    scene: Scene::new(),
-                },
-            ));
+            entities.push(world.spawn_source(OwningSource {
+                context: ctx,
+                node: None,
+                scene: Scene::new(),
+            }));
         }
 
         for &entity in &entities {
@@ -1405,14 +1401,11 @@ mod release_tests {
     fn a_build_that_returns_early_still_maintains() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = spawn_source(
-            &mut world,
-            EarlyReturnSource {
-                context: ctx,
-                node: None,
-                scene: Scene::new(),
-            },
-        );
+        let entity = world.spawn_source(EarlyReturnSource {
+            context: ctx,
+            node: None,
+            scene: Scene::new(),
+        });
 
         // The first build registers the node the source owns.
         build_once(&mut world, entity, ctx);

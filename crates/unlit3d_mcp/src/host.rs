@@ -518,7 +518,7 @@ impl Host {
 
         let mut source = MeshSource::new(&world, context);
         source.register_unlit_family(&world);
-        let source = spawn_source(&mut world, source);
+        let source = world.spawn_source(source);
         world.spawn((InputState::default(),));
 
         let target = create_render_target(&device, COLOR_FORMAT, size.0, size.1, samples);

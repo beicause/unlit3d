@@ -51,7 +51,7 @@ fn build(
     source.register_unlit_family(world);
     // The variant that reads both the joint stream and the morph bindings.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = spawn_source(world, source);
+    let source_entity = world.spawn_source(source);
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, 0.0);
