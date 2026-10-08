@@ -19,7 +19,6 @@
 //! description, so the three cannot drift apart.
 
 use wgpu::WriteOnly;
-use zerocopy::IntoBytes;
 
 /// How one compressed channel is encoded as a vertex attribute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -561,7 +560,9 @@ fn f32_to_unorm16(component: f32) -> u16 {
 ///
 /// The caller is responsible for weights that already sum to 1; this helper
 /// does not renormalize. Computed on demand, so nothing is allocated.
-pub fn compress_weights(weights: &[[f32; 4]]) -> impl Iterator<Item = CompressedWeights> + '_ {
+pub fn compress_weights(
+    weights: &[[f32; 4]],
+) -> impl ExactSizeIterator<Item = CompressedWeights> + '_ {
     weights.iter().map(|weight| weight.map(f32_to_unorm16))
 }
 
@@ -588,21 +589,6 @@ pub fn compress_indices(indices: &[u32]) -> Result<impl Iterator<Item = u16> + '
         return Err(CompressError::TooManyVertices(index));
     }
     Ok(indices.iter().map(|&index| index as u16))
-}
-
-/// Byte view of a compressed position stream, ready for upload.
-pub fn positions_as_bytes(positions: &[CompressedPosition]) -> &[u8] {
-    positions.as_bytes()
-}
-
-/// Byte view of a joint-index stream, ready for upload.
-pub fn joints_as_bytes(joints: &[CompressedJoints]) -> &[u8] {
-    joints.as_bytes()
-}
-
-/// Byte view of a joint-weight stream, ready for upload.
-pub fn weights_as_bytes(weights: &[CompressedWeights]) -> &[u8] {
-    weights.as_bytes()
 }
 
 /// Quantize `[-1, 1]` floats to signed 16-bit normalized integers.
@@ -975,24 +961,27 @@ impl PositionStreamWriter {
     ///
     /// `joints` and `weights` are taken as their stored widths, because that
     /// is what the stream stores; float weights can be quantized with
-    /// [`compress_weights`] first. A stream that declares no joints ignores
-    /// both slices.
+    /// [`compress_weights`] first. They arrive as iterators so a caller can
+    /// compress its weights lazily as the stream is packed, without collecting
+    /// them first. A stream that declares no joints ignores both.
     ///
     /// # Panics
     ///
-    /// If a declared channel has no matching slice, if the slice lengths
-    /// disagree, or if `out` is not exactly one stream long.
+    /// If a declared channel's iterator is shorter than the positions, if the
+    /// two lengths disagree, or if `out` is not exactly one stream long.
     pub fn write(
         &self,
         positions: &[[f32; 3]],
-        joints: &[CompressedJoints],
-        weights: &[CompressedWeights],
+        joints: impl ExactSizeIterator<Item = CompressedJoints>,
+        weights: impl ExactSizeIterator<Item = CompressedWeights>,
         metadata: &mut MeshMetadata,
         out: WriteOnly<'_, [u8]>,
     ) {
         use zerocopy::IntoBytes;
 
         let vertex_count = positions.len();
+        let mut joints = joints;
+        let mut weights = weights;
         if self.joints() {
             assert_eq!(
                 joints.len(),
@@ -1056,10 +1045,12 @@ impl PositionStreamWriter {
                 None => {}
             }
             if write_joints {
-                let bytes = joints[index].as_bytes();
+                let joint = joints.next().expect("one joint set per vertex");
+                let bytes = joint.as_bytes();
                 vertex[len..len + bytes.len()].copy_from_slice(bytes);
                 len += bytes.len();
-                let bytes = weights[index].as_bytes();
+                let weight = weights.next().expect("one weight set per vertex");
+                let bytes = weight.as_bytes();
                 vertex[len..len + bytes.len()].copy_from_slice(bytes);
                 len += bytes.len();
             }
@@ -1111,6 +1102,7 @@ const MAX_POSITION_STRIDE: usize =
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zerocopy::IntoBytes;
 
     /// Write raw UVs and compressed colors through the mapped-buffer path
     /// and return the bytes.
@@ -1384,8 +1376,8 @@ mod tests {
         let mut out = vec![0u8; skinned.byte_len(2)];
         skinned.write(
             &positions,
-            &joints,
-            &weights,
+            joints.iter().copied(),
+            weights.iter().copied(),
             &mut metadata,
             WriteOnly::from_mut(out.as_mut_slice()),
         );
@@ -1395,8 +1387,8 @@ mod tests {
         let mut plain_out = vec![0u8; plain.byte_len(2)];
         plain.write(
             &positions,
-            &[],
-            &[],
+            core::iter::empty(),
+            core::iter::empty(),
             &mut MeshMetadata::default(),
             WriteOnly::from_mut(plain_out.as_mut_slice()),
         );

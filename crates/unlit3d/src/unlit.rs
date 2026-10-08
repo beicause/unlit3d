@@ -20,6 +20,7 @@ use unlit_wgpu::pipeline::{
     POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
 use unlit_wgpu::resources::{ResourceId, TextureView};
+use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::{
     SpecializedPipeline, SurfaceKey, VertexAttributes, VertexBufferLayoutDesc, VertexLayout,
 };
@@ -86,21 +87,21 @@ impl IndexOffset {
         }
     }
 
-    /// `indices` with the pool offset applied, in the narrowest format they
-    /// fit, as the bytes to upload.
+    /// The format `indices` pack into and the number of bytes they occupy,
+    /// with the pool offset applied.
     ///
     /// An offset carried by the draw leaves the indices mesh-local, so they
     /// stay as narrow as the mesh's own vertex count allows; an offset baked in
     /// here can push an index past `u16::MAX`, which widens *every* index of
-    /// the mesh to `Uint32`. Either way the offset is applied as the bytes are
-    /// written, so no intermediate index buffer exists.
+    /// the mesh to `Uint32`. Either way the width is decided on the baked
+    /// values.
     ///
-    /// The bytes are padded to [`wgpu::COPY_BUFFER_ALIGNMENT`], which is the
-    /// alignment an index pool hands its ranges out at, so the result is
-    /// written whole and its length is the size to allocate.
+    /// The length is padded to [`wgpu::COPY_BUFFER_ALIGNMENT`], which is the
+    /// alignment an index pool hands its ranges out at, so it is both the size
+    /// to allocate and the number of bytes [`Self::write`] fills.
     ///
     /// The slice must not be empty: an empty mesh has no index buffer at all.
-    fn pack(self, indices: &[u32]) -> (wgpu::IndexFormat, Vec<u8>) {
+    fn packed_len(self, indices: &[u32]) -> (wgpu::IndexFormat, usize) {
         let widened = indices
             .iter()
             .any(|&index| !index_fits_u16(index + self.baked));
@@ -109,25 +110,61 @@ impl IndexOffset {
         } else {
             size_of::<u16>()
         };
-        let padded_len =
-            (indices.len() * element).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
-        // Sized up front so padding extends into reserved space rather than
-        // growing the allocation.
-        let mut data = Vec::with_capacity(padded_len);
-        for &index in indices {
-            let index = index + self.baked;
-            if widened {
-                data.extend_from_slice(index.as_bytes());
-            } else {
-                data.extend_from_slice((index as u16).as_bytes());
-            }
-        }
-        data.resize(padded_len, 0);
         let format = if widened {
             wgpu::IndexFormat::Uint32
         } else {
             wgpu::IndexFormat::Uint16
         };
+        let padded_len =
+            (indices.len() * element).next_multiple_of(wgpu::COPY_BUFFER_ALIGNMENT as usize);
+        (format, padded_len)
+    }
+
+    /// Write `indices` with the pool offset applied into `out`, which must be
+    /// exactly [`Self::packed_len`]`(indices)` bytes.
+    ///
+    /// The offset is applied as the bytes are written, so no intermediate index
+    /// buffer exists; the trailing alignment padding is zeroed.
+    ///
+    /// The slice must not be empty: an empty mesh has no index buffer at all.
+    fn write(self, indices: &[u32], out: wgpu::WriteOnly<'_, [u8]>) {
+        let (format, padded_len) = self.packed_len(indices);
+        assert_eq!(
+            out.len(),
+            padded_len,
+            "the target must hold exactly the packed index buffer"
+        );
+        let element = index_format_size(format) as usize;
+        let (data, mut padding) = out.split_at(indices.len() * element);
+        match format {
+            wgpu::IndexFormat::Uint16 => {
+                let (chunks, _remainder) = data.into_chunks::<{ size_of::<u16>() }>();
+                chunks.write_iter(
+                    indices
+                        .iter()
+                        .map(|&index| (index + self.baked) as u16)
+                        .map(u16::to_ne_bytes),
+                );
+            }
+            wgpu::IndexFormat::Uint32 => {
+                let (chunks, _remainder) = data.into_chunks::<{ size_of::<u32>() }>();
+                chunks.write_iter(
+                    indices
+                        .iter()
+                        .map(|&index| index + self.baked)
+                        .map(u32::to_ne_bytes),
+                );
+            }
+        }
+        padding.fill(0);
+    }
+
+    /// [`Self::write`] into a fresh `Vec`, for tests that inspect the bytes.
+    #[cfg(test)]
+    fn pack(self, indices: &[u32]) -> (wgpu::IndexFormat, Vec<u8>) {
+        let (format, padded_len) = self.packed_len(indices);
+        let mut data = vec![0u8; padded_len];
+        self.write(indices, wgpu::WriteOnly::from_mut(data.as_mut_slice()));
         (format, data)
     }
 }
@@ -555,7 +592,7 @@ impl MeshSourceUnlitExt for MeshSource {
         // needs its UVs. A variant that reads none ignores joints it was
         // handed, as it ignores UVs it does not declare.
         let skinned = variant.needs_joints();
-        let (packed_joints, packed_weights) = if skinned {
+        let (joints, weights) = if skinned {
             let joints = joints.expect("a variant that reads joints needs the mesh's joints");
             let weights = weights.expect("a variant that reads joints needs the mesh's weights");
             assert_eq!(
@@ -568,36 +605,20 @@ impl MeshSourceUnlitExt for MeshSource {
                 positions.len(),
                 "the weight stream must describe the same vertices as the positions"
             );
-            (joints.to_vec(), compress_weights(weights).collect())
+            (joints, weights)
         } else {
-            (Vec::new(), Vec::new())
+            // A variant that reads none ignores the joints it was handed, as
+            // it ignores UVs it does not declare.
+            (&[] as &[[u16; 4]], &[] as &[[f32; 4]])
         };
 
-        // Compress every vertex stream.
+        // Both streams' lengths are known before anything is uploaded, so the
+        // pool can be sized first and each stream packed straight into it. The
+        // position stream's compression derives the mesh metadata as it runs.
         let mut meta = MeshMetadata::default();
-        let position_len = position_stream.byte_len(positions.len());
-        let mut position_data = vec![0u8; position_len];
-        position_stream.write(
-            positions,
-            &packed_joints,
-            &packed_weights,
-            &mut meta,
-            wgpu::WriteOnly::from_mut(position_data.as_mut_slice()),
-        );
         let vertex_count = positions.len();
-
-        // UV and colour vertex data, interleaved in the order the shader
-        // declares: the channel a slice is given for is the channel packed.
+        let position_len = position_stream.byte_len(vertex_count);
         let uv_color_len = uv_color_stream.byte_len(vertex_count);
-        let mut uv_color_data = vec![0u8; uv_color_len];
-        if uv_color_len > 0 {
-            uv_color_stream.write(
-                uvs.unwrap_or(&[]),
-                colors.unwrap_or(&[]),
-                &mut meta,
-                wgpu::WriteOnly::from_mut(uv_color_data.as_mut_slice()),
-            );
-        }
 
         // The morph displacements, when the draw reads them. They are geometry
         // the mesh owns, written once here; the weights that blend them are
@@ -649,9 +670,12 @@ impl MeshSourceUnlitExt for MeshSource {
             .allocate(&device, &queue, &stream_layouts, vertex_count as u32)
             .expect("the vertex pool grows with the mesh");
         let vertex_offset = vertices.offset();
-        for (_slot, (layout, data)) in [
-            (POSITION_SLOT, (&position_layout, position_data.as_bytes())),
-            (UV_COLOR_SLOT, (&uv_color_layout, uv_color_data.as_bytes())),
+        // Each stream is packed straight into the pool through a queue write,
+        // so no CPU-side buffer is built first. The write view is the only
+        // mutable borrow, so the two streams are packed one after the other.
+        for (slot, layout, len) in [
+            (POSITION_SLOT, &position_layout, position_len),
+            (UV_COLOR_SLOT, &uv_color_layout, uv_color_len),
         ] {
             if layout.array_stride == 0 {
                 continue;
@@ -662,11 +686,30 @@ impl MeshSourceUnlitExt for MeshSource {
                 .get(&id)
                 .expect("the stream's node exists")
                 .clone();
-            queue.write_buffer(
-                &buffer,
-                VertexStreamPool::byte_offset(layout, vertex_offset),
-                data,
-            );
+            let mut view = queue
+                .write_buffer_with(
+                    &buffer,
+                    VertexStreamPool::byte_offset(layout, vertex_offset),
+                    core::num::NonZeroU64::new(len as u64)
+                        .expect("a declared stream is never empty"),
+                )
+                .expect("the stream's range fits its buffer");
+            if slot == POSITION_SLOT {
+                position_stream.write(
+                    positions,
+                    joints.iter().copied(),
+                    compress_weights(weights),
+                    &mut meta,
+                    view.slice(..),
+                );
+            } else {
+                uv_color_stream.write(
+                    uvs.unwrap_or(&[]),
+                    colors.unwrap_or(&[]),
+                    &mut meta,
+                    view.slice(..),
+                );
+            }
         }
 
         // Index buffer (optional): `Uint16` when every index fits, otherwise
@@ -704,21 +747,27 @@ impl MeshSourceUnlitExt for MeshSource {
                 // that pushes an index past `u16::MAX` has to widen the buffer
                 // it is written into, so the format and the bytes are decided
                 // together.
-                let (format, data) = offset.pack(indices);
+                let (format, packed_len) = offset.packed_len(indices);
                 let range = self
                     .index_pool
-                    .allocate(&device, &queue, data.len() as u32)
+                    .allocate(&device, &queue, packed_len as u32)
                     .expect("the index pool grows with the mesh");
                 {
                     let mut graph = MeshSource::graph(world, self.context);
                     MeshSource::sync_pool_node(&self.index_pool, &self.index_pool_id, &mut graph);
-                    queue.write_buffer(
-                        graph
-                            .get(&self.index_pool_id)
-                            .expect("the index pool node exists"),
-                        u64::from(range.offset()),
-                        &data,
-                    );
+                    let buffer = graph
+                        .get(&self.index_pool_id)
+                        .expect("the index pool node exists")
+                        .clone();
+                    let mut view = queue
+                        .write_buffer_with(
+                            &buffer,
+                            u64::from(range.offset()),
+                            core::num::NonZeroU64::new(packed_len as u64)
+                                .expect("an empty index buffer is never allocated"),
+                        )
+                        .expect("the index range fits its buffer");
+                    offset.write(indices, view.slice(..));
                 }
                 let first = range.offset() / index_format_size(format);
                 (
@@ -773,7 +822,7 @@ impl MeshSourceUnlitExt for MeshSource {
         // The mesh's layout is only the vertex streams it draws from: the
         // per-instance stream is the family's own and is bound by the source
         // at draw time, so it is not part of the mesh's layout at all.
-        let mut layouts = Vec::new();
+        let mut layouts = ArrayVec::<_, MAX_VERTEX_BUFFERS>::new();
 
         // The mesh's slices of the pools it shares: the draw names its ranges
         // by `first` and `base_vertex`, and the allocations are handed back on
