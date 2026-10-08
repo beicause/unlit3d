@@ -3,9 +3,7 @@
 //! Re-exports general GPU test helpers and adds crate-specific helpers
 //! tailored to the `unlit3d` ECS-based rendering API.
 
-pub use unlit_wgpu_test_util::{
-    Ctx, Frame, assert_image_snapshot, count_pixels_off_background, read_texture_bytes, texel_bytes,
-};
+pub use unlit_wgpu_test_util::{Ctx, Frame, assert_image_snapshot, count_pixels_off_background};
 
 use core::ops::DerefMut;
 use unlit_ecs::{Entity, World};
@@ -400,7 +398,7 @@ impl TestGpu {
     ) -> Frame {
         let target = self.bind_offscreen_target_sized(world, size, 1, true);
         self.render(world);
-        let rgba = read_texture_bytes(ctx, &target, size.0, size.1, texel_bytes(&target));
+        let rgba = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
         Frame {
             rgba,
             width: size.0,

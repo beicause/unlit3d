@@ -397,7 +397,7 @@ async fn a_custom_family_owns_its_instance_stream() {
 
     let target = gpu.render_to_offscreen(&world, "test::custom_instances");
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };

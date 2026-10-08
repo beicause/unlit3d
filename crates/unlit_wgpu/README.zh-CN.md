@@ -23,8 +23,8 @@
 | `egui` | 否 | `ui` 模块：一个把 egui 的细分输出当作普通屏幕空间绘制来画的后端。隐含 `unlit` |
 
 使用 `--no-default-features` 时，本 crate 保留其通用设施——资源图、网格压缩、偏移
-分配器与缓冲池、staging、`Scene`、`RenderAttachments`、变体缓存，以及镜像调用者
-所绑定类型的那些 WESL 模块——并去掉一切与内置管线相关的东西，包括用于组合着色器
+分配器与缓冲池、staging、readback、`Scene`、`RenderAttachments`、变体缓存，以及
+镜像调用者所绑定类型的那些 WESL 模块——并去掉一切与内置管线相关的东西，包括用于组合着色器
 的 WESL 编译器。CI 会单独检查这一组合。
 
 ## 内容概览
@@ -57,6 +57,9 @@
   区间。
 - `render_attachments` —— 一个 pass 渲染到的附件、开启 pass 的入口，以及用于离屏
   帧的 `create_render_target`。
+- `readback` —— 把纹理或缓冲拷回主机：`readback_texture` 返回纹理 mip 0 的
+  紧凑行，`readback_buffer` 返回缓冲的一段切片。两者都会阻塞到拷贝完成，因此测试、截图或调试
+  工具可以检视 GPU 产出的内容。
 - `specialize` —— 变体缓存：`PipelineVariant` 构造出
   `PipelineDescriptor`，`Variants` 则为每个变体编译并复用一个
   `SpecializedPipeline`。

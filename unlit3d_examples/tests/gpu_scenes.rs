@@ -19,7 +19,7 @@
 
 use unlit_wgpu_test_util::{
     Ctx, Snapshot, Tolerance, assert_image_snapshot_with_tolerance, gpu_test_main, gpu_tests,
-    read_texture_bytes, snapshots,
+    snapshots,
 };
 use unlit3d::prelude::*;
 use unlit3d_examples::scenes::{self, SceneDef, SceneOptions};
@@ -180,11 +180,6 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         .expect("the renderer is a resource entity");
     set_frame_viewport(world, scene.viewport.map(FrameViewport));
 
-    let bytes_per_pixel = target
-        .format()
-        .block_copy_size(None)
-        .expect("a render-target format has a block copy size");
-
     let mut compared = 0;
     for frame in 0..def.frames {
         scene.advance(FIXED_STEP);
@@ -207,7 +202,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
             def.id
         );
 
-        let bytes = read_texture_bytes(&ctx, &target, size.0, size.1, bytes_per_pixel);
+        let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
         assert_image_snapshot_with_tolerance(*snapshot, &bytes, size.0, size.1, tolerance);
         compared += 1;
     }
@@ -263,18 +258,13 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         .expect("the renderer is a resource entity");
     set_frame_viewport(world, scene.viewport.map(FrameViewport));
 
-    let bytes_per_pixel = target
-        .format()
-        .block_copy_size(None)
-        .expect("a render-target format has a block copy size");
-
     for _ in 0..def.frames {
         scene.advance(FIXED_STEP);
         scene.render();
         scene.end_frame();
     }
 
-    let bytes = read_texture_bytes(&ctx, &target, size.0, size.1, bytes_per_pixel);
+    let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
     assert_image_snapshot_with_tolerance(snapshot, &bytes, size.0, size.1, LETTERBOX_TOLERANCE);
 }
 

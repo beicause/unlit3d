@@ -3,10 +3,7 @@
 //! This module is not a test binary itself — it is included by per-topic
 //! test files (`tests/*.rs`).
 
-#![expect(unused_imports, reason = "different test files use different subsets")]
-
-pub use unlit_wgpu_test_util::{
-    Ctx, Frame, assert_image_snapshot, assert_image_snapshot_with_tolerance, bg_entry,
-    count_pixels_off_background, read_texture_bytes, readback_buffer, rgb, srgb_to_linear_u8,
-    texel_bytes,
-};
+// Re-exported wholesale: each test file uses a different subset of the
+// harness, and a glob re-export is the one form unused_imports does not
+// flag per binary.
+pub use unlit_wgpu_test_util::*;

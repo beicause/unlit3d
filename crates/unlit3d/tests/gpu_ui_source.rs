@@ -242,7 +242,7 @@ fn pixel_of(point: egui::Pos2, pixels_per_point: f32) -> (u32, u32) {
 /// Read a frame back out of `target`.
 fn read(ctx: &Ctx, target: &wgpu::Texture) -> Frame {
     Frame {
-        rgba: read_texture_bytes(ctx, target, WIDTH, HEIGHT, texel_bytes(target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, target),
         width: WIDTH,
         height: HEIGHT,
     }

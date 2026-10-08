@@ -409,7 +409,7 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
     let target = gpu.render_to_offscreen(&world, "test::custom");
 
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };
@@ -524,7 +524,7 @@ async fn one_pipeline_draws_many_meshes() {
     let target = gpu.render_to_offscreen(&world, "test::custom::shared");
 
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };

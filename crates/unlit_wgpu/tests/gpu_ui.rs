@@ -176,7 +176,7 @@ fn render_ui_with(
         .expect("poll");
 
     Frame {
-        rgba: read_texture_bytes(ctx, &target, width, height, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width,
         height,
     }

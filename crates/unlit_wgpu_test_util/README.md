@@ -73,8 +73,7 @@ sets it.
 - [`init_logging`] — the logger backend on its own, for tests that never build a
   [`Ctx`]. Natively it is `env_logger` reading `RUST_LOG`; on the web,
   `console_log` forwards to the browser console. The default level is `warn`.
-- Buffer and texture readback: [`readback_buffer`] and [`read_texture_bytes`]
-  (the latter undoes the row padding a texture copy requires), plus
+- Texture readback through `unlit_wgpu::readback::readback_texture`, plus
   [`ColorTarget`], [`Frame`], [`texel_bytes`], [`bg_entry`], [`rgb`],
   [`srgb_to_linear_u8`] and [`count_pixels_off_background`].
 - With the `snapshot` feature: snapshot assertions, described below.
@@ -151,12 +150,12 @@ git -C unlit3d_asset_files diff   # review before committing
 ## Usage
 
 ```rust,no_run
-use unlit_wgpu_test_util::{Ctx, read_texture_bytes};
+use unlit_wgpu_test_util::Ctx;
 
 let ctx = unlit_wgpu_test_util::block_on(Ctx::headless());
 let target = unlit_wgpu_test_util::ColorTarget::new(&ctx.device, "example", 64, 64);
 // ... render into target.view ...
-let bytes = read_texture_bytes(&ctx, &target.texture, 64, 64, 4);
+let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);
 
 #[cfg(feature = "snapshot")]
 unlit_wgpu_test_util::assert_image_snapshot(

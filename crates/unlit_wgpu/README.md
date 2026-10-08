@@ -28,8 +28,8 @@ dependency on the ECS layer; the ECS-integrated API built on it is
 
 With `--no-default-features` the crate keeps its general facilities — the
 resource graph, mesh compression, the offset allocator and buffer pools,
-staging, `Scene`, `RenderAttachments`, the variant cache, and the WESL modules
-mirroring the types a caller binds — and drops everything specific to the
+staging, readback, `Scene`, `RenderAttachments`, the variant cache, and the
+WESL modules mirroring the types a caller binds — and drops everything specific to the
 built-in pipeline, including the WESL compiler it composes shaders with. CI
 checks that combination separately.
 
@@ -76,6 +76,12 @@ checks that combination separately.
   groups, materials, meshes, vertex buffers and draw ranges.
 - [`render_attachments`] — the attachments a pass renders into, the pass-opening
   entry point, and [`create_render_target`](render_attachments::create_render_target) for an offscreen frame.
+- [`readback`] — copying a texture or a buffer back to the host:
+  [`readback_texture`](readback::readback_texture) returns a texture's whole mip
+  level 0 as tight rows, [`readback_buffer`](readback::readback_buffer) a buffer
+  slice. Both
+  block until the copy has run, so a test, a screenshot or a debug tool can
+  inspect what the GPU produced.
 - [`specialize`] — variant caching: a [`PipelineVariant`](specialize::PipelineVariant)
   builds a [`PipelineDescriptor`](specialize::PipelineDescriptor), and
   [`Variants`](specialize::Variants) compiles and reuses one

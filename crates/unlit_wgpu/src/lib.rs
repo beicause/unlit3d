@@ -23,6 +23,7 @@ pub mod instance_stream;
 pub mod mesh;
 pub mod offset_allocator;
 pub mod pipeline;
+pub mod readback;
 pub mod render_attachments;
 pub mod resources;
 pub mod scene;

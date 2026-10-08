@@ -42,7 +42,7 @@ async fn ecs_cube_covers_the_frame() {
 
     // Read back and check.
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };
@@ -97,7 +97,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
     let target = gpu.render_to_offscreen(&world, "test::depth");
 
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };
@@ -192,7 +192,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 
     let target = gpu.render_to_offscreen(&world, "test::reused_range::before");
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };
@@ -225,7 +225,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 
     let target = gpu.render_to_offscreen(&world, "test::reused_range::after");
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };
@@ -300,7 +300,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
 
         let target = gpu.render_to_offscreen(&world, "test::pool_growth");
         let frame = Frame {
-            rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+            rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
             width: WIDTH,
             height: HEIGHT,
         };

@@ -216,50 +216,6 @@ pub fn srgb_to_linear_u8(c: u8) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// Buffer readback
-// ---------------------------------------------------------------------------
-
-/// Blocking buffer readback: copy `source` into a `MAP_READ` buffer, map,
-/// copy bytes out, unmap.
-pub fn readback_buffer(ctx: &Ctx, source: &wgpu::Buffer, size: u64) -> Vec<u8> {
-    let readback = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("gpu_test::readback"),
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gpu_test::copy"),
-        });
-    encoder.copy_buffer_to_buffer(source, 0, &readback, 0, size);
-    ctx.queue.submit([encoder.finish()]);
-
-    let slice = readback.slice(..);
-    let (tx, rx) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = tx.send(result);
-    });
-    ctx.device
-        .poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })
-        .expect("device poll failed during readback");
-    rx.recv()
-        .expect("map callback never fired")
-        .expect("buffer map failed");
-
-    let data = {
-        let view = slice.get_mapped_range().expect("map range failed");
-        view.to_vec()
-    };
-    readback.unmap();
-    data
-}
-
-// ---------------------------------------------------------------------------
 // Offscreen colour target and frame readback
 // ---------------------------------------------------------------------------
 
@@ -354,62 +310,6 @@ pub fn texel_bytes(texture: &wgpu::Texture) -> u32 {
         .format()
         .block_copy_size(None)
         .expect("texture format has a block copy size")
-}
-
-/// Blocking full-texture readback as tight bytes (no row padding).
-pub fn read_texture_bytes(
-    ctx: &Ctx,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-    bytes_per_pixel: u32,
-) -> Vec<u8> {
-    let tight_bpr = (width * bytes_per_pixel) as u64;
-    // A texture-to-buffer copy aligns every row to
-    // `COPY_BYTES_PER_ROW_ALIGNMENT`, which is coarser than the buffer
-    // alignment and is what the command encoder validates.
-    let padded_bpr = tight_bpr.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
-    let size = padded_bpr * height as u64;
-    let dst = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("gpu_test::tex_readback"),
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let mut encoder = ctx
-        .device
-        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("gpu_test::tex_copy"),
-        });
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &dst,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bpr as u32),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    ctx.queue.submit([encoder.finish()]);
-    let padded = readback_buffer(ctx, &dst, size);
-
-    if padded_bpr == tight_bpr {
-        return padded;
-    }
-    let tight = (tight_bpr * height as u64) as usize;
-    let mut out = Vec::with_capacity(tight);
-    for row in 0..height as usize {
-        let start = row * padded_bpr as usize;
-        out.extend_from_slice(&padded[start..start + tight_bpr as usize]);
-    }
-    out
 }
 
 /// Count pixels whose colour differs from `background` beyond `tolerance`.

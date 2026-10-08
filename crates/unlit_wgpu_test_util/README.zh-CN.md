@@ -62,8 +62,8 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
 - `init_logging()` —— 单独的日志后端，供从不创建 `Ctx` 的测试使用。原生平台上是读取
   `RUST_LOG` 的 `env_logger`；web 上是转发到浏览器控制台的 `console_log`。默认级别
   为 `warn`。
-- 缓冲与纹理回读：`readback_buffer` 与 `read_texture_bytes`（后者会去掉纹理拷贝所
-  要求的行填充），以及 `ColorTarget`、`Frame`、`texel_bytes`、`bg_entry`、`rgb`、
+- 纹理回读经由 `unlit_wgpu::readback::readback_texture`，另有
+  `ColorTarget`、`Frame`、`texel_bytes`、`bg_entry`、`rgb`、
   `srgb_to_linear_u8` 与 `count_pixels_off_background`。
 - 开启 `snapshot` feature 时：快照断言，见下文。
 
@@ -126,12 +126,12 @@ git -C unlit3d_asset_files diff   # 提交前先审查
 ## 用法
 
 ```rust,no_run
-use unlit_wgpu_test_util::{Ctx, read_texture_bytes};
+use unlit_wgpu_test_util::Ctx;
 
 let ctx = unlit_wgpu_test_util::block_on(Ctx::headless());
 let target = unlit_wgpu_test_util::ColorTarget::new(&ctx.device, "example", 64, 64);
 // ... render into target.view ...
-let bytes = read_texture_bytes(&ctx, &target.texture, 64, 64, 4);
+let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);
 
 #[cfg(feature = "snapshot")]
 unlit_wgpu_test_util::assert_image_snapshot(

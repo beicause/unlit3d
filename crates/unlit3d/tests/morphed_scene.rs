@@ -118,7 +118,7 @@ async fn meshes_can_share_one_morph_weights() {
     // would reach only one of them.
     let read = |gpu: &TestGpu| {
         gpu.render(&world);
-        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
     };
     let unweighted = read(&gpu);
     world

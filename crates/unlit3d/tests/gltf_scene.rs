@@ -281,7 +281,7 @@ async fn a_morphed_quad_follows_its_weights() {
 
     let read = |gpu: &TestGpu| {
         gpu.render(&world);
-        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
     };
     let undeformed = read(&gpu);
     let red = count_colour(&undeformed, [255, 0, 0], 4);
@@ -402,7 +402,7 @@ async fn an_animation_moves_the_drawn_mesh() {
     let read = |gpu: &TestGpu, time: f32| {
         gltf.apply_animation(&world, 0, time, &nodes);
         gpu.render(&world);
-        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
     };
 
     let rest = read(&gpu, 0.0);
@@ -475,7 +475,7 @@ async fn a_skinned_quad_follows_its_joint() {
 
     let read = |gpu: &TestGpu| {
         gpu.render(&world);
-        read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+        unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
     };
     let before = read(&gpu);
     let red = count_colour(&before, [255, 0, 0], 4);
@@ -526,7 +526,7 @@ async fn textured_quad_renders_four_colours() {
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_textured_quad");
     gpu.render(&world);
-    let px = read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target));
+    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
 
     let quarter = (WIDTH * HEIGHT / 4) as usize;
     for (colour, name) in [
@@ -634,7 +634,7 @@ async fn a_double_sided_material_draws_back_faces() {
 
             let target = gpu.bind_offscreen_target(&world, "test::gltf_double_sided");
             gpu.render(&world);
-            read_texture_bytes(ctx, &target, WIDTH, HEIGHT, texel_bytes(&target))
+            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
         }
     };
 
@@ -679,13 +679,7 @@ async fn node_hierarchy_translates_the_quad() {
         let entities = gltf.spawn_default_scene(&mut world, &resources);
         world.spawn((camera(),));
         gpu.render(&world);
-        let px = read_texture_bytes(
-            &ctx,
-            &target_handle,
-            WIDTH,
-            HEIGHT,
-            texel_bytes(&target_handle),
-        );
+        let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle);
         // Drop what the document added and despawn its entities, so the next
         // closure starts from the same empty world.
         for node in entities {
@@ -738,7 +732,7 @@ async fn untextured_material_draws_flat() {
     world.spawn((camera(),));
     let target = gpu.bind_offscreen_target(&world, "test::gltf_flat_quad");
     gpu.render(&world);
-    let px = read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target));
+    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
 
     // baseColorFactor [1,1,1,1] on the default white material: everything the
     // quad covers is white, and the frame has no other colour in it.
@@ -800,7 +794,7 @@ async fn a_blended_material_composites_over_the_frame() {
     world.spawn((camera(),));
     let target = gpu.bind_offscreen_target(&world, "test::gltf_blended_quad");
     gpu.render(&world);
-    let px = read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target));
+    let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
 
     let quarter = (WIDTH * HEIGHT / 4) as usize;
     // Half-opaque white over the background: almost no texel reaches fully
@@ -862,13 +856,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
         let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_masked_quad");
         world.spawn((camera(),));
         gpu.render(&world);
-        let px = read_texture_bytes(
-            &ctx,
-            &target_handle,
-            WIDTH,
-            HEIGHT,
-            texel_bytes(&target_handle),
-        );
+        let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle);
         for node in entities {
             for entity in node.entities {
                 world.despawn(entity);
@@ -919,7 +907,7 @@ async fn unload_empties_the_frame() {
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_before");
     gpu.render(&world);
-    let before = read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target));
+    let before = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
     assert!(
         count_pixels_off_background(&before, CLEAR, 2) > (WIDTH * HEIGHT * 85 / 100) as usize,
         "the quad draws before unloading"
@@ -936,7 +924,7 @@ async fn unload_empties_the_frame() {
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_after");
     gpu.render(&world);
-    let after = read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target));
+    let after = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
     // The frame clears to black with no `RenderLoadOps` in the world, so an
     // empty frame reads back black everywhere.
     let breakdown = [

@@ -230,18 +230,7 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
         .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(&world))
         .expect("the renderer entity exists");
 
-    let bytes_per_pixel = target
-        .format()
-        .block_copy_size(None)
-        .ok_or_else(|| Error::Config("the colour target has no block size".to_owned()))?;
-    let rgba = read_texture(
-        &device,
-        &queue,
-        &target,
-        output_size.0,
-        output_size.1,
-        bytes_per_pixel,
-    );
+    let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target);
     Ok(Frame {
         rgba,
         width: output_size.0,
@@ -418,92 +407,4 @@ fn animation_list(document: &UnlitGltf) -> String {
         list.push_str("none");
     }
     list
-}
-
-/// Copy a texture's pixels back to the host as tight rows of bytes_per_pixel.
-fn read_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    width: u32,
-    height: u32,
-    bytes_per_pixel: u32,
-) -> Vec<u8> {
-    let tight_bytes_per_row = u64::from(width) * u64::from(bytes_per_pixel);
-    let padded_bytes_per_row =
-        tight_bytes_per_row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
-    let size = padded_bytes_per_row * u64::from(height);
-    let destination = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("unlit3d_cli::readback"),
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("unlit3d_cli::readback"),
-    });
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &destination,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_bytes_per_row as u32),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    queue.submit([encoder.finish()]);
-    let padded = read_buffer(device, queue, &destination, size);
-    if padded_bytes_per_row == tight_bytes_per_row {
-        return padded;
-    }
-    let mut tight = Vec::with_capacity((tight_bytes_per_row * u64::from(height)) as usize);
-    for row in padded.chunks_exact(padded_bytes_per_row as usize) {
-        tight.extend_from_slice(&row[..tight_bytes_per_row as usize]);
-    }
-    tight
-}
-
-/// Map a buffer and copy its bytes back to the host.
-fn read_buffer(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    source: &wgpu::Buffer,
-    size: u64,
-) -> Vec<u8> {
-    let readback = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("unlit3d_cli::readback_buffer"),
-        size,
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("unlit3d_cli::copy"),
-    });
-    encoder.copy_buffer_to_buffer(source, 0, &readback, 0, size);
-    queue.submit([encoder.finish()]);
-    let slice = readback.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
-    });
-    device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("device poll failed during readback");
-    receiver
-        .recv()
-        .expect("map callback never fired")
-        .expect("buffer map failed");
-    let data = {
-        let view = slice.get_mapped_range().expect("map range failed");
-        view.to_vec()
-    };
-    readback.unmap();
-    data
 }

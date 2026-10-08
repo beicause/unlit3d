@@ -579,7 +579,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
         .expect("poll");
 
     Frame {
-        rgba: read_texture_bytes(ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     }
@@ -948,7 +948,7 @@ async fn a_loaded_color_attachment_keeps_its_contents() {
         .expect("poll");
 
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &target, WIDTH, HEIGHT, texel_bytes(&target)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target),
         width: WIDTH,
         height: HEIGHT,
     };
@@ -1107,7 +1107,7 @@ async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
     ctx.queue.submit([encoder.finish()]);
 
     let frame = Frame {
-        rgba: read_texture_bytes(&ctx, &ft.color, WIDTH, HEIGHT, texel_bytes(&ft.color)),
+        rgba: unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &ft.color),
         width: WIDTH,
         height: HEIGHT,
     };
@@ -1145,6 +1145,101 @@ async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
     }
 }
 
+/// The library's own texture readback returns tight rows.
+///
+/// The same not-copy-aligned width the harness test uses, but through
+/// [`unlit_wgpu::readback::readback_texture`] rather than the test harness, so the
+/// crate's readback is what is checked. The buffer rows must be stripped back
+/// off, and the texture's format — not a caller's guess — decides the width.
+async fn the_readback_module_returns_a_texture_as_tight_rows() {
+    // 60 RGBA pixels is 240 bytes: a multiple of the buffer alignment but not
+    // of the copy row alignment, so the copy has to be padded and stripped.
+    const WIDTH: u32 = 60;
+    const HEIGHT: u32 = 8;
+    let ctx = Ctx::headless().await;
+
+    let ft = create_render_target(&ctx.device, COLOR_FORMAT, WIDTH, HEIGHT, 1);
+    let mut encoder = ctx
+        .device
+        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("gpu_unlit::readback_module"),
+        });
+    {
+        let mut pass = ft.attachments.begin_pass(
+            &mut encoder,
+            wgpu::LoadOp::Clear(rgb(CLEAR[0], CLEAR[1], CLEAR[2])),
+            depth_clear(),
+            stencil_clear(),
+        );
+        Scene::new().record(&mut pass);
+    }
+    ctx.queue.submit([encoder.finish()]);
+
+    let pixels = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &ft.color);
+    assert_eq!(
+        pixels.len(),
+        (WIDTH * HEIGHT * 4) as usize,
+        "the readback returns exactly the frame's pixels, with no row padding",
+    );
+    // Every pixel is the clear colour, so a row that kept its padding would
+    // show up as a mismatch. The texture encodes sRGB, so the clear value is
+    // encoded the same way before comparing.
+    let encode = |linear: f64| {
+        let c = if linear <= 0.003_130_8 {
+            linear * 12.92
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (c * 255.0).round().clamp(0.0, 255.0) as u8
+    };
+    let expect = [encode(CLEAR[0]), encode(CLEAR[1]), encode(CLEAR[2])];
+    for y in 0..HEIGHT {
+        for x in 0..WIDTH {
+            let off = ((y * WIDTH + x) * 4) as usize;
+            let got = &pixels[off..off + 3];
+            assert!(
+                got.iter()
+                    .zip(expect)
+                    .all(|(&got, want)| got.abs_diff(want) <= 2),
+                "pixel ({x}, {y}) should be the clear colour, got {got:?}"
+            );
+        }
+    }
+}
+
+/// The library's buffer readback returns the requested slice.
+async fn the_readback_module_returns_a_buffer_slice() {
+    let ctx = Ctx::headless().await;
+    let values: [u32; 16] = core::array::from_fn(|index| index as u32 * 3 + 1);
+    let source = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gpu_unlit::readback_source"),
+        size: core::mem::size_of_val(&values) as u64,
+        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    ctx.queue
+        .write_buffer(&source, 0, zerocopy::IntoBytes::as_bytes(&values));
+
+    // A slice of the middle, offset to a second element and aligned to the
+    // buffer copy alignment.
+    let element = core::mem::size_of::<u32>() as u64;
+    let bytes = unlit_wgpu::readback::readback_buffer(
+        &ctx.device,
+        &ctx.queue,
+        &source,
+        element * 4,
+        element * 3,
+    );
+    let expected: Vec<u8> = values[4..7]
+        .iter()
+        .flat_map(|value| value.to_ne_bytes())
+        .collect();
+    assert_eq!(
+        bytes, expected,
+        "the readback returns exactly the slice asked for"
+    );
+}
+
 // The registry both runners drive: `cargo nextest` natively, and a
 // browser through the wasm export `gpu_test_main!` adds.
 gpu_tests! {
@@ -1160,6 +1255,8 @@ gpu_tests! {
     resource_graph_rebuilds_a_dependent_after_a_resource_change,
     a_color_only_target_draws_a_cube,
     a_readback_handles_a_row_that_is_not_copy_aligned,
+    the_readback_module_returns_a_texture_as_tight_rows,
+    the_readback_module_returns_a_buffer_slice,
 }
 
 gpu_test_main!(all_tests());
