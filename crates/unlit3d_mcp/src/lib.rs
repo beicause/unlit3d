@@ -16,7 +16,9 @@ pub mod server;
 
 pub use host::{Command, Host, HostContext, dispatch, request_device};
 pub use server::McpServer;
-pub use unlit3d::reflect::{ComponentEntry, contains, encode, entries, entry, names, push, set};
+pub use unlit3d::reflect::{
+    ComponentEntry, contains, decode_events, encode, entries, entry, names, push, set,
+};
 
 use std::error::Error;
 

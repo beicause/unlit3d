@@ -26,6 +26,17 @@ pub use proxies::{
 };
 pub use registry::{ComponentEntry, contains, encode, entries, entry, names, push, set};
 
+use crate::input::InputEvent;
+
+/// Decode input events from JSON text, through the reflection they derive.
+///
+/// # Errors
+///
+/// Fails when the text is not a JSON array of input events.
+pub fn decode_events(text: &str) -> Result<Vec<InputEvent>, String> {
+    facet_json::from_str(text).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use facet::Facet;
@@ -106,6 +117,35 @@ mod tests {
         assert!(
             !decoded.focused,
             "the state the events left behind is read too"
+        );
+    }
+
+    /// A caller's events decode through the same reflection the encoder
+    /// writes, so a field left out of the JSON takes its default.
+    #[test]
+    fn the_events_decode_through_their_reflection() {
+        use crate::input::{Key, KeyEvent, MouseEvent, TouchPhase, WheelUnit};
+
+        let events = decode_events(
+            r#"[{"Key":{"key":"A","pressed":true}},{"Mouse":{"Wheel":{"delta":[1.0,2.0]}}}]"#,
+        )
+        .expect("the events decode");
+        assert_eq!(
+            events,
+            vec![
+                InputEvent::Key(KeyEvent {
+                    key: Key::A,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }),
+                InputEvent::Mouse(MouseEvent::Wheel {
+                    delta: [1.0, 2.0],
+                    unit: WheelUnit::Pixel,
+                    phase: TouchPhase::Moved,
+                    modifiers: Default::default(),
+                }),
+            ]
         );
     }
 

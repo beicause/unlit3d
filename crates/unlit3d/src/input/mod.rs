@@ -429,10 +429,13 @@ pub struct KeyEvent {
     /// Which key.
     pub key: Key,
     /// Whether the key went down (`true`) or came up (`false`).
+    #[cfg_attr(feature = "reflect", facet(default = true))]
     pub pressed: bool,
     /// Whether this is an auto-repeat of a key already held.
+    #[cfg_attr(feature = "reflect", facet(default))]
     pub repeat: bool,
     /// The modifier state when the event was produced.
+    #[cfg_attr(feature = "reflect", facet(default))]
     pub modifiers: Modifiers,
 }
 
@@ -587,8 +590,10 @@ pub enum MouseEvent {
         /// Which button.
         button: MouseButton,
         /// Whether the button went down (`true`) or came up (`false`).
+        #[cfg_attr(feature = "reflect", facet(default = true))]
         pressed: bool,
         /// The modifier state when the event was produced.
+        #[cfg_attr(feature = "reflect", facet(default))]
         modifiers: Modifiers,
     },
     /// The mouse left the window, so there is no position for it any more.
@@ -598,10 +603,13 @@ pub enum MouseEvent {
         /// The scroll amount, in `unit`s.
         delta: [f32; 2],
         /// What `delta` is measured in.
+        #[cfg_attr(feature = "reflect", facet(default = WheelUnit::Pixel))]
         unit: WheelUnit,
         /// Where the gesture is in its lifetime.
+        #[cfg_attr(feature = "reflect", facet(default = TouchPhase::Moved))]
         phase: TouchPhase,
         /// The modifier state when the event was produced.
+        #[cfg_attr(feature = "reflect", facet(default))]
         modifiers: Modifiers,
     },
 }

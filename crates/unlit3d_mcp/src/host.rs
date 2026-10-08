@@ -378,13 +378,8 @@ impl HostContext<'_> {
 
     /// Push input events into the world and deliver them.
     pub(crate) fn send_input(&self, events: &Value) -> Result<Value, String> {
-        let events = events
-            .as_array()
-            .ok_or_else(|| "events must be an array".to_string())?;
-        let mut decoded = Vec::with_capacity(events.len());
-        for event in events {
-            decoded.push(decode_input_event(event)?);
-        }
+        let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
+        let decoded = reflect::decode_events(&text)?;
         let entity = self
             .world
             .query::<&InputState>()
@@ -401,19 +396,15 @@ impl HostContext<'_> {
     }
 
     /// Allocate a mesh and spawn an entity that draws it.
-    pub(crate) fn create_mesh(&mut self, value: &Value) -> Result<Value, String> {
-        let positions = vec3_array(field(value, "positions")?, "positions")?;
-        if positions.is_empty() {
+    pub(crate) fn create_mesh(&mut self, args: crate::server::CreateMesh) -> Result<Value, String> {
+        if args.positions.is_empty() {
             return Err("positions must not be empty".to_string());
         }
-        let uvs = optional_vec2_array(value.get("uvs"), "uvs")?;
-        let colors = optional_color_array(value.get("colors"), "colors")?;
-        let indices = optional_u32_array(value.get("indices"), "indices")?;
         let desc = UnlitMeshDesc {
-            positions: &positions,
-            uvs: uvs.as_deref(),
-            colors: colors.as_deref(),
-            indices: indices.as_deref(),
+            positions: &args.positions,
+            uvs: args.uvs.as_deref(),
+            colors: args.colors.as_deref(),
+            indices: args.indices.as_deref(),
             joints: None,
             weights: None,
             morph_deltas: None,
@@ -421,26 +412,27 @@ impl HostContext<'_> {
         let key = UnlitPipelineKey::new(UnlitOptions::standard(&self.device()?));
         let mesh =
             self.with_mesh_source(|source| source.allocate_unlit_mesh(self.world, &key, desc))?;
-        let transform = match present(value.get("transform")) {
-            Some(transform) => decode_transform(transform)?,
+        let transform = match args.transform {
+            Some(transform) => Transform {
+                translation: Vec3::from_array(transform.translation),
+                rotation: glam::Quat::from_xyzw(
+                    transform.rotation[0],
+                    transform.rotation[1],
+                    transform.rotation[2],
+                    transform.rotation[3],
+                ),
+                scale: Vec3::from_array(transform.scale),
+            },
             None => Transform::default(),
         };
-        let color = match present(value.get("color")) {
-            Some(color) => vec4(color, "color")?,
-            None => glam::Vec4::ONE,
-        };
+        let color = args.color.map_or(glam::Vec4::ONE, glam::Vec4::from_array);
         let mut builder = ArchetypeBuilder::new();
         builder.push(transform);
         builder.push(mesh);
         builder.push(UnlitPipeline::new(key));
         builder.push(InstanceColor::new(color));
-        if let Some(cutoff) = present(value.get("cutoff")) {
-            builder.push(InstanceCutoff::new(
-                cutoff
-                    .as_f64()
-                    .map(|n| n as f32)
-                    .ok_or_else(|| "cutoff must be a number".to_string())?,
-            ));
+        if let Some(cutoff) = args.cutoff {
+            builder.push(InstanceCutoff::new(cutoff));
         }
         let entity = self.world.spawn(builder);
         Ok(json!({"entity": entity.to_bits()}))
@@ -711,322 +703,4 @@ fn encode_png(
         .write_image(bytes, width, height, color)
         .map_err(|error| error.to_string())?;
     Ok(png)
-}
-
-/// The value at an optional argument that was absent, where a present JSON
-/// null counts as absent: a tool argument that serializes its None fields
-/// writes them as null, and both spellings mean the caller left the field out.
-fn present(value: Option<&Value>) -> Option<&Value> {
-    value.filter(|value| !value.is_null())
-}
-
-fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value, String> {
-    value
-        .get(name)
-        .ok_or_else(|| format!("missing field {name:?}"))
-}
-
-fn as_f32(value: &Value) -> Result<f32, String> {
-    value
-        .as_f64()
-        .map(|number| number as f32)
-        .ok_or_else(|| "expected a number".to_string())
-}
-
-fn as_u32(value: &Value) -> Result<u32, String> {
-    value
-        .as_u64()
-        .and_then(|number| u32::try_from(number).ok())
-        .ok_or_else(|| "expected a non-negative integer".to_string())
-}
-
-fn vec3(value: &Value, name: &str) -> Result<Vec3, String> {
-    let array = value
-        .as_array()
-        .ok_or_else(|| format!("{name} must be an array"))?;
-    if array.len() != 3 {
-        return Err(format!("{name} must have 3 components"));
-    }
-    Ok(Vec3::new(
-        as_f32(&array[0])?,
-        as_f32(&array[1])?,
-        as_f32(&array[2])?,
-    ))
-}
-
-fn vec4(value: &Value, name: &str) -> Result<glam::Vec4, String> {
-    let array = value
-        .as_array()
-        .ok_or_else(|| format!("{name} must be an array"))?;
-    if array.len() != 4 {
-        return Err(format!("{name} must have 4 components"));
-    }
-    Ok(glam::Vec4::new(
-        as_f32(&array[0])?,
-        as_f32(&array[1])?,
-        as_f32(&array[2])?,
-        as_f32(&array[3])?,
-    ))
-}
-
-fn decode_transform(value: &Value) -> Result<Transform, String> {
-    Ok(Transform {
-        translation: vec3(field(value, "translation")?, "translation")?,
-        rotation: quat(field(value, "rotation")?, "rotation")?,
-        scale: vec3(field(value, "scale")?, "scale")?,
-    })
-}
-
-fn quat(value: &Value, name: &str) -> Result<glam::Quat, String> {
-    let vec = vec4(value, name)?;
-    Ok(glam::Quat::from_xyzw(vec.x, vec.y, vec.z, vec.w))
-}
-
-fn vec3_array(value: &Value, name: &str) -> Result<Vec<[f32; 3]>, String> {
-    value
-        .as_array()
-        .ok_or_else(|| format!("{name} must be an array"))?
-        .iter()
-        .map(|point| {
-            let point = vec3(point, name)?;
-            Ok([point.x, point.y, point.z])
-        })
-        .collect()
-}
-
-fn optional_vec2_array(value: Option<&Value>, name: &str) -> Result<Option<Vec<[f32; 2]>>, String> {
-    let Some(value) = present(value) else {
-        return Ok(None);
-    };
-    let array = value
-        .as_array()
-        .ok_or_else(|| format!("{name} must be an array"))?;
-    let mut out = Vec::with_capacity(array.len());
-    for pair in array {
-        let pair = pair
-            .as_array()
-            .ok_or_else(|| format!("{name} must be an array of pairs"))?;
-        if pair.len() != 2 {
-            return Err(format!("{name} must have 2 components"));
-        }
-        out.push([as_f32(&pair[0])?, as_f32(&pair[1])?]);
-    }
-    Ok(Some(out))
-}
-
-fn optional_color_array(value: Option<&Value>, name: &str) -> Result<Option<Vec<[u8; 4]>>, String> {
-    let Some(value) = present(value) else {
-        return Ok(None);
-    };
-    let array = value
-        .as_array()
-        .ok_or_else(|| format!("{name} must be an array"))?;
-    let mut out = Vec::with_capacity(array.len());
-    for color in array {
-        let color = color
-            .as_array()
-            .ok_or_else(|| format!("{name} must be an array of colors"))?;
-        if color.len() != 4 {
-            return Err(format!("{name} must have 4 components"));
-        }
-        let mut bytes = [0u8; 4];
-        for (index, byte) in bytes.iter_mut().enumerate() {
-            *byte = u8::try_from(as_u32(&color[index])?)
-                .map_err(|_| format!("{name} components must fit a byte"))?;
-        }
-        out.push(bytes);
-    }
-    Ok(Some(out))
-}
-
-fn optional_u32_array(value: Option<&Value>, name: &str) -> Result<Option<Vec<u32>>, String> {
-    let Some(value) = present(value) else {
-        return Ok(None);
-    };
-    value
-        .as_array()
-        .ok_or_else(|| format!("{name} must be an array"))?
-        .iter()
-        .map(|number| as_u32(number).map_err(|error| format!("{name}: {error}")))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
-}
-
-fn decode_key(name: &str) -> Result<Key, String> {
-    let key = match name {
-        "Escape" => Key::Escape,
-        "Space" => Key::Space,
-        "Enter" => Key::Enter,
-        "Tab" => Key::Tab,
-        "Backspace" => Key::Backspace,
-        "Delete" => Key::Delete,
-        "ArrowUp" => Key::ArrowUp,
-        "ArrowDown" => Key::ArrowDown,
-        "ArrowLeft" => Key::ArrowLeft,
-        "ArrowRight" => Key::ArrowRight,
-        "Home" => Key::Home,
-        "End" => Key::End,
-        "PageUp" => Key::PageUp,
-        "PageDown" => Key::PageDown,
-        "0" | "Num0" => Key::Num0,
-        "1" | "Num1" => Key::Num1,
-        "2" | "Num2" => Key::Num2,
-        "3" | "Num3" => Key::Num3,
-        "4" | "Num4" => Key::Num4,
-        "5" | "Num5" => Key::Num5,
-        "6" | "Num6" => Key::Num6,
-        "7" | "Num7" => Key::Num7,
-        "8" | "Num8" => Key::Num8,
-        "9" | "Num9" => Key::Num9,
-        other => {
-            if let Some(letter) = other
-                .strip_prefix('F')
-                .and_then(|rest| rest.parse::<u8>().ok())
-            {
-                match letter {
-                    1 => Key::F1,
-                    2 => Key::F2,
-                    3 => Key::F3,
-                    4 => Key::F4,
-                    5 => Key::F5,
-                    6 => Key::F6,
-                    7 => Key::F7,
-                    8 => Key::F8,
-                    9 => Key::F9,
-                    10 => Key::F10,
-                    _ => return Err(format!("unsupported function key {name:?}")),
-                }
-            } else if other.len() == 1 && other.as_bytes()[0].is_ascii_alphabetic() {
-                key_from_letter(other.as_bytes()[0].to_ascii_uppercase())
-            } else {
-                return Err(format!("unknown key {name:?}"));
-            }
-        }
-    };
-    Ok(key)
-}
-
-fn key_from_letter(letter: u8) -> Key {
-    match letter {
-        b'A' => Key::A,
-        b'B' => Key::B,
-        b'C' => Key::C,
-        b'D' => Key::D,
-        b'E' => Key::E,
-        b'F' => Key::F,
-        b'G' => Key::G,
-        b'H' => Key::H,
-        b'I' => Key::I,
-        b'J' => Key::J,
-        b'K' => Key::K,
-        b'L' => Key::L,
-        b'M' => Key::M,
-        b'N' => Key::N,
-        b'O' => Key::O,
-        b'P' => Key::P,
-        b'Q' => Key::Q,
-        b'R' => Key::R,
-        b'S' => Key::S,
-        b'T' => Key::T,
-        b'U' => Key::U,
-        b'V' => Key::V,
-        b'W' => Key::W,
-        b'X' => Key::X,
-        b'Y' => Key::Y,
-        b'Z' => Key::Z,
-        _ => Key::Other(letter as u32),
-    }
-}
-
-fn decode_mouse_button(name: &str) -> Result<MouseButton, String> {
-    Ok(match name {
-        "Primary" | "primary" | "Left" | "left" => MouseButton::Primary,
-        "Secondary" | "secondary" | "Right" | "right" => MouseButton::Secondary,
-        "Middle" | "middle" => MouseButton::Middle,
-        "Back" | "back" => MouseButton::Back,
-        "Forward" | "forward" => MouseButton::Forward,
-        other => return Err(format!("unknown mouse button {other:?}")),
-    })
-}
-
-fn decode_modifiers(value: Option<&Value>) -> Result<Modifiers, String> {
-    let Some(value) = value else {
-        return Ok(Modifiers::default());
-    };
-    let flag = |name: &str| value.get(name).and_then(Value::as_bool).unwrap_or(false);
-    Ok(Modifiers {
-        alt: flag("alt"),
-        ctrl: flag("ctrl"),
-        shift: flag("shift"),
-        mac_cmd: flag("mac_cmd"),
-        command: flag("command"),
-    })
-}
-
-fn decode_position(value: &Value, name: &str) -> Result<[f32; 2], String> {
-    let position = vec2(value, name)?;
-    Ok([position.x, position.y])
-}
-
-fn vec2(value: &Value, name: &str) -> Result<glam::Vec2, String> {
-    let array = value
-        .as_array()
-        .ok_or_else(|| format!("{name} must be an array"))?;
-    if array.len() != 2 {
-        return Err(format!("{name} must have 2 components"));
-    }
-    Ok(glam::Vec2::new(as_f32(&array[0])?, as_f32(&array[1])?))
-}
-
-fn decode_input_event(value: &Value) -> Result<InputEvent, String> {
-    let kind = field(value, "kind")?
-        .as_str()
-        .ok_or_else(|| "an event's kind must be a string".to_string())?;
-    Ok(match kind {
-        "key" => InputEvent::Key(KeyEvent {
-            key: decode_key(
-                field(value, "key")?
-                    .as_str()
-                    .ok_or_else(|| "key must be a string".to_string())?,
-            )?,
-            pressed: field(value, "pressed")?.as_bool().unwrap_or(true),
-            repeat: value
-                .get("repeat")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            modifiers: decode_modifiers(value.get("modifiers"))?,
-        }),
-        "mouse_move" => InputEvent::Mouse(MouseEvent::Moved {
-            position: decode_position(field(value, "position")?, "position")?,
-        }),
-        "mouse_button" => InputEvent::Mouse(MouseEvent::Button {
-            position: decode_position(field(value, "position")?, "position")?,
-            button: decode_mouse_button(
-                field(value, "button")?
-                    .as_str()
-                    .ok_or_else(|| "button must be a string".to_string())?,
-            )?,
-            pressed: field(value, "pressed")?.as_bool().unwrap_or(true),
-            modifiers: decode_modifiers(value.get("modifiers"))?,
-        }),
-        "mouse_left" => InputEvent::Mouse(MouseEvent::Left),
-        "wheel" => InputEvent::Mouse(MouseEvent::Wheel {
-            delta: decode_position(field(value, "delta")?, "delta")?,
-            unit: WheelUnit::Pixel,
-            phase: TouchPhase::Moved,
-            modifiers: decode_modifiers(value.get("modifiers"))?,
-        }),
-        "text" => InputEvent::Text(TextEvent(
-            field(value, "text")?
-                .as_str()
-                .ok_or_else(|| "text must be a string".to_string())?
-                .to_string(),
-        )),
-        "focus" => InputEvent::FocusChanged(
-            field(value, "focused")?
-                .as_bool()
-                .ok_or_else(|| "focused must be a boolean".to_string())?,
-        ),
-        other => return Err(format!("unknown event kind {other:?}")),
-    })
 }

@@ -10,8 +10,8 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData, ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::Value;
 use unlit_ecs::Entity;
 
 use crate::host::{Command, HostContext};
@@ -236,6 +236,12 @@ impl McpServer {
     }
 
     /// Push input events into the world.
+    ///
+    /// Each event is a reflected `InputEvent`, tagged by its variant name:
+    /// `{"Key":{"key":"A","pressed":true}}`, `{"Mouse":{"Button":{...}}}`,
+    /// `{"Text":"hello"}` or `{"FocusChanged":false}`. A field that is left
+    /// out takes its default. Key and button names are the enum's own variant
+    /// names, so `"A"`, `"ArrowUp"` and `"Primary"`.
     #[tool(
         name = "send_input",
         description = "Push input events (key, mouse, text, focus) into the world and deliver them."
@@ -257,10 +263,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<CreateMesh>,
     ) -> Result<CallToolResult, ErrorData> {
-        let value = serde_json::to_value(&args)
-            .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        self.command(move |context| context.create_mesh(&value))
-            .await
+        self.command(move |context| context.create_mesh(args)).await
     }
 
     /// Remove a mesh entity and release its mesh.
@@ -397,7 +400,7 @@ pub struct SendInput {
 }
 
 /// Arguments for create_mesh.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateMesh {
     /// The mesh positions.
     pub positions: Vec<[f32; 3]>,
@@ -422,7 +425,7 @@ pub struct CreateMesh {
 }
 
 /// A transform as JSON.
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct MeshTransform {
     /// The translation.
     #[serde(default = "zero3")]
@@ -453,6 +456,3 @@ pub struct LoadGltf {
     /// The path to the glTF or GLB file.
     pub path: String,
 }
-
-// Keep the json import meaningful: tool descriptions and arguments use it.
-const _: fn() -> Value = || json!({});
