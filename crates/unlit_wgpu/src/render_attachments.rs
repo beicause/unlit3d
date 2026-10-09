@@ -390,9 +390,11 @@ pub struct FrameTextures {
 /// view, and assemble them into a [`RenderAttachments`].
 ///
 /// The color texture is created with
-/// [`TextureUsages::RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT)
-/// and [`TextureUsages::COPY_SRC`](wgpu::TextureUsages::COPY_SRC) so the
-/// caller can read the frame back. The depth and multisample textures use
+/// [`TextureUsages::RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT),
+/// [`TextureUsages::COPY_SRC`](wgpu::TextureUsages::COPY_SRC) so the caller
+/// can read the frame back, and
+/// [`TextureUsages::TEXTURE_BINDING`](wgpu::TextureUsages::TEXTURE_BINDING) so
+/// a later pass can sample it. The depth and multisample textures use
 /// [`TextureUsages::RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT) |
 /// [`TRANSIENT_ATTACHMENT`](wgpu::TextureUsages::TRANSIENT_ATTACHMENT). The
 /// depth format is [`default_depth_stencil_format`]'s choice for `device`.
@@ -418,7 +420,9 @@ pub fn create_render_target(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     let color_view = TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default());
