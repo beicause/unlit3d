@@ -311,32 +311,25 @@ impl TestGpu {
         samples: u32,
         with_depth: bool,
     ) -> wgpu::Texture {
-        use unlit_wgpu::render_attachments::create_render_target;
+        use unlit_wgpu::render_attachments::create_color_target;
         let device = world
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
-        let ft = create_render_target(&device, COLOR_FORMAT, WIDTH, HEIGHT, samples);
-        let (_, color_view) = self.register_texture(world, ft.color.clone());
-        let depth_view = with_depth.then(|| {
-            self.graph(world).insert(
-                TextureExt::create_view(&ft.depth, &wgpu::TextureViewDescriptor::default()),
-                None,
-            )
-        });
-        // A multisampled target resolves through its MSAA view, so the pass
-        // needs it bound; without it the draws would go straight to the
-        // single-sampled color view.
-        let msaa_view = ft.msaa.as_ref().map(|msaa| {
-            self.graph(world).insert(
-                TextureExt::create_view(msaa, &wgpu::TextureViewDescriptor::default()),
-                None,
-            )
-        });
+        let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
+        let (_, color_view) = self.register_texture(world, color.clone());
+        let attachments = FrameAttachments::new(
+            world,
+            self.context,
+            COLOR_FORMAT,
+            (WIDTH, HEIGHT),
+            samples,
+            with_depth,
+        );
         self.with_renderer(world, |renderer, world| {
-            renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);
+            attachments.bind(world, renderer, color_view);
         });
-        ft.color
+        color
     }
 
     /// Like [`Self::bind_offscreen_target_with`], but at a chosen size.
@@ -350,29 +343,19 @@ impl TestGpu {
         samples: u32,
         with_depth: bool,
     ) -> wgpu::Texture {
-        use unlit_wgpu::render_attachments::create_render_target;
+        use unlit_wgpu::render_attachments::create_color_target;
         let device = world
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
-        let ft = create_render_target(&device, COLOR_FORMAT, size.0, size.1, samples);
-        let (_, color_view) = self.register_texture(world, ft.color.clone());
-        let depth_view = with_depth.then(|| {
-            self.graph(world).insert(
-                TextureExt::create_view(&ft.depth, &wgpu::TextureViewDescriptor::default()),
-                None,
-            )
-        });
-        let msaa_view = ft.msaa.as_ref().map(|msaa| {
-            self.graph(world).insert(
-                TextureExt::create_view(msaa, &wgpu::TextureViewDescriptor::default()),
-                None,
-            )
-        });
+        let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
+        let (_, color_view) = self.register_texture(world, color.clone());
+        let attachments =
+            FrameAttachments::new(world, self.context, COLOR_FORMAT, size, samples, with_depth);
         self.with_renderer(world, |renderer, world| {
-            renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);
+            attachments.bind(world, renderer, color_view);
         });
-        ft.color
+        color
     }
 
     /// Bind the offscreen target for `label` and render one frame.

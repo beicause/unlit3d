@@ -393,9 +393,12 @@ UI 本身只需要 color 附件，不需要深度附件，但是管线的深度�
 mesh 共用同一 pass 是常见情形），UI 管线仍须声明**相同的**深度格式，只靠「不写入深度、
 不深度测试」来避免干扰 mesh 的深度——「不需要深度」不等于「不声明深度」。「目标没有
 深度附件」也是合法用法，因此管线的深度状态是可选的；可选的深度状态服务于**目标本身
-没有深度附件**的情形，那时 pass 里的所有管线都必须不声明深度，并非 UI 独有。这一点与
-egui 官方后端一致：它默认不带深度状态，但在被给予深度格式时，仍会建出同一格式、不写
-深度、比较函数为 `Always` 的状态。
+没有深度附件**的情形，那时 pass 里的所有管线都必须不声明深度，并非 UI 独有：只由
+[`BlitSource`](blit::BlitSource) 绘制的一帧同样没有深度附件。这一点与 egui 官方后端
+一致：它默认不带深度状态，但在被给予深度格式时，仍会建出同一格式、不写深度、比较函数
+为 `Always` 的状态。帧究竟带不带深度附件由调用方决定：
+[`FrameAttachments::new`](attachments::FrameAttachments::new) 只在被要求时才分配深度附件，
+因此源都不声明深度的窗口绘制进的就是不带深度附件的帧。
 
 </details>
 
@@ -407,7 +410,7 @@ world，`MeshSource` 作为源挂载，`Renderer` 是帧驱动器：
 ```rust
 use unlit3d::prelude::*;
 use unlit_wgpu::pipeline::UnlitOptions;
-use unlit_wgpu::resources::{ResourceGraph, TextureExt};
+use unlit_wgpu::resources::ResourceGraph;
 
 let (device, queue) =
     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -478,32 +481,35 @@ world.spawn((
     UnlitPipeline::new(key),
 ));
 
-// 4. Bind a render target from the frame's resource graph and render one
-//    frame (uses the noop device, so it produces a valid command buffer
-//    without touching a GPU).
-let ft = create_render_target(
+// 4. Bind a render target and render one frame (uses the noop device, so it
+//    produces a valid command buffer without touching a GPU). The frame's
+//    depth and multisample attachments are allocated and kept by
+//    `FrameAttachments`; the color attachment is this example's own.
+let color = create_color_target(
     &world.get::<wgpu::Device>(ctx.device).unwrap(),
     wgpu::TextureFormat::Rgba8UnormSrgb,
-    1280, 720, 1,
+    1280, 720,
 );
-let (color_view, depth_view) = world
+let attachments = FrameAttachments::new(
+    &world,
+    ctx,
+    wgpu::TextureFormat::Rgba8UnormSrgb,
+    (1280, 720),
+    1,
+    true,
+);
+let color_view = world
     .with_mut::<Source, _>(source, |source| {
-        let source = source.as_mut::<MeshSource>().unwrap();
-        let color_view = source.register_texture_and_default_view(&world, ft.color).1;
-        let depth_view = MeshSource::graph(&world, ctx)
-            .insert(
-                TextureExt::create_view(
-                    &ft.depth,
-                    &wgpu::TextureViewDescriptor::default(),
-                ),
-                None,
-            );
-        (color_view, depth_view)
+        source
+            .as_mut::<MeshSource>()
+            .unwrap()
+            .register_texture_and_default_view(&world, color)
+            .1
     })
     .unwrap();
 world
     .with_mut::<Renderer, _>(renderer, |r| {
-        r.set_render_target(&world, Some(color_view), Some(depth_view), None);
+        attachments.bind(&world, r, color_view);
         r.render(&world);
     })
     .unwrap();

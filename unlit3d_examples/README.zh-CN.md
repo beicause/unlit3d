@@ -42,8 +42,9 @@ Scenes:
 
 窗口化路径就是一个窗口应用所需的完整帧循环。渲染器作为资源实体只生成一次，场景的网格
 与材质通过它的 mesh source 分配；每次 `RedrawRequested` 都获取交换链的下一个图像，把
-ECS world 渲染进去并呈现。窗口尺寸变化交给 surface 处理，它会重新配置交换链，并重建
-渲染器绘制所用的深度与多重采样附件。
+ECS world 渲染进去并呈现。窗口尺寸变化同时交给 surface 与帧的
+[`FrameAttachments`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)：
+前者重新配置交换链，后者按新尺寸重建它持有的深度与多重采样附件。
 
 绘制 3D 内容的场景会声明一个**基准宽高比**——960×720，即移植场景被捕获时的形状。
 窗口化路径会把这类场景画进渲染目标内该宽高比所能容纳的最大矩形，并把该矩形自身的尺寸
@@ -104,7 +105,9 @@ cargo xtask run-wasm
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。所选场景会先被构建——
 `--scene` 仍然生效——随后客户端通过各工具读取并驱动这个 world。场景在独立线程上离屏渲染，
 窗口照旧显示画面：第二个 world 把这张离屏纹理 blit 进交换链，因此画面随客户端更新，
-而无需任何输入事件进入场景。工具与传输见
+而无需任何输入事件进入场景。该 blit 不声明深度状态，采样的是离屏帧 resolve 后的颜色纹理，
+因此这个 world 的帧既不带深度附件也不带多重采样附件。
+工具与传输见
 [`unlit3d_mcp`](../crates/unlit3d_mcp/README.zh-CN.md)。
 
 ```text

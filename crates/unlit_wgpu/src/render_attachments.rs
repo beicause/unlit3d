@@ -369,6 +369,98 @@ impl RenderAttachments {
     }
 }
 
+/// Allocate a persistent color texture for a render target.
+///
+/// It is created with
+/// [`RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT),
+/// [`COPY_SRC`](wgpu::TextureUsages::COPY_SRC) so the frame can be read back,
+/// and [`TEXTURE_BINDING`](wgpu::TextureUsages::TEXTURE_BINDING) so a later
+/// pass can sample it. A frame that draws into it pairs it with the depth and
+/// multisample textures [`create_depth_target`] and [`create_msaa_target`]
+/// allocate.
+pub fn create_color_target(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("unlit_wgpu::color"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
+/// Allocate a transient depth-stencil texture in the format
+/// [`default_depth_stencil_format`] picks for `device`.
+///
+/// It is created with
+/// [`RENDER_ATTACHMENT`](wgpu::TextureUsages::RENDER_ATTACHMENT) and
+/// [`TRANSIENT_ATTACHMENT`](wgpu::TextureUsages::TRANSIENT_ATTACHMENT): it is
+/// cleared and discarded inside the frame's single pass, so nothing is ever
+/// read back from it. `sample_count` must be the color attachment's, which
+/// this one is paired with in the pass.
+pub fn create_depth_target(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    sample_count: u32,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("unlit_wgpu::depth"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count,
+        dimension: wgpu::TextureDimension::D2,
+        format: default_depth_stencil_format(device),
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
+        view_formats: &[],
+    })
+}
+
+/// Allocate a transient multisample texture in `format`.
+///
+/// It resolves into the color attachment, so `format` and `sample_count`
+/// must be that attachment's. Like the depth target it is transient: it is
+/// written and resolved inside the frame's single pass and never read back.
+pub fn create_msaa_target(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    sample_count: u32,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("unlit_wgpu::msaa"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
+        view_formats: &[],
+    })
+}
+
 /// Textures a frame loop allocates for offscreen rendering.
 ///
 /// Created by [`create_render_target`]: a persistent color texture (read back
@@ -409,56 +501,12 @@ pub fn create_render_target(
     height: u32,
     sample_count: u32,
 ) -> FrameTextures {
-    let color = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("unlit_wgpu::color"),
-        size: wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::TEXTURE_BINDING,
-        view_formats: &[],
-    });
+    let color = create_color_target(device, format, width, height);
     let color_view = TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default());
-    let depth_format = default_depth_stencil_format(device);
-    let depth = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("unlit_wgpu::depth"),
-        size: wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count,
-        dimension: wgpu::TextureDimension::D2,
-        format: depth_format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
-        view_formats: &[],
-    });
+    let depth = create_depth_target(device, width, height, sample_count);
     let depth_view = TextureExt::create_view(&depth, &wgpu::TextureViewDescriptor::default());
-    let msaa = (sample_count > 1).then(|| {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("unlit_wgpu::msaa"),
-            size: wgpu::Extent3d {
-                width: width.max(1),
-                height: height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
-            view_formats: &[],
-        })
-    });
+    let msaa =
+        (sample_count > 1).then(|| create_msaa_target(device, format, width, height, sample_count));
     let msaa_view = msaa
         .as_ref()
         .map(|tex| TextureExt::create_view(tex, &wgpu::TextureViewDescriptor::default()));

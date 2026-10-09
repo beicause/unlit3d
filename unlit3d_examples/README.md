@@ -52,8 +52,10 @@ The windowed path is the whole frame loop a windowed app needs. The renderer is
 spawned once as a resource entity, a scene's meshes and materials are allocated
 through its mesh source, and every `RedrawRequested` acquires the swap chain's
 next image, renders the ECS world into it and presents it. A resize is handed to
-the surface, which reconfigures the swap chain and rebuilds the depth and
-multisample attachments the renderer draws with.
+the surface, which reconfigures the swap chain, and to the frame's
+[`FrameAttachments`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.md),
+which rebuilds the depth-stencil and multisample attachments it holds at the
+new size.
 
 A scene that draws 3D content declares a **baseline aspect** — 960×720, the
 shape the ported scenes were captured at. The windowed path draws such a scene
@@ -134,7 +136,9 @@ chosen scene is built first — `--scene` still selects it — and the client th
 reads and drives that world through the tools. The scene renders offscreen, on
 a thread of its own, and the window goes on showing it: a second world blits
 that offscreen frame into the swap chain, so the picture follows the client
-without an input event ever reaching the scene. See
+without an input event ever reaching the scene. The blit declares no depth
+state and samples the offscreen frame's resolved colour texture, so that
+world's frames carry neither a depth nor a multisample attachment. See
 [`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
 transport.
 

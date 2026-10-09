@@ -70,6 +70,9 @@ fn centre_pixel(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Textu
 
 /// A world drawing [`BlitSource`] from the texture `rgba`, with the frame's
 /// target bound.
+///
+/// The blit declares no depth state, so the target it draws into carries no
+/// depth attachment: wgpu requires the two to match.
 fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture) {
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, ctx);
@@ -78,7 +81,7 @@ fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture) {
     let blit = BlitTexture::new(&world, gpu.context, view);
     world.spawn((blit,));
     world.spawn_source(BlitSource::new());
-    let target = gpu.bind_offscreen_target(&world, "test::blit");
+    let target = gpu.bind_offscreen_target_with(&world, 1, false);
     (world, gpu, target)
 }
 

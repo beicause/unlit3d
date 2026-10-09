@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use unlit_ecs::ArchetypeBuilder;
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit_wgpu::readback::{readback_buffer, readback_texture};
+use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{Resource, ResourceGraph, TextureExt};
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
@@ -521,33 +522,20 @@ impl Host {
         let source = world.spawn_source(source);
         world.spawn((InputState::default(),));
 
-        let target = create_render_target(&device, COLOR_FORMAT, size.0, size.1, samples);
+        let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
         // The graph borrow ends before the renderer is touched: both live in
         // the world, and holding one column while borrowing another panics.
-        let (color, depth_view, msaa) = {
-            let mut graph = world
-                .get_mut::<ResourceGraph>(context.graph)
-                .ok_or_else(|| "the context has no graph".to_string())?;
-            let color = graph.insert(
-                TextureExt::create_view(&target.color, &wgpu::TextureViewDescriptor::default()),
+        let color_view = world
+            .get_mut::<ResourceGraph>(context.graph)
+            .ok_or_else(|| "the context has no graph".to_string())?
+            .insert(
+                TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
                 None,
             );
-            let depth_view = depth.then(|| {
-                graph.insert(
-                    TextureExt::create_view(&target.depth, &wgpu::TextureViewDescriptor::default()),
-                    None,
-                )
-            });
-            let msaa = target.msaa.as_ref().map(|msaa| {
-                graph.insert(
-                    TextureExt::create_view(msaa, &wgpu::TextureViewDescriptor::default()),
-                    None,
-                )
-            });
-            (color, depth_view, msaa)
-        };
+        let attachments =
+            FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
         let _ = world.with_mut::<Renderer, _>(renderer, |renderer| {
-            renderer.set_render_target(&world, Some(color), depth_view, msaa)
+            attachments.bind(&world, renderer, color_view)
         });
 
         world.spawn((default_camera(size),));
@@ -557,7 +545,7 @@ impl Host {
             renderer,
             source: Some(source),
             context,
-            target: target.color,
+            target: color,
             target_format: COLOR_FORMAT,
         })
     }

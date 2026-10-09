@@ -229,32 +229,28 @@ pub fn bind_offscreen_target(
     samples: u32,
     with_depth: bool,
 ) -> wgpu::Texture {
-    use unlit_wgpu::render_attachments::create_render_target;
+    use unlit_wgpu::render_attachments::create_color_target;
     use unlit_wgpu::resources::TextureExt;
 
-    let target = create_render_target(device, OFFSCREEN_FORMAT, size.0, size.1, samples);
-    let default_view = |texture: &wgpu::Texture| {
-        TextureExt::create_view(texture, &wgpu::TextureViewDescriptor::default())
-    };
+    let color = create_color_target(device, OFFSCREEN_FORMAT, size.0, size.1);
+    let color_view = world
+        .get_mut::<ResourceGraph>(renderer.context().graph)
+        .expect("the context's resource graph exists")
+        .insert(
+            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
+            None,
+        );
+    let attachments = FrameAttachments::new(
+        world,
+        renderer.context(),
+        OFFSCREEN_FORMAT,
+        size,
+        samples,
+        with_depth,
+    );
+    attachments.bind(world, renderer, color_view);
 
-    let (color_view, depth_view, msaa_view) = {
-        let mut graph = world
-            .get_mut::<ResourceGraph>(renderer.context().graph)
-            .expect("the context's resource graph exists");
-        let insert = |graph: &mut ResourceGraph, view: unlit_wgpu::resources::TextureView| {
-            graph.insert(view, None)
-        };
-        let color = insert(&mut graph, default_view(&target.color));
-        let depth = with_depth.then(|| insert(&mut graph, default_view(&target.depth)));
-        let msaa = target
-            .msaa
-            .as_ref()
-            .map(|msaa| insert(&mut graph, default_view(msaa)));
-        (color, depth, msaa)
-    };
-    renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);
-
-    target.color
+    color
 }
 
 /// Build the small world that presents an offscreen texture into the swap
@@ -300,6 +296,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         context: GpuState::Idle,
         scene: None,
         surface: None,
+        attachments: None,
         foreground: false,
         // Overwritten by the first frame, so its delta — the gap between
         // startup and that frame — is not mistaken for a frame's own.
@@ -366,6 +363,12 @@ struct App {
     scene: Option<Scene>,
     /// The swap chain the scene presents through, absent while suspended.
     surface: Option<WindowSurface>,
+    /// The depth and multisample attachments the presented frame draws with,
+    /// built with the surface and dropped with it.
+    ///
+    /// They live in whichever world the surface presents — the scene's, or the
+    /// MCP run's blit world — so they are rebuilt when that world is.
+    attachments: Option<FrameAttachments>,
     /// Whether the platform currently has a native window to present into.
     ///
     /// False between a suspension and the resume that ends it, which is the
@@ -881,20 +884,33 @@ impl App {
             };
             let blit = self.blit.as_ref().expect("the blit world was just built");
             let (world, renderer) = (&blit.world, blit.renderer);
-            let window_surface = world
+            let (window_surface, attachments) = world
                 .with_mut::<Renderer, _>(renderer, |renderer| {
-                    WindowSurface::new(
+                    let surface = WindowSurface::new(
                         world,
                         renderer,
                         &context.instance,
                         &context.adapter,
                         window,
                         surface,
-                        SAMPLE_COUNT,
-                    )
+                    );
+                    // The blit declares no depth state, so its frames carry no
+                    // depth attachment; wgpu requires the two to match. It
+                    // samples the offscreen frame's resolved colour texture, so
+                    // its own frames carry no multisample attachment either.
+                    let attachments = FrameAttachments::new(
+                        world,
+                        renderer.context(),
+                        surface.color_format(),
+                        surface.size(),
+                        1,
+                        false,
+                    );
+                    (surface, attachments)
                 })
                 .expect("the renderer is a resource entity");
             self.surface = Some(window_surface);
+            self.attachments = Some(attachments);
             self.surface
                 .as_ref()
                 .expect("the surface was just built")
@@ -961,20 +977,29 @@ impl App {
             }
         };
         let (world, renderer) = (&scene.world, scene.renderer);
-        let window_surface = world
+        let (window_surface, attachments) = world
             .with_mut::<Renderer, _>(renderer, |renderer| {
-                WindowSurface::new(
+                let surface = WindowSurface::new(
                     world,
                     renderer,
                     &context.instance,
                     &context.adapter,
                     window,
                     surface,
+                );
+                let attachments = FrameAttachments::new(
+                    world,
+                    renderer.context(),
+                    surface.color_format(),
+                    surface.size(),
                     SAMPLE_COUNT,
-                )
+                    true,
+                );
+                (surface, attachments)
             })
             .expect("the renderer is a resource entity");
         self.surface = Some(window_surface);
+        self.attachments = Some(attachments);
         self.surface
             .as_ref()
             .expect("the surface was just built")
@@ -1005,6 +1030,9 @@ impl App {
                 surface.resize(world, renderer, width, height);
             })
             .expect("the renderer is a resource entity");
+        if let Some(attachments) = self.attachments.as_mut() {
+            attachments.resize(world, surface.size());
+        }
     }
 
     /// Release the swap chain, keeping everything it presented.
@@ -1026,6 +1054,7 @@ impl App {
                 surface.release(world, renderer);
             })
             .expect("the renderer is a resource entity");
+        self.attachments = None;
     }
 
     /// Rebuild the scene and its surface around `def`.
@@ -1043,6 +1072,7 @@ impl App {
                 })
                 .expect("the renderer is a resource entity");
         }
+        self.attachments = None;
         self.scene = None;
         self.initial_scene = def;
         self.present();
@@ -1104,11 +1134,15 @@ impl App {
         // should be skipped, such as an occluded window's.
         let (world, renderer) = (&scene.world, scene.renderer);
         let viewport = scene.viewport;
+        let attachments = self.attachments.as_ref();
         world
             .with_mut::<Renderer, _>(renderer, |renderer| {
                 let Some(frame) = surface.acquire(world, renderer) else {
                     return;
                 };
+                if let Some(attachments) = attachments {
+                    attachments.bind(world, renderer, frame.color_view().clone());
+                }
                 // Stated before the frame is assembled, so every source that
                 // draws the 3D content records into this region and the UI
                 // overlay, which states none, still covers the whole target.
@@ -1135,11 +1169,15 @@ impl App {
             return;
         };
         let (world, renderer) = (&blit.world, blit.renderer);
+        let attachments = self.attachments.as_ref();
         world
             .with_mut::<Renderer, _>(renderer, |renderer| {
                 let Some(frame) = surface.acquire(world, renderer) else {
                     return;
                 };
+                if let Some(attachments) = attachments {
+                    attachments.bind(world, renderer, frame.color_view().clone());
+                }
                 renderer.render(world);
                 let queue = world
                     .get::<wgpu::Queue>(renderer.context().queue)

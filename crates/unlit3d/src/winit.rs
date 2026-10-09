@@ -2,11 +2,12 @@
 //!
 //! A window presents through a swap chain, which the frame's own attachment
 //! helpers do not cover: every frame hands out a new color image, and the
-//! depth and multisample attachments have to match the window's size.
-//! [`WindowSurface`] owns the surface, its configuration and those
-//! attachments, keeps them registered in the frame's resource graph, and binds
-//! each frame's image as the renderer's render target — so a frame loop is
-//! acquire, render, present.
+//! attachments the frame draws with have to match the window's size.
+//! [`WindowSurface`] owns the surface and its configuration, keeps the frame's
+//! color image registered in the frame's resource graph, and hands it back from
+//! [`WindowSurface::acquire`]. The depth and multisample attachments belong to
+//! the caller — see [`FrameAttachments`](crate::attachments::FrameAttachments)
+//! — so a frame loop is acquire, bind, render, present.
 //!
 //! The caller creates the `wgpu::Surface` itself, because the adapter has to
 //! be requested with it as the compatible surface. That request is async —
@@ -16,6 +17,7 @@
 //! ```
 //! use std::sync::Arc;
 //!
+//! use unlit3d::attachments::FrameAttachments;
 //! use unlit3d::prelude::*;
 //! use unlit3d::winit::WindowSurface;
 //! use winit::window::Window;
@@ -27,19 +29,32 @@
 //! #     adapter: &wgpu::Adapter,
 //! #     window: Arc<Window>,
 //! #     surface: wgpu::Surface<'static>,
-//! # ) {
+//! # ) -> (WindowSurface, FrameAttachments) {
 //! // The renderer the surface draws through, spawned once as a resource.
-//! world
+//! let window_surface = world
 //!     .with_mut::<Renderer, _>(renderer, |r| {
-//!         WindowSurface::new(world, r, instance, adapter, window, surface, 4)
+//!         WindowSurface::new(world, r, instance, adapter, window, surface)
 //!     })
 //!     .unwrap();
+//! // The depth and multisample attachments the frame draws with; `true` asks
+//! // for a depth-stencil one, which a frame of depth-tested geometry needs.
+//! let context = world.get::<Renderer>(renderer).unwrap().context();
+//! let attachments = FrameAttachments::new(
+//!     world,
+//!     context,
+//!     window_surface.color_format(),
+//!     window_surface.size(),
+//!     4,
+//!     true,
+//! );
+//! (window_surface, attachments)
 //! # }
 //! ```
 //!
-//! and the frame loop then only has to render and present:
+//! and the frame loop then only has to bind, render and present:
 //!
 //! ```
+//! # use unlit3d::attachments::FrameAttachments;
 //! # use unlit3d::prelude::*;
 //! # use unlit3d::winit::WindowSurface;
 //! # fn frame(
@@ -47,6 +62,7 @@
 //! #     queue: &wgpu::Queue,
 //! #     renderer_entity: Entity,
 //! #     window_surface: &mut WindowSurface,
+//! #     attachments: &FrameAttachments,
 //! # ) {
 //! let Some(frame) = world
 //!     .with_mut::<Renderer, _>(renderer_entity, |r| window_surface.acquire(world, r))
@@ -54,6 +70,11 @@
 //! else {
 //!     return;
 //! };
+//! world
+//!     .with_mut::<Renderer, _>(renderer_entity, |r| {
+//!         attachments.bind(world, r, frame.color_view().clone());
+//!     })
+//!     .unwrap();
 //! world
 //!     .with_mut::<Renderer, _>(renderer_entity, |r| r.render(world))
 //!     .unwrap();
@@ -64,7 +85,6 @@
 use std::sync::Arc;
 
 use unlit_ecs::World;
-use unlit_wgpu::render_attachments::default_depth_stencil_format;
 use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
 
 use crate::renderer::Renderer;
@@ -97,38 +117,28 @@ fn context_graph<'w>(
 
 /// A winit window's swap chain, presented through a [`Renderer`].
 ///
-/// The surface is configured for the window's current size and the
-/// depth-stencil — and, when multisampling, the multisample — attachments are
-/// registered in the frame's resource graph. [`Self::acquire`] binds the
-/// frame's color image as the renderer's render target; [`Self::resize`] keeps
-/// everything in step with the window.
+/// The surface is configured for the window's current size and keeps the
+/// frame's color image registered in the frame's resource graph.
+/// [`Self::acquire`] hands back the frame's color view for the caller to bind
+/// with its own depth and multisample attachments — see
+/// [`FrameAttachments`](crate::attachments::FrameAttachments) — and
+/// [`Self::resize`] keeps the surface in step with the window.
 ///
 /// A platform can invalidate the render surface while the app is not in the
 /// foreground, and Android does for as long as it is suspended. [`Self::release`]
-/// is for that: it drops the swap chain and its attachments without touching the
+/// is for that: it drops the swap chain and its color view without touching the
 /// device, the pipelines or anything else the frame draws from, so a scene keeps
 /// its state and presents again through a surface built from the same window.
-///
-/// The sample count is fixed when the surface is created. The renderer
-/// specializes every pipeline on the sample count the bound attachments
-/// report, so the options a key starts from do not have to agree with it — but
-/// the sample count does have to be one the device supports.
 pub struct WindowSurface {
     instance: wgpu::Instance,
     window: Arc<::winit::window::Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    sample_count: u32,
     /// The format the frame's color attachment is viewed as.
     ///
     /// Usually the swap chain's own format; an sRGB view of it when the
     /// surface offers no sRGB format of its own.
     color_format: wgpu::TextureFormat,
-    /// The depth-stencil view, in the frame's graph.
-    depth_view: ResourceId<TextureView>,
-    /// The multisample view, in the frame's graph; `None` when the frames
-    /// are not multisampled.
-    msaa_view: Option<ResourceId<TextureView>>,
     /// The color view of the most recently acquired frame, in the frame's
     /// graph. One id is kept for the surface's whole life; `None` until the
     /// first frame is acquired.
@@ -136,13 +146,11 @@ pub struct WindowSurface {
 }
 
 impl WindowSurface {
-    /// Configure `surface` for `window` and allocate the attachments the
-    /// renderer draws with.
+    /// Configure `surface` for `window`.
     ///
     /// `surface` must have been created from `window`, and `adapter` must be
     /// able to present to it — the adapter the renderer's device was requested
-    /// from. `sample_count` is the number of samples every frame is rendered
-    /// with; `1` disables multisampling.
+    /// from.
     ///
     /// The surface format is the first sRGB format the surface supports. A
     /// surface that supports none — the web's canvas does not — is configured
@@ -161,7 +169,6 @@ impl WindowSurface {
         adapter: &wgpu::Adapter,
         window: Arc<::winit::window::Window>,
         surface: wgpu::Surface<'static>,
-        sample_count: u32,
     ) -> Self {
         let size = window.inner_size();
         let config = surface_config(&surface, adapter, size.width, size.height);
@@ -169,27 +176,12 @@ impl WindowSurface {
         let device = context_device(world, renderer);
         surface.configure(&device, &config);
 
-        let (depth, msaa) = create_attachments(
-            &device,
-            color_format,
-            config.width,
-            config.height,
-            sample_count,
-        );
-        let mut graph = context_graph(world, renderer);
-        let depth_view = graph.insert(view_resource(&depth), None);
-        let msaa_view = msaa.map(|texture| graph.insert(view_resource(&texture), None));
-        drop(graph);
-
         Self {
             instance: instance.clone(),
             window,
             surface,
             config,
-            sample_count,
             color_format,
-            depth_view,
-            msaa_view,
             color_view: None,
         }
     }
@@ -222,7 +214,7 @@ impl WindowSurface {
         &self.window
     }
 
-    /// Reconfigure the surface and rebuild the attachments for a new size.
+    /// Reconfigure the surface for a new size.
     ///
     /// A zero width or height — a minimized window — is ignored: a surface
     /// cannot be configured with a zero dimension, and there is nothing to
@@ -238,58 +230,39 @@ impl WindowSurface {
         self.config.height = height;
         let device = context_device(world, renderer);
         self.surface.configure(&device, &self.config);
-
-        let (depth, msaa) =
-            create_attachments(&device, self.color_format, width, height, self.sample_count);
-        let mut graph = context_graph(world, renderer);
-        graph
-            .replace(&self.depth_view, view_resource(&depth))
-            .expect("the depth view is in the graph");
-        if let (Some(id), Some(texture)) = (self.msaa_view.as_ref(), msaa) {
-            graph
-                .replace(id, view_resource(&texture))
-                .expect("the multisample view is in the graph");
-        }
-        // A resize is not followed by a scene rebuild that would maintain the
-        // graph, so the replacement is collected and any dirty attachment path
-        // is rebuilt here, under the call's own maintain.
-        graph.maintain();
     }
 
     /// Release the swap chain.
     ///
-    /// Drops the surface and the attachments it registered in the frame's
-    /// graph, and unsets the renderer's render target, so nothing is left
-    /// naming a swap chain that is gone. The device, the pipelines and
-    /// everything else the scene draws from are untouched: the caller's own
-    /// window presents the same scene again through a surface built from it.
+    /// Drops the surface and the color view it registered in the frame's
+    /// graph, so nothing is left naming a swap chain that is gone. The device,
+    /// the pipelines and everything else the scene draws from are untouched:
+    /// the caller's own window presents the same scene again through a surface
+    /// built from it.
     ///
     /// This is what a suspension needs. Android invalidates the native surface
     /// for as long as the app is not in the foreground, which outlives the swap
     /// chain but not the window, the scene or the GPU context.
     pub fn release(self, world: &World, renderer: &mut Renderer) {
-        // The swap chain's image is the bound render target, so it is unset
-        // first: the graph reaches the views only through the ids held here,
-        // and it is about to give them up.
-        renderer.unset_render_target(world);
-
-        // Giving up the ids is the whole removal. Dropping them — with the
-        // surface whose images they view — leaves the graph's pass below to
-        // collect the three views, before anything can be left naming a swap
-        // chain that is gone.
+        // Giving up the id is the whole removal. Dropping it — with the
+        // surface whose images it views — leaves the graph's pass below to
+        // collect the view, before anything can be left naming a swap chain
+        // that is gone.
         drop(self);
         context_graph(world, renderer).maintain();
     }
 
-    /// Acquire the next frame and bind it as the renderer's render target.
+    /// Acquire the next frame.
     ///
     /// Returns `None` when the frame should be skipped — the window is
     /// occluded or minimized, or the swap chain had to be reconfigured. The
-    /// renderer must not be asked to render in that case.
+    /// caller must not render in that case.
     ///
     /// The frame's image replaces the previous one in the resource graph, so
     /// at most the frame just presented is still referenced — never a longer
-    /// history of swap-chain images.
+    /// history of swap-chain images. The caller binds the returned frame's
+    /// color view as its render target, together with whatever depth and
+    /// multisample attachments it draws with.
     pub fn acquire(&mut self, world: &World, renderer: &mut Renderer) -> Option<Frame> {
         let device = context_device(world, renderer);
         let surface_texture = match self.surface.get_current_texture() {
@@ -310,8 +283,7 @@ impl WindowSurface {
 
         // The color view keeps one id for the surface's whole life: replacing
         // the resource swaps in the new frame's view and drops the previous
-        // one, and a skipped frame leaves the id — and the target bound to it —
-        // untouched.
+        // one, and a skipped frame leaves the id untouched.
         let view = color_view_resource(&surface_texture.texture, self.color_format);
         let color = match self.color_view.as_ref() {
             Some(id) => {
@@ -322,17 +294,14 @@ impl WindowSurface {
             }
             None => context_graph(world, renderer).insert(view, None),
         };
-        self.color_view = Some(color);
-        renderer.set_render_target(
-            world,
-            self.color_view.clone(),
-            Some(self.depth_view.clone()),
-            self.msaa_view.clone(),
-        );
+        self.color_view = Some(color.clone());
         // Replacing the color view marked every reader dirty; drop the old
         // frame's view now rather than holding it until the next scene build.
         context_graph(world, renderer).maintain();
-        Some(Frame { surface_texture })
+        Some(Frame {
+            surface_texture,
+            color_view: color,
+        })
     }
 
     /// Rebuild the surface from the window after the swap chain was lost.
@@ -350,12 +319,21 @@ impl WindowSurface {
 /// A swap-chain image acquired for one frame.
 pub struct Frame {
     surface_texture: wgpu::SurfaceTexture,
+    color_view: ResourceId<TextureView>,
 }
 
 impl Frame {
     /// The image this frame draws into.
     pub fn texture(&self) -> &wgpu::Texture {
         &self.surface_texture.texture
+    }
+
+    /// The frame's color view, in the frame's resource graph.
+    ///
+    /// This is what a caller binds as its render target — together with the
+    /// depth and multisample views its own attachments hold.
+    pub fn color_view(&self) -> &ResourceId<TextureView> {
+        &self.color_view
     }
 
     /// Present the frame.
@@ -479,63 +457,6 @@ fn color_format(config: &wgpu::SurfaceConfiguration) -> wgpu::TextureFormat {
         .copied()
         .find(|format| *format != config.format)
         .unwrap_or(config.format)
-}
-
-/// The depth-stencil and, when `sample_count > 1`, multisample textures a
-/// frame draws with.
-///
-/// Both are sized `width` x `height` and transient: they are cleared and
-/// discarded inside the frame's single pass, so nothing is ever read back from
-/// them.
-///
-/// `color_format` is the format the frame's color attachment is viewed as (see
-/// [`WindowSurface::color_format`]), which the multisample texture carries too:
-/// its pixels are resolved into the color view, and wgpu requires the two to be
-/// in the same format.
-fn create_attachments(
-    device: &wgpu::Device,
-    color_format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
-    sample_count: u32,
-) -> (wgpu::Texture, Option<wgpu::Texture>) {
-    let extent = wgpu::Extent3d {
-        width: width.max(1),
-        height: height.max(1),
-        depth_or_array_layers: 1,
-    };
-    let depth = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("unlit3d::winit::depth"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count,
-        dimension: wgpu::TextureDimension::D2,
-        format: default_depth_stencil_format(device),
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
-        view_formats: &[],
-    });
-    let msaa = (sample_count > 1).then(|| {
-        device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("unlit3d::winit::msaa"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count,
-            dimension: wgpu::TextureDimension::D2,
-            format: color_format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
-            view_formats: &[],
-        })
-    });
-    (depth, msaa)
-}
-
-/// A graph view of `texture` in its own format.
-///
-/// Used for the depth and multisample attachments, whose views are always in
-/// their texture's own format.
-fn view_resource(texture: &wgpu::Texture) -> TextureView {
-    TextureExt::create_view(texture, &wgpu::TextureViewDescriptor::default())
 }
 
 /// A graph view of `texture` reinterpreted as `format`.

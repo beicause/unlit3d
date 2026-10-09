@@ -294,6 +294,10 @@ fn output_size(config: &Config) -> Result<(u32, u32), Error> {
 
 /// Bind an output-sized colour target, and its optional depth and multisample
 /// attachments, to the renderer.
+///
+/// The attachments live in the frame's resource graph for as long as the
+/// renderer's bound target names their views, so the attachments this builds
+/// can be dropped once they are bound.
 fn bind_target(
     world: &World,
     renderer: &mut Renderer,
@@ -302,27 +306,24 @@ fn bind_target(
     samples: u32,
     with_depth: bool,
 ) -> wgpu::Texture {
-    let target = create_render_target(device, COLOR_FORMAT, size.0, size.1, samples);
-    let default_view = |texture: &wgpu::Texture| {
-        TextureExt::create_view(texture, &wgpu::TextureViewDescriptor::default())
-    };
-    let (color_view, depth_view, msaa_view) = {
-        let mut graph = world
-            .get_mut::<ResourceGraph>(renderer.context().graph)
-            .expect("the context's resource graph exists");
-        let insert = |graph: &mut ResourceGraph, view: unlit_wgpu::resources::TextureView| {
-            graph.insert(view, None)
-        };
-        let color = insert(&mut graph, default_view(&target.color));
-        let depth = with_depth.then(|| insert(&mut graph, default_view(&target.depth)));
-        let msaa = target
-            .msaa
-            .as_ref()
-            .map(|msaa| insert(&mut graph, default_view(msaa)));
-        (color, depth, msaa)
-    };
-    renderer.set_render_target(world, Some(color_view), depth_view, msaa_view);
-    target.color
+    let color = create_color_target(device, COLOR_FORMAT, size.0, size.1);
+    let color_view = world
+        .get_mut::<ResourceGraph>(renderer.context().graph)
+        .expect("the context's resource graph exists")
+        .insert(
+            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
+            None,
+        );
+    let attachments = FrameAttachments::new(
+        world,
+        renderer.context(),
+        COLOR_FORMAT,
+        size,
+        samples,
+        with_depth,
+    );
+    attachments.bind(world, renderer, color_view);
+    color
 }
 
 /// Run f with the mesh source mounted at source_entity, borrowing both at once.

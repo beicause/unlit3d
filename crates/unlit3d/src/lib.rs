@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
+pub mod attachments;
 pub mod blit;
 pub mod bounds;
 pub mod components;
@@ -35,6 +36,7 @@ pub mod prelude {
         UnlitPipeline, UnlitPipelineKey,
     };
     pub use crate::{
+        attachments::FrameAttachments,
         blit::{BlitSource, BlitTexture},
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
@@ -64,7 +66,8 @@ pub mod prelude {
     pub use unlit_ecs::prelude::*;
     pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
     pub use unlit_wgpu::render_attachments::{
-        color_clear, create_render_target, depth_clear, stencil_clear,
+        color_clear, create_color_target, create_depth_target, create_msaa_target,
+        create_render_target, depth_clear, stencil_clear,
     };
     pub use unlit_wgpu::scene::{ScissorRect, ViewportRect, full_viewport};
 }

@@ -591,9 +591,14 @@ disturbing the meshes' depth only by not writing depth and not depth-testing:
 depth attachment" is also legal, which is why a pipeline's depth state is
 optional; that optional depth state serves the case where the target itself has
 no depth attachment, and then every pipeline in the pass must declare no depth,
-which is not specific to UI. This matches egui's official backend: by default it
-carries no depth state, but when given a depth format it still builds a state
-with that same format, no depth writes, and a compare function of `Always`.
+which is not specific to UI: a frame a [`BlitSource`](blit::BlitSource) draws
+alone has no depth attachment either. This matches egui's official backend: by
+default it carries no depth state, but when given a depth format it still builds
+a state with that same format, no depth writes, and a compare function of
+`Always`. Whether a frame carries a depth attachment at all is the caller's
+choice: [`FrameAttachments::new`](attachments::FrameAttachments::new) allocates
+one only when asked, so a window whose sources declare no depth state is drawn
+into a frame without one.
 
 </details>
 
@@ -606,7 +611,7 @@ puts the GPU state in the world, `MeshSource` is mounted as a source, and
 ```rust
 use unlit3d::prelude::*;
 use unlit_wgpu::pipeline::UnlitOptions;
-use unlit_wgpu::resources::{ResourceGraph, TextureExt};
+use unlit_wgpu::resources::ResourceGraph;
 
 let (device, queue) =
     wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
@@ -677,32 +682,35 @@ world.spawn((
     UnlitPipeline::new(key),
 ));
 
-// 4. Bind a render target from the frame's resource graph and render one
-//    frame (uses the noop device, so it produces a valid command buffer
-//    without touching a GPU).
-let ft = create_render_target(
+// 4. Bind a render target and render one frame (uses the noop device, so it
+//    produces a valid command buffer without touching a GPU). The frame's
+//    depth and multisample attachments are allocated and kept by
+//    `FrameAttachments`; the color attachment is this example's own.
+let color = create_color_target(
     &world.get::<wgpu::Device>(ctx.device).unwrap(),
     wgpu::TextureFormat::Rgba8UnormSrgb,
-    1280, 720, 1,
+    1280, 720,
 );
-let (color_view, depth_view) = world
+let attachments = FrameAttachments::new(
+    &world,
+    ctx,
+    wgpu::TextureFormat::Rgba8UnormSrgb,
+    (1280, 720),
+    1,
+    true,
+);
+let color_view = world
     .with_mut::<Source, _>(source, |source| {
-        let source = source.as_mut::<MeshSource>().unwrap();
-        let color_view = source.register_texture_and_default_view(&world, ft.color).1;
-        let depth_view = MeshSource::graph(&world, ctx)
-            .insert(
-                TextureExt::create_view(
-                    &ft.depth,
-                    &wgpu::TextureViewDescriptor::default(),
-                ),
-                None,
-            );
-        (color_view, depth_view)
+        source
+            .as_mut::<MeshSource>()
+            .unwrap()
+            .register_texture_and_default_view(&world, color)
+            .1
     })
     .unwrap();
 world
     .with_mut::<Renderer, _>(renderer, |r| {
-        r.set_render_target(&world, Some(color_view), Some(depth_view), None);
+        attachments.bind(&world, r, color_view);
         r.render(&world);
     })
     .unwrap();
