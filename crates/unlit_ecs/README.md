@@ -190,57 +190,6 @@ assert!(!world.has::<(u32, f32)>(entity));
 
 </details>
 
-### What other engines do
-
-<details>
-<summary>Why not an ECS with change detection and render extraction, or an OOP scene tree</summary>
-
-**bevy**, an ECS architecture. The good: a high degree of modularity, good
-plugin extensibility, and an ECS that can make full use of multi-threading. The
-bad, mainly from the ECS's drawbacks and complexity: dependencies between
-components make errors easy, inheritance and reuse are not obvious enough,
-managing complex object state is hard, and representing a scene graph with
-components is less intuitive than a tree data structure and objects directly.
-
-1. The component change-detection mechanism is complex, easy to break and easy
-   to get wrong, and mechanisms for component dependency updates and derivation
-   are almost absent. Synchronizing every frame without keeping components may
-   be expensive, while keeping them drags in complex change detection and
-   dependency updates. For example, `bevy_render`'s resource-extraction pattern
-   is error-prone, especially when components are added and removed: derived
-   components leak easily, updates are easily missed, and change detection
-   easily goes stale and causes over-updating. The complexity shows in bevy's
-   rendering systems often being huge, potentially handling many components with
-   many `Changed` and `RemovedComponents` queries. In OOP, an object maintains
-   its own state internally.
-2. Extensibility shows in adding systems, not in components, and components lack
-   OOP's inheritance. For example, extending bevy materials has users register a
-   plugin for each custom material, which is tedious. The GPU handles a bevy
-   material needs are often tied to the `Handle`s of types like `ShaderBuffer`,
-   `Mesh` and `Image`, so users cannot use their own resource handles for
-   materials, whereas in OOP extending from a base class is very easy.
-
-Because render resource types are singular, bevy's `RenderAssetUsages` mechanism
-is also error-prone: once the main world's data has been extracted as a render
-resource, accessing it again errors.
-
-**Godot, Three.js and the like**, using OOP, a scene tree/graph and a
-centralized renderer. The good: ease of use is high, and Godot's scene tree
-composes and decomposes easily; the API can be very high-level (Godot's node
-tree) or fairly low-level (Godot's server mode). The bad:
-
-1. OOP and inheritance are inconvenient for Rust, and simulating OOP by force is
-   awkward.
-2. It is not good at handling many entities, and traversing the node tree is
-   expensive.
-3. It does not automatically and fully use parallelism the way an ECS does.
-   Parallelism is coarse-grained and needs manual tuning: Godot's parallelism
-   shows in servers, and a node's per-frame update logic can choose a background
-   thread, but the logic inside servers and nodes cannot run in parallel unless
-   the thread pool is called by hand.
-
-</details>
-
 ## Tests
 
 ```text

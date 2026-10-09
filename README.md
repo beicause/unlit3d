@@ -93,6 +93,8 @@ Not supported: lighting and shadows, and post-processing.
   tests the workspace, then renders every example scene and compares it against
   its stored image with SSIMULACRA2; the wasm and Android builds are two more
   jobs.
+- **Built-in MCP support.** An MCP server can be embedded into an application,
+  letting AI agents read and write components and take screenshots.
 
 ## Crates
 
