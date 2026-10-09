@@ -8,7 +8,19 @@ license.workspace = true
 keywords = ["archetype", "ecs", "gamedev"]
 
 [dependencies]
+# Reflection is what a bridge serialises these structures through; the ECS
+# itself never reads it, so it is off by default and the crate keeps its
+# one-dependency shape for everyone else.
+facet = { workspace = true, features = ["reflect"], optional = true }
 hashbrown.workspace = true
+
+[features]
+## Derive [facet](https://docs.rs/facet) for the [`info`](crate::WorldInfo)
+## structures, so a bridge that reports a world over JSON serialises them
+## directly instead of restating their fields. Off by default: nothing in the
+## ECS reads it, and it is the only thing that pulls in a dependency besides the
+## hasher.
+reflect = ["dep:facet"]
 
 [lints]
 workspace = true

@@ -18,14 +18,14 @@ use unlit3d_examples::{FIXED_STEP, Scene};
 async fn selector_window_is_laid_out_after_a_frame() {
     let ctx = Ctx::headless().await;
     let size = (960, 720);
-    let mut scene = scene(&ctx, size, None);
-    bind(&mut scene, &ctx, size);
+    let (mut world, mut scene) = scene(&ctx, size, None);
+    bind(&mut world, &mut scene, &ctx, size);
 
-    scene.advance(FIXED_STEP);
-    scene.render();
-    scene.end_frame();
+    scene.advance(&mut world, FIXED_STEP);
+    scene.render(&world);
+    scene.end_frame(&mut world);
 
-    let laid_out = rect(&scene);
+    let laid_out = rect(&world);
     assert!(
         laid_out.is_some(),
         "the selector must be laid out after a frame"
@@ -42,14 +42,14 @@ async fn selector_window_opens_where_the_previous_scene_left_it() {
         egui::pos2(100.0, 50.0),
         egui::vec2(340.0, 297.0),
     ));
-    let mut scene = scene(&ctx, size, carried);
-    bind(&mut scene, &ctx, size);
+    let (mut world, mut scene) = scene(&ctx, size, carried);
+    bind(&mut world, &mut scene, &ctx, size);
 
-    scene.advance(FIXED_STEP);
-    scene.render();
-    scene.end_frame();
+    scene.advance(&mut world, FIXED_STEP);
+    scene.render(&world);
+    scene.end_frame(&mut world);
 
-    let opened = rect(&scene);
+    let opened = rect(&world);
     assert_eq!(
         opened, carried,
         "rebuild must inherit the carried rectangle"
@@ -61,23 +61,23 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
     let size = (960, 720);
 
     for (a, b) in [(0usize, 7usize), (7, 0)] {
-        let mut first = scene_at(&ctx, size, None, scenes::SCENES[a]);
-        bind(&mut first, &ctx, size);
+        let (mut first_world, mut first) = scene_at(&ctx, size, None, scenes::SCENES[a]);
+        bind(&mut first_world, &mut first, &ctx, size);
         for _ in 0..4 {
-            first.advance(FIXED_STEP);
-            first.render();
-            first.end_frame();
+            first.advance(&mut first_world, FIXED_STEP);
+            first.render(&first_world);
+            first.end_frame(&mut first_world);
         }
-        let opened = rect(&first).expect("laid out");
+        let opened = rect(&first_world).expect("laid out");
 
-        let mut second = scene_at(&ctx, size, Some(opened), scenes::SCENES[b]);
-        bind(&mut second, &ctx, size);
+        let (mut second_world, mut second) = scene_at(&ctx, size, Some(opened), scenes::SCENES[b]);
+        bind(&mut second_world, &mut second, &ctx, size);
         for _ in 0..4 {
-            second.advance(FIXED_STEP);
-            second.render();
-            second.end_frame();
+            second.advance(&mut second_world, FIXED_STEP);
+            second.render(&second_world);
+            second.end_frame(&mut second_world);
         }
-        let rebuilt = rect(&second).expect("laid out");
+        let rebuilt = rect(&second_world).expect("laid out");
         assert_eq!(
             rebuilt.min, opened.min,
             "the rebuilt selector must keep the position the first scene left"
@@ -85,8 +85,8 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
     }
 }
 
-fn rect(scene: &Scene) -> Option<egui::Rect> {
-    scene.world.query::<&Source>().find_map(|(_, source)| {
+fn rect(world: &World) -> Option<egui::Rect> {
+    world.query::<&Source>().find_map(|(_, source)| {
         let ui = source.as_ref::<UiSource>()?;
         ui.context()
             .memory(|memory| memory.area_rect(egui::Id::new("scenes")))
@@ -98,7 +98,7 @@ fn scene_at(
     size: (u32, u32),
     initial: Option<egui::Rect>,
     def: &'static scenes::SceneDef,
-) -> Scene {
+) -> (World, Scene) {
     Scene::new(
         ctx.device.clone(),
         ctx.queue.clone(),
@@ -117,7 +117,7 @@ fn scene_at(
 }
 
 /// A scene with the selector mounted, opened at `initial`.
-fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> Scene {
+fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Scene) {
     Scene::new(
         ctx.device.clone(),
         ctx.queue.clone(),
@@ -136,8 +136,8 @@ fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> Scene {
 }
 
 /// Bind an offscreen target the way the snapshot tests do, so `render` draws.
-fn bind(scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
-    let (world, renderer) = (&scene.world, scene.renderer);
+fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
+    let renderer = scene.renderer;
     world
         .with_mut::<Renderer, _>(renderer, |renderer| {
             unlit3d_examples::bind_offscreen_target(world, renderer, &ctx.device, size, 1, false)

@@ -10,7 +10,13 @@ The design is deliberately small: no change detection, no component hooks, no
 events or observers, no relations, and no scheduler. Everything that would need
 one of those is done by the caller on the entities themselves. The crate has no
 dependencies beyond a hasher and depends on nothing else in the workspace, so it
-can be used on its own; it knows nothing about rendering.
+can be used on its own; it knows nothing about rendering. The one exception is
+the optional `reflect` feature, which derives [facet](https://docs.rs/facet) for
+the [world information](crate::WorldInfo) structures so a bridge can serialise
+them as they are, and exports the [`EntityProxy`] an entity field reflects
+through. A reflected field whose type is an entity names that proxy, so the ECS's
+own structures and any caller's component spell an entity the same way — as its
+[`Entity::to_bits`] integer. Nothing in the ECS reads the reflection.
 
 It is at an **early stage of development** and its API changes freely.
 
@@ -57,8 +63,11 @@ It is at an **early stage of development** and its API changes freely.
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
 [`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
 component type a type-erased reader only knows by
-[`TypeId`](core::any::TypeId), and the
-specialized hash containers [`TypeIdHashMap`], [`EntityHashMap`] and friends.
+[`TypeId`](core::any::TypeId), [`WorldInfo`] / [`ArchetypeInfo`] / [`EntityInfo`]
+for reporting a world's shape as plain data (with [`EntityProxy`] and
+[`EntityVecProxy`] as the reflection an entity field names), and the specialized
+hash containers
+[`TypeIdHashMap`], [`EntityHashMap`] and friends.
 
 A query resolves the columns it needs once per archetype and then fetches rows
 through that state, so its cost is proportional to the number of *component

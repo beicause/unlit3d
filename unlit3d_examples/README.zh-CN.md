@@ -101,12 +101,13 @@ cargo xtask run-wasm
 
 ## Model Context Protocol
 
-`--mcp` 会把示例原本要渲染的那个 world 经 stdio 服务出去，作为
+`--mcp` 会把示例原本要渲染的那个场景经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。所选场景会先被构建——
-`--scene` 仍然生效——随后客户端通过各工具读取并驱动这个 world。场景在独立线程上离屏渲染，
-窗口照旧显示画面：第二个 world 把这张离屏纹理 blit 进交换链，因此画面随客户端更新，
-而无需任何输入事件进入场景。该 blit 不声明深度状态，采样的是离屏帧 resolve 后的颜色纹理，
-因此这个 world 的帧既不带深度附件也不带多重采样附件。
+`--scene` 仍然生效——随后客户端通过各工具读取并驱动它。示例自己的事件循环在持有它的线程上
+服务它，因此窗口照旧绘制，输入也照旧到达场景：场景 world 离屏渲染，第二个 world 把这一帧
+blit 进交换链，画面便随客户端更新。该 blit 不声明深度状态，采样的是离屏帧 resolve 后的
+颜色纹理，因此它的帧既不带深度附件也不带多重采样附件。两个 world 都是同一个宿主 `World`
+的组件，工具会指名它作用于哪一个。
 工具与传输见
 [`unlit3d_mcp`](../crates/unlit3d_mcp/README.zh-CN.md)。
 

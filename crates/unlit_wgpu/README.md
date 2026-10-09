@@ -509,12 +509,23 @@ graph:
   dirty node with no recipe stays dirty: the caller changed something the graph
   cannot rebuild on its own.
 - **The graph is walkable.** [`ResourceGraph::nodes`](resources::ResourceGraph::nodes)
-  lists every resource with its slot index, its
+  lists every resource with its [`ResId`](resources::ResId), its
   [`kind_name`](resources::Resource::kind_name), whether it is dirty and whether
   the graph can rebuild it, and
-  [`ResourceGraph::id_at`](resources::ResourceGraph::id_at) resolves a slot back
-  to a handle. That is what lets an outside reader — a debug overlay, an MCP
-  server — report the graph without a private view into it.
+  [`ResourceGraph::resolve`](resources::ResourceGraph::resolve) resolves an id
+  back to a handle. [`ResourceGraph::info`](resources::ResourceGraph::info) and
+  [`ResourceGraph::resource_infos`](resources::ResourceGraph::resource_infos) are
+  the same picture as plain data, for a reader that only reports it. That is what
+  lets an outside reader — a debug overlay, an MCP server — report the graph
+  without a private view into it.
+- **An id names the resource; a handle keeps it alive.** A [`ResId`](resources::ResId) is the
+  plain, [`Copy`] form a resource travels as: it carries the generation of its
+  slot, so an id to a removed resource stops resolving instead of quietly naming
+  its replacement. A [`ResHandle`](resources::ResHandle) holds a reference, so a resource lives while
+  any handle to it does; a [`ResId`](resources::ResId) holds none, which is what lets a report or
+  a transport carry one. A handle yields its id with
+  [`ResHandle::id`](resources::ResHandle::id), and the id comes back through
+  [`resolve`](resources::ResourceGraph::resolve).
 - **A texture view's format is recorded with the view.** This is the one
   exception to "no unnecessary wrappers": `wgpu` cannot tell a `TextureView`'s
   format from the view itself, and when an sRGB view covers a non-sRGB texture,

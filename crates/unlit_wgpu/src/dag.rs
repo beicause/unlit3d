@@ -7,12 +7,18 @@
 //!
 //! # Handles
 //!
-//! A [`NodeId`] is the slot a node occupies. Removing a node frees its slot for
-//! a later insertion, so a handle to a removed node can come to name whatever
-//! takes its place. Deciding liveness is the caller's job, not the graph's:
-//! [`ResHandle`](crate::resources::ResHandle) carries a strong reference that
-//! [`ResourceGraph`](crate::resources::ResourceGraph) collects on, so a node
-//! whose handle is still held is never removed in the first place.
+//! A [`NodeId`] names the slot a node occupies together with the generation
+//! that slot was in when the node was inserted. Removing a node frees its slot
+//! for a later insertion, and that insertion bumps the slot's generation, so a
+//! handle to a removed node never resolves again: it reports "no such node"
+//! rather than naming whatever took the slot. Handles can therefore travel
+//! through an API that stores only bits — see [`NodeId::to_bits`] — and be
+//! resolved back with [`Dag::get`], with a stale handle failing loudly instead
+//! of silently rebinding. Deciding liveness is still the caller's job, not the
+//! graph's: [`ResHandle`](crate::resources::ResHandle) carries a strong
+//! reference that [`ResourceGraph`](crate::resources::ResourceGraph) collects
+//! on, so a node whose handle is still held is never removed in the first
+//! place.
 //!
 //! # Edges
 //!
@@ -26,10 +32,18 @@
 
 use std::vec::Vec;
 
-/// The slot a node occupies in a [`Dag`].
+/// The slot a node occupies in a [`Dag`], with the generation it was in.
+///
+/// A handle is only valid while the node it names lives: once the node is
+/// removed and its slot is reused, the generation no longer matches and the
+/// handle stops resolving (see the [module documentation](self#handles)).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeId {
+    /// The slot the node occupies.
     index: u32,
+    /// The generation the slot was in when the node was inserted. A reused
+    /// slot carries a higher generation, so old handles do not resolve.
+    generation: u32,
 }
 
 impl NodeId {
@@ -37,9 +51,35 @@ impl NodeId {
     ///
     /// Only meaningful while the node lives, but stable across the node's
     /// lifetime, so callers can group or sort by it without holding a borrow.
+    /// Two handles can share an index and still differ: the generation is what
+    /// tells a live handle from a stale one.
     #[must_use]
     pub const fn index(self) -> usize {
         self.index as usize
+    }
+
+    /// The handle as plain bits, for an API that stores handles but does not
+    /// know the type — an inspector that reports one, or a transport that
+    /// carries it.
+    ///
+    /// The slot index is the low 32 bits and the generation the high 32, the
+    /// same layout as `unlit_ecs::Entity`. Rebuild the handle with
+    /// [`NodeId::from_bits`].
+    #[must_use]
+    pub const fn to_bits(self) -> u64 {
+        ((self.generation as u64) << 32) | self.index as u64
+    }
+
+    /// Rebuild a handle from the bits [`NodeId::to_bits`] produced.
+    ///
+    /// The bits say nothing about whether the node still lives; resolving them
+    /// through the graph is what decides that.
+    #[must_use]
+    pub const fn from_bits(bits: u64) -> Self {
+        Self {
+            index: bits as u32,
+            generation: (bits >> 32) as u32,
+        }
     }
 }
 
@@ -60,6 +100,10 @@ pub enum EdgeError {
 struct NodeSlot<N> {
     /// The node's weight, or `None` while the slot is vacant.
     weight: Option<N>,
+    /// The generation this slot is in. Bumped whenever a node is removed and
+    /// the slot is handed out again, so handles from the previous occupant
+    /// stop resolving.
+    generation: u32,
     /// Edges leaving this node, towards the nodes that depend on it.
     dependents: Vec<u32>,
     /// Edges entering this node, from the nodes it depends on.
@@ -140,12 +184,16 @@ impl<N> Dag<N> {
     }
 
     /// Add `weight` as a node and return a handle to it.
+    ///
+    /// Reusing a freed slot bumps its generation, so handles to the node that
+    /// occupied the slot before stop resolving.
     pub fn insert(&mut self, weight: N) -> NodeId {
         let index = match self.free_nodes.pop() {
             Some(index) => {
                 let slot = &mut self.nodes[index as usize];
                 debug_assert!(slot.weight.is_none(), "a free slot holds no node");
                 slot.weight = Some(weight);
+                slot.generation = slot.generation.wrapping_add(1);
                 slot.dependents.clear();
                 slot.dependencies.clear();
                 index
@@ -153,6 +201,7 @@ impl<N> Dag<N> {
             None => {
                 self.nodes.push(NodeSlot {
                     weight: Some(weight),
+                    generation: 0,
                     dependents: Vec::new(),
                     dependencies: Vec::new(),
                 });
@@ -175,19 +224,6 @@ impl<N> Dag<N> {
                 .as_ref()
                 .map(|weight| (self.node_id(index as u32), weight))
         })
-    }
-
-    /// The handle of the node in slot `index`, or `None` when that slot is
-    /// vacant or out of range.
-    ///
-    /// A caller that kept only a node's [`index`](NodeId::index) — an index
-    /// survives where a handle cannot be stored — resolves it back through
-    /// this.
-    pub fn id_at(&self, index: usize) -> Option<NodeId> {
-        self.nodes
-            .get(index)
-            .filter(|slot| slot.weight.is_some())
-            .map(|_| self.node_id(index as u32))
     }
 
     /// Borrow the weight of the node `id` names.
@@ -369,20 +405,23 @@ impl<N> Dag<N> {
 
     /// Resolve a handle to a slot index, or `None` when it names no node.
     ///
-    /// A handle is only ever used while its node lives — the caller holding it
-    /// is what keeps the node alive — so a vacant slot means the handle never
-    /// came from this graph.
+    /// A handle names both a slot and the generation it was in, so a handle
+    /// whose node was removed — and whose slot was perhaps reused — resolves to
+    /// nothing rather than to the slot's current occupant.
     fn resolve(&self, id: NodeId) -> Option<usize> {
         let index = id.index as usize;
         self.nodes
             .get(index)
-            .filter(|slot| slot.weight.is_some())
+            .filter(|slot| slot.weight.is_some() && slot.generation == id.generation)
             .map(|_| index)
     }
 
-    /// Build the handle for a live slot.
+    /// Build the handle for a live slot, in the generation the slot is in.
     fn node_id(&self, index: u32) -> NodeId {
-        NodeId { index }
+        NodeId {
+            index,
+            generation: self.nodes[index as usize].generation,
+        }
     }
 
     /// Whether `to` depends on `from`, both already resolved to slot indices.
@@ -498,21 +537,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_removed_slot_is_reused() {
+    fn a_removed_slot_is_reused_with_a_new_generation() {
         let mut dag = Dag::new();
         let first = dag.insert("first");
         assert_eq!(first.index(), 0);
+        assert_eq!(first.to_bits(), 0, "generation 0 in the high bits");
         assert_eq!(dag.get(first), Some(&"first"));
 
         assert_eq!(dag.remove(first), Some("first"));
         assert_eq!(dag.get(first), None, "the slot is vacant");
 
-        // The handle is the slot, so the next node to occupy it answers to the
-        // same handle. A caller only ever holds a handle while its node lives,
-        // which is what keeps this from being a stale-handle hazard.
+        // The slot is reused, but the generation moves on, so the old handle
+        // never comes to name the node that took its place.
         let second = dag.insert("second");
         assert_eq!(second.index(), first.index(), "the slot is reused");
+        assert_ne!(second.to_bits(), first.to_bits(), "but not the handle");
         assert_eq!(dag.get(second), Some(&"second"));
+        assert_eq!(dag.get(first), None, "the old handle is stale");
+    }
+
+    #[test]
+    fn a_handle_survives_a_round_trip_through_bits() {
+        let mut dag = Dag::new();
+        let id = dag.insert("value");
+        let bits = id.to_bits();
+        assert_eq!(NodeId::from_bits(bits), id);
+        assert_eq!(dag.get(NodeId::from_bits(bits)), Some(&"value"));
+
+        // The bits carry the generation, so reusing the slot does not make the
+        // old bits name the new node.
+        dag.remove(id);
+        let reused = dag.insert("reused");
+        assert_eq!(reused.index(), id.index(), "the slot is reused");
+        assert_eq!(
+            dag.get(NodeId::from_bits(bits)),
+            None,
+            "the bits of a removed node do not resolve"
+        );
     }
 
     #[test]

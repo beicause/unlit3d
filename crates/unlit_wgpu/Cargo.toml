@@ -26,6 +26,7 @@ arrayvec.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
 egui = { workspace = true, optional = true }
+facet = { workspace = true, features = ["reflect"], optional = true }
 foldhash.workspace = true
 glam.workspace = true
 hashbrown.workspace = true
@@ -57,6 +58,11 @@ default = ["unlit"]
 ## ordinary screen-space draws. It draws with a built-in unlit pipeline, so
 ## it implies `unlit`.
 egui = ["dep:egui", "unlit"]
+## Reflection: derive [facet](https://docs.rs/facet) for the resource graph's
+## information structures, so a bridge can serialise them as they are. Off by
+## default because it is only the bridge that needs it; the renderer never
+## reads the reflection.
+reflect = ["dep:facet"]
 ## The built-in unlit pipeline: the shader variants it composes from the WESL
 ## package, its options, and its bind-group and vertex-buffer layouts.
 ##

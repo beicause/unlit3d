@@ -3,21 +3,32 @@
 //! A [World] is not [Send], and the GPU work that reads it must happen on the
 //! thread that owns it. The MCP transport, on the other hand, runs on a tokio
 //! thread. The two meet at a command channel: a tool builds a [Command] holding
-//! a closure, the render thread runs the closure against a [HostContext] and
-//! sends the JSON result back. Nothing here is specific to the built-in
-//! pipeline; every tool goes through the same public API a caller would use.
+//! a closure and the handle of the world it should run against, the thread that
+//! owns that world resolves the handle and calls [dispatch], and the JSON
+//! result travels back on the command's reply channel.
+//!
+//! Nothing here assumes how many worlds there are or what a world contains.
+//! ECS tools take the world alone; GPU tools take the entity handles they need
+//! and resolve them through the public API, reporting a readable error when a
+//! handle does not name what they asked for. Every result is a struct from the
+//! original crates — [WorldInfo](unlit_ecs::WorldInfo),
+//! [ResourceGraphInfo] and friends — serialised
+//! through its own reflection rather than assembled field by field.
 
 use std::path::Path;
 
 use base64::Engine as _;
 use glam::Vec3;
 use image::ImageEncoder as _;
-use serde_json::{Value, json};
-use unlit_ecs::ArchetypeBuilder;
+use serde_json::Value;
+use unlit_ecs::{ArchetypeBuilder, Entity, World};
+use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit_wgpu::readback::{readback_buffer, readback_texture};
 use unlit_wgpu::render_attachments::create_color_target;
-use unlit_wgpu::resources::{Resource, ResourceGraph, TextureExt};
+use unlit_wgpu::resources::{
+    ResId, Resource, ResourceGraph, ResourceGraphInfo, ResourceGraphMaintain, TextureExt,
+};
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
 use unlit3d::reflect;
@@ -25,600 +36,656 @@ use unlit3d::reflect;
 /// The format of the offscreen target the standalone host renders into.
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// A unit of work for the render thread.
+/// A unit of work for the thread that owns a world.
 ///
 /// The closure captures plain data (tool arguments) and runs with exclusive
-/// access to the world. It must be [Send] because it travels across the channel;
-/// the world it touches never does.
-pub type Job = Box<dyn FnOnce(&mut HostContext<'_>) -> Result<Value, String> + Send + 'static>;
+/// access to one world. It must be [Send] because it travels across the
+/// channel; the world it touches never does.
+pub type Job = Box<dyn FnOnce(&mut World) -> Result<Value, String> + Send + 'static>;
 
 /// A job together with the channel its result is sent back on.
 pub struct Command {
     job: Job,
     reply: async_channel::Sender<Result<Value, String>>,
+    /// The host entity whose world the job runs against; `None` is the world
+    /// that receives the command itself.
+    world: Option<Entity>,
 }
 
 impl Command {
     /// Build a command and the receiver its result will arrive on.
     pub fn new(
-        job: impl FnOnce(&mut HostContext<'_>) -> Result<Value, String> + Send + 'static,
+        job: impl FnOnce(&mut World) -> Result<Value, String> + Send + 'static,
     ) -> (Self, async_channel::Receiver<Result<Value, String>>) {
         let (reply, receiver) = async_channel::bounded(1);
         (
             Self {
                 job: Box::new(job),
                 reply,
+                world: None,
             },
             receiver,
         )
     }
+
+    /// Direct the command at the world carried by `entity`.
+    #[must_use]
+    pub fn world(mut self, entity: Entity) -> Self {
+        self.world = Some(entity);
+        self
+    }
+
+    /// The host entity whose world the command asks for, or `None` for the
+    /// world the host itself dispatches into.
+    #[must_use]
+    pub fn world_handle(&self) -> Option<Entity> {
+        self.world
+    }
+
+    /// Answer the command with an error without running it.
+    ///
+    /// The host calls this when the world handle cannot be resolved, so the
+    /// tool call still gets a readable message rather than a dropped channel.
+    pub fn fail(self, message: String) {
+        let _ = self.reply.send_blocking(Err(message));
+    }
 }
 
-/// Run a command and send its result back.
+/// Run a command against `world` and send its result back.
 ///
 /// The send is best-effort: a tool call that has already been cancelled has no
 /// receiver left, and the result is simply dropped.
-pub fn dispatch(command: Command, context: &mut HostContext<'_>) {
-    let result = (command.job)(context);
+pub fn dispatch(command: Command, world: &mut World) {
+    let result = (command.job)(world);
     let _ = command.reply.send_blocking(result);
 }
 
-/// The world and resources a command runs against.
-pub struct HostContext<'a> {
-    /// The world being driven.
-    pub world: &'a mut World,
-    /// The entity carrying the [Renderer].
-    pub renderer: Entity,
-    /// The entity carrying the [MeshSource], if the world has one.
-    pub source: Option<Entity>,
-    /// The render context spawned by spawn_context.
-    pub context: RenderContext,
-    /// The offscreen color target, if the host renders offscreen.
-    pub target: Option<&'a wgpu::Texture>,
-    /// The format of [Self::target].
-    pub target_format: wgpu::TextureFormat,
+/// Serialise a value through the reflection it derives.
+///
+/// The information structs the original crates expose carry their own
+/// reflection, so the JSON this transport speaks is derived from their fields
+/// rather than written down a second time here.
+fn to_value<T: facet::Facet<'static>>(value: &T) -> Result<Value, String> {
+    let text = facet_json::to_string(value).map_err(|error| error.to_string())?;
+    serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
-impl HostContext<'_> {
-    fn device(&self) -> Result<wgpu::Device, String> {
-        self.world
-            .get::<wgpu::Device>(self.context.device)
-            .map(|device| device.clone())
-            .ok_or_else(|| "the world has no device".to_string())
+/// The render context the world holds, found from `handle` or by query.
+///
+/// `handle` names any one of the entities the context is stored on — its
+/// device, queue, graph or capabilities. Without one the world must hold
+/// exactly one context: several are ambiguous, and none is an error rather than
+/// an assumption.
+fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext, String> {
+    if let Some(entity) = handle {
+        return RenderContext::of(world, entity)
+            .ok_or_else(|| format!("entity {} carries no render context", entity.to_bits()));
     }
-
-    fn queue(&self) -> Result<wgpu::Queue, String> {
-        self.world
-            .get::<wgpu::Queue>(self.context.queue)
-            .map(|queue| queue.clone())
-            .ok_or_else(|| "the world has no queue".to_string())
-    }
-
-    fn with_graph<R>(&self, f: impl FnOnce(&mut ResourceGraph) -> R) -> Result<R, String> {
-        let mut graph = self
-            .world
-            .get_mut::<ResourceGraph>(self.context.graph)
-            .ok_or_else(|| "the world has no resource graph".to_string())?;
-        Ok(f(&mut graph))
-    }
-
-    fn with_graph_ref<R>(&self, f: impl FnOnce(&ResourceGraph) -> R) -> Result<R, String> {
-        let graph = self
-            .world
-            .get::<ResourceGraph>(self.context.graph)
-            .ok_or_else(|| "the world has no resource graph".to_string())?;
-        Ok(f(&graph))
-    }
-
-    fn with_mesh_source<R>(&self, f: impl FnOnce(&mut MeshSource) -> R) -> Result<R, String> {
-        let source = self
-            .source
-            .ok_or_else(|| "the world has no mesh source".to_string())?;
-        let mut handle = self
-            .world
-            .get_mut::<Source>(source)
-            .ok_or_else(|| "the mesh source entity is gone".to_string())?;
-        let mesh_source = handle
-            .as_mut::<MeshSource>()
-            .ok_or_else(|| "the source entity is not a mesh source".to_string())?;
-        Ok(f(mesh_source))
-    }
-
-    fn entity_components(&self, entity: Entity) -> Option<Vec<&'static str>> {
-        let location = self.world.location(entity)?;
-        let archetype = self.world.archetype(location.archetype())?;
-        Some(
-            archetype
-                .types()
-                .iter()
-                .filter_map(|type_id| self.world.type_name(*type_id))
-                .collect(),
-        )
-    }
-
-    /// A high-level description of the world.
-    pub(crate) fn world_summary(&self) -> Value {
-        json!({
-            "entities": self.world.len(),
-            "archetypes": self.world.archetype_count(),
-            "components": reflect::names().collect::<Vec<_>>(),
-        })
-    }
-
-    /// The component names the reflection table holds.
-    pub(crate) fn list_components(&self) -> Value {
-        json!(reflect::names().collect::<Vec<_>>())
-    }
-
-    /// Every archetype with the component names it stores.
-    pub(crate) fn list_archetypes(&self) -> Value {
-        let archetypes: Vec<Value> = self
-            .world
-            .archetypes()
-            .enumerate()
-            .map(|(index, archetype)| {
-                let types: Vec<&str> = archetype
-                    .types()
-                    .iter()
-                    .filter_map(|type_id| self.world.type_name(*type_id))
-                    .collect();
-                json!({
-                    "index": index,
-                    "len": archetype.len(),
-                    "types": types,
-                })
-            })
-            .collect();
-        Value::Array(archetypes)
-    }
-
-    /// Every spawned entity with its component names.
-    pub(crate) fn list_entities(&self, limit: usize) -> Value {
-        let mut entities = Vec::new();
-        'outer: for archetype in self.world.archetypes() {
-            let types: Vec<&str> = archetype
-                .types()
-                .iter()
-                .filter_map(|type_id| self.world.type_name(*type_id))
-                .collect();
-            for entity in archetype.entities() {
-                entities.push(json!({
-                    "entity": entity.to_bits(),
-                    "components": types,
-                }));
-                if entities.len() >= limit {
-                    break 'outer;
-                }
+    let mut found: Option<RenderContext> = None;
+    for (_, context) in world.query::<&RenderContext>() {
+        match found {
+            None => found = Some(*context),
+            Some(existing) if existing == *context => {}
+            Some(_) => {
+                return Err(
+                    "the world has more than one render context; pass `context`".to_string()
+                );
             }
         }
-        Value::Array(entities)
     }
-
-    /// One entity's component names and location.
-    pub(crate) fn get_entity(&self, entity: Entity) -> Result<Value, String> {
-        let location = self
-            .world
-            .location(entity)
-            .ok_or_else(|| format!("no entity with bits {}", entity.to_bits()))?;
-        let components = self.entity_components(entity).unwrap_or_default();
-        Ok(json!({
-            "entity": entity.to_bits(),
-            "alive": self.world.contains(entity),
-            "archetype": location.archetype(),
-            "row": location.row(),
-            "components": components,
-        }))
-    }
-
-    /// One component of one entity, encoded.
-    pub(crate) fn get_component(&self, entity: Entity, name: &str) -> Result<Value, String> {
-        let text = reflect::encode(self.world, entity, name)?;
-        serde_json::from_str(&text).map_err(|error| error.to_string())
-    }
-
-    /// Overwrite one component of one entity.
-    pub(crate) fn set_component(
-        &self,
-        entity: Entity,
-        name: &str,
-        value: &Value,
-    ) -> Result<Value, String> {
-        let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-        reflect::set(self.world, entity, name, &patch)?;
-        Ok(Value::Null)
-    }
-
-    /// Spawn an entity from a map of component name to value.
-    pub(crate) fn spawn_entity(&mut self, components: &Value) -> Result<Value, String> {
-        let object = components
-            .as_object()
-            .ok_or_else(|| "components must be an object".to_string())?;
-        let mut builder = ArchetypeBuilder::new();
-        for (name, value) in object {
-            let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-            reflect::push(&mut builder, name, &patch)?;
-        }
-        let entity = self.world.spawn(builder);
-        Ok(json!({"entity": entity.to_bits()}))
-    }
-
-    /// Despawn one entity.
-    pub(crate) fn despawn_entity(&mut self, entity: Entity) -> Result<Value, String> {
-        Ok(json!({"despawned": self.world.despawn(entity)}))
-    }
-
-    /// A summary of the resource graph.
-    pub(crate) fn graph_summary(&self) -> Result<Value, String> {
-        self.with_graph_ref(|graph| {
-            let mut kinds = std::collections::BTreeMap::<&'static str, usize>::new();
-            let mut dirty = 0usize;
-            let mut rebuildable = 0usize;
-            for node in graph.nodes() {
-                *kinds.entry(node.resource.kind_name()).or_default() += 1;
-                dirty += usize::from(node.dirty);
-                rebuildable += usize::from(node.rebuildable);
-            }
-            json!({
-                "resources": graph.len(),
-                "empty": graph.is_empty(),
-                "dirty": dirty,
-                "rebuildable": rebuildable,
-                "kinds": kinds,
-            })
-        })
-    }
-
-    /// Every resource slot in the graph.
-    pub(crate) fn list_resources(&self) -> Result<Value, String> {
-        self.with_graph_ref(|graph| {
-            let resources: Vec<Value> = graph
-                .nodes()
-                .map(|node| {
-                    json!({
-                        "index": node.index,
-                        "kind": node.resource.kind_name(),
-                        "dirty": node.dirty,
-                        "rebuildable": node.rebuildable,
-                    })
-                })
-                .collect();
-            Value::Array(resources)
-        })
-    }
-
-    /// The resources a slot depends on, as slot indices.
-    pub(crate) fn resource_dependencies(&self, index: usize) -> Result<Value, String> {
-        self.with_graph_ref(|graph| match graph.id_at(index) {
-            Some(id) => json!(
-                graph
-                    .dependencies(&id)
-                    .map(|id| id.index())
-                    .collect::<Vec<_>>()
-            ),
-            None => Value::Null,
-        })
-    }
-
-    /// Drop unreferenced resources and rebuild dirty ones.
-    pub(crate) fn graph_maintain(&self) -> Result<Value, String> {
-        self.with_graph(|graph| {
-            let before = graph.len();
-            graph.maintain();
-            json!({"before": before, "after": graph.len()})
-        })
-    }
-
-    /// Read bytes out of a buffer resource.
-    pub(crate) fn read_buffer(
-        &self,
-        index: usize,
-        offset: u64,
-        size: Option<u64>,
-    ) -> Result<Value, String> {
-        let buffer = self
-            .with_graph_ref(|graph| match graph.id_at(index) {
-                Some(id) => match graph.get::<Resource>(&id) {
-                    Some(Resource::Buffer(buffer)) => Some(buffer.clone()),
-                    _ => None,
-                },
-                None => None,
-            })?
-            .ok_or_else(|| format!("no buffer at resource index {index}"))?;
-        if !buffer.usage().contains(wgpu::BufferUsages::COPY_SRC) {
-            return Err(format!(
-                "buffer at resource index {index} was not created with COPY_SRC, so it cannot be read back"
-            ));
-        }
-        let total = buffer.size();
-        if offset > total {
-            return Err(format!(
-                "offset {offset} is past the buffer's {total} bytes"
-            ));
-        }
-        let size = size.unwrap_or(total - offset).min(total - offset);
-        let device = self.device()?;
-        let queue = self.queue()?;
-        let bytes = readback_buffer(&device, &queue, &buffer, offset, size);
-        Ok(json!({
-            "offset": offset,
-            "size": bytes.len(),
-            "data": base64::engine::general_purpose::STANDARD.encode(&bytes),
-        }))
-    }
-
-    /// Read a texture resource and encode it as a PNG.
-    pub(crate) fn read_texture_as_image(&self, index: usize) -> Result<Value, String> {
-        let texture = self
-            .with_graph_ref(|graph| match graph.id_at(index) {
-                Some(id) => match graph.get::<Resource>(&id) {
-                    Some(Resource::Texture(texture)) => Some(texture.clone()),
-                    Some(Resource::TextureView(view)) => Some(view.texture().clone()),
-                    _ => None,
-                },
-                None => None,
-            })?
-            .ok_or_else(|| format!("no texture at resource index {index}"))?;
-        let device = self.device()?;
-        let queue = self.queue()?;
-        let bytes = readback_texture(&device, &queue, &texture);
-        let png = encode_png(&bytes, texture.width(), texture.height(), texture.format())?;
-        Ok(image_value(&png, texture.width(), texture.height()))
-    }
-
-    /// The first input state, encoded, events included.
-    pub(crate) fn input_state(&self) -> Result<Value, String> {
-        let entity = self
-            .world
-            .query::<&InputState>()
-            .next()
-            .map(|(entity, _)| entity)
-            .ok_or_else(|| "the world has no InputState".to_string())?;
-        let text = reflect::encode(self.world, entity, "InputState")?;
-        serde_json::from_str(&text).map_err(|error| error.to_string())
-    }
-
-    /// Push input events into the world and deliver them.
-    pub(crate) fn send_input(&self, events: &Value) -> Result<Value, String> {
-        let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
-        let decoded = reflect::decode_events(&text)?;
-        let entity = self
-            .world
-            .query::<&InputState>()
-            .next()
-            .map(|(entity, _)| entity)
-            .ok_or_else(|| "the world has no InputState".to_string())?;
-        let _ = self.world.with_mut::<InputState, _>(entity, |state| {
-            for event in decoded {
-                state.push(event);
-            }
-        });
-        let delivered = dispatch_input(self.world);
-        Ok(json!({"delivered": delivered}))
-    }
-
-    /// Allocate a mesh and spawn an entity that draws it.
-    pub(crate) fn create_mesh(&mut self, args: crate::server::CreateMesh) -> Result<Value, String> {
-        if args.positions.is_empty() {
-            return Err("positions must not be empty".to_string());
-        }
-        let desc = UnlitMeshDesc {
-            positions: &args.positions,
-            uvs: args.uvs.as_deref(),
-            colors: args.colors.as_deref(),
-            indices: args.indices.as_deref(),
-            joints: None,
-            weights: None,
-            morph_deltas: None,
-        };
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&self.device()?));
-        let mesh =
-            self.with_mesh_source(|source| source.allocate_unlit_mesh(self.world, &key, desc))?;
-        let transform = match args.transform {
-            Some(transform) => Transform {
-                translation: Vec3::from_array(transform.translation),
-                rotation: glam::Quat::from_xyzw(
-                    transform.rotation[0],
-                    transform.rotation[1],
-                    transform.rotation[2],
-                    transform.rotation[3],
-                ),
-                scale: Vec3::from_array(transform.scale),
-            },
-            None => Transform::default(),
-        };
-        let color = args.color.map_or(glam::Vec4::ONE, glam::Vec4::from_array);
-        let mut builder = ArchetypeBuilder::new();
-        builder.push(transform);
-        builder.push(mesh);
-        builder.push(UnlitPipeline::new(key));
-        builder.push(InstanceColor::new(color));
-        if let Some(cutoff) = args.cutoff {
-            builder.push(InstanceCutoff::new(cutoff));
-        }
-        let entity = self.world.spawn(builder);
-        Ok(json!({"entity": entity.to_bits()}))
-    }
-
-    /// Remove a mesh entity and release its mesh.
-    pub(crate) fn remove_mesh(&mut self, entity: Entity) -> Result<Value, String> {
-        let mesh = self
-            .world
-            .get::<GpuMesh>(entity)
-            .map(|mesh| mesh.clone())
-            .ok_or_else(|| format!("entity {} has no GpuMesh", entity.to_bits()))?;
-        self.with_mesh_source(|source| source.remove_mesh(mesh))?;
-        let despawned = self.world.despawn(entity);
-        Ok(json!({"despawned": despawned}))
-    }
-
-    /// Render one frame with the world's renderer.
-    pub(crate) fn render_frame(&self) -> Result<Value, String> {
-        let world: &World = &*self.world;
-        let _ = world.with_mut::<Renderer, _>(self.renderer, |renderer| renderer.render(world));
-        Ok(Value::Null)
-    }
-
-    /// Render one frame and return the offscreen target as a PNG.
-    pub(crate) fn screenshot(&self) -> Result<Value, String> {
-        let target = self
-            .target
-            .ok_or_else(|| "the host has no offscreen target to screenshot".to_string())?;
-        self.render_frame()?;
-        let device = self.device()?;
-        let queue = self.queue()?;
-        let bytes = readback_texture(&device, &queue, target);
-        let png = encode_png(&bytes, target.width(), target.height(), self.target_format)?;
-        Ok(image_value(&png, target.width(), target.height()))
-    }
-
-    /// Load a glTF file and spawn its default scene.
-    pub(crate) fn load_gltf(&mut self, path: &str) -> Result<Value, String> {
-        let gltf = UnlitGltf::load(Path::new(path)).map_err(|error| error.to_string())?;
-        let resources =
-            self.with_mesh_source(|source| gltf.insert_resources(source, self.world))?;
-        let nodes = gltf.spawn_default_scene(self.world, &resources);
-        let entities: Vec<u64> = nodes
-            .iter()
-            .flat_map(|node| node.entities.iter())
-            .map(|entity| entity.to_bits())
-            .collect();
-        Ok(json!({"entities": entities}))
-    }
+    found.ok_or_else(|| "the world has no render context".to_string())
 }
 
-/// The standalone host: an offscreen world served over MCP.
-pub struct Host {
-    world: World,
-    renderer: Entity,
-    source: Option<Entity>,
+/// The entity carrying the world's renderer, from `handle` or by query.
+fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
+    if let Some(entity) = handle {
+        return world
+            .has::<Renderer>(entity)
+            .then_some(entity)
+            .ok_or_else(|| format!("entity {} carries no renderer", entity.to_bits()));
+    }
+    let mut found: Option<Entity> = None;
+    for (entity, _) in world.query::<&Renderer>() {
+        if found.is_some() {
+            return Err("the world has more than one renderer; pass `renderer`".to_string());
+        }
+        found = Some(entity);
+    }
+    found.ok_or_else(|| "the world has no renderer".to_string())
+}
+
+/// The entity carrying the world's mesh source, from `handle` or by query.
+fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
+    if let Some(entity) = handle {
+        let is_mesh_source = world
+            .get::<Source>(entity)
+            .is_some_and(|source| source.as_ref::<MeshSource>().is_some());
+        return is_mesh_source
+            .then_some(entity)
+            .ok_or_else(|| format!("entity {} carries no mesh source", entity.to_bits()));
+    }
+    let mut found: Option<Entity> = None;
+    for (entity, source) in world.query::<&Source>() {
+        if source.as_ref::<MeshSource>().is_some() {
+            if found.is_some() {
+                return Err("the world has more than one mesh source; pass `source`".to_string());
+            }
+            found = Some(entity);
+        }
+    }
+    found.ok_or_else(|| "the world has no mesh source".to_string())
+}
+
+/// Run `f` with the mesh source `handle` names, or the world's only one.
+fn with_mesh_source<R>(
+    world: &World,
+    handle: Option<Entity>,
+    f: impl FnOnce(&mut MeshSource) -> R,
+) -> Result<R, String> {
+    let entity = mesh_source_entity(world, handle)?;
+    let mut source = world
+        .get_mut::<Source>(entity)
+        .ok_or_else(|| "the mesh source entity is gone".to_string())?;
+    let mesh_source = source
+        .as_mut::<MeshSource>()
+        .ok_or_else(|| "the source entity is not a mesh source".to_string())?;
+    Ok(f(mesh_source))
+}
+
+/// The device the context names, cloned out of the world.
+fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, String> {
+    world
+        .get::<wgpu::Device>(context.device)
+        .map(|device| device.clone())
+        .ok_or_else(|| "the render context has no device".to_string())
+}
+
+/// The queue the context names, cloned out of the world.
+fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String> {
+    world
+        .get::<wgpu::Queue>(context.queue)
+        .map(|queue| queue.clone())
+        .ok_or_else(|| "the render context has no queue".to_string())
+}
+
+/// The graph the context names, borrowed from the world.
+fn graph_of<'w>(
+    world: &'w World,
     context: RenderContext,
-    target: wgpu::Texture,
-    target_format: wgpu::TextureFormat,
+) -> Result<unlit_ecs::CellRef<'w, ResourceGraph>, String> {
+    world
+        .get::<ResourceGraph>(context.graph)
+        .ok_or_else(|| "the render context has no resource graph".to_string())
 }
 
-impl Host {
-    /// Create a world with a renderer, a mesh source, an input state, a default
-    /// camera and an offscreen target of the given size.
-    pub async fn new_offscreen(
-        size: (u32, u32),
-        samples: u32,
-        depth: bool,
-    ) -> Result<Self, String> {
-        let (device, queue, capabilities) = request_device("unlit3d_mcp").await?;
+/// The graph the context names, mutably borrowed from the world.
+fn graph_of_mut<'w>(
+    world: &'w World,
+    context: RenderContext,
+) -> Result<unlit_ecs::CellRefMut<'w, ResourceGraph>, String> {
+    world
+        .get_mut::<ResourceGraph>(context.graph)
+        .ok_or_else(|| "the render context has no resource graph".to_string())
+}
 
-        let mut world = World::new();
-        let context = spawn_context(
-            &mut world,
-            device.clone(),
-            queue.clone(),
-            ResourceGraph::new(),
-            capabilities,
-        );
-        let renderer = world.spawn((Renderer::new(context),));
-        world.spawn((RenderLoadOps::default(),));
+/// A spawned entity, as the tools report it.
+#[derive(facet::Facet)]
+struct SpawnedEntity {
+    /// The spawned entity.
+    #[facet(opaque, proxy = unlit_ecs::EntityProxy)]
+    entity: Entity,
+}
 
-        let mut source = MeshSource::new(&world, context);
-        source.register_unlit_family(&world);
-        let source = world.spawn_source(source);
-        world.spawn((InputState::default(),));
+/// Whether a despawn removed anything.
+#[derive(facet::Facet)]
+struct Despawned {
+    /// Whether the entity was alive.
+    despawned: bool,
+}
 
-        let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
-        // The graph borrow ends before the renderer is touched: both live in
-        // the world, and holding one column while borrowing another panics.
-        let color_view = world
-            .get_mut::<ResourceGraph>(context.graph)
-            .ok_or_else(|| "the context has no graph".to_string())?
-            .insert(
-                TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
-                None,
-            );
-        let attachments =
-            FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
-        let _ = world.with_mut::<Renderer, _>(renderer, |renderer| {
-            attachments.bind(&world, renderer, color_view)
-        });
+/// Whether input events were delivered.
+#[derive(facet::Facet)]
+struct Delivered {
+    /// Whether a handler consumed anything.
+    delivered: bool,
+}
 
-        world.spawn((default_camera(size),));
+/// The entities a glTF scene spawned.
+#[derive(facet::Facet)]
+struct SpawnedEntities {
+    /// The spawned entities.
+    #[facet(opaque, proxy = unlit_ecs::EntityVecProxy)]
+    entities: Vec<Entity>,
+}
 
-        Ok(Self {
-            world,
-            renderer,
-            source: Some(source),
-            context,
-            target: color,
-            target_format: COLOR_FORMAT,
-        })
+/// The bytes read out of a buffer.
+#[derive(facet::Facet)]
+struct BufferRead {
+    /// The offset the read started at.
+    offset: u64,
+    /// How many bytes were read.
+    size: usize,
+    /// The bytes, base64-encoded.
+    data: String,
+}
+
+/// An encoded image.
+#[derive(facet::Facet)]
+struct ImageValue {
+    /// The image's media type.
+    mime_type: &'static str,
+    /// The image's width in pixels.
+    width: u32,
+    /// The image's height in pixels.
+    height: u32,
+    /// The image bytes, base64-encoded.
+    data: String,
+}
+
+/// A high-level description of the world.
+pub fn world_summary(world: &World) -> Result<Value, String> {
+    to_value(&world.info())
+}
+
+/// The component names the reflection table holds.
+pub fn list_components(_world: &World) -> Result<Value, String> {
+    to_value(&reflect::names().collect::<Vec<_>>())
+}
+
+/// Every archetype with the component names it stores.
+pub fn list_archetypes(world: &World) -> Result<Value, String> {
+    to_value(&world.archetype_infos())
+}
+
+/// Every spawned entity with its component names.
+pub fn list_entities(world: &World, limit: usize) -> Result<Value, String> {
+    to_value(&world.entity_infos(limit))
+}
+
+/// One entity's component names and location.
+pub fn get_entity(world: &World, entity: Entity) -> Result<Value, String> {
+    let info = world
+        .entity_info(entity)
+        .ok_or_else(|| format!("no entity with bits {}", entity.to_bits()))?;
+    to_value(&info)
+}
+
+/// One component of one entity, encoded.
+pub fn get_component(world: &World, entity: Entity, name: &str) -> Result<Value, String> {
+    let text = reflect::encode(world, entity, name)?;
+    serde_json::from_str(&text).map_err(|error| error.to_string())
+}
+
+/// Overwrite one component of one entity.
+pub fn set_component(
+    world: &World,
+    entity: Entity,
+    name: &str,
+    value: &Value,
+) -> Result<Value, String> {
+    let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
+    reflect::set(world, entity, name, &patch)?;
+    Ok(Value::Null)
+}
+
+/// Spawn an entity from a map of component name to value.
+pub fn spawn_entity(world: &mut World, components: &Value) -> Result<Value, String> {
+    let object = components
+        .as_object()
+        .ok_or_else(|| "components must be an object".to_string())?;
+    let mut builder = ArchetypeBuilder::new();
+    for (name, value) in object {
+        let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
+        reflect::push(&mut builder, name, &patch)?;
     }
+    let entity = world.spawn(builder);
+    to_value(&SpawnedEntity { entity })
+}
 
-    /// Wrap a world that already has a renderer, an offscreen target and
-    /// whatever else its owner built.
-    ///
-    /// The caller keeps ownership of the scene's construction — the host only
-    /// drives it. The target's own format is what screenshots are encoded as.
-    pub fn from_world(
-        world: World,
-        renderer: Entity,
-        source: Option<Entity>,
-        context: RenderContext,
-        target: wgpu::Texture,
-    ) -> Self {
-        Self {
-            world,
-            renderer,
-            source,
-            context,
-            target_format: target.format(),
-            target,
+/// Despawn one entity.
+pub fn despawn_entity(world: &mut World, entity: Entity) -> Result<Value, String> {
+    let despawned = world.despawn(entity);
+    to_value(&Despawned { despawned })
+}
+
+/// A summary of the resource graph.
+pub fn graph_summary(world: &World, context: Option<Entity>) -> Result<Value, String> {
+    let context = render_context(world, context)?;
+    let graph = graph_of(world, context)?;
+    let info: ResourceGraphInfo = graph.info();
+    to_value(&info)
+}
+
+/// Every resource slot in the graph.
+pub fn list_resources(world: &World, context: Option<Entity>) -> Result<Value, String> {
+    let context = render_context(world, context)?;
+    let graph = graph_of(world, context)?;
+    to_value(&graph.resource_infos())
+}
+
+/// The resources a resource depends on, as handles.
+pub fn resource_dependencies(
+    world: &World,
+    context: Option<Entity>,
+    id: ResId,
+) -> Result<Value, String> {
+    let context = render_context(world, context)?;
+    let graph = graph_of(world, context)?;
+    let handle = graph
+        .resolve(id)
+        .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+    to_value(&graph.dependency_ids(&handle))
+}
+
+/// Drop unreferenced resources and rebuild dirty ones.
+pub fn graph_maintain(world: &World, context: Option<Entity>) -> Result<Value, String> {
+    let context = render_context(world, context)?;
+    let mut graph = graph_of_mut(world, context)?;
+    let before = graph.len();
+    graph.maintain();
+    let after = graph.len();
+    drop(graph);
+    to_value(&ResourceGraphMaintain { before, after })
+}
+
+/// Read bytes out of a buffer resource.
+pub fn read_buffer(
+    world: &World,
+    context: Option<Entity>,
+    id: ResId,
+    offset: u64,
+    size: Option<u64>,
+) -> Result<Value, String> {
+    let context = render_context(world, context)?;
+    let buffer = {
+        let graph = graph_of(world, context)?;
+        let handle = graph
+            .resolve(id)
+            .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+        match graph.get::<Resource>(&handle) {
+            Some(Resource::Buffer(buffer)) => buffer.clone(),
+            _ => return Err(format!("resource id {} is not a buffer", id.to_bits())),
+        }
+    };
+    if !buffer.usage().contains(wgpu::BufferUsages::COPY_SRC) {
+        return Err(format!(
+            "the buffer behind id {} was not created with COPY_SRC, so it cannot be read back",
+            id.to_bits()
+        ));
+    }
+    let total = buffer.size();
+    if offset > total {
+        return Err(format!(
+            "offset {offset} is past the buffer's {total} bytes"
+        ));
+    }
+    let size = size.unwrap_or(total - offset).min(total - offset);
+    let device = device_of(world, context)?;
+    let queue = queue_of(world, context)?;
+    let bytes = readback_buffer(&device, &queue, &buffer, offset, size);
+    to_value(&BufferRead {
+        offset,
+        size: bytes.len(),
+        data: base64::engine::general_purpose::STANDARD.encode(&bytes),
+    })
+}
+
+/// Read a texture resource and encode it as a PNG.
+pub fn read_texture_as_image(
+    world: &World,
+    context: Option<Entity>,
+    id: ResId,
+) -> Result<Value, String> {
+    let context = render_context(world, context)?;
+    let texture = {
+        let graph = graph_of(world, context)?;
+        let handle = graph
+            .resolve(id)
+            .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+        match graph.get::<Resource>(&handle) {
+            Some(Resource::Texture(texture)) => texture.clone(),
+            Some(Resource::TextureView(view)) => view.texture().clone(),
+            _ => return Err(format!("resource id {} is not a texture", id.to_bits())),
+        }
+    };
+    let device = device_of(world, context)?;
+    let queue = queue_of(world, context)?;
+    let bytes = readback_texture(&device, &queue, &texture);
+    let png = encode_png(&bytes, texture.width(), texture.height(), texture.format())?;
+    image_value(&png, texture.width(), texture.height())
+}
+
+/// The input state `handle` names, or the world's only one.
+fn input_state_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
+    if let Some(entity) = handle {
+        return world
+            .has::<InputState>(entity)
+            .then_some(entity)
+            .ok_or_else(|| format!("entity {} carries no input state", entity.to_bits()));
+    }
+    let mut found: Option<Entity> = None;
+    for (entity, _) in world.query::<&InputState>() {
+        if found.is_some() {
+            return Err("the world has more than one input state; pass `entity`".to_string());
+        }
+        found = Some(entity);
+    }
+    found.ok_or_else(|| "the world has no input state".to_string())
+}
+
+/// The input state, encoded, events included.
+pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
+    let entity = input_state_entity(world, entity)?;
+    let text = reflect::encode(world, entity, "InputState")?;
+    serde_json::from_str(&text).map_err(|error| error.to_string())
+}
+
+/// Push input events into the world and deliver them.
+pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Result<Value, String> {
+    let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
+    let decoded = reflect::decode_events(&text)?;
+    let entity = input_state_entity(world, entity)?;
+    let _ = world.with_mut::<InputState, _>(entity, |state| {
+        for event in decoded {
+            state.push(event);
+        }
+    });
+    let delivered = dispatch_input(world);
+    to_value(&Delivered { delivered })
+}
+
+/// Allocate a mesh and spawn an entity that draws it.
+pub fn create_mesh(
+    world: &mut World,
+    source: Option<Entity>,
+    args: crate::server::CreateMesh,
+) -> Result<Value, String> {
+    if args.positions.is_empty() {
+        return Err("positions must not be empty".to_string());
+    }
+    let desc = UnlitMeshDesc {
+        positions: &args.positions,
+        uvs: args.uvs.as_deref(),
+        colors: args.colors.as_deref(),
+        indices: args.indices.as_deref(),
+        joints: None,
+        weights: None,
+        morph_deltas: None,
+    };
+    let (key, mesh) = with_mesh_source(world, source, |source| {
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(world)));
+        let mesh = source.allocate_unlit_mesh(world, &key, desc);
+        (key, mesh)
+    })?;
+    let transform = match args.transform {
+        Some(transform) => Transform {
+            translation: Vec3::from_array(transform.translation),
+            rotation: glam::Quat::from_xyzw(
+                transform.rotation[0],
+                transform.rotation[1],
+                transform.rotation[2],
+                transform.rotation[3],
+            ),
+            scale: Vec3::from_array(transform.scale),
+        },
+        None => Transform::default(),
+    };
+    let color = args.color.map_or(glam::Vec4::ONE, glam::Vec4::from_array);
+    let mut builder = ArchetypeBuilder::new();
+    builder.push(transform);
+    builder.push(mesh);
+    builder.push(UnlitPipeline::new(key));
+    builder.push(InstanceColor::new(color));
+    if let Some(cutoff) = args.cutoff {
+        builder.push(InstanceCutoff::new(cutoff));
+    }
+    let entity = world.spawn(builder);
+    to_value(&SpawnedEntity { entity })
+}
+
+/// Release a mesh and despawn the entity that drew it.
+pub fn remove_mesh(
+    world: &mut World,
+    source: Option<Entity>,
+    entity: Entity,
+) -> Result<Value, String> {
+    let mesh = world
+        .get::<GpuMesh>(entity)
+        .map(|mesh| mesh.clone())
+        .ok_or_else(|| format!("entity {} has no GpuMesh", entity.to_bits()))?;
+    with_mesh_source(world, source, |source| source.remove_mesh(mesh))?;
+    let despawned = world.despawn(entity);
+    to_value(&Despawned { despawned })
+}
+
+/// Render one frame from the world.
+pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
+    let entity = renderer_entity(world, renderer)?;
+    let world_ref: &World = &*world;
+    let _ = world_ref.with_mut::<Renderer, _>(entity, |renderer| renderer.render(world_ref));
+    Ok(Value::Null)
+}
+
+/// The offscreen texture a screenshot reads, from `handle` or by query.
+fn screenshot_target(
+    world: &World,
+    context: RenderContext,
+    id: Option<ResId>,
+) -> Result<wgpu::Texture, String> {
+    let graph = graph_of(world, context)?;
+    if let Some(id) = id {
+        let handle = graph
+            .resolve(id)
+            .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
+        return match graph.get::<Resource>(&handle) {
+            Some(Resource::Texture(texture)) => Ok(texture.clone()),
+            _ => Err(format!("resource id {} is not a texture", id.to_bits())),
+        };
+    }
+    let mut found: Option<wgpu::Texture> = None;
+    for node in graph.nodes() {
+        if let Resource::Texture(texture) = node.resource {
+            if !texture.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                continue;
+            }
+            if found.is_some() {
+                return Err(
+                    "the world has more than one readable texture; pass `target`".to_string(),
+                );
+            }
+            found = Some(texture.clone());
         }
     }
-
-    /// The world being driven.
-    pub fn world(&self) -> &World {
-        &self.world
-    }
-
-    /// The world being driven, mutably.
-    pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
-    }
-
-    /// The entity carrying the [Renderer].
-    pub fn renderer(&self) -> Entity {
-        self.renderer
-    }
-
-    /// The entity carrying the [MeshSource], if the world has one.
-    pub fn source(&self) -> Option<Entity> {
-        self.source
-    }
-
-    /// The render context.
-    pub fn context(&self) -> RenderContext {
-        self.context
-    }
-
-    /// Run a command against this host.
-    pub fn dispatch(&mut self, command: Command) {
-        let mut context = HostContext {
-            world: &mut self.world,
-            renderer: self.renderer,
-            source: self.source,
-            context: self.context,
-            target: Some(&self.target),
-            target_format: self.target_format,
-        };
-        dispatch(command, &mut context);
-    }
+    found
+        .ok_or_else(|| "the world has no readable texture to screenshot; pass `target`".to_string())
 }
 
-/// Request a headless device, queue and capability set.
+/// Render one frame and read the offscreen target back as a PNG.
+pub fn screenshot(
+    world: &mut World,
+    renderer: Option<Entity>,
+    target: Option<ResId>,
+) -> Result<Value, String> {
+    let context = render_context(world, None)?;
+    let texture = screenshot_target(world, context, target)?;
+    render_frame(world, renderer)?;
+    let device = device_of(world, context)?;
+    let queue = queue_of(world, context)?;
+    let bytes = readback_texture(&device, &queue, &texture);
+    let png = encode_png(&bytes, texture.width(), texture.height(), texture.format())?;
+    image_value(&png, texture.width(), texture.height())
+}
+
+/// Load a glTF file and spawn its default scene.
+pub fn load_gltf(world: &mut World, source: Option<Entity>, path: &str) -> Result<Value, String> {
+    let gltf = UnlitGltf::load(Path::new(path)).map_err(|error| error.to_string())?;
+    let resources = with_mesh_source(world, source, |source| gltf.insert_resources(source, world))?;
+    let nodes = gltf.spawn_default_scene(world, &resources);
+    let entities: Vec<Entity> = nodes
+        .iter()
+        .flat_map(|node| node.entities.iter())
+        .copied()
+        .collect();
+    to_value(&SpawnedEntities { entities })
+}
+
+/// Build an offscreen world for a host with no window.
 ///
-/// The same public entry points a normal application uses, so a host built on
-/// this device is no more privileged than one built on a window's.
+/// The world holds a render context, a renderer, a mesh source, an input state
+/// and a default camera, and an offscreen color target registered in the
+/// graph — both as a texture a screenshot can read back and as the view the
+/// renderer draws into. Returns the world and the renderer entity.
+#[must_use]
+pub fn offscreen_world(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    capabilities: DeviceCapabilities,
+    size: (u32, u32),
+    samples: u32,
+    depth: bool,
+) -> (World, Entity) {
+    let mut world = World::new();
+    let context = spawn_context(
+        &mut world,
+        device.clone(),
+        queue.clone(),
+        ResourceGraph::new(),
+        capabilities,
+    );
+    let renderer = world.spawn((Renderer::new(context),));
+    world.spawn((RenderLoadOps::default(),));
+    let mut source = MeshSource::new(&world, context);
+    source.register_unlit_family(&world);
+    world.spawn_source(source);
+    world.spawn((InputState::default(),));
+
+    let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
+    let color_view = {
+        let mut graph = world
+            .get_mut::<ResourceGraph>(context.graph)
+            .expect("spawn_context spawned the graph");
+        // The texture is registered in its own right so a screenshot can name
+        // it, and the view depends on it so the graph keeps it alive.
+        let texture = graph.insert(color.clone(), None);
+        let view = graph.insert(
+            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
+            None,
+        );
+        graph.add_dependency(&view, &texture);
+        view
+    };
+    let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
+    let _ = world.with_mut::<Renderer, _>(renderer, |renderer| {
+        attachments.bind(&world, renderer, color_view);
+    });
+    world.spawn((default_camera(size),));
+    (world, renderer)
+}
+
+/// Ask the backend for a device and a queue.
 ///
-/// # Errors
-///
-/// Fails when no adapter or device is available.
+/// The standalone binary and the CLI's windowless `--mcp` path both build
+/// their own world from this; the crate itself never owns one.
 pub async fn request_device(
     label: &str,
 ) -> Result<(wgpu::Device, wgpu::Queue, DeviceCapabilities), String> {
@@ -647,12 +714,11 @@ pub async fn request_device(
     Ok((device, queue, capabilities))
 }
 
+/// The camera the standalone host starts with.
 fn default_camera(size: (u32, u32)) -> Camera {
-    let eye = Vec3::new(0.0, 1.0, 3.0);
-    let target = Vec3::ZERO;
-    let up = Vec3::Y;
-    let view_from_world = glam::camera::rh::view::look_at_mat4(eye, target, up);
     let aspect = size.0.max(1) as f32 / size.1.max(1) as f32;
+    let view_from_world =
+        glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 1.0, 3.0), Vec3::ZERO, Vec3::Y);
     let clip_from_view = glam::camera::rh::proj::directx::perspective_infinite_reverse(
         60.0f32.to_radians(),
         aspect,
@@ -665,15 +731,17 @@ fn default_camera(size: (u32, u32)) -> Camera {
     }
 }
 
-fn image_value(png: &[u8], width: u32, height: u32) -> Value {
-    json!({
-        "mime_type": "image/png",
-        "width": width,
-        "height": height,
-        "data": base64::engine::general_purpose::STANDARD.encode(png),
+/// An image result as JSON.
+fn image_value(png: &[u8], width: u32, height: u32) -> Result<Value, String> {
+    to_value(&ImageValue {
+        mime_type: "image/png",
+        width,
+        height,
+        data: base64::engine::general_purpose::STANDARD.encode(png),
     })
 }
 
+/// Encode raw RGBA bytes as a PNG.
 fn encode_png(
     bytes: &[u8],
     width: u32,

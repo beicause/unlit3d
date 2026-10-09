@@ -37,13 +37,18 @@ world 无法给它命名。组件通过向 `unlit3d` 的 `reflect` feature 里�
 命令时所用的传输，也是本 crate 唯一实现的传输。它基于 [`rmcp`](https://docs.rs/rmcp) 与
 tokio，二者都是本 crate 的非可选依赖；workspace 的其余部分从不会看到它们。
 
-由于 world 不是 `Send`，服务器跑在两个线程上：渲染线程持有 `World` 并运行 host，协议线程
-持有 tokio 与 `rmcp` 服务。每个工具都会变成一条发往渲染线程的命令，由它执行并把 JSON 值
-发回。两者从不共享 world。
+由于 world 不是 `Send`，传输层从不接触 world：协议线程持有 tokio 与 `rmcp` 服务，每个
+工具把一段闭包和它该运行于哪个 world 的句柄打包成一条 `Command`，交给 sink
+（`serve_stdio_with`），然后等待 JSON 值。持有 world 的线程——独立二进制启动的渲染线程，
+或某个窗口的事件循环——调用 `dispatch` 执行它。两者从不共享同一个 world，而且这里既不
+假设有多少个 world，也不假设某个 world 持有渲染设备。
 
 ## 工具
 
-服务器按四组暴露 world 的公开能力。
+服务器按四组暴露一个 world 的公开能力。每个工具都用可选的 `world` 指名它作用于哪个
+world：承载 [`World`](unlit_ecs::World) 组件的宿主实体的 `u64` 位模式，省略则指拥有它的
+线程直接持有的 host world。GPU 工具还会指名它们所需的实体句柄——渲染上下文、渲染器、网格
+来源、资源——服务器原样透传，解析留给持有 world 的那个线程。
 
 **World 与实体**——`world_summary`、`list_components`、`list_archetypes`、
 `list_entities`、`get_entity`、`get_component`、`set_component`、`spawn_entity`、
@@ -53,9 +58,11 @@ tokio，二者都是本 crate 的非可选依赖；workspace 的其余部分从�
 收到的字段合并到实体已有的值之上。
 
 **资源图**——`graph_summary`、`list_resources`、`resource_dependencies`、
-`graph_maintain`、`read_buffer`、`read_texture_as_image`。资源用它的槽位序号命名，
-只要资源存活该序号就稳定。`graph_maintain` 就是渲染循环所跑的那一趟：丢弃无引用的资源、
-重建脏的资源。`read_buffer` 会拒绝没有以 `COPY_SRC` 创建的缓冲，而不是让设备拒绝这次
+`graph_maintain`、`read_buffer`、`read_texture_as_image`。资源用
+`list_resources` 报告的那个 `u64` id 命名——即 `ResId` 的位：低 32 位是槽位序号，
+高 32 位是该槽位的代际——由图解析回句柄。指向已移除资源的 id 将不再解析成功，
+而不是悄悄指向复用了该槽位的资源。
+`graph_maintain` 就是渲染循环所跑的那一趟：丢弃无引用的资源、重建脏的资源。`read_buffer` 会拒绝没有以 `COPY_SRC` 创建的缓冲，而不是让设备拒绝这次
 拷贝。
 
 **输入**——`input_state` 与 `send_input`。`input_state` 报告 `InputState` 持有的状态，
@@ -70,16 +77,19 @@ tokio，二者都是本 crate 的非可选依赖；workspace 的其余部分从�
 
 ## 库
 
-可执行程序只是一层薄封装：`serve_stdio` 启动渲染线程与之上的协议。已经拥有 world 的调用者
-用 `Host::from_world` 构建一个 `Host` 并改为服务它；`Host::new_offscreen` 则新建一个空
-world，自带相机、一个 unlit 家族与它自己的渲染目标。
+可执行程序只是一层薄封装：`serve_stdio_offscreen` 在渲染线程上新建一个无头 world 并服务
+它。已经拥有 world 的调用者——比如某个窗口的事件循环——改用 `serve_stdio_with`，传入一个
+把每条 `Command` 投递到该线程的 sink，由该线程解析命令的 world 句柄并调用 `dispatch`。
+这些工具都是作用于 `&mut World` 的普通函数（GPU 工具还接收传给它们的实体句柄），因此宿主
+可以绕过协议直接调用其中某个。
 
 ```text
 cargo run -p unlit3d_mcp --bin unlit3d-mcp
 ```
 
 命令行工具与示例都接受 `--mcp` 开关，把原本要渲染的那个 world 经 stdio 服务出去。
-命令行工具的 world 无窗口；示例则保留窗口，在渲染线程上离屏渲染，再把该帧 blit 进交换链：
+命令行工具的 world 无窗口；示例则保留窗口，从它的事件循环服务该场景，同一宿主里的第二个
+world 把该场景的离屏帧 blit 进交换链：
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp

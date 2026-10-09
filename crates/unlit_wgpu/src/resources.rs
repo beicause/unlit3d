@@ -400,6 +400,52 @@ into_resource! {
     wgpu::BindGroup => BindGroup,
 }
 
+/// A resource's identity as a plain value.
+///
+/// The slot index is the low 32 bits and the generation the slot was in the
+/// high 32 — the same layout as `unlit_ecs::Entity`. A [`ResHandle`] carries
+/// one, and it is the form a handle takes when it has to travel somewhere that
+/// cannot hold the typed handle: a report, a transport, a stored argument.
+/// Resolve it back with [`ResourceGraph::resolve`], which reports `None` once
+/// the slot has been recycled.
+///
+/// It is [`Copy`], unlike a [`ResHandle`], because it holds no reference: it
+/// names the resource but does not keep it alive.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+#[cfg_attr(feature = "reflect", facet(transparent))]
+pub struct ResId(u64);
+
+impl ResId {
+    /// The id as bits.
+    #[must_use]
+    pub const fn to_bits(self) -> u64 {
+        self.0
+    }
+
+    /// Rebuild an id from the bits [`Self::to_bits`] produced.
+    #[must_use]
+    pub const fn from_bits(bits: u64) -> Self {
+        Self(bits)
+    }
+
+    /// The slot index in the low 32 bits.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0 as u32 as usize
+    }
+
+    /// The slot handle this id names.
+    fn node(self) -> NodeId {
+        NodeId::from_bits(self.0)
+    }
+
+    /// The plain id naming `node`.
+    fn from_node(node: NodeId) -> Self {
+        Self(node.to_bits())
+    }
+}
+
 /// Handle to a resource stored in a [`ResourceGraph`], typed by its kind.
 ///
 /// `R` is the [`ResourceKind`] the id names, which is also what the graph hands
@@ -437,9 +483,23 @@ impl<R> ResHandle<R> {
     /// Only meaningful while the resource lives, but stable across the
     /// resource's lifetime: callers can group or sort by it (ordering draws
     /// so consecutive ones share a bind group, for example) without holding
-    /// a borrow.
+    /// a borrow. The index alone does not identify the resource across a
+    /// removal and reuse of its slot; [`ResHandle::id`] does.
     pub fn index(&self) -> usize {
         self.node.index()
+    }
+
+    /// The resource's [`ResId`], for an API that stores ids but does not know
+    /// the type — an inspector that reports one, or a transport that carries
+    /// it.
+    ///
+    /// The id names the resource but holds no reference to it, so it is
+    /// [`Copy`]. Resolve it back through the graph with
+    /// [`ResourceGraph::resolve`], which reports `None` once the slot has
+    /// been recycled.
+    #[must_use]
+    pub fn id(&self) -> ResId {
+        ResId::from_node(self.node)
     }
 
     /// Forget the kind, yielding an id to the same resource that claims none.
@@ -601,13 +661,13 @@ impl core::fmt::Debug for Rebuild {
 
 /// One resource as [`ResourceGraph::nodes`] reports it.
 ///
-/// A borrowed view rather than an owned handle: the index names the node slot
-/// and can be resolved back with [`ResourceGraph::id_at`], while the resource
-/// itself is borrowed from the graph for as long as the walk runs.
+/// A borrowed view rather than an owned handle: the [`id`](NodeInfo::id) names
+/// the node and can be resolved back with [`ResourceGraph::resolve`], while the
+/// resource itself is borrowed from the graph for as long as the walk runs.
 #[derive(Debug)]
 pub struct NodeInfo<'a> {
-    /// The node's slot index, the handle [`ResHandle::index`] reports.
-    pub index: usize,
+    /// The node's [`ResId`], the identity [`ResHandle::id`] reports.
+    pub id: ResId,
     /// The stored resource.
     pub resource: &'a Resource,
     /// Whether this resource or one of its dependencies was replaced, and so
@@ -615,6 +675,73 @@ pub struct NodeInfo<'a> {
     pub dirty: bool,
     /// Whether the graph can rebuild this resource from its inputs on its own.
     pub rebuildable: bool,
+}
+
+/// One resource slot of a [`ResourceGraph`], as plain data.
+///
+/// The serialisable projection of [`NodeInfo`]: where that borrows the
+/// stored resource, this reports the handle and the shape around it, so a
+/// caller that only inspects the graph needs no access to the wgpu handles.
+///
+/// No bare slot index is kept: the [id](ResourceInfo::id) carries it, and the
+/// slot order is already the order [`ResourceGraph::resource_infos`] returns.
+/// Note that the id's high 32 bits are the generation, so sorting by id orders
+/// by generation rather than by slot; [`ResId::index`] is the slot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct ResourceInfo {
+    /// The resource's [`ResId`]. Resolve it with [`ResourceGraph::resolve`].
+    pub id: ResId,
+    /// The resource kind, as [`Resource::kind_name`] reports it.
+    pub kind: &'static str,
+    /// Whether this resource or one of its dependencies was replaced, so
+    /// [`ResourceGraph::maintain`] still has work to do.
+    pub dirty: bool,
+    /// Whether the graph can rebuild this resource from its inputs on its own.
+    pub rebuildable: bool,
+}
+
+/// How many resources of one kind a [`ResourceGraph`] holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct ResourceKindCount {
+    /// The resource kind, as [`Resource::kind_name`] reports it.
+    pub kind: &'static str,
+    /// How many slots hold a resource of this kind.
+    pub count: usize,
+}
+
+/// The shape of a [`ResourceGraph`], as plain data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct ResourceGraphInfo {
+    /// Occupied slots, that is [`ResourceGraph::len`]; the `kinds` counts
+    /// sum to it.
+    ///
+    /// A resource nothing holds any more is still counted until the next
+    /// [`ResourceGraph::maintain`] collects it. There is no `empty` field:
+    /// `resources == 0` is it.
+    pub resources: usize,
+    /// Slots that are dirty: replaced themselves, or built from something that
+    /// was, so [`ResourceGraph::maintain`] still has a recipe to run.
+    pub dirty: usize,
+    /// Slots carrying a rebuild recipe, which [`ResourceGraph::maintain`] can
+    /// rebuild on its own.
+    pub rebuildable: usize,
+    /// Occupied slots grouped by kind, sorted by kind name so the report is
+    /// stable.
+    pub kinds: Vec<ResourceKindCount>,
+}
+
+/// What one [`ResourceGraph::maintain`] pass changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct ResourceGraphMaintain {
+    /// Occupied slots before the pass, that is [`ResourceGraph::len`].
+    pub before: usize,
+    /// Occupied slots after the pass: what survived the collection and the
+    /// rebuild.
+    pub after: usize,
 }
 
 /// A directed acyclic graph of wgpu resources.
@@ -647,39 +774,83 @@ impl ResourceGraph {
         self.graph.is_empty()
     }
 
+    /// The graph's shape as plain data.
+    ///
+    /// Counts what [`Self::len`] counts: a resource nothing holds any more
+    /// is still included until the next [`Self::maintain`] collects it.
+    pub fn info(&self) -> ResourceGraphInfo {
+        let mut kinds: Vec<ResourceKindCount> = Vec::new();
+        let mut dirty = 0;
+        let mut rebuildable = 0;
+        for (_, node) in self.graph.iter() {
+            dirty += usize::from(node.dirty);
+            rebuildable += usize::from(node.rebuild.is_some());
+            let kind = node.resource.kind_name();
+            match kinds.iter_mut().find(|count| count.kind == kind) {
+                Some(count) => count.count += 1,
+                None => kinds.push(ResourceKindCount { kind, count: 1 }),
+            }
+        }
+        kinds.sort_unstable_by_key(|count| count.kind);
+        ResourceGraphInfo {
+            resources: self.graph.len(),
+            dirty,
+            rebuildable,
+            kinds,
+        }
+    }
+
+    /// Every resource slot, in node-slot order, as plain data.
+    ///
+    /// The serialisable counterpart of [`Self::nodes`]: same order and same
+    /// count, but reporting the [id](ResourceInfo::id) rather than borrowing
+    /// the wgpu resource.
+    pub fn resource_infos(&self) -> Vec<ResourceInfo> {
+        self.graph
+            .iter()
+            .map(|(id, node)| ResourceInfo {
+                id: ResId::from_node(id),
+                kind: node.resource.kind_name(),
+                dirty: node.dirty,
+                rebuildable: node.rebuild.is_some(),
+            })
+            .collect()
+    }
+
     /// Every resource in the graph, in node-slot order.
     ///
-    /// The node's slot [`index`](ResHandle::index) is the handle: it is stable
-    /// while the resource lives, so a caller can report it, sort by it, and
-    /// resolve it back with [`Self::id_at`]. The walk covers every slot the
-    /// graph has ever used, so it costs the peak node count rather than the
-    /// current one.
+    /// Each node's [`id`](NodeInfo::id) is stable while the resource lives, so
+    /// a caller can report it, sort by it, and resolve it back with
+    /// [`Self::resolve`]. The walk covers every slot the graph has ever used,
+    /// so it costs the peak node count rather than the current one.
     ///
     /// A resource no id holds any more is still listed until the next
     /// [`Self::maintain`] collects it, exactly as [`Self::len`] counts it.
     pub fn nodes(&self) -> impl Iterator<Item = NodeInfo<'_>> {
         self.graph.iter().map(|(id, node)| NodeInfo {
-            index: id.index(),
+            id: ResId::from_node(id),
             resource: &node.resource,
             dirty: node.dirty,
             rebuildable: node.rebuild.is_some(),
         })
     }
 
-    /// The id of the resource in node slot `index`, or `None` when no resource
-    /// is there or nothing holds it any more.
+    /// The handle a [`ResId`] names, or `None` when no resource is there or
+    /// nothing holds it any more.
     ///
-    /// The id is erased — its kind is only known from the resource — and holds
-    /// one strong reference, so resolving an index keeps the resource alive
-    /// like any other id does. A resource nothing holds is on its way out at
-    /// the next [`Self::maintain`] and cannot be named again, which is why the
-    /// call reports `None` rather than inventing a reference to it.
+    /// The handle is erased — its kind is only known from the resource — and
+    /// holds one strong reference, so resolving an id keeps the resource alive
+    /// like any other handle does. An id whose slot has been recycled no longer
+    /// resolves, which is what keeps a stale id from naming a later resource; a
+    /// resource nothing holds is on its way out at the next [`Self::maintain`]
+    /// and cannot be named again, so the call reports `None` rather than
+    /// inventing a reference to it.
     #[must_use]
-    pub fn id_at(&self, index: usize) -> Option<ResHandle> {
-        let id = self.graph.id_at(index)?;
-        let strong = self.graph.get(id)?.strong.upgrade()?;
+    pub fn resolve(&self, id: ResId) -> Option<ResHandle> {
+        let node = id.node();
+        let strong = self.graph.get(node)?.strong.upgrade()?;
         Some(ResHandle {
-            node: id,
+            node,
             strong,
             kind: core::marker::PhantomData,
         })
@@ -861,6 +1032,18 @@ impl ResourceGraph {
         self.graph
             .dependencies(id.node)
             .map(|node| self.id_for(node))
+    }
+
+    /// The [`ResId`]s of the immediate dependencies recorded for `id`.
+    ///
+    /// The plain form of [`Self::dependencies`], for a caller that reports or
+    /// transports the graph rather than using it: each id resolves back through
+    /// [`Self::resolve`] while the dependency lives.
+    pub fn dependency_ids<R>(&self, id: &ResHandle<R>) -> Vec<ResId> {
+        self.graph
+            .dependencies(id.node)
+            .map(ResId::from_node)
+            .collect()
     }
 
     /// An id to `node`, taking one more strong reference to it.
@@ -1329,11 +1512,83 @@ mod tests {
 
         let nodes: Vec<_> = graph.nodes().collect();
         assert_eq!(nodes.len(), 2, "both resources are listed");
-        assert_eq!(nodes[0].index, base.index());
+        assert_eq!(nodes[0].id, base.id());
         assert_eq!(nodes[0].resource.kind_name(), "Buffer");
         assert!(!nodes[0].dirty);
         assert!(!nodes[0].rebuildable);
         assert!(nodes[1].rebuildable, "the derived resource has a recipe");
+    }
+
+    /// The graph's summary counts its slots, groups them by kind, and reports
+    /// how much work maintain still has.
+    #[test]
+    fn the_graph_summary_counts_slots_by_kind() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let base = graph.insert(buffer(&device, "base"), None);
+        let rebuilt = device.clone();
+        let derived = graph.insert(
+            buffer(&device, "derived"),
+            Some(Rebuild::new(move |_| buffer(&rebuilt, "rebuilt").into())),
+        );
+        graph.insert(Resource::Virtual, None);
+        graph.add_dependency(&derived, &base);
+        graph.replace(&base, sized_buffer(&device, 128));
+
+        let info = graph.info();
+        assert_eq!(info.resources, 3, "three slots are occupied");
+        assert_eq!(info.dirty, 2, "the base and its dependent are dirty");
+        assert_eq!(
+            info.rebuildable, 1,
+            "only the derived resource has a recipe"
+        );
+        assert_eq!(
+            info.kinds,
+            [
+                ResourceKindCount {
+                    kind: "Buffer",
+                    count: 2,
+                },
+                ResourceKindCount {
+                    kind: "Virtual",
+                    count: 1,
+                },
+            ],
+            "kinds are sorted by name",
+        );
+        assert_eq!(
+            info.kinds.iter().map(|kind| kind.count).sum::<usize>(),
+            info.resources,
+            "the two count the same slots",
+        );
+
+        graph.maintain();
+        assert_eq!(
+            graph.info().dirty,
+            1,
+            "the derived resource was rebuilt, but the base has no recipe to clear it",
+        );
+    }
+
+    /// The plain-data listing mirrors the borrowed one: same slots in the same
+    /// order, with the handle instead of the resource.
+    #[test]
+    fn the_plain_listing_mirrors_the_borrowed_one() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let base = graph.insert(buffer(&device, "base"), None);
+        graph.insert(Resource::Virtual, None);
+
+        let borrowed: Vec<_> = graph.nodes().map(|node| node.id).collect();
+        let plain: Vec<_> = graph
+            .resource_infos()
+            .into_iter()
+            .map(|info| info.id)
+            .collect();
+        assert_eq!(plain, borrowed);
+        assert_eq!(plain[0], base.id());
+        assert_eq!(graph.resource_infos()[0].kind, "Buffer");
+        assert_eq!(graph.resource_infos()[1].kind, "Virtual");
     }
 
     /// A resource that is dirty is reported as such until maintain runs its
@@ -1361,7 +1616,7 @@ mod tests {
             1,
             "only the recipe-less node stays dirty"
         );
-        assert_eq!(still_dirty[0].index, base.index());
+        assert_eq!(still_dirty[0].id, base.id());
     }
 
     /// The kinds a stored resource can be are named, and the name is the
@@ -1376,32 +1631,57 @@ mod tests {
         assert_eq!(graph.get(&erased).unwrap().kind_name(), "Buffer");
     }
 
-    /// A slot index resolves back to an id to the same resource.
+    /// A handle resolves back to an id to the same resource.
     #[test]
-    fn an_index_resolves_back_to_its_resource() {
+    fn a_handle_resolves_back_to_its_resource() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let id = buffer_id(&mut graph, &device, "a");
-        let index = id.index();
+        let plain = id.id();
 
-        let resolved = graph.id_at(index).expect("the slot holds a resource");
-        assert_eq!(resolved.index(), index);
+        let resolved = graph.resolve(plain).expect("the slot holds a resource");
+        assert_eq!(resolved.id(), plain);
         assert!(matches!(graph.get(&resolved), Some(Resource::Buffer(_))));
-        assert_eq!(graph.id_at(index + 1), None, "the next slot is vacant");
+        assert_eq!(
+            graph.resolve(ResId::from_bits(plain.to_bits().wrapping_add(1))),
+            None,
+            "the next slot is vacant"
+        );
     }
 
-    /// An id from a slot keeps the resource alive like any other, so resolving
-    /// one does not race the next maintain.
+    /// A handle stops resolving once its slot is reused, so a stale handle
+    /// cannot come to name a later resource.
     #[test]
-    fn an_index_resolves_only_while_the_resource_is_held() {
+    fn a_stale_handle_does_not_resolve_to_the_slot_s_new_resource() {
         let device = device();
         let mut graph = ResourceGraph::new();
         let id = buffer_id(&mut graph, &device, "a");
+        let plain = id.id();
         let index = id.index();
+        drop(id);
+        graph.maintain();
+
+        let reused = buffer_id(&mut graph, &device, "b");
+        assert_eq!(reused.index(), index, "the slot is reused");
+        assert!(
+            graph.resolve(plain).is_none(),
+            "the old handle names nothing",
+        );
+        assert!(graph.resolve(reused.id()).is_some());
+    }
+
+    /// A handle keeps the resource alive like any other id, so resolving one
+    /// does not race the next maintain.
+    #[test]
+    fn a_handle_resolves_only_while_the_resource_is_held() {
+        let device = device();
+        let mut graph = ResourceGraph::new();
+        let id = buffer_id(&mut graph, &device, "a");
+        let plain = id.id();
         drop(id);
 
         assert!(
-            graph.id_at(index).is_none(),
+            graph.resolve(plain).is_none(),
             "a resource nothing holds cannot be named again",
         );
         graph.maintain();

@@ -1,14 +1,15 @@
-//! The standalone unlit3d MCP server: serve the protocol over stdio against a
-//! fresh offscreen world.
+//! The standalone MCP binary: a headless unlit3d world served over stdio.
+//!
+//! The world lives on a render thread of its own; the transport thread only
+//! forwards commands to it, exactly as a windowed host forwards them to its
+//! event loop.
 
-use std::io::Write;
 use std::process::ExitCode;
 
-use unlit3d_mcp::{Host, serve_stdio};
+use unlit3d_mcp::serve_stdio_offscreen;
 
 fn main() -> ExitCode {
-    let served = serve_stdio(|| pollster::block_on(Host::new_offscreen((960, 720), 4, true)));
-    match served {
+    match serve_stdio_offscreen((960, 720), 4, true) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             stderr(&format!("error: {error}"));
@@ -19,5 +20,6 @@ fn main() -> ExitCode {
 
 /// Write text to stderr, ignoring a closed pipe.
 fn stderr(text: &str) {
+    use std::io::Write as _;
     let _ = writeln!(std::io::stderr(), "{text}");
 }

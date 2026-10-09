@@ -149,7 +149,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
     let ctx = Ctx::headless().await;
     let size = def.size;
 
-    let mut scene = Scene::new(
+    let (mut world, mut scene) = Scene::new(
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
@@ -165,11 +165,11 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         None,
     );
 
-    let (world, renderer) = (&scene.world, scene.renderer);
+    let renderer = scene.renderer;
     let target = world
         .with_mut::<Renderer, _>(renderer, |renderer| {
             unlit3d_examples::bind_offscreen_target(
-                world,
+                &world,
                 renderer,
                 &ctx.device,
                 size,
@@ -178,13 +178,13 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
             )
         })
         .expect("the renderer is a resource entity");
-    set_frame_viewport(world, scene.viewport.map(FrameViewport));
+    set_frame_viewport(&world, scene.viewport.map(FrameViewport));
 
     let mut compared = 0;
     for frame in 0..def.frames {
-        scene.advance(FIXED_STEP);
-        scene.render();
-        scene.end_frame();
+        scene.advance(&mut world, FIXED_STEP);
+        scene.render(&world);
+        scene.end_frame(&mut world);
 
         let Some(name) = (scene.control.snapshot)(frame) else {
             continue;
@@ -227,7 +227,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
 async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot: Snapshot) {
     let ctx = Ctx::headless().await;
 
-    let mut scene = Scene::new(
+    let (mut world, mut scene) = Scene::new(
         ctx.device.clone(),
         ctx.queue.clone(),
         ctx.capabilities,
@@ -243,11 +243,11 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         None,
     );
 
-    let (world, renderer) = (&scene.world, scene.renderer);
+    let renderer = scene.renderer;
     let target = world
         .with_mut::<Renderer, _>(renderer, |renderer| {
             unlit3d_examples::bind_offscreen_target(
-                world,
+                &world,
                 renderer,
                 &ctx.device,
                 size,
@@ -256,12 +256,12 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
             )
         })
         .expect("the renderer is a resource entity");
-    set_frame_viewport(world, scene.viewport.map(FrameViewport));
+    set_frame_viewport(&world, scene.viewport.map(FrameViewport));
 
     for _ in 0..def.frames {
-        scene.advance(FIXED_STEP);
-        scene.render();
-        scene.end_frame();
+        scene.advance(&mut world, FIXED_STEP);
+        scene.render(&world);
+        scene.end_frame(&mut world);
     }
 
     let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);

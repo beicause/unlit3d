@@ -462,9 +462,19 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
   闭包，它按 id 从图中读回自己的输入，因此运行时看到的是重新分配过的 buffer 或
   替换过的数组。没有配方的脏节点会一直保持脏：调用方改动了图自己无法重建的东西。
 - **图可以遍历。** [`ResourceGraph::nodes`](resources::ResourceGraph::nodes)
-  列出每个资源的槽位索引、[`kind_name`](resources::Resource::kind_name)、是否脏、
-  图能否自行重建，[`ResourceGraph::id_at`](resources::ResourceGraph::id_at) 再把槽位
-  解析回句柄。外部读取者——调试叠层、MCP 服务器——因此无需图的私有视图即可报告它。
+  列出每个资源的 [`ResId`](resources::ResId)、[`kind_name`](resources::Resource::kind_name)、是否脏、
+  图能否自行重建，[`ResourceGraph::resolve`](resources::ResourceGraph::resolve) 再把
+  id 解析回句柄。[`ResourceGraph::info`](resources::ResourceGraph::info) 与
+  [`ResourceGraph::resource_infos`](resources::ResourceGraph::resource_infos) 是同一
+  幅图的纯数据形式，供只做汇报的读取者使用。外部读取者——调试叠层、MCP 服务器——因此
+  无需图的私有视图即可报告它。
+- **id 命名资源，句柄维持其存活。** [`ResId`](resources::ResId) 是资源可携带的纯值、[`Copy`] 形式：
+  它带槽位的代际，因此指向已移除资源的 id 不再解析，而不会悄悄指向它的替身。
+  [`ResHandle`](resources::ResHandle) 持有引用，故资源在还有任何句柄指向它时存活；
+  [`ResId`](resources::ResId) 不持引用，
+  这正是它能随报告或传输流动的原因。句柄经
+  [`ResHandle::id`](resources::ResHandle::id) 给出其 id，id 再经
+  [`resolve`](resources::ResourceGraph::resolve) 还原。
 - **纹理视图的格式随视图记录。** 这是「不做不必要的包装」的唯一例外：wgpu 无法从
   `TextureView` 得知其创建时的格式，而 sRGB 视图覆盖非 sRGB 纹理时，管线要匹配的正是
   视图格式而非纹理格式。

@@ -420,7 +420,7 @@ impl MorphWeights {
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct SkinBinding {
     /// The entity carrying the [`SkinPose`] this mesh is drawn with.
-    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::EntityProxy))]
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
     pub pose: Entity,
 }
 
@@ -441,7 +441,7 @@ impl SkinBinding {
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct MorphBinding {
     /// The entity carrying the [`MorphWeights`] this mesh is drawn with.
-    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::reflect::EntityProxy))]
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
     pub weights: Entity,
 }
 

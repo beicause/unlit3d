@@ -130,16 +130,17 @@ windowed loop, so the example only has one frame loop to maintain.
 
 ## Model Context Protocol
 
-`--mcp` serves the world the example would otherwise have rendered, over stdio,
+`--mcp` serves the scene the example would otherwise have rendered, over stdio,
 as a [Model Context Protocol](https://modelcontextprotocol.io) server. The
 chosen scene is built first — `--scene` still selects it — and the client then
-reads and drives that world through the tools. The scene renders offscreen, on
-a thread of its own, and the window goes on showing it: a second world blits
-that offscreen frame into the swap chain, so the picture follows the client
-without an input event ever reaching the scene. The blit declares no depth
-state and samples the offscreen frame's resolved colour texture, so that
-world's frames carry neither a depth nor a multisample attachment. See
-[`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
+reads and drives it through the tools. The example's own event loop serves it,
+on the thread that owns it, so the window goes on drawing and input still
+reaches the scene: the scene world renders offscreen and a second world blits
+that frame into the swap chain, so the picture follows the client. The blit
+declares no depth state and samples the offscreen frame's resolved colour
+texture, so its frames carry neither a depth nor a multisample attachment. Both
+worlds are components of one host `World`, and a tool names the one it means.
+See [`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
 transport.
 
 ```text

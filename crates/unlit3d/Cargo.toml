@@ -97,7 +97,7 @@ gltf = ["dep:gltf", "dep:half"]
 ## link-time table of submitted entries turns that reflection into a codec. Off
 ## by default because it is only the bridge that needs it; the engine itself
 ## never reads the reflection.
-reflect = ["dep:facet", "dep:facet-json", "dep:inventory"]
+reflect = ["dep:facet", "dep:facet-json", "dep:inventory", "unlit_ecs/reflect"]
 ## The [`ui`](crate::ui) module: an egui overlay drawn as a frame source, and
 ## the [`unlit_wgpu`] egui backend it draws with. The UI's frame clock
 ## is the one place that needs a browser-capable `Instant`.

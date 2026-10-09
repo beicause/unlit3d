@@ -9,10 +9,6 @@
 - **字节转换统一走 zerocopy**。
 - **可执行程序（`[[bin]]`/`[[example]]`）的名字用连字符（`-`）连接**，包名与库名保持下划线。
 - **单元测试和集成测试**：对于较复杂、易错的函数逻辑要添加单元测试，对于各个库的功能添加集成测试，对于整体渲染的正确性添加快照测试。具体测试所在目录参见根目录 [`README.md`](./README.md) 的「测试与基准」一节。对于发现的bug或回归问题，要告知用户，并尽可能添加针对性测试。
-- **提交前检查**：运行以下命令，并且一次运行所有命令，尽可能减少会话轮次：
-  1. 运行`cargo xtask check`。
-  2. 运行`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --keep-going`。
-  3. 运行`tombi format`、`typos`。
 
 ## Git 工作流
 
@@ -45,16 +41,23 @@
 
 ## 常用命令
 
-常用命令遵循`cargo xtask`约定，各命令及其解释见根目录 [`README.md`](./README.md) 的「常用命令」一节；更新`xtask`时，注意同步更新该列表。
+`cargo xtask`约定含有一些常用命令，各命令及其解释见根目录 [`README.md`](./README.md) 的「常用命令」一节；更新`xtask`时，注意同步更新该列表。
 
-由于`cargo`命令可能运行较慢，要注意：
+- **提交前检查**：让以下命令通过（不一定要最后才运行，若之前运行后没改动，则不必重复运行），尽量一次运行多个命令，减少会话步次：
+  1. `cargo fmt --all`。
+  2. `cargo xtask check`。
+  3. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --keep-going`。
+  4. `tombi format`、`typos`。
+
+由于Rust编译可能较慢，要注意：
+- **先修复格式（`fmt`、`clippy`），再跑cargo编译或测试**，原因：`fmt`/`clippy`格式化速度比较快。`编译->格式化->编译`可能会破坏编译缓存再次全量编译，而`格式化->编译->编译`会命中编译缓存，更有利于再次运行或用户运行验证结果。
 - **使用`cargo nextest`，而不是`cargo test`**。
 - **针对特定改动、特定bug时，使用`cargo nextest`时要筛选**。不要总是跑全量`cargo nextest`或`cargo xtask test`测试。
 - **不要过度跑`cargo build`、`cargo nextest`**：
   1. 开始任务时，假定所有测试均已通过，无需测试。
-  3. 对于仅文档的、非常简单的、非逻辑性的改动，不要再跑`cargo nextest`。
+  3. 对于仅文档的、非常简单的、非逻辑性的改动，不要重跑`cargo nextest`。
   2. 整合多次改动后，再跑检查或测试，不要改一点测一点，减少检查或测试次数，尽可能减少会话轮次。
-  4. 优先用cargo check或clippy。若cargo check或clippy通过了，则大概率cargo build也能通过。反正有CI兜底。
+  4. 优先用`cargo check`或`clippy`，尽量减少编译次数。
   5. 尽量在当前平台上实现测试，不要依赖设备特定行为，使用运行时检测GPU设备功能、`DeviceTier`等配置切换代码路径。如果改动目标不是平台特定的，就绝不跑平台特定（如wasm，android）的检查或测试，特定平台的cargo冷构建通常很慢。
 - **不会自己结束的命令要放后台跑，且不要对其等待**：如 `cargo xtask run-wasm`（它启动的静态服务器一直运行到被停止）。这类命令用后台任务启动，之后正常做别的事、需要时再读它的输出，**绝不要对其调用带 `wait` 的读取**——它不会结束，等待只会白等到超时。
 

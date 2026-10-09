@@ -4,13 +4,15 @@
 //! [registry](crate::reflect::registry) turns that reflection into the codec a
 //! JSON bridge addresses components by.
 //!
-//! [facet] reflects a type's own fields, but glam's vector and matrix types and
-//! [unlit_ecs::Entity] implement neither [facet::Facet] nor serde, and the
-//! orphan rule keeps that from being fixed here. A field whose type cannot be
-//! reflected is therefore marked `#[facet(opaque, proxy = ...)]` and names a
-//! proxy from this module: a plain tuple struct over an array or an integer
-//! that `facet` can reflect, with a `From` in each direction to the real
-//! value.
+//! [facet] reflects a type's own fields, but glam's vector and matrix types
+//! implement neither [facet::Facet] nor serde, and the orphan rule keeps that
+//! from being fixed here. A field whose type cannot be reflected is therefore
+//! marked `#[facet(opaque, proxy = ...)]` and names a proxy from this module: a
+//! plain tuple struct over an array or an integer that `facet` can reflect,
+//! with a `From` in each direction to the real value. An entity is the one
+//! exception: its proxy lives beside the type in
+//! [`unlit_ecs::EntityProxy`], so both the ECS's own information structs and
+//! this crate's components reflect it the same way.
 //!
 //! These are the shapes the JSON bridge spells a value as: a vector is its
 //! components, a matrix is its columns in column-major order, and an entity is
@@ -20,7 +22,7 @@ pub mod proxies;
 pub mod registry;
 
 pub use proxies::{
-    AabbProxy, ColorLoadOpProxy, DepthLoadOpProxy, EntityProxy, GpuMaterialProxy, GpuMeshProxy,
+    AabbProxy, ColorLoadOpProxy, DepthLoadOpProxy, GpuMaterialProxy, GpuMeshProxy,
     GpuRenderPipelineProxy, InputStateProxy, Mat4Proxy, Mat4VecProxy, QuatProxy,
     StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
 };
@@ -41,7 +43,7 @@ pub fn decode_events(text: &str) -> Result<Vec<InputEvent>, String> {
 mod tests {
     use facet::Facet;
     use glam::{Mat4, Quat, Vec3, Vec4};
-    use unlit_ecs::Entity;
+    use unlit_ecs::{Entity, EntityProxy};
 
     use super::*;
     use crate::components::{Camera, MorphBinding, MorphWeights, SkinBinding, SkinPose, Transform};

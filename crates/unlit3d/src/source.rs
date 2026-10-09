@@ -48,6 +48,11 @@ impl FrameOrder {
 ///
 /// The handles are spawned once by [`spawn_context`] and stay valid for the
 /// world's life; a resource entity is never despawned while frames are drawn.
+///
+/// The context is itself a component: [`spawn_context`] stores a copy on the
+/// entity carrying the [`ResourceGraph`], so a reader that was handed one of
+/// the four addresses can query its way back to the whole context instead of
+/// assuming the world holds exactly one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderContext {
     /// The [`wgpu::Device`] the frame is drawn with, as a resource entity.
@@ -82,6 +87,51 @@ impl RenderContext {
     /// graph itself, as a build does.
     pub fn maintain_scope<'w>(self, world: &'w World) -> MaintainScope<'w> {
         MaintainScope { world, ctx: self }
+    }
+}
+
+/// A [`RenderContext`] as plain data.
+///
+/// The context's four resource entities, for a reader — a debug overlay, an MCP
+/// server — that reports the GPU state without borrowing the world. The handles
+/// round-trip through [`Entity::to_bits`] and [`Entity::from_bits`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct RenderContextInfo {
+    /// The entity carrying the [`wgpu::Device`].
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
+    pub device: Entity,
+    /// The entity carrying the [`wgpu::Queue`].
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
+    pub queue: Entity,
+    /// The entity carrying the [`ResourceGraph`].
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
+    pub graph: Entity,
+    /// The entity carrying the [`DeviceCapabilities`].
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
+    pub capabilities: Entity,
+}
+
+impl RenderContext {
+    /// The context the world holds, found from any one of its addresses.
+    ///
+    /// The four resource entities and the graph entity all carry the whole
+    /// [`RenderContext`], so a caller that was handed a device, queue, graph
+    /// or capabilities address gets the rest without assuming the world holds
+    /// exactly one context. `None` when `anchor` carries no context.
+    #[must_use]
+    pub fn of(world: &World, anchor: Entity) -> Option<Self> {
+        world.get::<RenderContext>(anchor).map(|context| *context)
+    }
+
+    /// The context's resource addresses as plain data.
+    pub fn info(self) -> RenderContextInfo {
+        RenderContextInfo {
+            device: self.device,
+            queue: self.queue,
+            graph: self.graph,
+            capabilities: self.capabilities,
+        }
     }
 }
 
@@ -421,13 +471,24 @@ pub fn spawn_context(
     world: &mut World,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    graph: ResourceGraph,
+    graph_component: ResourceGraph,
     capabilities: DeviceCapabilities,
 ) -> RenderContext {
-    let device = world.spawn((device,));
-    let queue = world.spawn((queue,));
-    let graph = world.spawn((graph,));
-    let capabilities = world.spawn((capabilities,));
+    // The graph entity is reserved first because the context names it, and
+    // every one of the four entities carries the whole context: a reader handed
+    // any single address can query the rest back instead of assuming the world
+    // holds exactly one context.
+    let graph = world.reserve_entity();
+    let context = RenderContext {
+        device: world.reserve_entity(),
+        queue: world.reserve_entity(),
+        graph,
+        capabilities: world.reserve_entity(),
+    };
+    world.spawn_at(context.device, (device, context));
+    world.spawn_at(context.queue, (queue, context));
+    world.spawn_at(context.capabilities, (capabilities, context));
+    world.spawn_at(graph, (graph_component, context));
     world.spawn((MountCounter::default(),));
     // The frame loop writes the target here every frame; until it does, no
     // source may draw.
@@ -438,12 +499,7 @@ pub fn spawn_context(
     // What the frame's sources claimed of its input, written by whichever
     // source consumes input and read by the caller's own logic.
     world.spawn((InputCapture::default(),));
-    RenderContext {
-        device,
-        queue,
-        graph,
-        capabilities,
-    }
+    context
 }
 
 /// Mounting a [`FrameSource`] on a [`World`].

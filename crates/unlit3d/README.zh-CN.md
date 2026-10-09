@@ -46,6 +46,8 @@ mesh 路径之上增加 glTF 加载器，见下文。开启 `reflect` 会派生 
   渲染器里没有任何 mesh 专用的字段或绘制路径。
 - GPU 状态——`wgpu::Device`、`wgpu::Queue` 与 `ResourceGraph`——作为资源组件存在于
   world 中，通过 `RenderContext` 寻址。`spawn_context` 负责生成它们并返回地址；
+  `RenderContext::of` 可以从它四个实体中的任意一个反查回整个上下文，
+  `RenderContextInfo` 则是同一幅图的纯数据形式，供只做报告的读取者使用。
   它还接收本帧的 `DeviceCapabilities`，由调用者从适配器推导——设备无法自述的信息
   随帧一起传递，而不是让每个源各自重新发现。
 - **构建与录制是两个阶段。** 源在 `build_scene` 期间往图里注册资源并暂存上传；录制

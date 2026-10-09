@@ -51,6 +51,67 @@ impl Entity {
     pub const fn to_bits(self) -> u64 {
         ((self.generation as u64) << 32) | self.index as u64
     }
+
+    /// The handle [`Entity::to_bits`] produced.
+    ///
+    /// The handle only refers to an entity if it was produced by the same
+    /// world, so this is for restoring a handle that came from that world.
+    #[must_use]
+    pub const fn from_bits(bits: u64) -> Self {
+        Self {
+            index: bits as u32,
+            generation: (bits >> 32) as u32,
+        }
+    }
+}
+
+/// An [`Entity`] as its [`Entity::to_bits`] integer.
+///
+/// `Entity` is not a newtype, so it cannot be reflected through
+/// [`facet::Facet`]'s `transparent`; this proxy is what a field whose type is
+/// an entity names with `#[facet(opaque, proxy = EntityProxy)]`, and its
+/// transparent `u64` is the shape such a field takes in JSON.
+#[cfg(feature = "reflect")]
+#[derive(facet::Facet)]
+#[facet(transparent)]
+pub struct EntityProxy(pub u64);
+
+#[cfg(feature = "reflect")]
+impl From<EntityProxy> for Entity {
+    fn from(proxy: EntityProxy) -> Self {
+        Entity::from_bits(proxy.0)
+    }
+}
+
+#[cfg(feature = "reflect")]
+impl From<&Entity> for EntityProxy {
+    fn from(value: &Entity) -> Self {
+        Self(value.to_bits())
+    }
+}
+
+/// A list of [`Entity`] handles, each as its [`Entity::to_bits`] integer.
+///
+/// The plural of [`EntityProxy`]: a reflected field whose type is
+/// `Vec<Entity>` names this with `#[facet(opaque, proxy = EntityVecProxy)]`,
+/// and its transparent `Vec<u64>` is the JSON array such a field becomes.
+#[cfg(feature = "reflect")]
+#[derive(facet::Facet)]
+#[facet(transparent)]
+pub struct EntityVecProxy(pub Vec<u64>);
+
+#[cfg(feature = "reflect")]
+impl From<EntityVecProxy> for Vec<Entity> {
+    fn from(proxy: EntityVecProxy) -> Self {
+        proxy.0.into_iter().map(Entity::from_bits).collect()
+    }
+}
+
+#[cfg(feature = "reflect")]
+impl From<&Vec<Entity>> for EntityVecProxy {
+    fn from(value: &Vec<Entity>) -> Self {
+        Self(value.iter().map(|entity| entity.to_bits()).collect())
+    }
 }
 
 /// Where an entity's components live.

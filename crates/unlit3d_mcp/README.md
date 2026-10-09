@@ -51,14 +51,23 @@ for, and it is the only one the crate implements. It is built on
 [`rmcp`](https://docs.rs/rmcp) and tokio, both of which are non-optional
 dependencies of this crate; the rest of the workspace never sees them.
 
-Because the world is not `Send`, the server runs on two threads: the render
-thread owns the `World` and runs the host, and the protocol thread owns tokio and
-the `rmcp` service. Every tool turns into a command sent to the render thread,
-which runs it and sends back a JSON value. The two never share the world.
+Because a world is not `Send`, the transport never touches one: the protocol
+thread owns tokio and the `rmcp` service, and every tool packs a closure and the
+handle of the world it should run against into a `Command`, hands it to a sink
+(`serve_stdio_with`), and awaits a JSON value. The thread that owns the world —
+a render thread the standalone binary starts, or a window's event loop — calls
+`dispatch` to run it. The two never share a world, and nothing here assumes how
+many worlds there are or that a world holds a rendering device.
 
 ## Tools
 
-The server exposes the world's public surface in four groups.
+The server exposes a world's public surface in four groups. Every tool names the
+world it runs against with an optional `world`: the `u64` bits of a host entity
+carrying a [`World`](unlit_ecs::World) component, or omitted for the host world
+the owning thread holds directly. GPU tools additionally name the entity handles
+they need — a render context, a renderer, a mesh source, a resource — and the
+server passes them through untouched, leaving their resolution to the thread that
+owns the world.
 
 **World and entities** — `world_summary`, `list_components`,
 `list_archetypes`, `list_entities`, `get_entity`, `get_component`,
@@ -72,8 +81,11 @@ entity already holds.
 
 **Resource graph** — `graph_summary`, `list_resources`,
 `resource_dependencies`, `graph_maintain`, `read_buffer`,
-`read_texture_as_image`. Resources are named by their slot index, which is
-stable for as long as the resource lives. `graph_maintain` is the same pass the
+`read_texture_as_image`. A resource is named by the `u64` id `list_resources`
+reports — the `ResId` bits: slot index in the low 32, the slot's generation in
+the high 32 — and the graph resolves it back to a handle. An id to a removed
+resource stops resolving rather than quietly naming the resource that reused its
+slot. `graph_maintain` is the same pass the
 render loop runs: it drops unreferenced resources and rebuilds dirty ones.
 `read_buffer` refuses a buffer that was not created with `COPY_SRC` rather than
 letting the device reject the copy.
@@ -93,10 +105,13 @@ the offscreen target as a base64 PNG.
 
 ## Library
 
-The binary is a thin wrapper: `serve_stdio` starts the render thread and the
-protocol on it. A caller that already has a world builds a `Host` with
-`Host::from_world` and serves that instead; `Host::new_offscreen` makes an empty
-one with a camera, an unlit family and a render target of its own.
+The binary is a thin wrapper: `serve_stdio_offscreen` builds a headless world on
+a render thread and serves it. A caller that already owns a world — a window's
+event loop, say — calls `serve_stdio_with` instead and passes a sink that posts
+each `Command` to that thread, which resolves the command's world handle and
+calls `dispatch`. The tools are plain functions over `&mut World` (and, for the
+GPU ones, the entity handles they are given), so a host can call one directly
+without the protocol in the way.
 
 ```text
 cargo run -p unlit3d_mcp --bin unlit3d-mcp
@@ -104,8 +119,9 @@ cargo run -p unlit3d_mcp --bin unlit3d-mcp
 
 The CLI and the example both take an `--mcp` switch that serves the world they
 would otherwise have rendered, over stdio. The CLI's world is headless; the
-example's keeps its window, rendering the world offscreen on a render thread
-and blitting that frame into the swap chain:
+example's keeps its window and serves the scene from its event loop, with a
+second world in the same host blitting that scene's offscreen frame into the
+swap chain:
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp

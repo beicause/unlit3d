@@ -12,7 +12,6 @@
 
 use facet::Facet;
 use glam::{Mat4, Quat, Vec3, Vec4};
-use unlit_ecs::Entity;
 
 use crate::bounds::Aabb;
 use crate::components::{GpuMaterial, GpuMesh, GpuRenderPipeline};
@@ -366,22 +365,5 @@ impl From<Mat4VecProxy> for Vec<Mat4> {
 impl From<&Vec<Mat4>> for Mat4VecProxy {
     fn from(value: &Vec<Mat4>) -> Self {
         Self(value.iter().map(Mat4::to_cols_array).collect())
-    }
-}
-
-/// An [Entity] as its [`Entity::to_bits`](unlit_ecs::Entity::to_bits) integer.
-#[derive(Facet)]
-#[facet(transparent)]
-pub struct EntityProxy(pub u64);
-
-impl From<EntityProxy> for Entity {
-    fn from(proxy: EntityProxy) -> Self {
-        Entity::from_raw(proxy.0 as u32, (proxy.0 >> 32) as u32)
-    }
-}
-
-impl From<&Entity> for EntityProxy {
-    fn from(value: &Entity) -> Self {
-        Self(value.to_bits())
     }
 }

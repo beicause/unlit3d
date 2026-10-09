@@ -9,7 +9,10 @@
 设计刻意保持精简：没有变化检测、没有组件钩子、没有事件与观察者、没有实体关系、
 也没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。除一个哈希器
 外本 crate 没有其他依赖，也不依赖工作区中的任何其他 crate，因此可以单独使用；它对
-渲染一无所知。
+渲染一无所知。唯一的例外是可选的 `reflect` feature，它为[世界信息](crate::WorldInfo)
+结构体派生 [facet](https://docs.rs/facet)，好让桥接层直接序列化它们，并导出实体字段所经由的
+[`EntityProxy`]。类型为实体的反射字段指名该 proxy，于是 ECS 自己的结构体与任何调用者的组件
+都用同一种方式书写实体——即它的 [`Entity::to_bits`] 整数。ECS 本身从不读取这份反射。
 
 本 crate 处于**极早期开发阶段**，API 会自由变动。
 
@@ -42,7 +45,9 @@
 `bundle!` 宏）、
 `Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`、用于给
-只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`，以及
+只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`、用于把 world
+形态当作纯数据汇报的 `WorldInfo` / `ArchetypeInfo` / `EntityInfo`（实体字段反射时
+指名 `EntityProxy` 与 `EntityVecProxy`），以及
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
 
 查询会按 archetype 解析一次它需要的列，再通过该状态逐行取值，因此其开销与

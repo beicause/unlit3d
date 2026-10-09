@@ -227,11 +227,7 @@ fn the_stdio_server_lists_its_tools_and_renders() {
         .expect("list_resources returns an array")
         .iter()
         .filter(|resource| resource["kind"] == "Buffer")
-        .map(|resource| {
-            resource["index"]
-                .as_u64()
-                .expect("a resource index is a number")
-        })
+        .map(|resource| resource["id"].as_u64().expect("a resource id is a number"))
         .collect();
     assert!(!buffers.is_empty(), "the world has buffer resources");
     let mut read = None;
@@ -239,7 +235,7 @@ fn the_stdio_server_lists_its_tools_and_renders() {
     for buffer in buffers {
         match server.try_tool(
             "read_buffer",
-            json!({ "index": buffer, "offset": 0, "size": 16 }),
+            json!({ "id": buffer, "offset": 0, "size": 16 }),
         ) {
             Some(value) => {
                 read = Some(value);
