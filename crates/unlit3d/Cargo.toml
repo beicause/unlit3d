@@ -12,6 +12,10 @@ exclude = ["/tests"]
 
 [[test]]
 harness = false
+name = "blit"
+
+[[test]]
+harness = false
 name = "custom_instances"
 
 [[test]]

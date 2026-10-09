@@ -276,9 +276,12 @@ fn build_blit_world(context: &Gpu, offscreen: &wgpu::Texture) -> BlitView {
     );
     let renderer = world.spawn((Renderer::new(frame),));
     // The frame's own view, in the frame's own format: the offscreen target was
-    // allocated with a sampleable usage for exactly this.
+    // allocated with a sampleable usage for exactly this. The view and the
+    // sampler are registered in this world's graph, which is what the blit
+    // binds.
     let view = TextureExt::create_view(offscreen, &wgpu::TextureViewDescriptor::default());
-    world.spawn((BlitTexture::new(&context.device, view),));
+    let texture = BlitTexture::new(&world, frame, view);
+    world.spawn((texture,));
     world.spawn_source(BlitSource::new());
     BlitView { world, renderer }
 }
