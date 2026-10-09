@@ -103,7 +103,9 @@ cargo run -p unlit3d_mcp --bin unlit3d-mcp
 ```
 
 The CLI and the example both take an `--mcp` switch that serves the world they
-would otherwise have rendered, over stdio:
+would otherwise have rendered, over stdio. The CLI's world is headless; the
+example's keeps its window, rendering the world offscreen on a render thread
+and blitting that frame into the swap chain:
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp

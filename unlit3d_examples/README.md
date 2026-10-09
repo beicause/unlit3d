@@ -131,7 +131,10 @@ windowed loop, so the example only has one frame loop to maintain.
 `--mcp` serves the world the example would otherwise have rendered, over stdio,
 as a [Model Context Protocol](https://modelcontextprotocol.io) server. The
 chosen scene is built first — `--scene` still selects it — and the client then
-reads and drives that world through the tools. See
+reads and drives that world through the tools. The scene renders offscreen, on
+a thread of its own, and the window goes on showing it: a second world blits
+that offscreen frame into the swap chain, so the picture follows the client
+without an input event ever reaching the scene. See
 [`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
 transport.
 
@@ -194,7 +197,7 @@ the value must be the next argument, so `--name=value` is not accepted.
 | `--scene <ID>` | `spin_cube` | The scene to start from |
 | `--list-scenes` | off | Print the scene table and exit |
 | `--size <WxH>` | the scene's own | Initial window size in pixels |
-| `--mcp` | off | Serve the world over stdio instead of opening a window |
+| `--mcp` | off | Serve the world over stdio, showing its frames in the window |
 
 ### Playback pace
 

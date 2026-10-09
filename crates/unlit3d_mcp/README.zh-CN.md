@@ -78,7 +78,8 @@ world，自带相机、一个 unlit 家族与它自己的渲染目标。
 cargo run -p unlit3d_mcp --bin unlit3d-mcp
 ```
 
-命令行工具与示例都接受 `--mcp` 开关，把原本要渲染的那个 world 经 stdio 服务出去：
+命令行工具与示例都接受 `--mcp` 开关，把原本要渲染的那个 world 经 stdio 服务出去。
+命令行工具的 world 无窗口；示例则保留窗口，在渲染线程上离屏渲染，再把该帧 blit 进交换链：
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp
