@@ -26,7 +26,7 @@ use unlit3d::winit::WindowSurface;
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
-use unlit_wgpu::resources::ResourceGraph;
+use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit_wgpu::scene::ViewportRect;
 use web_time::Instant;
 use winit::application::ApplicationHandler;
@@ -50,6 +50,13 @@ pub const FIXED_STEP: f32 = 1.0 / 60.0;
 /// sRGB, like the view a window surface presents through: it is what lets the
 /// built-in unlit shader's colors reach the readback unchanged.
 const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
+/// Whether this build can serve the Model Context Protocol.
+///
+/// It needs the stdio transport and a tokio runtime, neither of which a
+/// browser or an activity has; the switch is parsed everywhere but only acts
+/// where this is true.
+const MCP_SUPPORTED: bool = cfg!(all(not(target_arch = "wasm32"), not(target_os = "android")));
 
 /// Write `text` to standard output.
 ///
@@ -134,20 +141,6 @@ pub fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Serving MCP needs the stdio transport and a tokio runtime, neither of
-    // which a browser or an activity has; the switch is parsed everywhere but
-    // only acts on the desktop.
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    if args.mcp {
-        return match serve_mcp(&args) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                stderr(&format!("error: {error}\n"));
-                ExitCode::from(1)
-            }
-        };
-    }
-
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("an event loop");
@@ -155,30 +148,23 @@ pub fn run() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Serve the chosen scene over the Model Context Protocol on standard input
-/// and output, instead of opening a window.
+/// Build the world the MCP server drives, and hand the color texture its
+/// frames land in back to the window that blits them.
 ///
-/// The scene is built by the same [`Scene::new`] the windowed run uses and its
-/// frames land in an offscreen target bound by [`bind_offscreen_target`], so an
-/// MCP client drives exactly the world the example would have shown.
+/// The device is the one the window's own context already holds, so the
+/// offscreen frame shares a device with the window's blit and can be sampled by
+/// it. The scene is built by the same [`Scene::new`] the windowed run uses and
+/// its frames land in an offscreen target bound by [`bind_offscreen_target`],
+/// so an MCP client drives exactly the world the example would have shown.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-fn serve_mcp(args: &Args) -> Result<(), String> {
-    let def = scenes::by_id(&args.scene).expect("validated by the CLI");
-    let size = args.size.unwrap_or(def.size);
-    unlit3d_mcp::serve_stdio(move || pollster::block_on(mcp_host(def, size)))
-        .map_err(|error| error.to_string())
-}
-
-/// Build the world `serve_mcp` hands to the MCP server.
-///
-/// The device is requested through the same public entry points a windowed run
-/// uses, so the host has no privileged path to the world.
-#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-async fn mcp_host(
+fn mcp_host(
     def: &'static scenes::SceneDef,
     size: (u32, u32),
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    capabilities: DeviceCapabilities,
+    ready: std::sync::mpsc::Sender<wgpu::Texture>,
 ) -> Result<unlit3d_mcp::Host, String> {
-    let (device, queue, capabilities) = unlit3d_mcp::request_device("unlit3d-examples").await?;
     let scene = Scene::new(
         device.clone(),
         queue.clone(),
@@ -203,6 +189,10 @@ async fn mcp_host(
             })
             .expect("the renderer is a resource entity")
     };
+    // The window samples this texture, so hand it over before a client can ask
+    // for the first frame. A failure to send means the loop is gone, and the
+    // server is about to be torn down with it.
+    let _ = ready.send(target.clone());
 
     let source = scene
         .world
@@ -267,6 +257,31 @@ pub fn bind_offscreen_target(
     target.color
 }
 
+/// Build the small world that presents an offscreen texture into the swap
+/// chain, and return it with its renderer.
+///
+/// This is the second of the MCP run's two worlds. The first — the scene — is
+/// on the MCP render thread, because a [`World`] is not `Send`; this one holds
+/// nothing but the [`BlitSource`] and the [`BlitTexture`] sampling
+/// `offscreen`, so the
+/// window redraws it from whatever frame that thread last produced.
+fn build_blit_world(context: &Gpu, offscreen: &wgpu::Texture) -> BlitView {
+    let mut world = World::new();
+    let frame = spawn_context(
+        &mut world,
+        context.device.clone(),
+        context.queue.clone(),
+        ResourceGraph::new(),
+        context.capabilities,
+    );
+    let renderer = world.spawn((Renderer::new(frame),));
+    // The frame's own view, in the frame's own format: the offscreen target was
+    // allocated with a sampleable usage for exactly this.
+    let view = TextureExt::create_view(offscreen, &wgpu::TextureViewDescriptor::default());
+    world.spawn((BlitTexture::new(&context.device, view),));
+    world.spawn_source(BlitSource::new());
+    BlitView { world, renderer }
+}
 /// Drive the windowed example on `event_loop` until it exits.
 ///
 /// The loop is built by the caller, because that is the one thing the entry
@@ -289,6 +304,12 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         initial_size: args.size.unwrap_or(scene.size),
         initial_scene: scene,
         selector_pos: None,
+        // Serving MCP needs the stdio transport and a tokio runtime, neither
+        // of which a browser or an activity has; the switch is parsed
+        // everywhere but only acts where it can.
+        mcp: args.mcp && MCP_SUPPORTED,
+        offscreen: None,
+        blit: None,
     };
 
     // Native runs the loop on this thread. The web hands the app to the
@@ -356,6 +377,32 @@ struct App {
     /// The selector window's rectangle the last time a scene was live, so a
     /// scene switch can rebuild it in the same place and at the same size.
     selector_pos: Option<egui::Rect>,
+    /// Whether to serve the world over the Model Context Protocol rather than
+    /// drive a scene on this thread.
+    ///
+    /// False on the web and on Android, which have no stdio transport; see
+    /// [`MCP_SUPPORTED`].
+    mcp: bool,
+    /// The color texture the MCP renderer's frames land in, once it has built
+    /// its world. The window's blit world samples it.
+    offscreen: Option<wgpu::Texture>,
+    /// The second world that blits [`Self::offscreen`] into the swap chain.
+    ///
+    /// Only built in MCP mode: the mesh world lives on the MCP render thread,
+    /// because a [`World`] is not `Send`, and this one presents what it
+    /// produces.
+    blit: Option<BlitView>,
+}
+
+/// A world built around a blit, presenting an offscreen texture into the swap
+/// chain.
+///
+/// The main thread owns this in MCP mode: it has no scene of its own — the
+/// scene lives on the MCP render thread — and only samples the frame that
+/// thread produced.
+struct BlitView {
+    world: World,
+    renderer: Entity,
 }
 
 /// The GPU context a scene draws with, requested asynchronously.
@@ -658,6 +705,16 @@ impl ApplicationHandler<UserEvent> for App {
                 // the context is worth keeping, and only the surface is
                 // invalid then. `present` builds what it can with it.
                 self.context = GpuState::Ready(gpu);
+                // MCP mode has no scene to build on this thread; the render
+                // thread that owns the world starts here, once, and answers
+                // with the frame the window goes on to blit. A failure to
+                // start it is reported and the window carries on empty rather
+                // than taking the process down.
+                #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+                if self.mcp {
+                    let size = self.initial_size;
+                    self.start_mcp(size);
+                }
                 self.present();
             }
             UserEvent::Failed(error) => {
@@ -673,13 +730,16 @@ impl ApplicationHandler<UserEvent> for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        let Some(scene) = self.scene.as_mut() else {
-            return;
-        };
-        // Every window event goes to the input adapter first, so the frame
-        // that follows sees this event whichever branch handles it below. The
-        // adapter ignores the events that carry no input.
-        scene.input.on_window_event(&scene.world, &event);
+        // The input adapter belongs to the scene's world, which only exists on
+        // this thread in the windowed path. In MCP mode the scene lives on the
+        // render thread — events reach it over the protocol — so only the
+        // window's own branches below run here.
+        if let Some(scene) = self.scene.as_mut() {
+            // Every window event goes to the input adapter first, so the frame
+            // that follows sees this event whichever branch handles it below.
+            // The adapter ignores the events that carry no input.
+            scene.input.on_window_event(&scene.world, &event);
+        }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } => {
@@ -696,7 +756,9 @@ impl ApplicationHandler<UserEvent> for App {
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
-                scene.resize((size.width, size.height), self.initial_scene.baseline);
+                if let Some(scene) = self.scene.as_mut() {
+                    scene.resize((size.width, size.height), self.initial_scene.baseline);
+                }
                 self.resize_surface(size.width, size.height);
             }
             WindowEvent::RedrawRequested => self.draw(),
@@ -713,6 +775,54 @@ impl ApplicationHandler<UserEvent> for App {
             && let Some(window) = &self.window
         {
             window.request_redraw();
+        }
+    }
+}
+
+impl App {
+    /// Start serving the scene over stdio, once the GPU context is here.
+    ///
+    /// The world is `!Send`, so it cannot be built on this thread: a render
+    /// thread of the MCP layer's own builds and owns it, and this asks the
+    /// transport to run there too — `serve_stdio` blocks its caller, and the
+    /// caller must stay free to run the window. The device is the one the
+    /// window already holds, so the offscreen frame and the window's blit
+    /// share it and the frame can be sampled.
+    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+    fn start_mcp(&mut self, size: (u32, u32)) {
+        let (hosted_device, hosted_queue, capabilities) = match &self.context {
+            GpuState::Ready(context) => (
+                context.device.clone(),
+                context.queue.clone(),
+                context.capabilities,
+            ),
+            _ => return,
+        };
+        let def = self.initial_scene;
+        let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("unlit3d-examples-mcp".to_owned())
+            .spawn(move || {
+                let host = move || {
+                    mcp_host(
+                        def,
+                        size,
+                        hosted_device,
+                        hosted_queue,
+                        capabilities,
+                        ready_sender,
+                    )
+                };
+                if let Err(error) = unlit3d_mcp::serve_stdio(host) {
+                    log::error!("the MCP server stopped: {error}");
+                }
+            })
+            .expect("the MCP thread starts");
+        // The render thread builds the scene and answers with its target; the
+        // window waits for that one message rather than the whole thread.
+        match ready_receiver.recv() {
+            Ok(target) => self.offscreen = Some(target),
+            Err(_) => log::error!("the MCP render thread stopped before its first frame"),
         }
     }
 }
@@ -741,6 +851,54 @@ impl App {
         // projection. The real size arrives as a resize and corrects this.
         let size = window.inner_size();
         let size = (size.width.max(1), size.height.max(1));
+
+        // The MCP run's scene lives on the render thread: a world is not
+        // `Send`, so it cannot be built here. This thread owns only a blit
+        // world presenting the frame that thread produced, and the swap chain
+        // binds to it.
+        if self.mcp {
+            if self.blit.is_none() {
+                let Some(offscreen) = self.offscreen.clone() else {
+                    return;
+                };
+                let def = self.initial_scene;
+                window.set_title(&format!("unlit3d (MCP) — {}", def.title));
+                self.blit = Some(build_blit_world(context, &offscreen));
+            }
+            if self.surface.is_some() {
+                self.resize_surface(size.0, size.1);
+                return;
+            }
+            let surface = match context.instance.create_surface(window.clone()) {
+                Ok(surface) => surface,
+                Err(error) => {
+                    log::error!("failed to build the presentation surface: {error}");
+                    return;
+                }
+            };
+            let blit = self.blit.as_ref().expect("the blit world was just built");
+            let (world, renderer) = (&blit.world, blit.renderer);
+            let window_surface = world
+                .with_mut::<Renderer, _>(renderer, |renderer| {
+                    WindowSurface::new(
+                        world,
+                        renderer,
+                        &context.instance,
+                        &context.adapter,
+                        window,
+                        surface,
+                        SAMPLE_COUNT,
+                    )
+                })
+                .expect("the renderer is a resource entity");
+            self.surface = Some(window_surface);
+            self.surface
+                .as_ref()
+                .expect("the surface was just built")
+                .window()
+                .request_redraw();
+            return;
+        }
 
         // The selector's position survives a switch in the shell rather than
         // the scene: egui remembers it in the context the scene's world
@@ -827,10 +985,18 @@ impl App {
     /// yet, or a suspension released it — and when the surface is already that
     /// size.
     fn resize_surface(&mut self, width: u32, height: u32) {
-        let (Some(surface), Some(scene)) = (self.surface.as_mut(), self.scene.as_ref()) else {
+        let Some(surface) = self.surface.as_mut() else {
             return;
         };
-        let (world, renderer) = (&scene.world, scene.renderer);
+        // MCP mode has no scene on this thread: the surface looks at the blit
+        // world instead.
+        let (world, renderer) = match &self.scene {
+            Some(scene) => (&scene.world, scene.renderer),
+            None => match &self.blit {
+                Some(blit) => (&blit.world, blit.renderer),
+                None => return,
+            },
+        };
         world
             .with_mut::<Renderer, _>(renderer, |renderer| {
                 surface.resize(world, renderer, width, height);
@@ -915,6 +1081,12 @@ impl App {
             web::toggle(window);
         }
 
+        // MCP mode draws the blit world instead: the scene is not here.
+        if self.mcp {
+            self.draw_blit();
+            return;
+        }
+
         let (Some(surface), Some(scene)) = (self.surface.as_mut(), self.scene.as_mut()) else {
             return;
         };
@@ -947,6 +1119,31 @@ impl App {
             .expect("the renderer is a resource entity");
 
         scene.end_frame();
+    }
+
+    /// Present the MCP renderer's latest offscreen frame through the blit
+    /// world.
+    ///
+    /// The frame is produced on the MCP render thread, so this only samples
+    /// whatever that thread has drawn: the window follows the world over the
+    /// protocol rather than driving a scene of its own.
+    fn draw_blit(&mut self) {
+        let (Some(surface), Some(blit)) = (self.surface.as_mut(), self.blit.as_ref()) else {
+            return;
+        };
+        let (world, renderer) = (&blit.world, blit.renderer);
+        world
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                let Some(frame) = surface.acquire(world, renderer) else {
+                    return;
+                };
+                renderer.render(world);
+                let queue = world
+                    .get::<wgpu::Queue>(renderer.context().queue)
+                    .expect("the queue resource");
+                frame.present(&queue);
+            })
+            .expect("the renderer is a resource entity");
     }
 }
 

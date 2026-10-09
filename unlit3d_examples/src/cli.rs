@@ -44,7 +44,7 @@ pub struct Args {
     pub size: Option<(u32, u32)>,
 
     /// serve the scene over the Model Context Protocol on standard input and
-    /// output instead of opening a window
+    /// output, showing the frames it renders in the window
     #[argh(switch)]
     pub mcp: bool,
 }
