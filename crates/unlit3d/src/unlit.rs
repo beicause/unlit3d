@@ -19,7 +19,7 @@ use unlit_wgpu::pipeline::{
     BASE_COLOR_SAMPLER_BINDING, BASE_COLOR_TEXTURE_BINDING, GlobalBindings, INSTANCE_SLOT,
     POSITION_SLOT, UV_COLOR_SLOT, UnlitOptions, UnlitVariant, UnlitVertexChannels,
 };
-use unlit_wgpu::resources::{ResourceId, TextureView};
+use unlit_wgpu::resources::{ResHandle, TextureView};
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::{
     SpecializedPipeline, SurfaceKey, VertexAttributes, VertexBufferLayoutDesc, VertexLayout,
@@ -513,8 +513,8 @@ pub trait MeshSourceUnlitExt {
         &mut self,
         world: &World,
         key: &UnlitPipelineKey,
-        view_id: ResourceId<TextureView>,
-        sampler_id: ResourceId<wgpu::Sampler>,
+        view_id: ResHandle<TextureView>,
+        sampler_id: ResHandle<wgpu::Sampler>,
     ) -> GpuMaterial;
 }
 
@@ -864,8 +864,8 @@ impl MeshSourceUnlitExt for MeshSource {
         &mut self,
         world: &World,
         key: &UnlitPipelineKey,
-        view_id: ResourceId<TextureView>,
-        sampler_id: ResourceId<wgpu::Sampler>,
+        view_id: ResHandle<TextureView>,
+        sampler_id: ResHandle<wgpu::Sampler>,
     ) -> GpuMaterial {
         let layout = key.options.material_bind_group_layout(&self.device(world));
 
@@ -873,7 +873,7 @@ impl MeshSourceUnlitExt for MeshSource {
         // The recipe reads the view and the sampler back out of the graph each
         // time it runs, so replacing either rebuilds the group from the current
         // handle rather than the one captured here.
-        let mut dependencies = ArrayVec::<ResourceId, 2>::new();
+        let mut dependencies = ArrayVec::<ResHandle, 2>::new();
         dependencies.push(view_id.erase());
         dependencies.push(sampler_id.erase());
         self.allocate_material(

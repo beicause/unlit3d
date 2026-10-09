@@ -85,7 +85,7 @@
 use std::sync::Arc;
 
 use unlit_ecs::World;
-use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
+use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 use crate::renderer::Renderer;
 
@@ -142,7 +142,7 @@ pub struct WindowSurface {
     /// The color view of the most recently acquired frame, in the frame's
     /// graph. One id is kept for the surface's whole life; `None` until the
     /// first frame is acquired.
-    color_view: Option<ResourceId<TextureView>>,
+    color_view: Option<ResHandle<TextureView>>,
 }
 
 impl WindowSurface {
@@ -319,7 +319,7 @@ impl WindowSurface {
 /// A swap-chain image acquired for one frame.
 pub struct Frame {
     surface_texture: wgpu::SurfaceTexture,
-    color_view: ResourceId<TextureView>,
+    color_view: ResHandle<TextureView>,
 }
 
 impl Frame {
@@ -332,7 +332,7 @@ impl Frame {
     ///
     /// This is what a caller binds as its render target — together with the
     /// depth and multisample views its own attachments hold.
-    pub fn color_view(&self) -> &ResourceId<TextureView> {
+    pub fn color_view(&self) -> &ResHandle<TextureView> {
         &self.color_view
     }
 

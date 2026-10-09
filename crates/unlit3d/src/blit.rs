@@ -15,7 +15,7 @@
 use core::ops::DerefMut;
 
 use unlit_ecs::World;
-use unlit_wgpu::resources::{Rebuild, Resource, ResourceGraph, ResourceId, TextureView};
+use unlit_wgpu::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
     FragmentStateDesc, PipelineDescriptor, RenderPipelineDesc, SurfaceKey, SurfaceTarget,
@@ -57,8 +57,8 @@ fn resource_graph<'w>(
 /// different texture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlitTexture {
-    view: ResourceId<TextureView>,
-    sampler: ResourceId<wgpu::Sampler>,
+    view: ResHandle<TextureView>,
+    sampler: ResHandle<wgpu::Sampler>,
 }
 
 impl BlitTexture {
@@ -131,7 +131,7 @@ struct Gpu {
     /// The texture ids the current bind group reads.
     texture: BlitTexture,
     /// The graph node binding the texture and its sampler.
-    bind_group: ResourceId<wgpu::BindGroup>,
+    bind_group: ResHandle<wgpu::BindGroup>,
 }
 
 impl BlitSource {
@@ -182,7 +182,7 @@ fn allocate_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     texture: &BlitTexture,
-) -> ResourceId<wgpu::BindGroup> {
+) -> ResHandle<wgpu::BindGroup> {
     let recipe = bind_group_recipe(
         device.clone(),
         layout.clone(),
@@ -300,8 +300,8 @@ fn bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 fn bind_group_recipe(
     device: wgpu::Device,
     layout: wgpu::BindGroupLayout,
-    view: ResourceId<TextureView>,
-    sampler: ResourceId<wgpu::Sampler>,
+    view: ResHandle<TextureView>,
+    sampler: ResHandle<wgpu::Sampler>,
 ) -> impl Fn(&ResourceGraph) -> wgpu::BindGroup {
     move |graph| {
         let view = graph

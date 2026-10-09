@@ -7,7 +7,7 @@ pub use unlit_wgpu_test_util::{Ctx, Frame, assert_image_snapshot, count_pixels_o
 
 use core::ops::DerefMut;
 use unlit_ecs::{Entity, World};
-use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView};
+use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
 // Test constants matching what `unlit_wgpu`'s own tests use.
@@ -123,7 +123,7 @@ impl TestGpu {
         &self,
         world: &World,
         texture: wgpu::Texture,
-    ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
+    ) -> (ResHandle<wgpu::Texture>, ResHandle<TextureView>) {
         let mut graph = self.graph(world);
         let texture_id = graph.insert(texture, None);
         let view = TextureExt::create_view(

@@ -83,7 +83,7 @@ use crate::pipeline::{
     MATERIAL_GROUP, POSITION_SLOT, SpecializedUnlitPipeline, UV_COLOR_SLOT, UnlitOptions,
     UnlitVariant, UnlitVertexChannels,
 };
-use crate::resources::{Rebuild, Resource, ResourceGraph, ResourceId, TextureExt, TextureView};
+use crate::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureExt, TextureView};
 use crate::scene::{DrawEntry, DrawRange, Scene, ScissorRect};
 use crate::specialize::SurfaceKey;
 use crate::staging::StagingBuffer;
@@ -393,9 +393,9 @@ struct UiDraw {
 #[derive(Clone)]
 struct TextureSlot {
     /// The texture egui's deltas are written into.
-    texture: ResourceId<wgpu::Texture>,
+    texture: ResHandle<wgpu::Texture>,
     /// The default view over it, which the material samples.
-    view: ResourceId<TextureView>,
+    view: ResHandle<TextureView>,
 }
 
 /// Draws tessellated egui output with the built-in unlit pipeline.
@@ -412,7 +412,7 @@ pub struct EguiIntegration {
     pipeline: SpecializedUnlitPipeline,
     /// Graph node of the caller's global bind group: camera and frame
     /// globals, written by the caller.
-    global_group: ResourceId<wgpu::BindGroup>,
+    global_group: ResHandle<wgpu::BindGroup>,
     /// Graph nodes of every allocated texture slot, keyed by egui's own id.
     textures: HashMap<egui::TextureId, TextureSlot>,
     /// The sampling options egui last stated for each texture.
@@ -427,18 +427,18 @@ pub struct EguiIntegration {
     texture_options: HashMap<egui::TextureId, egui::TextureOptions>,
     /// One sampler per distinct set of egui sampling options seen, with its
     /// graph node.
-    samplers: Vec<(egui::TextureOptions, ResourceId<wgpu::Sampler>)>,
+    samplers: Vec<(egui::TextureOptions, ResHandle<wgpu::Sampler>)>,
     /// One material bind group per (texture, options) pair, with its graph
     /// node; the node depends on the texture's view and the sampler.
-    materials: Vec<(MaterialKey, ResourceId<wgpu::BindGroup>)>,
+    materials: Vec<(MaterialKey, ResHandle<wgpu::BindGroup>)>,
     /// Positions, then interleaved UVs and colors.
     vertices: Option<wgpu::Buffer>,
     /// `Uint32` indices.
     indices: Option<wgpu::Buffer>,
     /// Graph node of the vertex buffer, replaced in place when it grows.
-    vertex_node: Option<ResourceId<wgpu::Buffer>>,
+    vertex_node: Option<ResHandle<wgpu::Buffer>>,
     /// Graph node of the index buffer, replaced in place when it grows.
-    index_node: Option<ResourceId<wgpu::Buffer>>,
+    index_node: Option<ResHandle<wgpu::Buffer>>,
     /// One default [`MeshInstance`], bound at [`INSTANCE_SLOT`] by every
     /// draw.
     ///
@@ -517,7 +517,7 @@ impl EguiIntegration {
     /// same dependency tracking.
     pub fn new(
         device: &wgpu::Device,
-        global_group: ResourceId<wgpu::BindGroup>,
+        global_group: ResHandle<wgpu::BindGroup>,
         pipeline: SpecializedUnlitPipeline,
     ) -> Self {
         Self {
@@ -553,7 +553,7 @@ impl EguiIntegration {
     fn bind_group<'a>(
         &self,
         graph: &'a ResourceGraph,
-        id: &ResourceId<wgpu::BindGroup>,
+        id: &ResHandle<wgpu::BindGroup>,
     ) -> &'a wgpu::BindGroup {
         graph
             .get(id)
@@ -886,7 +886,7 @@ impl EguiIntegration {
         &mut self,
         graph: &mut ResourceGraph,
         options: egui::TextureOptions,
-    ) -> ResourceId<wgpu::Sampler> {
+    ) -> ResHandle<wgpu::Sampler> {
         if let Some((_, id)) = self.samplers.iter().find(|(seen, _)| *seen == options) {
             return id.clone();
         }

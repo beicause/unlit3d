@@ -22,7 +22,7 @@ use core::ops::DerefMut;
 
 use unlit_ecs::World;
 use unlit_wgpu::render_attachments::{create_depth_target, create_msaa_target};
-use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureExt, TextureView};
+use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 
 use crate::renderer::Renderer;
 use crate::source::RenderContext;
@@ -71,10 +71,10 @@ pub struct FrameAttachments {
     sample_count: u32,
     /// The depth-stencil view, in the frame's graph; `None` when the frame
     /// carries no depth attachment.
-    depth_view: Option<ResourceId<TextureView>>,
+    depth_view: Option<ResHandle<TextureView>>,
     /// The multisample view, in the frame's graph; `None` when the frame is
     /// not multisampled.
-    msaa_view: Option<ResourceId<TextureView>>,
+    msaa_view: Option<ResHandle<TextureView>>,
 }
 
 impl FrameAttachments {
@@ -125,13 +125,13 @@ impl FrameAttachments {
 
     /// The depth-stencil view, in the frame's graph, or `None` when the frame
     /// carries no depth attachment.
-    pub fn depth_view(&self) -> Option<&ResourceId<TextureView>> {
+    pub fn depth_view(&self) -> Option<&ResHandle<TextureView>> {
         self.depth_view.as_ref()
     }
 
     /// The multisample view, in the frame's graph, or `None` when the frame is
     /// not multisampled.
-    pub fn msaa_view(&self) -> Option<&ResourceId<TextureView>> {
+    pub fn msaa_view(&self) -> Option<&ResHandle<TextureView>> {
         self.msaa_view.as_ref()
     }
 
@@ -174,12 +174,7 @@ impl FrameAttachments {
     ///
     /// The color view is the caller's — a swap chain image, or a persistent
     /// offscreen texture — and must be in the frame's graph.
-    pub fn bind(
-        &self,
-        world: &World,
-        renderer: &mut Renderer,
-        color_view: ResourceId<TextureView>,
-    ) {
+    pub fn bind(&self, world: &World, renderer: &mut Renderer, color_view: ResHandle<TextureView>) {
         renderer.set_render_target(
             world,
             Some(color_view),

@@ -13,7 +13,7 @@ use arrayvec::ArrayVec;
 use hashbrown::HashMap;
 use unlit_ecs::{Query, World};
 use unlit_wgpu::instance_stream::InstanceBuffer;
-use unlit_wgpu::resources::{ResourceId, Virtual};
+use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
 
 use unlit_wgpu::pipeline::{GLOBAL_GROUP, MATERIAL_GROUP, MESH_GROUP};
@@ -257,7 +257,7 @@ where
         gpu_mesh: &GpuMesh,
         material: Option<&GpuMaterial>,
         sort_key: u64,
-        material_bg: Option<ResourceId<wgpu::BindGroup>>,
+        material_bg: Option<ResHandle<wgpu::BindGroup>>,
         z_sorted: bool,
     ) {
         // The frame, not the entity, knows the target, the mesh's layout and
@@ -512,11 +512,11 @@ pub(crate) fn collect_and_sort_visible(
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DrawHandlesKey {
     /// The mesh's root node, which names its buffers and bind group.
-    pub(crate) mesh: ResourceId<Virtual>,
+    pub(crate) mesh: ResHandle<Virtual>,
     /// What the draw reads from the mesh.
     pub(crate) shape: DrawShape,
     /// The material's bind group, when the entity carries a material.
-    pub(crate) material: Option<ResourceId<wgpu::BindGroup>>,
+    pub(crate) material: Option<ResHandle<wgpu::BindGroup>>,
 }
 
 /// A registered pipeline's GPU handles, indexed by [RenderPipelineId].

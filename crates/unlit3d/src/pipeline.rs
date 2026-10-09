@@ -51,7 +51,7 @@ use unlit_wgpu::pipeline::{
     MORPH_DELTAS_BINDING, MORPH_WEIGHTS_BINDING, global_bind_group_layout,
     supports_storage_buffers,
 };
-use unlit_wgpu::resources::{Resource, ResourceGraph, ResourceId};
+use unlit_wgpu::resources::{ResHandle, Resource, ResourceGraph};
 use unlit_wgpu::specialize::{PipelineVariant, SpecializedPipeline, SurfaceKey};
 use unlit_wgpu::texel_array::ArrayHandle;
 
@@ -79,21 +79,21 @@ pub use unlit_wgpu::resources::Rebuild;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlobalResources {
     /// The camera uniform buffer.
-    pub camera: ResourceId<wgpu::Buffer>,
+    pub camera: ResHandle<wgpu::Buffer>,
     /// The frame-globals uniform buffer.
-    pub globals: ResourceId<wgpu::Buffer>,
+    pub globals: ResHandle<wgpu::Buffer>,
     /// The mesh-metadata array.
-    pub metadata: ResourceId<ArrayHandle>,
+    pub metadata: ResHandle<ArrayHandle>,
     /// The frame's joint matrices: every visible skinned instance's joints,
     /// one array for the whole frame.
-    pub joints: ResourceId<ArrayHandle>,
+    pub joints: ResHandle<ArrayHandle>,
     /// The frame's morph weights: every visible morphed instance's weights, one
     /// array for the whole frame.
-    pub morph_weights: ResourceId<ArrayHandle>,
+    pub morph_weights: ResHandle<ArrayHandle>,
     /// The frame's morph displacements: every morphed mesh's per-vertex
     /// displacements, one array for the whole frame. A mesh names its slice
     /// through its metadata entry's `morph_deltas_offset`.
-    pub morph_deltas: ResourceId<ArrayHandle>,
+    pub morph_deltas: ResHandle<ArrayHandle>,
 }
 
 impl GlobalResources {
@@ -106,7 +106,7 @@ impl GlobalResources {
     pub(crate) fn declare_dependencies(
         &self,
         graph: &mut ResourceGraph,
-        group: &ResourceId<wgpu::BindGroup>,
+        group: &ResHandle<wgpu::BindGroup>,
     ) {
         graph.add_dependency(group, &self.camera);
         graph.add_dependency(group, &self.globals);
@@ -249,7 +249,7 @@ impl core::fmt::Debug for RegisteredRenderPipeline {
 #[derive(Clone)]
 pub(crate) struct RegisteredGlobal {
     /// The id in the source's resource graph.
-    pub(crate) id: ResourceId<wgpu::BindGroup>,
+    pub(crate) id: ResHandle<wgpu::BindGroup>,
 }
 
 /// What a [RenderPipelineFactory] may read from the source.

@@ -10,7 +10,7 @@
 //! A [`NodeId`] is the slot a node occupies. Removing a node frees its slot for
 //! a later insertion, so a handle to a removed node can come to name whatever
 //! takes its place. Deciding liveness is the caller's job, not the graph's:
-//! [`ResourceId`](crate::resources::ResourceId) carries a strong reference that
+//! [`ResHandle`](crate::resources::ResHandle) carries a strong reference that
 //! [`ResourceGraph`](crate::resources::ResourceGraph) collects on, so a node
 //! whose handle is still held is never removed in the first place.
 //!

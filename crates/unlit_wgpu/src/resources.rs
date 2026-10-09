@@ -13,7 +13,7 @@
 //!
 //! * [`ResourceGraph::replace`] swaps a resource and marks every resource
 //!   transitively built from it as *dirty*.
-//! * Dropping the last [`ResourceId`] to a resource makes it collectable.
+//! * Dropping the last [`ResHandle`] to a resource makes it collectable.
 //! * [`ResourceGraph::maintain`] collects the resources no id and no dependent
 //!   holds any more, and rebuilds the resources marked dirty.
 //!
@@ -43,10 +43,10 @@
 //!
 //! # Typed ids
 //!
-//! A [`ResourceId`] is typed by the [`ResourceKind`] it names, and the kind is
-//! the resource itself: [`ResourceId<wgpu::Buffer>`](ResourceId) resolves to a
-//! buffer, [`ResourceId<TextureView>`](ResourceId) to a texture view together
-//! with its format, and [`ResourceId<Virtual>`](ResourceId) to a node that
+//! A [`ResHandle`] is typed by the [`ResourceKind`] it names, and the kind is
+//! the resource itself: [`ResHandle<wgpu::Buffer>`](ResHandle) resolves to a
+//! buffer, [`ResHandle<TextureView>`](ResHandle) to a texture view together
+//! with its format, and [`ResHandle<Virtual>`](ResHandle) to a node that
 //! holds no handle.
 //! [`ResourceGraph::get`] hands that resource back directly, so no caller
 //! matches on which variant a node holds and a texture view cannot be read
@@ -59,7 +59,7 @@
 //! [`replace`](ResourceGraph::replace) requires the replacement to have the
 //! same kind, so an id never names a resource of another kind. Where the kind
 //! is genuinely unknown at compile time — a node's dependencies, a dirty
-//! node — the [erased](ResourceId::erase) `ResourceId<Resource>` names it
+//! node — the [erased](ResHandle::erase) `ResHandle<Resource>` names it
 //! instead.
 //!
 //! # Retention
@@ -102,7 +102,7 @@ use crate::dag::{Dag, EdgeError, NodeId};
 /// Implemented for the wgpu handles the graph stores and for [`Virtual`], the
 /// kind that holds no handle. The implementor is not just a tag: it is the
 /// payload [`ResourceGraph::get`] hands out, so the kind and the resource read
-/// as one thing — a `ResourceId<wgpu::Buffer>` names a buffer, not a mark
+/// as one thing — a `ResHandle<wgpu::Buffer>` names a buffer, not a mark
 /// saying "buffer".
 ///
 /// [`Resource`] itself implements the trait as the *erased* kind: the one that
@@ -123,7 +123,7 @@ pub trait ResourceKind: Sized {
 /// The kind of a [virtual](Resource::Virtual) node: a graph citizen holding no
 /// wgpu handle.
 ///
-/// [`ResourceId<Virtual>`](ResourceId) names such a node. It is an ordinary
+/// [`ResHandle<Virtual>`](ResHandle) names such a node. It is an ordinary
 /// node otherwise — it takes dependencies, dependents and liveness like any
 /// resource — and it is the natural aggregation root for a set of resources
 /// that live and die together (see [Retention](self)).
@@ -153,7 +153,7 @@ impl ResourceKind for Virtual {
 /// texture's — an sRGB view over a non-sRGB swap-chain image, for example — so
 /// the format a view was created with is tracked next to it rather than
 /// assumed from the texture. This is the kind a
-/// [`ResourceId<TextureView>`](ResourceId) names, and
+/// [`ResHandle<TextureView>`](ResHandle) names, and
 /// [`TextureExt::create_view`] builds one from a descriptor, so the format and
 /// the view cannot disagree.
 ///
@@ -263,7 +263,7 @@ impl TextureExt for wgpu::Texture {
 /// A wgpu resource owned by the graph, or a virtual node standing in for one.
 ///
 /// This is the stored form, and the way to name a resource whose kind is only
-/// known at runtime: it is the [erased](ResourceId::erase) [`ResourceId`]'s
+/// known at runtime: it is the [erased](ResHandle::erase) [`ResHandle`]'s
 /// kind. Variants are thin — each holds the wgpu handle itself — so callers can
 /// keep working with raw wgpu and use the graph purely for bookkeeping.
 #[derive(Clone, Debug)]
@@ -403,8 +403,8 @@ into_resource! {
 /// Handle to a resource stored in a [`ResourceGraph`], typed by its kind.
 ///
 /// `R` is the [`ResourceKind`] the id names, which is also what the graph hands
-/// back for it: a [`ResourceId<wgpu::Buffer>`](ResourceId) resolves to a
-/// buffer, a [`ResourceId<wgpu::TextureView>`](ResourceId) to a view. The
+/// back for it: a [`ResHandle<wgpu::Buffer>`](ResHandle) resolves to a
+/// buffer, a [`ResHandle<wgpu::TextureView>`](ResHandle) to a view. The
 /// default, [`Resource`], is the *erased* kind — an id to a resource whose kind
 /// is known only at runtime — which is what graph-wide reads like
 /// [`ResourceGraph::dependencies`] hand out.
@@ -423,7 +423,7 @@ into_resource! {
 ///
 /// An id is not [`Copy`]: cloning one adds a reference, which a copy could not
 /// tell apart from a move. Pass one to a graph method by reference.
-pub struct ResourceId<R = Resource> {
+pub struct ResHandle<R = Resource> {
     node: NodeId,
     /// The strong reference this id carries. Its liveness is the token's own
     /// reference count.
@@ -431,7 +431,7 @@ pub struct ResourceId<R = Resource> {
     kind: core::marker::PhantomData<fn() -> R>,
 }
 
-impl<R> ResourceId<R> {
+impl<R> ResHandle<R> {
     /// The graph index this id refers to.
     ///
     /// Only meaningful while the resource lives, but stable across the
@@ -445,25 +445,25 @@ impl<R> ResourceId<R> {
     /// Forget the kind, yielding an id to the same resource that claims none.
     ///
     /// This is how a typed id is handed to an API that works in any kind — the
-    /// erased [`ResourceId<Resource>`](Resource) that
+    /// erased [`ResHandle<Resource>`](Resource) that
     /// [`ResourceGraph::dependencies`] speaks in, or a stored field a caller
     /// only ever passes back to the graph. The kind is the only thing that
     /// changes: a strong id stays strong through the call, so the erased id
     /// names the same reference and both ids keep the resource alive.
-    pub fn erase(&self) -> ResourceId {
+    pub fn erase(&self) -> ResHandle {
         self.shared::<Resource>()
     }
 }
 
-impl<R> ResourceId<R> {
+impl<R> ResHandle<R> {
     /// A second id to the same resource, taking one more strong reference to it.
     ///
     /// The new id may name any kind: the node is what both ids resolve
     /// through, and the kind only says which accessor fits. Both [`Clone`] and
     /// [`Self::erase`] go through here so that a new id always counts,
     /// whichever way it was made.
-    fn shared<K>(&self) -> ResourceId<K> {
-        ResourceId {
+    fn shared<K>(&self) -> ResHandle<K> {
+        ResHandle {
             node: self.node,
             strong: self.strong.clone(),
             kind: core::marker::PhantomData,
@@ -474,45 +474,45 @@ impl<R> ResourceId<R> {
 // The trait impls are written out rather than derived: a derived bound would
 // ask `R` to be comparable, hashable or cloneable, none of which a kind has to
 // be. An id is a node handle, and only the handle takes part in any of them.
-impl<R> Clone for ResourceId<R> {
+impl<R> Clone for ResHandle<R> {
     fn clone(&self) -> Self {
         self.shared::<R>()
     }
 }
 
-impl<R> PartialEq for ResourceId<R> {
+impl<R> PartialEq for ResHandle<R> {
     fn eq(&self, other: &Self) -> bool {
         self.node == other.node
     }
 }
 
-impl<R> Eq for ResourceId<R> {}
+impl<R> Eq for ResHandle<R> {}
 
-impl<R> PartialOrd for ResourceId<R> {
+impl<R> PartialOrd for ResHandle<R> {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<R> Ord for ResourceId<R> {
+impl<R> Ord for ResHandle<R> {
     fn cmp(&self, other: &Self) -> core::cmp::Ordering {
         self.node.cmp(&other.node)
     }
 }
 
-impl<R> core::hash::Hash for ResourceId<R> {
+impl<R> core::hash::Hash for ResHandle<R> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         self.node.hash(state);
     }
 }
 
-impl<R> core::fmt::Debug for ResourceId<R> {
+impl<R> core::fmt::Debug for ResHandle<R> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "ResourceId({})", self.node.index())
+        write!(f, "ResHandle({})", self.node.index())
     }
 }
 
-/// The strong reference count of one node is the number of [`ResourceId`]s that
+/// The strong reference count of one node is the number of [`ResHandle`]s that
 /// name it plus the number of nodes built from it, which is exactly what
 /// [`Arc`] already counts.
 ///
@@ -556,7 +556,7 @@ struct Node {
 /// A node that can be rebuilt is inserted with one —
 /// [`ResourceGraph::insert`] — and [`ResourceGraph::maintain`]
 /// calls it whenever the node is dirty. The recipe reads whatever it was built
-/// from back out of the graph by [`ResourceId`], so it always sees the current
+/// from back out of the graph by [`ResHandle`], so it always sees the current
 /// handle of its inputs rather than a copy captured when it was written.
 ///
 /// The closure runs while the graph is borrowed immutably, so it can only read
@@ -606,7 +606,7 @@ impl core::fmt::Debug for Rebuild {
 /// itself is borrowed from the graph for as long as the walk runs.
 #[derive(Debug)]
 pub struct NodeInfo<'a> {
-    /// The node's slot index, the handle [`ResourceId::index`] reports.
+    /// The node's slot index, the handle [`ResHandle::index`] reports.
     pub index: usize,
     /// The stored resource.
     pub resource: &'a Resource,
@@ -649,7 +649,7 @@ impl ResourceGraph {
 
     /// Every resource in the graph, in node-slot order.
     ///
-    /// The node's slot [`index`](ResourceId::index) is the handle: it is stable
+    /// The node's slot [`index`](ResHandle::index) is the handle: it is stable
     /// while the resource lives, so a caller can report it, sort by it, and
     /// resolve it back with [`Self::id_at`]. The walk covers every slot the
     /// graph has ever used, so it costs the peak node count rather than the
@@ -675,10 +675,10 @@ impl ResourceGraph {
     /// the next [`Self::maintain`] and cannot be named again, which is why the
     /// call reports `None` rather than inventing a reference to it.
     #[must_use]
-    pub fn id_at(&self, index: usize) -> Option<ResourceId> {
+    pub fn id_at(&self, index: usize) -> Option<ResHandle> {
         let id = self.graph.id_at(index)?;
         let strong = self.graph.get(id)?.strong.upgrade()?;
-        Some(ResourceId {
+        Some(ResHandle {
             node: id,
             strong,
             kind: core::marker::PhantomData,
@@ -707,7 +707,7 @@ impl ResourceGraph {
         &mut self,
         resource: R,
         rebuild: Option<Rebuild>,
-    ) -> ResourceId<R> {
+    ) -> ResHandle<R> {
         let strong = Arc::new(());
         let node = self.graph.insert(Node {
             resource: resource.into_resource(),
@@ -716,7 +716,7 @@ impl ResourceGraph {
             held: Vec::new(),
             rebuild,
         });
-        ResourceId {
+        ResHandle {
             node,
             strong,
             kind: core::marker::PhantomData,
@@ -748,7 +748,7 @@ impl ResourceGraph {
     /// Panics if the edge would close a cycle. A cycle means the declared
     /// dependencies are not a build order at all, so it is refused where it is
     /// declared rather than corrupting a later walk.
-    pub fn add_dependency<D, R>(&mut self, dependent: &ResourceId<R>, dependency: &ResourceId<D>) {
+    pub fn add_dependency<D, R>(&mut self, dependent: &ResHandle<R>, dependency: &ResHandle<D>) {
         match self.graph.add_edge(dependency.node, dependent.node) {
             Ok(false) => {}
             Ok(true) => {
@@ -776,11 +776,11 @@ impl ResourceGraph {
     /// Borrow the resource behind `id`.
     ///
     /// The id says what it names, so this is the buffer, texture, view,
-    /// sampler or bind group itself; the [erased](ResourceId::erase)
-    /// `ResourceId<Resource>` is how a caller reads a resource whose kind it
+    /// sampler or bind group itself; the [erased](ResHandle::erase)
+    /// `ResHandle<Resource>` is how a caller reads a resource whose kind it
     /// does not know. `None` when the id is unknown — nothing else can make it
     /// fail, since an id only ever names a resource of its own kind.
-    pub fn get<R: ResourceKind>(&self, id: &ResourceId<R>) -> Option<&R> {
+    pub fn get<R: ResourceKind>(&self, id: &ResHandle<R>) -> Option<&R> {
         self.graph
             .get(id.node)
             .and_then(|node| R::borrow_from(&node.resource))
@@ -795,7 +795,7 @@ impl ResourceGraph {
     /// Returns the previous handle, or `None` if `id` is unknown.
     pub fn replace<R: ResourceKind>(
         &mut self,
-        id: &ResourceId<R>,
+        id: &ResHandle<R>,
         resource: impl Into<R>,
     ) -> Option<R> {
         R::take_from(self.replace_resource(id.node, resource.into().into_resource())?)
@@ -820,7 +820,7 @@ impl ResourceGraph {
     /// change made since the last call takes effect at a single point rather
     /// than at each change.
     ///
-    /// A resource is collected once nothing holds it: no [`ResourceId`] names
+    /// A resource is collected once nothing holds it: no [`ResHandle`] names
     /// it and no node is built from it. Dropping the last id to a resource — or
     /// to a node built from it — is what gives the resource up, and this pass
     /// is where that takes effect. There is no removal call: a resource some id
@@ -854,10 +854,10 @@ impl ResourceGraph {
     /// The immediate dependencies recorded for `id`.
     ///
     /// A node's inputs may be of any kind, so the ids come back
-    /// [erased](ResourceId::erase). Each id is a strong reference in its own
+    /// [erased](ResHandle::erase). Each id is a strong reference in its own
     /// right: holding one keeps the input alive, exactly as holding any other
     /// id does.
-    pub fn dependencies<R>(&self, id: &ResourceId<R>) -> impl Iterator<Item = ResourceId> + '_ {
+    pub fn dependencies<R>(&self, id: &ResHandle<R>) -> impl Iterator<Item = ResHandle> + '_ {
         self.graph
             .dependencies(id.node)
             .map(|node| self.id_for(node))
@@ -868,13 +868,13 @@ impl ResourceGraph {
     /// The caller asks about the dependency of a node it holds an id to, so the
     /// dependent's own reference to that dependency is still in place and the
     /// upgrade cannot fail.
-    fn id_for(&self, node: NodeId) -> ResourceId {
+    fn id_for(&self, node: NodeId) -> ResHandle {
         let strong = self
             .graph
             .get(node)
             .and_then(|slot| Weak::upgrade(&slot.strong))
             .expect("a dependency of a live node is still held by that node");
-        ResourceId {
+        ResHandle {
             node,
             strong,
             kind: core::marker::PhantomData,
@@ -960,7 +960,7 @@ mod tests {
 
     /// The id a [`buffer_id`] hands back: a buffer id, spelled out so the
     /// tests do not have to infer it.
-    type BufferId = ResourceId<wgpu::Buffer>;
+    type BufferId = ResHandle<wgpu::Buffer>;
 
     /// Insert a buffer whose recipe records that it ran, under `name`, and
     /// returns a fresh buffer.
@@ -1272,8 +1272,8 @@ mod tests {
     #[test]
     fn an_id_crosses_threads() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<ResourceId>();
-        assert_send_sync::<ResourceId<wgpu::Buffer>>();
+        assert_send_sync::<ResHandle>();
+        assert_send_sync::<ResHandle<wgpu::Buffer>>();
     }
 
     /// A typed id resolves to the resource itself, without the caller

@@ -16,7 +16,7 @@
 
 use unlit_ecs::World;
 use unlit_wgpu::render_attachments::RenderAttachments;
-use unlit_wgpu::resources::{ResourceGraph, ResourceId, TextureView};
+use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureView};
 use unlit_wgpu::scene::full_viewport;
 use unlit_wgpu::specialize::SurfaceKey;
 
@@ -62,15 +62,15 @@ pub struct Renderer {
     /// The color attachment the frame renders into, as a texture-view resource
     /// in the context's graph, or `None` until [`Self::set_render_target`] binds
     /// one.
-    color_view: Option<ResourceId<TextureView>>,
+    color_view: Option<ResHandle<TextureView>>,
     /// The depth-stencil attachment the frame renders into, as a texture-view
     /// resource in the context's graph, or `None` until
     /// [`Self::set_render_target`] binds one.
-    depth_view: Option<ResourceId<TextureView>>,
+    depth_view: Option<ResHandle<TextureView>>,
     /// The multisample attachment, if any, as a texture-view resource in the
     /// context's graph; `None` for a non-multisampled pass or before
     /// [`Self::set_render_target`] binds one.
-    msaa_view: Option<ResourceId<TextureView>>,
+    msaa_view: Option<ResHandle<TextureView>>,
     /// The [`SurfaceKey`] of the currently bound attachments, cached so the
     /// surface does not have to be re-derived every draw. `None` until
     /// [`Self::set_render_target`] is called.
@@ -137,9 +137,9 @@ impl Renderer {
     pub fn set_render_target(
         &mut self,
         world: &World,
-        color_view: Option<ResourceId<TextureView>>,
-        depth_view: Option<ResourceId<TextureView>>,
-        msaa_view: Option<ResourceId<TextureView>>,
+        color_view: Option<ResHandle<TextureView>>,
+        depth_view: Option<ResHandle<TextureView>>,
+        msaa_view: Option<ResHandle<TextureView>>,
     ) {
         // Resolve every view up front so a bad id panics before any field is
         // touched. The handles are cloned out only to derive the surface key;

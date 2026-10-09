@@ -40,7 +40,7 @@ use core::ops::DerefMut;
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline};
-use unlit_wgpu::resources::{ResourceGraph, ResourceId};
+use unlit_wgpu::resources::{ResHandle, ResourceGraph};
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -118,7 +118,7 @@ struct Gpu {
     ///
     /// Holding it is what keeps the two uniforms alive: the group depends on
     /// them, and dropping the whole [`Gpu`] gives up the group with it.
-    global_group: ResourceId<wgpu::BindGroup>,
+    global_group: ResHandle<wgpu::BindGroup>,
     /// Uploads egui's textures and geometry and records its draws.
     integration: EguiIntegration,
 }

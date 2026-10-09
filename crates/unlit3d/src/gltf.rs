@@ -132,7 +132,7 @@ use unlit_ecs::{
     prelude::{Entity, World},
 };
 use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
-use unlit_wgpu::resources::{ResourceId, TextureExt, TextureView};
+use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
 /// The cutoff the glTF spec gives a `MASK` material that leaves `alphaCutoff`
 /// out.
@@ -180,9 +180,9 @@ pub struct GltfImage {
     /// The index of the image in the glTF document.
     pub image: usize,
     /// The uploaded texture holding the image's decoded pixels.
-    pub texture: ResourceId<wgpu::Texture>,
+    pub texture: ResHandle<wgpu::Texture>,
     /// A default view of that texture, for callers that sample it directly.
-    pub view: ResourceId<TextureView>,
+    pub view: ResHandle<TextureView>,
     /// Whether the texture may be sampled with a filtering sampler.
     ///
     /// An image is uploaded in the GPU format closest to its own pixels, and
@@ -206,9 +206,9 @@ pub struct GltfMaterial {
     /// The bind group that samples the base-color texture.
     pub bind_group: GpuMaterial,
     /// The texture view the bind group samples.
-    pub view: ResourceId<TextureView>,
+    pub view: ResHandle<TextureView>,
     /// The sampler the bind group uses.
-    pub sampler: ResourceId<wgpu::Sampler>,
+    pub sampler: ResHandle<wgpu::Sampler>,
 }
 
 /// A mesh uploaded from one glTF primitive.

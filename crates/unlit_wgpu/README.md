@@ -476,18 +476,18 @@ graph:
 - **Acyclicity is an invariant the graph itself guarantees.** A dependency that
   would close a cycle is rejected where it is declared, so the graph can always
   be traversed in dependency order.
-- **Handles are typed.** `ResourceId<R>`'s `R` is the resource type itself:
+- **Handles are typed.** `ResHandle<R>`'s `R` is the resource type itself:
   `get` returns that resource directly with no variant matching, and `replace`
   accepts only the same type, so an id cannot come to mean a different kind of
   resource. Where the type cannot be known at compile time — dependency sets,
   dirty-resource walks, a stored field handed back to the graph — the erased
-  `ResourceId<Resource>` is still used.
+  `ResHandle<Resource>` is still used.
 - **Insertion is immediate.** Inserting creates the node and returns its id,
   dependencies are declared one at a time with `add_dependency`, and there is no
   intermediate state waiting to be finished. A dependency that cannot be
   recorded — a cycle — panics where it is declared rather than returning an
   error: that is a caller error, and it can only be surfaced there.
-- **A handle is a reference.** `ResourceId` is a counted handle, not a bare
+- **A handle is a reference.** `ResHandle` is a counted handle, not a bare
   index: cloning one takes another reference to the resource and dropping one
   gives it up. A resource lives exactly while some id names it, so there is no
   removal call and no handle that goes stale. A dependency holds a reference

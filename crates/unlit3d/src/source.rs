@@ -1171,7 +1171,7 @@ mod tests {
 #[cfg(test)]
 mod release_tests {
     use super::*;
-    use unlit_wgpu::resources::{Resource as GraphResource, ResourceId};
+    use unlit_wgpu::resources::{ResHandle, Resource as GraphResource};
 
     /// A source that registers a node, so dropping it has something to give up.
     ///
@@ -1179,7 +1179,7 @@ mod release_tests {
     /// alive for as long as the source component does.
     struct OwningSource {
         context: RenderContext,
-        node: Option<ResourceId>,
+        node: Option<ResHandle>,
         scene: Scene,
     }
 
@@ -1216,7 +1216,7 @@ mod release_tests {
     /// the way a source with nothing to draw does.
     struct EarlyReturnSource {
         context: RenderContext,
-        node: Option<ResourceId>,
+        node: Option<ResHandle>,
         scene: Scene,
     }
 

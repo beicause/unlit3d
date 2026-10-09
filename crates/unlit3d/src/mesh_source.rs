@@ -24,9 +24,7 @@ use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::mesh::{JointMatrix, MeshMetadata};
 use unlit_wgpu::pipeline::supports_storage_buffers;
-use unlit_wgpu::resources::{
-    Resource, ResourceGraph, ResourceId, TextureExt, TextureView, Virtual,
-};
+use unlit_wgpu::resources::{ResHandle, Resource, ResourceGraph, TextureExt, TextureView, Virtual};
 use unlit_wgpu::scene::{MAX_VERTEX_BUFFERS, Scene};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, VertexBufferLayoutDesc, VertexLayout};
 use unlit_wgpu::staging::StagingBuffer;
@@ -120,23 +118,23 @@ pub struct MeshSource {
     pub(crate) context: RenderContext,
 
     /// Resource id of the camera uniform buffer.
-    camera_buf: ResourceId<wgpu::Buffer>,
+    camera_buf: ResHandle<wgpu::Buffer>,
     /// Resource id of the frame-globals uniform buffer.
-    globals_buf: ResourceId<wgpu::Buffer>,
+    globals_buf: ResHandle<wgpu::Buffer>,
     /// The mesh-metadata array, held in whichever resource the device reads.
     metadata_array: Array,
     /// Resource id of the mesh-metadata array.
-    metadata_buf: ResourceId<ArrayHandle>,
+    metadata_buf: ResHandle<ArrayHandle>,
     /// The frame's joint-matrix array, held in whichever resource the device
     /// reads.
     joints_array: Array,
     /// Resource id of the frame's joint-matrix array.
-    joints_buf: ResourceId<ArrayHandle>,
+    joints_buf: ResHandle<ArrayHandle>,
     /// The frame's morph-weight array, held in whichever resource the device
     /// reads.
     morph_weights_array: Array,
     /// Resource id of the frame's morph-weight array.
-    morph_weights_buf: ResourceId<ArrayHandle>,
+    morph_weights_buf: ResHandle<ArrayHandle>,
     /// The frame's morph-displacement array, pooling every morphed mesh's
     /// deltas into one resource.
     ///
@@ -146,7 +144,7 @@ pub struct MeshSource {
     /// bind.
     morph_deltas_pool: ArrayPool,
     /// Resource id of the frame's morph-displacement array.
-    morph_deltas_buf: ResourceId<ArrayHandle>,
+    morph_deltas_buf: ResHandle<ArrayHandle>,
     /// Whether a mesh's displacements were written into the pool since the
     /// array was last uploaded.
     ///
@@ -191,7 +189,7 @@ pub struct MeshSource {
     /// when the pool grows; see [`MeshSource::sync_pool_node`].
     pub(crate) index_pool: BufferPool,
     /// The graph node of [`MeshSource::index_pool`]'s buffer.
-    pub(crate) index_pool_id: ResourceId<wgpu::Buffer>,
+    pub(crate) index_pool_id: ResHandle<wgpu::Buffer>,
     /// The pool every mesh uploaded through
     /// [`MeshSourceUnlitExt::allocate_unlit_mesh`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_mesh) keeps its vertices in: one large
     /// buffer per vertex layout, so meshes that share a layout share a buffer,
@@ -200,7 +198,7 @@ pub struct MeshSource {
     pub(crate) vertex_pool: VertexStreamPool,
     /// The graph node of each of [`MeshSource::vertex_pool`]'s buffers, by the
     /// layout the buffer is shaped for.
-    vertex_pool_ids: HashMap<VertexBufferLayoutDesc, ResourceId<wgpu::Buffer>>,
+    vertex_pool_ids: HashMap<VertexBufferLayoutDesc, ResHandle<wgpu::Buffer>>,
 
     /// Every concrete pipeline registered with this source, in registration
     /// order.
@@ -588,9 +586,9 @@ impl MeshSource {
 
         // The parts, capped like the description they come from: a mesh cannot
         // have more vertex buffers than a pass can bind.
-        let mut buffers = ArrayVec::<ResourceId<wgpu::Buffer>, MAX_VERTEX_BUFFERS>::new();
+        let mut buffers = ArrayVec::<ResHandle<wgpu::Buffer>, MAX_VERTEX_BUFFERS>::new();
         let mut vertex_slots =
-            ArrayVec::<(u32, ResourceId<wgpu::Buffer>), MAX_VERTEX_BUFFERS>::new();
+            ArrayVec::<(u32, ResHandle<wgpu::Buffer>), MAX_VERTEX_BUFFERS>::new();
         let mut layouts = Vec::with_capacity(vertex_buffers.len());
         for desc in vertex_buffers {
             // The mesh's virtual root is built from it, so the buffer lives
@@ -724,7 +722,7 @@ impl MeshSource {
         &mut self,
         world: &World,
         texture: wgpu::Texture,
-    ) -> (ResourceId<wgpu::Texture>, ResourceId<TextureView>) {
+    ) -> (ResHandle<wgpu::Texture>, ResHandle<TextureView>) {
         let mut graph = Self::graph(world, self.context);
         let texture_id = graph.insert(texture, None);
         let view = TextureExt::create_view(
@@ -742,7 +740,7 @@ impl MeshSource {
         &mut self,
         world: &World,
         descriptor: Option<wgpu::SamplerDescriptor<'_>>,
-    ) -> ResourceId<wgpu::Sampler> {
+    ) -> ResHandle<wgpu::Sampler> {
         let sampler = self
             .device(world)
             .create_sampler(&descriptor.unwrap_or_default());
@@ -769,7 +767,7 @@ impl MeshSource {
         &mut self,
         world: &World,
         build: impl Fn(&ResourceGraph) -> wgpu::BindGroup + 'static,
-        dependencies: impl IntoIterator<Item = ResourceId>,
+        dependencies: impl IntoIterator<Item = ResHandle>,
     ) -> GpuMaterial {
         // The first build is eager: the node has to hold a bind group from the
         // start, and only the rebuilds that follow are deferred to `maintain`.
@@ -921,7 +919,7 @@ impl MeshSource {
         ctx: RenderContext,
         label: &str,
         array: &mut Array,
-        node: &ResourceId<ArrayHandle>,
+        node: &ResHandle<ArrayHandle>,
         device: &wgpu::Device,
         needed: u64,
     ) {
@@ -1053,7 +1051,7 @@ impl MeshSource {
         &mut self,
         world: &World,
         layout: &VertexBufferLayoutDesc,
-    ) -> ResourceId<wgpu::Buffer> {
+    ) -> ResHandle<wgpu::Buffer> {
         if let Some(id) = self.vertex_pool_ids.get(layout) {
             return id.clone();
         }
@@ -1074,7 +1072,7 @@ impl MeshSource {
     pub(crate) fn sync_vertex_node(
         &mut self,
         world: &World,
-        id: &ResourceId<wgpu::Buffer>,
+        id: &ResHandle<wgpu::Buffer>,
         layout: &VertexBufferLayoutDesc,
     ) {
         let buffer = self
@@ -1102,7 +1100,7 @@ impl MeshSource {
     /// is why there must not be one.
     pub(crate) fn sync_pool_node(
         pool: &BufferPool,
-        id: &ResourceId<wgpu::Buffer>,
+        id: &ResHandle<wgpu::Buffer>,
         graph: &mut ResourceGraph,
     ) {
         if graph.get(id) != Some(pool.buffer()) {
@@ -1642,7 +1640,7 @@ mod tests {
     /// id, ready for [`MeshSourceUnlitExt::allocate_unlit_material`](crate::unlit::MeshSourceUnlitExt::allocate_unlit_material).
     fn test_material_resources(
         harness: &mut Harness,
-    ) -> (ResourceId<TextureView>, ResourceId<wgpu::Sampler>) {
+    ) -> (ResHandle<TextureView>, ResHandle<wgpu::Sampler>) {
         let texture =
             harness
                 .source

@@ -11,7 +11,7 @@ use unlit_ecs::Entity;
 use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::offset_allocator::Allocation;
 use unlit_wgpu::render_attachments::{color_clear, depth_clear, stencil_clear};
-use unlit_wgpu::resources::{ResourceId, Virtual};
+use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::scene::MAX_VERTEX_BUFFERS;
 use unlit_wgpu::specialize::VertexLayout;
 
@@ -211,19 +211,19 @@ pub struct MeshParts {
     /// supplied are all nodes this one depends on, so dropping the last
     /// [`GpuMesh`] naming the root leaves the root — and with it the parts
     /// nothing else holds — for the next `maintain` to collect.
-    pub root: ResourceId<Virtual>,
+    pub root: ResHandle<Virtual>,
 
     /// Vertex buffers, each tagged with its slot index, in slot order.
-    pub vertex_buffers: ArrayVec<(u32, ResourceId<wgpu::Buffer>), MAX_VERTEX_BUFFERS>,
+    pub vertex_buffers: ArrayVec<(u32, ResHandle<wgpu::Buffer>), MAX_VERTEX_BUFFERS>,
 
     /// Index buffer, if the mesh is indexed.
-    pub index_buffer: Option<(ResourceId<wgpu::Buffer>, wgpu::IndexFormat)>,
+    pub index_buffer: Option<(ResHandle<wgpu::Buffer>, wgpu::IndexFormat)>,
 
     /// Resource id of the mesh bind group, bound at
     /// [`MESH_GROUP`](unlit_wgpu::pipeline::MESH_GROUP).
     ///
     /// `None` when the mesh was uploaded without one.
-    pub bind_group_id: Option<ResourceId<wgpu::BindGroup>>,
+    pub bind_group_id: Option<ResHandle<wgpu::BindGroup>>,
 
     /// The mesh's vertex range in the pool it was allocated from, to hand back
     /// when the mesh is removed.
@@ -506,7 +506,7 @@ pub struct GpuMaterial {
     /// Resource id of the material bind group (index [`MATERIAL_GROUP`]).
     ///
     /// [`MATERIAL_GROUP`]: unlit_wgpu::pipeline::MATERIAL_GROUP
-    pub bind_group_id: ResourceId<wgpu::BindGroup>,
+    pub bind_group_id: ResHandle<wgpu::BindGroup>,
 }
 
 impl GpuMaterial {
