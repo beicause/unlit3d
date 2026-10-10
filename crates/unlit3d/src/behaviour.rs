@@ -14,7 +14,7 @@ pub(crate) use unlit_ecs::{Entity, World};
 
 /// A callback that may read and write the world, and receives the entity it
 /// runs for together with one event.
-pub(crate) type EventCallback<E> = Box<dyn FnMut(&World, Entity, &E)>;
+pub type EventCallback<E> = Box<dyn FnMut(&World, Entity, &E)>;
 
 /// Declares one behaviour component over an event type.
 ///
