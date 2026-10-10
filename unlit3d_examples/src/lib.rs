@@ -363,7 +363,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     ));
     // The frame's own behaviours, in order: request the GPU, build the scene
     // and its surface, serve the controls, advance the scene, present it.
-    world.spawn_frame_behaviour(request_gpu());
+    world.spawn_frame_behaviour(request_gpu(app));
     world.spawn_frame_behaviour(ensure_presented(app));
     world.spawn_frame_behaviour(serve_scene_controls(app));
     world.spawn_frame_behaviour(advance_scene(app));
@@ -371,9 +371,9 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     // A resize is a second `OnWindowEvent` behaviour, so it sits on its own
     // entity: two of one family on an entity would be two borrows of one cell.
     world.spawn((resize_scene(app),));
-    // Serving a user event needs the proxy and the app's state, and it is a
-    // family of its own, so it sits on the app entity too.
-    world.spawn((handle_user_event(),));
+    // Serving a user event needs the proxy and the app's state, so it captures
+    // the app entity; it is a family of its own, so it sits on its own entity.
+    world.spawn((handle_user_event(app),));
     #[cfg(target_os = "android")]
     world.spawn((release_on_suspend(app),));
 
@@ -1260,10 +1260,10 @@ fn draw_blit(world: &World, app: Entity) {
 /// The window is created by the host at the end of the resume callback, so the
 /// request waits for a later frame; a `GpuState` that is no longer idle keeps
 /// a later frame from starting it twice.
-fn request_gpu() -> OnFrame {
-    OnFrame::new(FRAME_GPU, |world, entity, _frame| {
+fn request_gpu(app: Entity) -> OnFrame {
+    OnFrame::new(FRAME_GPU, move |world, _entity, _frame| {
         if !world
-            .get::<GpuState>(entity)
+            .get::<GpuState>(app)
             .is_some_and(|state| matches!(&*state, GpuState::Idle))
         {
             return;
@@ -1279,12 +1279,12 @@ fn request_gpu() -> OnFrame {
             return;
         };
         let Some(proxy) = world
-            .get::<WinitProxy<UserEvent>>(entity)
+            .get::<WinitProxy<UserEvent>>(app)
             .map(|proxy| proxy.0.clone())
         else {
             return;
         };
-        let _ = world.with_mut::<GpuState, _>(entity, |state| *state = GpuState::Requested);
+        let _ = world.with_mut::<GpuState, _>(app, |state| *state = GpuState::Requested);
         // The display handle is owned, not borrowed: the instance it builds has
         // to outlive this callback. The descriptor is the environment-aware one
         // so `WGPU_BACKEND` still selects a backend.
@@ -1309,17 +1309,17 @@ fn request_gpu() -> OnFrame {
 }
 
 /// Serve the events the app posts to itself.
-fn handle_user_event() -> OnUserEvent<UserEvent> {
-    OnUserEvent::new(|world, entity, event| match event {
+fn handle_user_event(app: Entity) -> OnUserEvent<UserEvent> {
+    OnUserEvent::new(move |world, _entity, event| match event {
         UserEvent::Ready(gpu) => {
-            let _ = world.with_mut::<GpuState, _>(entity, |state| {
+            let _ = world.with_mut::<GpuState, _>(app, |state| {
                 *state = GpuState::Ready(gpu.clone());
             });
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-            if world.get::<McpEnabled>(entity).is_some_and(|mcp| mcp.0) {
-                start_mcp(world, entity);
+            if world.get::<McpEnabled>(app).is_some_and(|mcp| mcp.0) {
+                start_mcp(world, app);
             }
-            present(world, entity);
+            present(world, app);
         }
         #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
         UserEvent::Command(command) => {
@@ -1329,7 +1329,7 @@ fn handle_user_event() -> OnUserEvent<UserEvent> {
         }
         UserEvent::Failed(error) => {
             log::error!("failed to start the renderer: {error}");
-            let _ = world.with_mut::<ExitRequest, _>(entity, |request| request.0 = true);
+            let _ = world.with_mut::<ExitRequest, _>(app, |request| request.0 = true);
         }
     })
 }
