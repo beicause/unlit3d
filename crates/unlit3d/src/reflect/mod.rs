@@ -1,7 +1,7 @@
 //! Reflection support for the components that cross a JSON boundary.
 //!
 //! [facet] derives a component's own field list, and the
-//! [registry](crate::reflect::registry) turns that reflection into the codec a
+//! [`crate::reflect::registry`] turns that reflection into the codec a
 //! JSON bridge addresses components by.
 //!
 //! [facet] reflects a type's own fields, but glam's vector and matrix types
