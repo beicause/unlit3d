@@ -947,7 +947,7 @@ fn release(world: &World, app: Entity) {
         .renderer;
     nested
         .with_mut::<Renderer, _>(renderer, |renderer| {
-            surface.release(nested, renderer);
+            surface.release(&nested, renderer);
         })
         .expect("the renderer is a resource entity");
     if let Some(mut attachments) = world.get_mut::<AttachmentsSlot>(app) {
