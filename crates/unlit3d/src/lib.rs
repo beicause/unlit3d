@@ -8,6 +8,7 @@ pub mod blit;
 pub mod bounds;
 pub mod components;
 pub mod culling;
+pub mod frame;
 #[cfg(feature = "gltf")]
 pub mod gltf;
 pub mod input;
@@ -46,6 +47,7 @@ pub mod prelude {
             RenderLoadOps, SkinBinding, SkinPose, Transform, ZSortedDrawing,
         },
         culling::is_culled,
+        frame::{FrameBehaviour, FrameBehaviourOrder, OnFrame, WorldFrameExt, dispatch_frame},
         input::{
             ImeEvent, ImeKind, InputEvent, InputHandle, InputState, Key, KeyEvent, Modifiers,
             MouseButton, MouseButtons, MouseEvent, OnIme, OnInput, OnKey, OnMouse, OnPointer,
