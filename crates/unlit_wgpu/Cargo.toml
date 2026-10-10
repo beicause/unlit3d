@@ -8,8 +8,10 @@ license.workspace = true
 keywords = ["gamedev", "graphics", "rendering", "webgpu", "wgpu"]
 # The integration tests build against `unlit_wgpu_test_util`, which is not
 # published, and compare against snapshot baselines that live in the asset
-# submodule; neither travels in a package, so the tests do not either.
-exclude = ["/tests"]
+# submodule; neither travels in a package, so the tests do not either. The
+# README links its diagram by absolute URL, so the packaged copy would go
+# unread.
+exclude = ["/assets", "/tests"]
 
 [[test]]
 harness = false

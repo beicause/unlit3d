@@ -5,6 +5,9 @@ edition.workspace = true
 description = "A Model Context Protocol server that drives a unlit3d world through its public API."
 repository.workspace = true
 license.workspace = true
+# The integration test drives the server binary over stdio and renders, so it
+# needs a GPU; it is not part of what a consumer downloads.
+exclude = ["/tests"]
 
 [lib]
 name = "unlit3d_mcp"
