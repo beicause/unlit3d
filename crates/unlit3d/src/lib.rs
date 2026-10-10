@@ -60,7 +60,7 @@ pub mod prelude {
         },
         renderer::Renderer,
         source::{
-            FrameOrder, FrameSource, FrameTarget, FrameViewport, InputCapture, MaintainScope,
+            FrameSource, FrameSourceOrder, FrameTarget, FrameViewport, InputCapture, MaintainScope,
             RenderContext, Source, WorldSourceExt, frame_target, frame_viewport, set_frame_target,
             set_frame_viewport, spawn_context,
         },

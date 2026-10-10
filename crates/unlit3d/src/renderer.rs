@@ -3,7 +3,7 @@
 //! A [`Renderer`] draws nothing itself. It owns the frame's render target and
 //! drives the frame's [`FrameSource`](crate::source::FrameSource)s: every source builds its own
 //! [`Scene`](unlit_wgpu::scene::Scene) from the world, then the driver records those scenes in
-//! [`FrameOrder`](crate::source::FrameOrder) into one pass, opened over the target's attachments. That is
+//! [`FrameSourceOrder`](crate::source::FrameSourceOrder) into one pass, opened over the target's attachments. That is
 //! the whole of it — the built-in mesh rendering is one source
 //! ([`MeshSource`](crate::mesh_source::MeshSource)) and has no more privilege
 //! than a caller's own.
@@ -81,7 +81,7 @@ pub struct Renderer {
     bound_size: Option<(u32, u32)>,
 
     /// Reports sources that declared the same
-    /// [`FrameOrder`](crate::source::FrameOrder), without repeating itself
+    /// [`FrameSourceOrder`](crate::source::FrameSourceOrder), without repeating itself
     /// every frame.
     warnings: OrderWarnings,
     /// The frame's sources in record order, reused every frame so resolving the
@@ -229,7 +229,7 @@ impl Renderer {
     ///
     /// The frame is assembled in two phases: every [`Source`] component builds
     /// its scene from the world, then the scenes are recorded in
-    /// [`FrameOrder`](crate::source::FrameOrder) into one pass, opened over the target bound with
+    /// [`FrameSourceOrder`](crate::source::FrameSourceOrder) into one pass, opened over the target bound with
     /// [`Self::set_render_target`]. The frame's [`RenderLoadOps`] — the first
     /// one any entity carries, or the defaults — decide what the pass loads and
     /// clears. The frame always records, so a world with no camera, no visible

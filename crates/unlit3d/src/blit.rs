@@ -22,7 +22,7 @@ use unlit_wgpu::specialize::{
     VertexStateDesc,
 };
 
-use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
+use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
 
 /// The WESL module whose fullscreen vertex the blit draws.
 const VERTEX_MODULE: &str = "fullscreen_vertex";
@@ -111,7 +111,7 @@ impl BlitTexture {
 /// [`UiSource`](crate::ui::UiSource) specializes its own.
 ///
 /// The blit covers the whole target, so it records at
-/// [`FrameOrder::MESH`] - before any overlay a world draws on top of it.
+/// [`FrameSourceOrder::MESH`] - before any overlay a world draws on top of it.
 #[derive(Default)]
 pub struct BlitSource {
     /// The draws assembled for the current frame.
@@ -262,8 +262,8 @@ impl FrameSource for BlitSource {
         &self.scene
     }
 
-    fn order(&self) -> FrameOrder {
-        FrameOrder::MESH
+    fn order(&self) -> FrameSourceOrder {
+        FrameSourceOrder::MESH
     }
 }
 

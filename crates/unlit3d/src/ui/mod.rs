@@ -54,7 +54,7 @@ use zerocopy::IntoBytes;
 use crate::input::InputHandle;
 pub use crate::source::InputCapture;
 
-use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
+use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
 /// egui, re-exported because a [`UiPanel`] is written against its types.
 ///
 /// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
@@ -129,7 +129,7 @@ struct Gpu {
 /// memory survive across frames — and drives every [`UiPanel`] in the world.
 /// Mount it like any other source
 /// ([`spawn_source`](crate::source::WorldSourceExt::spawn_source)); it declares
-/// [`FrameOrder::OVERLAY`], so it records after the meshes.
+/// [`FrameSourceOrder::UI`], so it records after the meshes.
 ///
 /// Nothing is built until the first frame: the source's pipeline is
 /// specialized on the frame's target, which is only known in
@@ -434,8 +434,8 @@ impl FrameSource for UiSource {
         &self.scene
     }
 
-    fn order(&self) -> FrameOrder {
-        FrameOrder::OVERLAY
+    fn order(&self) -> FrameSourceOrder {
+        FrameSourceOrder::UI
     }
 }
 
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn a_fresh_source_declares_the_overlay_order() {
         let source = UiSource::new();
-        assert_eq!(source.order(), FrameOrder::OVERLAY);
+        assert_eq!(source.order(), FrameSourceOrder::UI);
     }
 
     /// A panel's queued spawn lands once the frame loop applies the queue.

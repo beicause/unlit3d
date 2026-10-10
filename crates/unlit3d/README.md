@@ -104,7 +104,7 @@ mode). The bad:
 A frame is **not** "one main scene plus extras". [`Renderer`](renderer::Renderer) draws nothing
 itself: it owns the frame's render target and records the frame sources it is
 given, in the order each source declares through
-[`FrameOrder`](source::FrameOrder).
+[`FrameSourceOrder`](source::FrameSourceOrder).
 
 - Each source builds its own [`Scene`](unlit_wgpu::scene::Scene) in `build_scene`, then the
   renderer records every scene in order into one pass opened over the target's
@@ -192,7 +192,7 @@ compile-time guarantee.
 <details>
 <summary>Why a source declares its order instead of relying on creation order</summary>
 
-The order is a required method, and [`FrameOrder`](source::FrameOrder) does not
+The order is a required method, and [`FrameSourceOrder`](source::FrameSourceOrder) does not
 implement `Default`. With a default value, "forgot to declare the order" and
 "really meant to keep creation order" become indistinguishable, and the ordering
 intent turns implicit again. Sources with equal order are logged and warned

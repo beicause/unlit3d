@@ -510,7 +510,7 @@ fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPane
     let ui = world.spawn_source(UiSource::new());
     if ui_first {
         let _ = world.with_mut::<Source, _>(ui, |source| {
-            source.set_order(Some(FrameOrder(FrameOrder::MESH.0 - 1)))
+            source.set_order(Some(FrameSourceOrder(FrameSourceOrder::MESH.0 - 1)))
         });
     }
 
@@ -526,7 +526,7 @@ const OVERLAP_PIXEL: (u32, u32) = (128, 144);
 /// A pixel inside the band that the cube does not cover.
 const PANEL_PIXEL: (u32, u32) = (16, 144);
 
-/// Record order follows the declared `FrameOrder`, not the mount order.
+/// Record order follows the declared `FrameSourceOrder`, not the mount order.
 ///
 /// The panel is opaque so each order leaves one colour on top: with the UI
 /// last the panel's colour survives the overlap, and with the UI first the
