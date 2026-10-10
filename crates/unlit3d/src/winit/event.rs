@@ -88,20 +88,28 @@ behaviour!(
     "Runs when the system reports a memory warning."
 );
 
+/// The callback an [`OnUserEvent`] holds.
+///
+/// A user event is the application's own type and often carries something that
+/// cannot be copied — an MCP command, a value from another thread — so the
+/// event is handed to the callback mutably and the callback may take what it
+/// needs out of it.
+pub type WinitUserCallback<U> = Box<dyn FnMut(&World, Entity, &mut U)>;
+
 /// Runs when the event loop receives a user event.
 ///
 /// The event type is the generic parameter of the [`EventLoop`], so this one
 /// cannot come from the `behaviour!` macro.
-pub struct OnUserEvent<U: 'static>(pub WinitCallback<U>);
+pub struct OnUserEvent<U: 'static>(pub WinitUserCallback<U>);
 
 impl<U: 'static> OnUserEvent<U> {
     /// Wrap `f` as an [`OnUserEvent`].
-    pub fn new(f: impl FnMut(&World, Entity, &U) + 'static) -> Self {
+    pub fn new(f: impl FnMut(&World, Entity, &mut U) + 'static) -> Self {
         Self(Box::new(f))
     }
 
     /// Run this behaviour for `entity` with `event`.
-    pub fn run(&mut self, world: &World, entity: Entity, event: &U) {
+    pub fn run(&mut self, world: &World, entity: Entity, event: &mut U) {
         (self.0)(world, entity, event);
     }
 }
@@ -303,9 +311,9 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         self.set_resumed(false);
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: U) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, mut event: U) {
         for (entity, mut behaviour) in self.world.query::<&mut OnUserEvent<U>>() {
-            behaviour.run(&self.world, entity, &event);
+            behaviour.run(&self.world, entity, &mut event);
         }
         self.settle(event_loop);
     }
@@ -413,7 +421,7 @@ mod tests {
             let seen = seen.clone();
             move |_world, _entity, event| *seen.borrow_mut() = Some(*event)
         });
-        behaviour.run(&world, Entity::from_bits(0), &7);
+        behaviour.run(&world, Entity::from_bits(0), &mut 7);
         assert_eq!(*seen.borrow(), Some(7));
     }
 }

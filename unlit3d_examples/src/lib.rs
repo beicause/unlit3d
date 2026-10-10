@@ -15,7 +15,6 @@ mod web;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use cli::{Args, Parsed};
 use scenes::SceneControl;
@@ -23,17 +22,23 @@ use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
 use unlit3d::winit::WindowSurface;
+use unlit3d::winit::builtin::{
+    CreateWindowRequest, DisplayHandle, ExitRequest, Resumed, WindowSpec, WinitProxy,
+    create_window_on_resume, exit_on_close_requested, exit_on_escape,
+    request_redraw_while_foreground, window, winit_input_behaviour,
+};
+#[cfg(target_os = "android")]
+use unlit3d::winit::event::OnSuspended;
+use unlit3d::winit::event::{OnAboutToWait, OnUserEvent, OnWindowEvent, WinitHost};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
 use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit_wgpu::scene::ViewportRect;
 use web_time::Instant;
-use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::event::WindowEvent;
+use winit::event_loop::{ControlFlow, EventLoop};
+use winit::window::Window;
 
 /// The number of samples the windowed loop presents every frame with.
 const SAMPLE_COUNT: u32 = scenes::spin_cube::SAMPLE_COUNT;
@@ -234,56 +239,61 @@ fn build_blit_world(context: &Gpu, offscreen: &wgpu::Texture) -> (World, BlitVie
 /// still resolve it by handle; the blit world's `BlitTexture` is replaced with
 /// a view of it, which makes `BlitSource` rebuild its bind group on the next
 /// frame.
-fn resize_offscreen(app: &mut App, size: (u32, u32)) {
+fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
     let (width, height) = size;
     if width == 0 || height == 0 {
         return;
     }
-    let (Some(mesh), Some(blit)) = (app.mesh, app.blit) else {
+    let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
         return;
     };
-    let Some(context) = app.context.ready() else {
+    let Some(blit_entity) = world.get::<BlitEntity>(app).and_then(|slot| slot.0) else {
         return;
     };
-    let device = context.device.clone();
-    let def = app.initial_scene;
-    let target = {
-        let world = app
-            .host
-            .get::<World>(mesh)
-            .expect("the mesh entity carries a world");
-        let renderer = app
-            .host
-            .get::<Scene>(mesh)
-            .expect("the mesh entity carries a scene")
-            .renderer;
-        world
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                bind_offscreen_target(&world, renderer, &device, size, def.samples, def.depth)
-            })
-            .expect("the renderer is a resource entity")
+    let Some(gpu) = gpu(world, app) else {
+        return;
     };
+    let def = world
+        .get::<InitialScene>(app)
+        .expect("the app entity carries its initial scene")
+        .0;
+    let scene_world = world
+        .get::<World>(scene_entity)
+        .expect("the scene entity carries a world");
+    let renderer = world
+        .get::<Scene>(scene_entity)
+        .expect("the scene entity carries a scene")
+        .renderer;
+    let target = scene_world
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            bind_offscreen_target(
+                &scene_world,
+                renderer,
+                &gpu.device,
+                size,
+                def.samples,
+                def.depth,
+            )
+        })
+        .expect("the renderer is a resource entity");
     let view = TextureExt::create_view(&target, &wgpu::TextureViewDescriptor::default());
     let (texture_entity, blit_renderer) = {
-        let view = app
-            .host
-            .get::<BlitView>(blit)
+        let blit = world
+            .get::<BlitView>(blit_entity)
             .expect("the blit entity carries a blit view");
-        (view.texture, view.renderer)
+        (blit.texture, blit.renderer)
     };
-    let blit_world = app
-        .host
-        .get::<World>(blit)
+    let blit_world = world
+        .get::<World>(blit_entity)
         .expect("the blit entity carries a world");
     let ctx = blit_world
         .get::<Renderer>(blit_renderer)
         .expect("the blit renderer is a resource entity")
         .context();
     let texture = BlitTexture::new(&blit_world, ctx, view);
-    *app.host
+    *world
         .get_mut::<BlitTexture>(texture_entity)
         .expect("the blit texture entity carries a blit texture") = texture;
-    app.offscreen = Some(target);
 }
 
 /// Drive the windowed example on `event_loop` until it exits.
@@ -295,44 +305,71 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     // Poll rather than wait: the scene animates every frame.
     event_loop.set_control_flow(ControlFlow::Poll);
     let scene = scenes::by_id(&args.scene).expect("validated by the CLI");
-    let app = App {
-        proxy: event_loop.create_proxy(),
-        window: None,
-        context: GpuState::Idle,
-        // The host owns every world the app draws: the scene's and, in MCP
-        // mode, the blit's, each a `World` component on an entity of this one.
-        host: World::new(),
-        mesh: None,
-        blit: None,
-        surface: None,
-        attachments: None,
-        foreground: false,
-        // Overwritten by the first frame, so its delta — the gap between
-        // startup and that frame — is not mistaken for a frame's own.
-        last_frame: Instant::now(),
-        initial_size: args.size.unwrap_or(scene.size),
-        initial_scene: scene,
-        selector_pos: None,
-        // Serving MCP needs the stdio transport and a tokio runtime, neither
-        // of which a browser or an activity has; the switch is parsed
-        // everywhere but only acts where it can.
-        mcp: args.mcp && MCP_SUPPORTED,
-        offscreen: None,
-    };
+    let proxy = event_loop.create_proxy();
 
-    // Native runs the loop on this thread. The web hands the app to the
-    // browser instead, which drives it from its own event callbacks — the
-    // loop cannot be run to completion there.
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let mut app = app;
-        event_loop.run_app(&mut app).expect("the event loop runs");
-    }
+    let mut host = WinitHost::<UserEvent>::new();
+    let world = host.world_mut();
+
+    // One input state, shared: the host world carries the handle and the
+    // adapter that feeds it, and every nested world the host reaches gets a
+    // clone of it.
+    let input = InputHandle::new();
+    world.spawn((input.clone(),));
+    world.spawn((winit_input_behaviour(WinitInput::new(input)),));
+
+    // The window is requested at the first resume, not created here: a
+    // platform may not allow a window before then.
+    let initial_size = args.size.unwrap_or(scene.size);
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(unused_mut, reason = "wasm32 reassigns to append the canvas")
+    )]
+    let mut attributes = Window::default_attributes()
+        .with_title("unlit3d + winit")
+        .with_inner_size(winit::dpi::LogicalSize::new(initial_size.0, initial_size.1));
     #[cfg(target_arch = "wasm32")]
     {
-        use winit::platform::web::EventLoopExtWebSys;
-        event_loop.spawn_app(app);
+        use winit::platform::web::WindowAttributesExtWebSys;
+        attributes = attributes.with_append(true);
     }
+    world.spawn((
+        WindowSpec(attributes),
+        CreateWindowRequest(None),
+        create_window_on_resume(),
+    ));
+
+    world.spawn((ExitRequest(false), exit_on_close_requested()));
+    world.spawn((ExitRequest(false), exit_on_escape()));
+    world.spawn((request_redraw_while_foreground(),));
+
+    // The application's state and its per-callback behaviours share one
+    // entity: every component is its own cell, so a callback writing a sibling
+    // state component never conflicts with the behaviour being run.
+    let app = world.spawn((
+        GpuState::Idle,
+        SceneEntity(None),
+        BlitEntity(None),
+        SurfaceSlot(None),
+        AttachmentsSlot(None),
+        LastFrame(Instant::now()),
+        InitialScene(scene),
+        SelectorPos(None),
+        McpEnabled(args.mcp && MCP_SUPPORTED),
+        ExitRequest(false),
+        WinitProxy(proxy),
+        request_gpu(),
+        draw_on_redraw(),
+    ));
+    // A resize is a second `OnWindowEvent` behaviour, so it sits on its own
+    // entity: two of one family on an entity would be two borrows of one cell.
+    world.spawn((resize_scene(app),));
+    // Serving a user event needs the proxy and the app's state, and it is a
+    // family of its own, so it sits on the app entity too.
+    world.spawn((handle_user_event(),));
+    #[cfg(target_os = "android")]
+    world.spawn((release_on_suspend(app),));
+
+    host.run(event_loop).expect("the event loop runs");
 }
 
 /// Events delivered to the winit loop from outside a `WindowEvent`.
@@ -347,79 +384,11 @@ enum UserEvent {
     /// It arrives on this thread because a world is not `Send`; the app
     /// resolves the command's world handle and dispatches it here, between
     /// frames, so no command ever runs while a frame is being drawn.
+    ///
+    /// The command is wrapped in an `Option` because a user event reaches its
+    /// callbacks mutably and the one that runs it takes it out.
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    Command(unlit3d_mcp::Command),
-}
-
-/// The application.
-///
-/// The state is split by how long it lives, because a suspension does not reset
-/// all of it. The window handle and the GPU context outlive a suspension; the
-/// ECS world outlives it too, and holds everything the current scene has — the
-/// spin angle, the camera orbit, the panel values. Only the swap chain, which a
-/// suspension does invalidate, is dropped and built again.
-///
-/// Switching scenes is a rebuild of that world: the old scene's world and the
-/// surface presenting it go together, and the new scene is built with the same
-/// GPU context and window.
-struct App {
-    /// Sends the async GPU setup's result back to the loop.
-    proxy: EventLoopProxy<UserEvent>,
-    /// The window, created at the first resume and kept for the app's life.
-    ///
-    /// The platform's native window comes and goes with a suspension — Android
-    /// destroys it and hands a new one back — but this handle outlives that,
-    /// and the surface the scene presents through is built from it again.
-    window: Option<Arc<Window>>,
-    /// Where the one-time asynchronous GPU setup stands.
-    context: GpuState,
-    /// The world that owns every other world the app draws.
-    ///
-    /// A [`World`] is not `Send`, so the scene cannot be moved to a render
-    /// thread; instead the scene's world and, in MCP mode, the blit's are
-    /// components of this one, reached through the entity each is spawned on.
-    /// The host itself holds no GPU resources, which is what lets an MCP
-    /// command name it as the world to run against.
-    host: World,
-    /// The host entity carrying the scene's world and its [`Scene`].
-    ///
-    /// Built once the GPU context arrives and kept across a suspension so the
-    /// world's state survives it. `None` until then.
-    mesh: Option<Entity>,
-    /// The host entity carrying the MCP blit world, in MCP mode only.
-    blit: Option<Entity>,
-    /// The swap chain the presented world draws through, absent while
-    /// suspended.
-    surface: Option<WindowSurface>,
-    /// The depth and multisample attachments the presented frame draws with,
-    /// built with the surface and dropped with it.
-    ///
-    /// They live in whichever world the surface presents — the scene's, or the
-    /// MCP run's blit world — so they are rebuilt when that world is.
-    attachments: Option<FrameAttachments>,
-    /// Whether the platform currently has a native window to present into.
-    ///
-    /// False between a suspension and the resume that ends it, which is the
-    /// stretch in which no surface can be built.
-    foreground: bool,
-    /// The time the previous frame was drawn at, for the frame delta.
-    last_frame: Instant,
-    /// The window's initial size, from the command line or the scene's own.
-    initial_size: (u32, u32),
-    /// The scene the example starts with; a switch replaces it.
-    initial_scene: &'static scenes::SceneDef,
-    /// The selector window's rectangle the last time a scene was live, so a
-    /// scene switch can rebuild it in the same place and at the same size.
-    selector_pos: Option<egui::Rect>,
-    /// Whether to serve the world over the Model Context Protocol rather than
-    /// drive a scene on this thread.
-    ///
-    /// False on the web and on Android, which have no stdio transport; see
-    /// [`MCP_SUPPORTED`].
-    mcp: bool,
-    /// The color texture the MCP scene's frames land in, in MCP mode. The
-    /// window's blit world samples it.
-    offscreen: Option<wgpu::Texture>,
+    Command(Option<unlit3d_mcp::Command>),
 }
 
 /// The blit world's driving state, a component of the host alongside its
@@ -445,6 +414,7 @@ struct BlitView {
 /// The context and its device outlive a suspension: rebuilding them would drop
 /// every pipeline, buffer and texture the scene holds, for a change the
 /// platform only makes to the native window.
+#[derive(Clone)]
 struct Gpu {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
@@ -525,16 +495,6 @@ enum GpuState {
     Ready(Gpu),
 }
 
-impl GpuState {
-    /// The context, once the setup landed.
-    fn ready(&mut self) -> Option<&mut Gpu> {
-        match self {
-            Self::Ready(gpu) => Some(gpu),
-            Self::Idle | Self::Requested => None,
-        }
-    }
-}
-
 /// The scene's world and the frame loop that drives it.
 ///
 /// Deliberately knows nothing about how a frame reaches a display: it advances
@@ -557,9 +517,6 @@ pub struct Scene {
     /// The renderer resource entity: the handle every renderer access goes
     /// through.
     pub renderer: Entity,
-    /// Translates the window's events into the world's input events. The
-    /// snapshot tests never feed it, so its state stays idle.
-    input: WinitInput,
     /// The size the scene's content is drawn at, in pixels: the target's own,
     /// or the letterboxed part of it when [`Self::viewport`] is set.
     ///
@@ -613,761 +570,679 @@ struct SceneSwitch(Option<&'static scenes::SceneDef>);
 /// window the request is served on. See [`web`].
 struct FullscreenRequest(bool);
 
-impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // Already foreground: a redundant resume, which platforms are allowed
-        // to send, must not open a second window or build a second surface.
-        if self.foreground {
-            return;
-        }
+/// The host entity carrying the scene's world and its [`Scene`].
+///
+/// `None` until the GPU context arrives. The world itself outlives a
+/// suspension — only the swap chain it is presented through does not — so the
+/// scene's state survives one.
+struct SceneEntity(Option<Entity>);
 
-        // The window outlives a suspension, so it is opened once and only the
-        // surface is rebuilt after one. Android destroys the native window and
-        // hands a new one back to the same `Window`, so there is nothing to
-        // reopen.
-        if self.window.is_none() {
-            #[cfg_attr(
-                not(target_arch = "wasm32"),
-                expect(unused_mut, reason = "wasm32 reassigns to append the canvas")
-            )]
-            let mut attributes = Window::default_attributes()
-                .with_title("unlit3d + winit")
-                .with_inner_size(winit::dpi::LogicalSize::new(
-                    self.initial_size.0,
-                    self.initial_size.1,
-                ));
+/// The host entity carrying the MCP blit world, in MCP mode only.
+struct BlitEntity(Option<Entity>);
 
-            // winit creates the canvas but does not put it in the page; without
-            // this the web build would render to nothing visible.
-            #[cfg(target_arch = "wasm32")]
-            {
-                use winit::platform::web::WindowAttributesExtWebSys;
-                attributes = attributes.with_append(true);
-            }
+/// The swap chain the presented world draws through, absent while suspended.
+struct SurfaceSlot(Option<WindowSurface>);
 
-            let window = match event_loop.create_window(attributes) {
-                Ok(window) => Arc::new(window),
-                Err(error) => {
-                    log::error!("failed to open a window: {error}");
-                    event_loop.exit();
-                    return;
-                }
-            };
-            self.window = Some(window);
-        }
-        self.foreground = true;
-        // The frame clock restarts here rather than on the last frame, so the
-        // stretch the app spent suspended — which is arbitrarily long, and no
-        // frame's own — does not reach the scene as one frame's delta.
-        self.last_frame = Instant::now();
+/// The depth and multisample attachments the presented frame draws with, built
+/// with the surface and dropped with it.
+///
+/// They live in whichever world the surface presents — the scene's, or the MCP
+/// run's blit world — so they are rebuilt when that world is.
+struct AttachmentsSlot(Option<FrameAttachments>);
 
-        // The GPU context is requested once, against the first surface. Its
-        // adapter, device and everything built from them survive a suspension,
-        // so a later resume only needs a surface for the window it already
-        // has; see `Self::present`. `Requested` is what keeps a redundant
-        // resume from starting the request twice.
-        if matches!(self.context, GpuState::Idle) {
-            self.context = GpuState::Requested;
-            let window = self.window.clone().expect("the window was just opened");
+/// The color texture the MCP scene's frames land in, in MCP mode. The window's
+/// blit world samples it.
+struct Offscreen(Option<wgpu::Texture>);
 
-            // The display handle is taken here, on the thread that owns the
-            // event loop, and *owned* so the instance can outlive this borrow.
-            // It is what the GLES and WebGL2 backends use to reach the
-            // platform's display connection, and it is passed through the
-            // environment-aware descriptor, so `WGPU_BACKEND` and friends still
-            // select the backend by name.
-            let display = event_loop.owned_display_handle();
-            let proxy = self.proxy.clone();
+/// The time the previous frame was drawn at, for the frame delta.
+struct LastFrame(Instant);
 
-            // Everything else runs off the event loop's thread (native) or in
-            // the browser's task queue (web): the adapter and device requests
-            // are asynchronous on both, and so is finding out whether the
-            // browser really has WebGPU.
-            //
-            // `new_instance_with_webgpu_detection` is what makes that choice.
-            // WebGPU support has to be settled when the instance is created —
-            // the `navigator.gpu` object alone is not enough, since a browser
-            // may expose it and still fail to produce an adapter — so this asks
-            // for one before committing and drops the WebGPU backend if there
-            // is none. The WebGL2 backend then serves the frame. Building the
-            // instance with `Instance::new` instead would commit to WebGPU on
-            // the strength of the property alone.
-            //
-            // The surface is created here rather than on the event loop's
-            // thread for the same reason: it needs the instance, and the
-            // adapter is required to be able to present to it. It is a *probe*,
-            // dropped again by `Gpu::request`; whoever presents builds one for
-            // the window it has at that moment.
-            spawn(async move {
-                let instance = wgpu::util::new_instance_with_webgpu_detection(
-                    wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
-                )
-                .await;
-                let surface = instance
-                    .create_surface(window)
-                    .expect("the window presents to a surface");
-                match Gpu::request(instance, surface).await {
-                    Ok(gpu) => {
-                        let _ = proxy.send_event(UserEvent::Ready(gpu));
-                    }
-                    Err(error) => {
-                        let _ = proxy.send_event(UserEvent::Failed(error.to_string()));
-                    }
-                }
-            });
-        }
+/// The scene the example starts with; a switch replaces it.
+struct InitialScene(&'static scenes::SceneDef);
 
-        self.present();
-    }
+/// The selector window's rectangle the last time a scene was live, so a scene
+/// switch can rebuild it in the same place and at the same size.
+struct SelectorPos(Option<egui::Rect>);
 
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
-        self.foreground = false;
-        // Android destroys the app's `SurfaceView` when it is suspended, and
-        // wgpu requires every surface drawn from it to be dropped before this
-        // callback returns. iOS and the web only freeze the app — their canvas
-        // outlives the suspension — so theirs is kept.
-        //
-        // Only the swap chain goes, never the world it presented: the state
-        // the app is resumed into is the state it was suspended in.
-        #[cfg(target_os = "android")]
-        self.release();
-    }
+/// Whether to serve the world over the Model Context Protocol rather than
+/// drive a scene on this thread.
+///
+/// False on the web and on Android, which have no stdio transport; see
+/// [`MCP_SUPPORTED`].
+struct McpEnabled(bool);
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        match event {
-            UserEvent::Ready(gpu) => {
-                // Kept rather than dropped when this lands while suspended:
-                // the context is worth keeping, and only the surface is
-                // invalid then. `present` builds what it can with it.
-                self.context = GpuState::Ready(gpu);
-                self.present();
-                // Serve the world over stdio once it exists. The transport
-                // runs on its own thread and hands every command back to this
-                // one through the proxy; a failure to start it is reported and
-                // the window carries on rather than taking the process down.
-                #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-                if self.mcp {
-                    self.start_mcp();
-                }
-            }
-            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-            UserEvent::Command(command) => self.dispatch_command(command),
-            UserEvent::Failed(error) => {
-                log::error!("failed to start the renderer: {error}");
-                event_loop.exit();
-            }
-        }
-    }
+/// One frame's work, deferred to the host's apply.
+///
+/// Advancing a scene and landing the changes its behaviour queued both need
+/// `&mut World`, which only a command is handed; a callback runs with
+/// `&World`. The command is applied between two event callbacks, so no frame
+/// is drawn while one is being handled.
+struct Frame {
+    /// The app entity carrying the state the frame reads and writes.
+    app: Entity,
+}
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: WindowId,
-        event: WindowEvent,
-    ) {
-        // Every window event goes to the input adapter of the scene's world
-        // first, so the frame that follows sees this event whichever branch
-        // handles it below. The adapter ignores the events that carry no
-        // input. MCP mode keeps the scene on this thread too, so the window
-        // feeds it exactly as the windowed path does.
-        if let Some(mesh) = self.mesh {
-            let scene = self
-                .host
-                .get::<Scene>(mesh)
-                .expect("the mesh entity carries a scene");
-            scene.input.on_window_event(&event);
-        }
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::KeyboardInput { event, .. } => {
-                if event.state == ElementState::Pressed
-                    && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
-                {
-                    event_loop.exit();
-                }
-            }
-            WindowEvent::Resized(size) => {
-                // The swap chain and its attachments are rebuilt for the new
-                // size below, and the camera's projection follows the new
-                // aspect on the next frame so nothing is stretched.
-                if size.width == 0 || size.height == 0 {
-                    return;
-                }
-                if let Some(mesh) = self.mesh {
-                    self.host
-                        .get_mut::<Scene>(mesh)
-                        .expect("the mesh entity carries a scene")
-                        .resize((size.width, size.height), self.initial_scene.baseline);
-                }
-                if self.mcp {
-                    resize_offscreen(self, (size.width, size.height));
-                }
-                self.resize_surface(size.width, size.height);
-            }
-            WindowEvent::RedrawRequested => self.draw(),
-            _ => {}
-        }
-    }
-
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Ask for another frame every turn of the loop, so the scene animates.
-        // Nothing is asked for while suspended: the app is not being looked at,
-        // and on Android its surface is gone until the next resume.
-        if self.foreground
-            && self.surface.is_some()
-            && let Some(window) = &self.window
-        {
-            window.request_redraw();
-        }
+impl Command for Frame {
+    fn apply(self: Box<Self>, world: &mut World) {
+        draw_frame(world, self.app);
     }
 }
 
-impl App {
-    /// Serve the host over stdio, once the GPU context and the scene are here.
-    ///
-    /// Only the transport runs on its own thread — it blocks its caller on
-    /// stdio — and every command it receives is handed straight back to the
-    /// event loop through the proxy, so the world is only ever touched on the
-    /// thread that owns it.
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    fn start_mcp(&mut self) {
-        let proxy = self.proxy.clone();
-        std::thread::Builder::new()
-            .name("unlit3d-mcp-transport".to_owned())
-            .spawn(move || {
-                let sink = move |command| proxy.send_event(UserEvent::Command(command)).is_ok();
-                if let Err(error) = unlit3d_mcp::serve_stdio_with(sink) {
-                    log::error!("the MCP server stopped: {error}");
-                }
-            })
-            .expect("the MCP transport thread starts");
-    }
+/// Run one MCP command against a nested world of the host.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+struct RunInWorld {
+    /// The host entity carrying the world the command names.
+    entity: Entity,
+    /// The command to run.
+    command: unlit3d_mcp::Command,
+}
 
-    /// Run a command from the transport against the world it names.
-    ///
-    /// The handle is the bits of the host entity whose `World` component the
-    /// command runs in; `None` means the host world itself, which carries no
-    /// GPU resources but can still answer ECS queries. A handle naming an
-    /// entity that carries no world is reported to the caller rather than
-    /// dropped.
-    #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    fn dispatch_command(&mut self, command: unlit3d_mcp::Command) {
-        let Some(entity) = command.world_handle() else {
-            unlit3d_mcp::dispatch(command, &mut self.host);
-            return;
-        };
-        let Some(mut world) = self.host.get_mut::<World>(entity) else {
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+impl Command for RunInWorld {
+    fn apply(self: Box<Self>, world: &mut World) {
+        let Self { entity, command } = *self;
+        let Some(mut nested) = world.get_mut::<World>(entity) else {
             command.fail(format!("host entity {} carries no world", entity.to_bits()));
             return;
         };
-        unlit3d_mcp::dispatch(command, &mut world);
+        unlit3d_mcp::dispatch(command, &mut nested);
     }
 }
 
-impl App {
-    /// Build whatever the context, the window and the foreground allow.
-    ///
-    /// Every one of the three arrives on its own schedule — the context from
-    /// the async setup, the window and the foreground from the platform's
-    /// lifecycle — so this is called after each and does nothing until all
-    /// three are here. The scene is built once and outlives every suspension;
-    /// the swap chain is built, released and built again around them.
-    ///
-    /// The scene is the one [`Self::initial_scene`] names — the command line's
-    /// `--scene`, replaced when the selector panel requests a switch.
-    fn present(&mut self) {
-        let (Some(context), Some(window)) = (self.context.ready(), self.window.clone()) else {
-            return;
-        };
-        if !self.foreground {
-            return;
-        }
+/// Run one MCP command against the host world itself.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+struct RunInHost {
+    /// The command to run.
+    command: unlit3d_mcp::Command,
+}
 
-        // A window that has not been laid out yet reports nothing, and the scene
-        // divides by its size for the camera's aspect — a zero there is a NaN
-        // projection. The real size arrives as a resize and corrects this.
-        let size = window.inner_size();
-        let size = (size.width.max(1), size.height.max(1));
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+impl Command for RunInHost {
+    fn apply(self: Box<Self>, world: &mut World) {
+        unlit3d_mcp::dispatch(self.command, world);
+    }
+}
 
-        // The scene's world is built once and lives on the host, next to the
-        // `Scene` that drives it. MCP mode builds the very same scene here,
-        // on this thread — a world is not `Send` — and the transport only
-        // reaches it through commands, so the window draws it exactly as the
-        // windowed path does.
-        if self.mesh.is_none() {
-            let def = self.initial_scene;
-            let (world, scene) = Scene::new(
-                context.device.clone(),
-                context.queue.clone(),
-                context.capabilities,
+/// The GPU context, once the asynchronous setup has landed.
+fn gpu(world: &World, app: Entity) -> Option<Gpu> {
+    let state = world.get::<GpuState>(app)?;
+    match &*state {
+        GpuState::Ready(gpu) => Some(gpu.clone()),
+        GpuState::Idle | GpuState::Requested => None,
+    }
+}
+
+/// The world a frame is presented through, and the renderer entity inside it.
+///
+/// In MCP mode the swap chain presents the blit world; otherwise it presents
+/// the scene's. Both are components of the host, reached through the entity
+/// carrying them.
+fn with_presented<R>(world: &World, app: Entity, f: impl FnOnce(&World, Entity) -> R) -> Option<R> {
+    if world.get::<McpEnabled>(app).is_some_and(|mcp| mcp.0) {
+        let blit = world.get::<BlitEntity>(app)?.0?;
+        let nested = world.get::<World>(blit)?;
+        let renderer = world.get::<BlitView>(blit)?.renderer;
+        Some(f(&nested, renderer))
+    } else {
+        let scene = world.get::<SceneEntity>(app)?.0?;
+        let nested = world.get::<World>(scene)?;
+        let renderer = world.get::<Scene>(scene)?.renderer;
+        Some(f(&nested, renderer))
+    }
+}
+
+/// Bring the scene and the swap chain up, as far as the state allows.
+///
+/// A callback only has `&World`, so the scene's world cannot be spawned from
+/// one: it is queued and the entity the queue reserves is kept, and the host's
+/// apply lands the world. This runs again on the next frame and finishes what
+/// the previous pass could not, because the offscreen target, the blit world
+/// and the swap chain are all built out of the world that has by then landed.
+fn present(world: &World, app: Entity) {
+    let Some(gpu) = gpu(world, app) else {
+        return;
+    };
+    let Some(window) = window(world) else {
+        return;
+    };
+    let size = window.inner_size();
+    let size = (size.width.max(1), size.height.max(1));
+    let def = world
+        .get::<InitialScene>(app)
+        .expect("the app entity carries its initial scene")
+        .0;
+    let mcp = world.get::<McpEnabled>(app).is_some_and(|mcp| mcp.0);
+
+    // Phase one: the scene's world. Its build needs the GPU context and the
+    // window's size, both of which are known here, and the queue reserves the
+    // entity the world lands on.
+    let scene_entity = match world.get::<SceneEntity>(app).and_then(|slot| slot.0) {
+        Some(entity) => entity,
+        None => {
+            let (scene_world, scene) = Scene::new(
+                gpu.device.clone(),
+                gpu.queue.clone(),
+                gpu.capabilities,
                 size,
                 scenes::SceneOptions {
                     ui: def.ui,
                     selector: true,
                     reproducible: false,
-                    // A window of any shape shows the same picture, scaled to
-                    // whatever fits.
                     letterbox: true,
-                    // The windowed loop holds each frame of a fixed sequence
-                    // for the scene's own step, so it plays at a watchable
-                    // pace.
                     sequence_step: def.step_seconds,
                 },
                 def,
-                self.selector_pos,
+                world.get::<SelectorPos>(app).and_then(|pos| pos.0),
             );
-            self.mesh = Some(self.host.spawn((world, scene)));
+            let entity = world.queue().spawn((scene_world, scene));
+            let _ = world.with_mut::<SceneEntity, _>(app, |slot| slot.0 = Some(entity));
             window.set_title(&format!(
                 "unlit3d{} — {}",
-                if self.mcp { " (MCP)" } else { "" },
+                if mcp { " (MCP)" } else { "" },
                 def.title
             ));
-        }
-        let mesh = self.mesh.expect("the mesh entity was just built");
-        self.host
-            .get_mut::<Scene>(mesh)
-            .expect("the mesh entity carries a scene")
-            .resize(size, self.initial_scene.baseline);
-
-        // MCP mode draws the scene into an offscreen target and blits that
-        // target to the window: the surface belongs to a second, tiny world
-        // whose only source samples the target. Both worlds are components of
-        // the host, so a command can name either.
-        if self.mcp {
-            if self.offscreen.is_none() {
-                let def = self.initial_scene;
-                let world = self
-                    .host
-                    .get::<World>(mesh)
-                    .expect("the mesh entity carries a world");
-                let renderer = self
-                    .host
-                    .get::<Scene>(mesh)
-                    .expect("the mesh entity carries a scene")
-                    .renderer;
-                let target = world
-                    .with_mut::<Renderer, _>(renderer, |renderer| {
-                        bind_offscreen_target(
-                            &world,
-                            renderer,
-                            &context.device,
-                            size,
-                            def.samples,
-                            def.depth,
-                        )
-                    })
-                    .expect("the renderer is a resource entity");
-                self.offscreen = Some(target);
-            }
-            if self.blit.is_none() {
-                let offscreen = self
-                    .offscreen
-                    .clone()
-                    .expect("the offscreen target was just built");
-                let (world, blit) = build_blit_world(context, &offscreen);
-                self.blit = Some(self.host.spawn((world, blit)));
-            }
-        }
-
-        // A surface is built once per foreground stretch: the one kept from
-        // before a suspension has only to follow the window it was made from,
-        // which a resume may have replaced at another size.
-        if self.surface.is_some() {
-            self.resize_surface(size.0, size.1);
             return;
         }
+    };
+    let Some(scene_world) = world.get::<World>(scene_entity) else {
+        // The queued spawn has not landed yet; the next frame retries.
+        return;
+    };
+    let renderer = world
+        .get::<Scene>(scene_entity)
+        .expect("the scene entity carries a scene")
+        .renderer;
+    let _ = world.with_mut::<Scene, _>(scene_entity, |scene| scene.resize(size, def.baseline));
 
-        // Built fresh for the window in hand, which is not necessarily the one
-        // the adapter was probed against: a suspension replaces the native
-        // window, and a surface belongs to the window it was made from.
-        let surface = match context.instance.create_surface(window.clone()) {
-            Ok(surface) => surface,
-            Err(error) => {
-                log::error!("failed to build the presentation surface: {error}");
+    // Phase two, MCP mode only: the offscreen target the scene renders into,
+    // and the world that blits it into the swap chain.
+    if mcp {
+        if world
+            .get::<Offscreen>(app)
+            .is_some_and(|slot| slot.0.is_none())
+        {
+            let target = scene_world
+                .with_mut::<Renderer, _>(renderer, |renderer| {
+                    bind_offscreen_target(
+                        &scene_world,
+                        renderer,
+                        &gpu.device,
+                        size,
+                        def.samples,
+                        def.depth,
+                    )
+                })
+                .expect("the renderer is a resource entity");
+            let _ = world.with_mut::<Offscreen, _>(app, |slot| slot.0 = Some(target));
+        }
+        if world
+            .get::<BlitEntity>(app)
+            .is_some_and(|slot| slot.0.is_none())
+        {
+            let offscreen = world
+                .get::<Offscreen>(app)
+                .and_then(|slot| slot.0.clone())
+                .expect("the offscreen target was just built");
+            let (blit_world, blit) = build_blit_world(&gpu, &offscreen);
+            let entity = world.queue().spawn((blit_world, blit));
+            let _ = world.with_mut::<BlitEntity, _>(app, |slot| slot.0 = Some(entity));
+            return;
+        }
+    }
+
+    if world
+        .get::<SurfaceSlot>(app)
+        .is_some_and(|slot| slot.0.is_some())
+    {
+        resize_surface(world, app, size.0, size.1);
+        return;
+    }
+    let surface = match gpu.instance.create_surface(window.clone()) {
+        Ok(surface) => surface,
+        Err(error) => {
+            log::error!("failed to build the presentation surface: {error}");
+            return;
+        }
+    };
+    let created = with_presented(world, app, |nested, renderer| {
+        nested.with_mut::<Renderer, _>(renderer, |renderer| {
+            let window_surface = WindowSurface::new(
+                nested,
+                renderer,
+                &gpu.instance,
+                &gpu.adapter,
+                window.clone(),
+                surface,
+            );
+            let attachments = if mcp {
+                FrameAttachments::new(
+                    nested,
+                    renderer.context(),
+                    window_surface.color_format(),
+                    window_surface.size(),
+                    1,
+                    false,
+                )
+            } else {
+                FrameAttachments::new(
+                    nested,
+                    renderer.context(),
+                    window_surface.color_format(),
+                    window_surface.size(),
+                    SAMPLE_COUNT,
+                    true,
+                )
+            };
+            (window_surface, attachments)
+        })
+    });
+    let Some(Some((window_surface, attachments))) = created else {
+        return;
+    };
+    let _ = world.with_mut::<SurfaceSlot, _>(app, |slot| slot.0 = Some(window_surface));
+    let _ = world.with_mut::<AttachmentsSlot, _>(app, |slot| slot.0 = Some(attachments));
+    window.request_redraw();
+}
+
+/// Re-state the surface's size and the attachments drawn with it.
+fn resize_surface(world: &World, app: Entity, width: u32, height: u32) {
+    let Some(mut slot) = world.get_mut::<SurfaceSlot>(app) else {
+        return;
+    };
+    let Some(surface) = slot.0.as_mut() else {
+        return;
+    };
+    with_presented(world, app, |nested, renderer| {
+        nested
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                surface.resize(nested, renderer, width, height);
+            })
+            .expect("the renderer is a resource entity");
+    });
+    let size = surface.size();
+    if let Some(mut attachments) = world.get_mut::<AttachmentsSlot>(app)
+        && let Some(attachments) = attachments.0.as_mut()
+    {
+        with_presented(world, app, |nested, _renderer| {
+            attachments.resize(nested, size);
+        });
+    }
+}
+
+/// Drop the swap chain the platform is about to invalidate.
+#[cfg(target_os = "android")]
+fn release(world: &World, app: Entity) {
+    let Some(mut slot) = world.get_mut::<SurfaceSlot>(app) else {
+        return;
+    };
+    let Some(surface) = slot.0.take() else {
+        return;
+    };
+    let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
+        return;
+    };
+    let Some(nested) = world.get::<World>(scene_entity) else {
+        return;
+    };
+    let renderer = world
+        .get::<Scene>(scene_entity)
+        .expect("the scene entity carries a scene")
+        .renderer;
+    nested
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            surface.release(nested, renderer);
+        })
+        .expect("the renderer is a resource entity");
+    if let Some(mut attachments) = world.get_mut::<AttachmentsSlot>(app) {
+        attachments.0 = None;
+    }
+}
+
+/// Rebuild the app around a different scene.
+fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
+    let released = world
+        .get_mut::<SurfaceSlot>(app)
+        .and_then(|mut slot| slot.0.take());
+    if let Some(surface) = released
+        && let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0)
+        && let Some(nested) = world.get::<World>(scene_entity)
+    {
+        let renderer = world
+            .get::<Scene>(scene_entity)
+            .expect("the scene entity carries a scene")
+            .renderer;
+        nested
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                surface.release(&nested, renderer);
+            })
+            .expect("the renderer is a resource entity");
+    }
+    if let Some(mut attachments) = world.get_mut::<AttachmentsSlot>(app) {
+        attachments.0 = None;
+    }
+    if let Some(entity) = world
+        .get_mut::<SceneEntity>(app)
+        .and_then(|mut slot| slot.0.take())
+    {
+        world.queue().despawn(entity);
+    }
+    if let Some(mut initial) = world.get_mut::<InitialScene>(app) {
+        initial.0 = def;
+    }
+    present(world, app);
+}
+
+/// Draw one frame: advance the scene, then present it.
+///
+/// Called from the [`Frame`] command, because advancing the scene and landing
+/// the changes its behaviour queued both need `&mut World`.
+fn draw_frame(world: &mut World, app: Entity) {
+    let resumed = world
+        .query::<&Resumed>()
+        .next()
+        .is_some_and(|(_, state)| state.0);
+    if !resumed {
+        return;
+    }
+    let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
+        present(world, app);
+        return;
+    };
+    // The swap chain is built by `present`, which can only finish once the
+    // scene's world has landed; retry each frame until it has.
+    if !world
+        .get::<SurfaceSlot>(app)
+        .is_some_and(|slot| slot.0.is_some())
+    {
+        present(world, app);
+        if !world
+            .get::<SurfaceSlot>(app)
+            .is_some_and(|slot| slot.0.is_some())
+        {
+            return;
+        }
+    }
+    // The frame's control state is read before the scene's world is borrowed
+    // mutably: a scene switch drops that world, so nothing may still be
+    // borrowed from it when the switch is served.
+    let (selector_pos, switch, fullscreen) = {
+        let nested = world
+            .get::<World>(scene_entity)
+            .expect("the scene entity carries a world");
+        let mut scene = world
+            .get_mut::<Scene>(scene_entity)
+            .expect("the scene entity carries a scene");
+        (
+            scene.selector_rect(&nested),
+            scene.take_switch(),
+            scene.take_fullscreen(&nested),
+        )
+    };
+    let _ = world.with_mut::<SelectorPos, _>(app, |slot| slot.0 = selector_pos);
+    if let Some(def) = switch {
+        switch_scene(world, app, def);
+        return;
+    }
+    if fullscreen && let Some(window) = window(world) {
+        web::toggle(&window);
+    }
+    let Some(mut nested) = world.get_mut::<World>(scene_entity) else {
+        return;
+    };
+    let now = Instant::now();
+    let delta_time = world
+        .get::<LastFrame>(app)
+        .map_or(0.0, |last| (now - last.0).as_secs_f32());
+    let _ = world.with_mut::<LastFrame, _>(app, |slot| slot.0 = now);
+    let renderer = world
+        .get::<Scene>(scene_entity)
+        .expect("the scene entity carries a scene")
+        .renderer;
+    let viewport = world
+        .get::<Scene>(scene_entity)
+        .expect("the scene entity carries a scene")
+        .viewport;
+    let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
+        scene.advance(&mut nested, delta_time);
+    });
+
+    if world.get::<McpEnabled>(app).is_some_and(|mcp| mcp.0) {
+        let nested_world: &World = &nested;
+        nested_world
+            .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(nested_world))
+            .expect("the renderer is a resource entity");
+        let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
+            scene.end_frame(&mut nested);
+        });
+        draw_blit(world, app);
+        return;
+    }
+
+    let Some(mut slot) = world.get_mut::<SurfaceSlot>(app) else {
+        return;
+    };
+    let Some(surface) = slot.0.as_mut() else {
+        return;
+    };
+    let nested_world: &World = &nested;
+    let attachments = world
+        .get_mut::<AttachmentsSlot>(app)
+        .expect("the app entity carries its attachments slot");
+    let attachments = attachments.0.as_ref();
+    nested_world
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            let Some(frame) = surface.acquire(nested_world, renderer) else {
                 return;
+            };
+            if let Some(attachments) = attachments {
+                attachments.bind(nested_world, renderer, frame.color_view().clone());
             }
-        };
-        let (world, renderer) = if self.mcp {
-            let blit = self.blit.expect("the blit entity was just built");
-            let world = self
-                .host
-                .get::<World>(blit)
-                .expect("the blit entity carries a world");
-            let renderer = self
-                .host
-                .get::<BlitView>(blit)
-                .expect("the blit entity carries a blit view")
-                .renderer;
-            (world, renderer)
-        } else {
-            let world = self
-                .host
-                .get::<World>(mesh)
-                .expect("the mesh entity carries a world");
-            let renderer = self
-                .host
-                .get::<Scene>(mesh)
-                .expect("the mesh entity carries a scene")
-                .renderer;
-            (world, renderer)
-        };
-        let (window_surface, attachments) = world
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                let surface = WindowSurface::new(
-                    &world,
-                    renderer,
-                    &context.instance,
-                    &context.adapter,
-                    window,
-                    surface,
-                );
-                // The blit declares no depth state, so its frames carry no
-                // depth attachment; wgpu requires the two to match. It samples
-                // an already-resolved colour texture, so its frames carry no
-                // multisample attachment either. The scene's own frames carry
-                // both.
-                let attachments = if self.mcp {
-                    FrameAttachments::new(
-                        &world,
-                        renderer.context(),
-                        surface.color_format(),
-                        surface.size(),
-                        1,
-                        false,
-                    )
-                } else {
-                    FrameAttachments::new(
-                        &world,
-                        renderer.context(),
-                        surface.color_format(),
-                        surface.size(),
-                        SAMPLE_COUNT,
-                        true,
-                    )
-                };
-                (surface, attachments)
-            })
-            .expect("the renderer is a resource entity");
-        self.surface = Some(window_surface);
-        self.attachments = Some(attachments);
-        self.surface
-            .as_ref()
-            .expect("the surface was just built")
-            .window()
-            .request_redraw();
-    }
+            set_frame_viewport(nested_world, viewport.map(FrameViewport));
+            renderer.render(nested_world);
+            let queue = nested_world
+                .get::<wgpu::Queue>(renderer.context().queue)
+                .expect("the queue resource");
+            frame.present(&queue);
+        })
+        .expect("the renderer is a resource entity");
+    let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
+        scene.end_frame(&mut nested);
+    });
+}
 
-    /// Reconfigure the swap chain and its attachments for a new size.
-    ///
-    /// A no-op when there is no surface to reconfigure — one has not been built
-    /// yet, or a suspension released it — and when the surface is already that
-    /// size.
-    fn resize_surface(&mut self, width: u32, height: u32) {
-        let Some(surface) = self.surface.as_mut() else {
-            return;
-        };
-        // The surface presents whichever world is current: the blit world in
-        // MCP mode, the scene's own world otherwise. Resolved here rather than
-        // in a helper so the host borrow stays disjoint from the surface's.
-        if self.mcp {
-            let blit = self.blit.expect("a surface implies the blit entity");
-            let world = self
-                .host
-                .get::<World>(blit)
-                .expect("the blit entity carries a world");
-            let renderer = self
-                .host
-                .get::<BlitView>(blit)
-                .expect("the blit entity carries a blit view")
-                .renderer;
-            world
-                .with_mut::<Renderer, _>(renderer, |renderer| {
-                    surface.resize(&world, renderer, width, height);
-                })
-                .expect("the renderer is a resource entity");
-            if let Some(attachments) = self.attachments.as_mut() {
-                attachments.resize(&world, surface.size());
+/// Present the blit world into the swap chain, in MCP mode.
+fn draw_blit(world: &World, app: Entity) {
+    let Some(blit_entity) = world.get::<BlitEntity>(app).and_then(|slot| slot.0) else {
+        return;
+    };
+    let Some(mut slot) = world.get_mut::<SurfaceSlot>(app) else {
+        return;
+    };
+    let Some(surface) = slot.0.as_mut() else {
+        return;
+    };
+    let Some(blit_world) = world.get::<World>(blit_entity) else {
+        return;
+    };
+    let renderer = world
+        .get::<BlitView>(blit_entity)
+        .expect("the blit entity carries a blit view")
+        .renderer;
+    let attachments = world
+        .get_mut::<AttachmentsSlot>(app)
+        .expect("the app entity carries its attachments slot");
+    let attachments = attachments.0.as_ref();
+    blit_world
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            let Some(frame) = surface.acquire(&blit_world, renderer) else {
+                return;
+            };
+            if let Some(attachments) = attachments {
+                attachments.bind(&blit_world, renderer, frame.color_view().clone());
             }
-        } else {
-            let mesh = self.mesh.expect("a surface implies the mesh entity");
-            let world = self
-                .host
-                .get::<World>(mesh)
-                .expect("the mesh entity carries a world");
-            let renderer = self
-                .host
-                .get::<Scene>(mesh)
-                .expect("the mesh entity carries a scene")
-                .renderer;
-            world
-                .with_mut::<Renderer, _>(renderer, |renderer| {
-                    surface.resize(&world, renderer, width, height);
-                })
-                .expect("the renderer is a resource entity");
-            if let Some(attachments) = self.attachments.as_mut() {
-                attachments.resize(&world, surface.size());
-            }
-        }
-    }
+            renderer.render(&blit_world);
+            let queue = blit_world
+                .get::<wgpu::Queue>(renderer.context().queue)
+                .expect("the queue resource");
+            frame.present(&queue);
+        })
+        .expect("the renderer is a resource entity");
+}
 
-    /// Release the swap chain, keeping everything it presented.
-    ///
-    /// The world, the device and the pipelines are untouched: only the surface
-    /// the platform invalidated goes, and [`Self::present`] builds one again
-    /// from the same window.
-    ///
-    /// Android is the only platform whose suspension destroys what the surface
-    /// draws from, so it is the only caller.
-    #[cfg(target_os = "android")]
-    fn release(&mut self) {
-        let Some(mesh) = self.mesh else {
-            return;
-        };
-        let Some(surface) = self.surface.take() else {
-            return;
-        };
-        let world = self
-            .host
-            .get::<World>(mesh)
-            .expect("the mesh entity carries a world");
-        let renderer = self
-            .host
-            .get::<Scene>(mesh)
-            .expect("the mesh entity carries a scene")
-            .renderer;
-        world
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                surface.release(&world, renderer);
-            })
-            .expect("the renderer is a resource entity");
-        self.attachments = None;
-    }
-
-    /// Rebuild the scene and its surface around `def`.
-    ///
-    /// The old world and the surface presenting it go together: the surface's
-    /// attachments live in the old world's resource graph, so it is released
-    /// before the world is dropped. The new scene is built with the same GPU
-    /// context and window.
-    fn switch_scene(&mut self, def: &'static scenes::SceneDef) {
-        if let Some(surface) = self.surface.take()
-            && let Some(mesh) = self.mesh
+/// Request the GPU context once a window exists to present through.
+///
+/// The window is created by the host at the end of the resume callback, so the
+/// request waits for the next turn of the loop; a `GpuState` that is no
+/// longer idle keeps a later turn from starting it twice.
+fn request_gpu() -> OnAboutToWait {
+    OnAboutToWait::new(|world, entity, ()| {
+        if !world
+            .get::<GpuState>(entity)
+            .is_some_and(|state| matches!(&*state, GpuState::Idle))
         {
-            let world = self
-                .host
-                .get::<World>(mesh)
-                .expect("the mesh entity carries a world");
-            let renderer = self
-                .host
-                .get::<Scene>(mesh)
-                .expect("the mesh entity carries a scene")
-                .renderer;
-            world
-                .with_mut::<Renderer, _>(renderer, |renderer| {
-                    surface.release(&world, renderer);
-                })
-                .expect("the renderer is a resource entity");
-        }
-        self.attachments = None;
-        // The old world goes with the scene that owned it; `present` builds a
-        // new one from `def` on the next call.
-        if let Some(mesh) = self.mesh.take() {
-            self.host.despawn(mesh);
-        }
-        self.initial_scene = def;
-        self.present();
-    }
-
-    /// Advance the scene by the time since the previous frame and present it.
-    ///
-    /// Does nothing while suspended or while the swap chain is released: the
-    /// scene is frozen rather than advanced off-screen, so a resume continues
-    /// from where it left off instead of jumping.
-    fn draw(&mut self) {
-        if !self.foreground {
             return;
         }
-
-        // The selector window keeps where the user left it: egui remembers the
-        // position in the context this scene's world carries, so the shell
-        // reads it here — before a switch drops that world — to rebuild the
-        // new scene's selector in the same place. The layout a frame left
-        // stands until this frame's panels have run, so the position read is
-        // the user's latest.
-        // The selector's position is read first, so it can be carried into the
-        // scene a switch builds below, and the switch and fullscreen requests
-        // are taken before the frame is drawn.
-        let Some(mesh) = self.mesh else {
+        let Some(window) = window(world) else {
             return;
         };
-        let (selector_pos, switch, fullscreen) = {
-            let world = self
-                .host
-                .get::<World>(mesh)
-                .expect("the mesh entity carries a world");
-            let mut scene = self
-                .host
-                .get_mut::<Scene>(mesh)
-                .expect("the mesh entity carries a scene");
-            let selector_pos = scene.selector_rect(&world);
-            let switch = scene.take_switch();
-            let fullscreen = scene.take_fullscreen(&world);
-            (selector_pos, switch, fullscreen)
-        };
-        self.selector_pos = selector_pos;
-
-        // A switch requested by the selector panel is handled before the frame
-        // is drawn: the next redraw presents the new scene.
-        if let Some(def) = switch {
-            self.switch_scene(def);
-            return;
-        }
-
-        // The fullscreen button's request is served here, before the frame is
-        // drawn. The click reached the page through winit's own mouse or touch
-        // event, so the transient activation the browser demands is open, and
-        // the call has to be made from the loop that owns the window. See
-        // [`web`].
-        if fullscreen && let Some(window) = &self.window {
-            web::toggle(window);
-        }
-
-        let now = Instant::now();
-        let delta_time = (now - self.last_frame).as_secs_f32();
-        self.last_frame = now;
-
-        {
-            let mut world = self
-                .host
-                .get_mut::<World>(mesh)
-                .expect("the mesh entity carries a world");
-            let mut scene = self
-                .host
-                .get_mut::<Scene>(mesh)
-                .expect("the mesh entity carries a scene");
-            scene.advance(&mut world, delta_time);
-        }
-
-        // MCP mode draws the scene into its offscreen target and blits that to
-        // the window; the windowed path draws it straight to the swap chain.
-        if self.mcp {
-            {
-                let world = self
-                    .host
-                    .get::<World>(mesh)
-                    .expect("the mesh entity carries a world");
-                let renderer = self
-                    .host
-                    .get::<Scene>(mesh)
-                    .expect("the mesh entity carries a scene")
-                    .renderer;
-                world
-                    .with_mut::<Renderer, _>(renderer, |renderer| {
-                        renderer.render(&world);
-                    })
-                    .expect("the renderer is a resource entity");
-            }
-            {
-                let mut world = self
-                    .host
-                    .get_mut::<World>(mesh)
-                    .expect("the mesh entity carries a world");
-                let mut scene = self
-                    .host
-                    .get_mut::<Scene>(mesh)
-                    .expect("the mesh entity carries a scene");
-                scene.end_frame(&mut world);
-            }
-            self.draw_blit();
-            return;
-        }
-
-        let Some(surface) = self.surface.as_mut() else {
+        let Some(display) = world
+            .query::<&DisplayHandle>()
+            .next()
+            .map(|(_, handle)| handle.0.clone())
+        else {
             return;
         };
-        // Acquire, render and present. `acquire` binds the swap chain's next
-        // image as the renderer's target; it returns `None` for a frame that
-        // should be skipped, such as an occluded window's.
-        let world = self
-            .host
-            .get::<World>(mesh)
-            .expect("the mesh entity carries a world");
-        let scene = self
-            .host
-            .get::<Scene>(mesh)
-            .expect("the mesh entity carries a scene");
-        let renderer = scene.renderer;
-        let viewport = scene.viewport;
-        let attachments = self.attachments.as_ref();
-        world
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                let Some(frame) = surface.acquire(&world, renderer) else {
-                    return;
-                };
-                if let Some(attachments) = attachments {
-                    attachments.bind(&world, renderer, frame.color_view().clone());
+        let Some(proxy) = world
+            .get::<WinitProxy<UserEvent>>(entity)
+            .map(|proxy| proxy.0.clone())
+        else {
+            return;
+        };
+        let _ = world.with_mut::<GpuState, _>(entity, |state| *state = GpuState::Requested);
+        // The display handle is owned, not borrowed: the instance it builds has
+        // to outlive this callback. The descriptor is the environment-aware one
+        // so `WGPU_BACKEND` still selects a backend.
+        spawn(async move {
+            let instance = wgpu::util::new_instance_with_webgpu_detection(
+                wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
+            )
+            .await;
+            let surface = instance
+                .create_surface(window)
+                .expect("the window presents to a surface");
+            match Gpu::request(instance, surface).await {
+                Ok(gpu) => {
+                    let _ = proxy.send_event(UserEvent::Ready(gpu));
                 }
-                // Stated before the frame is assembled, so every source that
-                // draws the 3D content records into this region and the UI
-                // overlay, which states none, still covers the whole target.
-                set_frame_viewport(&world, viewport.map(FrameViewport));
-                renderer.render(&world);
-                let queue = world
-                    .get::<wgpu::Queue>(renderer.context().queue)
-                    .expect("the queue resource");
-                frame.present(&queue);
-            })
-            .expect("the renderer is a resource entity");
-
-        let mut world = self
-            .host
-            .get_mut::<World>(mesh)
-            .expect("the mesh entity carries a world");
-        let mut scene = self
-            .host
-            .get_mut::<Scene>(mesh)
-            .expect("the mesh entity carries a scene");
-        scene.end_frame(&mut world);
-    }
-
-    /// Present the MCP renderer's latest offscreen frame through the blit
-    /// world.
-    ///
-    /// The frame is produced on the MCP render thread, so this only samples
-    /// whatever that thread has drawn: the window follows the world over the
-    /// protocol rather than driving a scene of its own.
-    fn draw_blit(&mut self) {
-        let Some(blit) = self.blit else {
-            return;
-        };
-        let Some(surface) = self.surface.as_mut() else {
-            return;
-        };
-        let world = self
-            .host
-            .get::<World>(blit)
-            .expect("the blit entity carries a world");
-        let renderer = self
-            .host
-            .get::<BlitView>(blit)
-            .expect("the blit entity carries a blit view")
-            .renderer;
-        let attachments = self.attachments.as_ref();
-        world
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                let Some(frame) = surface.acquire(&world, renderer) else {
-                    return;
-                };
-                if let Some(attachments) = attachments {
-                    attachments.bind(&world, renderer, frame.color_view().clone());
+                Err(error) => {
+                    let _ = proxy.send_event(UserEvent::Failed(error.to_string()));
                 }
-                renderer.render(&world);
-                let queue = world
-                    .get::<wgpu::Queue>(renderer.context().queue)
-                    .expect("the queue resource");
-                frame.present(&queue);
-            })
-            .expect("the renderer is a resource entity");
+            }
+        });
+    })
+}
+
+/// Serve the events the app posts to itself.
+fn handle_user_event() -> OnUserEvent<UserEvent> {
+    OnUserEvent::new(|world, entity, event| match event {
+        UserEvent::Ready(gpu) => {
+            let _ = world.with_mut::<GpuState, _>(entity, |state| {
+                *state = GpuState::Ready(gpu.clone());
+            });
+            #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+            if world.get::<McpEnabled>(entity).is_some_and(|mcp| mcp.0) {
+                start_mcp(world, entity);
+            }
+            present(world, entity);
+        }
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+        UserEvent::Command(command) => {
+            if let Some(command) = command.take() {
+                dispatch_command(world, command);
+            }
+        }
+        UserEvent::Failed(error) => {
+            log::error!("failed to start the renderer: {error}");
+            let _ = world.with_mut::<ExitRequest, _>(entity, |request| request.0 = true);
+        }
+    })
+}
+
+/// Draw on the frames the loop asks for.
+fn draw_on_redraw() -> OnWindowEvent {
+    OnWindowEvent::new(|world, entity, payload| {
+        if matches!(&payload.event, WindowEvent::RedrawRequested) {
+            world.queue().push(Frame { app: entity });
+        }
+    })
+}
+
+/// Re-state the scene and the surface for a new window size.
+fn resize_scene(app: Entity) -> OnWindowEvent {
+    OnWindowEvent::new(move |world, _entity, payload| {
+        let WindowEvent::Resized(size) = &payload.event else {
+            return;
+        };
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+        let size = (size.width, size.height);
+        let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
+            return;
+        };
+        let baseline = world
+            .get::<InitialScene>(app)
+            .expect("the app entity carries its initial scene")
+            .0
+            .baseline;
+        let _ = world.with_mut::<Scene, _>(scene_entity, |scene| scene.resize(size, baseline));
+        if world.get::<McpEnabled>(app).is_some_and(|mcp| mcp.0) {
+            resize_offscreen(world, app, size);
+        }
+        resize_surface(world, app, size.0, size.1);
+    })
+}
+
+/// Drop the swap chain the platform is about to invalidate.
+#[cfg(target_os = "android")]
+fn release_on_suspend(app: Entity) -> OnSuspended {
+    OnSuspended::new(move |world, _entity, ()| {
+        release(world, app);
+    })
+}
+
+/// Start the MCP stdio transport, which posts each command back to the loop.
+///
+/// It runs on its own thread because serving the protocol blocks; the proxy is
+/// what carries a command back, because a world is not `Send`.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn start_mcp(world: &World, app: Entity) {
+    let Some(proxy) = world
+        .get::<WinitProxy<UserEvent>>(app)
+        .map(|proxy| proxy.0.clone())
+    else {
+        return;
+    };
+    std::thread::Builder::new()
+        .name("unlit3d-mcp-transport".to_owned())
+        .spawn(move || {
+            let sink = move |command| proxy.send_event(UserEvent::Command(Some(command))).is_ok();
+            if let Err(error) = unlit3d_mcp::serve_stdio_with(sink) {
+                log::error!("the MCP server stopped: {error}");
+            }
+        })
+        .expect("the MCP transport thread starts");
+}
+
+/// Queue one MCP command against the world it names.
+///
+/// Running it needs `&mut World`, so it is queued as a command and applied
+/// between two event callbacks.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+fn dispatch_command(world: &World, command: unlit3d_mcp::Command) {
+    match command.world_handle() {
+        Some(entity) => world.queue().push(RunInWorld { entity, command }),
+        None => world.queue().push(RunInHost { command }),
     }
 }
 
@@ -1404,9 +1279,6 @@ impl Scene {
         // content size is the target's own and nothing about it changes.
         let (viewport, content) = letterbox(def.baseline, size, options.letterbox);
         let control = (def.build)(&mut world, context, renderer, content, options);
-        let input_handle = InputHandle::new();
-        world.spawn((input_handle.clone(),));
-        let input = WinitInput::new(input_handle);
         // The selector's switch component lives in every world; only a windowed
         // run mounts the panel that writes it.
         let switch = world.spawn((SceneSwitch(None),));
@@ -1449,7 +1321,6 @@ impl Scene {
             world,
             Self {
                 renderer,
-                input,
                 size: content,
                 viewport,
                 control,

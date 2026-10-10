@@ -17,7 +17,7 @@ directly, and you are expected to know WebGPU to use it well.
 | Feature | Default | Provides |
 |---------|---------|----------|
 | `ui` | yes | the `ui` module (an egui overlay drawn as a frame source) and the `unlit_wgpu` egui backend it draws with |
-| `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain, and the winit input translation |
+| `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document into an `UnlitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
 
@@ -854,6 +854,51 @@ two flags back into the world, and game logic can read them to decide whether to
 respond. This iteration provides the data only, with no automatic interception.
 
 </details>
+
+## winit integration
+
+The `winit` module is three layers. `winit::surface` is the presentation half:
+[`WindowSurface`](winit::WindowSurface) configures a window's swap chain and
+hands out a [`Frame`](winit::Frame), and
+[`FrameAttachments`](attachments::FrameAttachments) holds the depth and
+multisample targets a frame draws with. `winit::event` is the bridge: every
+`ApplicationHandler` callback has a behaviour-component family, and
+[`WinitHost`](winit::event::WinitHost) is the one `ApplicationHandler` an
+application implements — it owns the world, dispatches each callback to its
+family, and holds no application logic of its own. `winit::builtin` is a set of
+ready-made behaviours, and nothing in them has a path an application cannot take.
+
+A callback component is an ordinary behaviour component, written and tested like
+any other: it receives `&World`, the entity it sits on, and the event, and it
+must not reach for its own component type or re-enter the host. Structural
+changes go through `World::queue` and land when the host applies after the
+dispatch. The callback signature deliberately carries no `ActiveEventLoop`:
+that type can only be built inside a callback, so a component taking it could
+never be unit-tested. What a callback needs from the loop is a request instead —
+`CreateWindowRequest` and `ExitRequest` are executed by the host after the
+dispatch, `WinitWindow` is the window a component asks for a redraw on, and the
+host maintains `Resumed` and `DisplayHandle` itself.
+
+```no_run
+# use unlit3d::winit::builtin::{
+#     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,
+#     exit_on_close_requested,
+# };
+# use unlit3d::winit::event::WinitHost;
+# use winit::event_loop::EventLoop;
+# use winit::window::Window;
+# fn main() -> Result<(), winit::error::EventLoopError> {
+let event_loop = EventLoop::new()?;
+let mut host = WinitHost::new();
+host.world_mut().spawn((
+    WindowSpec(Window::default_attributes().with_title("unlit3d")),
+    CreateWindowRequest(None),
+    create_window_on_resume(),
+));
+host.world_mut().spawn((ExitRequest(false), exit_on_close_requested()));
+host.run(event_loop)
+# }
+```
 
 ## Tests
 

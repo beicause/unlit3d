@@ -95,6 +95,15 @@ handle, the GPU context and the whole ECS world stay: the swap chain alone is
 released and built again on the next resume, so the app comes back to the state
 it left — the same spin angle, camera orbit and panel values.
 
+No application logic lives in a winit callback. `unlit3d::winit::event::WinitHost`
+is the one `ApplicationHandler` the example implements — it is not implemented
+at all, only driven — and every callback is an ordinary behaviour component on
+an entity of the host world: the window is requested on resume, close and
+`Esc` set an exit request, a redraw queues a `Frame` command, a resize
+re-letterboxes the scene, and the app's own `UserEvent` carries the GPU context
+back. The example's state is the same kind of component, so a callback writes a
+sibling cell and never borrows the one it is running from.
+
 ## Running it
 
 ```text

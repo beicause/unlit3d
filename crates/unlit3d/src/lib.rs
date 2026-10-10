@@ -65,6 +65,7 @@ pub mod prelude {
         },
     };
     pub use unlit_ecs::prelude::*;
+    pub use unlit_ecs::{Command, Commands};
     pub use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
     pub use unlit_wgpu::render_attachments::{
         color_clear, create_color_target, create_depth_target, create_msaa_target,

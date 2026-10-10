@@ -14,7 +14,7 @@
 | Feature | 默认 | 提供的内容 |
 |---------|------|-----------|
 | `ui` | 是 | `ui` 模块（作为帧源绘制的 egui 叠加层）以及它所使用的 `unlit_wgpu` egui 后端 |
-| `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；以及 winit 输入转发 |
+| `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档加载为 `UnlitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
 
@@ -608,6 +608,43 @@ UI 对输入的**捕获**（是否想独占指针/键盘）按 egui 的语义需
 标志写回世界，游戏逻辑可以读它决定是否响应。本期只提供数据，不做自动拦截。
 
 </details>
+
+## winit 集成
+
+`winit` 模块分三层。`winit::surface` 是表现层：`WindowSurface` 配置窗口的交换链
+并交出 `Frame`，`FrameAttachments` 持有该帧绘制所用的深度与多重采样目标。
+`winit::event` 是桥接层：`ApplicationHandler` 的每个回调都有一个对应的行为组件族，
+而 `WinitHost` 是应用唯一实现的 `ApplicationHandler`——它持有 world，把每个回调
+分发给对应的族，自身不持有任何应用逻辑。`winit::builtin` 是一组现成的行为，其中没有
+任何一条是应用走不了的路径。
+
+回调组件就是普通的行为组件，按普通方式编写与测试：它拿到 `&World`、它所在实体与事件，
+且不能触达自己那个组件类型，也不能重入宿主。结构变更经 `World::queue` 排队，在分发
+之后由宿主 `apply` 时落地。回调签名刻意不带 `ActiveEventLoop`：该类型只能在回调内
+构造，带它的组件永远无法单元测试。回调需要事件循环做的事改为请求组件——
+`CreateWindowRequest` 与 `ExitRequest` 由宿主在分发后执行，`WinitWindow` 是组件
+请求重绘时所用的窗口，而 `Resumed` 与 `DisplayHandle` 由宿主自己维护。
+
+```no_run
+# use unlit3d::winit::builtin::{
+#     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,
+#     exit_on_close_requested,
+# };
+# use unlit3d::winit::event::WinitHost;
+# use winit::event_loop::EventLoop;
+# use winit::window::Window;
+# fn main() -> Result<(), winit::error::EventLoopError> {
+let event_loop = EventLoop::new()?;
+let mut host = WinitHost::new();
+host.world_mut().spawn((
+    WindowSpec(Window::default_attributes().with_title("unlit3d")),
+    CreateWindowRequest(None),
+    create_window_on_resume(),
+));
+host.world_mut().spawn((ExitRequest(false), exit_on_close_requested()));
+host.run(event_loop)
+# }
+```
 
 ## 测试
 
