@@ -795,12 +795,15 @@ world.spawn((UiPanel::new(|_world, _entity, ui| {
 ## Input
 
 [`input`] is the portable half of input handling: event types and the behaviour
-components that react to them, depending on neither winit nor egui. A frame
-feeds events into the [`InputState`](input::InputState) resource, runs
+components that react to them, depending on neither winit nor egui. A world
+holds an [`InputHandle`](input::InputHandle) — a shared handle to one
+[`InputState`](input::InputState) — and a frame feeds events through it, runs
 [`dispatch_input`](input::dispatch_input) to drive the behaviours, then calls
 [`InputState::clear_events`](input::InputState::clear_events) once every
 consumer has read them — the events are traversed read-only, never taken,
-because more than one consumer sees the same frame. Translation from a
+because more than one consumer sees the same frame.
+[`distribute_input`](input::distribute_input) copies the handle into every
+nested world, so one state serves them all. Translation from a
 windowing library's events lives behind the corresponding feature:
 `input::winit::WinitInput` forwards `WindowEvent`s, and `ui::convert` turns the
 crate's events into egui's.
@@ -824,7 +827,10 @@ crate's events into egui's.
   `InputState` is mouse-only.
 - **`InputState` holds "the events that arrived since it was last cleared" plus
   the state the events left behind** (modifiers, pointer position and the
-  pointers pressed, cursor, buttons pressed, focus, window size and scale). A
+  pointers pressed, cursor, buttons pressed, focus, window size and scale). An
+  `InputHandle` is how a world reaches it: an `Arc<RwLock<InputState>>` that
+  copies freely between worlds and threads, so nested worlds share one state
+  rather than each carrying its own. A
   pointer's pressed state is recorded per "contact point"
   (`PointerContact`, identified by kind and id), so lifting one finger out of
   several does not misread as the gesture ending.

@@ -571,9 +571,10 @@ world.spawn((UiPanel::new(|_world, _entity, ui| {
 ## 输入
 
 `input` 是输入处理中可移植的那一半：事件类型以及响应它们的行为组件，既不依赖 winit
-也不依赖 egui。一帧把事件送入 `InputState` 资源，运行 `dispatch_input` 驱动这些行为，
-然后在所有消费者都读过之后调用 `InputState::clear_events`——事件只被只读遍历，从不被
-取走，因为同一帧可能有多个消费者。来自窗口库的事件转换位于相应 feature 之后：
+也不依赖 egui。世界持有 `InputHandle`——一份共享句柄，指向同一个 `InputState`——一帧
+经由它送入事件，运行 `dispatch_input` 驱动这些行为，然后在所有消费者都读过之后调用
+`InputState::clear_events`——事件只被只读遍历，从不被取走，因为同一帧可能有多个消费者。
+`distribute_input` 把句柄复制进每个嵌套世界，一份状态即可服务全部世界。来自窗口库的事件转换位于相应 feature 之后：
 `input::winit::WinitInput` 转发 `WindowEvent`，`ui::convert` 把本 crate 的事件转成
 egui 的事件。
 
@@ -590,7 +591,9 @@ egui 的事件。
   信息（触摸 id、压力）。反过来，触摸**不会**置位鼠标按键，`InputState` 里的按键状态
   是鼠标独有的。
 - **`InputState` 持有「自上次清空以来到达的事件」以及事件留下的状态**（修饰键、指针
-  位置与按下的指针、光标、按下的按钮、焦点、窗口尺寸与缩放）。指针的按下状态按
+  位置与按下的指针、光标、按下的按钮、焦点、窗口尺寸与缩放）。`InputHandle` 是
+  世界触达它的方式：一个 `Arc<RwLock<InputState>>`，可自由在多个世界与线程间复制，
+  因此嵌套世界共享同一份状态，而不是各持一份。指针的按下状态按
   「接触点」逐个记录（`PointerContact`，由种类与 id 标识），因此多指同时按下时抬起
   一根不会误判为手势结束。
 - **分发由调用方在帧循环里显式调用**，不由 `render` 内部自动进行。原因：回调内排队的

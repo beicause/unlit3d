@@ -162,9 +162,9 @@ fn build(
                     // the user is working in.
                     ui.separator();
                     let held = world
-                        .query::<&InputState>()
+                        .query::<&InputHandle>()
                         .next()
-                        .is_some_and(|(_, state)| state.pointer_down);
+                        .is_some_and(|(_, handle)| handle.read().pointer_down);
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
                     match world.get::<CameraOrbit>(camera) {
                         Some(orbit) => ui.label(format!(

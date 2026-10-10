@@ -1,11 +1,12 @@
-//! Feeding a winit window's events into the world's [`InputState`].
+//! Feeding a winit window's events into the shared [`InputHandle`].
 //!
 //! [`WinitInput`] is the winit half of [`crate::input`]: a caller forwards
 //! every [`WindowEvent`] the window produces, and the adapter translates the
 //! ones that carry input into [`InputEvent`]s, pushing each into the
-//! [`InputState`] resource it spawned. It decides nothing about what the input
-//! *means* — that is a behaviour component's job — so it holds no state of its
-//! own beyond the resource entity.
+//! [`InputState`](super::InputState) behind an [`InputHandle`]. It decides
+//! nothing about what the
+//! input *means* — that is a behaviour component's job — so it holds no state
+//! of its own beyond the handle.
 //!
 //! # Coordinates
 //!
@@ -13,7 +14,8 @@
 //! origin at the window's top-left corner. Window pixels are what game logic
 //! wants, because a click maps to the pixel under the cursor; a consumer that
 //! needs logical points, UI layout for instance, divides by
-//! [`InputState::scale_factor`] itself, which is why the state carries that
+//! [`InputState::scale_factor`](super::InputState::scale_factor) itself, which is
+//! why the state carries that
 //! factor.
 //!
 //! # Which key a key event names
@@ -33,20 +35,19 @@
 //! key must not move with the layout. The text the key produced comes from
 //! `KeyEvent::text` instead, as a separate [`TextEvent`].
 
-use unlit_ecs::{Entity, World};
 use winit::event::{
     Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase, WindowEvent,
 };
 use winit::keyboard::{KeyCode, ModifiersState, NativeKeyCode, PhysicalKey};
 
 use super::{
-    ImeEvent, ImeKind, InputEvent, InputState, Key, KeyEvent, Modifiers,
+    ImeEvent, ImeKind, InputEvent, InputHandle, Key, KeyEvent, Modifiers,
     MouseButton as CrateButton, MouseEvent, PointerAction, PointerEvent, PointerKind, TextEvent,
     TouchEvent, TouchPhase, WheelUnit,
 };
 
 /// The position a mouse event falls back to while the cursor is outside the
-/// window and [`InputState::cursor`] is `None`.
+/// window and [`InputState::cursor`](super::InputState::cursor) is `None`.
 const NO_CURSOR: [f32; 2] = [0.0, 0.0];
 
 /// The pointer id of the one pointer a mouse is.
@@ -78,28 +79,28 @@ const GESTURE_KIND: PointerKind = PointerKind::Touch;
 /// there is nothing left to tell them apart by.
 const UNIDENTIFIED_CODE: u32 = 0;
 
-/// Feeds a winit window's events into the world's [`InputState`].
+/// Feeds a winit window's events into the shared [`InputState`](super::InputState).
 ///
-/// The adapter is cheap to copy around: it holds only the entity of the
-/// resource it writes, so a frame loop can keep it beside the window.
+/// The adapter is cheap to copy around: it holds only the [`InputHandle`] of
+/// the shared state it writes, so a frame loop can keep it beside the window.
+#[derive(Clone)]
 pub struct WinitInput {
-    entity: Entity,
+    handle: InputHandle,
 }
 
 impl WinitInput {
-    /// Spawn the `InputState` resource this adapter feeds and return it.
+    /// Feed the `InputState` behind `handle`.
     ///
-    /// The world must not already carry an [`InputState`] from somewhere else:
-    /// two of them would split the input stream, and
-    /// [`dispatch_input`](super::dispatch_input) reads only the first it finds.
-    pub fn new(world: &mut World) -> Self {
-        let entity = world.spawn((InputState::default(),));
-        Self { entity }
+    /// The handle comes from the world that owns the one input state — see
+    /// [`distribute_input`](super::distribute_input) for how a nested world
+    /// gets the same one.
+    pub fn new(handle: InputHandle) -> Self {
+        Self { handle }
     }
 
-    /// The `InputState` resource entity.
-    pub fn state(&self) -> Entity {
-        self.entity
+    /// The shared input state this adapter writes.
+    pub fn handle(&self) -> &InputHandle {
+        &self.handle
     }
 
     /// Translate the parts of `event` that carry input and push them.
@@ -114,161 +115,139 @@ impl WinitInput {
     /// a touch is a [`TouchEvent`] *and* a [`PointerEvent`]. That is what lets
     /// a device-agnostic drag and a mouse-only one both be written against the
     /// same frame.
-    pub fn on_window_event(&self, world: &World, event: &WindowEvent) -> bool {
+    pub fn on_window_event(&self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput { event, .. } => self.on_key(
-                world,
                 event.physical_key,
                 event.state.is_pressed(),
                 event.repeat,
                 event.text.as_deref(),
             ),
-            WindowEvent::ModifiersChanged(modifiers) => self.emit(
-                world,
-                InputEvent::ModifiersChanged(to_modifiers(modifiers.state())),
-            ),
+            WindowEvent::ModifiersChanged(modifiers) => self.emit(InputEvent::ModifiersChanged(
+                to_modifiers(modifiers.state()),
+            )),
             WindowEvent::CursorMoved { position, .. } => {
                 let position = [position.x as f32, position.y as f32];
-                self.push_all(
-                    world,
-                    [
-                        InputEvent::Mouse(MouseEvent::Moved { position }),
-                        InputEvent::Pointer(PointerEvent {
-                            kind: PointerKind::Mouse,
-                            id: MOUSE_POINTER,
-                            action: PointerAction::Moved,
-                            position: Some(position),
-                            modifiers: self.modifiers(world),
-                        }),
-                    ],
-                )
+                self.push_all([
+                    InputEvent::Mouse(MouseEvent::Moved { position }),
+                    InputEvent::Pointer(PointerEvent {
+                        kind: PointerKind::Mouse,
+                        id: MOUSE_POINTER,
+                        action: PointerAction::Moved,
+                        position: Some(position),
+                        modifiers: self.modifiers(),
+                    }),
+                ])
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state.is_pressed();
                 let button = to_button(*button);
-                world
-                    .with_mut::<InputState, _>(self.entity, |state| {
-                        let position = state.cursor.unwrap_or(NO_CURSOR);
-                        let modifiers = state.modifiers;
-                        state.push(InputEvent::Mouse(MouseEvent::Button {
-                            position,
-                            button,
-                            pressed,
-                            modifiers,
-                        }));
-                        state.push(InputEvent::Pointer(PointerEvent {
-                            kind: PointerKind::Mouse,
-                            id: MOUSE_POINTER,
-                            action: if pressed {
-                                PointerAction::Pressed
-                            } else {
-                                PointerAction::Released { cancelled: false }
-                            },
-                            position: Some(position),
-                            modifiers,
-                        }));
-                    })
-                    .is_some()
+                let mut state = self.handle.write();
+                let position = state.cursor.unwrap_or(NO_CURSOR);
+                let modifiers = state.modifiers;
+                state.push(InputEvent::Mouse(MouseEvent::Button {
+                    position,
+                    button,
+                    pressed,
+                    modifiers,
+                }));
+                state.push(InputEvent::Pointer(PointerEvent {
+                    kind: PointerKind::Mouse,
+                    id: MOUSE_POINTER,
+                    action: if pressed {
+                        PointerAction::Pressed
+                    } else {
+                        PointerAction::Released { cancelled: false }
+                    },
+                    position: Some(position),
+                    modifiers,
+                }));
+                true
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 let (delta, unit) = to_wheel(delta);
                 let phase = to_phase(*phase);
-                world
-                    .with_mut::<InputState, _>(self.entity, |state| {
-                        // A wheel step is a mouse's alone: a touch produces no
-                        // wheel event, so there is no pointer event to pair it
-                        // with.
-                        state.push(InputEvent::Mouse(MouseEvent::Wheel {
-                            delta,
-                            unit,
-                            phase,
-                            modifiers: state.modifiers,
-                        }));
-                    })
-                    .is_some()
+                let mut state = self.handle.write();
+                // A wheel step is a mouse's alone: a touch produces no wheel
+                // event, so there is no pointer event to pair it with.
+                let modifiers = state.modifiers;
+                state.push(InputEvent::Mouse(MouseEvent::Wheel {
+                    delta,
+                    unit,
+                    phase,
+                    modifiers,
+                }));
+                true
             }
             // A pinch or rotation is a gesture, not a button and not a touch
             // point, so it enters the stream as a pointer action. The touch
             // points a two-finger gesture is built from arrive separately as
             // their own `WindowEvent::Touch`es.
-            WindowEvent::PinchGesture { delta, .. } => self.emit(
-                world,
-                InputEvent::Pointer(PointerEvent {
+            WindowEvent::PinchGesture { delta, .. } => {
+                self.emit(InputEvent::Pointer(PointerEvent {
                     kind: GESTURE_KIND,
                     // A gesture is not a contact, so it shares the mouse's id.
                     id: MOUSE_POINTER,
                     action: PointerAction::Zoom(*delta as f32),
                     position: None,
-                    modifiers: self.modifiers(world),
-                }),
-            ),
-            WindowEvent::RotationGesture { delta, .. } => self.emit(
-                world,
-                InputEvent::Pointer(PointerEvent {
+                    modifiers: self.modifiers(),
+                }))
+            }
+            WindowEvent::RotationGesture { delta, .. } => {
+                self.emit(InputEvent::Pointer(PointerEvent {
                     kind: GESTURE_KIND,
                     // A gesture is not a contact, so it shares the mouse's id.
                     id: MOUSE_POINTER,
                     action: PointerAction::Rotate(*delta),
                     position: None,
-                    modifiers: self.modifiers(world),
-                }),
-            ),
+                    modifiers: self.modifiers(),
+                }))
+            }
             WindowEvent::Touch(touch) => {
                 let phase = to_phase(touch.phase);
                 let position = [touch.location.x as f32, touch.location.y as f32];
                 let (action, pointer_position) = pointer_of_touch(phase, position);
-                self.push_all(
-                    world,
-                    [
-                        InputEvent::Touch(TouchEvent {
-                            id: touch.id,
-                            phase,
-                            position,
-                            force: touch.force.map(|force| force.normalized() as f32),
-                        }),
-                        InputEvent::Pointer(PointerEvent {
-                            kind: PointerKind::Touch,
-                            id: touch.id,
-                            action,
-                            position: pointer_position,
-                            modifiers: self.modifiers(world),
-                        }),
-                    ],
-                )
-            }
-            WindowEvent::Ime(ime) => self.emit(
-                world,
-                InputEvent::Ime(ImeEvent {
-                    kind: to_ime_kind(ime),
-                }),
-            ),
-            WindowEvent::Focused(focused) => self.emit(world, InputEvent::FocusChanged(*focused)),
-            WindowEvent::CursorLeft { .. } => self.push_all(
-                world,
-                [
-                    // The pointer leaves with the mouse: a touch that is still
-                    // down on the screen is not gone because the cursor left the
-                    // canvas.
-                    InputEvent::Mouse(MouseEvent::Left),
-                    InputEvent::Pointer(PointerEvent {
-                        kind: PointerKind::Mouse,
-                        id: MOUSE_POINTER,
-                        action: PointerAction::Left,
-                        position: None,
-                        modifiers: self.modifiers(world),
+                self.push_all([
+                    InputEvent::Touch(TouchEvent {
+                        id: touch.id,
+                        phase,
+                        position,
+                        force: touch.force.map(|force| force.normalized() as f32),
                     }),
-                ],
-            ),
+                    InputEvent::Pointer(PointerEvent {
+                        kind: PointerKind::Touch,
+                        id: touch.id,
+                        action,
+                        position: pointer_position,
+                        modifiers: self.modifiers(),
+                    }),
+                ])
+            }
+            WindowEvent::Ime(ime) => self.emit(InputEvent::Ime(ImeEvent {
+                kind: to_ime_kind(ime),
+            })),
+            WindowEvent::Focused(focused) => self.emit(InputEvent::FocusChanged(*focused)),
+            WindowEvent::CursorLeft { .. } => self.push_all([
+                // The pointer leaves with the mouse: a touch that is still
+                // down on the screen is not gone because the cursor left the
+                // canvas.
+                InputEvent::Mouse(MouseEvent::Left),
+                InputEvent::Pointer(PointerEvent {
+                    kind: PointerKind::Mouse,
+                    id: MOUSE_POINTER,
+                    action: PointerAction::Left,
+                    position: None,
+                    modifiers: self.modifiers(),
+                }),
+            ]),
             // These two carry no event of their own; they only refresh the
             // state later events read from.
             WindowEvent::Resized(size) => {
-                let _ = world.with_mut::<InputState, _>(self.entity, |state| {
-                    state.set_size_px(size.width, size.height);
-                });
+                self.handle.write().set_size_px(size.width, size.height);
                 false
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.on_scale_factor(world, *scale_factor)
+                self.on_scale_factor(*scale_factor)
             }
             _ => false,
         }
@@ -283,29 +262,26 @@ impl WinitInput {
     /// directly.
     fn on_key(
         &self,
-        world: &World,
         physical_key: PhysicalKey,
         pressed: bool,
         repeat: bool,
         text: Option<&str>,
     ) -> bool {
-        world
-            .with_mut::<InputState, _>(self.entity, |state| {
-                state.push(InputEvent::Key(KeyEvent {
-                    key: key_of(physical_key),
-                    pressed,
-                    repeat,
-                    modifiers: state.modifiers,
-                }));
-                // A key press also carries the character the layout produced
-                // there; `logical_key` is deliberately not consulted, because
-                // `text` already has that character, alone or with the dead
-                // key that preceded it.
-                if let (true, Some(text)) = (pressed, text) {
-                    state.push(InputEvent::Text(TextEvent(text.to_owned())));
-                }
-            })
-            .is_some()
+        let mut state = self.handle.write();
+        let modifiers = state.modifiers;
+        state.push(InputEvent::Key(KeyEvent {
+            key: key_of(physical_key),
+            pressed,
+            repeat,
+            modifiers,
+        }));
+        // A key press also carries the character the layout produced there;
+        // `logical_key` is deliberately not consulted, because `text` already
+        // has that character, alone or with the dead key that preceded it.
+        if let (true, Some(text)) = (pressed, text) {
+            state.push(InputEvent::Text(TextEvent(text.to_owned())));
+        }
+        true
     }
 
     /// The translation [`WindowEvent::ScaleFactorChanged`] performs.
@@ -314,18 +290,15 @@ impl WinitInput {
     /// an [`InnerSizeWriter`](winit::event::InnerSizeWriter) that no other
     /// crate can build. The window size that changes with the factor arrives as
     /// its own [`WindowEvent::Resized`].
-    fn on_scale_factor(&self, world: &World, scale_factor: f64) -> bool {
-        let _ = world.with_mut::<InputState, _>(self.entity, |state| {
-            state.set_scale_factor(scale_factor as f32);
-        });
+    fn on_scale_factor(&self, scale_factor: f64) -> bool {
+        self.handle.write().set_scale_factor(scale_factor as f32);
         false
     }
 
     /// Push one event and report that something was pushed.
-    fn emit(&self, world: &World, event: InputEvent) -> bool {
-        world
-            .with_mut::<InputState, _>(self.entity, |state| state.push(event))
-            .is_some()
+    fn emit(&self, event: InputEvent) -> bool {
+        self.handle.write().push(event);
+        true
     }
 
     /// Push several events from one window event under a single borrow.
@@ -333,25 +306,20 @@ impl WinitInput {
     /// The events keep the order they are given in, which is what lets a
     /// device-specific event precede the device-agnostic one describing the
     /// same action.
-    fn push_all(&self, world: &World, events: impl IntoIterator<Item = InputEvent>) -> bool {
+    fn push_all(&self, events: impl IntoIterator<Item = InputEvent>) -> bool {
         let mut pushed = false;
-        let any = world
-            .with_mut::<InputState, _>(self.entity, |state| {
-                for event in events {
-                    state.push(event);
-                    pushed = true;
-                }
-            })
-            .is_some();
-        any && pushed
+        let mut state = self.handle.write();
+        for event in events {
+            state.push(event);
+            pushed = true;
+        }
+        pushed
     }
 
     /// The modifier keys held right now, for an event that does not carry its
     /// own.
-    fn modifiers(&self, world: &World) -> Modifiers {
-        world
-            .get::<InputState>(self.entity)
-            .map_or_else(Modifiers::default, |state| state.modifiers)
+    fn modifiers(&self) -> Modifiers {
+        self.handle.read().modifiers
     }
 }
 
@@ -594,7 +562,7 @@ mod tests {
     use winit::event::{DeviceId, Force, Touch};
 
     use super::*;
-    use crate::input::MouseButtons;
+    use crate::input::{InputState, MouseButtons};
 
     /// The pointer position tests move to before producing a button or wheel
     /// event, deliberately not the fallback origin.
@@ -604,26 +572,19 @@ mod tests {
         PhysicalPosition::new(f64::from(CURSOR[0]), f64::from(CURSOR[1]))
     }
 
-    fn input() -> (World, WinitInput) {
-        let mut world = World::new();
-        let input = WinitInput::new(&mut world);
-        (world, input)
+    fn input() -> WinitInput {
+        WinitInput::new(InputHandle::new())
     }
 
     /// The frame's events, copied out so a test can compare them after further
     /// events have been fed in.
-    fn events(world: &World, input: &WinitInput) -> Vec<InputEvent> {
-        world
-            .get::<InputState>(input.state())
-            .unwrap()
-            .events()
-            .to_vec()
+    fn events(input: &WinitInput) -> Vec<InputEvent> {
+        input.handle().read().events().to_vec()
     }
 
     /// Run `f` over the state the adapter feeds.
-    fn state<R>(world: &World, input: &WinitInput, f: impl FnOnce(&InputState) -> R) -> R {
-        let state = world.get::<InputState>(input.state()).unwrap();
-        f(&state)
+    fn state<R>(input: &WinitInput, f: impl FnOnce(&InputState) -> R) -> R {
+        f(&input.handle().read())
     }
 
     fn moved() -> WindowEvent {
@@ -650,15 +611,15 @@ mod tests {
         // platform-specific field is private, so the keyboard translation is
         // driven through the same entry point `WindowEvent::KeyboardInput`
         // calls with the fields it destructures.
-        let (world, input) = input();
+        let input = input();
         let shift = ModifiersState::SHIFT.into();
-        assert!(input.on_window_event(&world, &WindowEvent::ModifiersChanged(shift)));
+        assert!(input.on_window_event(&WindowEvent::ModifiersChanged(shift)));
 
-        assert!(input.on_key(&world, PhysicalKey::Code(KeyCode::KeyW), true, false, None));
-        assert!(input.on_key(&world, PhysicalKey::Code(KeyCode::KeyW), false, false, None));
+        assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyW), true, false, None));
+        assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyW), false, false, None));
 
         let expected = to_modifiers(ModifiersState::SHIFT);
-        let events = events(&world, &input);
+        let events = events(&input);
         assert_eq!(
             events[1],
             InputEvent::Key(KeyEvent {
@@ -678,23 +639,17 @@ mod tests {
             }),
             "the release carries the modifiers too"
         );
-        assert!(state(&world, &input, |state| state.modifiers).shift);
+        assert!(state(&input, |state| state.modifiers).shift);
     }
 
     #[test]
     fn a_pressed_key_also_pushes_the_text_it_produced() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_key(
-            &world,
-            PhysicalKey::Code(KeyCode::KeyA),
-            true,
-            false,
-            Some("a")
-        ));
+        assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyA), true, false, Some("a")));
 
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [
                 InputEvent::Key(KeyEvent {
                     key: Key::A,
@@ -709,17 +664,11 @@ mod tests {
 
     #[test]
     fn a_released_key_pushes_no_text() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_key(
-            &world,
-            PhysicalKey::Code(KeyCode::KeyA),
-            false,
-            false,
-            Some("a")
-        ));
+        assert!(input.on_key(PhysicalKey::Code(KeyCode::KeyA), false, false, Some("a")));
 
-        assert_eq!(events(&world, &input).len(), 1);
+        assert_eq!(events(&input).len(), 1);
     }
 
     #[test]
@@ -773,20 +722,19 @@ mod tests {
 
     #[test]
     fn modifiers_changed_updates_the_state_and_pushes_the_event() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::ModifiersChanged(ModifiersState::CONTROL.into())
-        ));
+        assert!(input.on_window_event(&WindowEvent::ModifiersChanged(
+            ModifiersState::CONTROL.into()
+        )));
 
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [InputEvent::ModifiersChanged(to_modifiers(
                 ModifiersState::CONTROL
             ))]
         );
-        let held = state(&world, &input, |state| state.modifiers);
+        let held = state(&input, |state| state.modifiers);
         assert!(held.ctrl);
         assert_eq!(
             held.command,
@@ -798,15 +746,15 @@ mod tests {
 
     #[test]
     fn cursor_moved_pushes_a_mouse_and_a_pointer_move() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(&world, &moved()));
+        assert!(input.on_window_event(&moved()));
 
         // One physical move, two levels: the mouse names where the cursor is,
         // the pointer names where and from which device, so a drag written
         // against either hears the same move exactly once.
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [
                 InputEvent::Mouse(MouseEvent::Moved { position: CURSOR }),
                 InputEvent::Pointer(PointerEvent {
@@ -818,26 +766,23 @@ mod tests {
                 }),
             ]
         );
-        assert_eq!(state(&world, &input, |state| state.cursor), Some(CURSOR));
-        assert_eq!(state(&world, &input, |state| state.pointer), Some(CURSOR));
+        assert_eq!(state(&input, |state| state.cursor), Some(CURSOR));
+        assert_eq!(state(&input, |state| state.pointer), Some(CURSOR));
     }
 
     #[test]
     fn a_button_press_uses_the_current_cursor() {
-        let (world, input) = input();
-        assert!(input.on_window_event(&world, &moved()));
+        let input = input();
+        assert!(input.on_window_event(&moved()));
 
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: winit::event::ElementState::Pressed,
-                button: MouseButton::Left,
-            }
-        ));
+        assert!(input.on_window_event(&WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: winit::event::ElementState::Pressed,
+            button: MouseButton::Left,
+        }));
 
         assert_eq!(
-            events(&world, &input)[2],
+            events(&input)[2],
             InputEvent::Mouse(MouseEvent::Button {
                 position: CURSOR,
                 button: CrateButton::Primary,
@@ -846,7 +791,7 @@ mod tests {
             })
         );
         assert_eq!(
-            events(&world, &input)[3],
+            events(&input)[3],
             InputEvent::Pointer(PointerEvent {
                 kind: PointerKind::Mouse,
                 id: MOUSE_POINTER,
@@ -855,27 +800,24 @@ mod tests {
                 modifiers: Modifiers::default(),
             })
         );
-        assert!(state(&world, &input, |state| state
+        assert!(state(&input, |state| state
             .buttons
             .contains(MouseButtons::PRIMARY)));
-        assert!(state(&world, &input, |state| state.pointer_down));
+        assert!(state(&input, |state| state.pointer_down));
     }
 
     #[test]
     fn a_button_press_without_a_cursor_falls_back_to_the_origin() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::MouseInput {
-                device_id: DeviceId::dummy(),
-                state: winit::event::ElementState::Released,
-                button: MouseButton::Right,
-            }
-        ));
+        assert!(input.on_window_event(&WindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: winit::event::ElementState::Released,
+            button: MouseButton::Right,
+        }));
 
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [
                 InputEvent::Mouse(MouseEvent::Button {
                     position: NO_CURSOR,
@@ -892,34 +834,28 @@ mod tests {
                 }),
             ]
         );
-        assert!(!state(&world, &input, |state| state.pointer_down));
+        assert!(!state(&input, |state| state.pointer_down));
     }
 
     #[test]
     fn a_wheel_delta_keeps_its_unit() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::MouseWheel {
-                device_id: DeviceId::dummy(),
-                delta: MouseScrollDelta::LineDelta(1.0, -2.0),
-                phase: WinitTouchPhase::Moved,
-            }
-        ));
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::MouseWheel {
-                device_id: DeviceId::dummy(),
-                delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, 4.0)),
-                phase: WinitTouchPhase::Ended,
-            }
-        ));
+        assert!(input.on_window_event(&WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::LineDelta(1.0, -2.0),
+            phase: WinitTouchPhase::Moved,
+        }));
+        assert!(input.on_window_event(&WindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(3.0, 4.0)),
+            phase: WinitTouchPhase::Ended,
+        }));
 
         // A wheel is a mouse's own: there is no pointer event beside it, so a
         // device-agnostic consumer is not told the page scrolled.
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [
                 InputEvent::Mouse(MouseEvent::Wheel {
                     delta: [1.0, -2.0],
@@ -939,27 +875,21 @@ mod tests {
 
     #[test]
     fn a_pinch_and_a_rotation_become_pointer_gestures() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::PinchGesture {
-                device_id: DeviceId::dummy(),
-                delta: 1.5,
-                phase: WinitTouchPhase::Moved,
-            }
-        ));
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::RotationGesture {
-                device_id: DeviceId::dummy(),
-                delta: -0.25,
-                phase: WinitTouchPhase::Moved,
-            }
-        ));
+        assert!(input.on_window_event(&WindowEvent::PinchGesture {
+            device_id: DeviceId::dummy(),
+            delta: 1.5,
+            phase: WinitTouchPhase::Moved,
+        }));
+        assert!(input.on_window_event(&WindowEvent::RotationGesture {
+            device_id: DeviceId::dummy(),
+            delta: -0.25,
+            phase: WinitTouchPhase::Moved,
+        }));
 
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [
                 InputEvent::Pointer(PointerEvent {
                     kind: GESTURE_KIND,
@@ -981,18 +911,18 @@ mod tests {
 
     #[test]
     fn a_touch_carries_its_phase_and_normalized_force() {
-        let (world, input) = input();
+        let input = input();
         let force = Force::Calibrated {
             force: 1.0,
             max_possible_force: 2.0,
             altitude_angle: None,
         };
 
-        assert!(input.on_window_event(&world, &touch(WinitTouchPhase::Started, Some(force))));
+        assert!(input.on_window_event(&touch(WinitTouchPhase::Started, Some(force))));
         // A finger reaches a device-agnostic drag through its pointer event,
         // which is what makes the same behaviour work on a touch screen.
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [
                 InputEvent::Touch(TouchEvent {
                     id: 1,
@@ -1010,19 +940,19 @@ mod tests {
             ]
         );
         assert_eq!(
-            state(&world, &input, |state| state.touches.clone()),
+            state(&input, |state| state.touches.clone()),
             [(1, [5.0, 6.0])]
         );
-        assert!(state(&world, &input, |state| state.pointer_down));
+        assert!(state(&input, |state| state.pointer_down));
         assert!(
-            state(&world, &input, |state| state.buttons.is_empty()),
+            state(&input, |state| state.buttons.is_empty()),
             "a touch is not a mouse button"
         );
 
-        assert!(input.on_window_event(&world, &touch(WinitTouchPhase::Moved, None)));
-        assert!(input.on_window_event(&world, &touch(WinitTouchPhase::Ended, None)));
+        assert!(input.on_window_event(&touch(WinitTouchPhase::Moved, None)));
+        assert!(input.on_window_event(&touch(WinitTouchPhase::Ended, None)));
         assert_eq!(
-            events(&world, &input)[4],
+            events(&input)[4],
             InputEvent::Touch(TouchEvent {
                 id: 1,
                 phase: TouchPhase::Ended,
@@ -1030,21 +960,21 @@ mod tests {
                 force: None,
             })
         );
-        assert!(!state(&world, &input, |state| state.pointer_down));
-        assert!(state(&world, &input, |state| state.touches.is_empty()));
+        assert!(!state(&input, |state| state.pointer_down));
+        assert!(state(&input, |state| state.touches.is_empty()));
     }
 
     #[test]
     fn a_cancelled_touch_abandons_its_pointer() {
         // The platform taking a touch away ends the drag without a position,
         // so a consumer knows not to treat it as a lift where the finger was.
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(&world, &touch(WinitTouchPhase::Started, None)));
-        assert!(input.on_window_event(&world, &touch(WinitTouchPhase::Cancelled, None)));
+        assert!(input.on_window_event(&touch(WinitTouchPhase::Started, None)));
+        assert!(input.on_window_event(&touch(WinitTouchPhase::Cancelled, None)));
 
         assert_eq!(
-            events(&world, &input)[3],
+            events(&input)[3],
             InputEvent::Pointer(PointerEvent {
                 kind: PointerKind::Touch,
                 id: 1,
@@ -1053,22 +983,22 @@ mod tests {
                 modifiers: Modifiers::default(),
             })
         );
-        assert!(!state(&world, &input, |state| state.pointer_down));
+        assert!(!state(&input, |state| state.pointer_down));
     }
 
     #[test]
     fn ime_preedit_and_commit_become_ime_events() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::Ime(Ime::Preedit("にほん".to_owned(), Some((3, 6))))
-        ));
-        assert!(input.on_window_event(&world, &WindowEvent::Ime(Ime::Commit("日本".to_owned()))));
-        assert!(input.on_window_event(&world, &WindowEvent::Ime(Ime::Disabled)));
+        assert!(input.on_window_event(&WindowEvent::Ime(Ime::Preedit(
+            "にほん".to_owned(),
+            Some((3, 6))
+        ))));
+        assert!(input.on_window_event(&WindowEvent::Ime(Ime::Commit("日本".to_owned()))));
+        assert!(input.on_window_event(&WindowEvent::Ime(Ime::Disabled)));
 
         assert_eq!(
-            events(&world, &input),
+            events(&input),
             [
                 InputEvent::Ime(ImeEvent {
                     kind: ImeKind::Preedit {
@@ -1088,32 +1018,26 @@ mod tests {
 
     #[test]
     fn losing_focus_updates_the_state() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(input.on_window_event(&world, &WindowEvent::Focused(false)));
+        assert!(input.on_window_event(&WindowEvent::Focused(false)));
 
-        assert_eq!(events(&world, &input), [InputEvent::FocusChanged(false)]);
-        assert!(!state(&world, &input, |state| state.focused));
+        assert_eq!(events(&input), [InputEvent::FocusChanged(false)]);
+        assert!(!state(&input, |state| state.focused));
     }
 
     #[test]
     fn leaving_the_window_forgets_the_cursor() {
-        let (world, input) = input();
-        assert!(input.on_window_event(&world, &moved()));
+        let input = input();
+        assert!(input.on_window_event(&moved()));
 
-        assert!(input.on_window_event(
-            &world,
-            &WindowEvent::CursorLeft {
-                device_id: DeviceId::dummy(),
-            }
-        ));
+        assert!(input.on_window_event(&WindowEvent::CursorLeft {
+            device_id: DeviceId::dummy(),
+        }));
 
+        assert_eq!(events(&input)[2], InputEvent::Mouse(MouseEvent::Left));
         assert_eq!(
-            events(&world, &input)[2],
-            InputEvent::Mouse(MouseEvent::Left)
-        );
-        assert_eq!(
-            events(&world, &input)[3],
+            events(&input)[3],
             InputEvent::Pointer(PointerEvent {
                 kind: PointerKind::Mouse,
                 id: MOUSE_POINTER,
@@ -1122,18 +1046,18 @@ mod tests {
                 modifiers: Modifiers::default(),
             })
         );
-        assert_eq!(state(&world, &input, |state| state.cursor), None);
-        assert_eq!(state(&world, &input, |state| state.pointer), None);
+        assert_eq!(state(&input, |state| state.cursor), None);
+        assert_eq!(state(&input, |state| state.pointer), None);
     }
 
     #[test]
     fn a_resize_updates_the_state_without_pushing_an_event() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(!input.on_window_event(&world, &WindowEvent::Resized(PhysicalSize::new(800, 600))));
+        assert!(!input.on_window_event(&WindowEvent::Resized(PhysicalSize::new(800, 600))));
 
-        assert!(events(&world, &input).is_empty());
-        assert_eq!(state(&world, &input, |state| state.size_px), (800, 600));
+        assert!(events(&input).is_empty());
+        assert_eq!(state(&input, |state| state.size_px), (800, 600));
     }
 
     #[test]
@@ -1141,22 +1065,22 @@ mod tests {
         // `WindowEvent::ScaleFactorChanged` carries an `InnerSizeWriter` that
         // cannot be built outside winit, so the translation its match arm
         // performs is driven directly.
-        let (world, input) = input();
+        let input = input();
 
-        assert!(!input.on_scale_factor(&world, 1.5));
+        assert!(!input.on_scale_factor(1.5));
 
-        assert!(events(&world, &input).is_empty());
-        assert_eq!(state(&world, &input, |state| state.scale_factor), 1.5);
+        assert!(events(&input).is_empty());
+        assert_eq!(state(&input, |state| state.scale_factor), 1.5);
     }
 
     #[test]
     fn an_ignored_event_pushes_nothing() {
-        let (world, input) = input();
+        let input = input();
 
-        assert!(!input.on_window_event(&world, &WindowEvent::RedrawRequested));
-        assert!(!input.on_window_event(&world, &WindowEvent::Occluded(true)));
+        assert!(!input.on_window_event(&WindowEvent::RedrawRequested));
+        assert!(!input.on_window_event(&WindowEvent::Occluded(true)));
 
-        assert!(events(&world, &input).is_empty());
-        assert_eq!(state(&world, &input, |state| state.scale_factor), 1.0);
+        assert!(events(&input).is_empty());
+        assert_eq!(state(&input, |state| state.scale_factor), 1.0);
     }
 }

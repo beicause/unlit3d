@@ -67,7 +67,7 @@ world：承载 [`World`](unlit_ecs::World) 组件的宿主实体的 `u64` 位模
 
 **输入**——`input_state` 与 `send_input`。`input_state` 报告 `InputState` 持有的状态，
 其中包括自上次清除以来到达的事件，因此调用者能看到这一帧发生了什么。`send_input` 把输入
-事件推入 world 的 `InputState`，并经由窗口所用的同一个 `dispatch_input` 派发，因此行为组件
+事件推入 world 的 `InputHandle`，并经由窗口所用的同一个 `dispatch_input` 派发，因此行为组件
 看到它们的方式与来自用户时完全一样。
 
 **绘制**——`create_mesh`、`remove_mesh`、`render_frame`、`screenshot`、

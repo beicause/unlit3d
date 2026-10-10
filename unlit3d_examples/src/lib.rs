@@ -771,15 +771,11 @@ impl ApplicationHandler<UserEvent> for App {
         // input. MCP mode keeps the scene on this thread too, so the window
         // feeds it exactly as the windowed path does.
         if let Some(mesh) = self.mesh {
-            let world = self
-                .host
-                .get::<World>(mesh)
-                .expect("the mesh entity carries a world");
             let scene = self
                 .host
                 .get::<Scene>(mesh)
                 .expect("the mesh entity carries a scene");
-            scene.input.on_window_event(&world, &event);
+            scene.input.on_window_event(&event);
         }
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
@@ -1408,7 +1404,9 @@ impl Scene {
         // content size is the target's own and nothing about it changes.
         let (viewport, content) = letterbox(def.baseline, size, options.letterbox);
         let control = (def.build)(&mut world, context, renderer, content, options);
-        let input = WinitInput::new(&mut world);
+        let input_handle = InputHandle::new();
+        world.spawn((input_handle.clone(),));
+        let input = WinitInput::new(input_handle);
         // The selector's switch component lives in every world; only a windowed
         // run mounts the panel that writes it.
         let switch = world.spawn((SceneSwitch(None),));
@@ -1562,8 +1560,8 @@ impl Scene {
     /// Finish the frame: drop the events every consumer has read, and apply
     /// whatever a behaviour component or panel queued.
     pub fn end_frame(&mut self, world: &mut World) {
-        if let Some(state) = world.query::<&InputState>().next().map(|(e, _)| e) {
-            let _ = world.with_mut::<InputState, _>(state, |state| state.clear_events());
+        if let Some(handle) = world.query::<&InputHandle>().next().map(|(_, h)| h.clone()) {
+            handle.write().clear_events();
         }
         world.apply();
     }

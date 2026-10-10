@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod attachments;
+mod behaviour;
 pub mod blit;
 pub mod bounds;
 pub mod components;
@@ -45,10 +46,10 @@ pub mod prelude {
         },
         culling::is_culled,
         input::{
-            ImeEvent, ImeKind, InputEvent, InputState, Key, KeyEvent, Modifiers, MouseButton,
-            MouseButtons, MouseEvent, OnIme, OnInput, OnKey, OnMouse, OnPointer, OnText, OnTouch,
-            PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent, TouchEvent,
-            TouchPhase, WheelUnit, dispatch_input,
+            ImeEvent, ImeKind, InputEvent, InputHandle, InputState, Key, KeyEvent, Modifiers,
+            MouseButton, MouseButtons, MouseEvent, OnIme, OnInput, OnKey, OnMouse, OnPointer,
+            OnText, OnTouch, PointerAction, PointerContact, PointerEvent, PointerKind, TextEvent,
+            TouchEvent, TouchPhase, WheelUnit, dispatch_input, distribute_input,
         },
         mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
         mesh_source::MeshSource,

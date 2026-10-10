@@ -93,7 +93,7 @@ letting the device reject the copy.
 **Input** — `input_state` and `send_input`. `input_state` reports the state
 `InputState` holds, including the events that arrived since they were last
 cleared, so a caller can see what happened this frame. `send_input` pushes events
-into the world's `InputState` and delivers them through the same `dispatch_input`
+into the world's `InputHandle` and delivers them through the same `dispatch_input`
 pass the window does, so behaviour components see them exactly as they would from
 a user.
 

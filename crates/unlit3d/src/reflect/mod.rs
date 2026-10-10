@@ -95,7 +95,7 @@ mod tests {
     /// cannot say which key went down, so the reflection carries them too.
     #[test]
     fn the_input_state_reflects_its_events() {
-        use crate::input::{InputEvent, InputState, Key, KeyEvent, Modifiers};
+        use crate::input::{InputEvent, InputHandle, Key, KeyEvent, Modifiers};
         use crate::reflect::registry;
 
         let key = InputEvent::Key(KeyEvent {
@@ -105,14 +105,15 @@ mod tests {
             modifiers: Modifiers::default(),
         });
         let mut world = unlit_ecs::World::new();
-        let entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(entity, |state| {
+        let entity = world.spawn((InputHandle::new(),));
+        let _ = world.with_mut::<InputHandle, _>(entity, |handle| {
+            let mut state = handle.write();
             state.push(key.clone());
             state.push(InputEvent::FocusChanged(false));
         });
 
         let encoded =
-            registry::encode(&world, entity, "InputState").expect("the input state encodes");
+            registry::encode(&world, entity, "InputHandle").expect("the input state encodes");
         let decoded: InputStateProxy =
             facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(decoded.events, vec![key, InputEvent::FocusChanged(false)]);

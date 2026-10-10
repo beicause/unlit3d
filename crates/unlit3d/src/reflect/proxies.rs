@@ -15,7 +15,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::bounds::Aabb;
 use crate::components::{GpuMaterial, GpuMesh, GpuRenderPipeline};
-use crate::input::{InputEvent, InputState};
+use crate::input::{InputEvent, InputHandle, InputState};
 
 /// A [wgpu::LoadOp] over an `f32` as either a clear to a value or a load.
 ///
@@ -275,11 +275,17 @@ impl From<&InputState> for InputStateProxy {
     }
 }
 
-impl TryFrom<InputStateProxy> for InputState {
+impl From<&InputHandle> for InputStateProxy {
+    fn from(handle: &InputHandle) -> Self {
+        Self::from(&*handle.read())
+    }
+}
+
+impl TryFrom<InputStateProxy> for InputHandle {
     type Error = String;
 
     fn try_from(_proxy: InputStateProxy) -> Result<Self, Self::Error> {
-        Err("InputState is read-only; send events with send_input".to_string())
+        Err("InputHandle is read-only; send events with send_input".to_string())
     }
 }
 

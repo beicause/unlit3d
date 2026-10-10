@@ -26,7 +26,7 @@ use crate::components::{
     Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, RenderLoadOps,
     SkinBinding, SkinPose, Transform, ZSortedDrawing,
 };
-use crate::input::InputState;
+use crate::input::InputHandle;
 use crate::unlit::{InstanceColor, InstanceCutoff, UnlitPipelineKey};
 
 /// One component the JSON bridge can address.
@@ -99,7 +99,7 @@ inventory::submit! { ComponentEntry::new::<SkinBinding>() }
 inventory::submit! { ComponentEntry::new::<MorphBinding>() }
 inventory::submit! { ComponentEntry::default::<InstanceColor>() }
 inventory::submit! { ComponentEntry::default::<InstanceCutoff>() }
-inventory::submit! { ComponentEntry::new::<InputState>() }
+inventory::submit! { ComponentEntry::new::<InputHandle>() }
 
 /// Every submitted entry.
 pub fn entries() -> impl Iterator<Item = &'static ComponentEntry> {

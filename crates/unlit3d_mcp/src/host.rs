@@ -459,12 +459,12 @@ pub fn read_texture_as_image(
 fn input_state_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
     if let Some(entity) = handle {
         return world
-            .has::<InputState>(entity)
+            .has::<InputHandle>(entity)
             .then_some(entity)
             .ok_or_else(|| format!("entity {} carries no input state", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.query::<&InputState>() {
+    for (entity, _) in world.query::<&InputHandle>() {
         if found.is_some() {
             return Err("the world has more than one input state; pass `entity`".to_string());
         }
@@ -476,7 +476,7 @@ fn input_state_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
 /// The input state, encoded, events included.
 pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
     let entity = input_state_entity(world, entity)?;
-    let text = reflect::encode(world, entity, "InputState")?;
+    let text = reflect::encode(world, entity, "InputHandle")?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
@@ -485,7 +485,8 @@ pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Resu
     let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
     let decoded = reflect::decode_events(&text)?;
     let entity = input_state_entity(world, entity)?;
-    let _ = world.with_mut::<InputState, _>(entity, |state| {
+    let _ = world.with_mut::<InputHandle, _>(entity, |handle| {
+        let mut state = handle.write();
         for event in decoded {
             state.push(event);
         }
@@ -657,7 +658,7 @@ pub fn offscreen_world(
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
     world.spawn_source(source);
-    world.spawn((InputState::default(),));
+    world.spawn((InputHandle::new(),));
 
     let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
     let color_view = {

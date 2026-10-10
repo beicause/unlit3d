@@ -51,7 +51,7 @@ use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant}
 use web_time::Instant;
 use zerocopy::IntoBytes;
 
-use crate::input::InputState;
+use crate::input::InputHandle;
 pub use crate::source::InputCapture;
 
 use crate::source::{FrameOrder, FrameSource, RenderContext, frame_target};
@@ -152,8 +152,7 @@ pub struct UiSource {
     gpu: Option<Gpu>,
     /// The target the current pipeline is specialized for.
     surface: Option<SurfaceKey>,
-    /// The [`InputState`] resource found on the last frame, if the world has
-    /// one.
+    /// The [`InputHandle`] found on the last frame, if the world has one.
     input: Option<Entity>,
 }
 
@@ -324,20 +323,24 @@ impl FrameSource for UiSource {
         // The events are translated to egui's own here, while the state is
         // borrowed, rather than cloned out of the world first: the conversion
         // only reads them, so egui's list is the one allocation this makes.
-        let input_state = world.query::<&InputState>().next().map(|(entity, state)| {
-            let pixels_per_point = if state.scale_factor > 0.0 {
-                state.scale_factor
-            } else {
-                1.0
-            };
-            (
-                entity,
-                state.scale_factor,
-                state.size_px,
-                state.focused,
-                convert::to_egui_events(state.events(), pixels_per_point),
-            )
-        });
+        let input_state = world
+            .query::<&InputHandle>()
+            .next()
+            .map(|(entity, handle)| {
+                let state = handle.read();
+                let pixels_per_point = if state.scale_factor > 0.0 {
+                    state.scale_factor
+                } else {
+                    1.0
+                };
+                (
+                    entity,
+                    state.scale_factor,
+                    state.size_px,
+                    state.focused,
+                    convert::to_egui_events(state.events(), pixels_per_point),
+                )
+            });
         self.input = input_state.as_ref().map(|(entity, ..)| *entity);
         let (scale_factor, size_px, focused, events) = match input_state {
             Some((_, scale_factor, size_px, focused, events)) => {
@@ -373,7 +376,7 @@ impl FrameSource for UiSource {
         // projection both take the point size; the clip rectangles the
         // integration derives are scaled to pixels by `pixels_per_point`.
         let points = screen.size_in_points();
-        // The events reached egui's own types while `InputState` was borrowed,
+        // The events reached egui's own types while the `InputHandle` was read,
         // and they stay in the world afterwards: the UI reads them, it does not
         // consume them, so a game behaviour sees the same frame.
         let mut input = egui::RawInput {
@@ -774,7 +777,7 @@ mod tests {
 
     /// The frame's events reach the panels.
     ///
-    /// A panel that records the events egui gave it proves the `InputState`
+    /// A panel that records the events egui gave it proves the `InputHandle`
     /// resource was read and translated, not merely looked up.
     #[test]
     fn the_frame_events_reach_the_panels() {
@@ -802,13 +805,15 @@ mod tests {
         }),));
 
         // The pointer and a typed key arrive in the world's own event types.
-        let input = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input, |state| {
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        {
+            let mut state = input.write();
             state.set_size_px(128, 96);
             state.push(crate::input::InputEvent::Text(crate::input::TextEvent(
                 "hi".to_string(),
             )));
-        });
+        }
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -816,7 +821,7 @@ mod tests {
         // The caller clears the events between frames, which is what keeps a
         // frame's text from being delivered twice.
         source.build_scene(&world, ctx, &mut encoder);
-        let _ = world.with_mut::<InputState, _>(input, |state| state.clear_events());
+        input.write().clear_events();
         source.build_scene(&world, ctx, &mut encoder);
 
         assert_eq!(
@@ -850,8 +855,9 @@ mod tests {
             }
         }),));
 
-        let input = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input, |state| state.set_size_px(128, 96));
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        input.write().set_size_px(128, 96);
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -864,7 +870,8 @@ mod tests {
         // in *physical* pixels at a density of one, so points and pixels
         // coincide. A click is complete within the frame egui sees it, which
         // is how a fast click looks to a frame loop.
-        let _ = world.with_mut::<InputState, _>(input, |state| {
+        {
+            let mut state = input.write();
             let centre = [button().center().x, button().center().y];
             for event in [
                 crate::input::MouseEvent::Moved { position: centre },
@@ -883,7 +890,7 @@ mod tests {
             ] {
                 state.push(crate::input::InputEvent::Mouse(event));
             }
-        });
+        }
         source.build_scene(&world, ctx, &mut encoder);
 
         assert!(
@@ -906,15 +913,17 @@ mod tests {
             );
         }),));
 
-        let input = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input, |state| {
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        {
+            let mut state = input.write();
             state.set_size_px(128, 96);
             state.push(crate::input::InputEvent::Mouse(
                 crate::input::MouseEvent::Moved {
                     position: [16.0, 16.0],
                 },
             ));
-        });
+        }
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);

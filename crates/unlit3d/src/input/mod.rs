@@ -1,18 +1,18 @@
 //! Input events and the behaviour components that react to them.
 //!
 //! This module is the platform-independent half of input handling: the event
-//! types, the [`InputState`] resource that accumulates them, and the behaviour
-//! components something drives once a frame. It depends on neither winit nor
-//! egui, so game logic written here stays portable; the translation from a
-//! windowing library's events lives behind the corresponding feature module
-//! (for example [`crate::winit`] on the winit side).
+//! types, the [`InputState`] that accumulates them behind an [`InputHandle`],
+//! and the behaviour components something drives once a frame. It depends on
+//! neither winit nor egui, so game logic written here stays portable; the
+//! translation from a windowing library's events lives behind the corresponding
+//! feature module (for example [`crate::winit`] on the winit side).
 //!
 //! # The frame loop
 //!
 //! Input flows in three steps, and the caller owns all three:
 //!
-//! 1. Something feeds events into the [`InputState`] resource, one
-//!    [`InputState::push`] per event.
+//! 1. Something feeds events into the [`InputState`], one [`InputState::push`]
+//!    per event, through the [`InputHandle`] the world holds.
 //! 2. [`dispatch_input`] runs the behaviour components for the events that
 //!    arrived. It does not apply structural changes; the caller does.
 //! 3. [`InputState::clear_events`] drops the frame's events once every
@@ -26,8 +26,10 @@
 //! struct Presses(u32);
 //!
 //! let mut world = World::new();
-//! // The events of one frame, accumulated by whatever translates them.
-//! let input = world.spawn((InputState::default(),));
+//! // The handle is spawned so `dispatch_input` finds the state, and it is
+//! // also what feeds the events in.
+//! let input = InputHandle::new();
+//! world.spawn((input.clone(),));
 //! // A behaviour that reacts to the keyboard.
 //! world.spawn((
 //!     Presses(0),
@@ -39,21 +41,19 @@
 //! ));
 //!
 //! // This frame's events, as a translation layer would feed them in.
-//! let _ = world.with_mut::<InputState, _>(input, |state| {
-//!     state.push(InputEvent::Key(KeyEvent {
-//!         key: Key::W,
-//!         pressed: true,
-//!         repeat: false,
-//!         modifiers: Modifiers::default(),
-//!     }));
-//! });
+//! input.write().push(InputEvent::Key(KeyEvent {
+//!     key: Key::W,
+//!     pressed: true,
+//!     repeat: false,
+//!     modifiers: Modifiers::default(),
+//! }));
 //!
 //! // End of the frame: deliver the events, land what the callbacks queued,
 //! // then forget the events (the state they left behind stays).
 //! assert!(dispatch_input(&world));
 //! world.apply();
-//! let _ = world.with_mut::<InputState, _>(input, InputState::clear_events);
-//! assert!(world.get::<InputState>(input).unwrap().events().is_empty());
+//! input.write().clear_events();
+//! assert!(input.read().events().is_empty());
 //! ```
 //!
 //! # Constraints on a callback
@@ -65,9 +65,12 @@
 //! cells, so [`OnKey`] and [`OnInput`] never conflict.
 
 use core::ops::Deref;
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use bitflags::bitflags;
-use unlit_ecs::{Entity, World};
+use unlit_ecs::World;
+
+use crate::behaviour::behaviour;
 
 #[cfg(feature = "winit")]
 pub mod winit;
@@ -700,30 +703,24 @@ pub enum InputEvent {
 /// struct CtrlPresses(u32);
 ///
 /// let mut world = World::new();
-/// let input = world.spawn((InputState::default(),));
+/// let input = InputHandle::new();
+/// world.spawn((input.clone(),));
 /// let observer = world.spawn((
 ///     CtrlPresses(0),
 ///     OnInput::new(move |world, entity, _event| {
-///         let ctrl = world.get::<InputState>(input).unwrap().modifiers.ctrl;
+///         let ctrl = input.read().modifiers.ctrl;
 ///         if ctrl {
 ///             let _ = world.with_mut::<CtrlPresses, _>(entity, |presses| presses.0 += 1);
 ///         }
 ///     }),
 /// ));
 ///
-/// let _ = world.with_mut::<InputState, _>(input, |state| {
-///     state.push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
-/// });
+/// input.write().push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
 /// dispatch_input(&world);
 ///
 /// assert_eq!(world.get::<CtrlPresses>(observer).unwrap().0, 1);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "reflect",
-    derive(facet::Facet),
-    facet(opaque, proxy = crate::reflect::InputStateProxy)
-)]
 pub struct InputState {
     events: Vec<InputEvent>,
     /// The modifier keys currently held.
@@ -937,37 +934,101 @@ impl InputState {
     }
 }
 
-/// A callback that may read and write the world, and receives the entity it
-/// runs for together with one event.
-type EventCallback<E> = Box<dyn FnMut(&World, Entity, &E)>;
-
-/// Declares one behaviour component over an event type.
+/// A shared handle to the frame's input.
 ///
-/// Every behaviour is the same shape [`unlit_ecs`]' own behaviour components
-/// use: a public boxed closure, a `new` that boxes a caller's closure, and a
-/// `run` that calls it. Events are passed by reference, so the world can hold
-/// one copy of an event that several behaviours read.
+/// One [`InputState`] is kept, and every world that reads input holds a clone
+/// of this handle: a window callback that feeds events and a scene that reads
+/// them see the same state, however many worlds the scene is nested in. A
+/// handle is `Send + Sync`, so it can also be carried across a thread boundary.
 ///
-/// A `run` takes the world and the entity the behaviour sits on, so the
-/// callback can tell which entity it is acting for — one closure may be
-/// mounted on many.
-macro_rules! behaviour {
-    ($name:ident, $event:ty, $doc:expr) => {
-        #[doc = $doc]
-        pub struct $name(pub EventCallback<$event>);
+/// The state lives behind a lock because feeding and reading happen at
+/// different times and through a shared world: a caller takes a [`read`] or
+/// [`write`] guard for as long as it needs the state and no longer. No guard is
+/// held across a behaviour callback, so a callback may lock freely.
+///
+/// [`read`]: Self::read
+/// [`write`]: Self::write
+#[derive(Clone, Debug)]
+#[cfg_attr(
+    feature = "reflect",
+    derive(facet::Facet),
+    facet(opaque, proxy = crate::reflect::InputStateProxy)
+)]
+pub struct InputHandle(Arc<RwLock<InputState>>);
 
-        impl $name {
-            #[doc = concat!("Wrap `f` as an [`", stringify!($name), "`].")]
-            pub fn new(f: impl FnMut(&World, Entity, &$event) + 'static) -> Self {
-                Self(Box::new(f))
-            }
+impl InputHandle {
+    /// A handle to a fresh, default state.
+    pub fn new() -> Self {
+        Self::from_state(InputState::default())
+    }
 
-            #[doc = concat!("Run this behaviour for `entity` with `event`.")]
-            pub fn run(&mut self, world: &World, entity: Entity, event: &$event) {
-                (self.0)(world, entity, event);
-            }
-        }
+    /// A handle to `state`.
+    pub fn from_state(state: InputState) -> Self {
+        Self(Arc::new(RwLock::new(state)))
+    }
+
+    /// Read the state.
+    ///
+    /// A panicking writer leaves the lock poisoned; the value is still
+    /// readable, so the poison is ignored rather than propagated.
+    pub fn read(&self) -> RwLockReadGuard<'_, InputState> {
+        self.0.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Read and write the state.
+    ///
+    /// See [`Self::read`] for why a poison is ignored.
+    pub fn write(&self) -> RwLockWriteGuard<'_, InputState> {
+        self.0.write().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Default for InputHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Give every nested world the same input handle the root world holds.
+///
+/// Input arrives in one world — the host's, where the window callbacks run —
+/// while the worlds that read it are nested inside that one. A nested world
+/// cannot see its parent's components, so the handle is copied down: every
+/// world that has none gets one, and a world that already has one is left
+/// alone, so a handle put there deliberately is not replaced.
+///
+/// Returns whether anything was added. Recurses, so a world nested more than
+/// one level deep is reached too.
+pub fn distribute_input(world: &World) -> bool {
+    let Some(handle) = world
+        .query::<&InputHandle>()
+        .next()
+        .map(|(_, handle)| InputHandle::clone(&handle))
+    else {
+        return false;
     };
+    distribute_into(world, &handle)
+}
+
+/// The recursion behind [`distribute_input`].
+fn distribute_into(world: &World, handle: &InputHandle) -> bool {
+    let mut changed = false;
+    for (entity, child) in world.query::<&World>() {
+        let has = child.query::<&InputHandle>().next().is_some();
+        // The child is borrowed to ask the question; release it before
+        // writing, or the write finds the cell already borrowed.
+        drop(child);
+        let nested = world.with_mut::<World, _>(entity, |child| {
+            if !has {
+                child.spawn((handle.clone(),));
+            }
+            distribute_into(child, handle)
+        });
+        if let Some(nested) = nested {
+            changed |= !has || nested;
+        }
+    }
+    changed
 }
 
 behaviour!(
@@ -997,9 +1058,9 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 ///
 /// Returns whether any event was delivered, so a caller can skip the
 /// [`World::apply`] that would otherwise follow an empty dispatch. With
-/// no [`InputState`] resource in the world this does nothing and returns
-/// `false`: a world that never asked for input has nothing to deliver, and
-/// that is not an error.
+/// no [`InputHandle`] in the world this does nothing and returns `false`: a
+/// world that never asked for input has nothing to deliver, and that is not
+/// an error.
 ///
 /// Each event goes to its category's behaviour component and, in addition, to
 /// every [`OnInput`]:
@@ -1044,9 +1105,9 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// ```
 pub fn dispatch_input(world: &World) -> bool {
     let Some(events) = world
-        .query::<&InputState>()
+        .query::<&InputHandle>()
         .next()
-        .map(|(_, state)| state.events.to_vec())
+        .map(|(_, handle)| handle.read().events().to_vec())
     else {
         return false;
     };
@@ -1103,7 +1164,7 @@ mod tests {
     use core::cell::Cell;
     use std::rc::Rc;
 
-    use unlit_ecs::With;
+    use unlit_ecs::{Entity, With};
 
     use super::*;
 
@@ -1193,7 +1254,8 @@ mod tests {
             seen_ime.set(seen_ime.get() + 1);
         }),));
 
-        let input_entity = world.spawn((InputState::default(),));
+        let input_handle = InputHandle::new();
+        world.spawn((input_handle.clone(),));
         let events = [
             key_event(Key::W),
             mouse_event(),
@@ -1208,11 +1270,12 @@ mod tests {
             InputEvent::FocusChanged(false),
         ];
         let event_count = events.len();
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
+        {
+            let mut state = input_handle.write();
             for event in events {
                 state.push(event);
             }
-        });
+        }
 
         assert!(dispatch_input(&world), "events were delivered");
 
@@ -1237,11 +1300,13 @@ mod tests {
             OnKey::new(move |_, _, _| keys.set(keys.get() + 1)),
             OnInput::new(move |_, _, _| all.set(all.get() + 1)),
         ));
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        {
+            let mut state = input.write();
             state.push(key_event(Key::A));
             state.push(mouse_event());
-        });
+        }
 
         dispatch_input(&world);
 
@@ -1258,10 +1323,9 @@ mod tests {
             world.spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
         }
 
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
-            state.push(key_event(Key::A));
-        });
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        input.write().push(key_event(Key::A));
 
         dispatch_input(&world);
 
@@ -1284,10 +1348,9 @@ mod tests {
         // Another entity of the same kind must not be substituted.
         world.spawn((9u32, OnKey::new(|_, _, _| {})));
 
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
-            state.push(key_event(Key::A));
-        });
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        input.write().push(key_event(Key::A));
 
         dispatch_input(&world);
 
@@ -1299,30 +1362,26 @@ mod tests {
         // The events are copied out before the callbacks run, so the resource
         // is not borrowed while they execute.
         let mut world = World::new();
-        let input_entity = world.spawn((InputState::default(),));
-        world.spawn((OnKey::new(move |world, _, _| {
-            let held = world
-                .get::<InputState>(input_entity)
-                .unwrap()
-                .modifiers
-                .ctrl;
-            let _ = world.with_mut::<InputState, _>(input_entity, |state| state.focused = held);
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        let callback_input = input.clone();
+        world.spawn((OnKey::new(move |_, _, _| {
+            let held = callback_input.read().modifiers.ctrl;
+            callback_input.write().focused = held;
         }),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
-            state.push(InputEvent::Key(KeyEvent {
-                key: Key::C,
-                pressed: true,
-                repeat: false,
-                modifiers: Modifiers {
-                    ctrl: true,
-                    ..Modifiers::default()
-                },
-            }));
-        });
+        input.write().push(InputEvent::Key(KeyEvent {
+            key: Key::C,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        }));
 
         dispatch_input(&world);
 
-        assert!(world.get::<InputState>(input_entity).unwrap().focused);
+        assert!(input.read().focused);
     }
 
     #[test]
@@ -1337,10 +1396,9 @@ mod tests {
         }),));
         world.spawn((OnKey::new(|_, _, _| {}),));
 
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
-            state.push(key_event(Key::A));
-        });
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        input.write().push(key_event(Key::A));
 
         dispatch_input(&world);
 
@@ -1353,10 +1411,9 @@ mod tests {
         world.spawn((OnKey::new(|world, _, _| {
             world.queue().spawn((42u32,));
         }),));
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
-            state.push(key_event(Key::A));
-        });
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        input.write().push(key_event(Key::A));
 
         assert!(dispatch_input(&world));
         assert_eq!(world.len(), 2, "queued, not applied");
@@ -1371,11 +1428,13 @@ mod tests {
         let doomed = world.spawn((OnKey::new(|world, entity, _| {
             world.queue().despawn(entity);
         }),));
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        {
+            let mut state = input.write();
             state.push(key_event(Key::A));
             state.push(key_event(Key::B));
-        });
+        }
 
         dispatch_input(&world);
         world.apply();
@@ -1388,7 +1447,7 @@ mod tests {
         let mut world = World::new();
         let (count, seen) = counter();
         world.spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
-        world.spawn((InputState::default(),));
+        world.spawn((InputHandle::new(),));
 
         assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
@@ -1407,10 +1466,9 @@ mod tests {
     #[test]
     fn events_without_behaviours_are_delivered_to_nobody() {
         let mut world = World::new();
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
-            state.push(key_event(Key::A));
-        });
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        input.write().push(key_event(Key::A));
 
         // Events did arrive, so the caller still owes an `apply`.
         assert!(dispatch_input(&world));
@@ -1725,19 +1783,21 @@ mod tests {
         // The documented frame loop, end to end: deliver, apply, clear, and
         // the state a later frame reads is still there.
         let mut world = World::new();
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        {
+            let mut state = input.write();
             state.set_size_px(800, 600);
             state.set_scale_factor(1.5);
             state.push(InputEvent::FocusChanged(false));
             state.push(key_event(Key::S));
-        });
+        }
 
         assert!(dispatch_input(&world));
         world.apply();
-        let _ = world.with_mut::<InputState, _>(input_entity, InputState::clear_events);
+        input.write().clear_events();
 
-        let state = world.get::<InputState>(input_entity).unwrap();
+        let state = input.read();
         assert!(state.events().is_empty());
         assert_eq!(state.size_px, (800, 600));
         assert_eq!(state.scale_factor, 1.5);
@@ -1753,10 +1813,9 @@ mod tests {
         world.spawn((OnKey::new(|world, entity, _| {
             let _ = world.get::<OnKey>(entity);
         }),));
-        let input_entity = world.spawn((InputState::default(),));
-        let _ = world.with_mut::<InputState, _>(input_entity, |state| {
-            state.push(key_event(Key::A));
-        });
+        let input = InputHandle::new();
+        world.spawn((input.clone(),));
+        input.write().push(key_event(Key::A));
 
         dispatch_input(&world);
     }
