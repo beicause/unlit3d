@@ -82,6 +82,14 @@ held sideways. A page the browser denies fullscreen — one in an `iframe` witho
 the `fullscreen` permission — is drawn no button at all, rather than a control
 that could only fail.
 
+A GPU panel reports the device the example is running on: the adapter's name and
+description, the backend, the driver, the features the device was created with,
+and every limit it reports. It opens in the bottom-left corner and, like the
+scene selector, is a window that can be dragged anywhere and whose rectangle is
+carried into the next scene. The facts are read once, when the scene is built —
+a device's features and limits cannot change — and the list scrolls within a
+share of the window's height, so even a long one never covers the scene.
+
 The GPU context is requested asynchronously, because the adapter and device
 requests are: on the web they resolve on the browser's task queue, so the frame
 loop must not block on them. The window is created on the main thread — winit

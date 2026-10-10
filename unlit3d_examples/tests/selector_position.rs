@@ -1,10 +1,10 @@
-//! The scene-selector window keeps its dragged rectangle across a scene
-//! switch.
+//! The floating panels keep their dragged rectangles across a scene switch.
 //!
 //! A scene switch rebuilds the whole scene — world, renderer, and the egui
-//! context the window's position lives in — so the shell reads the window's
+//! context the window's position lives in — so the shell reads each window's
 //! last rectangle before dropping the old scene and hands it to the new one as
-//! its opening position and size. These tests pin both halves of that hand-off.
+//! its opening position. These tests pin both halves of that hand-off, for the
+//! scene selector and for the GPU-info panel.
 //!
 //! The file uses the harness `gpu_scenes.rs` uses, so the same binary runs
 //! natively and as the module a wasm test page loads.
@@ -13,7 +13,7 @@ use unlit_wgpu_test_util::{Ctx, gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
 use unlit3d_examples::scenes::{self, SceneOptions};
-use unlit3d_examples::{FIXED_STEP, Scene};
+use unlit3d_examples::{FIXED_STEP, PanelRects, Scene};
 
 async fn selector_window_is_laid_out_after_a_frame() {
     let ctx = Ctx::headless().await;
@@ -56,6 +56,26 @@ async fn selector_window_opens_where_the_previous_scene_left_it() {
     );
 }
 
+async fn the_gpu_info_panel_opens_where_the_previous_scene_left_it() {
+    let ctx = Ctx::headless().await;
+    let size = (960, 720);
+
+    // A rectangle a user might have dragged the panel to.
+    let carried = egui::Rect::from_min_size(egui::pos2(120.0, 80.0), egui::vec2(300.0, 260.0));
+    let (mut world, mut scene) = scene_with_gpu_info(&ctx, size, Some(carried));
+    bind(&mut world, &mut scene, &ctx, size);
+
+    scene.advance(&mut world, FIXED_STEP);
+    scene.render(&world);
+    scene.end_frame(&mut world);
+
+    let opened = gpu_info_rect(&world).expect("the GPU-info panel is laid out after a frame");
+    assert_eq!(
+        opened.min, carried.min,
+        "rebuild must inherit the carried rectangle's position"
+    );
+}
+
 async fn a_switched_scene_opens_where_the_selector_was_left() {
     let ctx = Ctx::headless().await;
     let size = (960, 720);
@@ -86,10 +106,36 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
 }
 
 fn rect(world: &World) -> Option<egui::Rect> {
+    panel_rect(world, "scenes")
+}
+
+/// The carried rectangles for a scene whose selector opens at `initial`.
+fn selector_only(initial: Option<egui::Rect>) -> PanelRects {
+    PanelRects {
+        selector: initial,
+        gpu_info: None,
+    }
+}
+
+/// The carried rectangles for a scene whose GPU-info panel opens at `gpu_info`.
+fn gpu_info_only(gpu_info: Option<egui::Rect>) -> PanelRects {
+    PanelRects {
+        selector: None,
+        gpu_info,
+    }
+}
+
+/// The GPU-info panel's rectangle, read by the id the panel's window is given.
+fn gpu_info_rect(world: &World) -> Option<egui::Rect> {
+    panel_rect(world, "unlit3d::gpu-info")
+}
+
+/// The rectangle egui remembers for the window with `id`.
+fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
     world.query::<&Source>().find_map(|(_, source)| {
         let ui = source.as_ref::<UiSource>()?;
         ui.context()
-            .memory(|memory| memory.area_rect(egui::Id::new("scenes")))
+            .memory(|memory| memory.area_rect(egui::Id::new(id)))
     })
 }
 
@@ -112,7 +158,30 @@ fn scene_at(
             sequence_step: None,
         },
         def,
-        initial,
+        selector_only(initial),
+    )
+}
+
+/// A scene whose GPU-info panel opens at `gpu_info`.
+fn scene_with_gpu_info(
+    ctx: &Ctx,
+    size: (u32, u32),
+    gpu_info: Option<egui::Rect>,
+) -> (World, Scene) {
+    Scene::new(
+        ctx.device.clone(),
+        ctx.queue.clone(),
+        ctx.capabilities,
+        size,
+        SceneOptions {
+            ui: true,
+            selector: true,
+            reproducible: true,
+            letterbox: false,
+            sequence_step: None,
+        },
+        scenes::SCENES[0],
+        gpu_info_only(gpu_info),
     )
 }
 
@@ -131,7 +200,7 @@ fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Sc
             sequence_step: None,
         },
         scenes::SCENES[0],
-        initial,
+        selector_only(initial),
     )
 }
 
@@ -148,6 +217,7 @@ fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
 gpu_tests! {
     selector_window_is_laid_out_after_a_frame,
     selector_window_opens_where_the_previous_scene_left_it,
+    the_gpu_info_panel_opens_where_the_previous_scene_left_it,
     a_switched_scene_opens_where_the_selector_was_left,
 }
 

@@ -23,7 +23,7 @@ use unlit_wgpu_test_util::{
 };
 use unlit3d::prelude::*;
 use unlit3d_examples::scenes::{self, SceneDef, SceneOptions};
-use unlit3d_examples::{FIXED_STEP, Scene};
+use unlit3d_examples::{FIXED_STEP, PanelRects, Scene};
 
 /// The tolerance the scenes that draw no panel are judged with.
 ///
@@ -162,7 +162,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
             sequence_step: None,
         },
         def,
-        None,
+        PanelRects::default(),
     );
 
     let renderer = scene.renderer;
@@ -240,7 +240,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
             sequence_step: None,
         },
         def,
-        None,
+        PanelRects::default(),
     );
 
     let renderer = scene.renderer;

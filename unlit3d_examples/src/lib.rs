@@ -355,6 +355,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         LastFrame(Instant::now()),
         InitialScene(scene),
         SelectorPos(None),
+        GpuInfoPos(None),
         McpEnabled(args.mcp && MCP_SUPPORTED),
         ExitRequest(false),
         WinitProxy(proxy),
@@ -609,6 +610,35 @@ struct InitialScene(&'static scenes::SceneDef);
 /// switch can rebuild it in the same place and at the same size.
 struct SelectorPos(Option<egui::Rect>);
 
+/// The GPU-info panel's rectangle the last time a scene was live, so a scene
+/// switch can rebuild it where the user left it.
+struct GpuInfoPos(Option<egui::Rect>);
+
+/// Where the scene's draggable panels opened, carried from the scene a switch
+/// replaced.
+///
+/// The two rectangles travel together because they are one idea: each is the
+/// position egui remembered for a panel, read from the dying scene's context
+/// and handed to the new scene's. A scene built without a carried position
+/// opens its panels in their default corners.
+#[derive(Clone, Copy, Default)]
+pub struct PanelRects {
+    /// The scene-selector window's last rectangle.
+    pub selector: Option<egui::Rect>,
+    /// The GPU-info panel's last rectangle.
+    pub gpu_info: Option<egui::Rect>,
+}
+
+impl PanelRects {
+    /// The panels' rectangles as the app entity remembers them.
+    fn read(world: &World, app: Entity) -> Self {
+        Self {
+            selector: world.get::<SelectorPos>(app).and_then(|pos| pos.0),
+            gpu_info: world.get::<GpuInfoPos>(app).and_then(|pos| pos.0),
+        }
+    }
+}
+
 /// Whether to serve the world over the Model Context Protocol rather than
 /// drive a scene on this thread.
 ///
@@ -789,7 +819,7 @@ fn present(world: &World, app: Entity) {
                     sequence_step: def.step_seconds,
                 },
                 def,
-                world.get::<SelectorPos>(app).and_then(|pos| pos.0),
+                PanelRects::read(world, app),
             );
             let entity = world.queue().spawn((scene_world, scene));
             let _ = world.with_mut::<SceneEntity, _>(app, |slot| slot.0 = Some(entity));
@@ -1105,22 +1135,26 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
         let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
             return;
         };
-        let (selector_pos, switch, fullscreen) = {
+        let (selector_pos, gpu_info_pos, switch, fullscreen) = {
             let Some(nested) = world.get::<World>(scene_entity) else {
                 return;
             };
-            let selector_pos = world
-                .get::<Scene>(scene_entity)
-                .and_then(|scene| scene.selector_rect(&nested));
+            let (selector_pos, gpu_info_pos) = {
+                let scene = world
+                    .get::<Scene>(scene_entity)
+                    .expect("the scene component exists");
+                (scene.selector_rect(&nested), scene.gpu_info_rect(&nested))
+            };
             let switch = world
                 .with_mut::<Scene, _>(scene_entity, |scene| scene.pending.take())
                 .flatten();
             let fullscreen = world
                 .get_mut::<Scene>(scene_entity)
                 .is_some_and(|mut scene| scene.take_fullscreen(&nested));
-            (selector_pos, switch, fullscreen)
+            (selector_pos, gpu_info_pos, switch, fullscreen)
         };
         let _ = world.with_mut::<SelectorPos, _>(app, |slot| slot.0 = selector_pos);
+        let _ = world.with_mut::<GpuInfoPos, _>(app, |slot| slot.0 = gpu_info_pos);
         if let Some(def) = switch {
             switch_scene(world, app, def);
             FrameSkip::skip(world);
@@ -1427,7 +1461,7 @@ impl Scene {
         size: (u32, u32),
         options: scenes::SceneOptions,
         def: &'static scenes::SceneDef,
-        selector_pos: Option<egui::Rect>,
+        panels: PanelRects,
     ) -> (World, Self) {
         let mut world = World::new();
         let context = spawn_context(
@@ -1492,8 +1526,9 @@ impl Scene {
         }
 
         if options.selector {
-            mount_selector(&mut world, switch, def, selector_pos);
+            mount_selector(&mut world, switch, def, panels.selector);
             mount_frame_rate(&mut world, frame_rate);
+            mount_gpu_info(&mut world, context.device, panels.gpu_info);
             // The browser is the one platform with a page to make fullscreen,
             // and a page can still be denied it — an `iframe` without the
             // `fullscreen` permission. No button is drawn where a press could
@@ -1565,12 +1600,28 @@ impl Scene {
     /// the shell reads it from here so a scene switch — which rebuilds that
     /// context — can rebuild the window in the same place and at the same size.
     fn selector_rect(&self, world: &World) -> Option<egui::Rect> {
-        // Several sources share the world; only the UI one holds egui's
-        // window memory, so skip every other source's entity.
+        self.panel_rect(world, SELECTOR_WINDOW)
+    }
+
+    /// The GPU-info panel's rectangle the last time it was laid out, or `None`
+    /// before it has been shown once.
+    ///
+    /// Carried across a scene switch exactly like [`Self::selector_rect`]: the
+    /// panel is a window the user may drag, and the switch rebuilds the context
+    /// that remembers where it was left.
+    fn gpu_info_rect(&self, world: &World) -> Option<egui::Rect> {
+        self.panel_rect(world, GPU_INFO_AREA)
+    }
+
+    /// The rectangle egui remembers for the window with `id`.
+    ///
+    /// Several sources share the world; only the UI one holds egui's window
+    /// memory, so skip every other source's entity.
+    fn panel_rect(&self, world: &World, id: &str) -> Option<egui::Rect> {
         world.query::<&Source>().find_map(|(_, source)| {
             let ui = source.as_ref::<UiSource>()?;
             ui.context()
-                .memory(|memory| memory.area_rect(SELECTOR_WINDOW))
+                .memory(|memory| memory.area_rect(egui::Id::new(id)))
         })
     }
 
@@ -1756,6 +1807,27 @@ const FRAME_RATE_AREA: &str = "unlit3d::frame-rate";
 /// The id of the fullscreen button's area.
 const FULLSCREEN_AREA: &str = "unlit3d::fullscreen";
 
+/// The GPU-info panel's title, shown in its title bar.
+const GPU_INFO_TITLE: &str = "GPU";
+
+/// The id of the GPU-info panel's area, which is also the id egui remembers
+/// the panel's rectangle under.
+const GPU_INFO_AREA: &str = "unlit3d::gpu-info";
+
+/// The widest the GPU-info panel is drawn, in points.
+///
+/// The panel prints strings the device chose — an adapter name, a driver
+/// description — beside a grid of limits, so its natural width is unbounded;
+/// this caps it so a long one wraps rather than running off the screen.
+const GPU_INFO_MAX_WIDTH: f32 = 320.0;
+
+/// The share of the window's height the GPU-info panel may take.
+///
+/// The panel is an overlay on the scene, not a replacement for it: the limits
+/// alone are several dozen rows, so the body scrolls within this share of the
+/// window instead of covering it.
+const GPU_INFO_HEIGHT_FRACTION: f32 = 0.6;
+
 /// Mount the frame-rate readout at the top of the window, centred.
 ///
 /// An [`egui::Area`] rather than a window: it is pinned, not something the user
@@ -1797,6 +1869,226 @@ fn frame_rate_readout(ui: &mut egui::Ui, text: &str) {
                 ui.add(egui::Label::new(egui::RichText::new(text).monospace()).extend());
             });
         });
+}
+
+/// The device facts the GPU-info panel shows, read once when it is mounted.
+///
+/// Reading them once rather than every frame keeps the panel's per-frame pass
+/// free of work the device cannot change: an adapter's name, the features it
+/// was created with and the limits it reports are fixed for the lifetime of
+/// the device, so the strings are built where the device is in hand and the
+/// pass only lays them out.
+struct GpuInfo {
+    /// The adapter's name, shown as the panel's title.
+    name: String,
+    /// One line naming the backend, the kind of device and the driver.
+    summary: String,
+    /// The rest of the adapter's description, as label/value pairs.
+    rows: Vec<(String, String)>,
+    /// The names of the features the device was created with.
+    features: Vec<&'static str>,
+    /// The limits the device reports, as field-name/value pairs.
+    limits: Vec<(String, String)>,
+}
+
+impl GpuInfo {
+    /// Read `device`'s adapter description, enabled features and limits.
+    fn read(device: &wgpu::Device) -> Self {
+        let info = device.adapter_info();
+        let features = device.features();
+        let limits = device.limits();
+
+        // The field names are the panel's labels, so they are spelled once and
+        // `stringify!`d rather than repeated as string literals that could drift
+        // from the fields they name.
+        Self {
+            name: info.name.clone(),
+            summary: format!(
+                "{} · {} · {}",
+                info.backend.to_str(),
+                device_type_name(info.device_type),
+                info.driver,
+            ),
+            rows: vec![
+                ("driver info".to_owned(), info.driver_info.clone()),
+                ("vendor".to_owned(), format!("{:#06x}", info.vendor)),
+                ("device".to_owned(), format!("{:#06x}", info.device)),
+                ("pci bus".to_owned(), info.device_pci_bus_id.clone()),
+                (
+                    "subgroup".to_owned(),
+                    format!("{}..{}", info.subgroup_min_size, info.subgroup_max_size),
+                ),
+                (
+                    "transient saves memory".to_owned(),
+                    match info.transient_saves_memory {
+                        Some(saves) => saves.to_string(),
+                        None => "unknown".to_owned(),
+                    },
+                ),
+            ],
+            features: features.iter_names().map(|(name, _)| name).collect(),
+            limits: limit_rows(&limits),
+        }
+    }
+}
+
+/// The device's limits as label/value pairs, in the order the device reports
+/// them.
+///
+/// A [`wgpu::Limits`] is serialisable, so the labels and values come from its
+/// own serde description: the field names are the JSON object's keys and the
+/// values are its entries. Nothing here names a limit, so a field wgpu adds is
+/// shown without a change, and a field it renames is not silently dropped.
+///
+/// The keys come out in the JSON object's order, which serde_json keeps sorted
+/// rather than in declaration order; the list is stable and complete either
+/// way, and a reader looking a limit up benefits from the order.
+///
+/// Falls back to an empty list rather than failing: a panel that loses its
+/// limits is a cosmetic loss, and serialising a plain struct of integers has
+/// no way to fail.
+fn limit_rows(limits: &wgpu::Limits) -> Vec<(String, String)> {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(limits) else {
+        return Vec::new();
+    };
+    fields
+        .into_iter()
+        .map(|(name, value)| (name, json_scalar(&value)))
+        .collect()
+}
+
+/// One limit's value as text.
+///
+/// Every field of a [`wgpu::Limits`] is an integer, so a scalar is all there
+/// is to render; the fallback covers a future field of another shape without
+/// hiding it.
+fn json_scalar(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Number(number) => number.to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// The name of a [`wgpu::DeviceType`], for the panel's summary line.
+///
+/// [`wgpu::DeviceType`] has no `Display` impl, so its names are spelled here.
+fn device_type_name(device_type: wgpu::DeviceType) -> &'static str {
+    match device_type {
+        wgpu::DeviceType::Other => "other",
+        wgpu::DeviceType::IntegratedGpu => "integrated GPU",
+        wgpu::DeviceType::DiscreteGpu => "discrete GPU",
+        wgpu::DeviceType::VirtualGpu => "virtual GPU",
+        wgpu::DeviceType::Cpu => "CPU",
+    }
+}
+
+/// Where the GPU-info panel opens when no position was carried over.
+///
+/// Like the selector, it is seeded by the corner it belongs in — here the
+/// bottom-left, one overlay margin in — so that corner stays put as the
+/// content decides the panel's size; a panel the user has dragged is carried
+/// by its whole rectangle, which a rebuild restores exactly.
+fn gpu_info_default_pos(ctx: &egui::Context) -> egui::Pos2 {
+    ctx.content_rect().left_bottom() + egui::Vec2::new(OVERLAY_MARGIN, -OVERLAY_MARGIN)
+}
+
+/// Mount the GPU-info panel, a draggable window in the bottom-left corner.
+///
+/// A window rather than an anchored area so the user can move it out of the
+/// way; it is drawn in the foreground layer so a scene panel cannot cover it.
+///
+/// The device is read here, once, where it is in hand; the panel then draws
+/// from the strings that read produced.
+fn mount_gpu_info(world: &mut World, device: Entity, initial: Option<egui::Rect>) {
+    let info = {
+        let device = world
+            .get::<wgpu::Device>(device)
+            .expect("the device component exists");
+        GpuInfo::read(&device)
+    };
+    world.spawn((UiPanel::new(move |_world, _entity, ui| {
+        gpu_info_panel(ui, &info, initial);
+    }),));
+}
+
+/// Draw the GPU-info panel for `info`, seeded at `initial` or the bottom-left
+/// corner of `ui`'s screen.
+///
+/// A free function rather than the body of the panel's closure so a test can
+/// drive it against a bare [`egui::Context`]: what it has to get right — where
+/// it opens, the width it wraps at and the facts it prints — is a property of
+/// the widget tree, not of the world.
+fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>) {
+    // The id is set explicitly, as in the selector: `Window::new` would derive
+    // it from the title text, and the shell reads the remembered rectangle back
+    // under this id.
+    let window = egui::Window::new(GPU_INFO_TITLE)
+        .id(egui::Id::new(GPU_INFO_AREA))
+        .order(egui::Order::Foreground)
+        .max_width(GPU_INFO_MAX_WIDTH)
+        // The facts are read once, so there is nothing to gain from resizing;
+        // the window sizes itself to them and scrolls the overflow.
+        .resizable(false);
+    // A fresh panel is seeded by its bottom-left pivot, so that corner stays
+    // put while the first layout measures the content. A carried rectangle is
+    // seeded by its left-top and given its size, so the first frame lays the
+    // window out as it last was.
+    let window = match initial {
+        Some(rect) => window.default_pos(rect.min).default_size(rect.size()),
+        None => window
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            // The size is given as well as the position: an area is laid out
+            // against the size it had before the first pass measures it, and
+            // egui's default area size is wider than a narrow window, which
+            // would push the seeded corner inward when the area is constrained
+            // to the screen.
+            .default_size(egui::Vec2::new(
+                GPU_INFO_MAX_WIDTH,
+                ui.ctx().content_rect().height() * GPU_INFO_HEIGHT_FRACTION,
+            ))
+            .default_pos(gpu_info_default_pos(ui.ctx())),
+    };
+    window.show(ui.ctx(), |ui| {
+        ui.set_max_width(GPU_INFO_MAX_WIDTH);
+        ui.vertical(|ui| {
+            ui.strong(&info.name);
+            ui.monospace(&info.summary);
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .max_height(ui.ctx().content_rect().height() * GPU_INFO_HEIGHT_FRACTION)
+                // Fill the panel's width so the facts wrap within the cap
+                // instead of the window sizing itself to the widest one; shrink
+                // to the content's height so a device with few limits gets a
+                // short panel.
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    gpu_info_section(ui, "Adapter");
+                    for (label, value) in &info.rows {
+                        ui.small(format!("{label}: {value}"));
+                    }
+
+                    gpu_info_section(ui, &format!("Features ({})", info.features.len()));
+                    if info.features.is_empty() {
+                        ui.small("none");
+                    } else {
+                        for feature in &info.features {
+                            ui.small(*feature);
+                        }
+                    }
+
+                    gpu_info_section(ui, &format!("Limits ({})", info.limits.len()));
+                    for (name, value) in &info.limits {
+                        ui.small(format!("{name} = {value}"));
+                    }
+                });
+        });
+    });
+}
+
+/// A heading separating the GPU-info panel's sections.
+fn gpu_info_section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(OVERLAY_GAP);
+    ui.strong(title);
 }
 
 /// Mount the fullscreen button in the window's top-right corner.
@@ -1942,8 +2234,9 @@ fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FRAME_RATE_AREA, FULLSCREEN_AREA, FULLSCREEN_BUTTON_MIN_SIZE, FrameRate, OVERLAY_MARGIN,
-        egui, frame_rate_readout, fullscreen_button, letterbox, tick,
+        FRAME_RATE_AREA, FULLSCREEN_AREA, FULLSCREEN_BUTTON_MIN_SIZE, FrameRate, GPU_INFO_AREA,
+        GPU_INFO_MAX_WIDTH, GpuInfo, OVERLAY_MARGIN, egui, frame_rate_readout, fullscreen_button,
+        gpu_info_panel, letterbox, limit_rows, tick,
     };
 
     /// Run one egui pass over a `screen`-point screen with `events`, drawing the
@@ -2000,6 +2293,37 @@ mod tests {
         })
     }
 
+    /// The pointer events that begin a drag at `pos`: the pointer arrives and
+    /// the button goes down.
+    fn drag_start(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+        ]
+    }
+
+    /// The pointer events that move a held pointer to `to`. The movement has
+    /// to be a pass of its own: egui measures a drag as the delta between two
+    /// passes, not between two events of one.
+    fn drag_move(to: egui::Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerMoved(to)]
+    }
+
+    /// The pointer events that release a held pointer at `pos`.
+    fn drag_release(pos: egui::Pos2) -> Vec<egui::Event> {
+        vec![egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        }]
+    }
+
     /// The pointer events that tap `pos`: a press and, on a later pass, the
     /// release that egui reports as a click.
     fn tap(pos: egui::Pos2) -> (Vec<egui::Event>, Vec<egui::Event>) {
@@ -2013,6 +2337,167 @@ mod tests {
             vec![egui::Event::PointerMoved(pos), button(true)],
             vec![button(false)],
         )
+    }
+
+    /// Run one egui pass over a `screen`-point screen with `events`, drawing
+    /// the GPU-info panel for `info` where `initial` says, and report every
+    /// galley it laid out.
+    fn gpu_info_pass(
+        ctx: &egui::Context,
+        screen: (f32, f32),
+        info: &GpuInfo,
+        initial: Option<egui::Rect>,
+        events: Vec<egui::Event>,
+    ) -> Vec<String> {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(screen.0, screen.1),
+            )),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            gpu_info_panel(ui, info, initial);
+        });
+        // egui panics if a texture delta is dropped unapplied; a real frame
+        // hands it to the integration, and this test discards it.
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_limit_list_comes_from_the_limits_own_description() {
+        // The labels are wgpu's own field names, so the test names the ones the
+        // type is known to carry rather than a copy of the whole list.
+        let rows = limit_rows(&wgpu::Limits::defaults());
+        assert!(
+            rows.len() > 50,
+            "a limits struct has dozens of fields, got {}",
+            rows.len()
+        );
+        for expected in [
+            ("maxBindGroups", "4"),
+            ("maxTextureDimension1D", "8192"),
+            ("maxBufferSize", "268435456"),
+        ] {
+            assert!(
+                rows.iter()
+                    .any(|(name, value)| name == expected.0 && value == expected.1),
+                "the limits do not show {expected:?}"
+            );
+        }
+    }
+
+    /// The facts a GPU-info panel is asked to show, small enough to read.
+    fn sample_gpu_info() -> GpuInfo {
+        GpuInfo {
+            name: "Test Adapter".to_owned(),
+            summary: "vulkan · discrete GPU · test driver".to_owned(),
+            rows: vec![("driver info".to_owned(), "1.2.3".to_owned())],
+            features: vec!["DEPTH_CLIP_CONTROL", "TEXTURE_COMPRESSION_BC"],
+            limits: vec![("max_bind_groups".to_owned(), "4".to_owned())],
+        }
+    }
+
+    #[test]
+    fn the_gpu_info_panel_opens_in_the_bottom_left_corner() {
+        // The panel is an overlay on the scene, so the first build has to put
+        // it in its corner and keep it inside the window.
+        for screen in [(1280.0, 577.0), (800.0, 600.0), (390.0, 844.0)] {
+            let ctx = egui::Context::default();
+            let info = sample_gpu_info();
+            // Two passes: the first measures the content, the second lays the
+            // window out against that measurement.
+            let _ = gpu_info_pass(&ctx, screen, &info, None, Vec::new());
+            let _ = gpu_info_pass(&ctx, screen, &info, None, Vec::new());
+
+            let panel = area_rect(&ctx, GPU_INFO_AREA);
+            assert!(
+                (panel.left() - OVERLAY_MARGIN).abs() < 1.0,
+                "at {screen:?} the panel {panel:?} does not keep the left margin"
+            );
+            assert!(
+                (screen.1 - panel.bottom() - OVERLAY_MARGIN).abs() < 1.0,
+                "at {screen:?} the panel {panel:?} does not keep the bottom margin"
+            );
+            assert!(
+                panel.right() <= screen.0,
+                "at {screen:?} the panel {panel:?} runs off the right"
+            );
+            assert!(
+                panel.width() <= GPU_INFO_MAX_WIDTH + 16.0,
+                "at {screen:?} the panel {panel:?} grew past its cap"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gpu_info_panel_can_be_dragged_by_its_title() {
+        // The panel is a window, not a pinned overlay: a user has to be able to
+        // move it off whatever it covers. The drag is a gesture spread over
+        // several passes, as egui sees a real one.
+        let ctx = egui::Context::default();
+        let info = sample_gpu_info();
+        let screen = (800.0, 600.0);
+        let _ = gpu_info_pass(&ctx, screen, &info, None, Vec::new());
+        let _ = gpu_info_pass(&ctx, screen, &info, None, Vec::new());
+        let opened = area_rect(&ctx, GPU_INFO_AREA);
+
+        // Grab the title bar and pull the window up and to the right.
+        let from = egui::pos2(opened.center().x, opened.top() + 8.0);
+        let to = from + egui::vec2(60.0, -40.0);
+        let _ = gpu_info_pass(&ctx, screen, &info, None, drag_start(from));
+        let _ = gpu_info_pass(&ctx, screen, &info, None, drag_move(to));
+        let _ = gpu_info_pass(&ctx, screen, &info, None, drag_release(to));
+
+        let moved = area_rect(&ctx, GPU_INFO_AREA);
+        assert!(
+            (moved.min - opened.min - (to - from)).length() < 1.0,
+            "the panel did not follow the drag: opened {opened:?}, moved {moved:?}"
+        );
+    }
+
+    #[test]
+    fn the_gpu_info_panel_prints_the_adapter_features_and_limits() {
+        let ctx = egui::Context::default();
+        let info = sample_gpu_info();
+        let _ = gpu_info_pass(&ctx, (800.0, 600.0), &info, None, Vec::new());
+        let text = gpu_info_pass(&ctx, (800.0, 600.0), &info, None, Vec::new()).join("\n");
+
+        for expected in [
+            "Test Adapter",
+            "vulkan · discrete GPU · test driver",
+            "driver info: 1.2.3",
+            "Features (2)",
+            "DEPTH_CLIP_CONTROL",
+            "TEXTURE_COMPRESSION_BC",
+            "Limits (1)",
+            "max_bind_groups = 4",
+        ] {
+            assert!(
+                text.contains(expected),
+                "the panel does not show {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gpu_info_panel_says_none_when_no_feature_is_enabled() {
+        let ctx = egui::Context::default();
+        let mut info = sample_gpu_info();
+        info.features.clear();
+        let _ = gpu_info_pass(&ctx, (800.0, 600.0), &info, None, Vec::new());
+        let text = gpu_info_pass(&ctx, (800.0, 600.0), &info, None, Vec::new()).join("\n");
+        assert!(text.contains("Features (0)"), "the count is still stated");
+        assert!(text.contains("none"), "an empty feature list is stated");
     }
 
     #[test]

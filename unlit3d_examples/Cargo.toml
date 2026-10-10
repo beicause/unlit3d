@@ -32,10 +32,15 @@ name = "selector_position"
 argh.workspace = true
 glam.workspace = true
 log.workspace = true
+# The GPU-info panel reads the device's facts from their serde description
+# rather than a hand-written field list; see limit_rows.
+serde_json.workspace = true
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.1", features = ["gltf"] }
 web-time.workspace = true
-wgpu.workspace = true
+# The GPU-info panel reads the device's limits from their serde description,
+# so this is the one crate that needs wgpu to serialise them.
+wgpu = { workspace = true, features = ["serde"] }
 winit.workspace = true
 
 # The snapshot tests drive the example's own scenes through the harness, so they
