@@ -15,7 +15,8 @@
 //! Like every other behaviour, a frame behaviour runs with `&World`, so a
 //! structural change goes through [`World::queue`] and lands when the driver
 //! applies after the dispatch. A behaviour that needs the rest of the frame
-//! skipped writes a flag its siblings read; nothing is skipped for it.
+//! skipped sets [FrameSkip], which its siblings read; [dispatch_frame] clears it
+//! before the first behaviour runs, so every frame starts whole.
 
 pub(crate) use unlit_ecs::{Entity, World};
 
@@ -44,6 +45,50 @@ pub struct FrameBehaviourOrder(pub i32);
 
 /// A callback that runs once for the entity it is mounted on.
 pub type FrameCallback = Box<dyn FnMut(&World, Entity, &mut Frame)>;
+
+/// Whether this frame has been short-circuited.
+///
+/// The frame's behaviours are independent components with no shared stack, so
+/// one that cannot carry the frame further sets this and its later siblings
+/// read it and return. The order they run in is what makes the reads
+/// meaningful, which is why a frame behaviour declares one.
+///
+/// Spawn one to take part; a world without one has nothing to skip.
+#[derive(Debug, Default)]
+pub struct FrameSkip(pub bool);
+
+impl FrameSkip {
+    /// Mark the frame as skipped.
+    ///
+    /// A no-op in a world that never spawned a [FrameSkip].
+    pub fn skip(world: &World) {
+        for entity in Self::entities(world) {
+            let _ = world.with_mut::<FrameSkip, _>(entity, |skip| skip.0 = true);
+        }
+    }
+
+    /// Whether the frame has been skipped.
+    #[must_use]
+    pub fn is_skipped(world: &World) -> bool {
+        world.query::<&FrameSkip>().any(|(_, skip)| skip.0)
+    }
+
+    /// Clear the flag, readying the frame for its behaviours.
+    fn reset(world: &World) {
+        for entity in Self::entities(world) {
+            let _ = world.with_mut::<FrameSkip, _>(entity, |skip| skip.0 = false);
+        }
+    }
+
+    /// The entities carrying a [FrameSkip], collected before any is borrowed
+    /// mutably.
+    fn entities(world: &World) -> Vec<Entity> {
+        world
+            .query::<&FrameSkip>()
+            .map(|(entity, _)| entity)
+            .collect()
+    }
+}
 
 /// A component that runs once per frame.
 ///
@@ -214,7 +259,11 @@ fn next_mount_index(world: &mut World) -> u64 {
 
 /// Run every [`OnFrame`] in `world`, in resolved order, then apply what they
 /// queued.
+///
+/// Any [FrameSkip] is cleared first, so a frame that was short-circuited does
+/// not stay short-circuited for the next one.
 pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
+    FrameSkip::reset(world);
     dispatch::<OnFrame>(world, frame);
     world.apply();
 }
@@ -242,6 +291,7 @@ fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -361,5 +411,43 @@ mod tests {
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec!["update", "end"]);
+    }
+
+    #[test]
+    fn skip_marks_the_frame_and_is_skipped_reads_it() {
+        let mut world = World::new();
+        world.spawn((FrameSkip::default(),));
+        assert!(!FrameSkip::is_skipped(&world));
+        FrameSkip::skip(&world);
+        assert!(FrameSkip::is_skipped(&world));
+    }
+
+    #[test]
+    fn skip_is_a_no_op_without_a_flag_component() {
+        let world = World::new();
+        FrameSkip::skip(&world);
+        assert!(!FrameSkip::is_skipped(&world));
+    }
+
+    /// A frame that short-circuited does not leave the next one short-circuited:
+    /// the dispatch clears the flag before the first behaviour runs.
+    #[test]
+    fn dispatch_clears_a_skip_left_by_the_previous_frame() {
+        let mut world = World::new();
+        let first = Rc::new(Cell::new(true));
+        world.spawn((FrameSkip::default(),));
+        {
+            let first = first.clone();
+            world.spawn_frame_behaviour(OnFrame::new(UPDATE, move |world, _entity, _frame| {
+                assert!(!FrameSkip::is_skipped(world), "the flag starts whole");
+                if first.replace(false) {
+                    FrameSkip::skip(world);
+                }
+            }));
+        }
+        dispatch_frame(&mut world, &mut frame());
+        assert!(FrameSkip::is_skipped(&world));
+        dispatch_frame(&mut world, &mut frame());
+        assert!(!FrameSkip::is_skipped(&world));
     }
 }

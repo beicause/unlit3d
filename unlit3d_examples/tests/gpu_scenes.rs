@@ -186,7 +186,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         scene.render(&world);
         scene.end_frame(&mut world);
 
-        let Some(name) = (scene.control.snapshot)(frame) else {
+        let Some(name) = (scene.snapshot)(frame) else {
             continue;
         };
         let snapshot = frames.get(compared).unwrap_or_else(|| {

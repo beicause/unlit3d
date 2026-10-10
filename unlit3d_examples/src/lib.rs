@@ -17,7 +17,8 @@ use std::io::Write;
 use std::process::ExitCode;
 
 use cli::{Args, Parsed};
-use scenes::SceneControl;
+use scenes::{Advance, SceneControl};
+use unlit3d::frame::Frame;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
@@ -29,7 +30,7 @@ use unlit3d::winit::builtin::{
 };
 #[cfg(target_os = "android")]
 use unlit3d::winit::event::OnSuspended;
-use unlit3d::winit::event::{OnAboutToWait, OnUserEvent, OnWindowEvent, WinitHost};
+use unlit3d::winit::event::{OnUserEvent, OnWindowEvent, WinitHost};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
@@ -357,9 +358,16 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         McpEnabled(args.mcp && MCP_SUPPORTED),
         ExitRequest(false),
         WinitProxy(proxy),
-        request_gpu(),
+        FrameSkip::default(),
         draw_on_redraw(),
     ));
+    // The frame's own behaviours, in order: request the GPU, build the scene
+    // and its surface, serve the controls, advance the scene, present it.
+    world.spawn_frame_behaviour(request_gpu());
+    world.spawn_frame_behaviour(ensure_presented(app));
+    world.spawn_frame_behaviour(serve_scene_controls(app));
+    world.spawn_frame_behaviour(advance_scene(app));
+    world.spawn_frame_behaviour(present_frame(app));
     // A resize is a second `OnWindowEvent` behaviour, so it sits on its own
     // entity: two of one family on an entity would be two borrows of one cell.
     world.spawn((resize_scene(app),));
@@ -530,25 +538,22 @@ pub struct Scene {
     /// [`scenes::SceneDef::baseline`] — so a target of any shape shows the same
     /// picture at a different scale rather than showing more of it.
     pub viewport: Option<ViewportRect>,
-    /// The scene's per-frame behaviour and snapshot table.
-    pub control: SceneControl,
+    /// The snapshot the scene's test compares each frame against, if any.
+    ///
+    /// The scene's per-frame behaviour is not here: it was moved into the
+    /// scene's own world as a frame behaviour at build time, so a frame
+    /// advances it without `&mut Scene`.
+    pub snapshot: scenes::Snapshot,
     /// The frame-rate measurement the windowed shell's readout displays.
     ///
     /// Unused by the snapshot tests, which have no display to report a rate on.
     frame_rate: Entity,
-    /// The frame index the scene's behaviour is handed.
-    frame: u32,
-    /// The interval the index advances at, in seconds, or `None` to advance it
-    /// once per drawn frame.
+    /// The index of the next frame the scene's behaviour advances from.
     ///
-    /// The snapshot tests advance it every frame so a capture draws exactly the
-    /// frames its snapshots froze; the windowed path hands a scene that froze a
-    /// sequence a longer interval, so the sequence plays at a watchable pace
-    /// instead of one frame per display refresh.
-    sequence_step: Option<f32>,
-    /// Seconds accumulated towards the next advance of `frame`, used only when
-    /// `sequence_step` is set.
-    sequence_clock: f32,
+    /// Carried across calls because [`Self::advance`] hands it to the frame
+    /// behaviours through the frame's context, and a fixed sequence may skip a
+    /// frame without advancing it.
+    frame: u32,
     /// The scene-selector's switch component, read once per frame.
     switch: Entity,
     /// The fullscreen button's request component, read once per frame.
@@ -613,18 +618,70 @@ struct McpEnabled(bool);
 
 /// One frame's work, deferred to the host's apply.
 ///
-/// Advancing a scene and landing the changes its behaviour queued both need
-/// `&mut World`, which only a command is handed; a callback runs with
-/// `&World`. The command is applied between two event callbacks, so no frame
-/// is drawn while one is being handled.
-struct Frame {
+/// The frame is a dispatch of the host world's `OnFrame` behaviours, which
+/// need `&World`; the command is what hands them a `&mut World`, so it
+/// computes the frame's delta and drives them. It is applied between two event
+/// callbacks, so no frame is drawn while one is being handled.
+struct DrawFrame {
     /// The app entity carrying the state the frame reads and writes.
     app: Entity,
 }
 
-impl Command for Frame {
+impl Command for DrawFrame {
     fn apply(self: Box<Self>, world: &mut World) {
-        draw_frame(world, self.app);
+        let app = self.app;
+        let now = Instant::now();
+        let delta_time = world
+            .get::<LastFrame>(app)
+            .map_or(0.0, |last| (now - last.0).as_secs_f32());
+        let _ = world.with_mut::<LastFrame, _>(app, |slot| slot.0 = now);
+        let mut frame = Frame {
+            delta_time,
+            index: 0,
+            size: (0, 0),
+        };
+        dispatch_frame(world, &mut frame);
+    }
+}
+
+/// The interval a scene's index advances at, in seconds, or `None` to advance
+/// it once per drawn frame.
+struct SequenceStep(Option<f32>);
+
+/// Seconds accumulated towards the next advance of a scene's index.
+struct SequenceClock(f32);
+
+/// Whether this frame advanced the scene's index, decided by the sequence step
+/// and read by the behaviour that runs the scene's own advance.
+struct SequenceStepped(bool);
+
+/// A scene's own per-frame behaviour, stored in its world so the frame
+/// behaviour that drives it can call it with the world it mutates.
+///
+/// `None` only while it is being called: the closure needs `&mut World`, and a
+/// component cannot be borrowed mutably and handed the world it lives in at the
+/// same time, so it is taken out, called, and put back.
+struct SceneAdvance(Option<Advance>);
+
+/// Run the scene's own per-frame behaviour, which needs `&mut World`.
+struct RunSceneAdvance {
+    /// The entity carrying the scene's [`SceneAdvance`] and sequence state.
+    entity: Entity,
+    /// The frame the behaviour is advanced by.
+    frame: Frame,
+}
+
+impl Command for RunSceneAdvance {
+    fn apply(self: Box<Self>, world: &mut World) {
+        let Self { entity, frame } = *self;
+        let advance = world
+            .with_mut::<SceneAdvance, _>(entity, |slot| slot.0.take())
+            .flatten();
+        let Some(mut advance) = advance else {
+            return;
+        };
+        advance(world, frame.index, frame.delta_time, frame.size);
+        let _ = world.with_mut::<SceneAdvance, _>(entity, |slot| slot.0 = Some(advance));
     }
 }
 
@@ -932,122 +989,231 @@ fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
     present(world, app);
 }
 
-/// Draw one frame: advance the scene, then present it.
+/// The host frame behaviours' order: the GPU request starts the async setup
+/// before anything looks for a GPU, the present-and-build step runs before the
+/// scene is touched, the controls are served before the scene advances, and the
+/// frame is drawn last.
+const FRAME_GPU: FrameBehaviourOrder = FrameBehaviourOrder(0);
+const FRAME_PRESENT: FrameBehaviourOrder = FrameBehaviourOrder(10);
+const FRAME_CONTROLS: FrameBehaviourOrder = FrameBehaviourOrder(20);
+const FRAME_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(30);
+const FRAME_DRAW: FrameBehaviourOrder = FrameBehaviourOrder(40);
+
+/// The scene world's frame behaviours' order: input is dispatched before the
+/// sequence is stepped, and the sequence before the scene's own behaviour runs.
+const SCENE_INPUT: FrameBehaviourOrder = FrameBehaviourOrder(0);
+const SCENE_SEQUENCE: FrameBehaviourOrder = FrameBehaviourOrder(10);
+const SCENE_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(20);
+
+/// Run the scene world's input dispatch for the frame.
+fn dispatch_input_on_frame() -> OnFrame {
+    OnFrame::new(SCENE_INPUT, |world, _entity, _frame| {
+        dispatch_input(world);
+    })
+}
+
+/// Decide whether this frame advances the scene's sequence.
 ///
-/// Called from the [`Frame`] command, because advancing the scene and landing
-/// the changes its behaviour queued both need `&mut World`.
-fn draw_frame(world: &mut World, app: Entity) {
-    let resumed = world
-        .query::<&Resumed>()
-        .next()
-        .is_some_and(|(_, state)| state.0);
-    if !resumed {
-        return;
-    }
-    let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
-        present(world, app);
-        return;
-    };
-    // The swap chain is built by `present`, which can only finish once the
-    // scene's world has landed; retry each frame until it has.
-    if !world
-        .get::<SurfaceSlot>(app)
-        .is_some_and(|slot| slot.0.is_some())
-    {
-        present(world, app);
+/// A scene with a fixed step advances once its clock has accumulated one; one
+/// without advances every frame. The decision is recorded in `SequenceStepped`
+/// for the behaviour that runs the advance.
+fn step_sequence(entity: Entity) -> OnFrame {
+    OnFrame::new(SCENE_SEQUENCE, move |world, _entity, frame| {
+        let stepped = match world.get::<SequenceStep>(entity).and_then(|step| step.0) {
+            Some(step) => world
+                .with_mut::<SequenceClock, _>(entity, |clock| {
+                    tick(&mut clock.0, step, frame.delta_time)
+                })
+                .expect("the scene frame entity carries a sequence clock"),
+            None => true,
+        };
+        let _ = world.with_mut::<SequenceStepped, _>(entity, |flag| flag.0 = stepped);
+    })
+}
+
+/// Run the scene's own per-frame behaviour when the sequence advanced, and
+/// count the frame.
+///
+/// The behaviour needs `&mut World`, which a frame callback does not have, so
+/// it is queued; the index is captured before it is counted on, so the
+/// behaviour is handed the frame it advances from.
+fn run_scene_advance(entity: Entity) -> OnFrame {
+    OnFrame::new(SCENE_ADVANCE, move |world, _entity, frame| {
+        let stepped = world
+            .get::<SequenceStepped>(entity)
+            .is_some_and(|flag| flag.0);
+        if !stepped {
+            return;
+        }
+        world.queue().push(RunSceneAdvance {
+            entity,
+            frame: *frame,
+        });
+        frame.index = frame.index.wrapping_add(1);
+    })
+}
+
+/// Build the scene and its surface, and short-circuit the frame until both are
+/// ready.
+///
+/// The scene's world is spawned through the queue, so it lands on a later
+/// `apply`; the surface is built out of that world. Each frame retries, and
+/// the frames that cannot yet draw are skipped.
+fn ensure_presented(app: Entity) -> OnFrame {
+    OnFrame::new(FRAME_PRESENT, move |world, _entity, _frame| {
+        let resumed = world
+            .query::<&Resumed>()
+            .next()
+            .is_some_and(|(_, state)| state.0);
+        if !resumed {
+            FrameSkip::skip(world);
+            return;
+        }
+        if world
+            .get::<SceneEntity>(app)
+            .is_none_or(|slot| slot.0.is_none())
+        {
+            present(world, app);
+            FrameSkip::skip(world);
+            return;
+        }
         if !world
             .get::<SurfaceSlot>(app)
             .is_some_and(|slot| slot.0.is_some())
         {
+            present(world, app);
+            if !world
+                .get::<SurfaceSlot>(app)
+                .is_some_and(|slot| slot.0.is_some())
+            {
+                FrameSkip::skip(world);
+            }
+        }
+    })
+}
+
+/// Serve the scene selector and the fullscreen button.
+///
+/// A scene switch drops the scene's world, so nothing may still be borrowed
+/// from it when the switch is served: the control state is read in one block
+/// and acted on after.
+fn serve_scene_controls(app: Entity) -> OnFrame {
+    OnFrame::new(FRAME_CONTROLS, move |world, _entity, _frame| {
+        if FrameSkip::is_skipped(world) {
             return;
         }
-    }
-    // The frame's control state is read before the scene's world is borrowed
-    // mutably: a scene switch drops that world, so nothing may still be
-    // borrowed from it when the switch is served.
-    let (selector_pos, switch, fullscreen) = {
-        let nested = world
-            .get::<World>(scene_entity)
-            .expect("the scene entity carries a world");
-        let mut scene = world
-            .get_mut::<Scene>(scene_entity)
-            .expect("the scene entity carries a scene");
-        (
-            scene.selector_rect(&nested),
-            scene.take_switch(),
-            scene.take_fullscreen(&nested),
-        )
-    };
-    let _ = world.with_mut::<SelectorPos, _>(app, |slot| slot.0 = selector_pos);
-    if let Some(def) = switch {
-        switch_scene(world, app, def);
-        return;
-    }
-    if fullscreen && let Some(window) = window(world) {
-        web::toggle(&window);
-    }
-    let Some(mut nested) = world.get_mut::<World>(scene_entity) else {
-        return;
-    };
-    let now = Instant::now();
-    let delta_time = world
-        .get::<LastFrame>(app)
-        .map_or(0.0, |last| (now - last.0).as_secs_f32());
-    let _ = world.with_mut::<LastFrame, _>(app, |slot| slot.0 = now);
-    let renderer = world
-        .get::<Scene>(scene_entity)
-        .expect("the scene entity carries a scene")
-        .renderer;
-    let viewport = world
-        .get::<Scene>(scene_entity)
-        .expect("the scene entity carries a scene")
-        .viewport;
-    let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
-        scene.advance(&mut nested, delta_time);
-    });
+        let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
+            return;
+        };
+        let (selector_pos, switch, fullscreen) = {
+            let Some(nested) = world.get::<World>(scene_entity) else {
+                return;
+            };
+            let selector_pos = world
+                .get::<Scene>(scene_entity)
+                .and_then(|scene| scene.selector_rect(&nested));
+            let switch = world
+                .with_mut::<Scene, _>(scene_entity, |scene| scene.pending.take())
+                .flatten();
+            let fullscreen = world
+                .get_mut::<Scene>(scene_entity)
+                .is_some_and(|mut scene| scene.take_fullscreen(&nested));
+            (selector_pos, switch, fullscreen)
+        };
+        let _ = world.with_mut::<SelectorPos, _>(app, |slot| slot.0 = selector_pos);
+        if let Some(def) = switch {
+            switch_scene(world, app, def);
+            FrameSkip::skip(world);
+            return;
+        }
+        if fullscreen && let Some(window) = window(world) {
+            web::toggle(&window);
+        }
+    })
+}
 
-    if world.get::<McpEnabled>(app).is_some_and(|mcp| mcp.0) {
+/// Advance the scene by the frame's delta.
+fn advance_scene(app: Entity) -> OnFrame {
+    OnFrame::new(FRAME_ADVANCE, move |world, _entity, frame| {
+        if FrameSkip::is_skipped(world) {
+            return;
+        }
+        let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
+            return;
+        };
+        let Some(mut nested) = world.get_mut::<World>(scene_entity) else {
+            return;
+        };
+        let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
+            scene.advance(&mut nested, frame.delta_time);
+        });
+    })
+}
+
+/// Present the advanced scene, or blit it into the swap chain in MCP mode.
+fn present_frame(app: Entity) -> OnFrame {
+    OnFrame::new(FRAME_DRAW, move |world, _entity, _frame| {
+        if FrameSkip::is_skipped(world) {
+            return;
+        }
+        let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
+            return;
+        };
+        let Some(mut nested) = world.get_mut::<World>(scene_entity) else {
+            return;
+        };
+        let renderer = world
+            .get::<Scene>(scene_entity)
+            .expect("the scene entity carries a scene")
+            .renderer;
+        let viewport = world
+            .get::<Scene>(scene_entity)
+            .expect("the scene entity carries a scene")
+            .viewport;
+
+        if world.get::<McpEnabled>(app).is_some_and(|mcp| mcp.0) {
+            let nested_world: &World = &nested;
+            nested_world
+                .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(nested_world))
+                .expect("the renderer is a resource entity");
+            let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
+                scene.end_frame(&mut nested);
+            });
+            draw_blit(world, app);
+            return;
+        }
+
+        let Some(mut slot) = world.get_mut::<SurfaceSlot>(app) else {
+            return;
+        };
+        let Some(surface) = slot.0.as_mut() else {
+            return;
+        };
         let nested_world: &World = &nested;
+        let attachments = world
+            .get_mut::<AttachmentsSlot>(app)
+            .expect("the app entity carries its attachments slot");
+        let attachments = attachments.0.as_ref();
         nested_world
-            .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(nested_world))
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                let Some(frame) = surface.acquire(nested_world, renderer) else {
+                    return;
+                };
+                if let Some(attachments) = attachments {
+                    attachments.bind(nested_world, renderer, frame.color_view().clone());
+                }
+                set_frame_viewport(nested_world, viewport.map(FrameViewport));
+                renderer.render(nested_world);
+                let queue = nested_world
+                    .get::<wgpu::Queue>(renderer.context().queue)
+                    .expect("the queue resource");
+                frame.present(&queue);
+            })
             .expect("the renderer is a resource entity");
         let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
             scene.end_frame(&mut nested);
         });
-        draw_blit(world, app);
-        return;
-    }
-
-    let Some(mut slot) = world.get_mut::<SurfaceSlot>(app) else {
-        return;
-    };
-    let Some(surface) = slot.0.as_mut() else {
-        return;
-    };
-    let nested_world: &World = &nested;
-    let attachments = world
-        .get_mut::<AttachmentsSlot>(app)
-        .expect("the app entity carries its attachments slot");
-    let attachments = attachments.0.as_ref();
-    nested_world
-        .with_mut::<Renderer, _>(renderer, |renderer| {
-            let Some(frame) = surface.acquire(nested_world, renderer) else {
-                return;
-            };
-            if let Some(attachments) = attachments {
-                attachments.bind(nested_world, renderer, frame.color_view().clone());
-            }
-            set_frame_viewport(nested_world, viewport.map(FrameViewport));
-            renderer.render(nested_world);
-            let queue = nested_world
-                .get::<wgpu::Queue>(renderer.context().queue)
-                .expect("the queue resource");
-            frame.present(&queue);
-        })
-        .expect("the renderer is a resource entity");
-    let _ = world.with_mut::<Scene, _>(scene_entity, |scene| {
-        scene.end_frame(&mut nested);
-    });
+    })
 }
 
 /// Present the blit world into the swap chain, in MCP mode.
@@ -1092,10 +1258,10 @@ fn draw_blit(world: &World, app: Entity) {
 /// Request the GPU context once a window exists to present through.
 ///
 /// The window is created by the host at the end of the resume callback, so the
-/// request waits for the next turn of the loop; a `GpuState` that is no
-/// longer idle keeps a later turn from starting it twice.
-fn request_gpu() -> OnAboutToWait {
-    OnAboutToWait::new(|world, entity, ()| {
+/// request waits for a later frame; a `GpuState` that is no longer idle keeps
+/// a later frame from starting it twice.
+fn request_gpu() -> OnFrame {
+    OnFrame::new(FRAME_GPU, |world, entity, _frame| {
         if !world
             .get::<GpuState>(entity)
             .is_some_and(|state| matches!(&*state, GpuState::Idle))
@@ -1172,7 +1338,7 @@ fn handle_user_event() -> OnUserEvent<UserEvent> {
 fn draw_on_redraw() -> OnWindowEvent {
     OnWindowEvent::new(|world, entity, payload| {
         if matches!(&payload.event, WindowEvent::RedrawRequested) {
-            world.queue().push(Frame { app: entity });
+            world.queue().push(DrawFrame { app: entity });
         }
     })
 }
@@ -1279,6 +1445,7 @@ impl Scene {
         // content size is the target's own and nothing about it changes.
         let (viewport, content) = letterbox(def.baseline, size, options.letterbox);
         let control = (def.build)(&mut world, context, renderer, content, options);
+        let SceneControl { advance, snapshot } = control;
         // The selector's switch component lives in every world; only a windowed
         // run mounts the panel that writes it.
         let switch = world.spawn((SceneSwitch(None),));
@@ -1287,6 +1454,25 @@ impl Scene {
         // The frame-rate component likewise, so both paths build the same
         // world shape and only the windowed run mounts the panel reading it.
         let frame_rate = world.spawn((FrameRate::default(),));
+        // The scene's per-frame state and its own behaviour, as components: the
+        // frame's behaviours advance them without `&mut Scene`. One entity
+        // carries them so the behaviour that advances the scene and the state
+        // it reads are reached together.
+        let frame_entity = world.spawn((
+            SceneAdvance(Some(advance)),
+            SequenceStep(options.sequence_step),
+            SequenceClock(0.0),
+            SequenceStepped(true),
+        ));
+        // The frame's own dispatch, in order: run the frame's input, step the
+        // index a fixed sequence holds each frame for, then advance the scene
+        // by the frame the index names.
+        world.spawn_frame_behaviour(dispatch_input_on_frame());
+        world.spawn_frame_behaviour(step_sequence(frame_entity));
+        world.spawn_frame_behaviour(run_scene_advance(frame_entity));
+        // A scene world has no window: it starts whole and nothing short-
+        // circuits it. Spawning the flag lets a scene behaviour do so.
+        world.spawn((FrameSkip::default(),));
 
         // The UI source drives the scene's own panels — and, in a windowed
         // run, the selector panel. A scene captured without UI mounts none.
@@ -1323,11 +1509,9 @@ impl Scene {
                 renderer,
                 size: content,
                 viewport,
-                control,
+                snapshot,
                 frame_rate,
                 frame: 0,
-                sequence_step: options.sequence_step,
-                sequence_clock: 0.0,
                 switch,
                 fullscreen,
                 pending: None,
@@ -1347,6 +1531,11 @@ impl Scene {
     }
 
     /// Advance the scene by `delta_time` seconds.
+    ///
+    /// A frame is the dispatch of the scene world's `OnFrame` behaviours, in
+    /// the order they declare: input, the index, and the scene's own behaviour.
+    /// The index and the content size travel in the frame's context, so a
+    /// behaviour reads them without a component of its own.
     pub fn advance(&mut self, world: &mut World, delta_time: f32) {
         // Measured before anything else, so the reading covers the whole frame
         // — input, behaviour, render and present — and not just the part
@@ -1355,38 +1544,18 @@ impl Scene {
             .with_mut::<FrameRate, _>(self.frame_rate, |rate| rate.push(delta_time))
             .expect("the frame-rate component exists");
 
-        // The frame's input events run the world's behaviour components. The
-        // UI source and the dispatcher read the same list, and the caller
-        // clears it once both have: this is the whole input step, and doing it
-        // before the frame is drawn means the frame that follows reflects it.
-        dispatch_input(world);
-        world.apply();
-
-        // A fixed-sequence scene holds each frame for `sequence_step` seconds;
-        // everything else, and every capture, steps once per drawn frame.
-        let stepped = match self.sequence_step {
-            Some(step) => tick(&mut self.sequence_clock, step, delta_time),
-            None => true,
+        let mut frame = Frame {
+            delta_time,
+            index: self.frame,
+            size: self.size,
         };
-
-        // The scene's own per-frame behaviour runs after the input, so the
-        // world the renderer reads is this frame's. It is handed the target's
-        // current size, so a scene whose camera follows the target's aspect
-        // re-aims on the very frame a resize reaches the loop.
-        if stepped {
-            (self.control.advance)(world, self.frame, delta_time, self.size);
-            self.frame += 1;
-        }
+        dispatch_frame(world, &mut frame);
+        self.frame = frame.index;
 
         // The selector's request, read once so the frame loop can act on it.
         self.pending = world
             .with_mut::<SceneSwitch, _>(self.switch, |s| s.0.take())
             .expect("the switch component exists");
-    }
-
-    /// A scene switch requested by the selector panel, if any.
-    fn take_switch(&mut self) -> Option<&'static scenes::SceneDef> {
-        self.pending.take()
     }
 
     /// The selector window's rectangle the last time it was laid out, or
