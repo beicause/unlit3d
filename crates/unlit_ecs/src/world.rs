@@ -22,6 +22,7 @@
 
 use core::any::TypeId;
 use core::cell::{Ref, RefCell, RefMut};
+use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
 use crate::bundle::Bundle;
@@ -40,11 +41,11 @@ pub struct World {
     ctors: TypeIdHashMap<fn() -> Box<dyn AnyColumn>>,
     /// The name of every component type that ever entered the world.
     names: TypeIdHashMap<&'static str>,
-    commands: RefCell<Vec<Box<dyn Command>>>,
+    commands: RefCell<VecDeque<Box<dyn Command>>>,
 }
 
 /// The exclusive borrow of a world's command queue.
-pub(crate) type CommandsGuard<'w> = RefMut<'w, Vec<Box<dyn Command>>>;
+pub(crate) type CommandsGuard<'w> = RefMut<'w, VecDeque<Box<dyn Command>>>;
 
 impl Default for World {
     fn default() -> Self {
@@ -60,7 +61,7 @@ impl World {
             archetypes: Archetypes::new(),
             ctors: TypeIdHashMap::default(),
             names: TypeIdHashMap::default(),
-            commands: RefCell::new(Vec::new()),
+            commands: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -348,13 +349,10 @@ impl World {
     /// already in the queue.
     pub fn apply(&mut self) {
         loop {
-            let mut batch = std::mem::take(&mut *self.commands_write());
-            if batch.is_empty() {
+            let Some(command) = self.commands_write().pop_front() else {
                 return;
-            }
-            for command in batch.drain(..) {
-                command.apply(self);
-            }
+            };
+            command.apply(self);
         }
     }
 
@@ -381,7 +379,7 @@ impl World {
 
     /// Append a command to the deferred queue.
     pub(crate) fn push_command(&self, command: Box<dyn Command>) {
-        self.commands_write().push(command);
+        self.commands_write().push_back(command);
     }
 
     /// The archetype with exactly `types` (sorted), creating it when it is
