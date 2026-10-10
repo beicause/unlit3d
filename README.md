@@ -296,6 +296,13 @@ that fails leaves it behind: each pass writes its own directory under
 platform showing through rather than a regression, so having the frame is what
 makes the difference something to look at rather than to infer from a score.
 
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml) publishes the site
+to GitHub Pages on every push to `main`: the web example at the root, with the
+workspace's API docs under `docs/` and the example's corner linking to them.
+The docs build on nightly, because the page listing the crates and the
+`doc(cfg(...))` labels are nightly-only; `ci.yml` keeps checking them on stable
+so a break is caught on the pull request rather than at the deploy.
+
 ## Workspace layout
 
 ```text

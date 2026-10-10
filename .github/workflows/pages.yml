@@ -1,9 +1,10 @@
 name: Pages
 
 # Publishing lives in its own workflow rather than in `ci.yml` because the two
-# want different triggers and different tokens: this one publishes the web
-# example and therefore runs only where a site may be written, while `ci.yml`
-# validates every pull request and must never publish.
+# want different triggers and different tokens: this one publishes the site —
+# the web example with the workspace's API docs beside it — and therefore runs
+# only where a site may be written, while `ci.yml` validates every pull
+# request and must never publish.
 #
 # Pages has to be set to build from a workflow once, in the repository's
 # settings. `configure-pages` reads that setting, so until it is set the build
@@ -33,9 +34,9 @@ permissions:
 
 jobs:
   build:
-    name: Build the web example
-    # runtime is normally 1 minute
-    timeout-minutes: 10
+    name: Build the site
+    # runtime is normally 2 minutes
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -55,6 +56,8 @@ jobs:
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal
+          # The API docs are the one step that needs nightly; see its comment.
+          rustup toolchain install nightly --no-self-update --profile=minimal
           rustup target add wasm32-unknown-unknown
 
       - name: Caching
@@ -85,6 +88,20 @@ jobs:
       # binary is several times its size.
       - name: Build the web example
         run: cargo xtask run-wasm --release --no-serve
+
+      # The API docs ship beside the example, under `docs/`. Rustdoc writes the
+      # page that lists the crates only with `--enable-index-page`, and the
+      # crates' `doc(cfg(...))` labels appear only under `--cfg docsrs`; both are
+      # nightly-only, so this is the one step that uses nightly. `--all-features`
+      # shows the optional modules — glTF, reflection, UI and winit — rather than
+      # the default set alone.
+      - name: Build the API docs
+        run: |
+          cargo +nightly doc --workspace --no-deps --document-private-items --all-features --keep-going
+          mkdir -p target/generated/release/docs
+          cp -r target/doc/. target/generated/release/docs/
+        env:
+          RUSTDOCFLAGS: "-D warnings --cfg docsrs -Z unstable-options --enable-index-page"
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v5.0.0

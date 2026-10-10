@@ -231,6 +231,12 @@ pull request 上运行上述检查以及各 lint 关卡：
 的目录里，由任务作为 artifact 上传。不匹配往往反映的是平台差异而非回归，所以拿到这
 一帧，才能让人直接查看差异，而不是从分数去推断。
 
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml) 在每次推送到 `main` 时
+把站点发布到 GitHub Pages：根目录是 web 示例，工作区的 API 文档放在 `docs/` 下，示例
+页角上有指向它的链接。文档用 nightly 构建，因为列出各 crate 的索引页与 `doc(cfg(...))`
+标签都只存在于 nightly；`ci.yml` 仍在 stable 上检查文档，好让问题在 pull request 上
+就被发现，而不是等到发布时。
+
 ## 工作区结构
 
 ```text
