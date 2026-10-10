@@ -112,9 +112,10 @@ activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK �
 
 ### `cargo xtask publish`
 
-把会发布到 crates.io 的 crate——`unlit_ecs`、`unlit_wgpu`、`unlit3d`——逐个、按上述
-顺序发布。这个顺序是硬性要求而非偏好：一个 crate 在它所依赖的 crate 进入 registry 之前
-无法打包，所以先发布 `unlit3d` 会报 `no matching package named unlit_ecs found`。
+把会发布到 crates.io 的 crate——`unlit_ecs`、`unlit_wgpu`、`unlit3d`、
+`unlit3d_mcp`——逐个、按上述顺序发布。这个顺序是硬性要求而非偏好：一个 crate 在它
+所依赖的 crate 进入 registry 之前无法打包，所以先发布 `unlit3d` 会报
+`no matching package named unlit_ecs found`。
 `cargo publish` 会等待每个已上传的 crate 出现在索引里，这正是下一个能解析成功的原因。
 
 `cargo publish --workspace` 本来会自行排序，但它的 `--dry-run` 无法验证包

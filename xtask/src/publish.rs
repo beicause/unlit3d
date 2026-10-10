@@ -12,7 +12,8 @@
 //! before it is uploaded; going crate by crate keeps that check.
 //!
 //! The test harness, the example and the task runner are `publish = false`, so
-//! they are not in the list and are never uploaded.
+//! they are not in the list and are never uploaded. The MCP server is
+//! publishable and depends on all three engine crates, so it goes last.
 
 use std::process::Command;
 
@@ -20,9 +21,10 @@ use super::{PublishArgs, step};
 
 /// The publishable crates, in the order publishing requires.
 ///
-/// `unlit3d` depends on the other two and so goes last. A crate added to the
-/// workspace belongs here if and only if it is meant to reach crates.io.
-const CRATES: [&str; 3] = ["unlit_ecs", "unlit_wgpu", "unlit3d"];
+/// Each crate depends on the ones before it and so goes after them. A crate
+/// added to the workspace belongs here if and only if it is meant to reach
+/// crates.io.
+const CRATES: [&str; 4] = ["unlit_ecs", "unlit_wgpu", "unlit3d", "unlit3d_mcp"];
 
 /// Publish every crate, in order.
 pub fn run(args: &PublishArgs) -> Result<(), String> {

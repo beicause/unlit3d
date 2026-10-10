@@ -122,8 +122,8 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，`--release` 构建
   未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`（NDK 由 cargo-ndk 自动探测）。
 - **`cargo xtask publish`** — 按依赖顺序把可发布的 crate（`unlit_ecs`、`unlit_wgpu`、
-  `unlit3d`）上传到 crates.io，每个都等到它出现在索引里再打包下一个。`--dry-run`
-  只做全部检查、不上传。
+  `unlit3d`、`unlit3d_mcp`）上传到 crates.io，每个都等到它出现在索引里再打包下一个。
+  `--dry-run` 只做全部检查、不上传。
 - **`cargo nextest run`** — 需要按名筛选或重跑单个测试时直接用（`-p <crate>`、
   `-E 'test(<name>)'`）。nextest 不跑 doctest，也别用它代替 `cargo xtask test`。
 - **`cargo bench -p unlit3d_benchmarks`** — 把渲染路径的一帧按每秒实体数计时。

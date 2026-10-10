@@ -162,9 +162,9 @@ Commands follow the `cargo xtask` convention:
   the APK. Debug by default; `--release` builds an unsigned release APK. Needs
   JDK 17+ and `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
 - **`cargo xtask publish`** — upload the publishable crates (`unlit_ecs`,
-  `unlit_wgpu`, `unlit3d`) to crates.io in dependency order, waiting for each to
-  reach the index before packaging the next. `--dry-run` runs every check
-  without uploading.
+  `unlit_wgpu`, `unlit3d`, `unlit3d_mcp`) to crates.io in dependency order,
+  waiting for each to reach the index before packaging the next. `--dry-run`
+  runs every check without uploading.
 - **`cargo nextest run`** — use it directly to filter or re-run individual tests
   (`-p <crate>`, `-E 'test(<name>)'`). nextest does not run doctests, so it is no
   substitute for `cargo xtask test`.
