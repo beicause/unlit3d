@@ -1,6 +1,6 @@
 [package]
 name = "unlit3d"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 edition.workspace = true
 description = "The high-level WebGPU rendering API over unlit_wgpu and unlit_ecs: ECS components, frame sources, input, UI and winit presentation."
 repository.workspace = true
@@ -63,8 +63,8 @@ inventory = { workspace = true, optional = true }
 log.workspace = true
 profiling.workspace = true
 smallvec.workspace = true
-unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.1" }
-unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
+unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2" }
+unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
 web-time = { workspace = true, optional = true }
 wesl.workspace = true
 wesl-core.workspace = true

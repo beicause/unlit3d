@@ -1,6 +1,6 @@
 [package]
 name = "unlit3d_examples"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 edition.workspace = true
 description = "A windowed unlit3d example with selectable scenes, and the snapshot tests that compare them."
 repository.workspace = true
@@ -35,8 +35,8 @@ log.workspace = true
 # The GPU-info panel reads the device's facts from their serde description
 # rather than a hand-written field list; see limit_rows.
 serde_json.workspace = true
-unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.1", default-features = false, features = ["unlit"] }
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.1", features = ["gltf"] }
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", features = ["gltf"] }
 web-time.workspace = true
 # The GPU-info panel reads the device's limits from their serde description,
 # so this is the one crate that needs wgpu to serialise them.
@@ -57,7 +57,7 @@ env_logger.workspace = true
 # `--mcp` serves the scene over the Model Context Protocol, which needs a
 # terminal's standard input and output; neither a browser nor an Android
 # activity has one.
-unlit3d_mcp = { path = "../crates/unlit3d_mcp", version = "0.1.0-dev.1" }
+unlit3d_mcp = { path = "../crates/unlit3d_mcp", version = "0.1.0-dev.2" }
 
 # The GPU context is requested asynchronously, so the setup future needs a
 # driver: a blocking executor natively, the browser's task queue on the web.

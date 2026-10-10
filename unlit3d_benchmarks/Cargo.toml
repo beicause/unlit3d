@@ -1,6 +1,6 @@
 [package]
 name = "unlit3d_benchmarks"
-version = "0.1.0-dev.1"
+version = "0.1.0-dev.2"
 edition.workspace = true
 description = "The workspace's benchmark suite."
 repository.workspace = true
