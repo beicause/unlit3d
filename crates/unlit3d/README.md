@@ -879,6 +879,21 @@ never be unit-tested. What a callback needs from the loop is a request instead â
 dispatch, `WinitWindow` is the window a component asks for a redraw on, and the
 host maintains `Resumed` and `DisplayHandle` itself.
 
+What happens *within* one frame is a behaviour too. The [`frame`](frame) module
+has one family, [`OnFrame`](frame::OnFrame), dispatched by
+[`dispatch_frame`](frame::dispatch_frame); a frame behaviour receives `&World`,
+the entity it sits on, and a `&mut` [`Frame`](frame::Frame) carrying the frame's
+delta time, index and size. That is the same shape as the event families, with
+the frame context in place of an event. Ordering is by
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder) then mount order, and the
+library declares no order values of its own: what runs before what is the
+application's to define. A windowed application's host world and each world it
+drives dispatch the same family, so the scene side is componentised the same way.
+Mount a behaviour with [`WorldFrameExt::spawn_frame_behaviour`](frame::WorldFrameExt::spawn_frame_behaviour),
+which assigns the mount index. A behaviour that needs the rest of the frame
+skipped sets a flag its siblings read; a behaviour that needs structural change
+queues it, because a callback only holds `&World`.
+
 ```rust,no_run
 # use unlit3d::winit::builtin::{
 #     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,

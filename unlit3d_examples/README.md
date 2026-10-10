@@ -99,10 +99,20 @@ No application logic lives in a winit callback. `unlit3d::winit::event::WinitHos
 is the one `ApplicationHandler` the example implements — it is not implemented
 at all, only driven — and every callback is an ordinary behaviour component on
 an entity of the host world: the window is requested on resume, close and
-`Esc` set an exit request, a redraw queues a `Frame` command, a resize
+`Esc` set an exit request, a redraw queues a `DrawFrame` command, a resize
 re-letterboxes the scene, and the app's own `UserEvent` carries the GPU context
 back. The example's state is the same kind of component, so a callback writes a
 sibling cell and never borrows the one it is running from.
+
+A frame's own work is split the same way. `draw_frame` no longer exists: the
+frame command computes the delta time and dispatches the host world's
+`OnFrame` behaviours, which request the GPU context, make sure the scene is
+presented, serve the scene switch and the fullscreen request, advance the scene
+and draw it. The scene's own world dispatches the same family for input
+distribution, sequence stepping and the scene's `advance` closure, which runs
+through a queued command because it needs `&mut World`. Each behaviour is
+mounted with an explicit order, so a caller can insert one between two of them
+without touching the rest.
 
 ## Running it
 

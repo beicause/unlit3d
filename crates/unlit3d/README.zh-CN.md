@@ -625,6 +625,18 @@ UI 对输入的**捕获**（是否想独占指针/键盘）按 egui 的语义需
 `CreateWindowRequest` 与 `ExitRequest` 由宿主在分发后执行，`WinitWindow` 是组件
 请求重绘时所用的窗口，而 `Resumed` 与 `DisplayHandle` 由宿主自己维护。
 
+一帧之内的推进同样是行为。[`frame`](frame) 模块只有一个族
+[`OnFrame`](frame::OnFrame)，由 [`dispatch_frame`](frame::dispatch_frame) 驱动；
+帧行为拿到 `&World`、它所在实体，以及一个 `&mut`
+[`Frame`](frame::Frame)——里面是这一帧的 delta、序号与尺寸。形状与事件族完全一致，
+只是把「事件」换成了「这一帧的上下文」。排序先按
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder)，再按挂载顺序；库自身不声明任何
+顺序值，谁先谁后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
+所以场景侧也用同样的方式组件化。用
+[`WorldFrameExt::spawn_frame_behaviour`](frame::WorldFrameExt::spawn_frame_behaviour)
+挂载，它会分配挂载序号。需要跳过本帧其余工作的行为写一个兄弟行为会读的标志；需要结构
+变更的行为把变更排队，因为回调只持有 `&World`。
+
 ```rust,no_run
 # use unlit3d::winit::builtin::{
 #     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,
