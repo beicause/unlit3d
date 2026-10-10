@@ -136,7 +136,7 @@ pub struct WinitDeviceEvent {
 /// application logic of its own. Build the world, spawn the behaviours, then
 /// hand the host to [`WinitHost::run`].
 ///
-/// ```no_run
+/// ```rust,no_run
 /// use unlit3d::winit::builtin::{WindowSpec, create_window_on_resume, exit_on_close_requested};
 /// use unlit3d::winit::event::WinitHost;
 /// use winit::event_loop::EventLoop;

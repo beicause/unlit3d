@@ -17,7 +17,7 @@
 //! `Spawn` pushed by hand with [`Commands::push`] must be ordered the same
 //! way.
 //!
-//! `````
+//! `````rust
 //! # use unlit_ecs::World;
 //! let mut world = World::new();
 //!

@@ -119,7 +119,7 @@ impl Snapshot {
 ///
 /// # Example
 ///
-/// ```
+/// ```rust
 /// use unlit_wgpu_test_util::snapshot;
 ///
 /// let baseline = snapshot!("unlit_cube.webp");
@@ -152,7 +152,7 @@ macro_rules! snapshot {
 /// frame the test does not compare, and one named here that has no file fails
 /// to compile on the web.
 ///
-/// ```
+/// ```rust
 /// use unlit_wgpu_test_util::snapshots;
 ///
 /// // A scene storing two frames under its own directory.

@@ -279,7 +279,7 @@ z-sorted 绘制排序与透视相机完全一致。
 逐实例状态放在顶点流里而不是绑定组里，因为它随实体而异，而绑定组是按 mesh 绑定的。
 因此每个家族都拥有自己的一条实例流，由 `InstanceData` 描述：
 
-```ignore
+```rust,ignore
 pub trait InstanceData: 'static {
     fn stream(&self) -> InstanceStreamDesc;
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]);
@@ -302,7 +302,7 @@ pub trait InstanceData: 'static {
 蒙皮与形变是两个独立概念，因此实例上下文带的是两个各自增长的数组和两个打包方法，
 而不是一个笼统的「姿势」：
 
-```ignore
+```rust,ignore
 impl InstanceContext<'_> {
     pub fn pack_joints(&mut self) -> u32;
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32;
@@ -625,7 +625,7 @@ UI 对输入的**捕获**（是否想独占指针/键盘）按 egui 的语义需
 `CreateWindowRequest` 与 `ExitRequest` 由宿主在分发后执行，`WinitWindow` 是组件
 请求重绘时所用的窗口，而 `Resumed` 与 `DisplayHandle` 由宿主自己维护。
 
-```no_run
+```rust,no_run
 # use unlit3d::winit::builtin::{
 #     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,
 #     exit_on_close_requested,

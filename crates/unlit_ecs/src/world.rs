@@ -129,7 +129,7 @@ impl World {
     /// component is driven: the closure is the behaviour, and the caller
     /// decides which entities to run it on.
     ///
-    /// `````
+    /// `````rust
     /// # use unlit_ecs::World;
     /// let mut world = World::new();
     /// let entity = world.spawn((1u32,));
@@ -150,7 +150,7 @@ impl World {
 
     /// Spawn an entity with `bundle`.
     ///
-    /// `````
+    /// `````rust
     /// # use unlit_ecs::World;
     /// let mut world = World::new();
     /// let entity = world.spawn((1u32, true));
@@ -232,7 +232,7 @@ impl World {
 
     /// Iterate the entities matching `Q`.
     ///
-    /// `````
+    /// `````rust
     /// # use unlit_ecs::{Query, World};
     /// let mut world = World::new();
     /// world.spawn((1u32,));
@@ -256,7 +256,7 @@ impl World {
     /// fetches nothing, so [`With`](crate::With) and [`Without`](crate::Without) cost no borrow and nothing
     /// appears in the item.
     ///
-    /// `````
+    /// `````rust
     /// # use unlit_ecs::{Query, Without, World};
     /// let mut world = World::new();
     /// let plain = world.spawn((1u32,));

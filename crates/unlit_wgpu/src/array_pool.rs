@@ -29,7 +29,7 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```rust
 //! use unlit_wgpu::array_pool::ArrayPool;
 //!
 //! let (device, _queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());

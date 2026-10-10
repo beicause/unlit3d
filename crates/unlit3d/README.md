@@ -422,7 +422,7 @@ differs per entity while a bind group is bound per mesh. Every family therefore
 owns one instance stream, described by
 [`InstanceData`](pipeline::InstanceData):
 
-```ignore
+```rust,ignore
 pub trait InstanceData: 'static {
     fn stream(&self) -> InstanceStreamDesc;
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]);
@@ -454,7 +454,7 @@ Skinning and morphing are independent concepts, so the instance context carries
 two separate growing arrays and two separate pack methods rather than one
 "pose":
 
-```ignore
+```rust,ignore
 impl InstanceContext<'_> {
     pub fn pack_joints(&mut self) -> u32;
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32;
@@ -879,7 +879,7 @@ never be unit-tested. What a callback needs from the loop is a request instead â
 dispatch, `WinitWindow` is the window a component asks for a redraw on, and the
 host maintains `Resumed` and `DisplayHandle` itself.
 
-```no_run
+```rust,no_run
 # use unlit3d::winit::builtin::{
 #     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,
 #     exit_on_close_requested,

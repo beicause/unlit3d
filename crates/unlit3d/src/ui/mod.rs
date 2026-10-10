@@ -5,7 +5,7 @@
 //! [`UiPanel`] behaviour components: the source is only their driver, and it
 //! runs whatever panels the world carries, in query order.
 //!
-//! ```
+//! ```rust
 //! use unlit3d::prelude::*;
 //! use unlit_wgpu::resources::ResourceGraph;
 //!

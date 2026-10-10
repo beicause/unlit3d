@@ -19,7 +19,7 @@
 //!
 //! # A windowed application
 //!
-//! ```no_run
+//! ```rust,no_run
 //! use unlit3d::prelude::*;
 //! use unlit3d::winit::builtin::{WindowSpec, create_window_on_resume, exit_on_close_requested};
 //! use unlit3d::winit::event::WinitHost;

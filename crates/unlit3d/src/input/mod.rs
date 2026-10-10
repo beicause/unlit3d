@@ -18,7 +18,7 @@
 //! 3. [`InputState::clear_events`] drops the frame's events once every
 //!    consumer has read them.
 //!
-//! ```
+//! ```rust
 //! use unlit3d::prelude::*;
 //!
 //! // What a callback accumulates, in a sibling component: a behaviour is
@@ -694,7 +694,7 @@ pub enum InputEvent {
 /// It lives in the world as a resource entity, so a behaviour component can
 /// read the state while it handles an event:
 ///
-/// ```
+/// ```rust
 /// use unlit3d::prelude::*;
 ///
 /// // A callback reads the resource through the handle it captured. Keeping
@@ -705,10 +705,11 @@ pub enum InputEvent {
 /// let mut world = World::new();
 /// let input = InputHandle::new();
 /// world.spawn((input.clone(),));
+/// let callback_input = input.clone();
 /// let observer = world.spawn((
 ///     CtrlPresses(0),
 ///     OnInput::new(move |world, entity, _event| {
-///         let ctrl = input.read().modifiers.ctrl;
+///         let ctrl = callback_input.read().modifiers.ctrl;
 ///         if ctrl {
 ///             let _ = world.with_mut::<CtrlPresses, _>(entity, |presses| presses.0 += 1);
 ///         }
@@ -1096,7 +1097,7 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// the world is borrowed for the duration and cannot be applied to. Typically
 /// that looks like:
 ///
-/// ```
+/// ```rust
 /// # use unlit3d::prelude::*;
 /// # let mut world = World::new();
 /// if dispatch_input(&world) {

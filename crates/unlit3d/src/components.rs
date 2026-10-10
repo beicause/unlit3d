@@ -139,7 +139,7 @@ impl Camera {
 /// Clearing an attachment the pass does not have is therefore not an error —
 /// the op is simply unused — so one component fits either target.
 ///
-/// ```
+/// ```rust
 /// use unlit3d::components::RenderLoadOps;
 /// use unlit3d::prelude::depth_clear;
 ///

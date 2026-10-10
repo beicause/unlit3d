@@ -17,7 +17,7 @@
 //! [`crate::scene::Scene`] stays the caller's, assembled per frame from the
 //! handles they hand out.
 //!
-//! ```
+//! ```rust
 //! # use unlit_wgpu::render_attachments::{
 //! #     RenderAttachments, color_clear, depth_clear, stencil_clear,
 //! # };

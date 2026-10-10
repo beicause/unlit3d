@@ -35,7 +35,7 @@ use crate::source::{
 /// with [`spawn_source`](crate::source::WorldSourceExt::spawn_source) and are ordinary ECS
 /// entities.
 ///
-/// ```
+/// ```rust
 /// # use unlit3d::prelude::*;
 /// # use unlit_wgpu::resources::ResourceGraph;
 /// # let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());

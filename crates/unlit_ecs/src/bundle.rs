@@ -147,7 +147,7 @@ impl_bundle!(A, B, C, D, E, F, G, H, I, J, K, L, N, O, P, Q);
 /// the walk happens while expanding, the components do not have to be a tuple
 /// type at all, and a bundle can hold more than sixteen of them.
 ///
-/// `````
+/// `````rust
 /// # use unlit_ecs::{bundle, World};
 /// let mut world = World::new();
 /// let entity = world.spawn(bundle!((1u32, 2.0f32), (true, ())));

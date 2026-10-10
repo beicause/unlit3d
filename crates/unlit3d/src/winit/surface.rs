@@ -14,7 +14,7 @@
 //! on the web it resolves on the browser's task queue, so a frame loop must not
 //! block on it — and so is the device's, which leaves both to the caller:
 //!
-//! ```
+//! ```rust
 //! use std::sync::Arc;
 //!
 //! use unlit3d::attachments::FrameAttachments;
@@ -53,7 +53,7 @@
 //!
 //! and the frame loop then only has to bind, render and present:
 //!
-//! ```
+//! ```rust
 //! # use unlit3d::attachments::FrameAttachments;
 //! # use unlit3d::prelude::*;
 //! # use unlit3d::winit::WindowSurface;

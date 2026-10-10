@@ -6,7 +6,7 @@
 //! about egui: the UI is premultiplied, textured, screen-space vertices, and
 //! egui's clip rectangles become scissor rectangles.
 //!
-//! ```
+//! ```rust
 //! # use unlit_wgpu::globals::Globals;
 //! # use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING};
 //! # use unlit_wgpu::resources::ResourceGraph;

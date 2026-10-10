@@ -19,7 +19,7 @@
 //! a plain byte buffer the copy is uploaded from. See
 //! [the section below](#what-a-staging-buffer-is-on-webgl2).
 //!
-//! ```
+//! ```rust
 //! # let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
 //! # let target = device.create_buffer(&wgpu::BufferDescriptor {
 //! #     label: Some("target"),

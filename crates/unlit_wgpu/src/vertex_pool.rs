@@ -31,7 +31,7 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```rust
 //! use unlit_wgpu::specialize::{VertexAttributes, VertexBufferLayoutDesc};
 //! use unlit_wgpu::vertex_pool::VertexStreamPool;
 //!

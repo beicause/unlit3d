@@ -62,7 +62,7 @@ impl TestEntry {
 ///
 /// # Example
 ///
-/// ```
+/// ```rust
 /// use unlit_wgpu_test_util::gpu_tests;
 ///
 /// async fn draws_a_triangle() {

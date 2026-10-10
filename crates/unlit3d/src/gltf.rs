@@ -13,7 +13,7 @@
 //!
 //! # Usage
 //!
-//! ```no_run
+//! ```rust,no_run
 //! use unlit3d::gltf::UnlitGltf;
 //! # fn run() -> Result<(), gltf::Error> {
 //! let gltf = UnlitGltf::load("model.glb")?;
@@ -23,7 +23,7 @@
 //! The document is inserted in one call, which returns every handle that keeps
 //! what it uploaded alive:
 //!
-//! ```no_run
+//! ```rust,no_run
 //! # use unlit3d::gltf::UnlitGltf;
 //! # use unlit3d::prelude::{MeshSource, World};
 //! # fn run(source: &mut MeshSource, world: &mut World) -> Result<(), gltf::Error> {

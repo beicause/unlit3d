@@ -55,7 +55,7 @@
 //! allocator with [`min_allocator_size`] (and, for aligned allocators, pass the
 //! same alignment) to make the initial free range representable:
 //!
-//! ```
+//! ```rust
 //! use unlit_wgpu::offset_allocator::{Allocator, min_allocator_size};
 //! use core::num::NonZeroU32;
 //!

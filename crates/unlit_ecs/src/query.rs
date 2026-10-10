@@ -16,7 +16,7 @@
 //! the archetype. Iteration visits archetypes in creation order and rows in
 //! storage order, so it is deterministic.
 //!
-//! `````
+//! `````rust
 //! # use unlit_ecs::{Query, Without, World};
 //! let mut world = World::new();
 //! world.spawn((1u32, 10.0f32));
@@ -206,7 +206,7 @@ mod sealed {
 
 /// Requires the component `T`, without fetching it.
 ///
-/// `````
+/// `````rust
 /// # use unlit_ecs::{With, World};
 /// let mut world = World::new();
 /// let flagged = world.spawn((1u32, true));
@@ -226,7 +226,7 @@ impl<T: 'static> QueryFilter for With<T> {
 
 /// Forbids the component `T`.
 ///
-/// `````
+/// `````rust
 /// # use unlit_ecs::{Without, World};
 /// let mut world = World::new();
 /// let plain = world.spawn((1u32,));
@@ -248,7 +248,7 @@ impl<T: 'static> QueryFilter for Without<T> {
 ///
 /// The union of the filters, as opposed to a tuple's intersection.
 ///
-/// `````
+/// `````rust
 /// # use unlit_ecs::{Or, With, World};
 /// let mut world = World::new();
 /// world.spawn((1u32, true));
