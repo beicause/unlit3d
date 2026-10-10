@@ -119,8 +119,12 @@ activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK �
 `cargo publish` 会等待每个已上传的 crate 出现在索引里，这正是下一个能解析成功的原因。
 
 `cargo publish --workspace` 本来会自行排序，但它的 `--dry-run` 无法验证包
-（rust-lang/cargo#16525）；逐个发布则保留了发布前值得做的验证步骤。`--dry-run`
-只做全部检查、不上传。
+（rust-lang/cargo#16525）；逐个发布则保留了发布前值得做的验证步骤。
+
+`--` 之后的参数会原样透传给每次 `cargo publish`，因此
+`cargo xtask publish -- --dry-run` 只做全部检查、不上传，
+`-- --allow-dirty` 则允许发布未提交的工作区。此外，判断中途失败的运行能否重跑时，
+也会按名字识别 `--dry-run`。
 
 测试骨架、示例与任务执行器都设置了 `publish = false`，因此永远不会被上传。真正发布是
 不可重复的——cargo 会拒绝已在 registry 上的版本——所以中途失败的运行必须从失败的那个

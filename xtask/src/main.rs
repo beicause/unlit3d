@@ -146,7 +146,7 @@ struct BuildAndroidArgs {
     description = "publish the workspace's crates to crates.io, in dependency order"
 )]
 struct PublishArgs {
-    /// run every check without uploading anything.
-    #[argh(switch)]
-    dry_run: bool,
+    /// extra arguments for every `cargo publish`; pass them after `--`.
+    #[argh(positional, greedy)]
+    cargo_args: Vec<String>,
 }

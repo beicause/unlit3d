@@ -14,6 +14,9 @@
 //! The test harness, the example and the task runner are `publish = false`, so
 //! they are not in the list and are never uploaded. The MCP server is
 //! publishable and depends on all three engine crates, so it goes last.
+//!
+//! Arguments after `--` are forwarded to every `cargo publish`, so a flag cargo
+//! gains does not need adding here.
 
 use std::process::Command;
 
@@ -28,19 +31,21 @@ const CRATES: [&str; 4] = ["unlit_ecs", "unlit_wgpu", "unlit3d", "unlit3d_mcp"];
 
 /// Publish every crate, in order.
 pub fn run(args: &PublishArgs) -> Result<(), String> {
+    // The forwarded arguments are opaque here, so `--dry-run` is recognised by
+    // name: it makes the run repeatable, which is what decides whether a
+    // partial failure can simply be re-run.
+    let dry_run = args.cargo_args.iter().any(|arg| arg == "--dry-run");
+
     for (index, krate) in CRATES.iter().enumerate() {
         let mut cargo = Command::new("cargo");
-        cargo.args(["publish", "-p", krate]);
-        if args.dry_run {
-            cargo.arg("--dry-run");
-        }
+        cargo.args(["publish", "-p", krate]).args(&args.cargo_args);
 
         let step_name = format!("publishing `{krate}`");
         if let Err(error) = step::run(&mut cargo, &step_name) {
             // A real publish is not repeatable: cargo refuses a version that is
             // already on the registry, so a run that stopped partway has to be
             // resumed at the crate that failed.
-            return Err(if index == 0 || args.dry_run {
+            return Err(if index == 0 || dry_run {
                 error
             } else {
                 format!(

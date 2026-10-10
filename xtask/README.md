@@ -140,8 +140,12 @@ uploaded crate to appear in the index, which is what makes the next one resolve.
 
 `cargo publish --workspace` would order the crates itself, but its `--dry-run`
 cannot verify the packages (rust-lang/cargo#16525); publishing crate by crate
-keeps the verification pass a release is worth. `--dry-run` runs every check
-without uploading.
+keeps the verification pass a release is worth.
+
+Every argument after `--` is passed through to each `cargo publish`, so
+`cargo xtask publish -- --dry-run` runs every check without uploading and
+`-- --allow-dirty` publishes an uncommitted worktree. `--dry-run` is also
+recognised when it decides whether a run that stopped partway can be re-run.
 
 The test harness, the example and the task runner are `publish = false`, so they
 are never uploaded. A real publish is not repeatable — cargo refuses a version
