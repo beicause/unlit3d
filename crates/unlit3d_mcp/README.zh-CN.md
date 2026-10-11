@@ -3,8 +3,8 @@
 # unlit3d_mcp
 
 一个 [Model Context Protocol](https://modelcontextprotocol.io) 服务器，让 agent 能读取并
-驱动一个运行中的 unlit3d 世界。包名为 `unlit3d_mcp`，构建出的可执行程序名为
-`unlit3d-mcp`。与它所用的那些 crate 一样，它也处于 **早期阶段**。
+驱动一个运行中的 unlit3d 世界。包名为 `unlit3d_mcp`。与它所用的那些 crate 一样，它也
+处于 **早期阶段**。
 
 ## 没有特权路径
 
@@ -38,19 +38,20 @@ world 无法给它命名。组件通过向 `unlit3d` 的 `reflect` feature 里�
 tokio，二者都是本 crate 的非可选依赖；workspace 的其余部分从不会看到它们。
 
 由于 world 不是 `Send`，传输层从不接触 world：协议线程持有 tokio 与 `rmcp` 服务，每个
-工具把一段闭包和它该运行于哪个 world 的句柄打包成一条 `Command`，交给 sink
+工具把一段闭包和一个 `WorldId` 打包成一条 `McpCommand`，交给 sink
 （`serve_stdio_with`），然后等待 JSON 值。持有 world 的线程——独立二进制启动的渲染线程，
-或某个窗口的事件循环——调用 `dispatch` 执行它。两者从不共享同一个 world，而且这里既不
+或某个窗口的事件循环——调用 `McpCommand::dispatch` 执行它。两者从不共享同一个 world，而且这里既不
 假设有多少个 world，也不假设某个 world 持有渲染设备。
 
 ## 工具
 
-服务器按四组暴露一个 world 的公开能力。每个工具都用可选的 `world` 指名它作用于哪个
-world：承载 [`World`](unlit_ecs::World) 组件的宿主实体的 `u64` 位模式，省略则指拥有它的
-线程直接持有的 host world。GPU 工具还会指名它们所需的实体句柄——渲染上下文、渲染器、网格
+服务器按四组暴露一个 world 的公开能力。每个工具都用 `WorldId` 指名它作用于哪个
+world：字符串 `"Host"` 指拥有它的线程直接持有的 host world，`{"Handle": bits}` 指由某个
+宿主实体承载的 world。`list_worlds` 报告宿主承载了哪些 world——包括在其他线程上的 world，
+那些只有宿主能命名——因此在用其他工具指名某个 world 之前先问它。GPU 工具还会指名它们所需的实体句柄——渲染上下文、渲染器、网格
 来源、资源——服务器原样透传，解析留给持有 world 的那个线程。
 
-**World 与实体**——`world_summary`、`list_components`、`list_archetypes`、
+**World 与实体**——`list_worlds`、`world_summary`、`list_components`、`list_archetypes`、
 `list_entities`、`get_entity`、`get_component`、`set_component`、`spawn_entity`、
 `despawn_entity`。实体用它的 `u64` 位模式命名，组件用注册名命名。实体在生成之后无法增删
 组件——这是 ECS 的约定，不是服务器的限制——所以 `spawn_entity` 接收一整套组件，而
@@ -78,19 +79,17 @@ world：承载 [`World`](unlit_ecs::World) 组件的宿主实体的 `u64` 位模
 
 ## 库
 
-可执行程序只是一层薄封装：`serve_stdio_offscreen` 在渲染线程上新建一个无头 world 并服务
-它。已经拥有 world 的调用者——比如某个窗口的事件循环——改用 `serve_stdio_with`，传入一个
-把每条 `Command` 投递到该线程的 sink，由该线程解析命令的 world 句柄并调用 `dispatch`。
-这些工具都是作用于 `&mut World` 的普通函数（GPU 工具还接收传给它们的实体句柄），因此宿主
-可以绕过协议直接调用其中某个。
-
-```text
-cargo run -p unlit3d_mcp --bin unlit3d-mcp
-```
+这个 crate 只做传输，别的都不做：它不持有 world，也不建 GPU 设备。已经拥有 world 的
+宿主——某个窗口的事件循环、命令行工具，或它自己起的一个线程——调用 `serve_stdio_with`，
+传入一个把每条 `McpCommand` 投递到该线程的 sink，由该线程解析命令的 `WorldId` 并调用
+`McpCommand::dispatch`。`list_worlds` 命令没有 job：宿主用 `McpCommand::wants_worlds`
+认出它，再用 `McpCommand::answer_worlds` 作答，列出它承载的每个 world——包括在其他线程上
+的那些，那些只有宿主能命名。这些工具都是作用于 `&mut World` 的普通函数（GPU 工具还接收
+传给它们的实体句柄），因此宿主可以绕过协议直接调用其中某个。
 
 命令行工具与示例都接受 `--mcp` 开关，把原本要渲染的那个 world 经 stdio 服务出去。
-命令行工具的 world 无窗口；示例则保留窗口，从它的事件循环服务该场景，同一宿主里的第二个
-world 把该场景的离屏帧 blit 进交换链：
+命令行工具新建一个无头 world 并服务它；示例则保留窗口，从它的事件循环服务该场景，同一宿主
+里的第二个 world 把该场景的离屏帧 blit 进交换链：
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp
@@ -99,9 +98,10 @@ cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube
 
 ## 测试
 
-`tests/stdio_server.rs` 把真正的可执行程序作为子进程启动，并用 JSON-RPC 与它对话：列出
-工具、读取 world、写入清除色、生成一个网格，再逐像素检查截图。这个 world 是真实的 GPU
-world，因此测试验证的是整条路径——协议、host、渲染、回读——而不是彼此孤立的各个部分。
+`tests/server.rs` 在它自己的一条线程上建一个真实的 GPU world，用一对流把它服务出去，
+并从测试里用 JSON-RPC 与它对话：列出工具、读取 world、写入清除色、生成一个网格，再逐像素
+检查截图。这个 world 是真实的 GPU world，因此测试验证的是整条路径——协议、host、渲染、
+回读——而不是彼此孤立的各个部分。
 
 ```text
 cargo nextest run -p unlit3d_mcp

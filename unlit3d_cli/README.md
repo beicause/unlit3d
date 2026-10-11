@@ -120,10 +120,10 @@ frame rather than failed on, and `SNAPSHOT_UPDATE=1` rewrites one that exists.
 
 ## Model Context Protocol
 
-`--mcp` serves the world the tool would otherwise have rendered, over stdio, as
-a [Model Context Protocol](https://modelcontextprotocol.io) server. `--output`
-is not required in that mode, and the world starts empty — no document is loaded
-— so a client can build the scene itself. See
+`--mcp` serves a headless world over stdio as a
+[Model Context Protocol](https://modelcontextprotocol.io) server. `--output` is
+not required in that mode, and the world starts empty — no document is loaded —
+so a client can build the scene itself. See
 [`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
 transport.
 

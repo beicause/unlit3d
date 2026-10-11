@@ -1,11 +1,12 @@
 //! A Model Context Protocol server that drives one or more unlit3d worlds.
 //!
 //! A [World](unlit_ecs::World) is not `Send`, so it lives on the thread that
-//! owns it — a window's event loop, or the render thread the standalone binary
-//! starts. The MCP transport runs elsewhere, on a tokio runtime. The two meet
-//! at a [Command]: a tool packs a closure and the handle of the world it should
+//! owns it — a window's event loop, or a thread the host starts for it. The MCP
+//! transport runs elsewhere, on a tokio runtime. The two meet at an
+//! [McpCommand]: a tool packs a closure and the [WorldId] of the world it should
 //! run against, the transport hands the command to a [sink](serve_stdio_with),
-//! and the thread that owns the world resolves the handle and calls [dispatch].
+//! and the thread that owns that world resolves the id and calls
+//! [McpCommand::dispatch].
 //!
 //! Nothing here assumes how many worlds there are, or that a world holds a
 //! rendering device: the ECS tools take the world alone, and the GPU tools take
@@ -14,16 +15,12 @@
 
 #![forbid(unsafe_code)]
 
-use ringbuf::StaticRb;
-use ringbuf::traits::{Consumer, Producer, Split};
 use std::error::Error;
 
 pub mod host;
 pub mod server;
 
-pub use host::{
-    COLOR_FORMAT, Command, EncodedImage, Job, Output, dispatch, offscreen_world, request_device,
-};
+pub use host::{EncodedImage, Job, McpCommand, Output, WorldId};
 pub use server::McpServer;
 pub use unlit3d::reflect::{
     ComponentEntry, contains, decode_events, encode, entries, entry, names, push, set,
@@ -31,123 +28,73 @@ pub use unlit3d::reflect::{
 
 /// Serve MCP over stdio, handing every command to `sink`.
 ///
-/// `sink` is how a command reaches the thread that owns a world: the standalone
-/// binary and the CLI send it to their own render thread, and a windowed host
-/// posts it to its event loop. Returning `false` means the command could not be
-/// delivered — the event loop is gone, say — and the waiting tool call is
-/// answered with an internal error rather than left hanging.
+/// `sink` is how a command reaches the thread that owns the world its
+/// [WorldId] names: a host sends it to its own render thread, or a windowed
+/// host posts it to its event loop, where it resolves the id to a world and
+/// calls
+/// [`McpCommand::dispatch`](host::McpCommand::dispatch). Returning `false`
+/// means the command could not be delivered — the event loop is gone, say —
+/// and the waiting tool call is answered with an internal error rather than
+/// left hanging.
+///
+/// The host answers the `list_worlds` tool itself: when a command's
+/// [`wants_worlds`](host::McpCommand::wants_worlds) is true, it names every
+/// world it carries with [`answer_worlds`](host::McpCommand::answer_worlds)
+/// instead of dispatching a job. This crate keeps no list of its own, because
+/// the worlds on other threads are not types it can recognise.
 ///
 /// # Errors
 ///
 /// Fails when the tokio runtime cannot be built or the transport cannot start.
 pub fn serve_stdio_with(
-    sink: impl Fn(Command) -> bool + Send + 'static,
+    sink: impl Fn(McpCommand) -> bool + Send + 'static,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let (sender, receiver) = async_channel::bounded::<Command>(4);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()?;
     runtime.block_on(async move {
-        // A pump rather than a task per command: the sink is synchronous, and
-        // the transport's own thread would otherwise be blocked on it.
-        let pump = tokio::task::spawn_blocking(move || {
-            while let Ok(command) = receiver.recv_blocking() {
-                if !sink(command) {
-                    break;
-                }
-            }
-        });
-        let service = rmcp::serve_server(McpServer::new(sender), rmcp::transport::stdio()).await?;
+        let service = serve_with(rmcp::transport::stdio(), sink)
+            .await
+            .map_err(|error| -> Box<dyn Error + Send + Sync> { error })?;
         service.waiting().await?;
-        pump.abort();
         Ok::<(), Box<dyn Error + Send + Sync>>(())
     })
 }
 
-/// The one-shot handoff that tells the main thread the render thread is ready.
+/// Serve MCP over any transport, handing every command to `sink`.
 ///
-/// A ring has no blocking read, so the producer unparks the consumer after it
-/// pushes and the consumer parks between attempts; a signal left before the
-/// park is remembered, so the push is never missed. If the render thread
-/// unwinds before it signals, its drop hands the main thread an error instead of
-/// leaving it parked.
-struct Ready<P: Producer<Item = Result<(), String>>> {
-    sender: P,
-    main: std::thread::Thread,
-    signalled: bool,
-}
-
-impl<P: Producer<Item = Result<(), String>>> Ready<P> {
-    fn signal(&mut self, ready: Result<(), String>) {
-        let _ = self.sender.try_push(ready);
-        self.signalled = true;
-        self.main.unpark();
-    }
-}
-
-impl<P: Producer<Item = Result<(), String>>> Drop for Ready<P> {
-    fn drop(&mut self) {
-        if !self.signalled {
-            let _ = self.sender.try_push(Err(
-                "the render thread stopped before building the world".to_owned(),
-            ));
-            self.main.unpark();
-        }
-    }
-}
-
-/// Serve MCP over stdio with a fresh headless world of its own.
-///
-/// The convenience entry point for a host with no window: it builds an
-/// offscreen world on a render thread and serves it, which is what the
-/// standalone binary and the CLI's `--mcp` path want. A windowed host calls
-/// [`serve_stdio_with`] instead and posts commands to its event loop.
+/// The transport is whatever rmcp accepts — stdio, or a pair of streams for a
+/// test that wants the server in its own process. The returned service is
+/// running; await [`waiting`](rmcp::service::RunningService::waiting) to serve
+/// until the peer leaves.
 ///
 /// # Errors
 ///
-/// Fails when no adapter is available, when the render thread cannot start, or
-/// when the transport fails.
-pub fn serve_stdio_offscreen(
-    size: (u32, u32),
-    samples: u32,
-    depth: bool,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let (sender, receiver) = async_channel::bounded::<Command>(4);
-    let (ready_sender, mut ready_receiver) = StaticRb::<Result<(), String>, 1>::default().split();
-    let main = std::thread::current();
-    let render = std::thread::Builder::new()
-        .name("unlit3d-mcp-render".to_owned())
-        .spawn(move || {
-            let mut ready = Ready {
-                sender: ready_sender,
-                main,
-                signalled: false,
-            };
-            let (device, queue, capabilities) =
-                match pollster::block_on(request_device("unlit3d-mcp")) {
-                    Ok(parts) => parts,
-                    Err(error) => {
-                        ready.signal(Err(error));
-                        return;
-                    }
-                };
-            let (mut world, _renderer) =
-                offscreen_world(device, queue, capabilities, size, samples, depth);
-            ready.signal(Ok(()));
-            while let Ok(command) = receiver.recv_blocking() {
-                dispatch(command, &mut world);
+/// Fails when the service cannot complete its handshake over `transport`.
+pub async fn serve_with<T, E, A>(
+    transport: T,
+    sink: impl Fn(McpCommand) -> bool + Send + 'static,
+) -> Result<
+    rmcp::service::RunningService<rmcp::RoleServer, McpServer>,
+    // Boxed because the error is large and this is the only place it is
+    // constructed: a caller reports it, it does not match on it.
+    Box<rmcp::service::ServerInitializeError>,
+>
+where
+    T: rmcp::transport::IntoTransport<rmcp::RoleServer, E, A>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let (sender, receiver) = async_channel::bounded::<McpCommand>(4);
+    // A pump rather than a task per command: the sink is synchronous, and the
+    // service would otherwise be blocked on it.
+    tokio::task::spawn_blocking(move || {
+        while let Ok(command) = receiver.recv_blocking() {
+            if !sink(command) {
+                break;
             }
-        })?;
-    let ready = loop {
-        if let Some(ready) = ready_receiver.try_pop() {
-            break ready;
         }
-        std::thread::park();
-    };
-    if let Err(error) = ready {
-        return Err(error.into());
-    }
-    let served = serve_stdio_with(move |command| sender.send_blocking(command).is_ok());
-    let _ = render.join();
-    served
+    });
+    rmcp::serve_server(McpServer::new(sender), transport)
+        .await
+        .map_err(Box::new)
 }

@@ -130,6 +130,34 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
         ));
     }
 
+    let (device, queue, capabilities) = request_device().await?;
+    let (world, target, renderer) = build_world(
+        config,
+        &device,
+        &queue,
+        capabilities,
+        output_size,
+        render_size,
+    )?;
+
+    world
+        .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(&world))
+        .expect("the renderer entity exists");
+
+    let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target);
+    Ok(Frame {
+        rgba,
+        width: output_size.0,
+        height: output_size.1,
+    })
+}
+
+/// Ask the backend for a device and a queue.
+///
+/// # Errors
+///
+/// Fails when no adapter is available or the device cannot be created.
+pub async fn request_device() -> Result<(wgpu::Device, wgpu::Queue, DeviceCapabilities), Error> {
     let tier = DeviceTier::from_env();
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
@@ -152,7 +180,26 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
         })
         .await
         .map_err(|error| Error::Gpu(format!("failed to request a device: {error}")))?;
+    Ok((device, queue, capabilities))
+}
 
+/// Build the world a render draws, and the target it draws into.
+///
+/// Returns the world, the output-sized colour target, and the renderer entity.
+/// The world holds the render context, the renderer, a mesh source, the clear
+/// state, the configured documents and camera, and the viewport.
+///
+/// # Errors
+///
+/// Fails when a document or its animation cannot be read.
+pub fn build_world(
+    config: &Config,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    capabilities: DeviceCapabilities,
+    output_size: (u32, u32),
+    render_size: (u32, u32),
+) -> Result<(World, wgpu::Texture, Entity), Error> {
     let mut world = World::new();
     let context = spawn_context(
         &mut world,
@@ -168,7 +215,7 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
             bind_target(
                 &world,
                 renderer,
-                &device,
+                device,
                 output_size,
                 config.output.samples,
                 config.output.depth,
@@ -226,16 +273,129 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
         )),
     );
 
-    world
-        .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(&world))
-        .expect("the renderer entity exists");
+    Ok((world, target, renderer))
+}
 
-    let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target);
-    Ok(Frame {
-        rgba,
-        width: output_size.0,
-        height: output_size.1,
-    })
+/// Build an empty offscreen world a host can serve over MCP.
+///
+/// The world holds a render context, a renderer, a mesh source, an input state
+/// and a default camera, and an offscreen colour target registered in the graph
+/// — both as a texture a screenshot can read back and as the view the renderer
+/// draws into. Returns the world and the renderer entity.
+#[must_use]
+pub fn offscreen_world(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    capabilities: DeviceCapabilities,
+    size: (u32, u32),
+    samples: u32,
+    depth: bool,
+) -> (World, Entity) {
+    let mut world = World::new();
+    let context = spawn_context(
+        &mut world,
+        device.clone(),
+        queue.clone(),
+        ResourceGraph::new(),
+        capabilities,
+    );
+    let renderer = world.spawn((Renderer::new(context),));
+    world.spawn((RenderLoadOps::default(),));
+    let mut source = MeshSource::new(&world, context);
+    source.register_unlit_family(&world);
+    world.spawn_source(source);
+    world.spawn((InputHandle::new(),));
+
+    let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
+    let color_view = {
+        let mut graph = world
+            .get_mut::<ResourceGraph>(context.graph)
+            .expect("spawn_context spawned the graph");
+        // The texture is registered in its own right so a screenshot can name
+        // it, and the view depends on it so the graph keeps it alive.
+        let texture = graph.insert(color.clone(), None);
+        let view = graph.insert(
+            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
+            None,
+        );
+        graph.add_dependency(&view, &texture);
+        view
+    };
+    let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
+    let _ = world.with_mut::<Renderer, _>(renderer, |renderer| {
+        attachments.bind(&world, renderer, color_view);
+    });
+    world.spawn((default_camera(size),));
+    (world, renderer)
+}
+
+/// The camera an offscreen world starts with.
+fn default_camera(size: (u32, u32)) -> Camera {
+    let aspect = size.0.max(1) as f32 / size.1.max(1) as f32;
+    let view_from_world = glam::camera::rh::view::look_at_mat4(
+        glam::Vec3::new(0.0, 1.0, 3.0),
+        glam::Vec3::ZERO,
+        glam::Vec3::Y,
+    );
+    let clip_from_view = glam::camera::rh::proj::directx::perspective_infinite_reverse(
+        60.0f32.to_radians(),
+        aspect,
+        0.1,
+    );
+    Camera {
+        view_from_world,
+        clip_from_view,
+        active: true,
+    }
+}
+
+/// Serve an empty offscreen world over MCP stdio.
+///
+/// The world lives on a render thread of its own; the transport thread only
+/// forwards commands to it, exactly as a windowed host forwards them to its
+/// event loop. A browser has no stdio to serve, so this exists only off wasm.
+///
+/// # Errors
+///
+/// Fails when no adapter is available, when the render thread cannot start, or
+/// when the transport fails.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Result<(), Error> {
+    use std::sync::mpsc;
+    let (sender, receiver) = mpsc::channel::<unlit3d_mcp::McpCommand>();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+    let render = std::thread::Builder::new()
+        .name("unlit3d-cli-mcp-render".to_owned())
+        .spawn(move || {
+            let built =
+                pollster::block_on(request_device()).map(|(device, queue, capabilities)| {
+                    offscreen_world(device, queue, capabilities, size, samples, depth)
+                });
+            match built {
+                Ok((mut world, _renderer)) => {
+                    let _ = ready_tx.send(Ok(()));
+                    while let Ok(command) = receiver.recv() {
+                        if command.wants_worlds() {
+                            command.answer_worlds(vec![unlit3d_mcp::WorldId::Host]);
+                        } else {
+                            command.dispatch(&mut world);
+                        }
+                    }
+                }
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error.to_string()));
+                }
+            }
+        })
+        .map_err(|error| Error::Gpu(error.to_string()))?;
+    match ready_rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(message)) => return Err(Error::Gpu(message)),
+        Err(_) => return Err(Error::Gpu("the render thread stopped".to_owned())),
+    }
+    let served = unlit3d_mcp::serve_stdio_with(move |command| sender.send(command).is_ok());
+    let _ = render.join();
+    served.map_err(|error| Error::Gpu(error.to_string()))
 }
 
 /// Encode a frame to path, choosing the format from the extension.

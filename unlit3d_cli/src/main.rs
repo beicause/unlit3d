@@ -25,7 +25,7 @@ fn run(args: &cli::Args) -> ExitCode {
     // which a browser has; the switch is parsed everywhere but only acts here.
     #[cfg(not(target_arch = "wasm32"))]
     if args.mcp {
-        return match unlit3d_mcp::serve_stdio_offscreen((960, 720), 4, true) {
+        return match unlit3d_cli::serve_stdio_offscreen((960, 720), 4, true) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 stderr(&format!("error: {error}\n"));

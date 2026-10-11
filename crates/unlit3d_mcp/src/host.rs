@@ -2,10 +2,11 @@
 //!
 //! A [World] is not [Send], and the GPU work that reads it must happen on the
 //! thread that owns it. The MCP transport, on the other hand, runs on a tokio
-//! thread. The two meet at a command channel: a tool builds a [Command] holding
-//! a closure and the handle of the world it should run against, the thread that
-//! owns that world resolves the handle and calls [dispatch], and the [Output]
-//! travels back on the command's reply channel.
+//! thread. The two meet at a command channel: a tool builds an [McpCommand]
+//! holding a closure and the [WorldId] of the world it should run against, the
+//! thread that owns that world resolves the id and calls
+//! [McpCommand::dispatch], and the [Output] travels back on the command's reply
+//! channel.
 //!
 //! Nothing here assumes how many worlds there are or what a world contains.
 //! ECS tools take the world alone; GPU tools take the entity handles they need
@@ -20,21 +21,18 @@ use std::path::Path;
 use base64::Engine as _;
 use glam::Vec3;
 use image::ImageEncoder as _;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use serde_json::Value;
 use unlit_ecs::{ArchetypeBuilder, Entity, World};
-use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit_wgpu::readback::{readback_buffer, readback_texture};
-use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{
-    ResId, Resource, ResourceGraph, ResourceGraphInfo, ResourceGraphMaintain, TextureExt,
+    ResId, Resource, ResourceGraph, ResourceGraphInfo, ResourceGraphMaintain,
 };
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
 use unlit3d::reflect;
-
-/// The format of the offscreen target the standalone host renders into.
-pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// What a finished job produced.
 ///
@@ -70,61 +68,143 @@ pub struct EncodedImage {
 /// channel; the world it touches never does.
 pub type Job = Box<dyn FnOnce(&mut World) -> Result<Output, String> + Send + 'static>;
 
-/// A job together with the channel its result is sent back on.
-pub struct Command {
-    job: Job,
-    reply: async_channel::Sender<Result<Output, String>>,
-    /// The host entity whose world the job runs against; `None` is the world
-    /// that receives the command itself.
-    world: Option<Entity>,
+/// Which world a tool or a command runs against.
+///
+/// A host carries several worlds: the one its own thread holds directly, and
+/// any number it reaches through a host entity carrying a [World] component.
+/// A [World] is not [Send], so a command
+/// never names one directly — it names the entity that carries it, and the
+/// thread that owns that entity resolves the id to the world it holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema, facet::Facet)]
+#[repr(u8)]
+pub enum WorldId {
+    /// The world the thread receiving the command owns directly.
+    #[default]
+    Host,
+    /// The world carried by the host entity with these bits.
+    Handle(u64),
 }
 
-impl Command {
-    /// Build a command and the receiver its result will arrive on.
+impl WorldId {
+    /// The id of the world carried by `entity`.
+    #[must_use]
+    pub const fn handle(entity: Entity) -> Self {
+        Self::Handle(entity.to_bits())
+    }
+
+    /// The host entity carrying the world, or `None` for the host world.
+    #[must_use]
+    pub const fn entity(self) -> Option<Entity> {
+        match self {
+            Self::Host => None,
+            Self::Handle(bits) => Some(Entity::from_bits(bits)),
+        }
+    }
+}
+
+/// What a command asks the host to do.
+enum Request {
+    /// Run a job against one world.
+    Job(Job),
+    /// Answer with the worlds the host carries. Only the host knows them: the
+    /// worlds on other threads are not components this crate can recognise, so
+    /// the server asks rather than keeping a list of its own.
+    Worlds,
+}
+
+/// A request together with the channel its result is sent back on.
+pub struct McpCommand {
+    request: Request,
+    reply: async_channel::Sender<Result<Output, String>>,
+    /// The world a [`Request::Job`] runs against.
+    world: WorldId,
+}
+
+impl McpCommand {
+    /// Build a command that runs a job, and the receiver its result will
+    /// arrive on.
+    ///
+    /// The command starts out aimed at the world the receiving thread owns
+    /// directly; redirect it with [`with_world`](Self::with_world).
     pub fn new(
         job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
     ) -> (Self, async_channel::Receiver<Result<Output, String>>) {
+        Self::build(Request::Job(Box::new(job)))
+    }
+
+    /// Build the command the `list_worlds` tool sends.
+    ///
+    /// The host answers it with [`answer_worlds`](Self::answer_worlds); the
+    /// server holds no world list of its own.
+    #[must_use]
+    pub fn list_worlds() -> (Self, async_channel::Receiver<Result<Output, String>>) {
+        Self::build(Request::Worlds)
+    }
+
+    fn build(request: Request) -> (Self, async_channel::Receiver<Result<Output, String>>) {
         let (reply, receiver) = async_channel::bounded(1);
         (
             Self {
-                job: Box::new(job),
+                request,
                 reply,
-                world: None,
+                world: WorldId::Host,
             },
             receiver,
         )
     }
 
-    /// Direct the command at the world carried by `entity`.
+    /// Direct the command at `world`.
     #[must_use]
-    pub fn world(mut self, entity: Entity) -> Self {
-        self.world = Some(entity);
+    pub fn with_world(mut self, world: WorldId) -> Self {
+        self.world = world;
         self
     }
 
-    /// The host entity whose world the command asks for, or `None` for the
-    /// world the host itself dispatches into.
+    /// The world a job runs against.
     #[must_use]
-    pub fn world_handle(&self) -> Option<Entity> {
+    pub const fn world(&self) -> WorldId {
         self.world
+    }
+
+    /// Whether this is the `list_worlds` request, which the host answers with
+    /// [`answer_worlds`](Self::answer_worlds) instead of dispatching a job.
+    #[must_use]
+    pub const fn wants_worlds(&self) -> bool {
+        matches!(self.request, Request::Worlds)
+    }
+
+    /// Answer the `list_worlds` request with the worlds the host carries.
+    ///
+    /// The host names every world a tool can reach — the host world itself and
+    /// each world it routes commands to, including ones on other threads.
+    pub fn answer_worlds(self, worlds: Vec<WorldId>) {
+        let result = to_value(&worlds).map(Output::from);
+        let _ = self.reply.send_blocking(result);
     }
 
     /// Answer the command with an error without running it.
     ///
-    /// The host calls this when the world handle cannot be resolved, so the
-    /// tool call still gets a readable message rather than a dropped channel.
+    /// The host calls this when the world cannot be resolved, so the tool call
+    /// still gets a readable message rather than a dropped channel.
     pub fn fail(self, message: String) {
         let _ = self.reply.send_blocking(Err(message));
     }
-}
 
-/// Run a command against `world` and send its result back.
-///
-/// The send is best-effort: a tool call that has already been cancelled has no
-/// receiver left, and the result is simply dropped.
-pub fn dispatch(command: Command, world: &mut World) {
-    let result = (command.job)(world);
-    let _ = command.reply.send_blocking(result);
+    /// Run the command's job against `world` and send its result back.
+    ///
+    /// A [`list_worlds`](Self::list_worlds) request has no job; the host is
+    /// expected to answer it with [`answer_worlds`](Self::answer_worlds)
+    /// after checking [`wants_worlds`](Self::wants_worlds).
+    ///
+    /// The send is best-effort: a tool call that has already been cancelled has
+    /// no receiver left, and the result is simply dropped.
+    pub fn dispatch(self, world: &mut World) {
+        let result = match self.request {
+            Request::Job(job) => job(world),
+            Request::Worlds => Err("the host did not answer list_worlds".to_owned()),
+        };
+        let _ = self.reply.send_blocking(result);
+    }
 }
 
 /// Serialise a value through the reflection it derives.
@@ -644,108 +724,6 @@ pub fn load_gltf(world: &mut World, source: Option<Entity>, path: &str) -> Resul
     to_value(&SpawnedEntities { entities })
 }
 
-/// Build an offscreen world for a host with no window.
-///
-/// The world holds a render context, a renderer, a mesh source, an input state
-/// and a default camera, and an offscreen color target registered in the
-/// graph — both as a texture a screenshot can read back and as the view the
-/// renderer draws into. Returns the world and the renderer entity.
-#[must_use]
-pub fn offscreen_world(
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    capabilities: DeviceCapabilities,
-    size: (u32, u32),
-    samples: u32,
-    depth: bool,
-) -> (World, Entity) {
-    let mut world = World::new();
-    let context = spawn_context(
-        &mut world,
-        device.clone(),
-        queue.clone(),
-        ResourceGraph::new(),
-        capabilities,
-    );
-    let renderer = world.spawn((Renderer::new(context),));
-    world.spawn((RenderLoadOps::default(),));
-    let mut source = MeshSource::new(&world, context);
-    source.register_unlit_family(&world);
-    world.spawn_source(source);
-    world.spawn((InputHandle::new(),));
-
-    let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
-    let color_view = {
-        let mut graph = world
-            .get_mut::<ResourceGraph>(context.graph)
-            .expect("spawn_context spawned the graph");
-        // The texture is registered in its own right so a screenshot can name
-        // it, and the view depends on it so the graph keeps it alive.
-        let texture = graph.insert(color.clone(), None);
-        let view = graph.insert(
-            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
-            None,
-        );
-        graph.add_dependency(&view, &texture);
-        view
-    };
-    let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
-    let _ = world.with_mut::<Renderer, _>(renderer, |renderer| {
-        attachments.bind(&world, renderer, color_view);
-    });
-    world.spawn((default_camera(size),));
-    (world, renderer)
-}
-
-/// Ask the backend for a device and a queue.
-///
-/// The standalone binary and the CLI's windowless `--mcp` path both build
-/// their own world from this; the crate itself never owns one.
-pub async fn request_device(
-    label: &str,
-) -> Result<(wgpu::Device, wgpu::Queue, DeviceCapabilities), String> {
-    let tier = DeviceTier::from_env();
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    let adapter = instance
-        .request_adapter(&wgpu::RequestAdapterOptions {
-            compatible_surface: None,
-            ..Default::default()
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let capabilities = tier.capabilities_of(&adapter);
-    let (device, queue) = adapter
-        .request_device(&wgpu::DeviceDescriptor {
-            label: Some(label),
-            required_features: wgpu::Features::empty(),
-            required_limits: tier.limits(&adapter.limits()),
-            experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            memory_hints: wgpu::MemoryHints::Performance,
-            trace: wgpu::Trace::Off,
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok((device, queue, capabilities))
-}
-
-/// The camera the standalone host starts with.
-fn default_camera(size: (u32, u32)) -> Camera {
-    let aspect = size.0.max(1) as f32 / size.1.max(1) as f32;
-    let view_from_world =
-        glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 1.0, 3.0), Vec3::ZERO, Vec3::Y);
-    let clip_from_view = glam::camera::rh::proj::directx::perspective_infinite_reverse(
-        60.0f32.to_radians(),
-        aspect,
-        0.1,
-    );
-    Camera {
-        view_from_world,
-        clip_from_view,
-        active: true,
-    }
-}
-
 /// An image's size, as structured output.
 #[derive(facet::Facet)]
 struct ImageSize {
@@ -781,4 +759,66 @@ fn encode_png(
         .write_image(bytes, width, height, color)
         .map_err(|error| error.to_string())?;
     Ok(png)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The JSON a tool argument carries for a world.
+    #[derive(Debug, Deserialize)]
+    struct Arg {
+        #[serde(default)]
+        world: WorldId,
+    }
+
+    #[test]
+    fn a_world_id_parses_from_json() {
+        let host: Arg = serde_json::from_str("{}").unwrap();
+        assert_eq!(host.world, WorldId::Host);
+        let host: Arg = serde_json::from_str(r#"{"world": "Host"}"#).unwrap();
+        assert_eq!(host.world, WorldId::Host);
+        let handle: Arg = serde_json::from_str(r#"{"world": {"Handle": 7}}"#).unwrap();
+        assert_eq!(handle.world, WorldId::Handle(7));
+    }
+
+    #[test]
+    fn a_world_id_maps_to_and_from_an_entity() {
+        let entity = Entity::from_bits(0x0000_0002_0000_0001);
+        assert_eq!(
+            WorldId::handle(entity),
+            WorldId::Handle(0x0000_0002_0000_0001)
+        );
+        assert_eq!(WorldId::handle(entity).entity(), Some(entity));
+        assert_eq!(WorldId::Host.entity(), None);
+        assert_eq!(WorldId::default(), WorldId::Host);
+    }
+
+    #[test]
+    fn a_list_worlds_command_carries_no_job() {
+        let (command, receiver) = McpCommand::list_worlds();
+        assert!(command.wants_worlds());
+        assert_eq!(command.world(), WorldId::Host);
+        command.answer_worlds(vec![WorldId::Host, WorldId::Handle(3)]);
+        let answer = receiver.recv_blocking().unwrap().unwrap();
+        let Output::Json(value) = answer else {
+            panic!("list_worlds answers with JSON");
+        };
+        assert_eq!(value, serde_json::json!(["Host", {"Handle": 3}]));
+    }
+
+    #[test]
+    fn a_job_command_dispatches_against_a_world() {
+        let (command, receiver) =
+            McpCommand::new(|world| Ok(Output::Json(serde_json::json!(world.len()))));
+        assert!(!command.wants_worlds());
+        let mut world = World::new();
+        world.spawn((1u32,));
+        command.dispatch(&mut world);
+        let answer = receiver.recv_blocking().unwrap().unwrap();
+        let Output::Json(value) = answer else {
+            panic!("a job answers with JSON");
+        };
+        assert_eq!(value, serde_json::json!(1));
+    }
 }

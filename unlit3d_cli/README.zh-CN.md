@@ -103,7 +103,7 @@ cargo nextest run -p unlit3d_cli
 
 ## Model Context Protocol
 
-`--mcp` 会把工具原本要渲染的那个 world 经 stdio 服务出去，作为
+`--mcp` 会把一个无头 world 经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。该模式下不需要
 `--output`，且 world 从空开始——不加载任何文档——以便客户端自行搭建场景。工具与传输见
 [`unlit3d_mcp`](../crates/unlit3d_mcp/README.zh-CN.md)。

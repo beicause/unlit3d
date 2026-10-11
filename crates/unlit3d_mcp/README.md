@@ -3,9 +3,8 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/crates/un
 # unlit3d_mcp
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that lets an
-agent read and drive a running unlit3d world. The package is `unlit3d_mcp` and
-the binary it builds is `unlit3d-mcp`. It is at an **early stage** along with the
-crates it uses.
+agent read and drive a running unlit3d world. The package is `unlit3d_mcp`. It
+is at an **early stage** along with the crates it uses.
 
 ## No privileged path
 
@@ -47,29 +46,30 @@ same-named components in different modules apart.
 
 The transport is **stdio**: the server reads JSON-RPC requests on stdin and
 writes responses to stdout. That is the transport MCP clients launch a command
-for, and it is the only one the crate implements. It is built on
+for; a host with a window serves the same server over stdio too. It is built on
 [`rmcp`](https://docs.rs/rmcp) and tokio, both of which are non-optional
 dependencies of this crate; the rest of the workspace never sees them.
 
 Because a world is not `Send`, the transport never touches one: the protocol
-thread owns tokio and the `rmcp` service, and every tool packs a closure and the
-handle of the world it should run against into a `Command`, hands it to a sink
-(`serve_stdio_with`), and awaits a JSON value. The thread that owns the world —
-a render thread the standalone binary starts, or a window's event loop — calls
-`dispatch` to run it. The two never share a world, and nothing here assumes how
-many worlds there are or that a world holds a rendering device.
+thread owns tokio and the `rmcp` service, and every tool packs a closure and a
+`WorldId` into an `McpCommand`, hands it to a sink (`serve_stdio_with`), and
+awaits a JSON value. The thread that owns the world — a render thread the
+standalone binary starts, or a window's event loop — calls
+`McpCommand::dispatch` to run it. The two never share a world, and nothing here
+assumes how many worlds there are or that a world holds a rendering device.
 
 ## Tools
 
 The server exposes a world's public surface in four groups. Every tool names the
-world it runs against with an optional `world`: the `u64` bits of a host entity
-carrying a [`World`](unlit_ecs::World) component, or omitted for the host world
-the owning thread holds directly. GPU tools additionally name the entity handles
-they need — a render context, a renderer, a mesh source, a resource — and the
-server passes them through untouched, leaving their resolution to the thread that
-owns the world.
+world it runs against with a `WorldId`: the string `"Host"` for the world the
+owning thread holds directly, or `{"Handle": bits}` for a world carried by a
+host entity. `list_worlds` reports which worlds the host carries — including
+worlds on other threads, which only the host can name — so ask it before naming
+a world. GPU tools additionally name the entity handles they need — a render
+context, a renderer, a mesh source, a resource — and the server passes them
+through untouched, leaving their resolution to the thread that owns the world.
 
-**World and entities** — `world_summary`, `list_components`,
+**World and entities** — `list_worlds`, `world_summary`, `list_components`,
 `list_archetypes`, `list_entities`, `get_entity`, `get_component`,
 `set_component`, `spawn_entity`, `despawn_entity`. An entity is named by its
 `u64` bits, and a component by its registered name. Entities cannot gain or lose
@@ -107,23 +107,22 @@ answers the same way.
 
 ## Library
 
-The binary is a thin wrapper: `serve_stdio_offscreen` builds a headless world on
-a render thread and serves it. A caller that already owns a world — a window's
-event loop, say — calls `serve_stdio_with` instead and passes a sink that posts
-each `Command` to that thread, which resolves the command's world handle and
-calls `dispatch`. The tools are plain functions over `&mut World` (and, for the
-GPU ones, the entity handles they are given), so a host can call one directly
-without the protocol in the way.
-
-```text
-cargo run -p unlit3d_mcp --bin unlit3d-mcp
-```
+The crate is the transport and nothing else: it holds no world and builds no
+GPU device. A host that already owns a world — a window's event loop, the CLI,
+or a thread of its own — calls `serve_stdio_with` and passes a sink that posts
+each `McpCommand` to that thread, which resolves the command's `WorldId` and
+calls `McpCommand::dispatch`. A `list_worlds` command has no job: the host
+recognises it with `McpCommand::wants_worlds` and answers it with
+`McpCommand::answer_worlds`, naming every world it carries — including worlds
+on other threads, which only the host can name. The tools are plain functions
+over `&mut World` (and, for the GPU ones, the entity handles they are given), so
+a host can call one directly without the protocol in the way.
 
 The CLI and the example both take an `--mcp` switch that serves the world they
-would otherwise have rendered, over stdio. The CLI's world is headless; the
-example's keeps its window and serves the scene from its event loop, with a
-second world in the same host blitting that scene's offscreen frame into the
-swap chain:
+would otherwise have rendered, over stdio. The CLI builds a headless world and
+serves it; the example keeps its window and serves the scene from its event
+loop, with a second world in the same host blitting that scene's offscreen frame
+into the swap chain:
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp
@@ -132,11 +131,11 @@ cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube
 
 ## Tests
 
-`tests/stdio_server.rs` starts the real binary as a child process and speaks
-JSON-RPC to it: it lists the tools, reads the world, writes a clear colour, spawns
-a mesh, and checks the screenshot pixel by pixel. The world is a real GPU world,
-so the test proves the whole path — protocol, host, render, readback — rather
-than the pieces in isolation.
+`tests/server.rs` builds a real GPU world on a thread of its own, serves it over
+a pair of streams, and speaks JSON-RPC to it from the test: it lists the tools,
+reads the world, writes a clear colour, spawns a mesh, and checks the screenshot
+pixel by pixel. The world is a real GPU world, so the test proves the whole path
+— protocol, host, render, readback — rather than the pieces in isolation.
 
 ```text
 cargo nextest run -p unlit3d_mcp

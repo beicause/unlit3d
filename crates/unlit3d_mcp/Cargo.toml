@@ -5,16 +5,12 @@ edition.workspace = true
 description = "A Model Context Protocol server that drives a unlit3d world through its public API."
 repository.workspace = true
 license.workspace = true
-# The integration test drives the server binary over stdio and renders, so it
-# needs a GPU; it is not part of what a consumer downloads.
+# The integration test serves a real world over a pair of streams, so it needs
+# a GPU; it is not part of what a consumer downloads.
 exclude = ["/tests"]
 
 [lib]
 name = "unlit3d_mcp"
-
-[[bin]]
-name = "unlit3d-mcp"
-path = "src/main.rs"
 
 [dependencies]
 async-channel.workspace = true
@@ -25,17 +21,18 @@ facet.workspace = true
 facet-json.workspace = true
 glam.workspace = true
 image.workspace = true
-pollster.workspace = true
-ringbuf.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["io-std", "macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sync", "time"] }
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2", features = ["reflect"] }
 unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["reflect", "unlit"] }
 unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["gltf", "reflect"] }
 wgpu.workspace = true
+
+[dev-dependencies]
+unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util" }
 
 [lints]
 workspace = true

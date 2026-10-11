@@ -1,17 +1,17 @@
 //! The MCP service.
 //!
-//! Each tool turns its JSON arguments into a [Command] and sends it to the
+//! Each tool turns its JSON arguments into an [McpCommand] and sends it to the
 //! thread that owns the world. The tool then awaits the result: structured JSON
 //! for most tools, an image content block for the ones that read pixels back. A
 //! tool that fails returns a tool-level error result rather than a protocol
 //! error, so a model sees the message instead of a transport failure.
 //!
-//! Every tool names the world it should run against: `world` is the bits of a
-//! host entity carrying a [World](unlit_ecs::World) component, or `None` for
-//! the world the transport thread itself holds. GPU tools additionally name the
-//! entity handles they need — a render context, a renderer, a mesh source, a
-//! resource — and the server passes them through untouched; the render thread
-//! resolves them and reports a readable error when one does not fit.
+//! Every tool names the world it should run against with a [WorldId]: `"Host"`
+//! for the world the transport thread itself holds, or `{"Handle": bits}` for
+//! a world carried by a host entity. GPU tools additionally name the entity
+//! handles they need — a render context, a renderer, a mesh source, a resource
+//! — and the server passes them through untouched; the render thread resolves
+//! them and reports a readable error when one does not fit.
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -24,9 +24,9 @@ use unlit_ecs::Entity;
 use unlit_wgpu::resources::ResId;
 
 use crate::host::{
-    Command, Output, create_mesh, despawn_entity, get_component, get_entity, graph_maintain,
-    graph_summary, input_state, list_archetypes, list_components, list_entities, list_resources,
-    load_gltf, read_buffer, read_texture_as_image, remove_mesh, render_frame,
+    McpCommand, Output, WorldId, create_mesh, despawn_entity, get_component, get_entity,
+    graph_maintain, graph_summary, input_state, list_archetypes, list_components, list_entities,
+    list_resources, load_gltf, read_buffer, read_texture_as_image, remove_mesh, render_frame,
     resource_dependencies, screenshot, send_input, set_component, spawn_entity, world_summary,
 };
 
@@ -43,56 +43,66 @@ fn resource_id(bits: u64) -> ResId {
 /// The MCP server driving one or more unlit3d worlds.
 #[derive(Debug, Clone)]
 pub struct McpServer {
-    commands: async_channel::Sender<Command>,
+    commands: async_channel::Sender<McpCommand>,
     tool_router: ToolRouter<Self>,
 }
 
 impl McpServer {
     /// A server that sends its commands over `commands`.
-    pub fn new(commands: async_channel::Sender<Command>) -> Self {
+    pub fn new(commands: async_channel::Sender<McpCommand>) -> Self {
         Self {
             commands,
             tool_router: Self::tool_router(),
         }
     }
 
-    /// Send a job to the world `world` names and await its output.
-    async fn run(
+    /// Send a job to the world `world` names and await what it answered.
+    ///
+    /// The host — not this server — turns `world` into a world: it routes the
+    /// command to the thread that owns that world, which calls
+    /// [`McpCommand::dispatch`](crate::host::McpCommand::dispatch) on it.
+    async fn send(
         &self,
-        world: Option<Entity>,
+        world: WorldId,
         job: impl FnOnce(&mut unlit_ecs::World) -> Result<Output, String> + Send + 'static,
-    ) -> Result<CallToolResult, ErrorData> {
-        let (mut command, receiver) = Command::new(job);
-        if let Some(entity) = world {
-            command = command.world(entity);
-        }
+    ) -> Result<Result<Output, String>, ErrorData> {
+        let (command, receiver) = McpCommand::new(job);
+        let command = command.with_world(world);
         self.commands
             .send(command)
             .await
             .map_err(|_| ErrorData::internal_error("the render thread is gone", None))?;
-        match receiver.recv().await {
-            Ok(Ok(Output::Json(value))) => Ok(CallToolResult::structured(value)),
+        receiver
+            .recv()
+            .await
+            .map_err(|_| ErrorData::internal_error("the render thread dropped the command", None))
+    }
+
+    /// Send a job to the world `world` names and await its output.
+    async fn run(
+        &self,
+        world: WorldId,
+        job: impl FnOnce(&mut unlit_ecs::World) -> Result<Output, String> + Send + 'static,
+    ) -> Result<CallToolResult, ErrorData> {
+        match self.send(world, job).await? {
+            Ok(Output::Json(value)) => Ok(CallToolResult::structured(value)),
             // An image answers with an MCP image content block so the client
             // renders the pixels, and carries its size as structured content so
             // a client reads it as data instead of from the picture.
-            Ok(Ok(Output::Image(image))) => {
+            Ok(Output::Image(image)) => {
                 let mut result =
                     CallToolResult::success(vec![ContentBlock::image(image.data, "image/png")]);
                 result.structured_content = Some(image.structured);
                 Ok(result)
             }
-            Ok(Err(message)) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
-            Err(_) => Err(ErrorData::internal_error(
-                "the render thread dropped the command",
-                None,
-            )),
+            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         }
     }
 
     /// Send a job to the world `world` names and await its JSON result.
     async fn command(
         &self,
-        world: Option<Entity>,
+        world: WorldId,
         job: impl FnOnce(&mut unlit_ecs::World) -> Result<Value, String> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
         self.run(world, move |world| job(world).map(Output::from))
@@ -111,8 +121,33 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WorldArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| world_summary(world))
+        self.command(args.world, move |world| world_summary(world))
             .await
+    }
+
+    /// Every world the host carries.
+    #[tool(
+        name = "list_worlds",
+        description = "List the worlds the host carries: its own world and every world it routes commands to, including ones on other threads. Ask this before naming a world in another tool."
+    )]
+    pub async fn list_worlds(&self) -> Result<CallToolResult, ErrorData> {
+        let (command, receiver) = McpCommand::list_worlds();
+        self.commands
+            .send(command)
+            .await
+            .map_err(|_| ErrorData::internal_error("the render thread is gone", None))?;
+        match receiver.recv().await {
+            Ok(Ok(Output::Json(value))) => Ok(CallToolResult::structured(value)),
+            Ok(Ok(Output::Image(_))) => Err(ErrorData::internal_error(
+                "list_worlds was answered with an image",
+                None,
+            )),
+            Ok(Err(message)) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+            Err(_) => Err(ErrorData::internal_error(
+                "the render thread dropped the command",
+                None,
+            )),
+        }
     }
 
     /// The component names the server can read and write.
@@ -124,7 +159,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WorldArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| list_components(world))
+        self.command(args.world, move |world| list_components(world))
             .await
     }
 
@@ -137,7 +172,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<WorldArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| list_archetypes(world))
+        self.command(args.world, move |world| list_archetypes(world))
             .await
     }
 
@@ -150,10 +185,8 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ListEntities>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
-            list_entities(world, args.limit)
-        })
-        .await
+        self.command(args.world, move |world| list_entities(world, args.limit))
+            .await
     }
 
     /// One entity's component names and location.
@@ -165,7 +198,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<EntityArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             get_entity(world, entity(args.entity))
         })
         .await
@@ -180,7 +213,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<GetComponent>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             get_component(world, entity(args.entity), &args.component)
         })
         .await
@@ -195,7 +228,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SetComponent>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             set_component(world, entity(args.entity), &args.component, &args.value)
         })
         .await
@@ -210,7 +243,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SpawnEntity>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             spawn_entity(world, &args.components)
         })
         .await
@@ -225,7 +258,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<EntityArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             despawn_entity(world, entity(args.entity))
         })
         .await
@@ -240,7 +273,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ContextArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             graph_summary(world, args.context.map(entity))
         })
         .await
@@ -255,7 +288,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ContextArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             list_resources(world, args.context.map(entity))
         })
         .await
@@ -270,7 +303,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<HandleArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             resource_dependencies(world, args.context.map(entity), resource_id(args.id))
         })
         .await
@@ -285,7 +318,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ContextArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             graph_maintain(world, args.context.map(entity))
         })
         .await
@@ -300,7 +333,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<ReadBuffer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             read_buffer(
                 world,
                 args.context.map(entity),
@@ -321,7 +354,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<HandleArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(args.world.map(entity), move |world| {
+        self.run(args.world, move |world| {
             read_texture_as_image(world, args.context.map(entity), resource_id(args.id))
         })
         .await
@@ -336,7 +369,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<InputArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             input_state(world, args.entity.map(entity))
         })
         .await
@@ -351,7 +384,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<SendInput>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             send_input(world, args.entity.map(entity), &Value::Array(args.events))
         })
         .await
@@ -367,10 +400,8 @@ impl McpServer {
         Parameters(args): Parameters<CreateMesh>,
     ) -> Result<CallToolResult, ErrorData> {
         let source = args.source.map(entity);
-        self.command(args.world.map(entity), move |world| {
-            create_mesh(world, source, args)
-        })
-        .await
+        self.command(args.world, move |world| create_mesh(world, source, args))
+            .await
     }
 
     /// Release a mesh and despawn the entity that drew it.
@@ -382,7 +413,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<EntityArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             remove_mesh(world, args.source.map(entity), entity(args.entity))
         })
         .await
@@ -397,7 +428,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<RendererArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             render_frame(world, args.renderer.map(entity))
         })
         .await
@@ -412,7 +443,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<Screenshot>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(args.world.map(entity), move |world| {
+        self.run(args.world, move |world| {
             screenshot(
                 world,
                 args.renderer.map(entity),
@@ -432,7 +463,7 @@ impl McpServer {
         Parameters(args): Parameters<LoadGltf>,
     ) -> Result<CallToolResult, ErrorData> {
         let path = args.path;
-        self.command(args.world.map(entity), move |world| {
+        self.command(args.world, move |world| {
             load_gltf(world, args.source.map(entity), &path)
         })
         .await
@@ -445,8 +476,9 @@ impl ServerHandler for McpServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Drives one or more unlit3d worlds through the public API: inspect and edit entities \
              and components, inspect a world's resource graph, read buffers and textures, send \
-             input, and render or screenshot frames. Every tool names its world by host entity \
-             bits (omit it for the host world), and GPU tools name the entity handles they need.",
+             input, and render or screenshot frames. Every tool names its world with a WorldId \
+             (\"Host\", or {\"Handle\": bits} for a world a host entity carries), and GPU tools \
+             name the entity handles they need.",
         )
     }
 }
@@ -454,19 +486,19 @@ impl ServerHandler for McpServer {
 /// Which world a tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorldArg {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit for the
-    /// host world the transport thread itself holds.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
 }
 
 /// Which world and render context a GPU tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ContextArg {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// Any entity carrying the world's render context, as its `u64` bits —
     /// its device, queue, graph or capabilities. Omit when the world holds
     /// exactly one.
@@ -477,10 +509,10 @@ pub struct ContextArg {
 /// Which world and resource a handle tool runs against.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct HandleArg {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// Any entity carrying the world's render context, as its `u64` bits.
     /// Omit when the world holds exactly one.
     #[serde(default)]
@@ -492,10 +524,10 @@ pub struct HandleArg {
 /// Arguments for one entity in a world.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EntityArg {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity's bits.
     pub entity: u64,
     /// The entity carrying the world's mesh source, as its `u64` bits, for the tools
@@ -507,10 +539,10 @@ pub struct EntityArg {
 /// Arguments for listing entities.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListEntities {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// How many entities to report.
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -523,10 +555,10 @@ fn default_limit() -> usize {
 /// Arguments for reading one component.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetComponent {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity's bits.
     pub entity: u64,
     /// The component's name.
@@ -536,10 +568,10 @@ pub struct GetComponent {
 /// Arguments for writing one component.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetComponent {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity's bits.
     pub entity: u64,
     /// The component's name.
@@ -551,10 +583,10 @@ pub struct SetComponent {
 /// Arguments for spawning an entity.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SpawnEntity {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The components, as an object of name to value.
     pub components: Value,
 }
@@ -562,10 +594,10 @@ pub struct SpawnEntity {
 /// Arguments for reading a buffer.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadBuffer {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// Any entity carrying the world's render context, as its `u64` bits.
     /// Omit when the world holds exactly one.
     #[serde(default)]
@@ -583,10 +615,10 @@ pub struct ReadBuffer {
 /// Arguments for reading or sending input.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InputArg {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity carrying the input state, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -596,10 +628,10 @@ pub struct InputArg {
 /// Arguments for sending input events.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SendInput {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity carrying the input state, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -611,10 +643,10 @@ pub struct SendInput {
 /// Arguments for rendering a frame.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RendererArg {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -624,10 +656,10 @@ pub struct RendererArg {
 /// Arguments for taking a screenshot.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Screenshot {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity carrying the renderer, as its `u64` bits. Omit for the
     /// world's only one.
     #[serde(default)]
@@ -641,10 +673,10 @@ pub struct Screenshot {
 /// Arguments for creating a mesh.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateMesh {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity carrying the world's mesh source, as its `u64` bits. Omit
     /// for the world's only one.
     #[serde(default)]
@@ -700,10 +732,10 @@ fn identity4() -> [f32; 4] {
 /// Arguments for load_gltf.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LoadGltf {
-    /// The host entity carrying the world to drive, as its `u64` bits; omit
-    /// for the host world.
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
-    pub world: Option<u64>,
+    pub world: WorldId,
     /// The entity carrying the world's mesh source, as its `u64` bits. Omit
     /// for the world's only one.
     #[serde(default)]

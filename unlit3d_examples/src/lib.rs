@@ -399,7 +399,7 @@ enum UserEvent {
     /// The command is wrapped in an `Option` because a user event reaches its
     /// callbacks mutably and the one that runs it takes it out.
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    Command(Option<unlit3d_mcp::Command>),
+    Command(Option<unlit3d_mcp::McpCommand>),
 }
 
 /// The blit world's driving state, a component of the host alongside its
@@ -733,7 +733,7 @@ struct RunInWorld {
     /// The host entity carrying the world the command names.
     entity: Entity,
     /// The command to run.
-    command: unlit3d_mcp::Command,
+    command: unlit3d_mcp::McpCommand,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -744,7 +744,7 @@ impl Command for RunInWorld {
             command.fail(format!("host entity {} carries no world", entity.to_bits()));
             return;
         };
-        unlit3d_mcp::dispatch(command, &mut nested);
+        command.dispatch(&mut nested);
     }
 }
 
@@ -752,13 +752,13 @@ impl Command for RunInWorld {
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 struct RunInHost {
     /// The command to run.
-    command: unlit3d_mcp::Command,
+    command: unlit3d_mcp::McpCommand,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 impl Command for RunInHost {
     fn apply(self: Box<Self>, world: &mut World) {
-        unlit3d_mcp::dispatch(self.command, world);
+        self.command.dispatch(world);
     }
 }
 
@@ -1491,10 +1491,21 @@ fn start_mcp(world: &World, app: Entity) {
 /// Queue one MCP command against the world it names.
 ///
 /// Running it needs `&mut World`, so it is queued as a command and applied
-/// between two event callbacks.
+/// between two event callbacks. The host answers `list_worlds` itself: it is
+/// the only one that knows which entities carry a world.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-fn dispatch_command(world: &World, command: unlit3d_mcp::Command) {
-    match command.world_handle() {
+fn dispatch_command(world: &World, command: unlit3d_mcp::McpCommand) {
+    if command.wants_worlds() {
+        let mut worlds = vec![unlit3d_mcp::WorldId::Host];
+        worlds.extend(
+            world
+                .query::<(Entity, &World)>()
+                .map(|(entity, _)| unlit3d_mcp::WorldId::handle(entity)),
+        );
+        command.answer_worlds(worlds);
+        return;
+    }
+    match command.world().entity() {
         Some(entity) => world.queue().push(RunInWorld { entity, command }),
         None => world.queue().push(RunInHost { command }),
     }
