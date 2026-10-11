@@ -1,0 +1,27 @@
+[package]
+name = "unlit3dx_examples"
+version = "0.1.0-dev.2"
+edition.workspace = true
+description = "A multi-world unlit3dx example: rendering, physics and soundfont audio in one scene."
+repository.workspace = true
+license.workspace = true
+keywords = ["example", "gamedev", "webgpu", "physics", "audio"]
+publish = false
+
+[[bin]]
+name = "unlit3dx-examples"
+path = "src/main.rs"
+
+[dependencies]
+glam.workspace = true
+log.workspace = true
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2" }
+unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2" }
+unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.2" }
+wgpu.workspace = true
+winit.workspace = true
+
+# The GPU context is requested synchronously: this example is native only.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger.workspace = true
+pollster.workspace = true

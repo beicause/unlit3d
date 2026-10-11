@@ -1,0 +1,34 @@
+[package]
+name = "unlit3dx"
+version = "0.1.0-dev.2"
+edition.workspace = true
+description = "Multi-world extension for unlit3d: host, render, physics, audio and gameplay worlds on their own threads, joined by jobs and snapshots."
+repository.workspace = true
+license.workspace = true
+keywords = ["ecs", "gamedev", "multithreading", "physics", "audio"]
+
+[features]
+default = ["render", "physics", "audio", "synth"]
+## The render bridge: snapshots that drive `Transform` components in a render
+## sub-world.
+render = ["dep:unlit3d"]
+## The physics world on its own thread, backed by rapier.
+physics = ["dep:rapier3d"]
+## The audio output thread, backed by cpal and a ring buffer.
+audio = ["dep:cpal", "dep:ringbuf"]
+## A soundfont synthesizer `PcmSource` for the audio world.
+synth = ["audio", "dep:rustysynth-ext"]
+
+[dependencies]
+crossbeam-channel.workspace = true
+glam.workspace = true
+log.workspace = true
+unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2" }
+unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false, optional = true }
+rapier3d = { workspace = true, optional = true }
+cpal = { workspace = true, optional = true }
+ringbuf = { workspace = true, optional = true }
+rustysynth-ext = { workspace = true, optional = true }
+
+[lints]
+workspace = true
