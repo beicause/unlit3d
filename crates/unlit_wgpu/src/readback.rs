@@ -49,7 +49,7 @@ pub fn readback_buffer(
     queue.submit([encoder.finish()]);
 
     let slice = staging.slice(..);
-    let (sender, receiver) = std::sync::mpsc::channel();
+    let (sender, receiver) = crossbeam_channel::unbounded();
     slice.map_async(wgpu::MapMode::Read, move |result| {
         let _ = sender.send(result);
     });

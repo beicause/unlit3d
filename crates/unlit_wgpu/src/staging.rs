@@ -357,7 +357,7 @@ mod tests {
     /// Read `target` back and return its first `size` bytes.
     fn read_back(device: &wgpu::Device, target: &wgpu::Buffer, size: u64) -> Vec<u8> {
         let slice = target.slice(..size);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = crossbeam_channel::unbounded();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             tx.send(result).expect("the test reads the result");
         });

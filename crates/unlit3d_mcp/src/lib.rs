@@ -15,7 +15,6 @@
 #![forbid(unsafe_code)]
 
 use std::error::Error;
-use std::sync::mpsc;
 
 pub mod host;
 pub mod server;
@@ -79,7 +78,7 @@ pub fn serve_stdio_offscreen(
     depth: bool,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let (sender, receiver) = async_channel::bounded::<Command>(4);
-    let (ready_sender, ready_receiver) = mpsc::channel::<Result<(), String>>();
+    let (ready_sender, ready_receiver) = crossbeam_channel::unbounded::<Result<(), String>>();
     let render = std::thread::Builder::new()
         .name("unlit3d-mcp-render".to_owned())
         .spawn(move || {

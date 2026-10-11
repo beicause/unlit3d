@@ -27,6 +27,7 @@ required-features = ["egui"]
 arrayvec.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
+crossbeam-channel.workspace = true
 egui = { workspace = true, optional = true }
 facet = { workspace = true, features = ["reflect"], optional = true }
 foldhash.workspace = true

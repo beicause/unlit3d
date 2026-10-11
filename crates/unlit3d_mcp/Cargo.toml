@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 async-channel.workspace = true
 base64.workspace = true
+crossbeam-channel.workspace = true
 # The world-information structs the original crates expose derive their own
 # reflection, and facet-json turns that into the JSON this transport speaks.
 facet.workspace = true
