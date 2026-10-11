@@ -52,7 +52,7 @@ use web_time::Instant;
 use zerocopy::IntoBytes;
 
 use crate::input::InputHandle;
-pub use crate::source::InputCapture;
+pub use crate::source::{InputCapture, OpenUrl, OpenUrls};
 
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
 /// egui, re-exported because a [`UiPanel`] is written against its types.
@@ -398,6 +398,13 @@ impl FrameSource for UiSource {
 
         let output = self.run_panels(world, input);
 
+        // A URL egui was asked to open is a request for the host rather than
+        // the frame, the same way a claim on the input is: a panel cannot open
+        // a browser tab itself, so the request is published in the world for
+        // whoever owns the page to serve. Read before the integration takes
+        // the output, because it consumes it.
+        publish_open_urls(world, &output.platform_output);
+
         let gpu = self.gpu.as_mut().expect("built above");
         gpu.integration
             .update(&mut graph, &queue, encoder, &self.ctx, output, screen);
@@ -454,6 +461,29 @@ fn publish_capture(world: &World, ctx: &egui::Context) {
         return;
     };
     let _ = world.with_mut::<InputCapture, _>(entity, |slot| *slot = capture);
+}
+
+/// Publish the URLs egui was asked to open as an [`OpenUrls`] resource.
+///
+/// The resource is looked up by type, so a world gets one from `spawn_context`
+/// — the frame's own setup — and a caller never has to create it. A world
+/// without one is not an error: the UI still draws, and the request is simply
+/// dropped, the same way a claim on the input is.
+fn publish_open_urls(world: &World, output: &egui::PlatformOutput) {
+    let urls = output.commands.iter().filter_map(|command| match command {
+        egui::OutputCommand::OpenUrl(open) => Some(OpenUrl {
+            url: open.url.clone(),
+            new_tab: open.new_tab,
+        }),
+        // Copying text or an image is the integration's to serve on the
+        // platform it runs on; only a URL needs something a frame source is
+        // not: a page to open it in.
+        _ => None,
+    });
+    let Some(entity) = world.query::<&OpenUrls>().next().map(|(e, _)| e) else {
+        return;
+    };
+    let _ = world.with_mut::<OpenUrls, _>(entity, |slot| slot.replace(urls));
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.

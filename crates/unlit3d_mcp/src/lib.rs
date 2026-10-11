@@ -20,7 +20,9 @@ use std::sync::mpsc;
 pub mod host;
 pub mod server;
 
-pub use host::{COLOR_FORMAT, Command, Job, dispatch, offscreen_world, request_device};
+pub use host::{
+    COLOR_FORMAT, Command, EncodedImage, Job, Output, dispatch, offscreen_world, request_device,
+};
 pub use server::McpServer;
 pub use unlit3d::reflect::{
     ComponentEntry, contains, decode_events, encode, entries, entry, names, push, set,

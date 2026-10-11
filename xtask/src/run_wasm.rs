@@ -42,9 +42,11 @@ const PORT: u16 = 8000;
 /// each frame. A window that changes shape re-aims the projection and shows
 /// more or less of the scene; nothing is stretched.
 ///
-/// The corner link leads to the API docs the Pages workflow puts beside the
-/// page under `docs/`. A server that has only the example — what `run-wasm`
-/// starts — leaves that link without a target.
+/// The page carries no overlay of its own: the corner controls, the link to
+/// the API docs the Pages workflow puts beside the page under `docs/` included,
+/// are drawn by the example, so they are laid out together instead of by two
+/// hand-kept rules that can collide. A server that has only the example — what
+/// `run-wasm` starts — leaves that link without a target.
 ///
 /// `touch-action: none` is what makes a finger drag reach the app at all. The
 /// Pointer Events specification has `preventDefault()` on `pointerdown` *not*
@@ -95,27 +97,9 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         /* Without this the browser claims a drag as its own pan. */
         touch-action: none;
       }
-      /* The way from the example to the API docs, which the Pages workflow
-         publishes beside the page under `docs/`. Fixed to the corner so it takes
-         no space from the canvas. */
-      .docs {
-        position: fixed;
-        top: max(var(--margin), env(safe-area-inset-top));
-        right: max(var(--margin), env(safe-area-inset-right));
-        padding: 6px 10px;
-        border-radius: 6px;
-        background: rgb(255 255 255 / 8%);
-        color: #d0d0d8;
-        font: 14px/1 system-ui, sans-serif;
-        text-decoration: none;
-      }
-      .docs:hover {
-        background: rgb(255 255 255 / 16%);
-      }
     </style>
   </head>
   <body>
-    <a class="docs" href="./docs/index.html">API docs</a>
     <script type="module">
       import init from "./unlit3d-examples.js";
       init();

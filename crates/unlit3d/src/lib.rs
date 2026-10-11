@@ -65,8 +65,8 @@ pub mod prelude {
         renderer::Renderer,
         source::{
             FrameSource, FrameSourceOrder, FrameTarget, FrameViewport, InputCapture, MaintainScope,
-            RenderContext, Source, WorldSourceExt, frame_target, frame_viewport, set_frame_target,
-            set_frame_viewport, spawn_context,
+            OpenUrl, OpenUrls, RenderContext, Source, WorldSourceExt, drain_open_urls,
+            frame_target, frame_viewport, set_frame_target, set_frame_viewport, spawn_context,
         },
     };
     pub use unlit_ecs::prelude::*;

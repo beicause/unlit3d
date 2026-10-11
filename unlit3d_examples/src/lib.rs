@@ -8,9 +8,8 @@ mod cli;
 #[cfg(target_os = "android")]
 pub mod android;
 
-/// The browser's fullscreen button, and the landscape lock that only
-/// fullscreen permits. Nothing is offered away from the web.
-mod web;
+/// The fullscreen button, and the landscape lock that only a browser permits.
+mod fullscreen;
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -239,7 +238,8 @@ fn build_blit_world(context: &Gpu, offscreen: &wgpu::Texture) -> (World, BlitVie
 /// registered in the scene world's graph, as at first bind, so a screenshot can
 /// still resolve it by handle; the blit world's `BlitTexture` is replaced with
 /// a view of it, which makes `BlitSource` rebuild its bind group on the next
-/// frame.
+/// frame. The `Offscreen` slot is re-pointed at the new texture as well, so it
+/// never names a target the frames no longer land in.
 fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
     let (width, height) = size;
     if width == 0 || height == 0 {
@@ -277,6 +277,7 @@ fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
             )
         })
         .expect("the renderer is a resource entity");
+    let _ = world.with_mut::<Offscreen, _>(app, |slot| slot.0 = Some(target.clone()));
     let view = TextureExt::create_view(&target, &wgpu::TextureViewDescriptor::default());
     let (texture_entity, blit_renderer) = {
         let blit = world
@@ -349,6 +350,7 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     let app = world.spawn((
         GpuState::Idle,
         SceneEntity(None),
+        Offscreen(None),
         BlitEntity(None),
         SurfaceSlot(None),
         AttachmentsSlot(None),
@@ -559,6 +561,9 @@ pub struct Scene {
     switch: Entity,
     /// The fullscreen button's request component, read once per frame.
     fullscreen: Entity,
+    /// The window's fullscreen state, written once per frame for the button to
+    /// label itself from: a panel runs with no window to ask.
+    fullscreen_active: Entity,
     /// A scene switch requested by the selector, consumed by the frame loop.
     pending: Option<&'static scenes::SceneDef>,
 }
@@ -569,12 +574,19 @@ struct SceneSwitch(Option<&'static scenes::SceneDef>);
 
 /// Set by the windowed shell's fullscreen button, read once by the frame loop.
 ///
-/// A flag rather than the state to move to: the button asks for the document to
-/// change, and which way it changes is read from the document itself at the
+/// A flag rather than the state to move to: the button asks for the window to
+/// change, and which way it changes is read from the window itself at the
 /// moment the request is served. A panel runs while the world is borrowed to
 /// lay the UI out, so it can only record the click; the frame loop owns the
-/// window the request is served on. See [`web`].
+/// window the request is served on. See [`fullscreen`].
 struct FullscreenRequest(bool);
+
+/// Whether the window is fullscreen, written once per frame by the frame loop.
+///
+/// The button labels itself for the action it would take, and a panel has no
+/// window to ask, so the frame loop reads the window's state and leaves it here
+/// for the panel to draw from.
+struct FullscreenActive(bool);
 
 /// The host entity carrying the scene's world and its [`Scene`].
 ///
@@ -1007,6 +1019,20 @@ fn switch_scene(world: &World, app: Entity, def: &'static scenes::SceneDef) {
     if let Some(mut attachments) = world.get_mut::<AttachmentsSlot>(app) {
         attachments.0 = None;
     }
+    // The MCP run's offscreen target and the world that blits it were built
+    // around the scene a switch just dropped, so they go with it: the rebuilt
+    // scene binds a target of its own, and a fresh blit world samples that one.
+    // The switching frame skips drawing, so nothing renders into the target
+    // being released.
+    if let Some(mut offscreen) = world.get_mut::<Offscreen>(app) {
+        offscreen.0 = None;
+    }
+    if let Some(entity) = world
+        .get_mut::<BlitEntity>(app)
+        .and_then(|mut slot| slot.0.take())
+    {
+        world.queue().despawn(entity);
+    }
     if let Some(entity) = world
         .get_mut::<SceneEntity>(app)
         .and_then(|mut slot| slot.0.take())
@@ -1122,7 +1148,27 @@ fn ensure_presented(app: Entity) -> OnFrame {
     })
 }
 
-/// Serve the scene selector and the fullscreen button.
+/// Open a URL the UI asked for, in a new tab when it asked for one.
+///
+/// The UI cannot open it itself: a panel runs while the world is borrowed and
+/// has no page to reach, so it publishes the request in the world and the frame
+/// loop serves it here — the same split the fullscreen request follows. One
+/// call covers every platform the example builds for.
+fn open_url(url: &OpenUrl) {
+    // The target hint only means anything in a browser, where it decides
+    // between a new tab and the page the app is already on; elsewhere it is
+    // ignored.
+    let target = if url.new_tab { "_blank" } else { "_self" };
+    let mut options = webbrowser::BrowserOptions::new();
+    options.with_target_hint(target);
+    if let Err(error) =
+        webbrowser::open_browser_with_options(webbrowser::Browser::Default, &url.url, &options)
+    {
+        log::debug!("the URL {} could not be opened: {error}", url.url);
+    }
+}
+
+/// Serve the scene selector, the fullscreen button and the UI's URL requests.
 ///
 /// A scene switch drops the scene's world, so nothing may still be borrowed
 /// from it when the switch is served: the control state is read in one block
@@ -1135,6 +1181,7 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
         let Some(scene_entity) = world.get::<SceneEntity>(app).and_then(|slot| slot.0) else {
             return;
         };
+        let active = window(world).is_some_and(|window| fullscreen::active(&window));
         let (selector_pos, gpu_info_pos, switch, fullscreen) = {
             let Some(nested) = world.get::<World>(scene_entity) else {
                 return;
@@ -1150,7 +1197,7 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
                 .flatten();
             let fullscreen = world
                 .get_mut::<Scene>(scene_entity)
-                .is_some_and(|mut scene| scene.take_fullscreen(&nested));
+                .is_some_and(|mut scene| scene.fullscreen_request(&nested, active));
             (selector_pos, gpu_info_pos, switch, fullscreen)
         };
         let _ = world.with_mut::<SelectorPos, _>(app, |slot| slot.0 = selector_pos);
@@ -1161,7 +1208,14 @@ fn serve_scene_controls(app: Entity) -> OnFrame {
             return;
         }
         if fullscreen && let Some(window) = window(world) {
-            web::toggle(&window);
+            fullscreen::toggle(&window);
+        }
+        // The UI publishes the URLs it was asked to open in the scene's own
+        // world, so it is drained there rather than here in the host.
+        if let Some(nested) = world.get::<World>(scene_entity) {
+            for url in drain_open_urls(&nested) {
+                open_url(&url);
+            }
         }
     })
 }
@@ -1483,8 +1537,9 @@ impl Scene {
         // The selector's switch component lives in every world; only a windowed
         // run mounts the panel that writes it.
         let switch = world.spawn((SceneSwitch(None),));
-        // The fullscreen button's request component likewise.
+        // The fullscreen button's request and state components likewise.
         let fullscreen = world.spawn((FullscreenRequest(false),));
+        let fullscreen_active = world.spawn((FullscreenActive(false),));
         // The frame-rate component likewise, so both paths build the same
         // world shape and only the windowed run mounts the panel reading it.
         let frame_rate = world.spawn((FrameRate::default(),));
@@ -1529,13 +1584,15 @@ impl Scene {
             mount_selector(&mut world, switch, def, panels.selector);
             mount_frame_rate(&mut world, frame_rate);
             mount_gpu_info(&mut world, context.device, panels.gpu_info);
-            // The browser is the one platform with a page to make fullscreen,
-            // and a page can still be denied it — an `iframe` without the
-            // `fullscreen` permission. No button is drawn where a press could
-            // only fail, so a phone never shows a control that does nothing.
-            if web::supported() {
-                mount_fullscreen(&mut world, fullscreen);
-            }
+            // Every platform has a window the button can take fullscreen, so
+            // it is drawn everywhere. A platform whose backend cannot — Android
+            // already takes the whole screen for its activity — draws the
+            // button and ignores the press.
+            mount_fullscreen(&mut world, fullscreen, fullscreen_active);
+            // The API docs are a page every platform can open, so the link is
+            // drawn everywhere. Mounted after the fullscreen button, which it
+            // is placed under.
+            mount_api_docs(&mut world);
         }
 
         (
@@ -1549,6 +1606,7 @@ impl Scene {
                 frame: 0,
                 switch,
                 fullscreen,
+                fullscreen_active,
                 pending: None,
             },
         )
@@ -1625,11 +1683,15 @@ impl Scene {
         })
     }
 
-    /// Whether the fullscreen button asked for a change, clearing the request.
+    /// Record whether the window is fullscreen and report whether the button
+    /// asked for a change, clearing the request.
     ///
-    /// Read once per frame by the windowed loop, which is what serves it; the
-    /// scene keeps no opinion of its own about fullscreen.
-    fn take_fullscreen(&mut self, world: &World) -> bool {
+    /// Both are read and written once per frame by the windowed loop, which is
+    /// what owns the window; the scene keeps no opinion of its own about
+    /// fullscreen.
+    fn fullscreen_request(&mut self, world: &World, active: bool) -> bool {
+        let _ =
+            world.with_mut::<FullscreenActive, _>(self.fullscreen_active, |state| state.0 = active);
         world
             .with_mut::<FullscreenRequest, _>(self.fullscreen, |request| {
                 std::mem::take(&mut request.0)
@@ -1661,6 +1723,13 @@ impl Scene {
 /// The scene-selector window's title, which is also its egui area id: the
 /// shell reads the window's remembered rectangle by this same id.
 const SELECTOR_WINDOW: &str = "scenes";
+
+/// The width the selector window opens at, in points.
+///
+/// Narrow enough that the list leaves the scene visible behind it: the
+/// description wraps onto a second line instead of the window stretching across
+/// the frame. A window a user has dragged keeps the width it was dragged to.
+const SELECTOR_DEFAULT_WIDTH: f32 = 280.0;
 
 /// Where the selector window opens when no position was carried over — the
 /// first build of a session.
@@ -1700,6 +1769,7 @@ fn mount_selector(
             Some(rect) => window.default_pos(rect.min).default_size(rect.size()),
             None => window
                 .pivot(egui::Align2::RIGHT_BOTTOM)
+                .default_width(SELECTOR_DEFAULT_WIDTH)
                 .default_pos(selector_default_pos(ui.ctx())),
         };
         window.show(ui.ctx(), |ui| {
@@ -1785,27 +1855,41 @@ const OVERLAY_MARGIN: f32 = 8.0;
 /// window is too narrow to hold them on the same row.
 const OVERLAY_GAP: f32 = 8.0;
 
-/// The smallest the fullscreen button is drawn, in points.
+/// The smallest a corner button is drawn, in points.
 ///
 /// A control a phone has to be hit with a finger wants a taller target than a
 /// row of text: this is the height the touch-target guidelines converge on,
 /// and the button is grown to it.
-const FULLSCREEN_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(140.0, 44.0);
+const OVERLAY_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(140.0, 44.0);
 
-/// The button's inner padding, symmetric so the label is centred within the
-/// button it is grown to.
+/// A corner button's inner padding, symmetric so the label is centred within
+/// the button it is grown to.
 ///
 /// A bare [`egui::Button::min_size`] would leave the label sitting in a corner:
 /// the button's atoms are aligned by the surrounding layout, which is not
 /// centred. Growing the padding instead — the same on every side — is what
 /// pushes the label to the middle of the larger button.
-const FULLSCREEN_BUTTON_PADDING: egui::Vec2 = egui::Vec2::new(16.0, 16.0);
+const OVERLAY_BUTTON_PADDING: egui::Vec2 = egui::Vec2::new(16.0, 16.0);
+
+/// The API docs the Pages workflow publishes beside the example page.
+///
+/// Absolute, because the browser and Android only open an `http(s)` URL — a
+/// path relative to the page is not something either hands to a browser. The
+/// site is the repository's, so a fork that publishes its own should point this
+/// at its own Pages URL.
+const API_DOCS_URL: &str = "https://beicause.github.io/unlit3d/docs/index.html";
+
+/// The label the API-docs button carries.
+const API_DOCS_LABEL: &str = "API docs";
 
 /// The id of the frame-rate readout's area.
 const FRAME_RATE_AREA: &str = "unlit3d::frame-rate";
 
 /// The id of the fullscreen button's area.
 const FULLSCREEN_AREA: &str = "unlit3d::fullscreen";
+
+/// The id of the API-docs button's area.
+const API_DOCS_AREA: &str = "unlit3d::api-docs";
 
 /// The GPU-info panel's title, shown in its title bar.
 const GPU_INFO_TITLE: &str = "GPU";
@@ -1814,12 +1898,29 @@ const GPU_INFO_TITLE: &str = "GPU";
 /// the panel's rectangle under.
 const GPU_INFO_AREA: &str = "unlit3d::gpu-info";
 
-/// The widest the GPU-info panel is drawn, in points.
+/// The narrowest the GPU-info panel may be dragged, in points.
 ///
-/// The panel prints strings the device chose — an adapter name, a driver
-/// description — beside a grid of limits, so its natural width is unbounded;
-/// this caps it so a long one wraps rather than running off the screen.
-const GPU_INFO_MAX_WIDTH: f32 = 320.0;
+/// A fresh panel opens as wide as its widest fact needs to stay on one line,
+/// so this floor is only reached by dragging. Without it a drag could squeeze
+/// the panel down to a column of one letter: the facts are wrapped text in a
+/// scroll area, so they follow the panel all the way down.
+const GPU_INFO_MIN_WIDTH: f32 = 160.0;
+
+/// Slack added to the GPU-info panel's measured width.
+///
+/// A label wraps on a strict comparison against the width it is handed, and a
+/// window rounds its size to a whole pixel, so a width that fits a fact exactly
+/// can still come out a hair too narrow. A couple of points keep the longest
+/// fact on its line when the rounding would otherwise break it.
+const GPU_INFO_WIDTH_SLACK: f32 = 2.0;
+
+/// The share of the window's width the GPU-info panel may take, at most.
+///
+/// The panel takes its opening width from its content, and a device can name a
+/// limit that is longer than the window is wide. This keeps such a panel from
+/// hanging off the edge and leaves the scene visible beside it; a name that
+/// still does not fit wraps, and the panel may be dragged wider by hand.
+const GPU_INFO_MAX_WIDTH_FRACTION: f32 = 0.85;
 
 /// The share of the window's height the GPU-info panel may take.
 ///
@@ -1995,7 +2096,10 @@ fn gpu_info_default_pos(ctx: &egui::Context) -> egui::Pos2 {
 /// Mount the GPU-info panel, a draggable window in the bottom-left corner.
 ///
 /// A window rather than an anchored area so the user can move it out of the
-/// way; it is drawn in the foreground layer so a scene panel cannot cover it.
+/// way. It is an ordinary window, in the layer the scene's own windows are
+/// drawn in: the title bar then highlights exactly when it is the window on
+/// top, the same as the selector's, and a scene panel dragged over it covers
+/// it the same way.
 ///
 /// The device is read here, once, where it is in hand; the panel then draws
 /// from the strings that read produced.
@@ -2011,28 +2115,143 @@ fn mount_gpu_info(world: &mut World, device: Entity, initial: Option<egui::Rect>
     }),));
 }
 
+/// One line of the GPU-info panel.
+///
+/// The panel sizes itself from these lines and then draws the same values, so a
+/// line's wording and the font it is drawn in are chosen once: a width measured
+/// from a differently-styled string would not be the width the panel draws with.
+enum GpuInfoLine {
+    /// The adapter's name or its one-line description, above the separator.
+    Header(egui::WidgetText),
+    /// A heading that opens a group of facts, set off by a gap above it.
+    Heading(egui::WidgetText),
+    /// One fact.
+    Fact(egui::WidgetText),
+}
+
+impl GpuInfoLine {
+    /// The line's text and styling, as it is both measured and drawn.
+    fn text(&self) -> &egui::WidgetText {
+        match self {
+            Self::Header(text) | Self::Heading(text) | Self::Fact(text) => text,
+        }
+    }
+
+    /// Whether the line is part of the header, above the separating rule.
+    fn is_header(&self) -> bool {
+        matches!(self, Self::Header(_))
+    }
+
+    /// Whether the line opens a section, which is set off by a gap above it.
+    fn is_heading(&self) -> bool {
+        matches!(self, Self::Heading(_))
+    }
+}
+
+/// The lines the GPU-info panel shows, top to bottom.
+///
+/// The wording lives here and nowhere else: the width measurement and the
+/// drawing both walk this list, so a fact cannot be measured as one string and
+/// drawn as another, nor measured in one font and drawn in another.
+fn gpu_info_lines(info: &GpuInfo) -> Vec<GpuInfoLine> {
+    let mut lines = Vec::new();
+    lines.push(GpuInfoLine::Header(
+        egui::RichText::new(&info.name).strong().into(),
+    ));
+    lines.push(GpuInfoLine::Header(
+        egui::RichText::new(&info.summary).monospace().into(),
+    ));
+    lines.push(GpuInfoLine::Heading(
+        egui::RichText::new("Adapter").strong().into(),
+    ));
+    for (label, value) in &info.rows {
+        lines.push(GpuInfoLine::Fact(format!("{label}: {value}").into()));
+    }
+    lines.push(GpuInfoLine::Heading(
+        egui::RichText::new(format!("Features ({})", info.features.len()))
+            .strong()
+            .into(),
+    ));
+    if info.features.is_empty() {
+        lines.push(GpuInfoLine::Fact("none".into()));
+    } else {
+        for feature in &info.features {
+            lines.push(GpuInfoLine::Fact((*feature).into()));
+        }
+    }
+    lines.push(GpuInfoLine::Heading(
+        egui::RichText::new(format!("Limits ({})", info.limits.len()))
+            .strong()
+            .into(),
+    ));
+    for (name, value) in &info.limits {
+        lines.push(GpuInfoLine::Fact(format!("{name} = {value}").into()));
+    }
+    lines
+}
+
+/// How wide the GPU-info panel has to be to keep every line on one row.
+///
+/// The facts are strings the device chose, and its own names for its limits run
+/// past fifty characters, so a fixed opening width would wrap them. Each line is
+/// laid out unwrapped as it will be drawn, the widest one sets the content
+/// width, and the window's frame and the body's scroll bar are added back on:
+/// the panel's size, unlike the text's, includes both.
+///
+/// A free function rather than part of the panel so a test can ask what width a
+/// given set of lines needs without drawing a pass.
+fn gpu_info_width(ui: &egui::Ui, lines: &[GpuInfoLine]) -> f32 {
+    let mut widest: f32 = 0.0;
+    for line in lines {
+        let width = line
+            .text()
+            .clone()
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Extend),
+                0.0,
+                egui::FontSelection::Default,
+            )
+            .size()
+            .x;
+        widest = widest.max(width);
+    }
+    let style = ui.style();
+    let frame = egui::Frame::window(style).total_margin().sum().x;
+    let scroll_bar = style.spacing.scroll.allocated_width();
+    widest + frame + scroll_bar + GPU_INFO_WIDTH_SLACK
+}
+
 /// Draw the GPU-info panel for `info`, seeded at `initial` or the bottom-left
 /// corner of `ui`'s screen.
 ///
 /// A free function rather than the body of the panel's closure so a test can
 /// drive it against a bare [`egui::Context`]: what it has to get right — where
-/// it opens, the width it wraps at and the facts it prints — is a property of
-/// the widget tree, not of the world.
+/// it opens, the width it takes from its facts and the facts it prints — is a
+/// property of the widget tree, not of the world.
 fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>) {
     // The id is set explicitly, as in the selector: `Window::new` would derive
     // it from the title text, and the shell reads the remembered rectangle back
     // under this id.
+    //
+    // The panel is resizable in both directions, like the selector and the
+    // scene's own windows: the limits alone are several dozen rows, and how
+    // much of the scene the panel covers while they are read is the reader's
+    // to decide. It opens as wide as its facts need, and dragging it narrower
+    // is what wraps them.
     let window = egui::Window::new(GPU_INFO_TITLE)
         .id(egui::Id::new(GPU_INFO_AREA))
-        .order(egui::Order::Foreground)
-        .max_width(GPU_INFO_MAX_WIDTH)
-        // The facts are read once, so there is nothing to gain from resizing;
-        // the window sizes itself to them and scrolls the overflow.
-        .resizable(false);
+        .min_width(GPU_INFO_MIN_WIDTH)
+        .max_width(ui.ctx().content_rect().width() * GPU_INFO_MAX_WIDTH_FRACTION);
     // A fresh panel is seeded by its bottom-left pivot, so that corner stays
     // put while the first layout measures the content. A carried rectangle is
     // seeded by its left-top and given its size, so the first frame lays the
     // window out as it last was.
+    let lines = gpu_info_lines(info);
+    // The lines above the rule are the header; the rest are the facts, which
+    // scroll, so the two runs are drawn into different places from the one
+    // list.
+    let header = lines.iter().take_while(|line| line.is_header()).count();
     let window = match initial {
         Some(rect) => window.default_pos(rect.min).default_size(rect.size()),
         None => window
@@ -2043,52 +2262,36 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
             // would push the seeded corner inward when the area is constrained
             // to the screen.
             .default_size(egui::Vec2::new(
-                GPU_INFO_MAX_WIDTH,
+                gpu_info_width(ui, &lines),
                 ui.ctx().content_rect().height() * GPU_INFO_HEIGHT_FRACTION,
             ))
             .default_pos(gpu_info_default_pos(ui.ctx())),
     };
     window.show(ui.ctx(), |ui| {
-        ui.set_max_width(GPU_INFO_MAX_WIDTH);
+        let (header_lines, body_lines) = lines.split_at(header);
         ui.vertical(|ui| {
-            ui.strong(&info.name);
-            ui.monospace(&info.summary);
+            for line in header_lines {
+                ui.label(line.text().clone());
+            }
             ui.separator();
             egui::ScrollArea::vertical()
                 .max_height(ui.ctx().content_rect().height() * GPU_INFO_HEIGHT_FRACTION)
-                // Fill the panel's width so the facts wrap within the cap
-                // instead of the window sizing itself to the widest one; shrink
-                // to the content's height so a device with few limits gets a
-                // short panel.
+                // Fill the panel's width so the facts wrap within it instead of
+                // the panel sizing itself to the widest one; shrink to the
+                // content's height so a device with few limits gets a short
+                // panel, and dragging it taller then does not pad it out with
+                // empty space.
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    gpu_info_section(ui, "Adapter");
-                    for (label, value) in &info.rows {
-                        ui.small(format!("{label}: {value}"));
-                    }
-
-                    gpu_info_section(ui, &format!("Features ({})", info.features.len()));
-                    if info.features.is_empty() {
-                        ui.small("none");
-                    } else {
-                        for feature in &info.features {
-                            ui.small(*feature);
+                    for line in body_lines {
+                        if line.is_heading() {
+                            ui.add_space(OVERLAY_GAP);
                         }
-                    }
-
-                    gpu_info_section(ui, &format!("Limits ({})", info.limits.len()));
-                    for (name, value) in &info.limits {
-                        ui.small(format!("{name} = {value}"));
+                        ui.label(line.text().clone());
                     }
                 });
         });
     });
-}
-
-/// A heading separating the GPU-info panel's sections.
-fn gpu_info_section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(OVERLAY_GAP);
-    ui.strong(title);
 }
 
 /// Mount the fullscreen button in the window's top-right corner.
@@ -2102,42 +2305,92 @@ fn gpu_info_section(ui: &mut egui::Ui, title: &str) {
 ///
 /// The click is recorded rather than served here: a panel runs while the world
 /// is borrowed, and it has no window to ask; the frame loop reads the request
-/// and calls [`web::toggle`], which is where a browser accepts it from.
-fn mount_fullscreen(world: &mut World, request: Entity) {
+/// and calls [`fullscreen::toggle`], which is where a browser accepts it from.
+fn mount_fullscreen(world: &mut World, request: Entity, state: Entity) {
     world.spawn((UiPanel::new(move |world, _entity, ui| {
-        let active = web::active();
-        let clicked = fullscreen_button(ui, active);
-        if clicked {
+        let active = world
+            .get::<FullscreenActive>(state)
+            .is_some_and(|state| state.0);
+        if fullscreen_button(ui, active) {
             let _ = world.with_mut::<FullscreenRequest, _>(request, |request| request.0 = true);
         }
     }),));
 }
 
-/// The vertical offset the fullscreen button's anchor is drawn at.
+/// Mount the link to the API docs in the window's top-right corner.
 ///
-/// The readout and the button share the top row when the window is wide enough
-/// for both to sit side by side. When it is not — the readout is centred, so on
-/// a portrait phone it reaches into the corner the button anchors to — the
-/// button drops to the row under the readout instead: hiding the end of the
-/// reading under the button that is meant to sit beside it on a roomier window
-/// does not help. The fallback keeps both legible and separated at any width.
+/// The link lives in the UI rather than in the page so the two corner overlays
+/// are laid out by the same code and cannot collide: the page's own link knew
+/// nothing about the button, which is what put the two on top of each other.
+/// Mounted after [`mount_fullscreen`], because the link is placed under the
+/// button it measures.
+///
+/// The click is recorded rather than served here: a panel runs while the world
+/// is borrowed and has no page to reach; the frame loop reads the request and
+/// opens it with [`webbrowser`], which covers every platform the example runs
+/// on.
+fn mount_api_docs(world: &mut World) {
+    world.spawn((UiPanel::new(|_world, _entity, ui| {
+        api_docs_button(ui);
+    }),));
+}
+
+/// The vertical offset a corner button's anchor is drawn at, given the area
+/// above it in the same corner.
+///
+/// `above` and the button share the top row when the window is wide enough for
+/// both to sit side by side. When it is not — the frame-rate readout is
+/// centred, so on a portrait phone it reaches into the corner the fullscreen
+/// button anchors to — the button drops to the row under `above` instead:
+/// hiding the end of the reading under the button that is meant to sit beside
+/// it on a roomier window does not help. The fallback keeps both legible and
+/// separated at any width.
 ///
 /// Both areas are anchored, and an anchored area is laid out against the
 /// rectangle the previous pass remembered for it — which is what is compared
 /// here, so the decision is made about the very positions egui will use.
-fn fullscreen_button_top(ctx: &egui::Context) -> f32 {
-    let readout = ctx.memory(|memory| memory.area_rect(egui::Id::new(FRAME_RATE_AREA)));
-    let button = ctx.memory(|memory| memory.area_rect(egui::Id::new(FULLSCREEN_AREA)));
-    match (readout, button) {
-        // The readout stops clear of the button's column.
-        (Some(readout), Some(button)) if readout.right() + OVERLAY_GAP < button.left() => {
+fn overlay_button_top(ctx: &egui::Context, above: &str, id: &str) -> f32 {
+    let above = ctx.memory(|memory| memory.area_rect(egui::Id::new(above)));
+    let button = ctx.memory(|memory| memory.area_rect(egui::Id::new(id)));
+    match (above, button) {
+        // The area above stops clear of the button's column.
+        (Some(above), Some(button)) if above.right() + OVERLAY_GAP < button.left() => {
             OVERLAY_MARGIN
         }
-        // The readout reaches into the button's corner: stack beneath it.
-        (Some(readout), _) => readout.bottom() + OVERLAY_GAP,
+        // The area above reaches into the button's corner: stack beneath it.
+        (Some(above), _) => above.bottom() + OVERLAY_GAP,
         // The button is the first thing drawn; the top row is where it belongs.
         (None, _) => OVERLAY_MARGIN,
     }
+}
+
+/// Draw a button that owns a corner, and report whether it was pressed.
+///
+/// `id` names the area, so the button can be read back — the docs link is
+/// placed under the fullscreen button by measuring it — and so two corners can
+/// be tested apart. A free function rather than the body of a panel's closure
+/// so a test can drive it against a bare [`egui::Context`].
+fn corner_button(ui: &mut egui::Ui, id: &str, top: f32, label: egui::RichText) -> bool {
+    egui::Area::new(egui::Id::new(id))
+        .anchor(egui::Align2::RIGHT_TOP, [-OVERLAY_MARGIN, top])
+        // A corner button is an overlay, not a window: a scene panel dragged
+        // over the corner must not cover it, so it sits in the layer above the
+        // one windows are drawn in.
+        .order(egui::Order::Foreground)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style())
+                .show(ui, |ui| {
+                    ui.style_mut().spacing.button_padding = OVERLAY_BUTTON_PADDING;
+                    ui.add(
+                        egui::Button::new(label)
+                            .wrap_mode(egui::TextWrapMode::Extend)
+                            .min_size(OVERLAY_BUTTON_MIN_SIZE),
+                    )
+                    .clicked()
+                })
+                .inner
+        })
+        .inner
 }
 
 /// Draw the fullscreen button, labelled for what pressing it does, and report
@@ -2150,47 +2403,41 @@ fn fullscreen_button_top(ctx: &egui::Context) -> f32 {
 /// anchored area keeps to itself, and the button is only drawn on top of the
 /// readout's line when the two would otherwise collide.
 ///
-/// A free function rather than the body of the panel's closure so a test can
-/// drive it against a bare [`egui::Context`], in both states, without a world
-/// or a window.
+/// The glyphs are drawn from the default font — ⛶ to enter and ⏏ to leave —
+/// with a word beside each so the meaning does not rest on a symbol alone. Both
+/// labels are laid out to extend rather than wrap: the exit label is the wider
+/// of the two, and an anchored area lays its contents out against the size it
+/// remembered from the previous pass, so switching to it would otherwise break
+/// it across two lines in the narrower area the enter label had established.
 fn fullscreen_button(ui: &mut egui::Ui, active: bool) -> bool {
     let label = if active {
         "⏏ Exit fullscreen"
     } else {
         "⛶ Fullscreen"
     };
-    let label = egui::RichText::new(label).monospace();
-    egui::Area::new(egui::Id::new(FULLSCREEN_AREA))
-        .anchor(
-            egui::Align2::RIGHT_TOP,
-            [-OVERLAY_MARGIN, fullscreen_button_top(ui.ctx())],
-        )
-        // The button is an overlay, not a window: a scene panel dragged over
-        // the corner must not cover it, so it sits in the layer above the one
-        // windows are drawn in.
-        .order(egui::Order::Foreground)
-        .show(ui.ctx(), |ui| {
-            egui::Frame::popup(ui.style())
-                .show(ui, |ui| {
-                    // The glyphs are drawn from the default font — ⛶ to enter and
-                    // ⏏ to leave — with a word beside each so the meaning does not
-                    // rest on a symbol alone. Both labels are laid out to extend
-                    // rather than wrap: the exit label is the wider of the two, and
-                    // an anchored area lays its contents out against the size it
-                    // remembered from the previous pass, so switching to it would
-                    // otherwise break it across two lines in the narrower area the
-                    // enter label had established.
-                    ui.style_mut().spacing.button_padding = FULLSCREEN_BUTTON_PADDING;
-                    ui.add(
-                        egui::Button::new(label)
-                            .wrap_mode(egui::TextWrapMode::Extend)
-                            .min_size(FULLSCREEN_BUTTON_MIN_SIZE),
-                    )
-                    .clicked()
-                })
-                .inner
-        })
-        .inner
+    let top = overlay_button_top(ui.ctx(), FRAME_RATE_AREA, FULLSCREEN_AREA);
+    corner_button(
+        ui,
+        FULLSCREEN_AREA,
+        top,
+        egui::RichText::new(label).monospace(),
+    )
+}
+
+/// Draw the API-docs link under the fullscreen button, and report whether it
+/// was pressed.
+///
+/// The click becomes egui's own URL command, which the UI source publishes in
+/// the world for the frame loop to serve, rather than opening the page here: a
+/// panel runs while the world is borrowed and cannot wait on one.
+fn api_docs_button(ui: &mut egui::Ui) -> bool {
+    let top = overlay_button_top(ui.ctx(), FULLSCREEN_AREA, API_DOCS_AREA);
+    let label = egui::RichText::new(API_DOCS_LABEL).monospace();
+    let clicked = corner_button(ui, API_DOCS_AREA, top, label);
+    if clicked {
+        ui.ctx().open_url(egui::OpenUrl::same_tab(API_DOCS_URL));
+    }
+    clicked
 }
 
 /// The region a scene's content is drawn into and the size its camera is built
@@ -2234,10 +2481,80 @@ fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        FRAME_RATE_AREA, FULLSCREEN_AREA, FULLSCREEN_BUTTON_MIN_SIZE, FrameRate, GPU_INFO_AREA,
-        GPU_INFO_MAX_WIDTH, GpuInfo, OVERLAY_MARGIN, egui, frame_rate_readout, fullscreen_button,
-        gpu_info_panel, letterbox, limit_rows, tick,
+        API_DOCS_AREA, API_DOCS_URL, BlitEntity, FRAME_RATE_AREA, FULLSCREEN_AREA, FrameRate,
+        GPU_INFO_AREA, GPU_INFO_MIN_WIDTH, GpuInfo, InitialScene, OFFSCREEN_FORMAT,
+        OVERLAY_BUTTON_MIN_SIZE, OVERLAY_MARGIN, Offscreen, SceneEntity, api_docs_button, egui,
+        frame_rate_readout, fullscreen_button, gpu_info_panel, letterbox, limit_rows, scenes,
+        switch_scene, tick,
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    use unlit_wgpu_test_util::{Ctx, block_on};
+    #[cfg(not(target_arch = "wasm32"))]
+    use unlit3d::prelude::{World, create_color_target};
+
+    /// A scene switch drops the MCP run's offscreen target and the blit world
+    /// built around the scene it replaced.
+    ///
+    /// The offscreen texture received the dying scene's frames and the blit
+    /// world sampled it, so both are keyed to that scene. Left behind, the
+    /// rebuilt scene would render through a renderer that never bound a target
+    /// of its own, and the next MCP frame would panic for want of an
+    /// attachment.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_scene_switch_drops_the_mcp_offscreen_target_and_its_blit_world() {
+        let ctx = block_on(Ctx::headless());
+        let mut world = World::new();
+
+        let old_blit = world.spawn_empty();
+        let old_scene = world.spawn_empty();
+        let texture = create_color_target(&ctx.device, OFFSCREEN_FORMAT, 8, 8);
+        let app = world.spawn((
+            InitialScene(scenes::default()),
+            Offscreen(Some(texture)),
+            BlitEntity(Some(old_blit)),
+            SceneEntity(Some(old_scene)),
+        ));
+
+        let next = scenes::by_id("ui_only").expect("the example ships a UI-only scene");
+        switch_scene(&world, app, next);
+        world.apply();
+
+        assert!(
+            world
+                .get::<Offscreen>(app)
+                .expect("the app keeps its slots")
+                .0
+                .is_none(),
+            "the offscreen target went with the scene that filled it"
+        );
+        let blit = world
+            .get::<BlitEntity>(app)
+            .expect("the app keeps its slots");
+        assert!(blit.0.is_none(), "the blit world went with the scene");
+        assert!(!world.contains(old_blit), "the blit world was despawned");
+        assert!(!world.contains(old_scene), "the old scene was despawned");
+        assert_eq!(
+            world
+                .get::<InitialScene>(app)
+                .expect("the app keeps its initial scene")
+                .0
+                .id,
+            "ui_only"
+        );
+    }
+
+    /// An egui input for a `screen`-point screen carrying `events`.
+    fn raw_input(screen: (f32, f32), events: Vec<egui::Event>) -> egui::RawInput {
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(screen.0, screen.1),
+            )),
+            events,
+            ..Default::default()
+        }
+    }
 
     /// Run one egui pass over a `screen`-point screen with `events`, drawing the
     /// fullscreen button in the state `active`, and report what it drew.
@@ -2373,6 +2690,34 @@ mod tests {
             .collect()
     }
 
+    /// Run one egui pass over a `screen`-point screen, drawing the GPU-info
+    /// panel for `info`, and report every galley it laid out with the number of
+    /// rows it was broken into. A fact on a single row is a fact the panel was
+    /// wide enough to keep on one line.
+    fn gpu_info_rows(
+        ctx: &egui::Context,
+        screen: (f32, f32),
+        info: &GpuInfo,
+        initial: Option<egui::Rect>,
+    ) -> Vec<(String, usize)> {
+        let mut output = ctx.run_ui(raw_input(screen, Vec::new()), |ui| {
+            gpu_info_panel(ui, info, initial);
+        });
+        // egui panics if a texture delta is dropped unapplied; a real frame
+        // hands it to the integration, and this test discards it.
+        output.textures_delta.clear();
+        output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => {
+                    Some((text.galley.text().to_owned(), text.galley.rows.len()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     #[test]
     fn the_limit_list_comes_from_the_limits_own_description() {
         // The labels are wgpu's own field names, so the test names the ones the
@@ -2433,10 +2778,56 @@ mod tests {
                 "at {screen:?} the panel {panel:?} runs off the right"
             );
             assert!(
-                panel.width() <= GPU_INFO_MAX_WIDTH + 16.0,
-                "at {screen:?} the panel {panel:?} grew past its cap"
+                panel.width() >= GPU_INFO_MIN_WIDTH,
+                "at {screen:?} the panel {panel:?} is narrower than its floor"
             );
         }
+    }
+
+    #[test]
+    fn the_gpu_info_panel_opens_wide_enough_for_its_facts() {
+        // A limit name is the device's own, and some run past fifty characters.
+        // A panel that opened at a fixed width would wrap them, so every fact
+        // has to come out on one row.
+        let info = sample_gpu_info();
+        for screen in [(1280.0, 577.0), (800.0, 600.0), (390.0, 844.0)] {
+            let ctx = egui::Context::default();
+            // Two passes: the first measures the content, the second lays the
+            // window out against that measurement.
+            let _ = gpu_info_rows(&ctx, screen, &info, None);
+            for (text, rows) in gpu_info_rows(&ctx, screen, &info, None) {
+                assert_eq!(
+                    rows, 1,
+                    "at {screen:?} the panel wrapped {text:?} onto {rows} rows"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_gpu_info_panel_wraps_a_fact_wider_than_the_window() {
+        // The panel's opening width comes from its facts, so a fact wider than
+        // the window cannot be kept on one row: it is wrapped inside the window
+        // instead of the panel hanging off the edge.
+        let mut info = sample_gpu_info();
+        info.limits
+            .push(("max_long_limit_name".to_owned(), "x".repeat(200)));
+        let screen = (800.0, 600.0);
+        let ctx = egui::Context::default();
+        let _ = gpu_info_rows(&ctx, screen, &info, None);
+        let lines = gpu_info_rows(&ctx, screen, &info, None);
+
+        let panel = area_rect(&ctx, GPU_INFO_AREA);
+        assert!(
+            panel.right() <= screen.0,
+            "the panel {panel:?} runs off the right of the {screen:?} screen"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|(text, rows)| text.starts_with("max_long_limit_name") && *rows > 1),
+            "the oversized fact was not wrapped inside the window"
+        );
     }
 
     #[test]
@@ -2569,53 +2960,65 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_fullscreen_button_does_not_cover_the_frame_rate_readout() {
-        // The readout sits centred at the top and the button anchors to the
-        // top-right corner; on a window wide enough for both they share the top
-        // row, and on a narrow one — a portrait phone — the button drops to the
-        // row under the readout rather than hide the end of the reading.
-        for screen in [
-            (1280.0, 577.0),
-            (800.0, 600.0),
-            (390.0, 844.0),
-            (320.0, 480.0),
-        ] {
-            let ctx = egui::Context::default();
-            let text = "60.0 fps · 16.7 ms";
-            // Three passes: an anchored area lays out against the size it
-            // remembered from the previous pass, and the button's top depends
-            // on the readout's remembered rectangle, so the layout only
-            // settles once both have a geometry to remember.
-            for _ in 0..3 {
-                let input = egui::RawInput {
-                    screen_rect: Some(egui::Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::Vec2::new(screen.0, screen.1),
-                    )),
-                    ..Default::default()
-                };
-                let mut output = ctx.run_ui(input, |ui| {
-                    frame_rate_readout(ui, text);
-                    fullscreen_button(ui, false);
-                });
-                output.textures_delta.clear();
-            }
+    /// The screens the corner overlays are laid out on: wide enough for all
+    /// three to share a row, and narrow ones — a portrait phone — where they
+    /// have to stack.
+    const OVERLAY_SCREENS: [(f32, f32); 4] = [
+        (1280.0, 577.0),
+        (800.0, 600.0),
+        (390.0, 844.0),
+        (320.0, 480.0),
+    ];
 
-            let readout = ctx.memory(|memory| {
-                memory
-                    .area_rect(egui::Id::new(FRAME_RATE_AREA))
-                    .expect("the readout was drawn")
+    /// Lay the three corner overlays out on `screen` until their anchored
+    /// positions settle, and return their rectangles.
+    ///
+    /// Each of them anchors against what the previous pass remembered, so one
+    /// pass proves nothing: the layout is only settled once every area has a
+    /// geometry for the next one to read.
+    fn corner_rects(
+        ctx: &egui::Context,
+        screen: (f32, f32),
+    ) -> (egui::Rect, egui::Rect, egui::Rect) {
+        let text = "60.0 fps · 16.7 ms";
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::Vec2::new(screen.0, screen.1),
+                )),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                frame_rate_readout(ui, text);
+                fullscreen_button(ui, false);
+                api_docs_button(ui);
             });
-            let button = ctx.memory(|memory| {
-                memory
-                    .area_rect(egui::Id::new(FULLSCREEN_AREA))
-                    .expect("the button was drawn")
-            });
-            assert!(
-                !readout.intersects(button),
-                "at {screen:?} the readout {readout:?} and the button {button:?} share screen space"
-            );
+            output.textures_delta.clear();
+        }
+        (
+            area_rect(ctx, FRAME_RATE_AREA),
+            area_rect(ctx, FULLSCREEN_AREA),
+            area_rect(ctx, API_DOCS_AREA),
+        )
+    }
+
+    #[test]
+    fn the_corner_overlays_do_not_cover_each_other() {
+        // The readout sits centred at the top, the fullscreen button anchors to
+        // the top-right corner and the docs link under it. On a window wide
+        // enough for them they share the top row, and on a narrow one — a
+        // portrait phone — the button drops under the readout rather than hide
+        // the end of the reading. The link then follows the button down.
+        for screen in OVERLAY_SCREENS {
+            let ctx = egui::Context::default();
+            let (readout, button, docs) = corner_rects(&ctx, screen);
+            for (first, second) in [(readout, button), (readout, docs), (button, docs)] {
+                assert!(
+                    !first.intersects(second),
+                    "at {screen:?} {first:?} and {second:?} share screen space"
+                );
+            }
 
             // The readout is centred, its top a margin from the window's top.
             assert!(
@@ -2627,18 +3030,25 @@ mod tests {
                 "at {screen:?} the readout {readout:?} does not keep the top margin"
             );
 
-            // The button keeps the margin from the right edge and stays on screen.
+            // Both corner buttons keep the margin from the right edge and stay
+            // on screen, the link under the button.
+            for (name, rect) in [("button", button), ("docs", docs)] {
+                assert!(
+                    (screen.0 - rect.right() - OVERLAY_MARGIN).abs() < 1.0,
+                    "at {screen:?} the {name} {rect:?} does not keep the right margin"
+                );
+                assert!(
+                    rect.bottom() <= screen.1,
+                    "at {screen:?} the {name} {rect:?} runs off the bottom"
+                );
+            }
             assert!(
-                (screen.0 - button.right() - OVERLAY_MARGIN).abs() < 1.0,
-                "at {screen:?} the button {button:?} does not keep the right margin"
-            );
-            assert!(
-                button.bottom() <= screen.1,
-                "at {screen:?} the button {button:?} runs off the bottom"
+                docs.top() >= button.bottom(),
+                "at {screen:?} the docs link {docs:?} is not under the button {button:?}"
             );
 
-            // Wide windows hold both on the top row; narrow ones stack the
-            // button under the readout.
+            // Wide windows hold the readout and the button on the top row;
+            // narrow ones stack the button under the readout.
             if screen.0 >= 800.0 {
                 assert!(
                     (button.top() - OVERLAY_MARGIN).abs() < 1.0,
@@ -2654,6 +3064,46 @@ mod tests {
     }
 
     #[test]
+    fn the_docs_button_asks_for_the_api_docs() {
+        // The docs link goes through egui's own URL command, which the UI
+        // source publishes in the world; nothing here opens a page.
+        let ctx = egui::Context::default();
+        let screen = (800.0, 600.0);
+        // The link is only under the button once a pass has settled both.
+        for _ in 0..2 {
+            let _ = corner_rects(&ctx, screen);
+        }
+        let (press, release) = tap(area_centre(&ctx, API_DOCS_AREA));
+
+        let mut output = ctx.run_ui(raw_input(screen, press), |ui| {
+            api_docs_button(ui);
+        });
+        assert!(
+            output.platform_output.commands.is_empty(),
+            "a press alone asks for nothing"
+        );
+        output.textures_delta.clear();
+
+        let mut output = ctx.run_ui(raw_input(screen, release), |ui| {
+            api_docs_button(ui);
+        });
+        let commands = std::mem::take(&mut output.platform_output.commands);
+        output.textures_delta.clear();
+        let opened: Vec<(String, bool)> = commands
+            .iter()
+            .filter_map(|command| match command {
+                egui::OutputCommand::OpenUrl(open) => Some((open.url.clone(), open.new_tab)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            opened,
+            vec![(API_DOCS_URL.to_owned(), false)],
+            "the release asks for the API docs in this tab"
+        );
+    }
+
+    #[test]
     fn the_fullscreen_button_is_at_least_a_touch_target() {
         // A control a phone has to be hit with a finger must not shrink to a
         // row of text: the button is grown to the declared minimum, including
@@ -2666,8 +3116,8 @@ mod tests {
                 }
                 let button = area_rect(&ctx, FULLSCREEN_AREA);
                 assert!(
-                    button.width() >= FULLSCREEN_BUTTON_MIN_SIZE.x
-                        && button.height() >= FULLSCREEN_BUTTON_MIN_SIZE.y,
+                    button.width() >= OVERLAY_BUTTON_MIN_SIZE.x
+                        && button.height() >= OVERLAY_BUTTON_MIN_SIZE.y,
                     "at {screen:?} {active} the button {button:?} is below the touch-target size"
                 );
             }

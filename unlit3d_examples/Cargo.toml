@@ -38,6 +38,8 @@ serde_json.workspace = true
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", features = ["gltf"] }
 web-time.workspace = true
+# A URL the UI asks to open is opened by this one call on every platform.
+webbrowser.workspace = true
 # The GPU-info panel reads the device's limits from their serde description,
 # so this is the one crate that needs wgpu to serialise them.
 wgpu = { workspace = true, features = ["serde"] }

@@ -62,6 +62,9 @@ web-sys = { version = "0.3.105", default-features = false }
 # `std::time::Instant` panics on `wasm32-unknown-unknown`; this reads the
 # browser's clock there and re-exports `std::time` on every other target.
 web-time = { version = "1.1.0", default-features = false }
+# Opening a URL the UI asked for: one call covers the desktop, Android and the
+# browser, so the example keeps no platform branch of its own for it.
+webbrowser = "1.2.4"
 wesl = { version = "0.5.0", default-features = false }
 wesl-core = { version = "0.1.0", default-features = false }
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12", "gles", "metal", "std", "vulkan", "web", "webgl", "webgpu", "wgsl"] }

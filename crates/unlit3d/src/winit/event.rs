@@ -44,7 +44,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::behaviour::{EventCallback, behaviour};
-use crate::input::distribute_input;
+use crate::input::{InputHandle, distribute_input};
 
 use super::builtin::{CreateWindowRequest, DisplayHandle, ExitRequest, Resumed, WinitWindow};
 
@@ -256,6 +256,15 @@ impl<U: 'static> WinitHost<U> {
         for attributes in requests {
             match event_loop.create_window(attributes) {
                 Ok(window) => {
+                    // A platform reports the scale factor only when it changes,
+                    // and a window is already laid out by then: record the one
+                    // it starts with, or nothing that needs logical points ever
+                    // learns it.
+                    if let Some((_, handle)) = self.world.query::<&InputHandle>().next() {
+                        handle
+                            .write()
+                            .set_scale_factor(window.scale_factor() as f32);
+                    }
                     self.world.spawn((WinitWindow(Arc::new(window)),));
                 }
                 Err(error) => {

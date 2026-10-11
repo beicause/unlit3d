@@ -1,17 +1,16 @@
-//! Presentation the browser can offer this example: the button that makes the
-//! canvas fullscreen, and the landscape lock that only fullscreen permits.
+//! Fullscreen: the button that takes the window fullscreen, and the landscape
+//! lock that only a browser permits.
 //!
 //! The example's content has a fixed aspect, so it reads best on a display of
 //! roughly that shape. A phone held upright shows it as a band across the
 //! middle of the screen, which is the case this module exists for: the button
-//! asks the browser to make the canvas fullscreen, and a device being held
-//! upright is then locked to landscape so the picture fills the display.
+//! takes the window fullscreen, and a browser then locks a device being held
+//! upright to landscape so the picture fills the display.
 //!
-//! Only the browser has a page to make fullscreen or a screen to lock, so
-//! everywhere else the capability is reported as absent and the frame loop
-//! draws no button. The click on that button is the gesture a browser accepts
-//! as permission to go fullscreen, and it stays available after the user leaves
-//! fullscreen, so the app can be put back into it as often as they ask.
+//! Every platform draws the button, because every platform has a window that
+//! can be made fullscreen. On Android winit has no fullscreen to offer, so the
+//! button is drawn but a press changes nothing: the activity already takes the
+//! screen over for itself.
 
 #[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
@@ -22,52 +21,19 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::JsValue;
-#[cfg(target_arch = "wasm32")]
-use winit::window::Fullscreen;
-use winit::window::Window;
+use winit::window::{Fullscreen, Window};
 
-/// Whether the page can take the canvas fullscreen.
-///
-/// The browser reports this for the document as a whole: it is false for a page
-/// that never had the API, and for one in an `iframe` without the `fullscreen`
-/// permission. No button is drawn when it is false, so a phone that cannot go
-/// fullscreen is not shown a control that could only fail.
-#[must_use]
-pub fn supported() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            return false;
-        };
-        document.fullscreen_enabled()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        false
-    }
-}
-
-/// Whether the document is fullscreen at this moment.
+/// Whether `window` is fullscreen at this moment.
 ///
 /// The button reads this every frame and labels itself for the action it would
 /// take. That matters most on a phone, where leaving fullscreen is otherwise
 /// only possible through the browser's own chrome, which a page cannot reach.
 #[must_use]
-pub fn active() -> bool {
-    #[cfg(target_arch = "wasm32")]
-    {
-        let Some(document) = web_sys::window().and_then(|window| window.document()) else {
-            return false;
-        };
-        document.fullscreen()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        false
-    }
+pub fn active(window: &Window) -> bool {
+    window.fullscreen().is_some()
 }
 
-/// Put `window` into or out of fullscreen, whichever the document is not.
+/// Put `window` into or out of fullscreen, whichever it is not.
 ///
 /// A browser grants this only to a page with a *transient activation*, and the
 /// click on the button is what provides one. The request leaves that click's
@@ -79,21 +45,20 @@ pub fn active() -> bool {
 /// turns the request down simply leaves the app windowed. Nothing is asked for
 /// while already fullscreen except to leave it, so the button cannot trap a
 /// user in a display they did not choose.
+///
+/// Android's winit backend logs and ignores the call, which is what leaves the
+/// button there a press that changes nothing.
 pub fn toggle(window: &Window) {
+    // Armed here rather than at start-up because the event it waits for is the
+    // one the request below is about to cause. Registering is idempotent, so
+    // every press after the first only flips the state.
     #[cfg(target_arch = "wasm32")]
-    {
-        // Armed here rather than at start-up because the event it waits for is
-        // the one the request below is about to cause. Registering is
-        // idempotent, so every press after the first only flips the state.
-        watch_fullscreen_change();
-        let fullscreen = match window.fullscreen() {
-            Some(_) => None,
-            None => Some(Fullscreen::Borderless(None)),
-        };
-        window.set_fullscreen(fullscreen);
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = window;
+    watch_fullscreen_change();
+    let fullscreen = match window.fullscreen() {
+        Some(_) => None,
+        None => Some(Fullscreen::Borderless(None)),
+    };
+    window.set_fullscreen(fullscreen);
 }
 
 /// Lock the screen to landscape while the document is fullscreen and the device

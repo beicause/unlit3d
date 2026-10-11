@@ -78,6 +78,9 @@ impl Server {
     }
 
     /// Call a tool and return its structured content.
+    ///
+    /// A tool that answers with content blocks instead — an image — returns
+    /// those blocks, so a caller reads them through [image_block].
     fn tool(&mut self, name: &str, arguments: Value) -> Value {
         self.try_tool(name, arguments)
             .unwrap_or_else(|| panic!("the tool {name} failed"))
@@ -110,12 +113,23 @@ impl Drop for Server {
     }
 }
 
-/// The base64 `data` of a structured image result, decoded.
-fn image_bytes(value: &Value) -> Vec<u8> {
-    assert_eq!(value["mime_type"], "image/png");
+/// The image content block of a tool result.
+fn image_block(result: &Value) -> &Value {
+    result["content"]
+        .as_array()
+        .expect("the result has content")
+        .iter()
+        .find(|block| block["type"] == "image")
+        .expect("the result carries an image content block")
+}
+
+/// The base64 `data` of a tool result's image content block, decoded.
+fn image_bytes(result: &Value) -> Vec<u8> {
+    let block = image_block(result);
+    assert_eq!(block["mimeType"], "image/png");
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
-        .decode(value["data"].as_str().expect("the image has data"))
+        .decode(block["data"].as_str().expect("the image has data"))
         .expect("the image data is base64")
 }
 
@@ -195,16 +209,23 @@ fn the_stdio_server_lists_its_tools_and_renders() {
         }),
     );
 
-    let shot = server.tool("screenshot", json!({}));
-    let (width, height) = (
-        shot["width"].as_u64().expect("the image has a width") as u32,
-        shot["height"].as_u64().expect("the image has a height") as u32,
+    // The screenshot answers with an MCP image content block, not JSON a
+    // client would have to base64-decode itself, and its size as structured
+    // content rather than text a caller would have to parse.
+    let shot = server.request(
+        "tools/call",
+        json!({ "name": "screenshot", "arguments": {} }),
     );
-    assert_eq!((width, height), (960, 720));
-
     let image = image::load_from_memory(&image_bytes(&shot))
         .expect("the screenshot is a PNG")
         .to_rgba8();
+    let (width, height) = image.dimensions();
+    assert_eq!((width, height), (960, 720));
+    assert_eq!(
+        shot["structuredContent"],
+        json!({ "height": 720, "width": 960 }),
+        "the result states the image size as structured content"
+    );
 
     // The corner is the clear colour, sRGB-encoded; the centre is the mesh.
     let corner = pixel(&image, 2, 2);

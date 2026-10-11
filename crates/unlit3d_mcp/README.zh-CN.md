@@ -73,7 +73,8 @@ world：承载 [`World`](unlit_ecs::World) 组件的宿主实体的 `u64` 位模
 **绘制**——`create_mesh`、`remove_mesh`、`render_frame`、`screenshot`、
 `load_gltf`。`create_mesh` 从位置（以及可选的 uv、颜色与索引）分配一个 unlit 网格，并
 生成绘制它的实体；`remove_mesh` 再把它释放。`render_frame` 画一帧，`screenshot` 画一帧
-并把离屏目标作为 base64 PNG 返回。
+并以 image content block 返回离屏目标（图像尺寸作为结构化内容），客户端因此直接渲染像素；
+`read_texture_as_image` 以同样方式作答。
 
 ## 库
 

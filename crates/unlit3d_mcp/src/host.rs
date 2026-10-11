@@ -4,8 +4,8 @@
 //! thread that owns it. The MCP transport, on the other hand, runs on a tokio
 //! thread. The two meet at a command channel: a tool builds a [Command] holding
 //! a closure and the handle of the world it should run against, the thread that
-//! owns that world resolves the handle and calls [dispatch], and the JSON
-//! result travels back on the command's reply channel.
+//! owns that world resolves the handle and calls [dispatch], and the [Output]
+//! travels back on the command's reply channel.
 //!
 //! Nothing here assumes how many worlds there are or what a world contains.
 //! ECS tools take the world alone; GPU tools take the entity handles they need
@@ -36,17 +36,44 @@ use unlit3d::reflect;
 /// The format of the offscreen target the standalone host renders into.
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
+/// What a finished job produced.
+///
+/// Most tools answer with structured JSON that the transport serialises
+/// through the value's reflection. Image tools answer with a PNG that the
+/// transport sends as an MCP image content block, so a client renders the
+/// picture instead of decoding JSON.
+pub enum Output {
+    /// A structured JSON result.
+    Json(Value),
+    /// An encoded PNG.
+    Image(EncodedImage),
+}
+
+impl From<Value> for Output {
+    fn from(value: Value) -> Self {
+        Self::Json(value)
+    }
+}
+
+/// A PNG the transport sends as an image content block.
+pub struct EncodedImage {
+    /// The PNG bytes, base64-encoded.
+    pub data: String,
+    /// The image's metadata — its size — as structured JSON.
+    pub structured: Value,
+}
+
 /// A unit of work for the thread that owns a world.
 ///
 /// The closure captures plain data (tool arguments) and runs with exclusive
 /// access to one world. It must be [Send] because it travels across the
 /// channel; the world it touches never does.
-pub type Job = Box<dyn FnOnce(&mut World) -> Result<Value, String> + Send + 'static>;
+pub type Job = Box<dyn FnOnce(&mut World) -> Result<Output, String> + Send + 'static>;
 
 /// A job together with the channel its result is sent back on.
 pub struct Command {
     job: Job,
-    reply: async_channel::Sender<Result<Value, String>>,
+    reply: async_channel::Sender<Result<Output, String>>,
     /// The host entity whose world the job runs against; `None` is the world
     /// that receives the command itself.
     world: Option<Entity>,
@@ -55,8 +82,8 @@ pub struct Command {
 impl Command {
     /// Build a command and the receiver its result will arrive on.
     pub fn new(
-        job: impl FnOnce(&mut World) -> Result<Value, String> + Send + 'static,
-    ) -> (Self, async_channel::Receiver<Result<Value, String>>) {
+        job: impl FnOnce(&mut World) -> Result<Output, String> + Send + 'static,
+    ) -> (Self, async_channel::Receiver<Result<Output, String>>) {
         let (reply, receiver) = async_channel::bounded(1);
         (
             Self {
@@ -269,19 +296,6 @@ struct BufferRead {
     data: String,
 }
 
-/// An encoded image.
-#[derive(facet::Facet)]
-struct ImageValue {
-    /// The image's media type.
-    mime_type: &'static str,
-    /// The image's width in pixels.
-    width: u32,
-    /// The image's height in pixels.
-    height: u32,
-    /// The image bytes, base64-encoded.
-    data: String,
-}
-
 /// A high-level description of the world.
 pub fn world_summary(world: &World) -> Result<Value, String> {
     to_value(&world.info())
@@ -435,7 +449,7 @@ pub fn read_texture_as_image(
     world: &World,
     context: Option<Entity>,
     id: ResId,
-) -> Result<Value, String> {
+) -> Result<Output, String> {
     let context = render_context(world, context)?;
     let texture = {
         let graph = graph_of(world, context)?;
@@ -606,7 +620,7 @@ pub fn screenshot(
     world: &mut World,
     renderer: Option<Entity>,
     target: Option<ResId>,
-) -> Result<Value, String> {
+) -> Result<Output, String> {
     let context = render_context(world, None)?;
     let texture = screenshot_target(world, context, target)?;
     render_frame(world, renderer)?;
@@ -732,14 +746,21 @@ fn default_camera(size: (u32, u32)) -> Camera {
     }
 }
 
-/// An image result as JSON.
-fn image_value(png: &[u8], width: u32, height: u32) -> Result<Value, String> {
-    to_value(&ImageValue {
-        mime_type: "image/png",
-        width,
-        height,
+/// An image's size, as structured output.
+#[derive(facet::Facet)]
+struct ImageSize {
+    /// The image's width in pixels.
+    width: u32,
+    /// The image's height in pixels.
+    height: u32,
+}
+
+/// A PNG result the transport sends as an image content block.
+fn image_value(png: &[u8], width: u32, height: u32) -> Result<Output, String> {
+    Ok(Output::Image(EncodedImage {
         data: base64::engine::general_purpose::STANDARD.encode(png),
-    })
+        structured: to_value(&ImageSize { width, height })?,
+    }))
 }
 
 /// Encode raw RGBA bytes as a PNG.

@@ -235,6 +235,62 @@ impl InputCapture {
     }
 }
 
+/// A URL a frame source asked the host to open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenUrl {
+    /// The URL to open.
+    pub url: String,
+    /// Whether to open it in a new tab rather than the current one. Only a
+    /// browser draws that distinction; anywhere else a URL opens however that
+    /// platform opens one.
+    pub new_tab: bool,
+}
+
+/// The URLs the frame's sources asked to open, queued for the host.
+///
+/// A source cannot open a browser tab itself: it builds the frame while the
+/// world is borrowed, and has no host to ask. It queues the request here
+/// instead, and the host drains it after the frame and opens each URL where it
+/// has the means to — see [`drain_open_urls`]. The frame context spawns it, so
+/// a world that draws a frame has one.
+#[derive(Debug, Default)]
+pub struct OpenUrls(Vec<OpenUrl>);
+
+impl OpenUrls {
+    /// Queue a URL to open.
+    pub fn push(&mut self, url: impl Into<String>, new_tab: bool) {
+        self.0.push(OpenUrl {
+            url: url.into(),
+            new_tab,
+        });
+    }
+
+    /// Replace everything queued with `urls`.
+    ///
+    /// A source that publishes the requests of a frame in one go uses this
+    /// rather than pushing, so a frame's requests never mix with a stale
+    /// queue.
+    pub fn replace(&mut self, urls: impl IntoIterator<Item = OpenUrl>) {
+        self.0.clear();
+        self.0.extend(urls);
+    }
+}
+
+/// Take the URLs the frame's sources asked the host to open.
+///
+/// The host calls this after the frame. Nothing is intercepted automatically,
+/// so a caller decides what opening a URL means where it runs: a browser tab
+/// on the web, and nothing at all where there is no browser. A world without a
+/// queue — one built without [`spawn_context`] — yields none.
+pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
+    let Some(entity) = world.query::<&OpenUrls>().next().map(|(e, _)| e) else {
+        return Vec::new();
+    };
+    world
+        .with_mut::<OpenUrls, _>(entity, |urls| std::mem::take(&mut urls.0))
+        .unwrap_or_default()
+}
+
 /// The frame's target, or `None` before any frame loop wrote one.
 ///
 /// A source calls this in
@@ -499,6 +555,9 @@ pub fn spawn_context(
     // What the frame's sources claimed of its input, written by whichever
     // source consumes input and read by the caller's own logic.
     world.spawn((InputCapture::default(),));
+    // The URLs the frame's sources asked to open, drained by the host after
+    // the frame.
+    world.spawn((OpenUrls::default(),));
     context
 }
 

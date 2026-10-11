@@ -101,7 +101,9 @@ a user.
 `load_gltf`. `create_mesh` allocates an unlit mesh from positions, optional uvs,
 colors and indices, and spawns the entity that draws it; `remove_mesh` releases
 it again. `render_frame` draws one frame, and `screenshot` draws one and returns
-the offscreen target as a base64 PNG.
+the offscreen target as an image content block, so a client renders the pixels
+directly, with the image size as structured content; `read_texture_as_image`
+answers the same way.
 
 ## Library
 

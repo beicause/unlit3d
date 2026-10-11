@@ -1,9 +1,10 @@
 //! The MCP service.
 //!
 //! Each tool turns its JSON arguments into a [Command] and sends it to the
-//! thread that owns the world. The tool then awaits the JSON result. A tool
-//! that fails returns a tool-level error result rather than a protocol error,
-//! so a model sees the message instead of a transport failure.
+//! thread that owns the world. The tool then awaits the result: structured JSON
+//! for most tools, an image content block for the ones that read pixels back. A
+//! tool that fails returns a tool-level error result rather than a protocol
+//! error, so a model sees the message instead of a transport failure.
 //!
 //! Every tool names the world it should run against: `world` is the bits of a
 //! host entity carrying a [World](unlit_ecs::World) component, or `None` for
@@ -23,10 +24,10 @@ use unlit_ecs::Entity;
 use unlit_wgpu::resources::ResId;
 
 use crate::host::{
-    Command, create_mesh, despawn_entity, get_component, get_entity, graph_maintain, graph_summary,
-    input_state, list_archetypes, list_components, list_entities, list_resources, load_gltf,
-    read_buffer, read_texture_as_image, remove_mesh, render_frame, resource_dependencies,
-    screenshot, send_input, set_component, spawn_entity, world_summary,
+    Command, Output, create_mesh, despawn_entity, get_component, get_entity, graph_maintain,
+    graph_summary, input_state, list_archetypes, list_components, list_entities, list_resources,
+    load_gltf, read_buffer, read_texture_as_image, remove_mesh, render_frame,
+    resource_dependencies, screenshot, send_input, set_component, spawn_entity, world_summary,
 };
 
 /// An entity handle from the `u64` bits a JSON argument carries.
@@ -55,11 +56,11 @@ impl McpServer {
         }
     }
 
-    /// Send a job to the world `world` names and await its JSON result.
-    async fn command(
+    /// Send a job to the world `world` names and await its output.
+    async fn run(
         &self,
         world: Option<Entity>,
-        job: impl FnOnce(&mut unlit_ecs::World) -> Result<Value, String> + Send + 'static,
+        job: impl FnOnce(&mut unlit_ecs::World) -> Result<Output, String> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
         let (mut command, receiver) = Command::new(job);
         if let Some(entity) = world {
@@ -70,13 +71,32 @@ impl McpServer {
             .await
             .map_err(|_| ErrorData::internal_error("the render thread is gone", None))?;
         match receiver.recv().await {
-            Ok(Ok(value)) => Ok(CallToolResult::structured(value)),
+            Ok(Ok(Output::Json(value))) => Ok(CallToolResult::structured(value)),
+            // An image answers with an MCP image content block so the client
+            // renders the pixels, and carries its size as structured content so
+            // a client reads it as data instead of from the picture.
+            Ok(Ok(Output::Image(image))) => {
+                let mut result =
+                    CallToolResult::success(vec![ContentBlock::image(image.data, "image/png")]);
+                result.structured_content = Some(image.structured);
+                Ok(result)
+            }
             Ok(Err(message)) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
             Err(_) => Err(ErrorData::internal_error(
                 "the render thread dropped the command",
                 None,
             )),
         }
+    }
+
+    /// Send a job to the world `world` names and await its JSON result.
+    async fn command(
+        &self,
+        world: Option<Entity>,
+        job: impl FnOnce(&mut unlit_ecs::World) -> Result<Value, String> + Send + 'static,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run(world, move |world| job(world).map(Output::from))
+            .await
     }
 }
 
@@ -301,7 +321,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<HandleArg>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.run(args.world.map(entity), move |world| {
             read_texture_as_image(world, args.context.map(entity), resource_id(args.id))
         })
         .await
@@ -392,7 +412,7 @@ impl McpServer {
         &self,
         Parameters(args): Parameters<Screenshot>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.command(args.world.map(entity), move |world| {
+        self.run(args.world.map(entity), move |world| {
             screenshot(
                 world,
                 args.renderer.map(entity),
