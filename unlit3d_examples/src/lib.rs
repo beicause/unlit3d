@@ -2481,11 +2481,15 @@ fn tick(clock: &mut f32, step: f32, delta_time: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        API_DOCS_AREA, API_DOCS_URL, BlitEntity, FRAME_RATE_AREA, FULLSCREEN_AREA, FrameRate,
-        GPU_INFO_AREA, GPU_INFO_MIN_WIDTH, GpuInfo, InitialScene, OFFSCREEN_FORMAT,
-        OVERLAY_BUTTON_MIN_SIZE, OVERLAY_MARGIN, Offscreen, SceneEntity, api_docs_button, egui,
-        frame_rate_readout, fullscreen_button, gpu_info_panel, letterbox, limit_rows, scenes,
-        switch_scene, tick,
+        API_DOCS_AREA, API_DOCS_URL, FRAME_RATE_AREA, FULLSCREEN_AREA, FrameRate, GPU_INFO_AREA,
+        GPU_INFO_MIN_WIDTH, GpuInfo, OVERLAY_BUTTON_MIN_SIZE, OVERLAY_MARGIN, api_docs_button,
+        egui, frame_rate_readout, fullscreen_button, gpu_info_panel, letterbox, limit_rows, tick,
+    };
+    // The scene-switch test below drives the app's own slots through a headless
+    // device, so it is host-only — and these are the names only it uses.
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::{
+        BlitEntity, InitialScene, OFFSCREEN_FORMAT, Offscreen, SceneEntity, scenes, switch_scene,
     };
     #[cfg(not(target_arch = "wasm32"))]
     use unlit_wgpu_test_util::{Ctx, block_on};
