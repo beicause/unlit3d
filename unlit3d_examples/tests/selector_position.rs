@@ -1,10 +1,12 @@
-//! The floating panels keep their dragged rectangles across a scene switch.
+//! The floating panels keep their dragged rectangles across a scene switch and
+//! follow the corners they belong to when the screen changes shape.
 //!
 //! A scene switch rebuilds the whole scene — world, renderer, and the egui
 //! context the window's position lives in — so the shell reads each window's
 //! last rectangle before dropping the old scene and hands it to the new one as
 //! its opening position. These tests pin both halves of that hand-off, for the
-//! scene selector and for the GPU-info panel.
+//! scene selector and for the GPU-info panel, and the re-seating that a rotated
+//! frame asks of a corner panel.
 //!
 //! The file uses the harness `gpu_scenes.rs` uses, so the same binary runs
 //! natively and as the module a wasm test page loads.
@@ -103,6 +105,38 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
             "the rebuilt selector must keep the position the first scene left"
         );
     }
+}
+
+async fn the_selector_re_seats_in_its_corner_when_the_screen_changes_shape() {
+    let ctx = Ctx::headless().await;
+    let (mut world, mut scene) = scene(&ctx, (960, 720), None);
+    bind(&mut world, &mut scene, &ctx, (960, 720));
+    for _ in 0..2 {
+        scene.advance(&mut world, FIXED_STEP);
+        scene.render(&world);
+        scene.end_frame(&mut world);
+    }
+
+    // How far the selector's bottom-right corner sits from the frame's, which
+    // the panel keeps as its margin from the screen edge.
+    let opened = rect(&world).expect("the selector is laid out");
+    let margin = egui::vec2(960.0, 720.0) - opened.max.to_vec2();
+
+    // Rotating a phone swaps the frame's width and height; rebinding the
+    // offscreen target at the new size is what a window Resized does to the
+    // size egui lays its panels out against.
+    bind(&mut world, &mut scene, &ctx, (720, 960));
+    for _ in 0..2 {
+        scene.advance(&mut world, FIXED_STEP);
+        scene.render(&world);
+        scene.end_frame(&mut world);
+    }
+
+    let rotated = rect(&world).expect("the selector is laid out");
+    assert!(
+        (rotated.max.to_vec2() - (egui::vec2(720.0, 960.0) - margin)).length() < 1.0,
+        "the selector left its corner when the screen changed shape: {rotated:?}"
+    );
 }
 
 fn rect(world: &World) -> Option<egui::Rect> {
@@ -219,6 +253,7 @@ gpu_tests! {
     selector_window_opens_where_the_previous_scene_left_it,
     the_gpu_info_panel_opens_where_the_previous_scene_left_it,
     a_switched_scene_opens_where_the_selector_was_left,
+    the_selector_re_seats_in_its_corner_when_the_screen_changes_shape,
 }
 
 gpu_test_main!(all_tests());

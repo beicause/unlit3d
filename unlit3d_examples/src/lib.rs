@@ -1731,6 +1731,55 @@ const SELECTOR_WINDOW: &str = "scenes";
 /// the frame. A window a user has dragged keeps the width it was dragged to.
 const SELECTOR_DEFAULT_WIDTH: f32 = 220.0;
 
+/// Shift a movable window by however far the screen corner it belongs to moved
+/// when the screen changed shape.
+///
+/// egui applies a window's opening position on the pass that first shows it and
+/// afterwards only clamps the remembered rectangle into the screen, so a window
+/// seeded into a corner keeps its old spot when the display rotates and the
+/// frame becomes a different shape. Shifting it by the corner's movement keeps
+/// its distance from that corner — including a distance the user dragged it to —
+/// instead of leaving it stranded off its edge.
+///
+/// The window is anchored to the corner `pivot` names, so its pivot position
+/// (the point of the window sitting on that corner) is what moves. The screen
+/// the last call saw is remembered under `id`, so the shift is computed once
+/// per change and the returned position is applied with
+/// [`egui::Window::current_pos`] for that one pass; every other pass returns
+/// `None` and the window keeps the position egui remembers for it.
+fn follow_screen_corner(
+    ctx: &egui::Context,
+    id: egui::Id,
+    pivot: egui::Align2,
+) -> Option<egui::Pos2> {
+    let screen = ctx.content_rect();
+    let screen_key = id.with("screen");
+    let previous = ctx.data(|data| data.get_temp::<egui::Rect>(screen_key));
+    ctx.data_mut(|data| {
+        data.insert_temp(screen_key, screen);
+    });
+    let previous = previous?;
+    if previous == screen {
+        return None;
+    }
+    // The window has to have been laid out for its position to be known; on its
+    // first pass it is seeded by the corner it belongs to, which is where this
+    // pass would move it anyway.
+    let rect = ctx.memory(|memory| memory.area_rect(id))?;
+    let factor = pivot_factor(pivot);
+    let moved = screen.lerp_inside(factor) - previous.lerp_inside(factor);
+    Some(rect.lerp_inside(factor) + moved)
+}
+
+/// The fraction of a window's size at which its pivot sits, per axis.
+///
+/// The pivot of a window seeded into a corner is that corner, so this is the
+/// point of the window — and the matching point of the screen — that stays
+/// fixed as the window's size changes.
+fn pivot_factor(pivot: egui::Align2) -> egui::Vec2 {
+    egui::vec2(pivot.x().to_factor(), pivot.y().to_factor())
+}
+
 /// Where the selector window opens when no position was carried over — the
 /// first build of a session.
 ///
@@ -1757,20 +1806,32 @@ fn mount_selector(
     world.spawn((UiPanel::new(move |world, _entity, ui| {
         // The id is set explicitly: `Window::new` derives it from the title's
         // `Atoms` text, whose hash differs from a plain string id, so the
-        // shell's read of the remembered rect below would never match.
-        let window = egui::Window::new(SELECTOR_WINDOW).id(egui::Id::new(SELECTOR_WINDOW));
-        // A fresh window is seeded by its bottom-right corner, so that corner
-        // stays put while the first layout measures the content. A carried
-        // rectangle is seeded by its left-top, and its size is given too: the
-        // first frame then lays the window out at the size it last had, so the
-        // constrain step cannot drag a window whose unmeasured default size
-        // would overflow the screen.
+        // shell's read of the remembered rect would never match.
+        let id = egui::Id::new(SELECTOR_WINDOW);
+        // The window belongs to the bottom-right corner. A fresh one is seeded
+        // by that corner, so the corner stays put while the first layout
+        // measures the content; a carried rectangle is seeded by its own
+        // bottom-right and given its size, so the first frame lays it out
+        // exactly where the previous scene left it. `follow_screen_corner`
+        // keeps the corner when the screen changes shape.
+        let pivot = egui::Align2::RIGHT_BOTTOM;
+        let window = egui::Window::new(SELECTOR_WINDOW).id(id).pivot(pivot);
         let window = match initial {
-            Some(rect) => window.default_pos(rect.min).default_size(rect.size()),
+            Some(rect) => window
+                .default_pos(rect.lerp_inside(pivot_factor(pivot)))
+                .default_size(rect.size()),
             None => window
-                .pivot(egui::Align2::RIGHT_BOTTOM)
                 .default_width(SELECTOR_DEFAULT_WIDTH)
                 .default_pos(selector_default_pos(ui.ctx())),
+        };
+        // A titled window that is movable discards `current_pos`: egui
+        // re-applies the pivot it had stored before the area began, so the
+        // position given here would not stick. The reposition pass therefore
+        // also turns the window immovable; every other pass is movable again
+        // and a user's drag works as before.
+        let window = match follow_screen_corner(ui.ctx(), id, pivot) {
+            Some(pos) => window.current_pos(pos).movable(false),
+            None => window,
         };
         window.show(ui.ctx(), |ui| {
             ui.label(format!("{} — {}", current.title, current.description));
@@ -2239,23 +2300,27 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
     // much of the scene the panel covers while they are read is the reader's
     // to decide. It opens as wide as its facts need, and dragging it narrower
     // is what wraps them.
+    let id = egui::Id::new(GPU_INFO_AREA);
+    // The panel belongs to the bottom-left corner, so it is seeded and kept by
+    // that corner: a fresh one opens there, a carried rectangle is seeded by its
+    // own bottom-left and given its size, and `follow_screen_corner` moves it
+    // when the screen changes shape.
+    let pivot = egui::Align2::LEFT_BOTTOM;
     let window = egui::Window::new(GPU_INFO_TITLE)
-        .id(egui::Id::new(GPU_INFO_AREA))
+        .id(id)
+        .pivot(pivot)
         .min_width(GPU_INFO_MIN_WIDTH)
         .max_width(ui.ctx().content_rect().width() * GPU_INFO_MAX_WIDTH_FRACTION);
-    // A fresh panel is seeded by its bottom-left pivot, so that corner stays
-    // put while the first layout measures the content. A carried rectangle is
-    // seeded by its left-top and given its size, so the first frame lays the
-    // window out as it last was.
     let lines = gpu_info_lines(info);
     // The lines above the rule are the header; the rest are the facts, which
     // scroll, so the two runs are drawn into different places from the one
     // list.
     let header = lines.iter().take_while(|line| line.is_header()).count();
     let window = match initial {
-        Some(rect) => window.default_pos(rect.min).default_size(rect.size()),
+        Some(rect) => window
+            .default_pos(rect.lerp_inside(pivot_factor(pivot)))
+            .default_size(rect.size()),
         None => window
-            .pivot(egui::Align2::LEFT_BOTTOM)
             // The size is given as well as the position: an area is laid out
             // against the size it had before the first pass measures it, and
             // egui's default area size is wider than a narrow window, which
@@ -2266,6 +2331,15 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
                 ui.ctx().content_rect().height() * GPU_INFO_HEIGHT_FRACTION,
             ))
             .default_pos(gpu_info_default_pos(ui.ctx())),
+    };
+    // A titled window that is movable discards `current_pos`: egui re-applies
+    // the pivot it had stored before the area began, so the position given here
+    // would not stick. The reposition pass therefore also turns the window
+    // immovable; every other pass is movable again and a user's drag works as
+    // before.
+    let window = match follow_screen_corner(ui.ctx(), id, pivot) {
+        Some(pos) => window.current_pos(pos).movable(false),
+        None => window,
     };
     window.show(ui.ctx(), |ui| {
         let (header_lines, body_lines) = lines.split_at(header);
@@ -2784,6 +2858,34 @@ mod tests {
             assert!(
                 panel.width() >= GPU_INFO_MIN_WIDTH,
                 "at {screen:?} the panel {panel:?} is narrower than its floor"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gpu_info_panel_follows_its_corner_when_the_screen_changes_shape() {
+        // The panel opens against the bottom-left corner. When the display
+        // rotates, the frame becomes a different shape and egui only clamps the
+        // remembered rectangle, so the panel has to be moved by how far that
+        // corner moved — otherwise it stays where the old, now-rotated screen
+        // put it.
+        let ctx = egui::Context::default();
+        let info = sample_gpu_info();
+        for (from, to) in [
+            ((1280.0, 577.0), (577.0, 1280.0)),
+            ((800.0, 600.0), (600.0, 800.0)),
+        ] {
+            // Two passes: the first measures the content, the second lays the
+            // window out against that measurement.
+            let _ = gpu_info_pass(&ctx, from, &info, None, Vec::new());
+            let _ = gpu_info_pass(&ctx, from, &info, None, Vec::new());
+
+            let _ = gpu_info_pass(&ctx, to, &info, None, Vec::new());
+            let panel = area_rect(&ctx, GPU_INFO_AREA);
+            assert!(
+                (panel.left() - OVERLAY_MARGIN).abs() < 1.0
+                    && (to.1 - panel.bottom() - OVERLAY_MARGIN).abs() < 1.0,
+                "after {from:?} -> {to:?} the panel {panel:?} left its corner"
             );
         }
     }

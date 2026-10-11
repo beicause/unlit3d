@@ -72,9 +72,12 @@ A readout at the top of the window, centred, reports the smoothed frame rate
 and frame time. The scene selector opens in the bottom-right corner, its
 bottom-right held a margin from the screen's edge, and can be dragged anywhere
 from there; the rectangle it is left at is carried into the next scene when one
-is chosen. A button in the top-right corner — sized so a finger can land on it
-— offers fullscreen on every platform, and is labelled for whichever the window
-is not. On the desktop and in a browser it takes the window fullscreen and back:
+is chosen. When the window changes shape — a phone rotating as fullscreen takes
+it — the panel follows the corner it belongs to, keeping its distance from that
+corner instead of staying where the old shape left it. A button in the
+top-right corner — sized so a finger can land on it — offers fullscreen on
+every platform, and is labelled for whichever the window is not. On the desktop
+and in a browser it takes the window fullscreen and back:
 in a browser the click is the one gesture the page is granted as permission, and
 a device being held upright is then locked to landscape, so the picture fills a
 phone's screen. The lock follows from the fullscreen: the browser releases it
