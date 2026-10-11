@@ -279,6 +279,16 @@ fn pixel(image: &image::RgbaImage, x: u32, y: u32) -> [u8; 4] {
     image.get_pixel(x, y).0
 }
 
+/// A fresh directory under the system temp directory for a save tool to write
+/// into, named for the test that uses it.
+fn temp_dir(name: &str) -> std::path::PathBuf {
+    let directory =
+        std::env::temp_dir().join(format!("unlit3d-mcp-test-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).expect("the temp directory is created");
+    directory
+}
+
 #[test]
 fn the_server_lists_its_tools_and_renders() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -305,7 +315,10 @@ fn the_server_lists_its_tools_and_renders() {
             "create_mesh",
             "send_input",
             "read_buffer",
-            "screenshot",
+            "save_buffer",
+            "read_screenshot",
+            "save_texture_as_image",
+            "save_screenshot",
             "render_frame",
         ] {
             assert!(
@@ -377,7 +390,7 @@ fn the_server_lists_its_tools_and_renders() {
         let shot = server
             .request(
                 "tools/call",
-                json!({ "name": "screenshot", "arguments": {} }),
+                json!({ "name": "read_screenshot", "arguments": {} }),
             )
             .await;
         let image = image::load_from_memory(&image_bytes(&shot))
@@ -393,6 +406,41 @@ fn the_server_lists_its_tools_and_renders() {
             centre[0] > 200 && centre[1] < 60 && centre[2] < 60,
             "the centre should be the red mesh, got {centre:?}"
         );
+
+        // The save tools answer with the path they wrote instead of the image,
+        // so a caller reads a file off disk rather than decoding base64.
+        let directory = temp_dir("screenshot");
+        let saved = server
+            .tool(
+                "save_screenshot",
+                json!({ "directory": directory.to_str().unwrap() }),
+            )
+            .await;
+        let path = saved["path"]
+            .as_str()
+            .expect("save_screenshot reports a path");
+        assert!(
+            path.ends_with("screenshot.png"),
+            "save_screenshot defaults to screenshot.png: {saved}"
+        );
+        assert_eq!(
+            saved["size"].as_u64(),
+            Some(
+                std::fs::metadata(path)
+                    .expect("the screenshot file exists")
+                    .len()
+            ),
+            "the reported size matches the file on disk"
+        );
+        let saved_image = image::open(path)
+            .expect("the saved screenshot is a PNG")
+            .to_rgba8();
+        assert_eq!(
+            saved_image.dimensions(),
+            SIZE,
+            "the saved screenshot is the target size"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
 
         // The graph's own listing names every resource; buffers that were not
         // made for readback are refused, and one that was can be read through

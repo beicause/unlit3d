@@ -376,6 +376,15 @@ struct BufferRead {
     data: String,
 }
 
+/// A file a save tool wrote.
+#[derive(facet::Facet)]
+struct SavedFile {
+    /// The absolute path of the file that was written.
+    path: String,
+    /// How many bytes were written.
+    size: usize,
+}
+
 /// A high-level description of the world.
 pub fn world_summary(world: &World) -> Result<Value, String> {
     to_value(&world.info())
@@ -482,14 +491,14 @@ pub fn graph_maintain(world: &World, context: Option<Entity>) -> Result<Value, S
     to_value(&ResourceGraphMaintain { before, after })
 }
 
-/// Read bytes out of a buffer resource.
-pub fn read_buffer(
+/// The bytes a buffer read produced, with the offset it started at.
+fn read_buffer_bytes(
     world: &World,
     context: Option<Entity>,
     id: ResId,
     offset: u64,
     size: Option<u64>,
-) -> Result<Value, String> {
+) -> Result<(u64, Vec<u8>), String> {
     let context = render_context(world, context)?;
     let buffer = {
         let graph = graph_of(world, context)?;
@@ -517,6 +526,18 @@ pub fn read_buffer(
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
     let bytes = readback_buffer(&device, &queue, &buffer, offset, size);
+    Ok((offset, bytes))
+}
+
+/// Read bytes out of a buffer resource.
+pub fn read_buffer(
+    world: &World,
+    context: Option<Entity>,
+    id: ResId,
+    offset: u64,
+    size: Option<u64>,
+) -> Result<Value, String> {
+    let (offset, bytes) = read_buffer_bytes(world, context, id, offset, size)?;
     to_value(&BufferRead {
         offset,
         size: bytes.len(),
@@ -524,12 +545,28 @@ pub fn read_buffer(
     })
 }
 
-/// Read a texture resource and encode it as a PNG.
-pub fn read_texture_as_image(
+/// Read bytes out of a buffer resource and write them to a file.
+pub fn save_buffer(
     world: &World,
     context: Option<Entity>,
     id: ResId,
-) -> Result<Output, String> {
+    offset: u64,
+    size: Option<u64>,
+    directory: &str,
+    file_name: Option<&str>,
+) -> Result<Value, String> {
+    let (_, bytes) = read_buffer_bytes(world, context, id, offset, size)?;
+    let default_name = format!("buffer-{}.bin", id.to_bits());
+    let file_name = file_name.unwrap_or(default_name.as_str());
+    to_value(&write_file(directory, file_name, &bytes)?)
+}
+
+/// The PNG a texture read produced, with its size in pixels.
+fn read_texture_png(
+    world: &World,
+    context: Option<Entity>,
+    id: ResId,
+) -> Result<(Vec<u8>, u32, u32), String> {
     let context = render_context(world, context)?;
     let texture = {
         let graph = graph_of(world, context)?;
@@ -546,7 +583,31 @@ pub fn read_texture_as_image(
     let queue = queue_of(world, context)?;
     let bytes = readback_texture(&device, &queue, &texture);
     let png = encode_png(&bytes, texture.width(), texture.height(), texture.format())?;
-    image_value(&png, texture.width(), texture.height())
+    Ok((png, texture.width(), texture.height()))
+}
+
+/// Read a texture resource and encode it as a PNG.
+pub fn read_texture_as_image(
+    world: &World,
+    context: Option<Entity>,
+    id: ResId,
+) -> Result<Output, String> {
+    let (png, width, height) = read_texture_png(world, context, id)?;
+    image_value(&png, width, height)
+}
+
+/// Read a texture resource as a PNG and write it to a file.
+pub fn save_texture_as_image(
+    world: &World,
+    context: Option<Entity>,
+    id: ResId,
+    directory: &str,
+    file_name: Option<&str>,
+) -> Result<Value, String> {
+    let (png, _, _) = read_texture_png(world, context, id)?;
+    let default_name = format!("texture-{}.png", id.to_bits());
+    let file_name = file_name.unwrap_or(default_name.as_str());
+    to_value(&write_file(directory, file_name, &png)?)
 }
 
 /// The input state `handle` names, or the world's only one.
@@ -696,11 +757,11 @@ fn screenshot_target(
 }
 
 /// Render one frame and read the offscreen target back as a PNG.
-pub fn screenshot(
+fn screenshot_png(
     world: &mut World,
     renderer: Option<Entity>,
     target: Option<ResId>,
-) -> Result<Output, String> {
+) -> Result<(Vec<u8>, u32, u32), String> {
     let context = render_context(world, None)?;
     let texture = screenshot_target(world, context, target)?;
     render_frame(world, renderer)?;
@@ -708,7 +769,33 @@ pub fn screenshot(
     let queue = queue_of(world, context)?;
     let bytes = readback_texture(&device, &queue, &texture);
     let png = encode_png(&bytes, texture.width(), texture.height(), texture.format())?;
-    image_value(&png, texture.width(), texture.height())
+    Ok((png, texture.width(), texture.height()))
+}
+
+/// Render one frame and read the offscreen target back as a PNG.
+pub fn read_screenshot(
+    world: &mut World,
+    renderer: Option<Entity>,
+    target: Option<ResId>,
+) -> Result<Output, String> {
+    let (png, width, height) = screenshot_png(world, renderer, target)?;
+    image_value(&png, width, height)
+}
+
+/// Render one frame and write the offscreen target to a file as a PNG.
+pub fn save_screenshot(
+    world: &mut World,
+    renderer: Option<Entity>,
+    target: Option<ResId>,
+    directory: &str,
+    file_name: Option<&str>,
+) -> Result<Value, String> {
+    let (png, _, _) = screenshot_png(world, renderer, target)?;
+    to_value(&write_file(
+        directory,
+        file_name.unwrap_or("screenshot.png"),
+        &png,
+    )?)
 }
 
 /// Load a glTF file and spawn its default scene.
@@ -739,6 +826,22 @@ fn image_value(png: &[u8], width: u32, height: u32) -> Result<Output, String> {
         data: base64::engine::general_purpose::STANDARD.encode(png),
         structured: to_value(&ImageSize { width, height })?,
     }))
+}
+
+/// Write `bytes` to `directory/file_name`, creating the directory.
+fn write_file(directory: &str, file_name: &str, bytes: &[u8]) -> Result<SavedFile, String> {
+    let path = Path::new(directory).join(file_name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+    // Report an absolute path, so a caller does not have to know the process's
+    // working directory to find what was written.
+    let path = std::fs::canonicalize(&path).unwrap_or(path);
+    Ok(SavedFile {
+        path: path.display().to_string(),
+        size: bytes.len(),
+    })
 }
 
 /// Encode raw RGBA bytes as a PNG.

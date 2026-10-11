@@ -80,15 +80,18 @@ given field by field; `set_component` merges what it is given over what the
 entity already holds.
 
 **Resource graph** — `graph_summary`, `list_resources`,
-`resource_dependencies`, `graph_maintain`, `read_buffer`,
-`read_texture_as_image`. A resource is named by the `u64` id `list_resources`
-reports — the `ResId` bits: slot index in the low 32, the slot's generation in
-the high 32 — and the graph resolves it back to a handle. An id to a removed
-resource stops resolving rather than quietly naming the resource that reused its
-slot. `graph_maintain` is the same pass the
+`resource_dependencies`, `graph_maintain`, `read_buffer`, `save_buffer`,
+`read_texture_as_image`, `save_texture_as_image`. A resource is named by the
+`u64` id `list_resources` reports — the `ResId` bits: slot index in the low 32,
+the slot's generation in the high 32 — and the graph resolves it back to a
+handle. An id to a removed resource stops resolving rather than quietly naming
+the resource that reused its slot. `graph_maintain` is the same pass the
 render loop runs: it drops unreferenced resources and rebuilds dirty ones.
 `read_buffer` refuses a buffer that was not created with `COPY_SRC` rather than
-letting the device reject the copy.
+letting the device reject the copy. `save_buffer` and `save_texture_as_image`
+read the same way but write to a file in the directory they are given —
+creating it when it does not exist — and answer with the written path and size,
+so a caller reads bytes off disk instead of decoding base64 or an inline image.
 
 **Input** — `input_state` and `send_input`. `input_state` reports the state
 `InputState` holds, including the events that arrived since they were last
@@ -97,13 +100,20 @@ into the world's `InputHandle` and delivers them through the same `dispatch_inpu
 pass the window does, so behaviour components see them exactly as they would from
 a user.
 
-**Drawing** — `create_mesh`, `remove_mesh`, `render_frame`, `screenshot`,
-`load_gltf`. `create_mesh` allocates an unlit mesh from positions, optional uvs,
-colors and indices, and spawns the entity that draws it; `remove_mesh` releases
-it again. `render_frame` draws one frame, and `screenshot` draws one and returns
-the offscreen target as an image content block, so a client renders the pixels
-directly, with the image size as structured content; `read_texture_as_image`
-answers the same way.
+**Drawing** — `create_mesh`, `remove_mesh`, `render_frame`,
+`read_screenshot`, `save_screenshot`, `load_gltf`. `create_mesh` allocates an
+unlit mesh from positions, optional uvs, colors and indices, and spawns the
+entity that draws it; `remove_mesh` releases it again. `render_frame` draws one
+frame, and `read_screenshot` draws one and returns the offscreen target as an
+image content block, so a client renders the pixels directly, with the image size
+as structured content; `read_texture_as_image` answers the same way.
+`save_screenshot` draws one too and writes the PNG to a file, answering with its
+path and size.
+
+The `save_*` tools exist because an inline image or base64 payload costs a model
+context it cannot easily shed, while a file on disk can be read back a piece at a
+time, or not at all. Prefer them, and reach for the `read_*` tools only when the
+caller genuinely wants the pixels in the reply.
 
 ## Library
 

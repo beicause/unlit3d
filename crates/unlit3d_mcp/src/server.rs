@@ -2,9 +2,10 @@
 //!
 //! Each tool turns its JSON arguments into an [McpCommand] and sends it to the
 //! thread that owns the world. The tool then awaits the result: structured JSON
-//! for most tools, an image content block for the ones that read pixels back. A
-//! tool that fails returns a tool-level error result rather than a protocol
-//! error, so a model sees the message instead of a transport failure.
+//! for most tools, an image content block for the ones that read pixels back
+//! inline, and a written path for the ones that save to a file. A tool that
+//! fails returns a tool-level error result rather than a protocol error, so a
+//! model sees the message instead of a transport failure.
 //!
 //! Every tool names the world it should run against with a [WorldId]: `"Host"`
 //! for the world the transport thread itself holds, or `{"Handle": bits}` for
@@ -26,8 +27,9 @@ use unlit_wgpu::resources::ResId;
 use crate::host::{
     McpCommand, Output, WorldId, create_mesh, despawn_entity, get_component, get_entity,
     graph_maintain, graph_summary, input_state, list_archetypes, list_components, list_entities,
-    list_resources, load_gltf, read_buffer, read_texture_as_image, remove_mesh, render_frame,
-    resource_dependencies, screenshot, send_input, set_component, spawn_entity, world_summary,
+    list_resources, load_gltf, read_buffer, read_screenshot, read_texture_as_image, remove_mesh,
+    render_frame, resource_dependencies, save_buffer, save_screenshot, save_texture_as_image,
+    send_input, set_component, spawn_entity, world_summary,
 };
 
 /// An entity handle from the `u64` bits a JSON argument carries.
@@ -345,10 +347,33 @@ impl McpServer {
         .await
     }
 
+    /// Read bytes out of a buffer resource and write them to a file.
+    #[tool(
+        name = "save_buffer",
+        description = "Read bytes from a buffer resource and write them to a file in a directory, returning the written path and size. Prefer this over read_buffer, which returns the bytes base64-encoded inline."
+    )]
+    pub async fn save_buffer(
+        &self,
+        Parameters(args): Parameters<SaveBuffer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.command(args.world, move |world| {
+            save_buffer(
+                world,
+                args.context.map(entity),
+                resource_id(args.id),
+                args.offset,
+                args.size,
+                &args.directory,
+                args.file_name.as_deref(),
+            )
+        })
+        .await
+    }
+
     /// Read a texture resource as a PNG.
     #[tool(
         name = "read_texture_as_image",
-        description = "Read a texture resource as a PNG image, given its handle."
+        description = "Read a texture resource as a PNG image, given its handle. Prefer save_texture_as_image to write the image to a file instead of returning it inline."
     )]
     pub async fn read_texture_as_image(
         &self,
@@ -356,6 +381,27 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         self.run(args.world, move |world| {
             read_texture_as_image(world, args.context.map(entity), resource_id(args.id))
+        })
+        .await
+    }
+
+    /// Read a texture resource as a PNG and write it to a file.
+    #[tool(
+        name = "save_texture_as_image",
+        description = "Read a texture resource as a PNG and write it to a file in a directory, returning the written path and size. Prefer this over read_texture_as_image, which returns the image inline."
+    )]
+    pub async fn save_texture_as_image(
+        &self,
+        Parameters(args): Parameters<SaveTexture>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.command(args.world, move |world| {
+            save_texture_as_image(
+                world,
+                args.context.map(entity),
+                resource_id(args.id),
+                &args.directory,
+                args.file_name.as_deref(),
+            )
         })
         .await
     }
@@ -436,18 +482,39 @@ impl McpServer {
 
     /// Render a frame and read it back as a PNG.
     #[tool(
-        name = "screenshot",
-        description = "Render one frame of a world and read its offscreen target back as a PNG. Pass the target's resource handle to choose it, or omit for the world's only readable texture."
+        name = "read_screenshot",
+        description = "Render one frame of a world and read its offscreen target back as an inline PNG image. Pass the target's resource handle to choose it, or omit for the world's only readable texture. Prefer save_screenshot to write the image to a file instead of returning it inline."
     )]
-    pub async fn screenshot(
+    pub async fn read_screenshot(
         &self,
         Parameters(args): Parameters<Screenshot>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run(args.world, move |world| {
-            screenshot(
+            read_screenshot(
                 world,
                 args.renderer.map(entity),
                 args.target.map(resource_id),
+            )
+        })
+        .await
+    }
+
+    /// Render a frame and write it to a file as a PNG.
+    #[tool(
+        name = "save_screenshot",
+        description = "Render one frame of a world, read its offscreen target back as a PNG, and write it to a file in a directory, returning the written path and size. Prefer this over read_screenshot, which returns the image inline."
+    )]
+    pub async fn save_screenshot(
+        &self,
+        Parameters(args): Parameters<SaveScreenshot>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.command(args.world, move |world| {
+            save_screenshot(
+                world,
+                args.renderer.map(entity),
+                args.target.map(resource_id),
+                &args.directory,
+                args.file_name.as_deref(),
             )
         })
         .await
@@ -475,8 +542,9 @@ impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Drives one or more unlit3d worlds through the public API: inspect and edit entities \
-             and components, inspect a world's resource graph, read buffers and textures, send \
-             input, and render or screenshot frames. Every tool names its world with a WorldId \
+             and components, inspect a world's resource graph, read or save buffers and \
+             textures, send input, and render or screenshot frames. Every tool names its world \
+             with a WorldId \
              (\"Host\", or {\"Handle\": bits} for a world a host entity carries), and GPU tools \
              name the entity handles they need.",
         )
@@ -610,6 +678,74 @@ pub struct ReadBuffer {
     /// How many bytes to read; the rest of the buffer when omitted.
     #[serde(default)]
     pub size: Option<u64>,
+}
+
+/// Arguments for saving a buffer to a file.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SaveBuffer {
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    #[serde(default)]
+    pub world: WorldId,
+    /// Any entity carrying the world's render context, as its `u64` bits.
+    /// Omit when the world holds exactly one.
+    #[serde(default)]
+    pub context: Option<u64>,
+    /// The buffer's id, as `list_resources` reports it.
+    pub id: u64,
+    /// The byte offset to read from.
+    #[serde(default)]
+    pub offset: u64,
+    /// How many bytes to read; the rest of the buffer when omitted.
+    #[serde(default)]
+    pub size: Option<u64>,
+    /// The directory to write the file into; created when it does not exist.
+    pub directory: String,
+    /// The file name to write; `buffer-<id>.bin` when omitted.
+    #[serde(default)]
+    pub file_name: Option<String>,
+}
+
+/// Arguments for saving a texture as a PNG.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SaveTexture {
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    #[serde(default)]
+    pub world: WorldId,
+    /// Any entity carrying the world's render context, as its `u64` bits.
+    /// Omit when the world holds exactly one.
+    #[serde(default)]
+    pub context: Option<u64>,
+    /// The resource's id, as `list_resources` reports it.
+    pub id: u64,
+    /// The directory to write the file into; created when it does not exist.
+    pub directory: String,
+    /// The file name to write; `texture-<id>.png` when omitted.
+    #[serde(default)]
+    pub file_name: Option<String>,
+}
+
+/// Arguments for saving a screenshot as a PNG.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SaveScreenshot {
+    /// The world to drive: `"Host"` for the world the transport thread itself
+    /// holds, or `{"Handle": bits}` for a world a host entity carries.
+    #[serde(default)]
+    pub world: WorldId,
+    /// The entity carrying the renderer, as its `u64` bits. Omit for the
+    /// world's only one.
+    #[serde(default)]
+    pub renderer: Option<u64>,
+    /// The id of the texture to read, as `list_resources` reports it. Omit
+    /// for the world's only readable texture.
+    #[serde(default)]
+    pub target: Option<u64>,
+    /// The directory to write the file into; created when it does not exist.
+    pub directory: String,
+    /// The file name to write; `screenshot.png` when omitted.
+    #[serde(default)]
+    pub file_name: Option<String>,
 }
 
 /// Arguments for reading or sending input.

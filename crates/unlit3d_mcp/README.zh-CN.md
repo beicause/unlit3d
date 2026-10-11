@@ -59,23 +59,31 @@ world：字符串 `"Host"` 指拥有它的线程直接持有的 host world，`{"
 收到的字段合并到实体已有的值之上。
 
 **资源图**——`graph_summary`、`list_resources`、`resource_dependencies`、
-`graph_maintain`、`read_buffer`、`read_texture_as_image`。资源用
+`graph_maintain`、`read_buffer`、`save_buffer`、`read_texture_as_image`、
+`save_texture_as_image`。资源用
 `list_resources` 报告的那个 `u64` id 命名——即 `ResId` 的位：低 32 位是槽位序号，
 高 32 位是该槽位的代际——由图解析回句柄。指向已移除资源的 id 将不再解析成功，
 而不是悄悄指向复用了该槽位的资源。
 `graph_maintain` 就是渲染循环所跑的那一趟：丢弃无引用的资源、重建脏的资源。`read_buffer` 会拒绝没有以 `COPY_SRC` 创建的缓冲，而不是让设备拒绝这次
-拷贝。
+拷贝。`save_buffer` 与 `save_texture_as_image` 读取方式相同，但把结果写入给定的
+目录中的文件（目录不存在时会创建），并返回写入的路径与大小，调用者因此从磁盘
+读取字节，而不是解码 base64 或内联图像。
 
 **输入**——`input_state` 与 `send_input`。`input_state` 报告 `InputState` 持有的状态，
 其中包括自上次清除以来到达的事件，因此调用者能看到这一帧发生了什么。`send_input` 把输入
 事件推入 world 的 `InputHandle`，并经由窗口所用的同一个 `dispatch_input` 派发，因此行为组件
 看到它们的方式与来自用户时完全一样。
 
-**绘制**——`create_mesh`、`remove_mesh`、`render_frame`、`screenshot`、
-`load_gltf`。`create_mesh` 从位置（以及可选的 uv、颜色与索引）分配一个 unlit 网格，并
-生成绘制它的实体；`remove_mesh` 再把它释放。`render_frame` 画一帧，`screenshot` 画一帧
-并以 image content block 返回离屏目标（图像尺寸作为结构化内容），客户端因此直接渲染像素；
-`read_texture_as_image` 以同样方式作答。
+**绘制**——`create_mesh`、`remove_mesh`、`render_frame`、`read_screenshot`、
+`save_screenshot`、`load_gltf`。`create_mesh` 从位置（以及可选的 uv、颜色与索引）
+分配一个 unlit 网格，并生成绘制它的实体；`remove_mesh` 再把它释放。`render_frame` 画
+一帧，`read_screenshot` 画一帧并以 image content block 返回离屏目标（图像尺寸作为
+结构化内容），客户端因此直接渲染像素；`read_texture_as_image` 以同样方式作答。
+`save_screenshot` 同样画一帧，但把 PNG 写入文件，并返回其路径与大小。
+
+这些 `save_*` 工具的存在，是因为内联图像或 base64 负载会占用模型难以释放的上下文，
+而磁盘上的文件可以按需分次读取，也可以完全不读。优先使用它们，只有在调用者确实
+需要回复中直接带上像素时才用 `read_*` 工具。
 
 ## 库
 
