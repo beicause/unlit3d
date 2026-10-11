@@ -3,6 +3,7 @@ Cargo.lock
 *.log
 
 docs/internal/
+assets/
 
 # Built by `cargo xtask test-wasm`: the assembled page, the bindgen'd example and
 # modules, and the runner's installed dependencies. All are reproduced from

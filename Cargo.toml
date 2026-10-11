@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "unlit3d_benchmarks", "unlit3d_cli", "unlit3d_examples", "xtask"]
+members = ["crates/*", "unlit3d_benchmarks", "unlit3d_cli", "unlit3d_examples", "unlit3dx_examples", "xtask"]
 
 [workspace.package]
 edition = "2024"
@@ -14,6 +14,11 @@ async-channel = { version = "2.5.0", default-features = false, features = ["std"
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
 console_error_panic_hook = { version = "0.1.7", default-features = false }
+# Real-time audio output. `cpal` opens the device's stream; the lock-free
+# ring buffer bridges the audio thread that fills it and the stream's
+# callback that drains it.
+cpal = { version = "0.18.2", default-features = false }
+crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
 console_log = "1.1.0"
 const_shader_layout = { version = "0.4.2", default-features = false, features = ["derive", "glam", "std"] }
 egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
@@ -44,6 +49,12 @@ libtest-mimic = "0.8.2"
 log = { version = "0.4", default-features = false, features = ["alloc", "std"] }
 pollster = { version = "1.0.1", default-features = false }
 profiling = { version = "1.0.18", default-features = false }
+# The physics world. No parallel feature: the physics world owns its thread,
+# so the rayon pool and the scheduler plumbing it pulls in are not needed.
+rapier3d = { version = "0.36.1", default-features = false, features = ["dim3", "f32", "std"] }
+# The synthesizer the audio world renders notes through. The `sf3` feature
+# reads the compressed FluidR3 sound bank the example plays through.
+rustysynth-ext = { version = "1.5.0-alpha.1", default-features = false, features = ["sf3"] }
 # The Model Context Protocol server. `server` provides the handler and the
 # stdio loop, `transport-io` is the stdio transport, and `macros` derives the
 # tool router from `#[tool]` methods.
