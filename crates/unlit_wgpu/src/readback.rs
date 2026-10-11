@@ -17,6 +17,9 @@
 //! readback is for: the bytes cannot exist before then. A frame loop should
 //! only call one where it actually needs the pixels.
 
+use ringbuf::StaticRb;
+use ringbuf::traits::{Consumer, Producer, Split};
+
 /// Copy `size` bytes of `source`, starting at `offset`, back to the host.
 ///
 /// The bytes are copied into a staging buffer and mapped, so the call blocks
@@ -49,15 +52,19 @@ pub fn readback_buffer(
     queue.submit([encoder.finish()]);
 
     let slice = staging.slice(..);
-    let (sender, receiver) = crossbeam_channel::unbounded();
+    // The callback hands the result over once, so a one-slot ring is all the
+    // handoff needs; the poll below is what makes the callback run. A
+    // `StaticRb` keeps the slot inline instead of allocating it on the heap.
+    let (mut sender, mut receiver) =
+        StaticRb::<Result<(), wgpu::BufferAsyncError>, 1>::default().split();
     slice.map_async(wgpu::MapMode::Read, move |result| {
-        let _ = sender.send(result);
+        let _ = sender.try_push(result);
     });
     device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("the device polls to completion during a readback");
     receiver
-        .recv()
+        .try_pop()
         .expect("the map callback fires once the device has polled")
         .expect("the staging buffer maps for reading");
     let bytes = {

@@ -27,12 +27,12 @@ required-features = ["egui"]
 arrayvec.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
-crossbeam-channel.workspace = true
 egui = { workspace = true, optional = true }
 facet = { workspace = true, features = ["reflect"], optional = true }
 foldhash.workspace = true
 glam.workspace = true
 hashbrown.workspace = true
+ringbuf.workspace = true
 smallvec.workspace = true
 wesl = { workspace = true, optional = true }
 wesl-core.workspace = true

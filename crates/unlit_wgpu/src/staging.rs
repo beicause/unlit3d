@@ -329,6 +329,8 @@ impl StagingBuffer {
 mod tests {
     use super::*;
     use crate::util::test::noop_device;
+    use ringbuf::StaticRb;
+    use ringbuf::traits::{Consumer, Producer, Split};
 
     /// A destination buffer the tests upload into and read back from.
     fn target(device: &wgpu::Device, size: u64) -> wgpu::Buffer {
@@ -357,12 +359,12 @@ mod tests {
     /// Read `target` back and return its first `size` bytes.
     fn read_back(device: &wgpu::Device, target: &wgpu::Buffer, size: u64) -> Vec<u8> {
         let slice = target.slice(..size);
-        let (tx, rx) = crossbeam_channel::unbounded();
+        let (mut tx, mut rx) = StaticRb::<Result<(), wgpu::BufferAsyncError>, 1>::default().split();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            tx.send(result).expect("the test reads the result");
+            tx.try_push(result).expect("the test reads the result");
         });
         device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
-        rx.recv().expect("the mapping callback runs").unwrap();
+        rx.try_pop().expect("the mapping callback runs").unwrap();
         let bytes = slice
             .get_mapped_range()
             .expect("the mapping succeeded")

@@ -16,7 +16,6 @@ bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
 console_error_panic_hook = { version = "0.1.7", default-features = false }
 console_log = "1.1.0"
 const_shader_layout = { version = "0.4.2", default-features = false, features = ["derive", "glam", "std"] }
-crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
 egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 # Reflection: a component's own field list is its codec, so nothing declares
@@ -48,6 +47,7 @@ profiling = { version = "1.0.18", default-features = false }
 # The Model Context Protocol server. `server` provides the handler and the
 # stdio loop, `transport-io` is the stdio transport, and `macros` derives the
 # tool router from `#[tool]` methods.
+ringbuf = { version = "0.5.3", default-features = false, features = ["std"] }
 rmcp = { version = "3.5.1", default-features = false, features = ["macros", "server", "transport-io"] }
 schemars = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }

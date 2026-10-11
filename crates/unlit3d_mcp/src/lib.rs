@@ -14,6 +14,8 @@
 
 #![forbid(unsafe_code)]
 
+use ringbuf::StaticRb;
+use ringbuf::traits::{Consumer, Producer, Split};
 use std::error::Error;
 
 pub mod host;
@@ -61,6 +63,39 @@ pub fn serve_stdio_with(
         Ok::<(), Box<dyn Error + Send + Sync>>(())
     })
 }
+
+/// The one-shot handoff that tells the main thread the render thread is ready.
+///
+/// A ring has no blocking read, so the producer unparks the consumer after it
+/// pushes and the consumer parks between attempts; a signal left before the
+/// park is remembered, so the push is never missed. If the render thread
+/// unwinds before it signals, its drop hands the main thread an error instead of
+/// leaving it parked.
+struct Ready<P: Producer<Item = Result<(), String>>> {
+    sender: P,
+    main: std::thread::Thread,
+    signalled: bool,
+}
+
+impl<P: Producer<Item = Result<(), String>>> Ready<P> {
+    fn signal(&mut self, ready: Result<(), String>) {
+        let _ = self.sender.try_push(ready);
+        self.signalled = true;
+        self.main.unpark();
+    }
+}
+
+impl<P: Producer<Item = Result<(), String>>> Drop for Ready<P> {
+    fn drop(&mut self) {
+        if !self.signalled {
+            let _ = self.sender.try_push(Err(
+                "the render thread stopped before building the world".to_owned(),
+            ));
+            self.main.unpark();
+        }
+    }
+}
+
 /// Serve MCP over stdio with a fresh headless world of its own.
 ///
 /// The convenience entry point for a host with no window: it builds an
@@ -78,29 +113,39 @@ pub fn serve_stdio_offscreen(
     depth: bool,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let (sender, receiver) = async_channel::bounded::<Command>(4);
-    let (ready_sender, ready_receiver) = crossbeam_channel::unbounded::<Result<(), String>>();
+    let (ready_sender, mut ready_receiver) = StaticRb::<Result<(), String>, 1>::default().split();
+    let main = std::thread::current();
     let render = std::thread::Builder::new()
         .name("unlit3d-mcp-render".to_owned())
         .spawn(move || {
+            let mut ready = Ready {
+                sender: ready_sender,
+                main,
+                signalled: false,
+            };
             let (device, queue, capabilities) =
                 match pollster::block_on(request_device("unlit3d-mcp")) {
                     Ok(parts) => parts,
                     Err(error) => {
-                        let _ = ready_sender.send(Err(error));
+                        ready.signal(Err(error));
                         return;
                     }
                 };
             let (mut world, _renderer) =
                 offscreen_world(device, queue, capabilities, size, samples, depth);
-            let _ = ready_sender.send(Ok(()));
+            ready.signal(Ok(()));
             while let Ok(command) = receiver.recv_blocking() {
                 dispatch(command, &mut world);
             }
         })?;
-    match ready_receiver.recv() {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => return Err(error.into()),
-        Err(_) => return Err("the render thread stopped before building the world".into()),
+    let ready = loop {
+        if let Some(ready) = ready_receiver.try_pop() {
+            break ready;
+        }
+        std::thread::park();
+    };
+    if let Err(error) = ready {
+        return Err(error.into());
     }
     let served = serve_stdio_with(move |command| sender.send_blocking(command).is_ok());
     let _ = render.join();
