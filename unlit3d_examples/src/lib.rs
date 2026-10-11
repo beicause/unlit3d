@@ -1727,9 +1727,9 @@ const SELECTOR_WINDOW: &str = "scenes";
 /// The width the selector window opens at, in points.
 ///
 /// Narrow enough that the list leaves the scene visible behind it: the
-/// description wraps onto a second line instead of the window stretching across
+/// description wraps onto a few lines instead of the window stretching across
 /// the frame. A window a user has dragged keeps the width it was dragged to.
-const SELECTOR_DEFAULT_WIDTH: f32 = 280.0;
+const SELECTOR_DEFAULT_WIDTH: f32 = 220.0;
 
 /// Where the selector window opens when no position was carried over — the
 /// first build of a session.
@@ -1857,10 +1857,10 @@ const OVERLAY_GAP: f32 = 8.0;
 
 /// The smallest a corner button is drawn, in points.
 ///
-/// A control a phone has to be hit with a finger wants a taller target than a
-/// row of text: this is the height the touch-target guidelines converge on,
-/// and the button is grown to it.
-const OVERLAY_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(140.0, 44.0);
+/// A corner button is an overlay on the scene, so it is kept small enough to
+/// read as one — a control as tall as a panel's row competes with the frame it
+/// annotates — while still being a comfortable target to click.
+const OVERLAY_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(110.0, 32.0);
 
 /// A corner button's inner padding, symmetric so the label is centred within
 /// the button it is grown to.
@@ -1869,7 +1869,7 @@ const OVERLAY_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(140.0, 44.0);
 /// the button's atoms are aligned by the surrounding layout, which is not
 /// centred. Growing the padding instead — the same on every side — is what
 /// pushes the label to the middle of the larger button.
-const OVERLAY_BUTTON_PADDING: egui::Vec2 = egui::Vec2::new(16.0, 16.0);
+const OVERLAY_BUTTON_PADDING: egui::Vec2 = egui::Vec2::new(10.0, 7.0);
 
 /// The API docs the Pages workflow publishes beside the example page.
 ///
