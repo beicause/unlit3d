@@ -11,8 +11,7 @@ use std::sync::Arc;
 use crossbeam_channel::Sender;
 use glam::Vec3;
 use hashbrown::HashMap;
-use unlit_wgpu::render_attachments::create_color_target;
-use unlit_wgpu::resources::{ResourceGraph, TextureExt};
+use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
@@ -25,13 +24,6 @@ pub const SOUNDFONT: &[u8] = include_bytes!(env!("SOUNDFONT_FILE"));
 
 /// The window opens at this size, in logical pixels.
 pub const WINDOW_SIZE: (u32, u32) = (1024, 720);
-
-/// The number of samples every frame is rendered with.
-pub const SAMPLE_COUNT: u32 = 4;
-
-/// The format the offscreen target renders into; the blit re-encodes it
-/// into the surface's own format when it presents.
-pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// The render sub-world's command queue depth. One scene build queues
 /// seven asset requests and forty-nine instance requests; the capacity
@@ -193,16 +185,6 @@ pub fn checker_ground() -> Vec<[u8; 4]> {
     pixels
 }
 
-/// The sampler every material in the scene uses: linear filtering keeps
-/// the flat colors clean under minification.
-pub fn linear_sampler() -> wgpu::SamplerDescriptor<'static> {
-    wgpu::SamplerDescriptor {
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    }
-}
-
 /// The pattern textures the shape materials draw from, in pixels per
 /// side: big enough that a pattern reads across a metre-wide body,
 /// small enough that sixteen of them stay cheap.
@@ -290,15 +272,27 @@ pub fn pattern_texture(kind: ShapeKind, color: [u8; 4]) -> Vec<[u8; 4]> {
     pixels
 }
 
-/// The mesh one shape kind draws, as raw arrays. Every kind is about
-/// [`BALL_RADIUS`] across, so the pool shares one visual weight.
+/// The mesh one shape kind draws. Every kind is about [`BALL_RADIUS`]
+/// across, so the pool shares one visual weight.
 #[must_use]
-pub fn shape_mesh(kind: ShapeKind) -> RawMesh {
+pub fn shape_mesh(kind: ShapeKind) -> OwnedUnlitMeshDesc {
     match kind {
         ShapeKind::Ball => uv_sphere(BALL_RADIUS, 32, 22),
         ShapeKind::Cube => cuboid_mesh(Vec3::splat(BALL_RADIUS * 0.8)),
-        ShapeKind::Cylinder => uv_cylinder(BALL_RADIUS * 0.72, BALL_RADIUS, 24),
-        ShapeKind::Cone => uv_cone(BALL_RADIUS * 0.9, BALL_RADIUS, 24),
+        ShapeKind::Cylinder => into_desc(uv_cylinder(BALL_RADIUS * 0.72, BALL_RADIUS, 24)),
+        ShapeKind::Cone => into_desc(uv_cone(BALL_RADIUS * 0.9, BALL_RADIUS, 24)),
+    }
+}
+
+/// Lift a raw mesh's arrays into the owned description the render server
+/// takes.
+fn into_desc(mesh: RawMesh) -> OwnedUnlitMeshDesc {
+    let (positions, uvs, colors, indices) = mesh;
+    OwnedUnlitMeshDesc {
+        positions,
+        uvs: Some(uvs),
+        colors: Some(colors),
+        indices: Some(indices),
     }
 }
 
@@ -313,12 +307,6 @@ pub fn shape_body(kind: ShapeKind) -> BodyShape {
         ShapeKind::Cone => BodyShape::Cone(BALL_RADIUS, BALL_RADIUS * 0.9),
     }
 }
-
-/// The host frame's behaviour order: setup runs before the draw.
-pub const FRAME_SETUP: i32 = 0;
-
-/// The host frame's behaviour order: the draw runs last.
-pub const FRAME_DRAW: i32 = 10;
 
 /// The host frame's behaviour order: the host's own input dispatch runs
 /// after the setup and before the draw, whose UI source reads the same
@@ -433,29 +421,28 @@ pub fn setup_render_world(
     // matched to the frame's own aspect. The azimuth advances with the
     // frame index, so the orbit speed follows the redraw rate.
     let mut azimuth = ORBIT_START;
-    let camera = nested.spawn((orbit_camera(WINDOW_SIZE, ORBIT_START),));
+    let camera_entity = nested.spawn((camera_looking_at(
+        WINDOW_SIZE,
+        orbit_eye(ORBIT_START),
+        ORBIT_TARGET,
+        60f32.to_radians(),
+        0.1,
+    ),));
     nested.spawn((OnFrame::new(
         FrameBehaviourOrder(RENDER_CAMERA),
         move |world, _entity, frame| {
             // The orbit advances by each frame's own delta, so the speed
             // does not follow the redraw rate.
             azimuth += ORBIT_SPEED * frame.delta_time;
-            let eye = Vec3::new(
-                ORBIT_TARGET.x + azimuth.cos() * ORBIT_RADIUS,
-                ORBIT_HEIGHT,
-                ORBIT_TARGET.z + azimuth.sin() * ORBIT_RADIUS,
-            );
-            let aspect = frame.size.0 as f32 / frame.size.1.max(1) as f32;
-            let projection = glam::camera::rh::proj::directx::perspective_infinite_reverse(
+            let camera = camera_looking_at(
+                frame.size,
+                orbit_eye(azimuth),
+                ORBIT_TARGET,
                 60f32.to_radians(),
-                aspect,
                 0.1,
             );
-            let view = glam::camera::rh::view::look_at_mat4(eye, ORBIT_TARGET, Vec3::Y);
-            let _ = world.with_mut::<Camera, _>(camera, |current| {
-                current.view_from_world = view;
-                current.clip_from_view = projection;
-                current.active = true;
+            let _ = world.with_mut::<Camera, _>(camera_entity, |current| {
+                *current = camera;
             });
         },
     ),));
@@ -469,24 +456,13 @@ pub fn setup_render_world(
     renderer
 }
 
-/// A camera on the orbit at the given azimuth, looking at the orbit
-/// target.
-pub fn orbit_camera(size: (u32, u32), azimuth: f32) -> Camera {
-    let eye = Vec3::new(
+/// The point on the orbit the camera sits at for one azimuth.
+fn orbit_eye(azimuth: f32) -> Vec3 {
+    Vec3::new(
         ORBIT_TARGET.x + azimuth.cos() * ORBIT_RADIUS,
         ORBIT_HEIGHT,
         ORBIT_TARGET.z + azimuth.sin() * ORBIT_RADIUS,
-    );
-    let aspect = size.0 as f32 / size.1.max(1) as f32;
-    Camera {
-        view_from_world: glam::camera::rh::view::look_at_mat4(eye, ORBIT_TARGET, Vec3::Y),
-        clip_from_view: glam::camera::rh::proj::directx::perspective_infinite_reverse(
-            60f32.to_radians(),
-            aspect,
-            0.1,
-        ),
-        active: true,
-    }
+    )
 }
 
 /// A mesh as raw arrays: positions, uvs, colors, indices.
@@ -495,108 +471,6 @@ pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
 /// The opaque white every mesh vertex carries; materials tint via
 /// textures.
 pub const WHITE_COLOR: [u8; 4] = [255, 255, 255, 255];
-
-/// A lat-long sphere for the balls: positions, uvs, opaque white colors
-/// and indices. Flat colors make the shading geometry simple; the normals
-/// come from the sphere positions, normalized on the GPU side of the
-/// unlit pass.
-pub fn uv_sphere(radius: f32, slices: usize, stacks: usize) -> RawMesh {
-    let mut positions = Vec::with_capacity((slices + 1) * (stacks + 1));
-    let mut uvs = Vec::with_capacity((slices + 1) * (stacks + 1));
-    let mut colors = Vec::with_capacity((slices + 1) * (stacks + 1));
-    for stack in 0..=stacks {
-        let v = stack as f32 / stacks as f32;
-        let phi = v * std::f32::consts::PI;
-        let (sin_phi, cos_phi) = phi.sin_cos();
-        for slice in 0..=slices {
-            let u = slice as f32 / slices as f32;
-            let theta = u * std::f32::consts::TAU;
-            let (sin_theta, cos_theta) = theta.sin_cos();
-            positions.push([
-                radius * sin_phi * cos_theta,
-                radius * cos_phi,
-                radius * sin_phi * sin_theta,
-            ]);
-            uvs.push([u, v]);
-            colors.push(WHITE_COLOR);
-        }
-    }
-    let mut indices = Vec::with_capacity(slices * stacks * 6);
-    for stack in 0..stacks {
-        for slice in 0..slices {
-            let row = (stack * (slices + 1) + slice) as u32;
-            let next = row + slices as u32 + 1;
-            // Wound CCW as seen from outside the sphere, matching the
-            // back-face culling of the unlit pipeline: stacks grow
-            // downward and slices counterclockwise, so each quad reads
-            // (top, top-next, bottom) and (top-next, bottom-next,
-            // bottom) against the outward direction.
-            indices.extend_from_slice(&[row, row + 1, next, row + 1, next + 1, next]);
-        }
-    }
-    (positions, uvs, colors, indices)
-}
-
-/// The unit right and up axes for each cuboid face, with the face's
-/// outward normal, so the six faces share one loop.
-pub const FACES: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
-    ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
-    ([-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
-    ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
-    ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
-    ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
-    ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
-];
-
-/// An axis-aligned cuboid from its half extents: 24 vertices (four per
-/// face, so each face has clean uvs) and 36 indices.
-pub fn cuboid_mesh(half: Vec3) -> RawMesh {
-    let mut positions = Vec::with_capacity(24);
-    let mut uvs = Vec::with_capacity(24);
-    let mut colors = Vec::with_capacity(24);
-    let mut indices = Vec::with_capacity(36);
-    for (normal, up, right) in FACES {
-        // The face spans the half extents projected onto its right and
-        // up axes; the normal is a unit axis, so its projection is one
-        // component.
-        let extent_right = right[0] * half.x + right[1] * half.y + right[2] * half.z;
-        let extent_up = up[0] * half.x + up[1] * half.y + up[2] * half.z;
-        let base = positions.len() as u32;
-        let face = |du: f32, dv: f32| -> [f32; 3] {
-            [
-                normal[0] * half.x + right[0] * du * extent_right + up[0] * dv * extent_up,
-                normal[1] * half.y + right[1] * du * extent_right + up[1] * dv * extent_up,
-                normal[2] * half.z + right[2] * du * extent_right + up[2] * dv * extent_up,
-            ]
-        };
-        let corners = [
-            face(-1.0, -1.0),
-            face(1.0, -1.0),
-            face(1.0, 1.0),
-            face(-1.0, 1.0),
-        ];
-        let corner_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-        for (position, uv) in corners.into_iter().zip(corner_uvs) {
-            positions.push(position);
-            uvs.push(uv);
-            colors.push(WHITE_COLOR);
-        }
-        // Corners sit at (-1, -1) (1, -1) (1, 1) (-1, 1) in the face's
-        // (right, up) plane. When right crosses up along the normal that
-        // plain order reads CCW from outside; a face whose axes cross
-        // against the normal reads CW and takes the reversed order.
-        let plain = Vec3::from(right)
-            .cross(Vec3::from(up))
-            .dot(Vec3::from(normal))
-            > 0.0;
-        if plain {
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
-        } else {
-            indices.extend_from_slice(&[base + 2, base + 1, base, base, base + 3, base + 2]);
-        }
-    }
-    (positions, uvs, colors, indices)
-}
 
 /// A lathe along the y axis: the side wall walks the rings top to
 /// bottom, and the caps close whichever ends ask for it, so a cylinder
@@ -693,48 +567,6 @@ pub fn uv_cone(radius: f32, half_height: f32, slices: usize) -> RawMesh {
     )
 }
 
-/// Bind an offscreen size-pixel target as the render world's render
-/// target, and return the color texture the frames land in.
-///
-/// The attachments go into the render world's resource graph exactly as a
-/// window surface's do, so the renderer specializes its pipelines on them
-/// the same way — and the color texture is the one a screenshot copies
-/// out of.
-pub fn bind_offscreen(
-    world: &World,
-    renderer: &mut Renderer,
-    device: &wgpu::Device,
-    size: (u32, u32),
-) -> wgpu::Texture {
-    let color = create_color_target(device, OFFSCREEN_FORMAT, size.0, size.1);
-    // The texture is registered as a resource in its own right, and the
-    // view depends on it, so the renderer holding the view keeps the
-    // texture alive — and a screenshot can resolve the texture by handle
-    // and read it back.
-    let color_view = {
-        let mut graph = world
-            .get_mut::<ResourceGraph>(renderer.context().graph)
-            .expect("the context's resource graph exists");
-        let texture = graph.insert(color.clone(), None);
-        let view = graph.insert(
-            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
-            None,
-        );
-        graph.add_dependency(&view, &texture);
-        view
-    };
-    let attachments = FrameAttachments::new(
-        world,
-        renderer.context(),
-        OFFSCREEN_FORMAT,
-        size,
-        SAMPLE_COUNT,
-        true,
-    );
-    attachments.bind(world, renderer, color_view);
-    color
-}
-
 /// The scene build's progress, one phase per round trip through the
 /// render server.
 pub enum Phase {
@@ -745,18 +577,6 @@ pub enum Phase {
     Instances(Vec<Request<u64>>),
     /// The pool is live and bodies may be assigned to it.
     Ready,
-}
-
-/// The answers, in request order, once every request has landed.
-///
-/// The gate matters: a request's answer is consumed when polled, so
-/// polling a batch where only some answers have arrived would drop the
-/// ones it took, and those requests would never answer again.
-pub fn poll_all(requests: &[Request<u64>]) -> Option<Vec<u64>> {
-    requests
-        .iter()
-        .all(Request::answered)
-        .then(|| requests.iter().filter_map(Request::poll).collect())
 }
 
 /// A contact pair of body handles, ordered for the notes map.
@@ -833,21 +653,9 @@ impl Gameplay {
             Vec::with_capacity(SHAPE_KINDS.len() + 1 + SHAPE_KINDS.len() * BALL_COLORS.len() + 1);
         // One mesh per shape kind, then the ground.
         for kind in SHAPE_KINDS {
-            let (positions, uvs, colors, indices) = shape_mesh(kind);
-            requests.push(render.request(create_mesh(OwnedUnlitMeshDesc {
-                positions,
-                uvs: Some(uvs),
-                colors: Some(colors),
-                indices: Some(indices),
-            })));
+            requests.push(render.request(create_mesh(shape_mesh(kind))));
         }
-        let (positions, uvs, colors, indices) = cuboid_mesh(GROUND_HALF);
-        requests.push(render.request(create_mesh(OwnedUnlitMeshDesc {
-            positions,
-            uvs: Some(uvs),
-            colors: Some(colors),
-            indices: Some(indices),
-        })));
+        requests.push(render.request(create_mesh(cuboid_mesh(GROUND_HALF))));
         // One patterned material per shape kind and color, kind-major,
         // then the ground's checker.
         for kind in SHAPE_KINDS {
@@ -1144,10 +952,10 @@ mod tests {
     /// Every triangle of every generated mesh faces outward: the unlit
     /// pipeline culls back faces, so a single inward triangle shows as a
     /// hole in the surface.
-    fn assert_faces_outward(name: &str, mesh: &RawMesh) {
-        let (positions, _, _, indices) = mesh;
+    fn assert_faces_outward(name: &str, mesh: &OwnedUnlitMeshDesc) {
+        let indices = mesh.indices.as_deref().unwrap_or(&[]);
         for triangle in indices.as_chunks::<3>().0 {
-            let [a, b, c] = triangle.map(|index| Vec3::from(positions[index as usize]));
+            let [a, b, c] = triangle.map(|index| Vec3::from(mesh.positions[index as usize]));
             let normal = (b - a).cross(c - a);
             // The sphere's pole rows collapse to a point, so their
             // triangles have zero area and no orientation to check.

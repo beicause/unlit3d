@@ -22,7 +22,7 @@ use unlit3dx::prelude::*;
 
 use crate::scene::{
     GAMEPLAY_TICKS_PER_FRAME, GROUND_HALF, GROUND_POSITION, Gameplay, RENDER_HZ, SYNTH_GAIN,
-    bind_offscreen, setup_render_world,
+    setup_render_world,
 };
 
 /// The audio sample rate the headless run renders at, in hertz.
@@ -85,7 +85,7 @@ pub fn run(
             .get_mut::<World>(render)
             .expect("the render sub-world exists");
         let _ = nested.with_mut::<Renderer, _>(renderer, |r| {
-            offscreen = Some(bind_offscreen(&nested, r, device, config.size));
+            offscreen = bind_offscreen(&nested, r, device, config.size);
         });
     }
 

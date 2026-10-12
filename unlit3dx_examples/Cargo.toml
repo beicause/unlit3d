@@ -22,7 +22,7 @@ hashbrown.workspace = true
 log.workspace = true
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.2" }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["winit", "ui"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["ui", "winit"] }
 unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2" }
 web-time.workspace = true
 wgpu.workspace = true
@@ -40,7 +40,9 @@ unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1
 # activity has one.
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 env_logger.workspace = true
-unlit3d_mcp = { path = "../crates/unlit3d_mcp", version = "0.1.0-dev.2" }
+# The library's `mcp` feature wraps the Model Context Protocol server the
+# demo serves with --mcp.
+unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2", features = ["mcp"] }
 
 # The headless mode encodes its last frame as a PNG on the way out.
 image = { workspace = true, default-features = false, features = ["png"] }

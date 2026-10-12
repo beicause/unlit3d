@@ -9,12 +9,15 @@ the binary is `unlit3dx-examples`.
 
 ## What you see
 
-A checkered ground plane and a pool of colored balls. Space drops a ball from above at a
-random position; balls fall, bounce off the ground and each other, and every
-contact hard enough plays a pentatonic note through a soundfont synthesizer.
-Balls also drop on their own, about one every one and a half seconds. The
-camera orbits the scene slowly. `M` plays a short MIDI sequence — the scale
-walked up and back down — through the same synthesizer.
+A checkered ground plane and a pool of falling shapes — balls, cubes,
+cylinders and cones, each wearing its own patterned material. Space drops a
+shape from above at a random position; shapes fall, bounce off the ground
+and each other, and every contact hard enough plays a pentatonic note
+through a music-box soundfont. Shapes also drop on their own, about one
+every 0.7 seconds. The camera orbits the scene slowly, and the render
+world's control panel — a small egui window — plays a short MIDI sequence
+(the scale walked up and back down), pauses, resumes and stops the audio,
+and drops more shapes on demand.
 
 ## How to run
 
@@ -58,15 +61,18 @@ webp baselines and the mix against a wav baseline, both kept in the
 Five worlds, per the `unlit3dx` protocol: jobs go out, snapshots come back.
 The other worlds act as servers; gameplay is the client that drives them.
 
-- The **host** owns the window and drives frames. It requests the GPU, builds
-  the render world, drains the render world's job inbox every frame and
-  presents the result — and knows nothing about physics or audio. Space is
-  forwarded to gameplay as a job.
+- The **host** owns the window and drives frames. It requests the GPU, and
+  once the GPU answers, the library's behaviours take over: `draw_presented`
+  drains the render world's job inbox every frame, dispatches the frame and
+  presents it, `pump_presented` keeps the frames coming while the window
+  lives, and `resize_presented` follows the window around — the host knows
+  nothing about physics or audio. Space is forwarded to gameplay as a job.
 - The **render world** is a sub-world on the main thread that behaves like a
   Godot-style resource server: gameplay requests meshes, materials and
   instances with jobs, and the entity bits of the spawned instances come
-  back as the handles. It also holds the orbiting camera and one behaviour
-  that applies the latest transform snapshot before anything draws.
+  back as the handles. It also holds the orbiting camera, the control
+  panel, and one behaviour that applies the latest transform snapshot
+  before anything draws.
 - The **physics world** steps rapier at 64 Hz and publishes body transforms
   and collision events. The ground is its first job.
 - The **audio world** owns the output stream and the synthesizer; it receives
