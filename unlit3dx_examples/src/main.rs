@@ -11,18 +11,21 @@
 //! the render server, publishes transforms, and books the notes each
 //! collision plays.
 //!
-//! Space drops a ball, M plays a short MIDI sequence through the same
-//! synthesizer. Balls fall, bounce off the ground and each other, and
-//! every contact hard enough plays a pentatonic note. The soundfont is
-//! embedded at build time: build.rs reads the FluidR3Mono_GM.sf3 file the
-//! repository keeps out of version control under assets, and the demo
-//! runs silent when it is missing.
+//! Space drops a body; the render world's control panel plays a short
+//! MIDI sequence, pauses and stops the audio, and drops more bodies.
+//! Bodies fall, bounce off the ground and each other, and every contact
+//! hard enough plays a music-box note. The soundfont is embedded at
+//! build time: build.rs reads the FluidR3Mono_GM.sf3 file the repository
+//! keeps out of version control under assets, and the demo runs silent
+//! when it is missing.
 //!
 //! The --headless switch runs the same scene without a window or
 //! threads: the worlds step inline at fixed rates, the run keeps its
 //! last frame and audio mix, and writes them into --out.
 
 use std::{process::ExitCode, time::Duration};
+
+use crossbeam_channel::Sender;
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use image::ImageEncoder;
@@ -169,6 +172,10 @@ struct SetupCargoInner {
     /// The render sub-world, spawned empty at startup and filled in by
     /// the setup command.
     render: Entity,
+    /// The gameplay world's command sender, for the control panel.
+    gameplay: Sender<Job<()>>,
+    /// The audio world's command sender, for the control panel.
+    audio: Sender<Job<()>>,
 }
 
 /// One frame's work, deferred to the host's apply.
@@ -249,6 +256,10 @@ impl Command for Setup {
             &gpu.queue,
             gpu.capabilities,
             cargo.frame_reader,
+            Some(ControlHooks {
+                gameplay: cargo.gameplay,
+                audio: cargo.audio,
+            }),
         );
         let _ = world.with_mut::<RenderRef, _>(app, |slot| {
             slot.0 = Some((cargo.render, renderer));
@@ -804,12 +815,17 @@ fn windowed(mcp: bool, event_loop: EventLoop<UserEvent>) {
     let audio = spawn_audio_world(
         world,
         AudioConfig::default(),
-        Some(synth_source_bytes(SOUNDFONT.into(), SYNTH_GAIN)),
+        Some(music_box_source(SOUNDFONT.into())),
     );
     let audio_sender = world
         .get::<RemoteWorld>(audio)
         .expect("the audio proxy carries its commands")
         .sender();
+    let audio_inbox = world
+        .get::<AudioReadyInbox>(audio)
+        .expect("the audio proxy carries its readiness inbox")
+        .0
+        .clone();
 
     // The gameplay world: one entity of state, ticked at a fixed rate,
     // driving the scene as the render server's client.
@@ -829,6 +845,7 @@ fn windowed(mcp: bool, event_loop: EventLoop<UserEvent>) {
                     physics_reader.clone(),
                     physics_sender.clone(),
                     audio_sender.clone(),
+                    audio_inbox.clone(),
                     render.clone(),
                 ),));
             }
@@ -858,6 +875,8 @@ fn windowed(mcp: bool, event_loop: EventLoop<UserEvent>) {
         SetupCargo(Some(SetupCargoInner {
             frame_reader,
             render,
+            gameplay: gameplay_sender.clone(),
+            audio: audio_sender.clone(),
         })),
         McpEnabled(mcp),
         WinitProxy(proxy),
@@ -872,7 +891,8 @@ fn windowed(mcp: bool, event_loop: EventLoop<UserEvent>) {
     // two behaviour families never share a borrow. Space drops a ball; M
     // plays the demo sequence through the audio world's MIDI player.
     world.spawn((resize(app),));
-    let demo_midi = Some(demo_midi());
+    // Space drops a body; the sequence, the pause and the stop live on
+    // the render world's control panel.
     world.spawn((OnKey::new(move |_world, _entity, key| {
         if !key.pressed || key.repeat {
             return;
@@ -880,12 +900,26 @@ fn windowed(mcp: bool, event_loop: EventLoop<UserEvent>) {
         if key.key == Key::Space {
             request_drop(&gameplay_sender);
         }
-        if key.key == Key::M
-            && let Some(midi) = &demo_midi
-        {
-            audio_sender.send(play_midi_job(midi.clone(), false)).ok();
-        }
     }),));
+    // The frame's input: the host dispatches its own key behaviours
+    // before the draw, the render world's UI source reads the same
+    // events while it draws, and the events are forgotten once the
+    // frame is out, so nothing hears them twice.
+    world.spawn_frame_behaviour(OnFrame::new(
+        FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
+        |world, _entity, _frame| {
+            dispatch_input(world);
+        },
+    ));
+    world.spawn_frame_behaviour(OnFrame::new(
+        FrameBehaviourOrder(FRAME_CLEAR_INPUT),
+        |world, _entity, _frame| {
+            let handle = world.query::<&InputHandle>().next().map(|(_, h)| h.clone());
+            if let Some(handle) = handle {
+                handle.write().clear_events();
+            }
+        },
+    ));
 
     host.run(event_loop).expect("the event loop runs");
 }

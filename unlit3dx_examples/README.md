@@ -70,7 +70,10 @@ The other worlds act as servers; gameplay is the client that drives them.
 - The **physics world** steps rapier at 64 Hz and publishes body transforms
   and collision events. The ground is its first job.
 - The **audio world** owns the output stream and the synthesizer; it receives
-  note jobs and mixes, underrunning to silence.
+  note jobs and mixes, underrunning to silence. While the soundfont loads it
+  publishes its readiness, and gameplay drops the notes of that window —
+  impacts before the load finishes stay silent instead of bursting out
+  together afterwards.
 - The **gameplay world** is the only place that knows about all three. It
   builds the scene by requesting assets and instances from the render
   server, requests bodies from physics, maps them to the instance handles,

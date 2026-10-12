@@ -22,7 +22,7 @@ hashbrown.workspace = true
 log.workspace = true
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.2" }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["winit"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["winit", "ui"] }
 unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2" }
 web-time.workspace = true
 wgpu.workspace = true

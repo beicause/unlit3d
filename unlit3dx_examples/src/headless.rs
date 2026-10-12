@@ -69,7 +69,16 @@ pub fn run(
     // windowed mode's draw behaviour drains it.
     let render = spawn_sub_world(&mut host, 64);
     let (frame_writer, frame_reader) = snapshot_pair::<TransformFrame>();
-    let renderer = setup_render_world(&mut host, render, device, queue, capabilities, frame_reader);
+    let renderer = setup_render_world(
+        &mut host,
+        render,
+        device,
+        queue,
+        capabilities,
+        frame_reader,
+        // No control panel headless: nothing is there to click.
+        None,
+    );
     let mut offscreen = None;
     {
         let nested = host
@@ -104,6 +113,10 @@ pub fn run(
         config.audio_sample_rate,
         2,
     );
+    // The inline world is ready from the first frame: the soundfont
+    // loaded above, before any tick ran, so no sound was ever stale.
+    let (ready_writer, ready_reader) = snapshot_pair::<AudioReady>();
+    ready_writer.publish(AudioReady(true));
 
     // The gameplay world, ticked inline at the gameplay rate.
     let mut gameplay_world = World::new();
@@ -112,6 +125,7 @@ pub fn run(
         physics_reader,
         physics_sender,
         audio_sender.clone(),
+        ready_reader,
         host.get::<SubWorld>(render)
             .expect("the render sub-world carries its proxy")
             .clone(),
