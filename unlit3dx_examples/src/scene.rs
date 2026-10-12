@@ -87,24 +87,6 @@ pub const SYNTH_GAIN: f32 = 2.0;
 /// like plucked timbre that stays smooth where a piano turns brash.
 pub const MUSIC_BOX_PROGRAM: i32 = 10;
 
-/// The demo's audio factory: the embedded soundfont through a music box.
-///
-/// The program change runs where the source is built, on the audio
-/// thread, so the windowed mixer and the headless mixer play the same
-/// preset without an extra round trip.
-pub fn music_box_source(soundfont: Arc<[u8]>) -> PcmSourceFactory {
-    let inner = synth_source_bytes(soundfont, SYNTH_GAIN);
-    Box::new(move |world, rate, channels| {
-        let source = inner(world, rate, channels);
-        for (_, mut voice) in world.query::<&mut SynthVoice>() {
-            voice
-                .synthesizer
-                .process_midi_message(0, 0xC0, MUSIC_BOX_PROGRAM, 0);
-        }
-        source
-    })
-}
-
 /// The demo's MIDI sequence: the scale walked up and back down, one note
 /// every 0.28 seconds, each held for 0.25 of them.
 pub fn demo_midi() -> Arc<MidiFile> {
@@ -806,6 +788,14 @@ impl Gameplay {
         // notes of impacts that happened during the soundfont load are
         // dropped, not queued to burst out all at once later.
         if let Some(state) = self.audio_inbox.latest() {
+            // The instrument is a play-time choice: the first moment the
+            // world can sound, the gameplay picks the preset its notes
+            // play on.
+            if state.0 && !self.audio_ready {
+                self.audio_sender
+                    .send(program_change_job(0, MUSIC_BOX_PROGRAM))
+                    .ok();
+            }
             self.audio_ready = state.0;
         }
         self.advance_build();

@@ -110,7 +110,7 @@ fn windowed(
     let audio = spawn_audio_world(
         world,
         AudioConfig::default(),
-        Some(music_box_source(SOUNDFONT.into())),
+        Some(synth_source_bytes(SOUNDFONT.into(), SYNTH_GAIN)),
     );
     let audio_sender = world
         .get::<RemoteWorld>(audio)
