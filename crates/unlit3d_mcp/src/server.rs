@@ -93,7 +93,7 @@ impl McpServer {
             // a client reads it as data instead of from the picture.
             Ok(Output::Image(image)) => {
                 let mut result =
-                    CallToolResult::success(vec![ContentBlock::image(image.data, "image/png")]);
+                    CallToolResult::success(vec![ContentBlock::image(image.data, image.mime_type)]);
                 result.structured_content = Some(image.structured);
                 Ok(result)
             }
@@ -370,25 +370,30 @@ impl McpServer {
         .await
     }
 
-    /// Read a texture resource as a PNG.
+    /// Read a texture resource as an inline image.
     #[tool(
         name = "read_texture_as_image",
-        description = "Read a texture resource as a PNG image, given its handle. Prefer save_texture_as_image to write the image to a file instead of returning it inline."
+        description = "Read a texture resource as an image content block, given its handle. The format argument picks lossless webp, the default, png, or jpeg. Prefer save_texture_as_image to write the image to a file instead of returning it inline."
     )]
     pub async fn read_texture_as_image(
         &self,
         Parameters(args): Parameters<HandleArg>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run(args.world, move |world| {
-            read_texture_as_image(world, args.context.map(entity), resource_id(args.id))
+            read_texture_as_image(
+                world,
+                args.context.map(entity),
+                resource_id(args.id),
+                args.format.as_deref(),
+            )
         })
         .await
     }
 
-    /// Read a texture resource as a PNG and write it to a file.
+    /// Read a texture resource and write it to a file as an image.
     #[tool(
         name = "save_texture_as_image",
-        description = "Read a texture resource as a PNG and write it to a file in a directory, returning the written path and size. Prefer this over read_texture_as_image, which returns the image inline."
+        description = "Read a texture resource and write it to a file in a directory, returning the written path and size. The file name's extension picks the format: .webp (lossless, the default when it has none), .png, or .jpg/.jpeg. Prefer this over read_texture_as_image, which returns the image inline."
     )]
     pub async fn save_texture_as_image(
         &self,
@@ -480,10 +485,10 @@ impl McpServer {
         .await
     }
 
-    /// Render a frame and read it back as a PNG.
+    /// Render a frame and read it back as an inline image.
     #[tool(
         name = "read_screenshot",
-        description = "Render one frame of a world and read its offscreen target back as an inline PNG image. Pass the target's resource handle to choose it, or omit for the world's only readable texture. Prefer save_screenshot to write the image to a file instead of returning it inline."
+        description = "Render one frame of a world and read its offscreen target back as an image content block. Pass the target's resource handle to choose it, or omit for the world's only readable texture; the format argument picks lossless webp, the default, png, or jpeg. Prefer save_screenshot to write the image to a file instead of returning it inline."
     )]
     pub async fn read_screenshot(
         &self,
@@ -494,15 +499,16 @@ impl McpServer {
                 world,
                 args.renderer.map(entity),
                 args.target.map(resource_id),
+                args.format.as_deref(),
             )
         })
         .await
     }
 
-    /// Render a frame and write it to a file as a PNG.
+    /// Render a frame and write it to a file as an image.
     #[tool(
         name = "save_screenshot",
-        description = "Render one frame of a world, read its offscreen target back as a PNG, and write it to a file in a directory, returning the written path and size. Prefer this over read_screenshot, which returns the image inline."
+        description = "Render one frame of a world, read its offscreen target back, and write it to a file in a directory, returning the written path and size. The file name's extension picks the format: .webp (lossless, the default when it has none), .png, or .jpg/.jpeg. Prefer this over read_screenshot, which returns the image inline."
     )]
     pub async fn save_screenshot(
         &self,
@@ -587,6 +593,10 @@ pub struct HandleArg {
     pub context: Option<u64>,
     /// The resource's id, as `list_resources` reports it.
     pub id: u64,
+    /// The image format to answer with: `"webp"` (lossless, the default),
+    /// `"png"`, or `"jpeg"`.
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// Arguments for one entity in a world.
@@ -701,12 +711,13 @@ pub struct SaveBuffer {
     pub size: Option<u64>,
     /// The directory to write the file into; created when it does not exist.
     pub directory: String,
-    /// The file name to write; `buffer-<id>.bin` when omitted.
+    /// The file name to write; it is given a `.bin` extension when it carries
+    /// none.
     #[serde(default)]
     pub file_name: Option<String>,
 }
 
-/// Arguments for saving a texture as a PNG.
+/// Arguments for saving a texture as an image.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveTexture {
     /// The world to drive: `"Host"` for the world the transport thread itself
@@ -721,12 +732,13 @@ pub struct SaveTexture {
     pub id: u64,
     /// The directory to write the file into; created when it does not exist.
     pub directory: String,
-    /// The file name to write; `texture-<id>.png` when omitted.
+    /// The file name to write; its extension picks the image format, and it is
+    /// given a `.webp` one when it carries none.
     #[serde(default)]
     pub file_name: Option<String>,
 }
 
-/// Arguments for saving a screenshot as a PNG.
+/// Arguments for saving a screenshot as an image.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveScreenshot {
     /// The world to drive: `"Host"` for the world the transport thread itself
@@ -743,7 +755,8 @@ pub struct SaveScreenshot {
     pub target: Option<u64>,
     /// The directory to write the file into; created when it does not exist.
     pub directory: String,
-    /// The file name to write; `screenshot.png` when omitted.
+    /// The file name to write; its extension picks the image format, and it is
+    /// given a `.webp` one when it carries none.
     #[serde(default)]
     pub file_name: Option<String>,
 }
@@ -804,6 +817,10 @@ pub struct Screenshot {
     /// for the world's only readable texture.
     #[serde(default)]
     pub target: Option<u64>,
+    /// The image format to answer with: `"webp"` (lossless, the default),
+    /// `"png"`, or `"jpeg"`.
+    #[serde(default)]
+    pub format: Option<String>,
 }
 
 /// Arguments for creating a mesh.

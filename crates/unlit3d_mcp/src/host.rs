@@ -37,13 +37,13 @@ use unlit3d::reflect;
 /// What a finished job produced.
 ///
 /// Most tools answer with structured JSON that the transport serialises
-/// through the value's reflection. Image tools answer with a PNG that the
-/// transport sends as an MCP image content block, so a client renders the
-/// picture instead of decoding JSON.
+/// through the value's reflection. Image tools answer with an encoded image
+/// that the transport sends as an MCP image content block, so a client
+/// renders the picture instead of decoding JSON.
 pub enum Output {
     /// A structured JSON result.
     Json(Value),
-    /// An encoded PNG.
+    /// An encoded image.
     Image(EncodedImage),
 }
 
@@ -53,10 +53,12 @@ impl From<Value> for Output {
     }
 }
 
-/// A PNG the transport sends as an image content block.
+/// An image the transport sends as an image content block.
 pub struct EncodedImage {
-    /// The PNG bytes, base64-encoded.
+    /// The encoded bytes, base64-encoded.
     pub data: String,
+    /// The format the bytes are in, as a MIME type.
+    pub mime_type: String,
     /// The image's metadata — its size — as structured JSON.
     pub structured: Value,
 }
@@ -556,17 +558,158 @@ pub fn save_buffer(
     file_name: Option<&str>,
 ) -> Result<Value, String> {
     let (_, bytes) = read_buffer_bytes(world, context, id, offset, size)?;
-    let default_name = format!("buffer-{}.bin", id.to_bits());
-    let file_name = file_name.unwrap_or(default_name.as_str());
-    to_value(&write_file(directory, file_name, &bytes)?)
+    let file_name = saved_name(file_name, "buffer", "bin");
+    to_value(&write_file(directory, &file_name, &bytes)?)
 }
 
-/// The PNG a texture read produced, with its size in pixels.
-fn read_texture_png(
-    world: &World,
-    context: Option<Entity>,
-    id: ResId,
-) -> Result<(Vec<u8>, u32, u32), String> {
+/// The pixels a texture read produced, still in the texture's own format.
+struct Frame {
+    /// The pixel bytes.
+    bytes: Vec<u8>,
+    /// The frame's width in pixels.
+    width: u32,
+    /// The frame's height in pixels.
+    height: u32,
+    /// The format the bytes are in.
+    format: wgpu::TextureFormat,
+}
+
+impl Frame {
+    /// The color type an encoder reads these bytes as.
+    fn color(&self) -> Result<image::ExtendedColorType, String> {
+        match self.format {
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
+                Ok(image::ExtendedColorType::Rgba8)
+            }
+            other => Err(format!("cannot encode a {other:?} texture")),
+        }
+    }
+
+    /// The frame's pixels with their alpha channel dropped, for an encoder
+    /// that takes no alpha.
+    fn rgb8(&self) -> Result<Vec<u8>, String> {
+        self.color()?;
+        let mut rgb = Vec::with_capacity(self.bytes.len() / 4 * 3);
+        for pixel in self.bytes.as_chunks::<4>().0 {
+            rgb.extend_from_slice(&pixel[..3]);
+        }
+        Ok(rgb)
+    }
+}
+
+/// The image format an image tool writes or sends, named by a file's
+/// extension or by a format argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImageFormat {
+    /// PNG.
+    Png,
+    /// Lossless WebP.
+    Webp,
+    /// JPEG, which is lossy and carries no alpha channel.
+    Jpeg,
+}
+
+impl ImageFormat {
+    /// The format an image tool uses when it is asked for none.
+    const DEFAULT: Self = Self::Webp;
+
+    /// The format `name` names, or an error when it names none this server
+    /// can write.
+    fn from_name(name: &str) -> Result<Self, String> {
+        match name.to_ascii_lowercase().as_str() {
+            "png" => Ok(Self::Png),
+            "webp" => Ok(Self::Webp),
+            "jpg" | "jpeg" => Ok(Self::Jpeg),
+            other => Err(format!(
+                "cannot write a {other:?} image; use .png, .webp, .jpg or .jpeg"
+            )),
+        }
+    }
+
+    /// The format the file named `file_name` asks for.
+    fn of(file_name: &str) -> Result<Self, String> {
+        extension_of(file_name).map_or_else(
+            || Err(format!("the file name {file_name:?} has no extension")),
+            Self::from_name,
+        )
+    }
+
+    /// The MIME type an image content block carries.
+    fn mime_type(self) -> &'static str {
+        match self {
+            Self::Png => "image/png",
+            Self::Webp => "image/webp",
+            Self::Jpeg => "image/jpeg",
+        }
+    }
+
+    /// Encode a frame read back from a texture.
+    fn encode(self, frame: &Frame) -> Result<Vec<u8>, String> {
+        let color = frame.color()?;
+        let mut bytes = Vec::new();
+        match self {
+            Self::Png => image::codecs::png::PngEncoder::new(&mut bytes).write_image(
+                &frame.bytes,
+                frame.width,
+                frame.height,
+                color,
+            ),
+            Self::Webp => image::codecs::webp::WebPEncoder::new_lossless(&mut bytes).write_image(
+                &frame.bytes,
+                frame.width,
+                frame.height,
+                color,
+            ),
+            Self::Jpeg => image::codecs::jpeg::JpegEncoder::new(&mut bytes).write_image(
+                &frame.rgb8()?,
+                frame.width,
+                frame.height,
+                image::ExtendedColorType::Rgb8,
+            ),
+        }
+        .map_err(|error| error.to_string())?;
+        Ok(bytes)
+    }
+}
+
+/// The extension `file_name` carries, unless it is empty.
+fn extension_of(file_name: &str) -> Option<&str> {
+    Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .filter(|extension| !extension.is_empty())
+}
+
+/// `file_name` with `extension` appended when it carries none, or `None`
+/// when there is no file name to extend.
+fn with_extension(file_name: Option<&str>, extension: &str) -> Option<String> {
+    let file_name = file_name?;
+    Some(match extension_of(file_name) {
+        Some(_) => file_name.to_string(),
+        None => format!("{file_name}.{extension}"),
+    })
+}
+
+/// The name a save writes when its caller named none: `stem` with a fresh
+/// random id, so a save never overwrites the file an earlier one wrote.
+fn generated_name(stem: &str, extension: &str) -> String {
+    format!("{stem}-{}.{extension}", uuid::Uuid::new_v4().simple())
+}
+
+/// The name a save writes: the caller's own, given `extension` when it
+/// carries none, or a fresh `stem` name when the caller named none.
+fn saved_name(file_name: Option<&str>, stem: &str, extension: &str) -> String {
+    with_extension(file_name, extension).unwrap_or_else(|| generated_name(stem, extension))
+}
+
+/// Encode a frame into `directory`, as the image format `file_name` names.
+fn save_image(directory: &str, file_name: &str, frame: &Frame) -> Result<SavedFile, String> {
+    let bytes = ImageFormat::of(file_name)?.encode(frame)?;
+    write_file(directory, file_name, &bytes)
+}
+
+/// The frame a texture read produced.
+fn read_texture_frame(world: &World, context: Option<Entity>, id: ResId) -> Result<Frame, String> {
     let context = render_context(world, context)?;
     let texture = {
         let graph = graph_of(world, context)?;
@@ -582,21 +725,30 @@ fn read_texture_png(
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
     let bytes = readback_texture(&device, &queue, &texture);
-    let png = encode_png(&bytes, texture.width(), texture.height(), texture.format())?;
-    Ok((png, texture.width(), texture.height()))
+    Ok(Frame {
+        bytes,
+        width: texture.width(),
+        height: texture.height(),
+        format: texture.format(),
+    })
 }
 
-/// Read a texture resource and encode it as a PNG.
+/// Read a texture resource and encode it as an inline image.
 pub fn read_texture_as_image(
     world: &World,
     context: Option<Entity>,
     id: ResId,
+    format: Option<&str>,
 ) -> Result<Output, String> {
-    let (png, width, height) = read_texture_png(world, context, id)?;
-    image_value(&png, width, height)
+    let format = match format {
+        Some(name) => ImageFormat::from_name(name)?,
+        None => ImageFormat::DEFAULT,
+    };
+    let frame = read_texture_frame(world, context, id)?;
+    image_value(&format.encode(&frame)?, frame.width, frame.height, format)
 }
 
-/// Read a texture resource as a PNG and write it to a file.
+/// Read a texture resource and write it to a file as an image.
 pub fn save_texture_as_image(
     world: &World,
     context: Option<Entity>,
@@ -604,10 +756,9 @@ pub fn save_texture_as_image(
     directory: &str,
     file_name: Option<&str>,
 ) -> Result<Value, String> {
-    let (png, _, _) = read_texture_png(world, context, id)?;
-    let default_name = format!("texture-{}.png", id.to_bits());
-    let file_name = file_name.unwrap_or(default_name.as_str());
-    to_value(&write_file(directory, file_name, &png)?)
+    let frame = read_texture_frame(world, context, id)?;
+    let file_name = saved_name(file_name, "texture", "webp");
+    to_value(&save_image(directory, &file_name, &frame)?)
 }
 
 /// The input state `handle` names, or the world's only one.
@@ -756,33 +907,42 @@ fn screenshot_target(
         .ok_or_else(|| "the world has no readable texture to screenshot; pass `target`".to_string())
 }
 
-/// Render one frame and read the offscreen target back as a PNG.
-fn screenshot_png(
+/// Render one frame and read the offscreen target back.
+fn screenshot_frame(
     world: &mut World,
     renderer: Option<Entity>,
     target: Option<ResId>,
-) -> Result<(Vec<u8>, u32, u32), String> {
+) -> Result<Frame, String> {
     let context = render_context(world, None)?;
     let texture = screenshot_target(world, context, target)?;
     render_frame(world, renderer)?;
     let device = device_of(world, context)?;
     let queue = queue_of(world, context)?;
     let bytes = readback_texture(&device, &queue, &texture);
-    let png = encode_png(&bytes, texture.width(), texture.height(), texture.format())?;
-    Ok((png, texture.width(), texture.height()))
+    Ok(Frame {
+        bytes,
+        width: texture.width(),
+        height: texture.height(),
+        format: texture.format(),
+    })
 }
 
-/// Render one frame and read the offscreen target back as a PNG.
+/// Render one frame and read the offscreen target back as an inline image.
 pub fn read_screenshot(
     world: &mut World,
     renderer: Option<Entity>,
     target: Option<ResId>,
+    format: Option<&str>,
 ) -> Result<Output, String> {
-    let (png, width, height) = screenshot_png(world, renderer, target)?;
-    image_value(&png, width, height)
+    let format = match format {
+        Some(name) => ImageFormat::from_name(name)?,
+        None => ImageFormat::DEFAULT,
+    };
+    let frame = screenshot_frame(world, renderer, target)?;
+    image_value(&format.encode(&frame)?, frame.width, frame.height, format)
 }
 
-/// Render one frame and write the offscreen target to a file as a PNG.
+/// Render one frame and write the offscreen target to a file as an image.
 pub fn save_screenshot(
     world: &mut World,
     renderer: Option<Entity>,
@@ -790,12 +950,9 @@ pub fn save_screenshot(
     directory: &str,
     file_name: Option<&str>,
 ) -> Result<Value, String> {
-    let (png, _, _) = screenshot_png(world, renderer, target)?;
-    to_value(&write_file(
-        directory,
-        file_name.unwrap_or("screenshot.png"),
-        &png,
-    )?)
+    let frame = screenshot_frame(world, renderer, target)?;
+    let file_name = saved_name(file_name, "screenshot", "webp");
+    to_value(&save_image(directory, &file_name, &frame)?)
 }
 
 /// Load a glTF file and spawn its default scene.
@@ -820,10 +977,16 @@ struct ImageSize {
     height: u32,
 }
 
-/// A PNG result the transport sends as an image content block.
-fn image_value(png: &[u8], width: u32, height: u32) -> Result<Output, String> {
+/// An encoded image the transport sends as an image content block.
+fn image_value(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    format: ImageFormat,
+) -> Result<Output, String> {
     Ok(Output::Image(EncodedImage {
-        data: base64::engine::general_purpose::STANDARD.encode(png),
+        data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        mime_type: format.mime_type().to_string(),
         structured: to_value(&ImageSize { width, height })?,
     }))
 }
@@ -842,26 +1005,6 @@ fn write_file(directory: &str, file_name: &str, bytes: &[u8]) -> Result<SavedFil
         path: path.display().to_string(),
         size: bytes.len(),
     })
-}
-
-/// Encode raw RGBA bytes as a PNG.
-fn encode_png(
-    bytes: &[u8],
-    width: u32,
-    height: u32,
-    format: wgpu::TextureFormat,
-) -> Result<Vec<u8>, String> {
-    let color = match format {
-        wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
-            image::ExtendedColorType::Rgba8
-        }
-        other => return Err(format!("cannot encode a {other:?} texture as a PNG")),
-    };
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png)
-        .write_image(bytes, width, height, color)
-        .map_err(|error| error.to_string())?;
-    Ok(png)
 }
 
 #[cfg(test)]
@@ -923,5 +1066,53 @@ mod tests {
             panic!("a job answers with JSON");
         };
         assert_eq!(value, serde_json::json!(1));
+    }
+
+    #[test]
+    fn an_extension_is_only_read_when_it_is_present() {
+        assert_eq!(extension_of("a.png"), Some("png"));
+        assert_eq!(extension_of("dir/a.webp"), Some("webp"));
+        assert_eq!(extension_of("a"), None);
+        assert_eq!(extension_of("a."), None);
+    }
+
+    #[test]
+    fn a_missing_extension_is_appended() {
+        assert_eq!(with_extension(None, "webp"), None);
+        assert_eq!(with_extension(Some("a"), "webp").as_deref(), Some("a.webp"));
+        assert_eq!(
+            with_extension(Some("a.png"), "webp").as_deref(),
+            Some("a.png")
+        );
+    }
+
+    #[test]
+    fn a_generated_name_carries_a_fresh_id() {
+        let name = generated_name("texture", "webp");
+        assert!(name.starts_with("texture-"), "{name}");
+        assert!(name.ends_with(".webp"), "{name}");
+        assert_ne!(name, generated_name("texture", "webp"));
+    }
+
+    #[test]
+    fn a_saved_name_prefers_the_callers_own() {
+        assert_eq!(saved_name(Some("a"), "buffer", "bin"), "a.bin");
+        assert_eq!(saved_name(Some("a.png"), "buffer", "bin"), "a.png");
+        let generated = saved_name(None, "screenshot", "webp");
+        assert!(generated.starts_with("screenshot-"), "{generated}");
+        assert!(generated.ends_with(".webp"), "{generated}");
+    }
+
+    #[test]
+    fn an_extension_names_the_image_format() {
+        assert_eq!(ImageFormat::of("a.png"), Ok(ImageFormat::Png));
+        assert_eq!(ImageFormat::of("a.webp"), Ok(ImageFormat::Webp));
+        assert_eq!(ImageFormat::of("a.jpg"), Ok(ImageFormat::Jpeg));
+        assert_eq!(ImageFormat::of("a.jpeg"), Ok(ImageFormat::Jpeg));
+        assert_eq!(ImageFormat::of("a.JPG"), Ok(ImageFormat::Jpeg));
+        assert_eq!(ImageFormat::of("a.PNG"), Ok(ImageFormat::Png));
+        assert_eq!(ImageFormat::from_name("jpeg"), Ok(ImageFormat::Jpeg));
+        assert!(ImageFormat::of("a").is_err());
+        assert!(ImageFormat::of("a.gif").is_err());
     }
 }

@@ -29,6 +29,7 @@ tokio = { workspace = true, features = ["io-std", "io-util", "macros", "rt", "sy
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2", features = ["reflect"] }
 unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["reflect", "unlit"] }
 unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["gltf", "reflect"] }
+uuid.workspace = true
 wgpu.workspace = true
 
 [dev-dependencies]

@@ -67,7 +67,9 @@ world：字符串 `"Host"` 指拥有它的线程直接持有的 host world，`{"
 `graph_maintain` 就是渲染循环所跑的那一趟：丢弃无引用的资源、重建脏的资源。`read_buffer` 会拒绝没有以 `COPY_SRC` 创建的缓冲，而不是让设备拒绝这次
 拷贝。`save_buffer` 与 `save_texture_as_image` 读取方式相同，但把结果写入给定的
 目录中的文件（目录不存在时会创建），并返回写入的路径与大小，调用者因此从磁盘
-读取字节，而不是解码 base64 或内联图像。
+读取字节，而不是解码 base64 或内联图像。没有后缀名的文件名会被补上默认后缀：
+`save_buffer` 补 `.bin`，图像工具补 `.webp`。后者的后缀决定格式——默认的无损
+`.webp`、`.png`，或有损的 `.jpg`/`.jpeg`——其他后缀会被拒绝。
 
 **输入**——`input_state` 与 `send_input`。`input_state` 报告 `InputState` 持有的状态，
 其中包括自上次清除以来到达的事件，因此调用者能看到这一帧发生了什么。`send_input` 把输入
@@ -78,8 +80,10 @@ world：字符串 `"Host"` 指拥有它的线程直接持有的 host world，`{"
 `save_screenshot`、`load_gltf`。`create_mesh` 从位置（以及可选的 uv、颜色与索引）
 分配一个 unlit 网格，并生成绘制它的实体；`remove_mesh` 再把它释放。`render_frame` 画
 一帧，`read_screenshot` 画一帧并以 image content block 返回离屏目标（图像尺寸作为
-结构化内容），客户端因此直接渲染像素；`read_texture_as_image` 以同样方式作答。
-`save_screenshot` 同样画一帧，但把 PNG 写入文件，并返回其路径与大小。
+结构化内容），客户端因此直接渲染像素；`read_texture_as_image` 以同样方式作答。两个
+读取工具都接受 `format` 参数——默认的无损 `webp`、`png`，或 `jpeg`。
+`save_screenshot` 同样画一帧，但把它写入文件，并返回其路径与大小；它的后缀与
+`save_texture_as_image` 一样决定格式。
 
 这些 `save_*` 工具的存在，是因为内联图像或 base64 负载会占用模型难以释放的上下文，
 而磁盘上的文件可以按需分次读取，也可以完全不读。优先使用它们，只有在调用者确实

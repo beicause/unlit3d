@@ -264,14 +264,21 @@ fn image_block(result: &Value) -> &Value {
         .expect("the result carries an image content block")
 }
 
-/// The base64 `data` of a tool result's image content block, decoded.
-fn image_bytes(result: &Value) -> Vec<u8> {
+/// The base64 `data` of a tool result's image content block, decoded, which
+/// must carry `mime_type`.
+fn image_bytes_of_type(result: &Value, mime_type: &str) -> Vec<u8> {
     let block = image_block(result);
-    assert_eq!(block["mimeType"], "image/png");
+    assert_eq!(block["mimeType"], mime_type, "the block carries its format");
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
         .decode(block["data"].as_str().expect("the image has data"))
         .expect("the image data is base64")
+}
+
+/// The base64 `data` of a tool result's image content block, decoded; a read
+/// tool answers with lossless WebP unless it is asked for another format.
+fn image_bytes(result: &Value) -> Vec<u8> {
+    image_bytes_of_type(result, "image/webp")
 }
 
 /// An RGBA pixel of a decoded PNG.
@@ -394,7 +401,7 @@ fn the_server_lists_its_tools_and_renders() {
             )
             .await;
         let image = image::load_from_memory(&image_bytes(&shot))
-            .expect("the screenshot is a PNG")
+            .expect("the screenshot is a WebP")
             .to_rgba8();
         assert_eq!(
             image.dimensions(),
@@ -419,9 +426,10 @@ fn the_server_lists_its_tools_and_renders() {
         let path = saved["path"]
             .as_str()
             .expect("save_screenshot reports a path");
+        let default_name = path.rsplit('/').next().expect("the path names a file");
         assert!(
-            path.ends_with("screenshot.png"),
-            "save_screenshot defaults to screenshot.png: {saved}"
+            default_name.starts_with("screenshot-") && default_name.ends_with(".webp"),
+            "save_screenshot defaults to a fresh webp file: {saved}"
         );
         assert_eq!(
             saved["size"].as_u64(),
@@ -433,12 +441,74 @@ fn the_server_lists_its_tools_and_renders() {
             "the reported size matches the file on disk"
         );
         let saved_image = image::open(path)
-            .expect("the saved screenshot is a PNG")
+            .expect("the saved screenshot is a WebP")
             .to_rgba8();
         assert_eq!(
             saved_image.dimensions(),
             SIZE,
             "the saved screenshot is the target size"
+        );
+
+        // The name decides the format: a .png name writes a PNG, and the
+        // extension is appended when the name carries none.
+        let png = server
+            .tool(
+                "save_screenshot",
+                json!({
+                    "directory": directory.to_str().unwrap(),
+                    "file_name": "explicit.png",
+                }),
+            )
+            .await;
+        let png_path = png["path"]
+            .as_str()
+            .expect("save_screenshot reports a path");
+        assert!(
+            png_path.ends_with("explicit.png"),
+            "save_screenshot honours an explicit .png name: {png}"
+        );
+        assert_eq!(
+            image::open(png_path)
+                .expect("the named file is a PNG")
+                .to_rgba8()
+                .dimensions(),
+            SIZE,
+            "the PNG is the target size"
+        );
+        let jpeg = server
+            .tool(
+                "save_screenshot",
+                json!({
+                    "directory": directory.to_str().unwrap(),
+                    "file_name": "explicit.jpg",
+                }),
+            )
+            .await;
+        let jpeg_path = jpeg["path"]
+            .as_str()
+            .expect("save_screenshot reports a path");
+        assert_eq!(
+            image::open(jpeg_path)
+                .expect("the named file is a JPEG")
+                .to_rgba8()
+                .dimensions(),
+            SIZE,
+            "the JPEG is the target size"
+        );
+        let named = server
+            .tool(
+                "save_screenshot",
+                json!({
+                    "directory": directory.to_str().unwrap(),
+                    "file_name": "named",
+                }),
+            )
+            .await;
+        assert!(
+            named["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("named.webp")),
+            "a name without an extension gets the default one: {named}"
         );
         let _ = std::fs::remove_dir_all(&directory);
 

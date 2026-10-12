@@ -92,6 +92,10 @@ letting the device reject the copy. `save_buffer` and `save_texture_as_image`
 read the same way but write to a file in the directory they are given —
 creating it when it does not exist — and answer with the written path and size,
 so a caller reads bytes off disk instead of decoding base64 or an inline image.
+A name without an extension is given a default one: `.bin` for `save_buffer`,
+`.webp` for the image tools. For those two the extension picks the format —
+lossless `.webp`, the default, `.png`, or lossy `.jpg`/`.jpeg` — and any other
+extension is refused.
 
 **Input** — `input_state` and `send_input`. `input_state` reports the state
 `InputState` holds, including the events that arrived since they were last
@@ -106,9 +110,12 @@ unlit mesh from positions, optional uvs, colors and indices, and spawns the
 entity that draws it; `remove_mesh` releases it again. `render_frame` draws one
 frame, and `read_screenshot` draws one and returns the offscreen target as an
 image content block, so a client renders the pixels directly, with the image size
-as structured content; `read_texture_as_image` answers the same way.
-`save_screenshot` draws one too and writes the PNG to a file, answering with its
-path and size.
+as structured content; `read_texture_as_image` answers the same way. Both
+read tools take a `format` argument — lossless `webp`, the default, `png`, or
+`jpeg`.
+`save_screenshot` draws one too and writes it to a file, answering with its path
+and size; its extension picks the format exactly as `save_texture_as_image`'s
+does.
 
 The `save_*` tools exist because an inline image or base64 payload costs a model
 context it cannot easily shed, while a file on disk can be read back a piece at a
