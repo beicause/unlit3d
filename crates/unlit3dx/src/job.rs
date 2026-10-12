@@ -59,6 +59,22 @@ impl<R: Send + 'static> Request<R> {
     }
 }
 
+/// The answers of a whole request batch, once every one of them has
+/// landed.
+///
+/// Returns `None` while any request is still unanswered. Checking
+/// [`Request::answered`](crate::job::Request::answered) first matters:
+/// [`Request::poll`](crate::job::Request::poll) consumes its answer, so a
+/// plain poll-over-all would swallow the answers that arrived early and
+/// never see them again.
+#[must_use]
+pub fn poll_all<R: Send + 'static>(requests: &[Request<R>]) -> Option<Vec<R>> {
+    requests
+        .iter()
+        .all(Request::answered)
+        .then(|| requests.iter().filter_map(Request::poll).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

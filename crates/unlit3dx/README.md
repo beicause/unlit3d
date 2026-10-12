@@ -86,7 +86,9 @@ through a single-slot mailbox. That is the whole protocol.
 the remote thread drains its queue before every tick, so a job never races a
 tick. `RemoteWorld::request` wraps a job with a bounded reply channel and
 returns a `Request<R>` the caller may `poll` or `recv` later: the send is
-fire-and-forget, and the answer arrives whenever it arrives. A dropped
+fire-and-forget, and the answer arrives whenever it arrives. `poll_all`
+answers a batch of requests only once every answer is in — a batch polled
+too early stays intact instead of losing the requests that did answer. A dropped
 `Request` costs nothing; a dropped job's result is simply never read.
 
 ## Snapshots
@@ -142,6 +144,34 @@ The feature-gated modules are the bridges between worlds:
   `MidiPlayer`: a MIDI file sequencer fed from `load_midi_file` (an SMF
   file) or `midi_file` (a list of timed messages). The `gain` argument
   scales the mix, for the headroom soundfont presets leave.
+- **mcp** (off by default): `serve_mcp` serves the host world and its
+  sub-worlds over the [Model Context
+  Protocol](../crates/unlit3d_mcp/README.md), so a live scene can be
+  inspected and screenshotted from a terminal while it runs.
+
+## The application skeleton
+
+The window-facing half of a multi-world app is app-agnostic too, so it
+ships with the runtime. The **gpu** module asks for a `Gpu` off the
+main thread and answers back into a closure on it — wasm-safe, no
+blocking:
+
+```rust,ignore
+world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
+    // ... build the scene where the request started ...
+}));
+```
+
+`Gpu::headless` is the same request without a window, for tests and
+tools. The **present** module owns the plumbing from a sub-world to a
+window: `setup_presenter` renders the scene into an offscreen target and
+blits it to the swap chain (which also keeps the frame long enough to
+read back — screenshots and snapshot tests rely on it), `draw_presented`
+is the per-frame behaviour that drains the sub-world, dispatches the
+frame and presents it, `pump_presented` keeps frames coming while the
+window lives, and `resize_presented` follows the window around. Mesh and
+camera helpers — `uv_sphere`, `cuboid_mesh`, `camera_looking_at`,
+`linear_sampler` — round the skeleton out.
 
 ## Tests
 

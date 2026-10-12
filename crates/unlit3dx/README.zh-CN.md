@@ -78,7 +78,8 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 `Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`RemoteWorld::send` 把一个 job 排入
 队列；远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
 `RemoteWorld::request` 给 job 配上一个有界回复通道，返回一个可以稍后 `poll` 或
-`recv` 的 `Request<R>`：发送是即发即忘的，答案什么时候到就什么时候到。丢弃一个
+`recv` 的 `Request<R>`：发送是即发即忘的，答案什么时候到就什么时候到。`poll_all`
+只在整批答案都就绪时才取出整批结果——过早地取批不会弄丢已经作答的请求。丢弃一个
 `Request` 没有任何代价；丢弃一个 job 的结果只是没人去读而已。
 
 ## 快照
@@ -122,6 +123,27 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
   `play_midi_job` 与 `stop_midi_job` 驱动一台 `MidiPlayer`：MIDI 文件音序器，
   由 `load_midi_file`（SMF 文件）或 `midi_file`（一列定时消息）喂入。`gain`
   参数缩放混音，补上音色库预留的余量。
+- **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其子 world 通过
+  [模型上下文协议](../crates/unlit3d_mcp/README.zh-CN.md)对外服务，场景
+  运行时即可从终端检视与截图。
+
+## 应用骨架
+
+多 world 应用面向窗口的那一半同样与应用无关，所以随运行时一起提供。**gpu**
+模块在主线程之外请求 `Gpu`，把答案送回主线程上的一个闭包——wasm 安全，不阻塞：
+
+```rust,ignore
+world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
+    // ... 在请求发起处搭建场景 ...
+}));
+```
+
+`Gpu::headless` 是同一个请求的免窗口版本，供测试与工具使用。**present** 模块
+持有从子 world 到窗口的全部管线：`setup_presenter` 把场景渲染进离屏目标再
+blit 到交换链（这也让帧存活得足够久、可以读回——截图与快照测试正依赖这一点），
+`draw_presented` 是每帧排空子 world、分发帧并呈现的行为，`pump_presented` 在窗口
+存活期间让帧持续到来，`resize_presented` 跟随窗口变化。网格与相机辅助——
+`uv_sphere`、`cuboid_mesh`、`camera_looking_at`、`linear_sampler`——补全骨架。
 
 ## 测试
 

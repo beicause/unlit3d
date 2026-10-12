@@ -13,7 +13,7 @@
 use glam::{Quat, Vec3};
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::pipeline::UnlitOptions;
-use unlit3d::components::{GpuMaterial, GpuMesh, Transform};
+use unlit3d::components::{Camera, GpuMaterial, GpuMesh, Transform};
 use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame};
 use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
@@ -270,4 +270,154 @@ pub fn rgba_texture(
         },
     );
     texture
+}
+
+/// The opaque white every generated mesh vertex carries; materials tint
+/// via textures, so the geometry itself stays colorless.
+const WHITE_COLOR: [u8; 4] = [255, 255, 255, 255];
+
+/// The sampler most textured materials want: linear filtering keeps flat
+/// colors clean under minification.
+#[must_use]
+pub fn linear_sampler() -> wgpu::SamplerDescriptor<'static> {
+    wgpu::SamplerDescriptor {
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    }
+}
+
+/// A camera at `eye` looking at `target`, with a reverse-z infinite
+/// perspective of `fov_y_radians` fitted to `size`.
+#[must_use]
+pub fn camera_looking_at(
+    size: (u32, u32),
+    eye: Vec3,
+    target: Vec3,
+    fov_y_radians: f32,
+    near: f32,
+) -> Camera {
+    let aspect = size.0 as f32 / size.1.max(1) as f32;
+    Camera {
+        view_from_world: glam::camera::rh::view::look_at_mat4(eye, target, Vec3::Y),
+        clip_from_view: glam::camera::rh::proj::directx::perspective_infinite_reverse(
+            fov_y_radians,
+            aspect,
+            near,
+        ),
+        active: true,
+    }
+}
+
+/// A lat-long sphere: positions, uvs, opaque white colors and indices.
+///
+/// The triangles are wound CCW as seen from outside, matching the
+/// back-face culling of the unlit pipeline: stacks grow downward and
+/// slices counterclockwise, so each quad reads (top, top-next, bottom)
+/// and (top-next, bottom-next, bottom) against the outward direction.
+#[must_use]
+pub fn uv_sphere(radius: f32, slices: usize, stacks: usize) -> OwnedUnlitMeshDesc {
+    let count = (slices + 1) * (stacks + 1);
+    let mut positions = Vec::with_capacity(count);
+    let mut uvs = Vec::with_capacity(count);
+    let mut colors = Vec::with_capacity(count);
+    for stack in 0..=stacks {
+        let v = stack as f32 / stacks as f32;
+        let phi = v * core::f32::consts::PI;
+        let (sin_phi, cos_phi) = phi.sin_cos();
+        for slice in 0..=slices {
+            let u = slice as f32 / slices as f32;
+            let theta = u * core::f32::consts::TAU;
+            let (sin_theta, cos_theta) = theta.sin_cos();
+            positions.push([
+                radius * sin_phi * cos_theta,
+                radius * cos_phi,
+                radius * sin_phi * sin_theta,
+            ]);
+            uvs.push([u, v]);
+            colors.push(WHITE_COLOR);
+        }
+    }
+    let mut indices = Vec::with_capacity(slices * stacks * 6);
+    for stack in 0..stacks {
+        for slice in 0..slices {
+            let row = (stack * (slices + 1) + slice) as u32;
+            let next = row + slices as u32 + 1;
+            indices.extend_from_slice(&[row, row + 1, next, row + 1, next + 1, next]);
+        }
+    }
+    OwnedUnlitMeshDesc {
+        positions,
+        uvs: Some(uvs),
+        colors: Some(colors),
+        indices: Some(indices),
+    }
+}
+
+/// The unit right and up axes for each cuboid face, with the face's
+/// outward normal, so the six faces share one loop.
+const FACES: [([f32; 3], [f32; 3], [f32; 3]); 6] = [
+    ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+    ([-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+    ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+    ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+    ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+    ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]),
+];
+
+/// An axis-aligned cuboid from its half extents: 24 vertices (four per
+/// face, so each face has clean uvs) and 36 indices, wound CCW as seen
+/// from outside.
+#[must_use]
+pub fn cuboid_mesh(half: Vec3) -> OwnedUnlitMeshDesc {
+    let mut positions = Vec::with_capacity(24);
+    let mut uvs = Vec::with_capacity(24);
+    let mut colors = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(36);
+    for (normal, up, right) in FACES {
+        // The face spans the half extents projected onto its right and
+        // up axes; the normal is a unit axis, so its projection is one
+        // component.
+        let extent_right = right[0] * half.x + right[1] * half.y + right[2] * half.z;
+        let extent_up = up[0] * half.x + up[1] * half.y + up[2] * half.z;
+        let base = positions.len() as u32;
+        let face = |du: f32, dv: f32| -> [f32; 3] {
+            [
+                normal[0] * half.x + right[0] * du * extent_right + up[0] * dv * extent_up,
+                normal[1] * half.y + right[1] * du * extent_right + up[1] * dv * extent_up,
+                normal[2] * half.z + right[2] * du * extent_right + up[2] * dv * extent_up,
+            ]
+        };
+        let corners = [
+            face(-1.0, -1.0),
+            face(1.0, -1.0),
+            face(1.0, 1.0),
+            face(-1.0, 1.0),
+        ];
+        let corner_uvs = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        for (position, uv) in corners.into_iter().zip(corner_uvs) {
+            positions.push(position);
+            uvs.push(uv);
+            colors.push(WHITE_COLOR);
+        }
+        // Corners sit at (-1, -1) (1, -1) (1, 1) (-1, 1) in the face's
+        // (right, up) plane. When right crosses up along the normal that
+        // plain order reads CCW from outside; a face whose axes cross
+        // against the normal reads CW and takes the reversed order.
+        let plain = Vec3::from(right)
+            .cross(Vec3::from(up))
+            .dot(Vec3::from(normal))
+            > 0.0;
+        if plain {
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+        } else {
+            indices.extend_from_slice(&[base + 2, base + 1, base, base, base + 3, base + 2]);
+        }
+    }
+    OwnedUnlitMeshDesc {
+        positions,
+        uvs: Some(uvs),
+        colors: Some(colors),
+        indices: Some(indices),
+    }
 }
