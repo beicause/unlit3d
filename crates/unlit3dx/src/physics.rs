@@ -60,27 +60,41 @@ pub struct PhysicsInbox(pub SnapshotReader<PhysicsSnapshot>);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PhysicsBody(pub RigidBodyHandle);
 
-/// A falling, bouncing ball: the simulation the example drives.
+/// The collider shape a dynamic body carries.
 #[derive(Clone, Copy, Debug)]
-pub struct BallDesc {
-    /// Where the ball starts, in metres.
-    pub position: Vec3,
-    /// The velocity the ball starts with, in metres per second.
-    pub velocity: Vec3,
-    /// The ball's radius, in metres.
-    pub radius: f32,
-    /// How bouncy the ball is, from zero to one.
-    pub restitution: f32,
+pub enum BodyShape {
+    /// A sphere of the given radius, in metres.
+    Ball(f32),
+    /// An axis-aligned box of the given half extents, in metres.
+    Cuboid(Vec3),
+    /// A cylinder along the y axis: half height, then radius, in metres.
+    Cylinder(f32, f32),
+    /// A cone pointing up the y axis: half height, then base radius, in
+    /// metres.
+    Cone(f32, f32),
 }
 
-/// Spawn a dynamic ball with a collision-event collider, returning its body.
+/// A falling, bouncing body: the simulation the example drives.
+#[derive(Clone, Copy, Debug)]
+pub struct BodyDesc {
+    /// Where the body starts, in metres.
+    pub position: Vec3,
+    /// The velocity the body starts with, in metres per second.
+    pub velocity: Vec3,
+    /// How bouncy the body is, from zero to one.
+    pub restitution: f32,
+    /// The collider shape the body carries.
+    pub shape: BodyShape,
+}
+
+/// Spawn a dynamic body with a collision-event collider, returning it.
 ///
 /// # Panics
 ///
 /// Panics when the world carries no [`PhysicsWorld`] yet, which only the
 /// physics thread's first tick creates.
 #[must_use]
-pub fn spawn_ball(world: &mut World, desc: BallDesc) -> RigidBodyHandle {
+pub fn spawn_body(world: &mut World, desc: BodyDesc) -> RigidBodyHandle {
     ensure_physics_world(world);
     let mut physics = physics_world(world);
     let body = physics.insert_body(
@@ -89,8 +103,14 @@ pub fn spawn_ball(world: &mut World, desc: BallDesc) -> RigidBodyHandle {
             .linvel(desc.velocity)
             .build(),
     );
+    let collider = match desc.shape {
+        BodyShape::Ball(radius) => ColliderBuilder::ball(radius),
+        BodyShape::Cuboid(half) => ColliderBuilder::cuboid(half.x, half.y, half.z),
+        BodyShape::Cylinder(half_height, radius) => ColliderBuilder::cylinder(half_height, radius),
+        BodyShape::Cone(half_height, radius) => ColliderBuilder::cone(half_height, radius),
+    };
     physics.insert_collider(
-        ColliderBuilder::ball(desc.radius)
+        collider
             .restitution(desc.restitution)
             .active_events(ActiveEvents::COLLISION_EVENTS),
         Some(body),

@@ -55,7 +55,7 @@ The **render** bridge's `RenderServer` turns that into a resource server:
 `create_mesh`, `create_material` and `spawn_instance` jobs return entity
 bits a remote gameplay world can hold as handles. The **physics** bridge
 publishes a `PhysicsSnapshot` of body transforms and collision events, and
-the **synth** bridge turns note jobs into soundfont audio. The
+the **synth** bridge turns note jobs and MIDI files into soundfont audio. The
 `unlit3dx_examples` crate ties every bridge into one scene.
 
 ## Why separate worlds
@@ -123,17 +123,25 @@ The feature-gated modules are the bridges between worlds:
   `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64) and publishes a
   `PhysicsSnapshot` — the transforms of every moving body, plus the collision
   pairs that started and stopped this step, with the speed of each new
-  contact. `spawn_ball` and `spawn_fixed_cuboid` are the building blocks, and
-  `PhysicsBody` marks the body an entity owns.
+  contact. `spawn_body` (a `BodyDesc` with a `BodyShape`) and
+  `spawn_fixed_cuboid` are the building blocks, and `PhysicsBody` marks the
+  body an entity owns.
 - **audio** (on by default): `spawn_audio_world` opens the output device and
   owns its stream on the audio thread. A `PcmSource` fills a ring buffer sized
   by `AudioConfig`; the device callback drains it and underruns to silence.
-  Gameplay never touches audio directly — it sends jobs.
-- **synth** (on by default, implies audio): `synth_source` loads a soundfont
-  into a [rustysynth-ext](https://docs.rs/rustysynth-ext) synthesizer on the
-  audio thread, and `note_on_job`/`note_off_job`/`notes_off_all_job` are
-  ready-made jobs against it. `synth_source_with_gain` scales the
-  mix, for the headroom soundfont presets leave.
+  Gameplay never touches audio directly — it sends jobs. The proxy also
+  carries an `AudioReadyInbox`: the world publishes when it can actually
+  sound, so a caller can tell a loading soundfont from a broken setup and
+  drop stale notes instead of queueing them behind the load.
+- **synth** (on by default, implies audio): `synth_source_bytes` builds a
+  mixer from soundfont bytes — typically an `include_bytes!`, so no
+  filesystem is involved — loading a
+  [rustysynth-ext](https://docs.rs/rustysynth-ext) synthesizer on the audio
+  thread, and `note_on_job`/`note_off_job`/`notes_off_all_job` are
+  ready-made jobs against it. `play_midi_job` and `stop_midi_job` drive a
+  `MidiPlayer`: a MIDI file sequencer fed from `load_midi_file` (an SMF
+  file) or `midi_file` (a list of timed messages). The `gain` argument
+  scales the mix, for the headroom soundfont presets leave.
 
 ## Tests
 

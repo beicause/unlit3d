@@ -19,11 +19,14 @@ pub mod world;
 /// The types most callers of the multi-world model need.
 pub mod prelude {
     #[cfg(feature = "audio")]
-    pub use crate::audio::{AudioConfig, PcmSource, PcmSourceFactory, spawn_audio_world};
+    pub use crate::audio::{
+        AudioConfig, AudioPaused, AudioReady, AudioReadyInbox, PcmSource, PcmSourceFactory,
+        pause_audio_job, spawn_audio_world,
+    };
     #[cfg(feature = "physics")]
     pub use crate::physics::{
-        BallDesc, PHYSICS_HZ, PhysicsBody, PhysicsConfig, PhysicsInbox, PhysicsSnapshot,
-        RigidBodyHandle, spawn_ball, spawn_fixed_cuboid, spawn_physics_world, step_once,
+        BodyDesc, BodyShape, PHYSICS_HZ, PhysicsBody, PhysicsConfig, PhysicsInbox, PhysicsSnapshot,
+        RigidBodyHandle, spawn_body, spawn_fixed_cuboid, spawn_physics_world, step_once,
     };
     #[cfg(feature = "render")]
     pub use crate::render::{
@@ -32,8 +35,9 @@ pub mod prelude {
     };
     #[cfg(feature = "synth")]
     pub use crate::synth::{
-        SynthVoice, VoiceError, note_off_job, note_on_job, notes_off_all_job, synth_source,
-        synth_source_with_gain,
+        MidiEvent, MidiFile, MidiPlayer, SynthVoice, VoiceError, load_midi_file, load_soundfont,
+        midi_file, note_off_job, note_on_job, notes_off_all_job, play_midi_job, program_change_job,
+        stop_audio_job, stop_midi_job, synth_source_bytes,
     };
     pub use crate::{
         bridge::RenderEntity,

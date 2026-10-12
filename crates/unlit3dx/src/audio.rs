@@ -13,8 +13,10 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
 use unlit_ecs::{Entity, World};
 
+use crate::channel::{SnapshotReader, snapshot_pair};
+use crate::job::Job;
 use crate::thread::FixedClock;
-use crate::world::spawn_remote_world;
+use crate::world::spawn_remote_world_with;
 
 /// How many frames the filler generates per pass, the unit the pacing and
 /// the ring's headroom are measured in.
@@ -61,6 +63,60 @@ pub trait PcmSource: Send {
 /// setup may touch entities on the audio world.
 pub type PcmSourceFactory = Box<dyn FnOnce(&mut World, u32, u16) -> Box<dyn PcmSource> + Send>;
 
+/// Whether the audio world's output is paused, carried on one entity the
+/// filler consults every tick.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioPaused(pub bool);
+
+/// A job that pauses or resumes the audio world's output.
+///
+/// While paused the filler keeps feeding the ring silence, so the output
+/// stays fresh and resumes exactly where the mixer left off.
+pub fn pause_audio_job(paused: bool) -> Job<()> {
+    Box::new(move |world| set_paused(world, paused))
+}
+
+/// Mark the audio world's output paused or resumed, creating the marker
+/// entity the first time.
+pub(crate) fn set_paused(world: &mut World, paused: bool) {
+    let holder = world
+        .query::<&AudioPaused>()
+        .next()
+        .map(|(entity, _)| entity);
+    match holder {
+        Some(entity) => {
+            let _ = world.with_mut::<AudioPaused, _>(entity, |state| state.0 = paused);
+        }
+        None => {
+            world.spawn((AudioPaused(paused),));
+        }
+    }
+}
+
+/// Whether the audio world's output is paused right now: true only when
+/// the world carries an AudioPaused set to true.
+fn paused(world: &World) -> bool {
+    world
+        .query::<&AudioPaused>()
+        .next()
+        .is_some_and(|(_, state)| state.0)
+}
+
+/// Whether the audio world can sound, published by the audio thread once
+/// its output and source exist.
+///
+/// Impacts that happen while the world is still loading its soundfont
+/// must not queue as note jobs: they would all fire the instant the
+/// synth appears, a burst instead of the spread of hits that made them.
+/// Consumers read this and drop the sounds that belong to the silent
+/// past.
+#[derive(Clone, Copy, Debug)]
+pub struct AudioReady(pub bool);
+
+/// The audio world's readiness mailbox, carried on the proxy entity the
+/// host spawned the world through.
+#[derive(Clone, Debug)]
+pub struct AudioReadyInbox(pub SnapshotReader<AudioReady>);
 /// Everything the open output stream needs to keep running.
 struct OpenOutput {
     /// The stream, kept alive by being held.
@@ -89,10 +145,15 @@ pub fn spawn_audio_world(
     let mut output: Option<OpenOutput> = None;
     let mut source: Option<Box<dyn PcmSource>> = None;
     let mut scratch: Vec<f32> = Vec::new();
-    spawn_remote_world(
+    let (ready_writer, ready_reader) = snapshot_pair::<AudioReady>();
+    // The readiness flips only when the output and the source appear or
+    // vanish, so the mailbox sees one publish per transition.
+    let mut ready = false;
+    spawn_remote_world_with(
         host,
         "audio",
         config.command_capacity,
+        AudioReadyInbox(ready_reader),
         move |world, control| {
             if control.stop_requested() {
                 return false;
@@ -115,11 +176,28 @@ pub fn spawn_audio_world(
                     }
                 }
             }
+            // The soundfont load runs inside the factory, so a device may
+            // be open for seconds before the world can sound. Publish the
+            // transition, not the state, so the mailbox stays quiet.
+            let sounding = output.is_some() && source.is_some();
+            if sounding != ready {
+                ready = sounding;
+                ready_writer.publish(AudioReady(sounding));
+                if sounding {
+                    log::info!("the audio world can sound");
+                } else {
+                    log::warn!("the audio world cannot sound");
+                }
+            }
             if let Some(output) = output.as_mut() {
                 let chunk = FILL_FRAMES * usize::from(output.channels);
+                // A paused output feeds the ring silence instead of the
+                // mixer, so the callback drains fresh silence and the
+                // resume picks up exactly where the mix left off.
+                let silenced = paused(world);
                 while output.producer.vacant_len() >= chunk {
                     scratch.resize(chunk, 0.0);
-                    if let Some(source) = source.as_mut() {
+                    if !silenced && let Some(source) = source.as_mut() {
                         source.fill(world, &mut scratch, output.sample_rate, output.channels);
                     }
                     output.producer.push_slice(&scratch);

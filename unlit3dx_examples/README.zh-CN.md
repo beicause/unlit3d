@@ -10,7 +10,8 @@
 
 一片棋盘格地面和一池彩色小球。空格键从高处随机位置丢下一个球；球下落、与地面和彼此
 碰撞，每一次足够重的撞击都通过音色库合成器奏出一个五声音阶音符。球也会自动
-下落，大约一秒半一个。相机绕着场景缓慢环绕。
+下落，大约一秒半一个。相机绕着场景缓慢环绕。`M` 键播放一段短小的 MIDI
+序列——音阶上行再下行——走同一个合成器。
 
 ## 如何运行
 
@@ -18,9 +19,10 @@
 cargo run -p unlit3dx_examples
 ```
 
-合成器需要一个音色库。第一个位置参数是它的路径，默认
-`assets/FluidR3Mono_GM.sf3`，仓库不把它纳入版本控制；任何 SF3 音色库都可以，
-例如
+合成器演奏的音色库在构建期嵌入二进制：`build.rs` 读取
+`assets/FluidR3Mono_GM.sf3`（仓库不把它纳入版本控制），`include_bytes!` 把它
+带进二进制，同一份字节在任何平台都能用，wasm 也不例外。文件缺失时构建发出
+警告，示例静音运行。把任何 SF3 音色库放到该路径并重新构建即可换音色，例如
 [FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3)。
 
 `--mcp` 开关把各个 world 通过[模型上下文协议](../crates/unlit3d_mcp/README.md)

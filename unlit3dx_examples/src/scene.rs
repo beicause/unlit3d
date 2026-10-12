@@ -16,6 +16,12 @@ use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
+/// The soundfont the demo plays, embedded at build time by `build.rs`.
+///
+/// When the soundfont file is missing the build writes an empty stub, so
+/// the demo starts and runs silent rather than failing to compile.
+pub const SOUNDFONT: &[u8] = include_bytes!(env!("SOUNDFONT_FILE"));
+
 /// The window opens at this size, in logical pixels.
 pub const WINDOW_SIZE: (u32, u32) = (1024, 720);
 
@@ -78,7 +84,20 @@ pub fn note_ticks(speed: f32) -> u32 {
 
 /// The factor every synthesizer sample scales by, making up the headroom
 /// soundfont presets leave.
-pub const SYNTH_GAIN: f32 = 4.0;
+pub const SYNTH_GAIN: f32 = 3.0;
+
+/// The demo's MIDI sequence: the scale walked up and back down, one note
+/// every 0.28 seconds, each held for 0.25 of them.
+pub fn demo_midi() -> Arc<MidiFile> {
+    let mut events = Vec::new();
+    for (index, &key) in SCALE.iter().chain(SCALE.iter().rev().skip(1)).enumerate() {
+        let start = index as f64 * 0.28;
+        events.push((start, 0x90, key as u8, 96));
+        events.push((start + 0.25, 0x80, key as u8, 0));
+    }
+    events.sort_by(|(one, ..), (other, ..)| one.total_cmp(other));
+    midi_file(&events).expect("the demo sequence is well formed")
+}
 
 /// The gameplay world's tick rate, in hertz.
 pub const GAME_HZ: f64 = 120.0;

@@ -86,6 +86,36 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     }
 }
 
+/// The audio world announces when it can sound: the inbox flips to a
+/// published state once the stream and the source exist, or to `false`
+/// when they never will. Either way it lands without any job being
+/// sent, so a caller can tell silence from a still-loading factory.
+#[test]
+fn the_audio_world_publishes_its_readiness() {
+    let mut host = World::new();
+    let world = spawn_audio_world(
+        &mut host,
+        AudioConfig::default(),
+        Some(Box::new(|_world: &mut World, _rate, _channels| {
+            Box::new(Silent)
+        })),
+    );
+    let inbox = host
+        .get::<AudioReadyInbox>(world)
+        .expect("the audio proxy carries its readiness inbox")
+        .0
+        .clone();
+    assert!(
+        wait_for(|| inbox.latest().is_some()),
+        "the readiness inbox never published a state"
+    );
+    assert_eq!(
+        inbox.latest().map(|state| state.0),
+        Some(has_output_device()),
+        "readiness must match whether an output device exists"
+    );
+}
+
 /// Whether the default host has an output device to open.
 fn has_output_device() -> bool {
     use cpal::traits::{DeviceTrait, HostTrait};
@@ -102,3 +132,38 @@ fn has_output_device() -> bool {
 
 /// The marker the job test leaves in the audio world.
 struct Marker;
+
+/// The mixer a broken soundfont leaves behind still fills its buffers:
+/// silence, ready for the stream.
+#[test]
+fn a_failed_soundfont_leaves_a_silent_mixer() {
+    let mut out = vec![1.0f32; 256];
+    let mut source =
+        synth_source_bytes(Arc::from(&b"not a soundfont"[..]), 4.0)(&mut World::new(), 48_000, 2);
+    source.fill(&World::new(), &mut out, 48_000, 2);
+    assert!(out.iter().all(|sample| *sample == 0.0));
+}
+
+/// A MIDI file refuses event times that run backwards.
+#[test]
+fn midi_file_rejects_out_of_order_times() {
+    let events = [(1.0, 0x90, 60, 100), (0.5, 0x80, 60, 0)];
+    assert!(matches!(midi_file(&events), Err(VoiceError::MidiFile(_))));
+}
+
+/// A MIDI file builds from sorted event times.
+#[test]
+fn midi_file_accepts_sorted_events() {
+    let events = [(0.5, 0x90, 60, 100), (1.0, 0x80, 60, 0)];
+    let file = midi_file(&events).expect("sorted events build");
+    assert!(file.get_length() >= 1.0);
+}
+
+/// A soundfont parser rejects bytes that are not a soundfont.
+#[test]
+fn load_soundfont_rejects_garbage() {
+    assert!(matches!(
+        load_soundfont(&[0u8; 64]),
+        Err(VoiceError::SoundFont(_))
+    ));
+}

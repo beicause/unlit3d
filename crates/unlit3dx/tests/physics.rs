@@ -62,13 +62,13 @@ fn a_dropped_ball_lands_and_reports_the_contact() {
         .sender();
     sender
         .send(Box::new(move |world: &mut World| {
-            let _ball = spawn_ball(
+            let _ball = spawn_body(
                 world,
-                BallDesc {
+                BodyDesc {
                     position: BALL_START,
                     velocity: Vec3::ZERO,
-                    radius: BALL_RADIUS,
                     restitution: 0.3,
+                    shape: BodyShape::Ball(BALL_RADIUS),
                 },
             );
         }))

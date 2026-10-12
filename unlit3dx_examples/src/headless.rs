@@ -11,7 +11,8 @@
 //! every world stepped at a fixed rate, a run is reproducible down to
 //! the captured frames and audio samples.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
 use crossbeam_channel::{Sender, unbounded};
 use unlit_wgpu::readback::readback_texture;
@@ -39,8 +40,9 @@ pub struct HeadlessConfig {
     pub capture: Vec<u32>,
     /// The audio sample rate the synthesizer renders at.
     pub audio_sample_rate: u32,
-    /// The soundfont the synthesizer plays.
-    pub soundfont: PathBuf,
+    /// The soundfont the synthesizer plays, as raw bytes: the demo
+    /// passes the same embedded bytes the windowed mode builds with.
+    pub soundfont: Arc<[u8]>,
 }
 
 /// What one headless run produced.
@@ -92,15 +94,16 @@ pub fn run(
         .expect("the physics job queue takes the ground job");
 
     // The audio world: no thread and no output stream, just the
-    // synthesizer and the job queue the gameplay books notes into.
+    // synthesizer and the job queue the gameplay books notes into. The
+    // same factory the audio thread builds mixes here, so the headless
+    // run's samples match the windowed one's by construction.
     let mut audio_world = World::new();
     let (audio_sender, audio_receiver) = unbounded();
-    SynthVoice::spawn(
+    let mut audio_source = synth_source_bytes(config.soundfont.clone(), SYNTH_GAIN)(
         &mut audio_world,
-        &config.soundfont,
         config.audio_sample_rate,
-    )
-    .expect("the headless run's soundfont loads");
+        2,
+    );
 
     // The gameplay world, ticked inline at the gameplay rate.
     let mut gameplay_world = World::new();
@@ -131,9 +134,9 @@ pub fn run(
     let frame_seconds = 1.0 / RENDER_HZ;
     let physics_period = 1.0 / PHYSICS_HZ;
     let sample_period = 1.0 / config.audio_sample_rate as f64;
-    // The sample buffers, reused across frames so the audio loop does not
-    // allocate one per frame.
-    let (mut left, mut right): (Vec<f32>, Vec<f32>) = (Vec::new(), Vec::new());
+    // The interleaved sample buffer, reused across frames so the audio
+    // loop does not allocate one per frame.
+    let mut samples_out: Vec<f32> = Vec::new();
 
     for index in 0..config.frames {
         frame.index = index;
@@ -164,27 +167,13 @@ pub fn run(
             job(&mut audio_world);
         }
         audio_debt += frame_seconds;
-        let samples = (audio_debt / sample_period) as usize;
-        if samples > 0 {
-            audio_debt -= samples as f64 * sample_period;
-            left.clear();
-            left.resize(samples, 0.0);
-            right.clear();
-            right.resize(samples, 0.0);
-            for (_, mut voice) in audio_world.query::<&mut SynthVoice>() {
-                voice.synthesizer.render(&mut left, &mut right);
-            }
-            // The same gain the audio thread's mixer applies, so the
-            // headless mix matches the windowed one. The channels
-            // interleave here, sample frame by sample frame: the WAV
-            // writer downstream reads one left and one right sample per
-            // frame, not two half-file channel planes.
-            output.audio.extend(
-                left.iter()
-                    .zip(&right)
-                    .flat_map(|(left, right)| [left, right])
-                    .map(|sample| (*sample * SYNTH_GAIN).clamp(-1.0, 1.0)),
-            );
+        let frames = (audio_debt / sample_period) as usize;
+        if frames > 0 {
+            audio_debt -= frames as f64 * sample_period;
+            samples_out.clear();
+            samples_out.resize(frames * 2, 0.0);
+            audio_source.fill(&audio_world, &mut samples_out, config.audio_sample_rate, 2);
+            output.audio.extend_from_slice(&samples_out);
         }
 
         // Render: drain the sub-world's commands — the scene build rides

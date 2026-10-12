@@ -8,7 +8,8 @@
 
 #![cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::sync::Arc;
 
 use unlit_wgpu_test_util::{
     Ctx, Tolerance, assert_image_snapshot_with_tolerance, block_on, snapshot_path, snapshots,
@@ -40,12 +41,14 @@ const CAPTURE: [u32; 4] = [120, 180, 240, 299];
 /// The soundfont, kept out of version control under the workspace's
 /// assets directory; the tests skip when the repository does not carry
 /// it.
-fn soundfont() -> Option<PathBuf> {
+fn soundfont() -> Option<Arc<[u8]>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/FluidR3Mono_GM.sf3");
-    path.is_file().then_some(path)
+    path.is_file()
+        .then(|| std::fs::read(&path).expect("the soundfont reads"))
+        .map(Into::into)
 }
 
-fn config(soundfont: PathBuf, frames: u32, capture: Vec<u32>) -> HeadlessConfig {
+fn config(soundfont: Arc<[u8]>, frames: u32, capture: Vec<u32>) -> HeadlessConfig {
     HeadlessConfig {
         size: WINDOW_SIZE,
         frames,

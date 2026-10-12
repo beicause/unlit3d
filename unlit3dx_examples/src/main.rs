@@ -11,11 +11,12 @@
 //! the render server, publishes transforms, and books the notes each
 //! collision plays.
 //!
-//! Space drops a ball. Balls fall, bounce off the ground and each other,
-//! and every contact hard enough plays a pentatonic note through a
-//! soundfont synthesizer. The soundfont path is the first command line
-//! argument, and defaults to the FluidR3Mono_GM.sf3 file the repository
-//! keeps out of version control under assets.
+//! Space drops a ball, M plays a short MIDI sequence through the same
+//! synthesizer. Balls fall, bounce off the ground and each other, and
+//! every contact hard enough plays a pentatonic note. The soundfont is
+//! embedded at build time: build.rs reads the FluidR3Mono_GM.sf3 file the
+//! repository keeps out of version control under assets, and the demo
+//! runs silent when it is missing.
 //!
 //! The --headless switch runs the same scene without a window or
 //! threads: the worlds step inline at fixed rates, the run keeps its
@@ -40,6 +41,7 @@ use unlit3d::winit::event::{OnAboutToWait, OnUserEvent, OnWindowEvent, WinitHost
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use unlit3d_mcp::{McpCommand, WorldId};
 use unlit3dx::prelude::*;
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use unlit3dx_examples::headless;
 use unlit3dx_examples::scene::*;
 use web_time::Instant;
@@ -747,7 +749,7 @@ fn start_mcp(world: &World, app: Entity) {
 /// go out, snapshots come back, and nothing but data crosses a thread
 /// boundary. With the mcp flag, a Model Context Protocol server over
 /// stdio reads the host and its render world.
-fn windowed(soundfont: Option<String>, mcp: bool, event_loop: EventLoop<UserEvent>) {
+fn windowed(mcp: bool, event_loop: EventLoop<UserEvent>) {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = WinitHost::<UserEvent>::new();
     let proxy = event_loop.create_proxy();
@@ -796,13 +798,13 @@ fn windowed(soundfont: Option<String>, mcp: bool, event_loop: EventLoop<UserEven
         .0
         .clone();
 
-    // The audio world: one synthesizer voice from the soundfont, mixed
-    // into the output stream on the audio thread.
-    let soundfont = soundfont.unwrap_or_else(|| "assets/FluidR3Mono_GM.sf3".to_owned());
+    // The audio world: one synthesizer voice plus a MIDI player, both
+    // fed by the embedded soundfont, mixed into the output stream on the
+    // audio thread.
     let audio = spawn_audio_world(
         world,
         AudioConfig::default(),
-        Some(synth_source_with_gain(soundfont, SYNTH_GAIN)),
+        Some(synth_source_bytes(SOUNDFONT.into(), SYNTH_GAIN)),
     );
     let audio_sender = world
         .get::<RemoteWorld>(audio)
@@ -866,26 +868,32 @@ fn windowed(soundfont: Option<String>, mcp: bool, event_loop: EventLoop<UserEven
     world.spawn((pump(app),));
     world.spawn((handle_user_event(app),));
 
-    // Window events: resize on its own entity, space on another, so the
-    // two behaviour families never share a borrow.
+    // Window events: resize on its own entity, keys on another, so the
+    // two behaviour families never share a borrow. Space drops a ball; M
+    // plays the demo sequence through the audio world's MIDI player.
     world.spawn((resize(app),));
+    let demo_midi = Some(demo_midi());
     world.spawn((OnKey::new(move |_world, _entity, key| {
-        if key.pressed && !key.repeat && key.key == Key::Space {
+        if !key.pressed || key.repeat {
+            return;
+        }
+        if key.key == Key::Space {
             request_drop(&gameplay_sender);
+        }
+        if key.key == Key::M
+            && let Some(midi) = &demo_midi
+        {
+            audio_sender.send(play_midi_job(midi.clone(), false)).ok();
         }
     }),));
 
     host.run(event_loop).expect("the event loop runs");
 }
 
-/// The example's command line: an optional soundfont path plus a switch
-/// for serving the worlds over the Model Context Protocol.
+/// The example's command line: switches for the Model Context Protocol
+/// and the headless render.
 #[derive(argh::FromArgs)]
 struct Args {
-    /// the soundfont file the synthesizer plays
-    #[argh(positional)]
-    soundfont: Option<String>,
-
     /// serve the worlds over the Model Context Protocol
     #[argh(switch)]
     mcp: bool,
@@ -918,7 +926,7 @@ fn main() -> ExitCode {
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .expect("an event loop");
-    windowed(args.soundfont, args.mcp, event_loop);
+    windowed(args.mcp, event_loop);
     ExitCode::SUCCESS
 }
 
@@ -933,10 +941,6 @@ fn run_headless(args: &Args) -> ExitCode {
         log::error!("--frames must be at least 1");
         return ExitCode::FAILURE;
     }
-    let soundfont = args
-        .soundfont
-        .clone()
-        .unwrap_or_else(|| "assets/FluidR3Mono_GM.sf3".to_owned());
     let (device, queue, capabilities) = match headless_gpu() {
         Ok(gpu) => gpu,
         Err(error) => {
@@ -949,7 +953,7 @@ fn run_headless(args: &Args) -> ExitCode {
         frames: args.frames,
         capture: vec![args.frames - 1],
         audio_sample_rate: headless::AUDIO_SAMPLE_RATE,
-        soundfont: soundfont.into(),
+        soundfont: SOUNDFONT.into(),
     };
     let output = headless::run(&config, &device, &queue, capabilities);
     let out = std::path::Path::new(&args.out);

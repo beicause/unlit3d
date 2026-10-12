@@ -13,7 +13,8 @@ A checkered ground plane and a pool of colored balls. Space drops a ball from ab
 random position; balls fall, bounce off the ground and each other, and every
 contact hard enough plays a pentatonic note through a soundfont synthesizer.
 Balls also drop on their own, about one every one and a half seconds. The
-camera orbits the scene slowly.
+camera orbits the scene slowly. `M` plays a short MIDI sequence — the scale
+walked up and back down — through the same synthesizer.
 
 ## How to run
 
@@ -21,9 +22,12 @@ camera orbits the scene slowly.
 cargo run -p unlit3dx_examples
 ```
 
-The synthesizer needs a soundfont. The first positional argument is its path,
-defaulting to `assets/FluidR3Mono_GM.sf3`, which the repository keeps out of
-version control; any SF3 soundfont works, for example
+The synthesizer plays a soundfont embedded into the binary at build time:
+`build.rs` reads `assets/FluidR3Mono_GM.sf3`, which the repository keeps out
+of version control, and `include_bytes!` carries it in, so the same bytes
+run everywhere, wasm included. When the file is missing the build warns and
+the demo runs silent. Drop any SF3 soundfont at that path and rebuild — for
+example
 [FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3).
 
 The `--mcp` switch serves the worlds over the [Model Context

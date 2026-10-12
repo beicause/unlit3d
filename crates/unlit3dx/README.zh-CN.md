@@ -52,7 +52,7 @@ drain_sub_world(&mut nested); // 运行其他线程投递的 job
 **render** 桥的 `RenderServer` 把它变成资源服务器：`create_mesh`、
 `create_material` 与 `spawn_instance` 这些 job 返回实体位，远程的玩法 world
 把它们当作句柄持有。**physics** 桥发布刚体变换与碰撞事件的 `PhysicsSnapshot`，
-**synth** 桥把 note job 变成音色库音频。`unlit3dx_examples` crate 把所有桥
+**synth** 桥把 note job 与 MIDI 文件变成音色库音频。`unlit3dx_examples` crate 把所有桥
 放进同一个场景。
 
 ## 为什么要分离 world
@@ -109,15 +109,19 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 - **physics**（默认开启）：`spawn_physics_world` 以固定步率（`PHYSICS_HZ`，64）
   驱动 rapier 的 `PhysicsWorld`，并发布一份 `PhysicsSnapshot`——每个运动刚体的
   变换，加上这一步开始与结束的碰撞对，以及每个新接触的速度。
-  `spawn_ball` 与 `spawn_fixed_cuboid` 是基本构件，`PhysicsBody` 标记实体拥有的
-  刚体。
+  `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件，
+  `PhysicsBody` 标记实体拥有的刚体。
 - **audio**（默认开启）：`spawn_audio_world` 打开输出设备并在音频线程上持有其
   流。`PcmSource` 填充由 `AudioConfig` 定长的环形缓冲；设备回调消费它，欠载时静音。
-  玩法从不直接触碰音频——它发送 job。
-- **synth**（默认开启，蕴含 audio）：`synth_source` 在音频线程上把一个音色库
-  加载进 [rustysynth-ext](https://docs.rs/rustysynth-ext) 合成器，
-  `note_on_job`/`note_off_job`/`notes_off_all_job` 是现成的 job。
-  `synth_source_with_gain` 可以缩放混音，补上音色库预留的余量。
+  玩法从不直接触碰音频——它发送 job。代理还携带一个 `AudioReadyInbox`：world 在真正
+  能出声时发布状态，调用方由此区分音色库加载中与设备损坏，并丢弃过期的音符而非
+  把它们排在加载之后一次性齐放。
+- **synth**（默认开启，蕴含 audio）：`synth_source_bytes` 从音色库字节构建混音器——通常是 `include_bytes!`，不经过文件系统——在音频线程上加载
+  [rustysynth-ext](https://docs.rs/rustysynth-ext) 合成器，
+  `note_on_job`/`note_off_job`/`notes_off_all_job` 是作用于它的现成 job。
+  `play_midi_job` 与 `stop_midi_job` 驱动一台 `MidiPlayer`：MIDI 文件音序器，
+  由 `load_midi_file`（SMF 文件）或 `midi_file`（一列定时消息）喂入。`gain`
+  参数缩放混音，补上音色库预留的余量。
 
 ## 测试
 
