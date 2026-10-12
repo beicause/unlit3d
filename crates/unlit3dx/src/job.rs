@@ -33,10 +33,22 @@ impl<R: Send + 'static> Request<R> {
         (job, Self { reply: receiver })
     }
 
-    /// The result, if it has landed.
+    /// The result, if it has landed, taking it out of the one-slot
+    /// channel: a later poll finds nothing.
     #[must_use]
     pub fn poll(&self) -> Option<R> {
         self.reply.try_recv().ok()
+    }
+
+    /// Whether the result has landed, without taking it.
+    ///
+    /// Check this across a batch of requests and only poll once every one
+    /// answers: poll consumes the result, so polling a batch where only
+    /// some answers have arrived would drop the ones it took, and those
+    /// requests would never answer again.
+    #[must_use]
+    pub fn answered(&self) -> bool {
+        !self.reply.is_empty()
     }
 
     /// The result, blocking until it lands.
@@ -65,5 +77,18 @@ mod tests {
     fn poll_is_empty_before_the_job_runs() {
         let (_job, request) = Request::wrap(Box::new(|_: &mut World| 1));
         assert_eq!(request.poll(), None);
+    }
+
+    /// The peek keeps the answer: only poll takes it away.
+    #[test]
+    fn answered_peeks_without_consuming() {
+        let (job, request) = Request::wrap(Box::new(|_: &mut World| 7));
+        assert!(!request.answered());
+        let mut world = World::new();
+        job(&mut world);
+        assert!(request.answered());
+        assert!(request.answered(), "peeking twice keeps the answer");
+        assert_eq!(request.poll(), Some(7));
+        assert!(!request.answered(), "polling consumed the answer");
     }
 }

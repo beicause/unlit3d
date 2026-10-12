@@ -19,24 +19,42 @@ use crate::audio::PcmSource;
 use crate::job::Job;
 
 /// Build a mixer backed by the soundfont at the path, loaded when the audio
-/// thread opens its output.
+/// thread opens its output, at unit gain.
 ///
 /// A soundfont that fails to load logs and leaves the world silent rather
 /// than taking the stream down with it.
 pub fn synth_source(path: impl Into<PathBuf>) -> crate::audio::PcmSourceFactory {
+    synth_source_with_gain(path, 1.0)
+}
+
+/// Build a mixer backed by the soundfont at the path, loaded when the audio
+/// thread opens its output, with every sample scaled by `gain`.
+///
+/// Soundfont presets leave a lot of headroom, so a mix of a few quiet voices
+/// often sits far below full scale; `gain` makes it up. Samples clamp to the
+/// unit range after the gain, so an overdriven mix distorts rather than
+/// wraps. A soundfont that fails to load logs and leaves the world silent
+/// rather than taking the stream down with it.
+pub fn synth_source_with_gain(
+    path: impl Into<PathBuf>,
+    gain: f32,
+) -> crate::audio::PcmSourceFactory {
     let path = path.into();
     Box::new(move |world: &mut World, sample_rate: u32, _channels: u16| {
+        // Decoding an sf3's vorbis samples is the load's whole cost: a few
+        // seconds in release, tens of them in an unoptimized debug build.
+        log::info!("loading the soundfont at {}", path.display());
         match SynthVoice::spawn(world, &path, sample_rate) {
             Ok(_) => {
                 log::info!("the soundfont at {} loaded", path.display());
-                Box::new(SynthMixer::default())
+                Box::new(SynthMixer::new(gain))
             }
             Err(error) => {
                 log::error!(
                     "the soundfont at {} failed to load ({error})",
                     path.display()
                 );
-                Box::new(SynthMixer::default())
+                Box::new(SynthMixer::new(gain))
             }
         }
     })
@@ -111,12 +129,25 @@ impl From<SynthesizerError> for VoiceError {
 }
 
 /// Renders every [`SynthVoice`] in the world into interleaved frames.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct SynthMixer {
     /// The left channel's scratch, reused across fills.
     left: Vec<f32>,
     /// The right channel's scratch, reused across fills.
     right: Vec<f32>,
+    /// The factor every rendered sample scales by.
+    gain: f32,
+}
+
+impl SynthMixer {
+    /// A mixer whose samples scale by `gain`.
+    fn new(gain: f32) -> Self {
+        Self {
+            left: Vec::new(),
+            right: Vec::new(),
+            gain,
+        }
+    }
 }
 
 impl PcmSource for SynthMixer {
@@ -133,10 +164,11 @@ impl PcmSource for SynthMixer {
         // Everything past the first two channels of a wider stream is silent.
         for (frame, out) in out.chunks_mut(channels).enumerate() {
             for (channel, sample) in out.iter_mut().enumerate() {
-                *sample = match channel {
+                *sample = (match channel {
                     0 => self.left[frame],
                     _ => self.right[frame],
-                };
+                } * self.gain)
+                    .clamp(-1.0, 1.0);
             }
         }
     }

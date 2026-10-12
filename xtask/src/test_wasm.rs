@@ -234,6 +234,12 @@ fn build_workspace() -> Result<(), String> {
     // Protocol over a native stdio pipe, and rmcp's server side pulls `uuid` v4,
     // whose wasm randomness source this crate does not ask for. A browser drives
     // the world through the example's own UI, not through the protocol.
+    //
+    // `unlit3dx_examples` builds for this target: its GPU request runs on the
+    // browser's task queue, and its `--mcp` dependency is target-gated away.
+    // It cannot run here, though: its remote worlds own OS threads, which a
+    // threads-enabled target provides, and it reads its soundfont from the
+    // filesystem.
     let mut build = Command::new("cargo");
     build
         .args(["build", "--workspace", "--exclude", "xtask"])

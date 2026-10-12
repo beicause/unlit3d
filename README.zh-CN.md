@@ -79,6 +79,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是打包成 APK 的 Android 示例。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 把 glTF 文档渲染成图片的命令行工具，由 JSON 配置文件驱动、并可被自身选项覆盖；其 `tests/gpu_cli.rs` 是端到端快照检查。 |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.zh-CN.md) | 一个 Model Context Protocol 服务器，经 stdio 读取并驱动运行中的 world，只由公开 API 构成。 |
+| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 运行时：以 job 与快照信箱连接渲染子 world 与物理、音频、玩法远程世界，各占一条线程。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
 
@@ -195,6 +196,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_scenes.rs` 的渲染快照。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.zh-CN.md) | 端到端测试：在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。 |
+| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 往返、请求回复、快照替换、线程停止与 panic 报告，以及远程 world 的已发送 job 运行。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
 `lavapipe` 作为软件 Vulkan 实现。wasm 那一遍不需要 GPU：浏览器会回退到软件 WebGL2。
@@ -246,7 +248,9 @@ crates/unlit3d/              与 ECS 集成的渲染 API
 crates/unlit_ecs/            archetype ECS
 crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
 crates/unlit3d_mcp/          Model Context Protocol 服务器，只建立在公开 API 之上
+crates/unlit3dx/             多 world 运行时：job、快照与 world 线程
 unlit3d_examples/            窗口化示例、它的场景与场景的快照测试
+unlit3dx_examples/           多 world 示例：五个 world，一个窗口
 unlit3d_cli/                 glTF 转图片的命令行工具与端到端测试
 unlit3d_benchmarks/          帧路径基准测试与剖析运行
 android/                     把示例打包成 APK 的 Gradle 工程

@@ -12,7 +12,7 @@ use std::time::Duration;
 use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 
-pub use rapier3d::prelude::RigidBodyHandle;
+pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
 use unlit_ecs::{Entity, World};
 
 use crate::channel::{SnapshotReader, SnapshotWriter, snapshot_pair};
@@ -167,10 +167,16 @@ pub fn spawn_physics_world(host: &mut World, config: PhysicsConfig) -> Entity {
 
 /// Step the rapier world once and publish what happened.
 fn step_world(world: &World, writer: &SnapshotWriter<PhysicsSnapshot>) {
-    let mut physics = match world.query::<&mut PhysicsWorld>().next() {
-        Some((_, physics)) => physics,
-        None => return,
-    };
+    if let Some(snapshot) = step_once(world) {
+        writer.publish(snapshot);
+    }
+}
+
+/// Step the rapier world once and return the snapshot a threaded world would
+/// publish. Thread-free callers — deterministic tests, offline rendering —
+/// drive the same simulation on a cadence of their own.
+pub fn step_once(world: &World) -> Option<PhysicsSnapshot> {
+    let mut physics = world.query::<&mut PhysicsWorld>().next()?.1;
     let (collision_sender, collision_receiver) = channel();
     // The unused event kinds just vanish: a dropped receiver discards them.
     let (force_sender, force_receiver) = channel::<ContactForceEvent>();
@@ -201,11 +207,11 @@ fn step_world(world: &World, writer: &SnapshotWriter<PhysicsSnapshot>) {
             _ => stopped.push((body_one, body_two)),
         }
     }
-    writer.publish(PhysicsSnapshot {
+    Some(PhysicsSnapshot {
         transforms,
         started,
         stopped,
-    });
+    })
 }
 
 /// The speed two colliders close at, from the difference of their bodies'

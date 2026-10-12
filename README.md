@@ -107,6 +107,7 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; also the Android example, packaged as an APK. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.md) | A Model Context Protocol server that reads and drives a running world over stdio, built only from the public API. |
+| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: jobs and snapshot mailboxes joining a render sub-world with physics, audio and gameplay remote worlds, each on its own thread. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
 
@@ -250,6 +251,7 @@ Per-crate notes:
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`) and the fixed-step playback clock (`src/lib.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.md) | An end-to-end test that builds a real GPU world on a thread, serves it over a pair of streams, and speaks JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks the screenshot pixel by pixel. |
+| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: job round trips, request replies, snapshot replacement, thread stop and panic reporting, and a remote world's sent jobs running. |
 
 A GPU is needed for the rendering crates' integration tests and for the example.
 On a headless CI runner, Mesa's `lavapipe` serves as the software Vulkan
@@ -312,7 +314,9 @@ crates/unlit3d/              the ECS-integrated rendering API
 crates/unlit_ecs/            the archetype ECS
 crates/unlit_wgpu_test_util/ the shared GPU test harness
 crates/unlit3d_mcp/          the Model Context Protocol server over the public API
+crates/unlit3dx/             the multi-world runtime: jobs, snapshots, world threads
 unlit3d_examples/            the windowed example, its scenes and their snapshot tests
+unlit3dx_examples/           the multi-world demo: five worlds, one window
 unlit3d_cli/                 the glTF-to-image command-line tool and its end-to-end test
 unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
 android/                     the Gradle project that packages the example as an APK

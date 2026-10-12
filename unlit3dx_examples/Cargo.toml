@@ -5,7 +5,7 @@ edition.workspace = true
 description = "A multi-world unlit3dx example: rendering, physics and soundfont audio in one scene."
 repository.workspace = true
 license.workspace = true
-keywords = ["example", "gamedev", "webgpu", "physics", "audio"]
+keywords = ["audio", "example", "gamedev", "physics", "webgpu"]
 publish = false
 
 [[bin]]
@@ -13,15 +13,42 @@ name = "unlit3dx-examples"
 path = "src/main.rs"
 
 [dependencies]
+argh.workspace = true
+# The winit feature is the only part of unlit3d this example needs: it
+# presents directly into a window's swap chain, with no UI overlay.
+crossbeam-channel.workspace = true
 glam.workspace = true
+hashbrown.workspace = true
 log.workspace = true
-unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2" }
-unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2" }
 unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.2" }
+unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["winit"] }
+unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2" }
+web-time.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 
-# The GPU context is requested synchronously: this example is native only.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[dev-dependencies]
+# The headless run's snapshot tests compare captured frames and audio
+# against baselines kept in the asset submodule.
+unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1.0-dev.2", features = ["snapshot"] }
+
+# The logger backend, which differs by platform even though there is only one
+# per target: `env_logger` writes to the terminal a command line runs in.
+# `--mcp` serves the worlds over the Model Context Protocol, which needs a
+# terminal's standard input and output; neither a browser nor an Android
+# activity has one.
+[target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))'.dependencies]
 env_logger.workspace = true
+unlit3d_mcp = { path = "../crates/unlit3d_mcp", version = "0.1.0-dev.2" }
+
+# The headless mode encodes its last frame as a PNG on the way out.
+image = { workspace = true, default-features = false, features = ["png"] }
+
+# The GPU request runs off the main thread: `pollster` drives it on a worker
+# thread on native, and the browser's task queue drives it on the web.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures.workspace = true

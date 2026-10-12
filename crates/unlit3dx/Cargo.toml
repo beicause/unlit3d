@@ -5,30 +5,39 @@ edition.workspace = true
 description = "Multi-world extension for unlit3d: host, render, physics, audio and gameplay worlds on their own threads, joined by jobs and snapshots."
 repository.workspace = true
 license.workspace = true
-keywords = ["ecs", "gamedev", "multithreading", "physics", "audio"]
-
-[features]
-default = ["render", "physics", "audio", "synth"]
-## The render bridge: snapshots that drive `Transform` components in a render
-## sub-world.
-render = ["dep:unlit3d"]
-## The physics world on its own thread, backed by rapier.
-physics = ["dep:rapier3d"]
-## The audio output thread, backed by cpal and a ring buffer.
-audio = ["dep:cpal", "dep:ringbuf"]
-## A soundfont synthesizer `PcmSource` for the audio world.
-synth = ["audio", "dep:rustysynth-ext"]
+keywords = ["audio", "ecs", "gamedev", "multithreading", "physics"]
 
 [dependencies]
+cpal = { workspace = true, optional = true }
 crossbeam-channel.workspace = true
 glam.workspace = true
 log.workspace = true
-unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2" }
-unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false, optional = true }
 rapier3d = { workspace = true, optional = true }
-cpal = { workspace = true, optional = true }
 ringbuf = { workspace = true, optional = true }
 rustysynth-ext = { workspace = true, optional = true }
+unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2" }
+unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"], optional = true }
+unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false, optional = true }
+web-time.workspace = true
+wgpu = { workspace = true, optional = true }
+
+# On this target cpal swaps its OS audio backends for the `wasm-bindgen` one,
+# which drives a Web Audio context; every other dependency here is pure Rust
+# and builds as-is.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+cpal = { workspace = true, features = ["wasm-bindgen"], optional = true }
+
+[features]
+default = ["audio", "physics", "render", "synth"]
+## The audio output thread, backed by cpal and a ring buffer.
+audio = ["dep:cpal", "dep:ringbuf"]
+## The physics world on its own thread, backed by rapier.
+physics = ["dep:rapier3d"]
+## The render bridge: a render sub-world that acts as an asset server, plus
+## snapshots that drive `Transform` components in it.
+render = ["dep:unlit_wgpu", "dep:unlit3d", "dep:wgpu"]
+## A soundfont synthesizer `PcmSource` for the audio world.
+synth = ["audio", "dep:rustysynth-ext"]
 
 [lints]
 workspace = true

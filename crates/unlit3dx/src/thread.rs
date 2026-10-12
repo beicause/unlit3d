@@ -1,12 +1,13 @@
 //! World threads: one thread owning one `World`, with pacing and stop control.
 
+use core::time::Duration;
 use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use unlit_ecs::World;
+use web_time::Instant;
 
 /// How a world thread's tick paces itself and observes a stop.
 ///
