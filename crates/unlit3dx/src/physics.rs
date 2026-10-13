@@ -57,6 +57,13 @@ pub struct PhysicsSnapshot {
 
 /// The reader side of the physics world's snapshot mailbox, on the host
 /// entity the proxy lives on.
+///
+/// The mailbox holds one snapshot: each step overwrites the last, so a reader
+/// that polls less often than the world steps at [`PhysicsConfig::hz`] sees
+/// only the newest. Transforms survive that — the newest is the current
+/// state — but a contact lives in exactly one snapshot, so a slow reader
+/// misses it. A caller that must see every contact reads on its own thread
+/// or drives [`step_once`] directly.
 #[derive(Clone, Debug)]
 pub struct PhysicsInbox(pub SnapshotReader<PhysicsSnapshot>);
 

@@ -60,8 +60,9 @@ wasm binary has no process to start and no exit code to hand back, so the pass i
 assembled rather than run:
 
 1. The workspace is built for wasm — under the default features, which is what
-   the browser and the APK ship — so a change that breaks the example or the
-   library for this target fails here rather than only in its own job.
+   the browser and the APK ship, and under the `wasm-dev` cargo profile — so a
+   change that breaks the example or the library for this target fails here
+   rather than only in its own job.
 2. `cargo nextest list --list-type binaries-only` builds the wasm test binaries
    and reports where they landed — asked of nextest so the target list, features
    and names stay the ones the host pass uses.
@@ -90,7 +91,14 @@ the same page `run-wasm` serves, built by the same code, so the two cannot drift
 The runner's JS dependencies and a browser are installed on the first run;
 `CHROME_PATH` names an existing browser to reuse instead of downloading one, and
 `--show` opens a visible window to watch a failure happen. The profile the
-nextest pass uses is `wasm`, defined in `.config/nextest.toml`.
+nextest pass uses is `wasm`, defined in `.config/nextest.toml`; that is a nextest
+profile, and separate from the `wasm-dev` cargo profile the builds themselves
+use.
+
+Everything this task compiles for `wasm32-unknown-unknown` goes through
+`wasm-dev`, as `run-wasm` does. A debug wasm is the slow thing here: it takes
+minutes to link, several times the size to fetch, and then runs the tests on a
+code path no browser ever ships.
 
 ### `cargo xtask run-wasm`
 
@@ -103,8 +111,12 @@ to be installed.
 
 It binds to loopback on port 8000, or the ports after it if that one is taken,
 and prints the URL to open. `--no-serve` builds and runs bindgen without
-serving; `--release` builds in release mode; trailing positional arguments are
-passed through to the `cargo build`.
+serving; trailing positional arguments are passed through to the `cargo build`.
+
+The build always uses the workspace's `wasm-dev` cargo profile — release's
+settings at a size-oriented `opt-level` — so there is no profile switch to pass:
+the output lands under `target/generated/wasm-dev` either way, and a browser is
+never handed the debug binary.
 
 The binary is named explicitly rather than left to the default target selection:
 the example crate is a `cdylib` as well as a binary, and on

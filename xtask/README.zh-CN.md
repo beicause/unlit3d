@@ -52,9 +52,9 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 `wasm32-unknown-unknown` 上运行，随后还会启动示例本身。wasm 二进制没有进程可以启动、
 也没有退出码可以交回，所以这一趟是*搭*出来的而不是直接跑的：
 
-1. 先把整个工作区构建到 wasm——用默认 feature，也就是浏览器与 APK 实际发布的那个——
-   这样某个改动若弄坏了该 target 上的示例或库，会在这里就失败，而不是只在自己的 job
-   里失败。
+1. 先把整个工作区构建到 wasm——用默认 feature，也就是浏览器与 APK 实际发布的那个，
+   并用 `wasm-dev` 这个 cargo profile——这样某个改动若弄坏了该 target 上的示例或库，
+   会在这里就失败，而不是只在自己的 job 里失败。
 2. `cargo nextest list --list-type binaries-only` 构建 wasm 测试二进制并报告它们落在
    哪里——之所以问 nextest，是为了让 target 列表、feature 与名字和宿主机那一趟保持
    一致。
@@ -78,7 +78,12 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 
 runner 的 JS 依赖与浏览器会在首次运行时安装；用 `CHROME_PATH` 指定现成的浏览器可
 免于下载，`--show` 打开可见窗口以观察失败。nextest 那一趟使用的 profile 是 `wasm`，
-定义在 `.config/nextest.toml` 中。
+定义在 `.config/nextest.toml` 中；那是 nextest 的 profile，与构建自身所用的
+`wasm-dev` 这个 cargo profile 是两回事。
+
+该任务为 `wasm32-unknown-unknown` 编译的一切都走 `wasm-dev`，与 `run-wasm` 相同。
+debug 的 wasm 才是这里慢的东西：链接要几分钟，下载体积是好几倍，而且跑的还是一
+条浏览器永远不会发布的代码路径。
 
 ### `cargo xtask run-wasm`
 
@@ -88,8 +93,11 @@ WebGPU 只在*安全上下文*中可用，`localhost` 是安全上下文而 `fil
 内置于任务执行器中，因此无需安装任何东西。
 
 它绑定到回环地址的 8000 端口；若该端口被占用，则尝试其后的端口，并打印要打开的 URL。
-`--no-serve` 只构建并跑 bindgen、不提供服务；`--release` 走 release 构建；尾部的
-位置参数会透传给 `cargo build`。
+`--no-serve` 只构建并跑 bindgen、不提供服务；尾部的位置参数会透传给 `cargo build`。
+
+构建一律走工作区的 `wasm-dev` cargo profile——沿用 release 的设定，但 `opt-level`
+以体积为目标——所以没有 profile 开关可传：产物总是落在
+`target/generated/wasm-dev`，浏览器也永远不会拿到 debug 二进制。
 
 这里显式指定了二进制 target，而不是交给默认的 target 选择：示例 crate 同时是
 `cdylib` 和二进制，而在 `wasm32-unknown-unknown` 上浏览器运行的是二进制，不是

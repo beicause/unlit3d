@@ -19,6 +19,11 @@ pub const BINARY_NAME: &str = "unlit3d-examples";
 pub const TARGET: &str = "wasm32-unknown-unknown";
 /// Where the bindgen output lands, inside `target/`.
 const OUT_DIR: &str = "generated";
+/// The cargo profile every wasm build of this repository uses, defined in the
+/// workspace manifest: release's settings at a size-oriented `opt-level`. A
+/// browser downloads and links a smaller wasm than `--release` produces, and no
+/// wasm build is a shipped artifact of a release, so none of them pay for one.
+pub const PROFILE: &str = "wasm-dev";
 /// The port the example prefers to be served on. Fixed, so the URL to open
 /// is predictable; if it is taken, the server tries the ports after it.
 const PORT: u16 = 8000;
@@ -110,7 +115,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
 
 /// Build and serve the web example.
 pub fn run(args: &RunWasmArgs) -> Result<(), String> {
-    let out = build_example(args.release, &args.cargo_args)?;
+    let out = build_example(&args.cargo_args)?;
 
     if args.no_serve {
         println!(
@@ -130,24 +135,26 @@ pub fn run(args: &RunWasmArgs) -> Result<(), String> {
 /// Building every target instead would build the cdylib for the web, where it
 /// is not what runs.
 ///
+/// The build goes through [`PROFILE`], so a browser is handed a small wasm
+/// rather than a debug one that takes minutes to compile and several times the
+/// size to fetch.
+///
 /// Shared with `cargo xtask test-wasm`, which loads the same page: writing it
 /// here keeps the page under test identical to the one `run-wasm` serves.
 /// Returns the directory the bindgen output and the page were written to.
-pub fn build_example(release: bool, cargo_args: &[String]) -> Result<PathBuf, String> {
-    let profile: &[&str] = if release { &["--release"] } else { &[] };
+pub fn build_example(cargo_args: &[String]) -> Result<PathBuf, String> {
     let mut cargo = std::process::Command::new("cargo");
     cargo
         .args(["build", "--target", TARGET, "-p", EXAMPLE_CRATE])
         .args(["--bin", BINARY_NAME])
-        .args(profile)
+        .args(["--profile", PROFILE])
         .args(cargo_args);
     step::run(&mut cargo, "the wasm build")?;
 
-    let profile_dir = if release { "release" } else { "debug" };
-    let out = Path::new("target").join(OUT_DIR).join(profile_dir);
+    let out = Path::new("target").join(OUT_DIR).join(PROFILE);
     let wasm = Path::new("target")
         .join(TARGET)
-        .join(profile_dir)
+        .join(PROFILE)
         .join(format!("{BINARY_NAME}.wasm"));
 
     let mut bindgen = std::process::Command::new("wasm-bindgen");

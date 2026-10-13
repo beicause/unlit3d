@@ -83,11 +83,12 @@ jobs:
         uses: actions/configure-pages@v6.0.0
 
       # The same pipeline a contributor runs locally: build for the target,
-      # then let wasm-bindgen write the JS loader and the page beside it.
-      # `--release` because this is what a visitor downloads, and the debug
-      # binary is several times its size.
+      # then let wasm-bindgen write the JS loader and the page beside it. The
+      # task builds every wasm under the workspace's `wasm-dev` profile, so this
+      # is what a visitor downloads: a smaller binary than `--release` gives,
+      # and none of the debug size or compile time.
       - name: Build the web example
-        run: cargo xtask run-wasm --release --no-serve
+        run: cargo xtask run-wasm --no-serve
 
       # The API docs ship beside the example, under `docs/`. Rustdoc writes the
       # page that lists the crates only with `--enable-index-page`, and the
@@ -98,15 +99,15 @@ jobs:
       - name: Build the API docs
         run: |
           cargo +nightly doc --workspace --no-deps --document-private-items --all-features --keep-going
-          mkdir -p target/generated/release/docs
-          cp -r target/doc/. target/generated/release/docs/
+          mkdir -p target/generated/wasm-dev/docs
+          cp -r target/doc/. target/generated/wasm-dev/docs/
         env:
           RUSTDOCFLAGS: "-D warnings --cfg docsrs -Z unstable-options --enable-index-page"
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v5.0.0
         with:
-          path: target/generated/release
+          path: target/generated/wasm-dev
 
   deploy:
     name: Deploy the web example

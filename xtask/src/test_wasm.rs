@@ -101,7 +101,7 @@ pub fn run(args: &TestWasmArgs) -> Result<(), String> {
     build_workspace()?;
 
     println!("==> building the example");
-    let example = crate::run_wasm::build_example(false, &[])?;
+    let example = crate::run_wasm::build_example(&[])?;
     copy_example(&example)?;
 
     println!("==> building the wasm test binaries and binding them");
@@ -245,6 +245,7 @@ fn build_workspace() -> Result<(), String> {
         .args(["build", "--workspace", "--exclude", "xtask"])
         .args(["--exclude", "unlit3d_mcp"])
         .args(["--target", TARGET])
+        .args(["--profile", crate::run_wasm::PROFILE])
         .args(["--bins", "--tests", "--benches", "--examples"]);
     step::run(&mut build, "building the workspace for wasm")
 }
@@ -265,6 +266,7 @@ fn build_wasm_tests() -> Result<Vec<String>, String> {
         .args(PACKAGES.iter().flat_map(|package| ["-p", package]))
         .args(["--tests", "--all-features"])
         .args(["--list-type", "binaries-only", "--target", TARGET])
+        .args(["--cargo-profile", crate::run_wasm::PROFILE])
         .args(["--message-format=json", "-v"])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());

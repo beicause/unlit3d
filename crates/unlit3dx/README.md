@@ -92,10 +92,12 @@ with a reply channel and returns a `Request<R>` the caller may `poll`,
 `recv` or await: `poll` is `Option<R>`, `recv` is `Result<R, RequestError>`,
 and a request whose job was dropped (refused, or the world died, or the job
 panicked) reports `Err(RequestError::Dropped)` instead of blocking forever.
-`Request` is a `Future`, so a batch can be joined instead of polled:
-`poll_all` answers a batch synchronously, and `executor::JoinAll` is the
-same join as a future, driven on the caller's thread by `executor::LocalPool`
-— the shape a scene build takes in `unlit3dx_examples`.
+`Request` is a `Future`, so a batch is joined rather than polled:
+`executor::try_join_all` turns one into a future of `Result<Vec<R>,
+RequestError>` in request order, and `executor::LocalPool` drives it on the
+caller's thread — `run_until_stalled` polls every task it holds until none
+can progress and never blocks, which is what lets a fixed-step tick or a
+frame behaviour own the await. The demo's scene build is that shape.
 
 ## Snapshots
 

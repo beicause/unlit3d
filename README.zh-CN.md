@@ -118,7 +118,9 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   与 Node；它会自行安装 runner 的依赖与一个浏览器，除非用 `CHROME_PATH` 指定现成的。
   `--show` 打开可见窗口以观察失败。
 - **`cargo xtask run-wasm`** — 构建 web 示例并用内置静态服务器提供（WebGPU 需要 secure
-  context，`file://` 不行）。`--no-serve` 只构建，`--release` 走 release。
+  context，`file://` 不行）。`--no-serve` 只构建。这里和 `test-wasm` 的每一次 wasm
+  构建都用工作区的 `wasm-dev` cargo profile：沿用 release 的设定，但 `opt-level`
+  以体积为目标，因为二进制是要被浏览器下载的。
 - **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译示例的动态库放进
   `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，`--release` 构建
   未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`（NDK 由 cargo-ndk 自动探测）。

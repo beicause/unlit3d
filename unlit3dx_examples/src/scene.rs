@@ -756,9 +756,9 @@ impl Gameplay {
         let slot = Rc::clone(&build);
         let server = render.clone();
         log::info!("the gameplay world started; requesting the scene assets from the render world");
-        builder.spawn(async move {
+        builder.spawner().spawn_local(async move {
             let assets = request_assets(&server);
-            let answers = match JoinAll::new(assets).await {
+            let answers = match try_join_all(assets).await {
                 Ok(answers) => answers,
                 Err(error) => {
                     log::error!(
@@ -770,7 +770,7 @@ impl Gameplay {
             };
             log::info!("the render assets landed; requesting the scene instances");
             let instances = request_instances(&server, &answers);
-            let answers = match JoinAll::new(instances).await {
+            let answers = match try_join_all(instances).await {
                 Ok(answers) => answers,
                 Err(error) => {
                     log::error!(
@@ -781,7 +781,8 @@ impl Gameplay {
                 }
             };
             *slot.borrow_mut() = BuildState::Ready(pool_from_instances(answers));
-        });
+        })
+        .expect("a fresh pool takes its first task");
         Self {
             writer,
             physics,
@@ -813,7 +814,7 @@ impl Gameplay {
         if !self.build_pending {
             return;
         }
-        self.builder.run_ready();
+        self.builder.run_until_stalled();
         if matches!(&*self.build.borrow(), BuildState::Building) {
             return;
         }

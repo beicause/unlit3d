@@ -14,6 +14,9 @@ const FLOOR_HALF: Vec3 = Vec3::new(8.0, 0.5, 8.0);
 /// The ball the tests drop, starting one metre above the floor.
 const BALL_START: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 const BALL_RADIUS: f32 = 0.25;
+/// How many steps a thread-free world is driven for: long enough for the
+/// ball to reach the floor, bounce and come to rest.
+const STEPS: usize = 256;
 
 /// A physics world at the default rate, with the floor already queued.
 fn floored_host() -> (World, WorldHandle) {
@@ -46,42 +49,119 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
     false
 }
 
-/// A dropped ball lands on the floor and stays there: its snapshot
-/// transform settles just above the surface, and the landing surfaces as
-/// a contact-started event with a real closing speed.
+/// The threaded world does the whole job round trip: a body built by a job
+/// falls, and its snapshots carry it down to rest a radius above the floor.
+///
+/// The contact itself is not checked here. A contact-started event appears in
+/// exactly one snapshot, and the mailbox holds only the newest, so a reader
+/// that is not scheduled within one step of the landing misses it. The speed
+/// a landing reports is what [`a_landing_reports_the_closing_speed`] checks,
+/// on a world stepped in this thread where no step can be skipped.
 #[test]
-fn a_dropped_ball_lands_and_reports_the_contact() {
+fn a_dropped_ball_settles_in_its_snapshots() {
     let (host, world) = floored_host();
     world
         .send(Box::new(move |world: &mut World| {
-            let _ball = spawn_body(
-                world,
-                BodyDesc {
-                    position: BALL_START,
-                    velocity: Vec3::ZERO,
-                    restitution: 0.3,
-                    shape: BodyShape::Ball(BALL_RADIUS),
-                },
-            );
+            let _ball = spawn_body(world, ball_desc());
         }))
         .expect("the physics world accepts jobs");
 
-    // The ball must appear in the snapshots, fall below its start, touch
-    // the floor audibly and come to rest a radius above the surface.
-    let landed = wait_for(|| {
+    let rested = wait_for(|| {
         let Some(snapshot) = latest(&host, &world) else {
             return false;
         };
-        let touched = snapshot.started.iter().any(|&(_, _, speed)| speed > 0.5);
-        let resting = snapshot.transforms.iter().any(|&(_, translation, _)| {
+        snapshot.transforms.iter().any(|&(_, translation, _)| {
             (translation.y - BALL_RADIUS).abs() < 0.05 && translation.y < BALL_START.y
-        });
-        touched && resting
+        })
     });
     assert!(
-        landed,
-        "the ball never landed: the last snapshot is {latest:?}",
+        rested,
+        "the ball never came to rest: the last snapshot is {latest:?}",
         latest = latest(&host, &world).map(|snapshot| snapshot.transforms.clone()),
+    );
+}
+
+/// The ball every drop test releases: still, resting on nothing, and bouncy
+/// enough that it leaves the floor again rather than sticking to it.
+fn ball_desc() -> BodyDesc {
+    BodyDesc {
+        position: BALL_START,
+        velocity: Vec3::ZERO,
+        restitution: 0.3,
+        shape: BodyShape::Ball(BALL_RADIUS),
+    }
+}
+
+/// A landing is reported as the speed the pair closed at, not the speed it
+/// separated at.
+///
+/// Rapier's solver runs inside the step, so the body's velocity once the step
+/// returns is the bounce. The snapshot has to carry the approach instead,
+/// which is what this asserts: free fall over the gap between the ball and the
+/// floor's surface reaches the floor at about 3.8 m/s, while the 0.3
+/// restitution leaves it separating at about 1.2 m/s.
+#[test]
+fn a_landing_reports_the_closing_speed() {
+    let mut world = World::new();
+    init_physics_world(&mut world, &PhysicsConfig::default());
+    spawn_fixed_cuboid(&mut world, FLOOR_POSITION, FLOOR_HALF, 0.9);
+    let ball = spawn_body(&mut world, ball_desc());
+
+    // The gap the ball falls through, from its centre to a radius above the
+    // floor's surface, and the speed that gap implies under this world's
+    // own gravity.
+    let gravity = PhysicsConfig::default().gravity.length();
+    let surface = FLOOR_POSITION.y + FLOOR_HALF.y;
+    let fall = BALL_START.y - BALL_RADIUS - surface;
+    let reaching = (2.0 * gravity * fall).sqrt();
+
+    let mut landings = Vec::new();
+    let mut height = BALL_START.y;
+    for _ in 0..STEPS {
+        let snapshot = step_once(&world).expect("the world carries a physics world");
+        landings.extend(snapshot.started.iter().copied());
+        height = snapshot
+            .transforms
+            .iter()
+            .find(|(handle, _, _)| *handle == ball)
+            .map_or(height, |(_, translation, _)| translation.y);
+    }
+
+    assert!(!landings.is_empty(), "the ball never touched the floor");
+    let (one, two, speed) = landings[0];
+    let partner = if one == ball { two } else { one };
+    assert_ne!(partner, ball, "a landing names two different bodies");
+    let physics = world
+        .query::<&PhysicsWorld>()
+        .next()
+        .expect("the setup created the world")
+        .1;
+    let Some(partner_body) = physics.bodies.get(partner) else {
+        panic!("the body the ball landed on is not in the world");
+    };
+    assert!(
+        partner_body.is_fixed(),
+        "the ball landed on something other than the floor"
+    );
+    // The reported speed is the approach, not the separation. Rapier
+    // integrates in fixed steps — velocity first, then position — so the
+    // discrete fall overshoots the continuous one by roughly a step, and
+    // contact prediction reports it a step early. Both effects stay inside
+    // a tenth of the analytic speed; the bounce this test exists to rule out
+    // is a factor of the restitution below it.
+    let bounce = reaching * 0.3;
+    assert!(
+        speed > reaching * 0.9 && speed < reaching * 1.25,
+        "the first landing reported {speed}: the analytic closing speed is \
+         {reaching} and the bounce away would be about {bounce}"
+    );
+    assert!(
+        speed > bounce * 2.0,
+        "the first landing reported the separation speed {speed}, not the approach"
+    );
+    assert!(
+        (height - BALL_RADIUS).abs() < 0.05,
+        "the ball ended at {height}, not resting a radius above the surface"
     );
 }
 

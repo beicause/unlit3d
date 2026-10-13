@@ -157,7 +157,9 @@ Commands follow the `cargo xtask` convention:
   window to watch a failure happen.
 - **`cargo xtask run-wasm`** — build the web example and serve it from a built-in
   static server (WebGPU needs a secure context; `file://` will not do).
-  `--no-serve` only builds it, and `--release` uses the release profile.
+  `--no-serve` only builds it. Every wasm build, here and in `test-wasm`, uses
+  the workspace's `wasm-dev` cargo profile: release's settings at an
+  `opt-level` aimed at size, since a browser downloads the binary.
 - **`cargo xtask build-android`** — cross-compile the example's shared library
   with `cargo ndk` into `android/app/src/main/jniLibs`, then run Gradle to build
   the APK. Debug by default; `--release` builds an unsigned release APK. Needs

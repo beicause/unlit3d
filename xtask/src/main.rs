@@ -117,9 +117,6 @@ struct RunWasmArgs {
     /// build and bindgen only; do not serve.
     #[argh(switch)]
     no_serve: bool,
-    /// build in release mode.
-    #[argh(switch)]
-    release: bool,
     /// extra arguments for the cargo build.
     #[argh(positional, greedy)]
     cargo_args: Vec<String>,

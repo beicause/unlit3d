@@ -259,23 +259,6 @@ impl<R> Future for Request<R> {
     }
 }
 
-/// Poll a batch of requests together.
-///
-/// Returns `Ok(None)` until every request has answered,
-/// `Ok(Some(results))` in request order once they all have, and
-/// [`Err`] as soon as any request's world dropped its job.
-pub fn poll_all<R: Send + 'static>(
-    requests: &[Request<R>],
-) -> Result<Option<Vec<R>>, RequestError> {
-    if requests.iter().any(Request::dropped) {
-        return Err(RequestError::Dropped);
-    }
-    if !requests.iter().all(Request::answered) {
-        return Ok(None);
-    }
-    Ok(Some(requests.iter().filter_map(Request::poll).collect()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,28 +328,5 @@ mod tests {
             Pin::new(&mut request).poll(&mut context),
             Poll::Ready(Ok(9))
         );
-    }
-
-    /// poll_all waits for every request, then returns the results in order.
-    #[test]
-    fn poll_all_waits_for_every_request() {
-        let (job_one, one) = Request::wrap(Box::new(|_: &mut World| 1));
-        let (job_two, two) = Request::wrap(Box::new(|_: &mut World| 2));
-        let requests = [one, two];
-        let mut world = World::new();
-        assert_eq!(poll_all(&requests), Ok(None));
-        job_one(&mut world);
-        let mut world = World::new();
-        assert_eq!(poll_all(&requests), Ok(None));
-        job_two(&mut world);
-        assert_eq!(poll_all(&requests), Ok(Some(vec![1, 2])));
-    }
-
-    /// poll_all fails as soon as one request's job is dropped.
-    #[test]
-    fn poll_all_fails_on_a_dropped_request() {
-        let (job, request) = Request::wrap(Box::new(|_: &mut World| 1));
-        drop(job);
-        assert_eq!(poll_all(&[request]), Err(RequestError::Dropped));
     }
 }

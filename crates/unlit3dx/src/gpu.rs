@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use unlit_ecs::{Command, Entity, World};
 
-use crate::executor::LocalPool;
+use crate::executor::{LocalPool, LocalSpawnExt};
 use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::winit::builtin::{DisplayHandle, ExitRequest, Resumed, window};
@@ -132,7 +132,7 @@ where
     // The pool lives inside the behaviour and is driven on the frame
     // thread, so the answer slot needs no lock: the request future and
     // the behaviour that reads it run on the same thread.
-    let pool = LocalPool::new();
+    let mut pool = LocalPool::new();
     let answer: Rc<RefCell<Option<Result<Gpu, String>>>> = Rc::default();
     let mut state = 0u8;
     let mut ready = Some(ready);
@@ -145,7 +145,7 @@ where
             if state == 1 {
                 // Drive the request future; a wake from the wgpu callback
                 // thread is queued and picked up here.
-                pool.run_ready();
+                pool.run_until_stalled();
                 // One poll takes the answer out for good, so it is moved
                 // into the command even if the callback panics half-way.
                 let Some(result) = answer.borrow_mut().take() else {
@@ -178,21 +178,25 @@ where
             state = 1;
             log::debug!("requesting a GPU context");
             let slot = Rc::clone(&answer);
-            pool.spawn(async move {
-                // The display handle is owned, not borrowed: the instance
-                // it builds has to outlive this callback.
-                let instance = wgpu::util::new_instance_with_webgpu_detection(
-                    wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
-                )
-                .await;
-                let result = match instance.create_surface(window) {
-                    Ok(probe) => Gpu::request(instance, probe)
-                        .await
-                        .map_err(|error| error.to_string()),
-                    Err(error) => Err(error.to_string()),
-                };
-                *slot.borrow_mut() = Some(result);
-            });
+            pool.spawner()
+                .spawn_local(async move {
+                    // The display handle is owned, not borrowed: the instance
+                    // it builds has to outlive this callback.
+                    let instance = wgpu::util::new_instance_with_webgpu_detection(
+                        wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
+                            display,
+                        )),
+                    )
+                    .await;
+                    let result = match instance.create_surface(window) {
+                        Ok(probe) => Gpu::request(instance, probe)
+                            .await
+                            .map_err(|error| error.to_string()),
+                        Err(error) => Err(error.to_string()),
+                    };
+                    *slot.borrow_mut() = Some(result);
+                })
+                .expect("the pool outlives the behaviour that owns it");
         },
     )
 }

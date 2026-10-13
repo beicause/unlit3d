@@ -38,6 +38,13 @@ flacenc = { version = "0.5.1", default-features = false }
 # crate's hash tables hash; its `FixedState` seeds deterministically, which a
 # per-instance hasher does not.
 foldhash = { version = "0.2.0", default-features = false }
+# The single-threaded executor that drives a batch of awaited requests. Only
+# its std pool is used: the optional thread-pool feature would add a thread
+# pool to a crate whose worlds already own their threads.
+futures-executor = { version = "0.3.34", default-features = false, features = ["std"] }
+# The join combinator those requests are batched with. std implies alloc,
+# which is what try_join_all and the spawn extension trait need.
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 glam = { version = "0.33", default-features = false, features = ["std", "zerocopy"] }
 gltf = { version = "1.4.1", default-features = false, features = ["import", "names", "utils"] }
 half = { version = "2.7.1", default-features = false }
@@ -99,8 +106,9 @@ print_stdout = "warn"
 [workspace.lints.rust]
 missing_docs = "deny"
 
-# Debug builds stay unoptimized by default, and dependencies that crunch data
-# on ordinary calls — the soundfont's vorbis decode alone takes tens of
-# seconds at opt-level 0 — make the examples unusable without some inlining.
 [profile.dev]
 opt-level = 1
+
+[profile.wasm-dev]
+inherits = "release"
+opt-level = "s"

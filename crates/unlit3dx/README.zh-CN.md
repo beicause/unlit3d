@@ -84,9 +84,11 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 await 的 `Request<R>`：`poll` 得到 `Option<R>`，`recv` 得到
 `Result<R, RequestError>`，而 job 被丢弃（队列拒绝、world 已死，或 job 自己
 panic）的请求报告 `Err(RequestError::Dropped)`，而不是永久阻塞。`Request` 实现了
-`Future`，所以一批请求可以被 join 而不是轮询：`poll_all` 同步地取出整批答案，
-`executor::JoinAll` 则是同一件事的 future 形态，由 `executor::LocalPool` 在调用方
-线程上驱动——`unlit3dx_examples` 里搭建场景用的就是这个形状。
+`Future`，所以一批请求是被 join 而不是被轮询：`executor::try_join_all` 把一批合成
+一个按请求顺序给出 `Result<Vec<R>, RequestError>` 的 future，由
+`executor::LocalPool` 在调用方线程上驱动——`run_until_stalled` 把池里每个任务轮到
+无法再推进就返回、从不阻塞，因此固定步长的 tick 或帧行为都能持有这个 await。
+`unlit3dx_examples` 里搭建场景用的就是这个形状。
 
 ## 快照
 

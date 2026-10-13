@@ -96,10 +96,10 @@ pub mod prelude {
     };
     pub use crate::{
         channel::{SnapshotReader, SnapshotWriter, snapshot_pair},
-        executor::{JoinAll, LocalPool},
+        executor::{LocalPool, LocalSpawnExt, try_join_all},
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world},
-        job::{Job, JobSender, Request, RequestError, SendError, poll_all},
+        job::{Job, JobSender, Request, RequestError, SendError},
         thread::{FixedClock, ThreadControl, ThreadStatus, WorldThread},
         world::{spawn_remote_world, spawn_remote_world_with, spawn_remote_world_with_init},
     };
