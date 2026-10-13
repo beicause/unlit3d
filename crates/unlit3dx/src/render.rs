@@ -6,7 +6,7 @@
 //! [`GpuMesh`] or [`GpuMaterial`] component of its own asset entity — the
 //! GPU handles inside carry `Rc`, so they cannot cross a thread, but the
 //! entity's bits can. A simulation world requests an allocation with
-//! [`create_mesh`] or [`create_material`], holds the entity bits that come
+//! [`create_mesh`] or [`create_material_from_texture`], holds the entity bits that come
 //! back, and names them again in [`spawn_instance`] to place a rendered
 //! instance of the assets.
 
@@ -85,17 +85,29 @@ impl OwnedUnlitMeshDesc {
     }
 }
 
-/// The render world's mesh source, with the standard unlit pipeline key
-/// built from its device.
+/// The render world's mesh source and the pipeline key its server jobs
+/// use.
 ///
-/// Every server job derives the key this way: the caller never needs a
-/// device, and the whole world renders through one pipeline.
+/// The key is the one installed in the render world: a caller that spawns
+/// an [`UnlitPipelineKey`] component chooses the options. Without one the
+/// standard unlit options are built from the mesh source's device, so a
+/// caller that only wants the built-in look never has to touch a device.
+///
+/// This is the built-in convenience layer. For a pipeline of the caller's
+/// own, register a family and allocate through `unlit3d`'s
+/// [`MeshSource`] directly; the world is the same registry either way.
 fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
     let (entity, source) = world
         .query::<&Source>()
         .find(|(_, source)| source.as_ref::<MeshSource>().is_some())?;
     let mesh_source = source.as_ref::<MeshSource>()?;
-    let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(world)));
+    let key = world
+        .query::<&UnlitPipelineKey>()
+        .next()
+        .map(|(_, key)| key.clone())
+        .unwrap_or_else(|| {
+            UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(world)))
+        });
     Some((entity, key))
 }
 
@@ -120,34 +132,6 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<u64> {
     })
 }
 
-/// A job that allocates one solid-color material in the render world and
-/// answers with the bits of its asset entity, the one carrying the
-/// [`GpuMaterial`].
-///
-/// The base-color texture is a single pixel of `color`; the sampler is
-/// created for this material alone and descriptor describes it.
-/// Panics inside the render world when it carries no `MeshSource`.
-pub fn create_material(color: [u8; 4], descriptor: wgpu::SamplerDescriptor<'static>) -> Job<u64> {
-    Box::new(move |world: &mut World| {
-        let Some((source_entity, key)) = mesh_source(world) else {
-            panic!("the render world carries no MeshSource");
-        };
-        let material = world
-            .with_mut::<Source, _>(source_entity, |source| {
-                let source = source
-                    .as_mut::<MeshSource>()
-                    .expect("the source carries a MeshSource");
-                let texture =
-                    solid_color_texture(&source.device(world), &source.queue(world), color);
-                let view = source.register_texture_and_default_view(world, texture).1;
-                let sampler = source.register_sampler(world, Some(descriptor));
-                source.allocate_unlit_material(world, &key, view, sampler)
-            })
-            .expect("the mesh source entity exists");
-        world.spawn((material,)).to_bits()
-    })
-}
-
 /// A job that allocates one material whose base-color texture is the
 /// `size.0` by `size.1` RGBA image `pixels`, and answers with the bits of
 /// its asset entity, the one carrying the [`GpuMaterial`].
@@ -169,31 +153,46 @@ pub fn create_material_from_texture(
         "the pixels do not fill the texture"
     );
     Box::new(move |world: &mut World| {
-        let Some((source_entity, key)) = mesh_source(world) else {
-            panic!("the render world carries no MeshSource");
-        };
-        let material = world
-            .with_mut::<Source, _>(source_entity, |source| {
-                let source = source
-                    .as_mut::<MeshSource>()
-                    .expect("the source carries a MeshSource");
-                let texture =
-                    rgba_texture(&source.device(world), &source.queue(world), size, &pixels);
-                let view = source.register_texture_and_default_view(world, texture).1;
-                let sampler = source.register_sampler(world, Some(descriptor));
-                source.allocate_unlit_material(world, &key, view, sampler)
-            })
-            .expect("the mesh source entity exists");
-        world.spawn((material,)).to_bits()
+        allocate_material(world, descriptor, |source, world| {
+            rgba_texture(&source.device(world), &source.queue(world), size, &pixels)
+        })
     })
+}
+
+/// Allocate one material in the render world from a texture built on its
+/// device, and answer the bits of its asset entity.
+///
+/// It builds a texture, registers it with a default view and a sampler,
+/// then allocates the material. Panics inside the render world when it
+/// carries no `MeshSource`.
+fn allocate_material(
+    world: &mut World,
+    descriptor: wgpu::SamplerDescriptor<'static>,
+    build_texture: impl FnOnce(&MeshSource, &World) -> wgpu::Texture,
+) -> u64 {
+    let Some((source_entity, key)) = mesh_source(world) else {
+        panic!("the render world carries no MeshSource");
+    };
+    let material = world
+        .with_mut::<Source, _>(source_entity, |source| {
+            let source = source
+                .as_mut::<MeshSource>()
+                .expect("the source carries a MeshSource");
+            let texture = build_texture(source, world);
+            let view = source.register_texture_and_default_view(world, texture).1;
+            let sampler = source.register_sampler(world, Some(descriptor));
+            source.allocate_unlit_material(world, &key, view, sampler)
+        })
+        .expect("the mesh source entity exists");
+    world.spawn((material,)).to_bits()
 }
 
 /// A job that spawns one render entity from asset entities: a [`GpuMesh`]
 /// cloned from `mesh`, a [`GpuMaterial`] cloned from `material`, and the
 /// `transform` it starts at. Answers with the new entity's bits.
 ///
-/// The assets are named by the bits [`create_mesh`] and [`create_material`]
-/// answered. Panics inside the render world when it carries no
+/// The assets are named by the bits [`create_mesh`] and
+/// [`create_material_from_texture`] answered. Panics inside the render world when it carries no
 /// `MeshSource`, or when an asset entity is gone.
 pub fn spawn_instance(mesh: u64, material: u64, transform: Transform) -> Job<u64> {
     Box::new(move |world: &mut World| {
@@ -212,17 +211,6 @@ pub fn spawn_instance(mesh: u64, material: u64, transform: Transform) -> Job<u64
             .spawn((transform, mesh, material, UnlitPipeline::new(key)))
             .to_bits()
     })
-}
-
-/// An RGBA texture of one solid color, for materials that only carry a
-/// tint.
-#[must_use]
-pub fn solid_color_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    color: [u8; 4],
-) -> wgpu::Texture {
-    rgba_texture(device, queue, (1, 1), &[color])
 }
 
 /// A texture of `size.0` by `size.1` RGBA pixels.
@@ -315,8 +303,14 @@ pub fn camera_looking_at(
 /// back-face culling of the unlit pipeline: stacks grow downward and
 /// slices counterclockwise, so each quad reads (top, top-next, bottom)
 /// and (top-next, bottom-next, bottom) against the outward direction.
+///
+/// # Panics
+///
+/// Panics when `slices` or `stacks` is zero: the sphere would divide by
+/// zero and carry NaN positions.
 #[must_use]
 pub fn uv_sphere(radius: f32, slices: usize, stacks: usize) -> OwnedUnlitMeshDesc {
+    assert!(slices > 0 && stacks > 0, "a sphere needs slices and stacks");
     let count = (slices + 1) * (stacks + 1);
     let mut positions = Vec::with_capacity(count);
     let mut uvs = Vec::with_capacity(count);

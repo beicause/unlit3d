@@ -3,8 +3,12 @@
 //! The audio thread owns the stream and a lock-free ring buffer; the
 //! operating system's callback pops whatever is newest and silences the
 //! rest, so a late simulation degrades to silence instead of stuttering.
-//! What sound plays is decided by a [`PcmSource`] the caller's factory
-//! builds on the audio thread, where it can reach the world's entities.
+//! What sound plays is decided by the world's [`OnFill`] components: the
+//! thread runs them once per filled chunk and sums their samples into the
+//! ring. The output's format is not known until its stream opens, so the
+//! thread publishes it as [`AudioFormat`] and a caller installs its
+//! sources then, with an ordinary job: a world that carries none plays
+//! nothing and says so through [`AudioReady`].
 
 use std::time::Duration;
 
@@ -14,7 +18,7 @@ use ringbuf::{HeapProd, HeapRb};
 use unlit_ecs::{Entity, World};
 
 use crate::channel::{SnapshotReader, snapshot_pair};
-use crate::job::Job;
+use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
 use crate::world::spawn_remote_world_with;
 
@@ -26,7 +30,8 @@ const FILL_FRAMES: usize = 256;
 #[derive(Clone, Debug)]
 pub struct AudioConfig {
     /// The ring buffer's length, in frames per channel: the total latency
-    /// the filler can smooth over.
+    /// the filler can smooth over. Must hold at least two fill chunks, or
+    /// the filler would never see room to write one.
     pub buffer_frames: usize,
     /// The sample rate to ask the output device for, in hertz.
     pub preferred_sample_rate: u32,
@@ -44,66 +49,219 @@ impl Default for AudioConfig {
     }
 }
 
-/// A source of audio samples, run on the audio thread once per filled chunk.
+/// Where a fill behaviour runs among the world's other sources.
 ///
-/// The buffer is interleaved frames: one set of samples per channel. The
-/// default impl leaves the buffer silent, which is what the stream plays
-/// when no source exists yet.
-pub trait PcmSource: Send {
-    /// Fill the buffer with the next chunk of interleaved audio.
-    fn fill(&mut self, world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
-        let _ = (world, out, sample_rate, channels);
+/// Sources with the same order run in the order they were mounted, so a
+/// mix is reproducible: the same spawns give the same sum, in the same
+/// order, at the same sample offsets.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FillOrder(pub i32);
+
+/// One chunk of interleaved audio a fill behaviour contributes to.
+///
+/// The chunk arrives silent and the behaviour adds its samples to it rather
+/// than overwriting them: adding is what lets several sources play at once.
+/// Samples past the first two channels of a wider stream are the right
+/// channel's, which is what a stereo source has to offer.
+pub struct AudioChunk<'a> {
+    /// The chunk's samples, interleaved frames, silent unless a behaviour
+    /// has already added to it.
+    pub out: &'a mut [f32],
+    /// The output's sample rate, in hertz.
+    pub sample_rate: u32,
+    /// The output's channel count.
+    pub channels: u16,
+}
+
+impl AudioChunk<'_> {
+    /// How many frames the chunk holds.
+    #[must_use]
+    pub fn frames(&self) -> usize {
+        self.out.len() / usize::from(self.channels.max(1))
     }
 }
 
-/// Builds the world's [`PcmSource`] on the audio thread.
-///
-/// The thread hands over its world, its output's sample rate and channel
-/// count, and takes the mixer back: this is the one moment a caller's
-/// setup may touch entities on the audio world.
-pub type PcmSourceFactory = Box<dyn FnOnce(&mut World, u32, u16) -> Box<dyn PcmSource> + Send>;
+/// The callback a fill behaviour runs: it adds its source's samples to the
+/// chunk it is handed.
+type FillCallback = Box<dyn FnMut(&World, Entity, &mut AudioChunk)>;
 
-/// Whether the audio world's output is paused, carried on one entity the
-/// filler consults every tick.
-#[derive(Clone, Copy, Debug)]
-pub struct AudioPaused(pub bool);
-
-/// A job that pauses or resumes the audio world's output.
-///
-/// While paused the filler keeps feeding the ring silence, so the output
-/// stays fresh and resumes exactly where the mixer left off.
-pub fn pause_audio_job(paused: bool) -> Job<()> {
-    Box::new(move |world| set_paused(world, paused))
+/// The state every fill behaviour shares: its callback, its order, and when
+/// it was mounted.
+struct FillSlot {
+    callback: FillCallback,
+    order: FillOrder,
+    mount_index: u64,
 }
 
-/// Mark the audio world's output paused or resumed, creating the marker
-/// entity the first time.
-pub(crate) fn set_paused(world: &mut World, paused: bool) {
-    let holder = world
-        .query::<&AudioPaused>()
+/// A source of audio samples: a component the audio thread runs once per
+/// filled chunk.
+///
+/// Spawn it on its own entity with [`WorldFillExt::spawn_on_fill`], or
+/// mount it with [`WorldFillExt::mount_on_fill`] to bundle it with the
+/// state it renders from — a synthesizer, say. [`dispatch_fill`] runs a
+/// world's sources and mixes them.
+pub struct OnFill(FillSlot);
+
+impl OnFill {
+    /// Wrap `f` as an [`OnFill`].
+    ///
+    /// `order` places it among the world's other sources; a source that
+    /// only adds its own samples can keep [`FillOrder::default`].
+    #[must_use]
+    pub fn new(order: FillOrder, f: impl FnMut(&World, Entity, &mut AudioChunk) + 'static) -> Self {
+        Self(FillSlot {
+            callback: Box::new(f),
+            order,
+            mount_index: 0,
+        })
+    }
+
+    /// The order this source runs in.
+    #[must_use]
+    pub fn order(&self) -> FillOrder {
+        self.0.order
+    }
+
+    /// When this source was mounted, which breaks ties between equal orders.
+    #[must_use]
+    pub fn mount_index(&self) -> u64 {
+        self.0.mount_index
+    }
+
+    /// Record when this source was mounted.
+    fn set_mount_index(&mut self, index: u64) {
+        self.0.mount_index = index;
+    }
+
+    /// Run this source for `entity`, adding its samples to `chunk`.
+    fn run(&mut self, world: &World, entity: Entity, chunk: &mut AudioChunk) {
+        (self.0.callback)(world, entity, chunk);
+    }
+}
+
+/// The next mount index to hand out.
+///
+/// Kept in the world so it is monotonic across the world's life rather than
+/// per driver: two drivers sharing a world must not hand out the same
+/// indices, or the tie-break would not be total.
+#[derive(Debug, Default)]
+struct FillMounts(u64);
+
+/// Spawning fill behaviours, which record the order they were mounted in.
+pub trait WorldFillExt {
+    /// Spawn `behaviour` on an entity of its own, as the next source
+    /// mounted in the world.
+    fn spawn_on_fill(&mut self, behaviour: OnFill) -> Entity;
+
+    /// Record `behaviour` as the next source mounted and hand it back, so
+    /// it can be bundled with the components it renders from.
+    fn mount_on_fill(&mut self, behaviour: OnFill) -> OnFill;
+}
+
+impl WorldFillExt for World {
+    fn spawn_on_fill(&mut self, behaviour: OnFill) -> Entity {
+        let behaviour = self.mount_on_fill(behaviour);
+        self.spawn((behaviour,))
+    }
+
+    fn mount_on_fill(&mut self, mut behaviour: OnFill) -> OnFill {
+        let index = next_mount_index(self);
+        behaviour.set_mount_index(index);
+        behaviour
+    }
+}
+
+/// Take the next mount index from the world's counter, spawning it if absent.
+fn next_mount_index(world: &mut World) -> u64 {
+    let counter = world
+        .query::<&FillMounts>()
         .next()
         .map(|(entity, _)| entity);
-    match holder {
-        Some(entity) => {
-            let _ = world.with_mut::<AudioPaused, _>(entity, |state| state.0 = paused);
-        }
-        None => {
-            world.spawn((AudioPaused(paused),));
-        }
+    let Some(counter) = counter else {
+        world.spawn((FillMounts(1),));
+        return 0;
+    };
+    world
+        .with_mut::<FillMounts, _>(counter, |mounts| {
+            let index = mounts.0;
+            mounts.0 += 1;
+            index
+        })
+        .expect("the mount counter exists")
+}
+
+/// The factor the mixed samples scale by, read from the audio world.
+///
+/// The gain belongs to the output rather than to one source:
+/// [`dispatch_fill`] sums every source and scales the sum once, so adding a
+/// source changes the mix without changing anyone's level. Soundfont presets
+/// leave a lot of headroom, so a mix of a few quiet voices usually wants a
+/// gain above one. Samples clamp to the unit range after the gain, so an
+/// overdriven mix distorts rather than wraps. A world carrying no gain
+/// passes its mix through unchanged.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AudioGain(pub f32);
+
+/// Run every [`OnFill`] in `world` once, mixing their samples into `out`.
+///
+/// `out` is interleaved frames and is zeroed first; each source adds its
+/// contribution in [`FillOrder`] order, then the world's [`AudioGain`] —
+/// one when it carries none — scales the sum, which clamps to the unit
+/// range. This is the whole of the audio thread's per-chunk work, and a
+/// caller stepping a world inline calls it the same way.
+///
+/// A source must not change the world's set of sources while it runs: it
+/// has a shared `&World`, so structural work goes through
+/// [`World::queue`] and is applied by the world's own driver between fills.
+pub fn dispatch_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
+    out.fill(0.0);
+    let mut sources: Vec<(FillOrder, u64, Entity)> = world
+        .query::<&OnFill>()
+        .map(|(entity, fill)| (fill.order(), fill.mount_index(), entity))
+        .collect();
+    sources.sort_unstable_by_key(|(order, index, _)| (*order, *index));
+    let mut chunk = AudioChunk {
+        out,
+        sample_rate,
+        channels,
+    };
+    for (_, _, entity) in sources {
+        world
+            .with_mut::<OnFill, _>(entity, |fill| fill.run(world, entity, &mut chunk))
+            .expect("the source entity exists");
+    }
+    let gain = world
+        .query::<&AudioGain>()
+        .next()
+        .map(|(_, gain)| gain.0)
+        .unwrap_or(1.0);
+    for sample in chunk.out.iter_mut() {
+        *sample = (*sample * gain).clamp(-1.0, 1.0);
     }
 }
 
-/// Whether the audio world's output is paused right now: true only when
-/// the world carries an AudioPaused set to true.
-fn paused(world: &World) -> bool {
-    world
-        .query::<&AudioPaused>()
-        .next()
-        .is_some_and(|(_, state)| state.0)
+/// The format the audio world's output stream opened at.
+///
+/// A source that renders at a fixed rate — a synthesizer, a sampler — is
+/// built at the rate the device actually uses, and that is not known until
+/// the stream opens. The audio thread publishes this as soon as it does, so
+/// the job that spawns the world's [`OnFill`] sources can be sent then,
+/// like any other work for that world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioFormat {
+    /// The stream's sample rate, in hertz.
+    pub sample_rate: u32,
+    /// The stream's channel count.
+    pub channels: u16,
 }
 
+/// The audio world's output-format mailbox, carried on the proxy entity the
+/// host spawned the world through.
+#[derive(Clone, Debug)]
+pub struct AudioFormatInbox(pub SnapshotReader<AudioFormat>);
+
 /// Whether the audio world can sound, published by the audio thread once
-/// its output and source exist.
+/// its output is open and the world carries at least one [`OnFill`] source.
 ///
 /// Impacts that happen while the world is still loading its soundfont
 /// must not queue as note jobs: they would all fire the instant the
@@ -129,31 +287,47 @@ struct OpenOutput {
     channels: u16,
 }
 
-/// Spawn the audio remote world on a fresh thread, and return the proxy
-/// entity carrying its command channel.
+/// Spawn the audio remote world on a fresh thread, and return the handle to
+/// it. Its entity carries the command channel, [`AudioFormatInbox`] and
+/// [`AudioReadyInbox`].
 ///
 /// The thread opens the default output device on its first tick and keeps it
 /// open; until then, and whenever no device exists, the world runs silently.
-/// The factory, when given, runs once on the audio thread as soon as the
-/// output's format is known.
-pub fn spawn_audio_world(
-    host: &mut World,
-    config: AudioConfig,
-    factory: Option<PcmSourceFactory>,
-) -> Entity {
-    let mut factory = factory;
+/// Once the stream is open its format is in the inbox, and the world mixes
+/// whatever [`OnFill`] sources a caller has since queued into it — a world
+/// nobody has installed stays silent.
+///
+/// # Panics
+///
+/// Panics when `buffer_frames` cannot hold two fill chunks, or when
+/// `command_capacity` is zero.
+pub fn spawn_audio_world(host: &mut World, config: AudioConfig) -> WorldHandle {
+    // The filler writes in chunks of FILL_FRAMES frames, so a ring smaller
+    // than one chunk would never see room and the stream would stay silent
+    // forever. Two chunks leave room to top the ring up between wakeups.
+    assert!(
+        config.buffer_frames >= FILL_FRAMES * 2,
+        "buffer_frames must hold at least two fill chunks of {FILL_FRAMES} frames"
+    );
     let mut output: Option<OpenOutput> = None;
-    let mut source: Option<Box<dyn PcmSource>> = None;
     let mut scratch: Vec<f32> = Vec::new();
+    let (format_writer, format_reader) = snapshot_pair::<AudioFormat>();
     let (ready_writer, ready_reader) = snapshot_pair::<AudioReady>();
-    // The readiness flips only when the output and the source appear or
+    // The readiness flips only when the output and the sources appear or
     // vanish, so the mailbox sees one publish per transition.
     let mut ready = false;
+    // The pacing clock follows the ring: it is created once the stream's
+    // sample rate is known and then keeps its own cadence, so a slow tick
+    // does not push every later wakeup out.
+    let mut clock: Option<FixedClock> = None;
     spawn_remote_world_with(
         host,
         "audio",
         config.command_capacity,
-        AudioReadyInbox(ready_reader),
+        (
+            AudioFormatInbox(format_reader),
+            AudioReadyInbox(ready_reader),
+        ),
         move |world, control| {
             if control.stop_requested() {
                 return false;
@@ -166,9 +340,17 @@ pub fn spawn_audio_world(
                             opened.sample_rate,
                             opened.channels
                         );
-                        if let Some(factory) = factory.take() {
-                            source = Some(factory(world, opened.sample_rate, opened.channels));
-                        }
+                        // Published once, before the first fill: whoever
+                        // waits on it builds their sources at the rate the
+                        // device really uses.
+                        format_writer.publish(AudioFormat {
+                            sample_rate: opened.sample_rate,
+                            channels: opened.channels,
+                        });
+                        // Half a chunk of pacing: the ring stays ahead of
+                        // the callback without the filler spinning.
+                        let pace = FILL_FRAMES as f64 / f64::from(opened.sample_rate) * 0.5;
+                        clock = Some(FixedClock::new(Duration::from_secs_f64(pace)));
                         output = Some(opened);
                     }
                     None => {
@@ -176,10 +358,11 @@ pub fn spawn_audio_world(
                     }
                 }
             }
-            // The soundfont load runs inside the factory, so a device may
-            // be open for seconds before the world can sound. Publish the
-            // transition, not the state, so the mailbox stays quiet.
-            let sounding = output.is_some() && source.is_some();
+            // A source takes time to build — a soundfont is parsed on this
+            // thread — so a device may be open for seconds before the world
+            // carries one. Publish the transition, not the state, so the
+            // mailbox stays quiet.
+            let sounding = output.is_some() && world.query::<&OnFill>().next().is_some();
             if sounding != ready {
                 ready = sounding;
                 ready_writer.publish(AudioReady(sounding));
@@ -191,22 +374,16 @@ pub fn spawn_audio_world(
             }
             if let Some(output) = output.as_mut() {
                 let chunk = FILL_FRAMES * usize::from(output.channels);
-                // A paused output feeds the ring silence instead of the
-                // mixer, so the callback drains fresh silence and the
-                // resume picks up exactly where the mix left off.
-                let silenced = paused(world);
                 while output.producer.vacant_len() >= chunk {
                     scratch.resize(chunk, 0.0);
-                    if !silenced && let Some(source) = source.as_mut() {
-                        source.fill(world, &mut scratch, output.sample_rate, output.channels);
-                    }
+                    dispatch_fill(world, &mut scratch, output.sample_rate, output.channels);
                     output.producer.push_slice(&scratch);
                 }
-                // Half a chunk of pacing: the ring stays ahead of the
-                // callback without the filler spinning.
-                let pace = FILL_FRAMES as f64 / f64::from(output.sample_rate) * 0.5;
-                let mut clock = FixedClock::new(Duration::from_secs_f64(pace));
-                clock.wait(control);
+                if let Some(clock) = clock.as_mut() {
+                    clock.wait(control);
+                } else {
+                    control.wait_timeout(Duration::from_secs(1));
+                }
             } else {
                 control.wait_timeout(Duration::from_secs(1));
             }
@@ -259,14 +436,4 @@ fn open_output(config: &AudioConfig) -> Option<OpenOutput> {
         sample_rate,
         channels,
     })
-}
-
-/// A source that plays nothing: the fallback when no mixer can be built.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Silent;
-
-impl PcmSource for Silent {
-    fn fill(&mut self, _world: &World, out: &mut [f32], _sample_rate: u32, _channels: u16) {
-        out.fill(0.0);
-    }
 }

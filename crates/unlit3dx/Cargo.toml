@@ -8,9 +8,8 @@ license.workspace = true
 keywords = ["audio", "ecs", "gamedev", "multithreading", "physics"]
 
 [dependencies]
-async-channel = { workspace = true, optional = true }
+async-channel.workspace = true
 cpal = { workspace = true, optional = true }
-crossbeam-channel.workspace = true
 glam.workspace = true
 log.workspace = true
 rapier3d = { workspace = true, optional = true }
@@ -28,6 +27,9 @@ wgpu = { workspace = true, optional = true }
 # and builds as-is.
 winit = { workspace = true, optional = true }
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster = { workspace = true, optional = true }
 
@@ -43,7 +45,7 @@ default = ["audio", "physics", "render", "synth"]
 ## The audio output thread, backed by cpal and a ring buffer.
 audio = ["dep:cpal", "dep:ringbuf"]
 ## The MCP stdio server driven from the host world.
-mcp = ["dep:async-channel", "dep:unlit3d", "dep:unlit3d_mcp", "unlit3d/winit"]
+mcp = ["dep:unlit3d", "dep:unlit3d_mcp", "unlit3d/winit"]
 ## The physics world on its own thread, backed by rapier.
 physics = ["dep:rapier3d"]
 ## The render bridge: a render sub-world that acts as an asset server, plus
@@ -57,7 +59,7 @@ render = [
   "dep:winit",
   "unlit3d/winit",
 ]
-## A soundfont synthesizer `PcmSource` for the audio world.
+## Soundfont-backed `OnFill` sources for the audio world.
 synth = ["audio", "dep:rustysynth-ext"]
 
 [lints]

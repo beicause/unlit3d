@@ -16,14 +16,10 @@ const BALL_START: Vec3 = Vec3::new(0.0, 1.0, 0.0);
 const BALL_RADIUS: f32 = 0.25;
 
 /// A physics world at the default rate, with the floor already queued.
-fn floored_host() -> (World, unlit_ecs::Entity) {
+fn floored_host() -> (World, WorldHandle) {
     let mut host = World::new();
     let world = spawn_physics_world(&mut host, PhysicsConfig::default());
-    let sender = host
-        .get::<RemoteWorld>(world)
-        .expect("the proxy carries its commands")
-        .sender();
-    sender
+    world
         .send(Box::new(move |world: &mut World| {
             spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
         }))
@@ -32,8 +28,8 @@ fn floored_host() -> (World, unlit_ecs::Entity) {
 }
 
 /// The newest snapshot from the physics inbox, if one has landed.
-fn latest(host: &World, world: unlit_ecs::Entity) -> Option<std::sync::Arc<PhysicsSnapshot>> {
-    host.get::<PhysicsInbox>(world)
+fn latest(host: &World, world: &WorldHandle) -> Option<std::sync::Arc<PhysicsSnapshot>> {
+    host.get::<PhysicsInbox>(world.entity())
         .expect("the proxy carries the inbox")
         .0
         .latest()
@@ -56,11 +52,7 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
 #[test]
 fn a_dropped_ball_lands_and_reports_the_contact() {
     let (host, world) = floored_host();
-    let sender = host
-        .get::<RemoteWorld>(world)
-        .expect("the proxy carries its commands")
-        .sender();
-    sender
+    world
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(
                 world,
@@ -77,7 +69,7 @@ fn a_dropped_ball_lands_and_reports_the_contact() {
     // The ball must appear in the snapshots, fall below its start, touch
     // the floor audibly and come to rest a radius above the surface.
     let landed = wait_for(|| {
-        let Some(snapshot) = latest(&host, world) else {
+        let Some(snapshot) = latest(&host, &world) else {
             return false;
         };
         let touched = snapshot.started.iter().any(|&(_, _, speed)| speed > 0.5);
@@ -89,7 +81,7 @@ fn a_dropped_ball_lands_and_reports_the_contact() {
     assert!(
         landed,
         "the ball never landed: the last snapshot is {latest:?}",
-        latest = latest(&host, world).map(|snapshot| snapshot.transforms.clone()),
+        latest = latest(&host, &world).map(|snapshot| snapshot.transforms.clone()),
     );
 }
 
@@ -101,17 +93,18 @@ fn an_empty_world_publishes_empty_snapshots() {
     let world = spawn_physics_world(&mut host, PhysicsConfig::default());
 
     assert!(
-        wait_for(|| latest(&host, world).is_some()),
+        wait_for(|| latest(&host, &world).is_some()),
         "the empty world never published a snapshot"
     );
-    let snapshot = latest(&host, world).expect("the snapshot exists");
+    let snapshot = latest(&host, &world).expect("the snapshot exists");
     assert!(snapshot.transforms.is_empty());
     assert!(snapshot.started.is_empty());
     assert!(snapshot.stopped.is_empty());
 }
 
-/// The world the thread's first tick creates carries the configured
-/// gravity, which a job can read back through a request.
+/// The one-time setup runs before any job, so a probe sent immediately
+/// after the spawn reads back the configured gravity without waiting for
+/// a first snapshot.
 #[test]
 fn the_configured_gravity_reaches_the_world() {
     let gravity = Vec3::new(0.0, -1.5, 0.0);
@@ -123,25 +116,16 @@ fn the_configured_gravity_reaches_the_world() {
             ..PhysicsConfig::default()
         },
     );
-    let probed = {
-        // Jobs drain before the thread's first tick, so wait for that
-        // tick's first snapshot: only then does the world exist.
-        assert!(
-            wait_for(|| latest(&host, world).is_some()),
-            "the physics thread never ran its first tick"
-        );
-        let remote = host
-            .get::<RemoteWorld>(world)
-            .expect("the proxy carries its commands");
-        remote.request(Box::new(|world: &mut World| {
-            world
-                .query::<&PhysicsWorld>()
-                .next()
-                .expect("the tick creates the world")
-                .1
-                .gravity
-        }))
-    };
+    // Sent before any snapshot has been published: the setup phase must
+    // already have created the world, so this answers without waiting.
+    let probed = world.request(Box::new(|world: &mut World| {
+        world
+            .query::<&PhysicsWorld>()
+            .next()
+            .expect("the setup creates the world before any job")
+            .1
+            .gravity
+    }));
 
     // Polling consumes the answer, so keep the first one around.
     let mut answer = None;

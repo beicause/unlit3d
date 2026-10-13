@@ -13,6 +13,8 @@ arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 bitflags = { version = "2.13.2", default-features = false, features = ["std"] }
+# The FLAC decoder the snapshot tests read their audio baseline with.
+claxon = "0.4.3"
 console_error_panic_hook = { version = "0.1.7", default-features = false }
 console_log = "1.1.0"
 const_shader_layout = { version = "0.4.2", default-features = false, features = ["derive", "glam", "std"] }
@@ -20,7 +22,6 @@ const_shader_layout = { version = "0.4.2", default-features = false, features = 
 # ring buffer bridges the audio thread that fills it and the stream's
 # callback that drains it.
 cpal = { version = "0.18.2", default-features = false }
-crossbeam-channel = { version = "0.5.17", default-features = false, features = ["std"] }
 egui = { version = "0.36.2", default-features = false, features = ["default_fonts", "bytemuck"] }
 env_logger = { version = "0.11.11", default-features = false, features = ["auto-color", "humantime"] }
 # Reflection: a component's own field list is its codec, so nothing declares
@@ -29,6 +30,10 @@ env_logger = { version = "0.11.11", default-features = false, features = ["auto-
 # `reflect` feature pulls it in.
 facet = { version = "0.50.0-rc.7", default-features = false, features = ["std"] }
 facet-json = { version = "0.50.0-rc.7", default-features = false }
+# The FLAC encoder the headless run writes its audio deliverable with. Only
+# the encoder itself is used: the parallel, serde and log features are its own
+# plumbing, not something a one-shot file write needs.
+flacenc = { version = "0.5.1", default-features = false }
 # Hashbrown uses this as its hasher, so hashing through it matches how the
 # crate's hash tables hash; its `FixedState` seeds deterministically, which a
 # per-instance hasher does not.

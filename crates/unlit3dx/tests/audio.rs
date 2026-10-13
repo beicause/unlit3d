@@ -1,12 +1,20 @@
-//! Integration tests for the audio remote world: the PCM source contract,
+//! Integration tests for the audio remote world: the fill-source contract,
 //! and the world's job channel with and without an output device.
 
-use std::sync::Arc;
+// The tests that need real samples read the workspace's own soundfont, which
+// is not in git: a checkout without it has to say so out loud rather than
+// report a green run that exercised nothing.
+#![expect(
+    clippy::print_stderr,
+    reason = "naming the reason a test skipped is part of the test's output"
+)]
+
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use unlit_ecs::World;
-use unlit3dx::audio::Silent;
 use unlit3dx::prelude::*;
 
 /// Waits until `probe` answers `true`, giving up after five seconds.
@@ -20,27 +28,111 @@ fn wait_for(probe: impl Fn() -> bool) -> bool {
     false
 }
 
-/// The source the device test counts fills with.
-struct Counting(Arc<AtomicUsize>);
-
-impl PcmSource for Counting {
-    fn fill(&mut self, _world: &World, out: &mut [f32], _sample_rate: u32, _channels: u16) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        out.fill(0.25);
+/// Install the synthesizer sources on a world: the mix's gain, one live
+/// voice and one player per track name, all built at `sample_rate`.
+///
+/// A caller queues this as a job to the audio world once the output has
+/// opened and its [`AudioFormat`] has landed; these tests drive worlds
+/// themselves, so they call it directly.
+fn install_synth(world: &mut World, bytes: &[u8], gain: f32, tracks: &[&str], sample_rate: u32) {
+    for (index, one) in tracks.iter().enumerate() {
+        assert!(
+            !tracks[..index].contains(one),
+            "the track name `{one}` is given twice"
+        );
+    }
+    world.spawn((AudioGain(gain),));
+    if let Ok(font) = load_soundfont(bytes) {
+        let _ = SynthVoice::from_font(world, &font, sample_rate);
+        for track in tracks {
+            let _ = MidiPlayer::from_font(world, &font, sample_rate, track);
+        }
     }
 }
 
-/// A source owns its buffer: it may write every sample, and the default
-/// source the mixer falls back to writes silence.
-#[test]
-fn pcm_sources_fill_their_buffers() {
-    let mut out = vec![1.0f32; 128];
-    Silent.fill(&World::new(), &mut out, 48_000, 2);
-    assert!(out.iter().all(|sample| *sample == 0.0));
+/// Spawn a source that counts the fills it takes and adds `level` to every
+/// sample, the way a synthesizer adds its block to the chunk.
+fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
+    let counted = Arc::clone(counts);
+    world.spawn_on_fill(OnFill::new(
+        FillOrder::default(),
+        move |_world, _entity, chunk| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            for sample in chunk.out.iter_mut() {
+                *sample += level;
+            }
+        },
+    ));
+}
 
-    let mut counting = Counting(Arc::new(AtomicUsize::new(0)));
-    counting.fill(&World::new(), &mut out, 48_000, 2);
+/// A world with no sources fills with silence; a source adds to the chunk
+/// the dispatcher hands it, and several sources mix.
+#[test]
+fn the_dispatcher_mixes_the_worlds_sources() {
+    let mut out = vec![1.0f32; 128];
+    dispatch_fill(&World::new(), &mut out, 48_000, 2);
+    assert!(out.iter().all(|sample| *sample == 0.0), "nothing to play");
+
+    let mut world = World::new();
+    let counts = Arc::new(AtomicUsize::new(0));
+    counting_source(&mut world, 0.25, &counts);
+    dispatch_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.25));
+    assert_eq!(counts.load(Ordering::SeqCst), 1);
+
+    counting_source(&mut world, 0.5, &counts);
+    dispatch_fill(&world, &mut out, 48_000, 2);
+    assert!(
+        out.iter().all(|sample| (sample - 0.75).abs() < 1e-6),
+        "both sources must add up"
+    );
+}
+
+/// The world's gain scales the mix once, after the sources summed, and an
+/// overdriven mix clamps instead of wrapping.
+#[test]
+fn the_worlds_gain_scales_the_mix() {
+    let mut world = World::new();
+    world.spawn((AudioGain(2.0),));
+    let counts = Arc::new(AtomicUsize::new(0));
+    counting_source(&mut world, 0.4, &counts);
+    let mut out = vec![0.0f32; 8];
+    dispatch_fill(&world, &mut out, 48_000, 2);
+    assert!(out.iter().all(|sample| (sample - 0.8).abs() < 1e-6));
+
+    // A second source pushes the sum past full scale: the clamp lands on
+    // the unit range, not on a wrapped sample.
+    counting_source(&mut world, 0.4, &counts);
+    dispatch_fill(&world, &mut out, 48_000, 2);
+    assert!(out.iter().all(|sample| *sample == 1.0));
+}
+
+/// Equal orders run in the order they were mounted, so a mix built from
+/// several sources stays reproducible.
+#[test]
+fn sources_run_in_mount_order() {
+    let mut world = World::new();
+    let ran: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    for (name, level) in [("first", 0.1), ("second", 0.2)] {
+        let ran = Arc::clone(&ran);
+        world.spawn_on_fill(OnFill::new(
+            FillOrder::default(),
+            move |_world, _entity, chunk| {
+                ran.lock().unwrap().push(name);
+                for sample in chunk.out.iter_mut() {
+                    *sample += level;
+                }
+            },
+        ));
+    }
+    // A later order runs after everything mounted earlier.
+    let late = Arc::clone(&ran);
+    world.spawn_on_fill(OnFill::new(FillOrder(1), move |_world, _entity, _chunk| {
+        late.lock().unwrap().push("late");
+    }));
+    let mut out = vec![0.0f32; 2];
+    dispatch_fill(&world, &mut out, 48_000, 2);
+    assert_eq!(*ran.lock().unwrap(), vec!["first", "second", "late"]);
 }
 
 /// The audio world runs its jobs and, when the machine has an output
@@ -50,22 +142,20 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     let mut host = World::new();
     let fills = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&fills);
-    let world = spawn_audio_world(
-        &mut host,
-        AudioConfig::default(),
-        Some(Box::new(move |_world: &mut World, _rate, _channels| {
-            Box::new(Counting(counted))
-        })),
-    );
-    let remote = host.get::<RemoteWorld>(world).expect("the proxy exists");
-
-    // A marker job and a probe that waits for it: jobs are answered
-    // whether or not a device exists, so a device-less world runs
-    // silently but stays alive.
-    remote.send(Box::new(|world: &mut World| {
+    let world = spawn_audio_world(&mut host, AudioConfig::default());
+    // The source arrives the way a caller's would: an ordinary job. Jobs
+    // are answered whether or not a device exists, so a device-less world
+    // runs silently but stays alive.
+    world
+        .send(Box::new(move |world: &mut World| {
+            counting_source(world, 0.25, &counted);
+        }))
+        .expect("the audio world takes its source");
+    // A marker job and a probe that waits for it.
+    let _ = world.send(Box::new(|world: &mut World| {
         world.spawn((Marker,));
     }));
-    let marked = remote.request(Box::new(|world: &mut World| {
+    let marked = world.request(Box::new(|world: &mut World| {
         world.query::<&Marker>().next().is_some()
     }));
     assert!(
@@ -73,7 +163,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
         "the audio world never ran the marker job"
     );
 
-    // With a device present the factory must have run and the mixer must
+    // With a device present the setup must have run and the source must
     // be filling; without one the world stays alive and silent instead.
     if has_output_device() {
         assert!(
@@ -82,37 +172,55 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
         );
     } else {
         assert_eq!(fills.load(Ordering::SeqCst), 0);
-        assert!(!remote.thread().is_finished(), "the device-less world died");
+        assert!(!world.is_finished(), "the device-less world died");
     }
 }
 
-/// The audio world announces when it can sound: the inbox flips to a
-/// published state once the stream and the source exist, or to `false`
-/// when they never will. Either way it lands without any job being
-/// sent, so a caller can tell silence from a still-loading factory.
+/// The audio world announces when it can sound, and says nothing until
+/// it can: the inbox stays empty while the output is shut or the world
+/// carries no source, and publishes the moment both hold. A caller can
+/// therefore tell silence from a still-loading soundfont by waiting on
+/// the mailbox rather than guessing.
 #[test]
 fn the_audio_world_publishes_its_readiness() {
     let mut host = World::new();
-    let world = spawn_audio_world(
-        &mut host,
-        AudioConfig::default(),
-        Some(Box::new(|_world: &mut World, _rate, _channels| {
-            Box::new(Silent)
-        })),
-    );
+    let world = spawn_audio_world(&mut host, AudioConfig::default());
     let inbox = host
-        .get::<AudioReadyInbox>(world)
+        .get::<AudioReadyInbox>(world.entity())
         .expect("the audio proxy carries its readiness inbox")
         .0
         .clone();
+    let format = host
+        .get::<AudioFormatInbox>(world.entity())
+        .expect("the audio proxy carries its format inbox")
+        .0
+        .clone();
+    // The source is queued only once the output's format has landed, the
+    // way a caller installs one: readiness then depends on the device
+    // alone.
+    let installed = wait_for(|| format.latest().is_some());
+    if !has_output_device() {
+        assert!(!installed, "a device-less world published a format");
+        assert!(
+            !wait_for(|| inbox.latest().is_some()),
+            "a world without an output announced it can sound"
+        );
+        return;
+    }
+    assert!(installed, "the output opened but no format was published");
+    world
+        .send(Box::new(|world: &mut World| {
+            counting_source(world, 0.0, &Arc::new(AtomicUsize::new(0)));
+        }))
+        .expect("the audio world takes its source");
     assert!(
         wait_for(|| inbox.latest().is_some()),
         "the readiness inbox never published a state"
     );
     assert_eq!(
         inbox.latest().map(|state| state.0),
-        Some(has_output_device()),
-        "readiness must match whether an output device exists"
+        Some(true),
+        "an open output with a source is ready"
     );
 }
 
@@ -133,14 +241,18 @@ fn has_output_device() -> bool {
 /// The marker the job test leaves in the audio world.
 struct Marker;
 
-/// The mixer a broken soundfont leaves behind still fills its buffers:
-/// silence, ready for the stream.
+/// A broken soundfont leaves the world without sources, so its fills are
+/// silence rather than a panic on the first chunk.
 #[test]
-fn a_failed_soundfont_leaves_a_silent_mixer() {
+fn a_failed_soundfont_leaves_the_world_silent() {
+    let mut world = World::new();
+    install_synth(&mut world, b"not a soundfont", 4.0, &["a", "b"], 48_000);
+    assert!(
+        world.query::<&OnFill>().next().is_none(),
+        "a world whose soundfont failed carries no sources"
+    );
     let mut out = vec![1.0f32; 256];
-    let mut source =
-        synth_source_bytes(Arc::from(&b"not a soundfont"[..]), 4.0)(&mut World::new(), 48_000, 2);
-    source.fill(&World::new(), &mut out, 48_000, 2);
+    dispatch_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0));
 }
 
@@ -166,4 +278,178 @@ fn load_soundfont_rejects_garbage() {
         load_soundfont(&[0u8; 64]),
         Err(VoiceError::SoundFont(_))
     ));
+}
+
+/// Transport jobs address a track by name, so a job for a track the world
+/// does not carry — one whose soundfont is still loading, a name typed
+/// wrong — must be a no-op rather than a panic or a wrong track.
+#[test]
+fn transport_jobs_for_unknown_tracks_do_nothing() {
+    let mut world = World::new();
+    let file = midi_file(&[(0.0, 0x90, 60, 90)]).expect("a one note file");
+    for name in ["background", "typo"] {
+        let play = play_track_job(name, file.clone(), true);
+        play(&mut world);
+        let pause = pause_track_job(name, true);
+        pause(&mut world);
+        let rewind = rewind_track_job(name);
+        rewind(&mut world);
+        let stop = stop_track_job(name);
+        stop(&mut world);
+    }
+    // A world whose soundfont never loaded still renders silence, ready
+    // for the stream, rather than dying on the first fill.
+    let mut broken = World::new();
+    install_synth(
+        &mut broken,
+        b"not a soundfont",
+        1.0,
+        &["background"],
+        48_000,
+    );
+    let mut out = vec![1.0f32; 64];
+    dispatch_fill(&broken, &mut out, 48_000, 2);
+    assert!(out.iter().all(|sample| *sample == 0.0));
+}
+
+/// The transport's contract, on a track of one audio world: pausing stops
+/// the sound and holds the sequencer's clock, resuming continues where the
+/// pause left off, and a rewind puts the same file back at its start.
+///
+/// The clock is what makes the test worth having. A pause that only muted
+/// the track would keep the sequence walking, so the resume would land
+/// past the note; a rewind that did nothing would leave the track finished
+/// and silent. The onset time of the first sound after each job says which
+/// of the three the track is on.
+///
+/// The soundfont is the workspace's own asset, so the test skips where the
+/// file is absent.
+#[test]
+fn a_track_holds_its_clock_across_pause_and_rewind() {
+    let Some(font) = asset_soundfont() else {
+        eprintln!("skipping: no soundfont under assets");
+        return;
+    };
+    let mut world = World::new();
+    install_synth(
+        &mut world,
+        &font,
+        1.0,
+        &["background", "sequence"],
+        SAMPLE_RATE,
+    );
+    // One note, struck a second in and released a second later: nothing
+    // before the first second sounds, and nothing after the second does.
+    let file = midi_file(&[(1.0, 0x90, 60, 100), (2.0, 0x80, 60, 0)]).expect("a one note file");
+    play_track_job("sequence", file, false)(&mut world);
+
+    // The onset lands where the note says it should.
+    let onset = fills_until_sound(&world, ONSET_FILLS * 2);
+    assert!(
+        (ONSET_FILLS - 8..ONSET_FILLS + 8).contains(&onset),
+        "the note sounded after {onset} fills, expected about {ONSET_FILLS}"
+    );
+    // Pause for longer than the whole file lasts, then resume: the clock
+    // stood still, so the note already struck is still sounding. A pause
+    // that only muted the track would have walked past the file's end, and
+    // the resume would be silence for good.
+    pause_track_job("sequence", true)(&mut world);
+    for _ in 0..ONSET_FILLS * 3 {
+        assert!(
+            !sounding(&world),
+            "a paused track is still rendering samples"
+        );
+    }
+    pause_track_job("sequence", false)(&mut world);
+    assert!(
+        sounding(&world),
+        "the resume found nothing left to play: the pause ran the sequencer's clock"
+    );
+
+    // Rewind: the same file starts over, so the note is a second of playing
+    // away again rather than still sounding where it was held.
+    rewind_track_job("sequence")(&mut world);
+    let after_rewind = fills_until_sound(&world, ONSET_FILLS * 3);
+    assert!(
+        (ONSET_FILLS - 8..ONSET_FILLS + 8).contains(&after_rewind),
+        "after the rewind the note came after {after_rewind} fills, expected about {ONSET_FILLS}"
+    );
+}
+
+/// Two tracks of one audio world are driven apart: pausing one leaves the
+/// other playing, and stopping a name the world does not carry silences
+/// nothing.
+#[test]
+fn the_other_track_keeps_playing() {
+    let Some(font) = asset_soundfont() else {
+        eprintln!("skipping: no soundfont under assets");
+        return;
+    };
+    let mut world = World::new();
+    install_synth(
+        &mut world,
+        &font,
+        1.0,
+        &["background", "sequence"],
+        SAMPLE_RATE,
+    );
+    let file = midi_file(&[(0.0, 0x90, 60, 100), (0.5, 0x80, 60, 0)]).expect("a one note file");
+    play_track_job("background", file.clone(), true)(&mut world);
+    play_track_job("sequence", file, false)(&mut world);
+    assert!(sounding(&world), "both tracks sound");
+
+    pause_track_job("sequence", true)(&mut world);
+    stop_track_job("nobody")(&mut world);
+    // The loop keeps playing: its file restarts on every pass, so the mix
+    // stays alive while the paused track holds still.
+    let mut quiet = 0;
+    for _ in 0..ONSET_FILLS {
+        if sounding(&world) {
+            return;
+        }
+        quiet += 1;
+    }
+    panic!("pausing one track silenced the other after {quiet} fills");
+}
+
+/// The chunk the tests render, in frames per channel: the same size the
+/// audio thread fills with.
+const BLOCK: usize = 256;
+
+/// The sample rate the tests render at, in hertz.
+const SAMPLE_RATE: u32 = 48_000;
+
+/// How many fills one second of audio lasts.
+const ONSET_FILLS: usize = SAMPLE_RATE as usize / BLOCK;
+
+/// Render one chunk and answer whether any sample moved.
+fn sounding(world: &World) -> bool {
+    fill(world).iter().any(|sample| *sample != 0.0)
+}
+
+/// Render one chunk of interleaved frames.
+fn fill(world: &World) -> Vec<f32> {
+    let mut out = vec![0.0f32; BLOCK * 2];
+    dispatch_fill(world, &mut out, SAMPLE_RATE, 2);
+    out
+}
+
+/// How many fills until a sample moves, or `limit` when none does.
+fn fills_until_sound(world: &World, limit: usize) -> usize {
+    for index in 0..limit {
+        if sounding(world) {
+            return index;
+        }
+    }
+    limit
+}
+
+/// The soundfont the workspace keeps under `assets`, when it is there: the
+/// same file the demo embeds, so these tests skip rather than fail where
+/// the asset is absent.
+fn asset_soundfont() -> Option<Arc<[u8]>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/FluidR3Mono_GM.sf3");
+    std::fs::read(path)
+        .ok()
+        .map(|bytes| Arc::from(bytes.as_slice()))
 }

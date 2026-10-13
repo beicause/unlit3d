@@ -3,8 +3,15 @@
 //! submodule.
 //!
 //! The headless run steps the windowed mode's very same worlds inline at
-//! fixed rates, so a run is reproducible: same spawn rolls, same
-//! collisions, same notes, same frames.
+//! fixed rates, so a run is reproducible: same spawn rolls, same shapes,
+//! same music, same frames.
+//!
+//! The frames are compared whenever the run can render, soundfont or not:
+//! the scene's rendering must not depend on the audio world, so a missing
+//! soundfont is no reason to skip the frame baselines. The audio baseline
+//! needs the real soundfont; where `UNLIT3D_REQUIRE_SOUNDFONT` is set — as
+//! it is in CI — a missing one fails the run instead of skipping it, so a
+//! checkout that silently stopped exercising the mix cannot pass.
 
 #![cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 
@@ -14,8 +21,8 @@ use std::sync::Arc;
 use unlit_wgpu_test_util::{
     Ctx, Tolerance, assert_image_snapshot_with_tolerance, block_on, snapshot_path, snapshots,
 };
-use unlit3dx_examples::headless::{AUDIO_SAMPLE_RATE, HeadlessConfig, run};
-use unlit3dx_examples::scene::WINDOW_SIZE;
+use unlit3dx_examples::headless::{AUDIO_CHANNELS, AUDIO_SAMPLE_RATE, HeadlessConfig, run};
+use unlit3dx_examples::scene::{SOUNDFONT, WINDOW_SIZE};
 
 /// The frame captures' comparison tolerance. The scene is flat-shaded and
 /// the camera path is fixed, so the floors are the driver-to-driver noise
@@ -38,14 +45,54 @@ const AUDIO_FRAMES: u32 = 600;
 /// balls' falls and bounces.
 const CAPTURE: [u32; 4] = [120, 180, 240, 299];
 
+/// The names of the frame baselines, in capture order.
+const FRAME_BASELINES: [&str; CAPTURE.len()] = [
+    "unlit3dx/frame_0120.webp",
+    "unlit3dx/frame_0180.webp",
+    "unlit3dx/frame_0240.webp",
+    "unlit3dx/frame_0299.webp",
+];
+
 /// The soundfont, kept out of version control under the workspace's
-/// assets directory; the tests skip when the repository does not carry
-/// it.
+/// assets directory. The build embeds a silent stub when it is absent, so
+/// a run without it still renders and still captures frames.
 fn soundfont() -> Option<Arc<[u8]>> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../assets/FluidR3Mono_GM.sf3");
     path.is_file()
         .then(|| std::fs::read(&path).expect("the soundfont reads"))
         .map(Into::into)
+}
+
+/// Whether the run must not skip the audio check. CI sets this: there a
+/// skipped test would let the whole end-to-end mix stop being exercised
+/// without any failure.
+fn soundfont_required() -> bool {
+    std::env::var_os("UNLIT3D_REQUIRE_SOUNDFONT").is_some()
+}
+
+/// The soundfont the audio check runs on, or the reason it may not run.
+fn required_soundfont() -> Option<Arc<[u8]>> {
+    let soundfont = soundfont();
+    if soundfont.is_none() && soundfont_required() {
+        panic!("no soundfont under assets, and UNLIT3D_REQUIRE_SOUNDFONT is set");
+    }
+    soundfont
+}
+
+/// Fail on a missing baseline instead of letting the comparison store the
+/// frame and pass: a checkout that lost its baselines must not look green.
+fn assert_baselines_exist(names: &[&str]) {
+    if std::env::var("SNAPSHOT_UPDATE").as_deref() == Ok("1") {
+        return;
+    }
+    for name in names {
+        let path = snapshot_path(name);
+        assert!(
+            path.exists(),
+            "the baseline `{name}` is missing at {}; store it with SNAPSHOT_UPDATE=1",
+            path.display(),
+        );
+    }
 }
 
 fn config(soundfont: Arc<[u8]>, frames: u32, capture: Vec<u32>) -> HeadlessConfig {
@@ -60,10 +107,12 @@ fn config(soundfont: Arc<[u8]>, frames: u32, capture: Vec<u32>) -> HeadlessConfi
 
 #[test]
 fn frames_match_the_baselines() {
-    let Some(soundfont) = soundfont() else {
-        eprintln!("skipping: no soundfont under assets");
-        return;
-    };
+    assert_baselines_exist(&FRAME_BASELINES);
+    // The frame check does not need the real soundfont: the scene renders
+    // the same either way, and the build's silent stub keeps the run
+    // compiling where the asset is absent. The audio check is the one that
+    // insists on the real font.
+    let soundfont = soundfont().unwrap_or_else(|| Arc::from(SOUNDFONT));
     let ctx = block_on(Ctx::headless());
     let output = run(
         &config(soundfont, FRAMES, CAPTURE.to_vec()),
@@ -96,10 +145,11 @@ fn frames_match_the_baselines() {
 
 #[test]
 fn audio_matches_the_baseline() {
-    let Some(soundfont) = soundfont() else {
+    let Some(soundfont) = required_soundfont() else {
         eprintln!("skipping: no soundfont under assets");
         return;
     };
+    assert_baselines_exist(&["unlit3dx/audio.flac"]);
     let ctx = block_on(Ctx::headless());
     let output = run(
         &config(soundfont, AUDIO_FRAMES, Vec::new()),
@@ -108,7 +158,7 @@ fn audio_matches_the_baseline() {
         ctx.capabilities,
     );
 
-    // The mix quantizes straight into the baseline's PCM16 samples.
+    // The mix quantizes straight into the baseline's 16-bit samples.
     let samples: Vec<i16> = output
         .audio
         .iter()
@@ -121,16 +171,16 @@ fn audio_matches_the_baseline() {
         .unwrap();
     assert!(loudest > 1000, "the mix came out nearly silent");
 
-    let baseline = snapshot_path("unlit3dx/audio.wav");
-    if !baseline.exists() || std::env::var("SNAPSHOT_UPDATE").as_deref() == Ok("1") {
+    let baseline = snapshot_path("unlit3dx/audio.flac");
+    if std::env::var("SNAPSHOT_UPDATE").as_deref() == Ok("1") {
         // The frame test may be creating the directory concurrently.
         std::fs::create_dir_all(baseline.parent().expect("a parent directory"))
             .expect("the snapshot directory creates");
-        unlit3dx_examples::headless::write_wav(&baseline, &output.audio, AUDIO_SAMPLE_RATE)
+        unlit3dx_examples::headless::write_flac(&baseline, &output.audio, AUDIO_SAMPLE_RATE)
             .expect("the audio baseline stores");
         return;
     }
-    let expected = read_pcm16_wav(&baseline);
+    let expected = read_flac(&baseline);
     assert_eq!(
         expected.len(),
         samples.len(),
@@ -148,24 +198,27 @@ fn audio_matches_the_baseline() {
     );
 }
 
-/// Read the 16-bit stereo PCM data chunk of the baseline WAV.
-fn read_pcm16_wav(path: &Path) -> Vec<i16> {
-    let bytes = std::fs::read(path).expect("the audio baseline reads");
-    let mut at = 12;
-    let mut data = None;
-    while at + 8 <= bytes.len() {
-        let id = &bytes[at..at + 4];
-        let len =
-            u32::from_le_bytes(bytes[at + 4..at + 8].try_into().expect("a chunk length")) as usize;
-        if id == b"data" {
-            data = Some(bytes[at + 8..at + 8 + len].to_vec());
-        }
-        at += 8 + len + (len % 2);
-    }
-    let data = data.expect("the baseline carries a data chunk");
-    data.as_chunks::<{ size_of::<i16>() }>()
-        .0
-        .iter()
-        .map(|chunk| i16::from_le_bytes(*chunk))
+/// Decode the baseline FLAC stream into its interleaved 16-bit samples.
+///
+/// The stream is lossless, so the samples it holds are exactly the ones the
+/// encoder was given; the format the header declares is checked so a baseline
+/// recorded at some other rate or channel count fails here rather than
+/// showing up as a drift in the mix.
+fn read_flac(path: &Path) -> Vec<i16> {
+    let file = std::fs::File::open(path).expect("the audio baseline opens");
+    let mut reader = claxon::FlacReader::new(file).expect("the audio baseline decodes");
+    let info = reader.streaminfo();
+    assert_eq!(
+        usize::try_from(info.channels).expect("a channel count"),
+        AUDIO_CHANNELS,
+        "the audio baseline is not stereo"
+    );
+    assert_eq!(
+        info.sample_rate, AUDIO_SAMPLE_RATE,
+        "the audio baseline was recorded at another sample rate"
+    );
+    reader
+        .samples()
+        .map(|sample| sample.expect("a decodable sample") as i16)
         .collect()
 }

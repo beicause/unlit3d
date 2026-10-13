@@ -8,13 +8,14 @@
 //! A physics world and an audio world each run on their own thread as
 //! remote worlds. Gameplay — also remote — is the client that drives the
 //! scene: it requests bodies from physics, builds the render scene through
-//! the render server, publishes transforms, and books the notes each
-//! collision plays.
+//! the render server, and publishes transforms.
 //!
-//! Space drops a body; the render world's control panel plays a short
-//! MIDI sequence, pauses and stops the audio, and drops more bodies.
-//! Bodies fall, bounce off the ground and each other, and every contact
-//! hard enough plays a music-box note. The soundfont is embedded at
+//! Space drops a body. The render world's control panel drives two music
+//! tracks — a looping background piece and a one-shot MIDI sequence — each
+//! of which pauses, resumes and rewinds on its own, and it drops the next
+//! shape or puts every live shape back in the pool.
+//! Bodies fall, bounce off the ground and each other while the music plays.
+//! The soundfont is embedded at
 //! build time: build.rs reads the FluidR3Mono_GM.sf3 file the repository
 //! keeps out of version control under assets, and the demo runs silent
 //! when it is missing.
@@ -33,7 +34,7 @@ use unlit3d::winit::builtin::{
     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume, exit_on_close_requested,
     exit_on_escape, request_redraw_while_foreground, winit_input_behaviour,
 };
-use unlit3d::winit::event::WinitHost;
+use unlit3d::winit::event::{OnAboutToWait, WinitHost};
 use unlit3dx::prelude::*;
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use unlit3dx_examples::headless;
@@ -81,68 +82,79 @@ fn windowed(
     // anyone needs it, so gameplay holds its proxy from the first tick.
     // Its content lands once the GPU request resolves.
     let render = spawn_sub_world(world, RENDER_COMMAND_CAPACITY);
-    let render_proxy = world
-        .get::<SubWorld>(render)
-        .expect("the sub-world proxy carries its commands")
-        .clone();
 
     // The physics world: fixed step, default gravity, a ground plane
     // ready before the first ball drops.
     let physics = spawn_physics_world(world, PhysicsConfig::default());
-    let physics_sender = world
-        .get::<RemoteWorld>(physics)
-        .expect("the physics proxy carries its commands")
-        .sender();
-    physics_sender
-        .send(Box::new(|world: &mut World| {
-            spawn_fixed_cuboid(world, GROUND_POSITION, GROUND_HALF, 0.9);
-        }))
-        .ok();
+    let physics_sender = physics.sender();
     let physics_reader = world
-        .get::<PhysicsInbox>(physics)
-        .expect("the physics proxy carries its inbox")
+        .get::<PhysicsInbox>(physics.entity())
+        .expect("the physics world carries its inbox")
         .0
         .clone();
 
-    // The audio world: one synthesizer voice plus a MIDI player, both
-    // fed by the embedded soundfont, mixed into the output stream on the
-    // audio thread.
-    let audio = spawn_audio_world(
-        world,
-        AudioConfig::default(),
-        Some(synth_source_bytes(SOUNDFONT.into(), SYNTH_GAIN)),
-    );
-    let audio_sender = world
-        .get::<RemoteWorld>(audio)
-        .expect("the audio proxy carries its commands")
-        .sender();
-    let audio_inbox = world
-        .get::<AudioReadyInbox>(audio)
-        .expect("the audio proxy carries its readiness inbox")
+    // The audio world: one synthesizer voice plus one MIDI player per
+    // track, all fed by the embedded soundfont, mixed into the output
+    // stream on the audio thread. The sources are not installed here:
+    // a synthesizer has to be built at the rate the device actually
+    // opened at, and that is only known once the audio thread has its
+    // stream. It publishes the format like any other world publishes a
+    // snapshot, and the behaviour below waits for it and queues the
+    // install as an ordinary job.
+    let audio = spawn_audio_world(world, AudioConfig::default());
+    let audio_sender = audio.sender();
+    let audio_format = world
+        .get::<AudioFormatInbox>(audio.entity())
+        .expect("the audio world carries its format inbox")
         .0
         .clone();
+    let audio_inbox = world
+        .get::<AudioReadyInbox>(audio.entity())
+        .expect("the audio world carries its readiness inbox")
+        .0
+        .clone();
+    world.spawn((OnAboutToWait::new({
+        let audio_sender = audio_sender.clone();
+        let mut installed = false;
+        move |_world: &World, _entity, ()| {
+            if installed {
+                return;
+            }
+            let Some(format) = audio_format.latest() else {
+                return;
+            };
+            installed = true;
+            if let Err(error) = audio_sender.send(install_audio_job(format.sample_rate)) {
+                log::error!("the audio world refused its sources ({error:?})");
+            }
+        }
+    }),));
+
+    // The scene's channels, shared by both run modes: the wiring below
+    // is the same whether the worlds are threads or inline.
+    let (frame_writer, frame_reader) = snapshot_pair::<TransformFrame>();
+    let scene = SceneWiring {
+        frame_writer,
+        frame_reader,
+        physics_sender,
+        physics_reader,
+        audio_sender,
+        audio_ready: audio_inbox,
+    };
+    scene.spawn_ground();
 
     // The gameplay world: one entity of state, ticked at a fixed rate,
     // driving the scene as the render server's client.
-    let (frame_writer, frame_reader) = snapshot_pair::<TransformFrame>();
     let gameplay = spawn_remote_world_with(world, "gameplay", 64, (), {
-        let render = render_proxy.clone();
-        let physics_sender = physics_sender.clone();
-        let audio_sender = audio_sender.clone();
+        let render = render.clone();
+        let scene = scene.clone();
         let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / GAME_HZ));
         move |world: &mut World, control: &ThreadControl| {
             if control.stop_requested() {
                 return false;
             }
             if world.query::<&Gameplay>().next().is_none() {
-                world.spawn((Gameplay::new(
-                    frame_writer.clone(),
-                    physics_reader.clone(),
-                    physics_sender.clone(),
-                    audio_sender.clone(),
-                    audio_inbox.clone(),
-                    render.clone(),
-                ),));
+                world.spawn((scene.gameplay(render.clone()),));
             }
             if let Some((_, mut game)) = world.query::<&mut Gameplay>().next() {
                 game.tick();
@@ -151,10 +163,7 @@ fn windowed(
             true
         }
     });
-    let gameplay_sender = world
-        .get::<RemoteWorld>(gameplay)
-        .expect("the gameplay proxy carries its commands")
-        .sender();
+    let gameplay_sender = gameplay.sender();
 
     // The app entity and the behaviours that drive it. The GPU request
     // resolves into the scene setup, which fills the render sub-world and
@@ -162,13 +171,16 @@ fn windowed(
     // requests dispatch frames into it.
     let app = world.spawn((ExitRequest(false),));
     world.spawn_frame_behaviour(request_gpu(app, {
-        let frame_reader = frame_reader.clone();
+        let frame_reader = scene.frame_reader.clone();
         let gameplay_sender = gameplay_sender.clone();
-        let audio_sender = audio_sender.clone();
+        let audio_sender = scene.audio_sender.clone();
+        // Only an MCP-driven scene needs the offscreen target: it is what
+        // a screenshot reads back. A plain window draws into the swap chain.
+        let offscreen = mcp;
         move |world, gpu| {
             let renderer = setup_render_world(
                 world,
-                render,
+                render.entity(),
                 &gpu.device,
                 &gpu.queue,
                 gpu.capabilities,
@@ -178,7 +190,15 @@ fn windowed(
                     audio: audio_sender,
                 }),
             );
-            if let Err(error) = setup_presenter(world, render, renderer, gpu, WINDOW_SIZE) {
+            let outcome = setup_presenter(
+                world,
+                render.entity(),
+                renderer,
+                gpu,
+                WINDOW_SIZE,
+                offscreen,
+            );
+            if let Err(error) = outcome {
                 log::error!("failed to build the presentation path: {error}");
             } else {
                 log::info!("the scene is set up");
@@ -195,8 +215,8 @@ fn windowed(
     world.spawn((redraw,));
     world.spawn((resize_presented(),));
 
-    // Space drops a body; the sequence, the pause and the stop live on
-    // the render world's control panel.
+    // Space drops a body; the music and the shapes are driven from the
+    // render world's control panel.
     world.spawn((OnKey::new(move |_world, _entity, key| {
         if !key.pressed || key.repeat {
             return;
@@ -310,8 +330,8 @@ fn run_headless(args: &Args) -> ExitCode {
         log::error!("could not encode the screenshot: {error}");
         return ExitCode::FAILURE;
     }
-    let wav_path = out.join("audio.wav");
-    if let Err(error) = headless::write_wav(&wav_path, &output.audio, config.audio_sample_rate) {
+    let flac_path = out.join("audio.flac");
+    if let Err(error) = headless::write_flac(&flac_path, &output.audio, config.audio_sample_rate) {
         log::error!("could not write the audio: {error}");
         return ExitCode::FAILURE;
     }
@@ -322,7 +342,7 @@ fn run_headless(args: &Args) -> ExitCode {
     log::info!(
         "the headless run wrote {} and {}",
         png_path.display(),
-        wav_path.display()
+        flac_path.display()
     );
     ExitCode::SUCCESS
 }

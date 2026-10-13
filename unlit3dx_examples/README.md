@@ -11,13 +11,17 @@ the binary is `unlit3dx-examples`.
 
 A checkered ground plane and a pool of falling shapes — balls, cubes,
 cylinders and cones, each wearing its own patterned material. Space drops a
-shape from above at a random position; shapes fall, bounce off the ground
-and each other, and every contact hard enough plays a pentatonic note
-through a music-box soundfont. Shapes also drop on their own, about one
-every 0.7 seconds. The camera orbits the scene slowly, and the render
-world's control panel — a small egui window — plays a short MIDI sequence
-(the scale walked up and back down), pauses, resumes and stops the audio,
-and drops more shapes on demand.
+shape from above at a random position; shapes fall and bounce off the ground
+and each other. Shapes also drop on their own, about one every 0.7 seconds.
+The camera orbits the scene slowly.
+
+Two pieces of music play at once, each on its own track of the audio world:
+a background loop that runs forever, and a one-shot MIDI sequence — the
+pentatonic scale walked up and back down on a music box. The render world's
+control panel — a small egui window — pauses, resumes and rewinds each track
+independently, drops the next shape, and puts every live shape back in the
+pool. Nothing about the music depends on the shapes: clearing the scene
+leaves both tracks playing.
 
 ## How to run
 
@@ -48,11 +52,11 @@ The `--headless` switch runs the very same scene without a window, threads
 or an audio device: the worlds step inline on one thread at their fixed
 rates — gameplay at 120 Hz, physics at 64 Hz, render at 60 Hz — for
 `--frames` frames, then the run's last frame and its whole audio mix land
-in `--out` as `screenshot.png` and `audio.wav`. Because the stepping is
+in `--out` as `screenshot.png` and `audio.flac`. Because the stepping is
 fixed-rate and the spawn rolls are seeded, a run is reproducible, which is
 what the snapshot tests ([English](tests/headless.rs),
 [简体中文](tests/headless.rs)) build on: rendered frames compare against
-webp baselines and the mix against a wav baseline, both kept in the
+webp baselines and the mix against a FLAC baseline, both kept in the
 [`unlit3d_asset_files`](../unlit3d_asset_files) submodule;
 `SNAPSHOT_UPDATE=1` re-stores them.
 
@@ -75,13 +79,17 @@ The other worlds act as servers; gameplay is the client that drives them.
   before anything draws.
 - The **physics world** steps rapier at 64 Hz and publishes body transforms
   and collision events. The ground is its first job.
-- The **audio world** owns the output stream and the synthesizer; it receives
-  note jobs and mixes, underrunning to silence. While the soundfont loads it
-  publishes its readiness, and gameplay drops the notes of that window —
-  impacts before the load finishes stay silent instead of bursting out
-  together afterwards.
+- The **audio world** owns the output stream and mixes whatever sources it
+  carries, underrunning to silence. Its own sample rate is not known until
+  the stream opens, so it publishes an `AudioFormat` then and the demo
+  answers with a job that spawns one synthesizer and one MIDI player per
+  track at that rate. While the soundfont loads it publishes its readiness,
+  since a transport job sent before the players exist would find no track to
+  address.
 - The **gameplay world** is the only place that knows about all three. It
-  builds the scene by requesting assets and instances from the render
-  server, requests bodies from physics, maps them to the instance handles,
-  publishes the transform snapshot, books a note per contact pair and fades
-  it out. It ticks at a fixed 120 Hz, independent of the frame rate.
+  builds the scene by awaiting assets and instances from the render server
+  as one async future on a `LocalPool`, requests bodies from physics, maps
+  them to the instance handles and publishes the transform snapshot. Once
+  the audio world reports it can sound, gameplay starts both tracks; the
+  panel drives them afterwards without going through gameplay. It ticks at
+  a fixed 120 Hz, independent of the frame rate.

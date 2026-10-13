@@ -1,59 +1,120 @@
 //! World threads: one thread owning one `World`, with pacing and stop control.
 
 use core::time::Duration;
-use std::cell::Cell;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use unlit_ecs::World;
 use web_time::Instant;
+
+use crate::sync;
+
+/// How long a dropped thread waits for its tick to notice the stop before it
+/// is left detached instead of blocking the dropper.
+const STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The stop signal a thread and its owner share.
+#[derive(Debug, Default)]
+struct Stop {
+    /// Whether a stop has been requested.
+    requested: Mutex<bool>,
+    /// Signalled whenever `requested` turns true.
+    signal: Condvar,
+}
+
+impl Stop {
+    /// Request a stop and wake whoever is waiting on one.
+    fn request(&self) {
+        let mut requested = sync::lock(&self.requested);
+        *requested = true;
+        drop(requested);
+        self.signal.notify_all();
+    }
+
+    /// Whether a stop has been requested.
+    fn requested(&self) -> bool {
+        *sync::lock(&self.requested)
+    }
+}
 
 /// How a world thread's tick paces itself and observes a stop.
 ///
 /// Every method may be called from inside the tick, which holds the control
-/// by shared reference only: the seen-stop answer lives in a cell, so a tick
-/// that sleeps through the stop signal still sees it when it wakes.
+/// by shared reference only: the stop lives in a shared flag, so a tick that
+/// sleeps through the stop signal still sees it when it wakes.
 pub struct ThreadControl {
     /// The stop signal the thread's owner sends.
-    stop: Receiver<()>,
-    /// Whether a stop signal has already been observed.
-    stop_seen: Cell<bool>,
+    stop: Arc<Stop>,
 }
 
 impl ThreadControl {
     /// Whether a stop has been requested.
     ///
-    /// Once true, stays true: the answer is remembered.
+    /// Once true, stays true.
     pub fn stop_requested(&self) -> bool {
-        if !self.stop_seen.get() && self.stop.try_recv().is_ok() {
-            self.stop_seen.set(true);
-        }
-        self.stop_seen.get()
+        self.stop.requested()
     }
 
     /// Sleep for at most `timeout`, returning early when a stop is requested.
     pub fn wait_timeout(&self, timeout: Duration) {
-        if self.stop_requested() {
+        let requested = sync::lock(&self.stop.requested);
+        if *requested {
             return;
         }
-        if self.stop.recv_timeout(timeout).is_ok() {
-            self.stop_seen.set(true);
-        }
+        let _ = self.stop.signal.wait_timeout(requested, timeout);
+    }
+}
+
+/// A cloneable view of a world thread's state.
+///
+/// A [`WorldThread`] owns the join handle and stops its thread on drop;
+/// this shares only the flags, so a [`WorldHandle`](crate::handle::WorldHandle)
+/// can report a remote world's liveness and ask it to stop without owning
+/// the thread.
+#[derive(Clone)]
+pub struct ThreadStatus {
+    /// The stop signal, sent on drop.
+    stop: Arc<Stop>,
+    /// Whether the thread has been seen to exit.
+    finished: Arc<AtomicBool>,
+    /// The panic the thread died with, if it has died with one.
+    panics: Arc<Mutex<Option<String>>>,
+}
+
+impl ThreadStatus {
+    /// The panic the thread died with, if it has died with one.
+    pub fn panic_message(&self) -> Option<String> {
+        sync::lock(&self.panics).take()
+    }
+
+    /// Whether the thread has exited.
+    ///
+    /// A detached thread keeps reporting its own exit, so this stays
+    /// meaningful after [`WorldThread::detach`].
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    /// Ask the thread to stop, without waiting for it to finish.
+    pub fn stop(&self) {
+        self.stop.request();
     }
 }
 
 /// One thread owning one `World`.
 ///
 /// Dropping the thread asks it to stop and waits for it to finish, so a
-/// remote world's lifetime is exactly the proxy's.
+/// remote world's lifetime is exactly the proxy's. A tick that ignores the
+/// stop cannot hang the dropper: after a short grace period the thread is
+/// detached and the drop returns.
 pub struct WorldThread {
-    /// The stop signal, sent on drop.
-    stop: Sender<()>,
+    /// The shared state a handle reports.
+    status: ThreadStatus,
     /// The thread handle, joined on drop.
     joined: Option<JoinHandle<()>>,
-    /// The panic the thread died with, if it has died with one.
-    panics: Receiver<String>,
 }
 
 impl WorldThread {
@@ -61,78 +122,149 @@ impl WorldThread {
     ///
     /// The tick runs once per loop iteration and returns whether to keep
     /// running; a `false` return ends the thread as cleanly as a stop. A
-    /// tick panic is caught, reported to the panic channel and logged, and
+    /// tick panic is caught, reported to the panic slot and logged, and
     /// ends the thread: a world whose tick has panicked is not worth
     /// restarting blindly.
     pub fn spawn<T>(name: &str, mut tick: T) -> Self
     where
         T: FnMut(&mut World, &ThreadControl) -> bool + Send + 'static,
     {
-        let (stop, stop_receiver) = unbounded::<()>();
-        let (panics, panic_receiver) = bounded(1);
+        Self::spawn_with(name, |_| (), move |world, control, ()| tick(world, control))
+    }
+
+    /// Like [`spawn`](Self::spawn), with a setup step and the state it
+    /// produces.
+    ///
+    /// `init` runs once on the thread, against the fresh world, before the
+    /// first job is drained; whatever it returns is handed to every tick.
+    /// That ordering is what lets a bridge create the components its jobs
+    /// assume exist - the physics world with its configured gravity, say -
+    /// so a job sent immediately after spawning already finds them.
+    pub fn spawn_with<S, I, T>(name: &str, init: I, mut tick: T) -> Self
+    where
+        I: FnOnce(&mut World) -> S + Send + 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
+    {
+        let stop = Arc::new(Stop::default());
+        let panics: Arc<Mutex<Option<String>>> = Arc::default();
+        let finished = Arc::new(AtomicBool::new(false));
         let name = name.to_owned();
+        let thread_stop = Arc::clone(&stop);
+        let thread_panics = Arc::clone(&panics);
+        let thread_finished = Arc::clone(&finished);
+        let thread_name = name.clone();
         let joined = std::thread::Builder::new()
-            .name(name.clone())
+            .name(name)
             .spawn(move || {
-                let mut world = World::new();
-                let control = ThreadControl {
-                    stop: stop_receiver,
-                    stop_seen: Cell::new(false),
-                };
-                loop {
-                    if control.stop_requested() {
-                        break;
-                    }
-                    match std::panic::catch_unwind(AssertUnwindSafe(|| tick(&mut world, &control)))
-                    {
-                        Ok(true) => {}
-                        Ok(false) => break,
-                        Err(payload) => {
-                            let message = panic_message(&*payload);
-                            log::error!("the world thread {} panicked: {message}", name.clone());
-                            let _ = panics.try_send(message);
+                let control = ThreadControl { stop: thread_stop };
+                let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    let mut world = World::new();
+                    let mut state = init(&mut world);
+                    while !control.stop_requested() {
+                        if !tick(&mut world, &control, &mut state) {
                             break;
                         }
                     }
+                }));
+                if let Err(payload) = outcome {
+                    let message = panic_message(&*payload);
+                    log::error!("the world thread {thread_name} panicked: {message}");
+                    *sync::lock(&thread_panics) = Some(message);
                 }
+                thread_finished.store(true, Ordering::Release);
             })
             .expect("the world thread spawns");
         Self {
-            stop,
+            status: ThreadStatus {
+                stop,
+                finished,
+                panics,
+            },
             joined: Some(joined),
-            panics: panic_receiver,
         }
+    }
+
+    /// A cloneable view of the thread's state, for handles that outlive the
+    /// proxy entity.
+    #[must_use]
+    pub fn status(&self) -> ThreadStatus {
+        self.status.clone()
     }
 
     /// The panic the thread died with, if it has died with one.
     pub fn panic_message(&self) -> Option<String> {
-        self.panics.try_recv().ok()
+        self.status.panic_message()
     }
 
     /// Whether the thread has exited.
+    ///
+    /// A detached thread keeps reporting its own exit, so this stays
+    /// meaningful after [`detach`](Self::detach).
+    #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.joined
-            .as_ref()
-            .is_some_and(|joined| joined.is_finished())
+        self.status.is_finished()
     }
-}
 
-impl Drop for WorldThread {
-    fn drop(&mut self) {
-        // Best effort: a thread already gone has nothing left to stop.
-        let _ = self.stop.send(());
+    /// Ask the thread to stop, without waiting for it to finish.
+    pub fn stop(&self) {
+        self.status.stop();
+    }
+
+    /// Wait up to `timeout` for the thread to finish.
+    ///
+    /// Returns whether it finished in time. A thread that already finished,
+    /// or was detached, counts as finished.
+    pub fn join_timeout(&mut self, timeout: Duration) -> bool {
+        let Some(joined) = self.joined.as_ref() else {
+            return true;
+        };
+        let deadline = Instant::now() + timeout;
+        while !joined.is_finished() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.join();
+        true
+    }
+
+    /// Leave the thread running without ever joining it.
+    ///
+    /// The thread stops when it notices the stop, but nothing waits for it.
+    pub fn detach(&mut self) {
+        self.joined.take();
+    }
+
+    /// Join the thread, clearing the handle.
+    fn join(&mut self) {
         if let Some(joined) = self.joined.take() {
+            // A panic was already reported through the panic slot.
             let _ = joined.join();
         }
     }
 }
 
+impl Drop for WorldThread {
+    fn drop(&mut self) {
+        self.status.stop();
+        if !self.join_timeout(STOP_TIMEOUT) {
+            log::warn!("a world thread did not stop within {STOP_TIMEOUT:?}; leaving it detached");
+            self.detach();
+        }
+    }
+}
+
 /// Paces a fixed-rate loop: sleeps until the next step boundary.
+///
+/// The boundary advances by exactly one step per wait, so a tick that
+/// finishes early does not shift the schedule; a tick that overruns a whole
+/// step resynchronizes to the present instead of catching up in a burst.
 pub struct FixedClock {
     /// Seconds per step.
     step: Duration,
-    /// When the current step began.
-    last: Instant,
+    /// When the next step is due.
+    next: Instant,
 }
 
 impl FixedClock {
@@ -140,18 +272,23 @@ impl FixedClock {
     pub fn new(step: Duration) -> Self {
         Self {
             step,
-            last: Instant::now(),
+            next: Instant::now() + step,
         }
     }
 
-    /// Sleep until the next step is due — or a stop arrives, which the caller
-    /// sees through [`ThreadControl::stop_requested`] — then restart the step.
+    /// Sleep until the next step is due - or a stop arrives, which the caller
+    /// sees through [`ThreadControl::stop_requested`] - then move to the
+    /// step after it.
     pub fn wait(&mut self, control: &ThreadControl) {
-        let remaining = self.step.saturating_sub(self.last.elapsed());
-        if remaining > Duration::ZERO {
-            control.wait_timeout(remaining);
+        let now = Instant::now();
+        if now < self.next {
+            control.wait_timeout(self.next - now);
         }
-        self.last = Instant::now();
+        self.next += self.step;
+        let now = Instant::now();
+        if self.next <= now {
+            self.next = now + self.step;
+        }
     }
 
     /// Seconds per step.
@@ -161,7 +298,7 @@ impl FixedClock {
 }
 
 /// The message a panic payload carries, whatever shape it arrived in.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+pub(crate) fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&'static str>() {
         (*message).to_owned()
     } else if let Some(message) = payload.downcast_ref::<String>() {
@@ -174,6 +311,7 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// The thread stops when its tick asks it to, and the stop is observable.
     #[test]
@@ -189,7 +327,7 @@ mod tests {
         assert!(thread.panic_message().is_none());
     }
 
-    /// A tick panic is reported through the panic channel.
+    /// A tick panic is reported through the panic slot.
     #[test]
     fn a_tick_panic_is_reported() {
         let thread = WorldThread::spawn("test", |_, _| panic!("the tick died"));
@@ -202,16 +340,33 @@ mod tests {
         assert_eq!(message, "the tick died");
     }
 
+    /// A panic in the setup step is reported like a tick panic.
+    #[test]
+    fn a_setup_panic_is_reported() {
+        let thread = WorldThread::spawn_with(
+            "test",
+            |_| -> () { panic!("the setup died") },
+            |_, _, ()| false,
+        );
+        let message = loop {
+            if let Some(message) = thread.panic_message() {
+                break message;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(message, "the setup died");
+    }
+
     /// A stop signalled while the tick sleeps wakes it up early.
     #[test]
     fn a_stop_wakes_a_sleeping_tick() {
-        let wakeups = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = std::sync::Arc::clone(&wakeups);
+        let wakeups = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&wakeups);
         let thread = WorldThread::spawn("test", move |_, control| {
             let before = Instant::now();
             control.wait_timeout(Duration::from_millis(1_000));
             if before.elapsed() < Duration::from_millis(900) {
-                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                observed.fetch_add(1, Ordering::SeqCst);
             }
             true
         });
@@ -219,8 +374,64 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
         drop(thread);
         assert!(
-            wakeups.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            wakeups.load(Ordering::SeqCst) >= 1,
             "the stop never woke the sleeping tick"
         );
+    }
+
+    /// Setup runs before the first tick, and its state reaches every tick.
+    #[test]
+    fn setup_runs_before_the_first_tick() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let saw = Arc::clone(&ran);
+        let mut thread = WorldThread::spawn_with(
+            "test",
+            move |_| {
+                saw.store(true, Ordering::SeqCst);
+                7u32
+            },
+            move |_, _, state| {
+                assert_eq!(*state, 7);
+                false
+            },
+        );
+        assert!(thread.join_timeout(Duration::from_secs(2)));
+        assert!(ran.load(Ordering::SeqCst), "the setup never ran");
+    }
+
+    /// Dropping a thread whose tick ignores the stop returns instead of
+    /// hanging, and leaves the thread detached.
+    #[test]
+    fn a_stuck_tick_does_not_hang_the_drop() {
+        let started = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&started);
+        let thread = WorldThread::spawn("test", move |_, _| {
+            flag.store(true, Ordering::SeqCst);
+            // Ignore the stop forever: the drop must give up on it.
+            std::thread::sleep(Duration::from_secs(30));
+            false
+        });
+        while !started.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let before = Instant::now();
+        drop(thread);
+        assert!(
+            before.elapsed() < STOP_TIMEOUT + Duration::from_secs(1),
+            "the drop waited far longer than the grace period"
+        );
+    }
+
+    /// A detached thread is never joined.
+    #[test]
+    fn a_detached_thread_is_forgotten() {
+        let mut thread = WorldThread::spawn("test", |_, control| {
+            control.wait_timeout(Duration::from_millis(5));
+            true
+        });
+        thread.stop();
+        assert!(thread.join_timeout(Duration::from_secs(2)));
+        thread.detach();
+        assert!(thread.is_finished());
     }
 }

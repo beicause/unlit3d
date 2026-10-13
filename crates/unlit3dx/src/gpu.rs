@@ -1,15 +1,18 @@
 //! The GPU context and its asynchronous request.
 //!
 //! A scene is set up once the adapter and device exist, and the setup
-//! needs a mutable world — so the request runs off the main thread while
-//! a frame behaviour polls for the answer, and the ready callback lands
-//! as a command between two event callbacks. Nothing outside this module
-//! needs to know any of that: [`request_gpu`] runs the request and calls
-//! back when the context is ready.
+//! needs a mutable world — so the request is a future the frame behaviour
+//! drives on a local pool, and the ready callback lands as a command
+//! between two event callbacks. Nothing outside this module needs to know
+//! any of that: [`request_gpu`] runs the request and calls back when the
+//! context is ready.
 
-use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use unlit_ecs::{Command, Entity, World};
+
+use crate::executor::LocalPool;
 use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::winit::builtin::{DisplayHandle, ExitRequest, Resumed, window};
@@ -57,32 +60,11 @@ impl Gpu {
         instance: wgpu::Instance,
         surface: wgpu::Surface<'static>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        log::debug!("requesting an adapter");
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await?;
-        log::debug!("adapter landed; requesting a device");
+        let adapter = request_adapter(&instance, Some(&surface)).await?;
+        // The surface only probes the adapter; the device request must not
+        // keep it alive.
         drop(surface);
-        let tier = DeviceTier::from_env();
-        let capabilities = tier.capabilities_of(&adapter);
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
-                required_limits: tier.limits(&adapter.limits()),
-                ..Default::default()
-            })
-            .await?;
-        log::debug!("device landed");
-        Ok(Self {
-            instance,
-            adapter,
-            device,
-            queue,
-            capabilities,
-        })
+        Self::from_adapter(instance, adapter).await
     }
 
     /// Request an adapter and device without a window to present to, for
@@ -90,14 +72,15 @@ impl Gpu {
     pub async fn headless() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        log::debug!("requesting an adapter");
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: None,
-                ..Default::default()
-            })
-            .await?;
+        let adapter = request_adapter(&instance, None).await?;
+        Self::from_adapter(instance, adapter).await
+    }
+
+    /// Request a device from `adapter` and gather the context around it.
+    async fn from_adapter(
+        instance: wgpu::Instance,
+        adapter: wgpu::Adapter,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         log::debug!("adapter landed; requesting a device");
         let tier = DeviceTier::from_env();
         let capabilities = tier.capabilities_of(&adapter);
@@ -118,18 +101,21 @@ impl Gpu {
     }
 }
 
-/// Run a future concurrently: on a worker thread on native, in the
-/// browser's task queue on the web, where no thread can be blocked.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn spawn(future: impl core::future::Future<Output = ()> + Send + 'static) {
-    std::thread::spawn(move || pollster::block_on(future));
-}
-
-/// Run a future concurrently: on a worker thread on native, in the
-/// browser's task queue on the web, where no thread can be blocked.
-#[cfg(target_arch = "wasm32")]
-pub fn spawn(future: impl core::future::Future<Output = ()> + 'static) {
-    wasm_bindgen_futures::spawn_local(future);
+/// Ask `instance` for a high-performance adapter that can present to
+/// `surface`, when one is given.
+async fn request_adapter(
+    instance: &wgpu::Instance,
+    surface: Option<&wgpu::Surface<'static>>,
+) -> Result<wgpu::Adapter, Box<dyn std::error::Error + Send + Sync>> {
+    log::debug!("requesting an adapter");
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: surface,
+            ..Default::default()
+        })
+        .await?;
+    Ok(adapter)
 }
 
 /// Start the app's GPU request once the window exists, and run `ready`
@@ -143,7 +129,11 @@ pub fn request_gpu<F>(app: Entity, ready: F) -> OnFrame
 where
     F: FnOnce(&mut World, &Gpu) + 'static,
 {
-    let answer: Arc<Mutex<Option<Result<Gpu, String>>>> = Arc::default();
+    // The pool lives inside the behaviour and is driven on the frame
+    // thread, so the answer slot needs no lock: the request future and
+    // the behaviour that reads it run on the same thread.
+    let pool = LocalPool::new();
+    let answer: Rc<RefCell<Option<Result<Gpu, String>>>> = Rc::default();
     let mut state = 0u8;
     let mut ready = Some(ready);
     OnFrame::new(
@@ -153,14 +143,12 @@ where
                 return;
             }
             if state == 1 {
-                // One poll takes the answer out for good, so it is
-                // moved into the command even if the callback panics
-                // half-way.
-                let Some(result) = answer
-                    .lock()
-                    .expect("the GPU answer is not poisoned")
-                    .take()
-                else {
+                // Drive the request future; a wake from the wgpu callback
+                // thread is queued and picked up here.
+                pool.run_ready();
+                // One poll takes the answer out for good, so it is moved
+                // into the command even if the callback panics half-way.
+                let Some(result) = answer.borrow_mut().take() else {
                     return;
                 };
                 state = 2;
@@ -189,8 +177,8 @@ where
             };
             state = 1;
             log::debug!("requesting a GPU context");
-            let worker = Arc::clone(&answer);
-            spawn(async move {
+            let slot = Rc::clone(&answer);
+            pool.spawn(async move {
                 // The display handle is owned, not borrowed: the instance
                 // it builds has to outlive this callback.
                 let instance = wgpu::util::new_instance_with_webgpu_detection(
@@ -203,7 +191,7 @@ where
                         .map_err(|error| error.to_string()),
                     Err(error) => Err(error.to_string()),
                 };
-                *worker.lock().expect("the GPU answer is not poisoned") = Some(result);
+                *slot.borrow_mut() = Some(result);
             });
         },
     )

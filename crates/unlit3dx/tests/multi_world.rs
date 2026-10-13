@@ -10,7 +10,7 @@ use unlit_ecs::World;
 use unlit3dx::prelude::*;
 
 /// A remote world that idles between ticks, for the tests to drive.
-fn idle_host() -> (World, unlit_ecs::Entity) {
+fn idle_host() -> (World, WorldHandle) {
     let mut host = World::new();
     let world = spawn_remote_world(&mut host, "test", 64, |_, control| {
         control.wait_timeout(Duration::from_millis(1));
@@ -35,22 +35,20 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
 #[test]
 fn sub_world_jobs_drain_in_order() {
     let mut host = World::new();
-    let sub = spawn_sub_world(&mut host, 16);
-    let proxy = host
-        .get::<SubWorld>(sub)
-        .expect("the proxy carries its commands")
-        .clone();
+    let proxy = spawn_sub_world(&mut host, 16);
 
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     for step in 0..4 {
         let order = Arc::clone(&order);
-        proxy.send(Box::new(move |_: &mut World| {
+        let _ = proxy.send(Box::new(move |_: &mut World| {
             order.lock().expect("the order lock").push(step);
         }));
     }
     let third = proxy.request(Box::new(|_: &mut World| "third"));
 
-    let mut nested = host.get_mut::<World>(sub).expect("the nested world");
+    let mut nested = host
+        .get_mut::<World>(proxy.entity())
+        .expect("the nested world");
     drain_sub_world(&mut nested);
 
     assert_eq!(*order.lock().expect("the order lock"), vec![0, 1, 2, 3]);
@@ -61,14 +59,13 @@ fn sub_world_jobs_drain_in_order() {
 /// earlier jobs left, which is what makes a world a world.
 #[test]
 fn remote_world_state_persists_between_jobs() {
-    let (host, world) = idle_host();
-    let remote = host.get::<RemoteWorld>(world).expect("the proxy exists");
+    let (_host, remote) = idle_host();
 
-    remote.send(Box::new(|world: &mut World| {
+    let _ = remote.send(Box::new(|world: &mut World| {
         world.spawn((Count(0),));
     }));
     for _ in 0..5 {
-        remote.send(Box::new(|world: &mut World| {
+        let _ = remote.send(Box::new(|world: &mut World| {
             world.query::<&mut Count>().next().expect("the counter").1.0 += 1;
         }));
     }
@@ -94,17 +91,18 @@ fn remote_world_state_persists_between_jobs() {
 fn a_finished_world_drops_jobs_quietly() {
     let mut host = World::new();
     let world = spawn_remote_world(&mut host, "test", 8, |_, _| false);
-    let remote = host.get::<RemoteWorld>(world).expect("the proxy exists");
 
     assert!(
-        wait_for(|| remote.thread().is_finished()),
+        wait_for(|| world.is_finished()),
         "the thread kept running after its tick declined"
     );
-    assert!(remote.thread().panic_message().is_none());
-    // The channel's receiver dies with the thread, so this logs and drops.
-    remote.send(Box::new(|_: &mut World| {
+    assert!(world.panic_message().is_none());
+    // The channel's receiver dies with the thread, so the job is refused
+    // instead of being queued for a world that will never run it.
+    let refused = world.send(Box::new(|_: &mut World| {
         panic!("a dropped job must not run");
     }));
+    assert_eq!(refused, Err(SendError::Closed));
 }
 
 /// Dropping the proxy entity stops the world: once the thread has ended,
@@ -116,16 +114,13 @@ fn despawning_the_proxy_stops_the_world() {
         control.wait_timeout(Duration::from_millis(1));
         true
     });
-    let sender = host
-        .get::<RemoteWorld>(world)
-        .expect("the proxy exists")
-        .sender();
-    assert!(host.despawn(world), "the proxy entity despawns");
+    let sender = world.sender();
+    assert!(host.despawn(world.entity()), "the proxy entity despawns");
 
     // The receiver lives inside the thread closure, so it drops only when
     // the thread does; until then the channel has room and accepts jobs.
     assert!(
-        wait_for(|| sender.try_send(Box::new(|_: &mut World| {})).is_err()),
+        wait_for(|| sender.send(Box::new(|_: &mut World| {})).is_err()),
         "the thread kept accepting jobs after its proxy was dropped"
     );
 }
@@ -146,7 +141,10 @@ fn snapshots_flow_from_thread_to_host() {
         wait_for(|| reader.latest().is_some_and(|value| *value >= 3)),
         "the reader never saw the published values"
     );
-    assert!(host.get::<RemoteWorld>(world).is_some(), "the proxy exists");
+    assert!(
+        host.contains(world.entity()),
+        "the proxy lives on a host entity"
+    );
 }
 
 /// The counter the persistence test shares with its remote world.

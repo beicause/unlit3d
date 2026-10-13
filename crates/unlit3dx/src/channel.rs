@@ -7,22 +7,22 @@
 
 use std::sync::{Arc, RwLock};
 
-/// Publishes snapshots: each [`publish`](Self::publish) replaces the
-/// previous one.
+use crate::sync;
+
+/// The writing half of a snapshot mailbox.
 #[derive(Clone, Debug)]
 pub struct SnapshotWriter<T> {
-    /// The single slot the newest snapshot occupies.
     slot: Arc<RwLock<Option<Arc<T>>>>,
 }
 
-/// Reads the newest published snapshot, or nothing before the first one.
+/// The reading half of a snapshot mailbox.
 #[derive(Clone, Debug)]
 pub struct SnapshotReader<T> {
-    /// The single slot the newest snapshot occupies, shared with the writer.
     slot: Arc<RwLock<Option<Arc<T>>>>,
 }
 
-/// Pair a writer with the reader that sees what it publishes.
+/// A writer and a reader sharing one slot.
+#[must_use]
 pub fn snapshot_pair<T>() -> (SnapshotWriter<T>, SnapshotReader<T>) {
     let slot = Arc::new(RwLock::new(None));
     (
@@ -34,22 +34,17 @@ pub fn snapshot_pair<T>() -> (SnapshotWriter<T>, SnapshotReader<T>) {
 }
 
 impl<T> SnapshotWriter<T> {
-    /// Publish a snapshot, returning the one it replaces.
+    /// Replace the slot's contents, returning the snapshot it displaced.
     pub fn publish(&self, snapshot: T) -> Option<Arc<T>> {
-        self.slot
-            .write()
-            .expect("the snapshot slot is not poisoned")
-            .replace(Arc::new(snapshot))
+        sync::write(&self.slot).replace(Arc::new(snapshot))
     }
 }
 
 impl<T> SnapshotReader<T> {
-    /// The newest snapshot, shared with the writer's thread.
+    /// The newest snapshot, or [`None`] if none was ever published.
+    #[must_use]
     pub fn latest(&self) -> Option<Arc<T>> {
-        self.slot
-            .read()
-            .expect("the snapshot slot is not poisoned")
-            .clone()
+        sync::read(&self.slot).clone()
     }
 }
 
@@ -57,23 +52,32 @@ impl<T> SnapshotReader<T> {
 mod tests {
     use super::*;
 
-    /// A reader always sees the newest snapshot and never an older one.
+    /// Publishing twice leaves the newest snapshot in the slot.
     #[test]
     fn the_newest_snapshot_wins() {
-        let (writer, reader) = snapshot_pair::<u32>();
-        assert!(reader.latest().is_none());
+        let (writer, reader) = snapshot_pair();
         writer.publish(1);
-        assert_eq!(reader.latest().map(|snapshot| *snapshot), Some(1));
         writer.publish(2);
-        assert_eq!(reader.latest().map(|snapshot| *snapshot), Some(2));
+        assert_eq!(*reader.latest().expect("a snapshot is published"), 2);
     }
 
-    /// The snapshot a publish replaces is the one that was there before.
+    /// Publishing returns the snapshot it replaced.
     #[test]
     fn publish_returns_the_replaced_snapshot() {
-        let (writer, _reader) = snapshot_pair::<u32>();
+        let (writer, _reader) = snapshot_pair();
+        assert!(writer.publish(1).is_none());
+        assert_eq!(*writer.publish(2).expect("the first snapshot"), 1);
+    }
+
+    /// A panic while a snapshot is held does not poison the mailbox.
+    #[test]
+    fn a_panic_while_publishing_does_not_poison_the_mailbox() {
+        let (writer, reader) = snapshot_pair();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = sync::write(&writer.slot);
+            panic!("while holding the write lock");
+        }));
         writer.publish(1);
-        assert_eq!(writer.publish(2).map(|snapshot| *snapshot), Some(1));
-        assert_eq!(writer.publish(3).map(|snapshot| *snapshot), Some(2));
+        assert_eq!(*reader.latest().expect("the mailbox still works"), 1);
     }
 }

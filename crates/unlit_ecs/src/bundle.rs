@@ -59,6 +59,18 @@ impl ArchetypeBuilder {
         ));
     }
 
+    /// Add every component of `bundle` to this builder.
+    ///
+    /// This is how a caller gathers several bundles into one spawn: the
+    /// components keep their own types, so a bundle that holds a tuple
+    /// contributes that tuple as a single component, exactly as spawning
+    /// it alone would.
+    pub fn push_bundle<B: Bundle>(&mut self, bundle: B) {
+        let (_types, values, ctors) = bundle.into_builder().finish();
+        self.values.extend(values);
+        self.ctors.extend(ctors);
+    }
+
     /// Sorted component types, the component values in the same order, and one
     /// column constructor per type.
     pub(crate) fn finish(self) -> FinishedColumns {
@@ -83,6 +95,7 @@ impl ArchetypeBuilder {
 ///
 /// Implemented for the empty tuple, for tuples of one to sixteen components,
 /// and for an [`ArchetypeBuilder`] the [`crate::bundle!`] macro produced.
+/// Several bundles come together through [`ArchetypeBuilder::push_bundle`].
 pub trait Bundle {
     /// The builder holding exactly this bundle's components.
     ///
@@ -196,4 +209,32 @@ macro_rules! bundle {
         $crate::bundle!(@list builder, $($item)+);
         builder
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::World;
+
+    /// Gathering bundles keeps each one's own components: a tuple bundle
+    /// contributes its leaves, and a component that is itself a tuple stays
+    /// one component.
+    #[test]
+    fn push_bundle_gathers_bundles() {
+        let mut world = World::new();
+        let mut builder = ArchetypeBuilder::new();
+        builder.push(1u32);
+        builder.push_bundle((2.0f32, true));
+        builder.push_bundle(((7u8, 8u8), ()));
+        let entity = world.spawn(builder);
+        assert_eq!(world.get::<u32>(entity).map(|value| *value), Some(1));
+        assert_eq!(world.get::<f32>(entity).map(|value| *value), Some(2.0));
+        assert_eq!(world.get::<bool>(entity).map(|value| *value), Some(true));
+        // The nested pair went in as one component, the way spawning it
+        // alone would have.
+        assert_eq!(
+            world.get::<(u8, u8)>(entity).map(|value| *value),
+            Some((7, 8))
+        );
+    }
 }

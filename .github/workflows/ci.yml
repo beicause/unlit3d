@@ -71,6 +71,21 @@ jobs:
       - name: Check out the asset submodule
         run: git submodule update --init --checkout
 
+      # The demo's soundfont is a 14 MB asset the repository keeps out of
+      # version control, and the example's build reads it from `assets/`.
+      # Fetching it here is what lets the audio snapshot test run for real
+      # instead of skipping: the test step below sets
+      # `UNLIT3D_REQUIRE_SOUNDFONT`, so a checkout that silently stopped
+      # exercising the mix fails rather than passing.
+      - name: Fetch the demo soundfont
+        run: |
+          mkdir -p assets
+          gh api -H "Accept: application/vnd.github.raw" \
+            repos/beicause/soundfont/contents/FluidR3Mono_GM.sf3 \
+            > assets/FluidR3Mono_GM.sf3
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install rust toolchain
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
@@ -135,6 +150,11 @@ jobs:
       - name: Test ${{matrix.os}}
         id: test
         run: cargo xtask test
+        env:
+          # The soundfont was fetched above, so the audio snapshot test has
+          # what it needs: requiring it here is what turns a checkout that
+          # lost the asset from a silent skip into a failure.
+          UNLIT3D_REQUIRE_SOUNDFONT: "1"
 
       # A frame that fails its snapshot comparison is written rather than only
       # scored, so a mismatch arrives as an image to look at instead of a number

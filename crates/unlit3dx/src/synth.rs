@@ -1,56 +1,32 @@
-//! A soundfont-backed [`PcmSource`]: synthesizers
-//! and MIDI sequencers, mixed.
+//! Soundfont-backed fill sources: synthesizers and MIDI sequencers,
+//! mixed.
 //!
 //! The soundfont loads on the audio thread, where the [`SynthVoice`] and
-//! [`MidiPlayer`] it feeds are spawned as components of the audio world.
-//! Gameplay never touches the synthesizer: it sends note jobs and MIDI
-//! files through the world's command channel, and the mixer renders
-//! whatever sources exist into the stream's interleaved frames.
+//! one [`MidiPlayer`] per named track it feeds are spawned as components
+//! of the audio world — each with the [`OnFill`] that renders it, so a
+//! source plays by existing and a world with no sources plays nothing.
+//! Installing them is ordinary work for that world: queue a job once the
+//! output's format ([`AudioFormat`](crate::audio::AudioFormat)) has landed.
+//! Gameplay never touches the
+//! synthesizer: it
+//! sends note jobs for live sound and transport jobs — play, pause,
+//! rewind, stop — addressed to a track by name, and the audio thread
+//! sums every source into the stream's interleaved frames.
+//!
+//! Tracks are independent: pausing one leaves the others sounding, and a
+//! paused track renders nothing at all, so its sequencer clock stops and
+//! the resume picks up exactly where it left off.
 
 use std::sync::Arc;
 
-pub use rustysynth_ext::MidiFile;
+pub use rustysynth_ext::{MidiFile, MidiMessage};
 use rustysynth_ext::{
-    MidiFileError, MidiFileSequencer, MidiMessage, SoundFont, SoundFontError, Synthesizer,
-    SynthesizerError, SynthesizerSettings,
+    MidiFileError, SoundFont, SoundFontError, Synthesizer, SynthesizerError, SynthesizerSettings,
 };
 use unlit_ecs::{Entity, World};
 
-use crate::audio::PcmSource;
+use crate::audio::{AudioChunk, FillOrder, OnFill, WorldFillExt};
 use crate::job::Job;
-
-/// Build a mixer backed by the soundfont in `bytes`, loaded when the audio
-/// thread opens its output, with every sample scaled by `gain`.
-///
-/// The bytes come from the binary itself, typically an `include_bytes!` of
-/// the soundfont, so no filesystem is involved and the same code runs on
-/// wasm. The factory spawns both a [`SynthVoice`] for live notes and a
-/// [`MidiPlayer`] for sequenced playback.
-///
-/// Soundfont presets leave a lot of headroom, so a mix of a few quiet
-/// voices often sits far below full scale; `gain` makes it up. Samples
-/// clamp to the unit range after the gain, so an overdriven mix distorts
-/// rather than wraps. A soundfont that fails to load logs and leaves the
-/// world silent rather than taking the stream down with it.
-pub fn synth_source_bytes(bytes: Arc<[u8]>, gain: f32) -> crate::audio::PcmSourceFactory {
-    Box::new(move |world: &mut World, sample_rate: u32, _channels: u16| {
-        // Decoding an sf3's vorbis samples is the load's whole cost: a few
-        // seconds in release, tens of them in an unoptimized debug build.
-        log::info!("loading the embedded soundfont");
-        match load_soundfont(&bytes) {
-            Ok(font) => {
-                if let Err(error) = SynthVoice::from_font(world, &font, sample_rate) {
-                    log::error!("the synthesizer failed to start ({error})");
-                }
-                if let Err(error) = MidiPlayer::from_font(world, &font, sample_rate) {
-                    log::error!("the midi player failed to start ({error})");
-                }
-            }
-            Err(error) => log::error!("the soundfont failed to load ({error})"),
-        }
-        Box::new(SynthMixer::new(gain))
-    })
-}
 
 /// Parses the soundfont in `bytes`.
 ///
@@ -63,7 +39,7 @@ pub fn load_soundfont(bytes: &[u8]) -> Result<Arc<SoundFont>, VoiceError> {
 }
 
 /// Parses a standard MIDI file from `bytes`, ready for
-/// [`play_midi_job`].
+/// [`play_track_job`].
 ///
 /// # Errors
 ///
@@ -79,7 +55,7 @@ pub fn load_midi_file(bytes: &[u8]) -> Result<Arc<MidiFile>, VoiceError> {
 pub type MidiEvent = (f64, u8, u8, u8);
 
 /// Builds a MIDI file from timed messages, ready for
-/// [`play_midi_job`].
+/// [`play_track_job`].
 ///
 /// The times must be in non-decreasing order.
 ///
@@ -101,16 +77,43 @@ pub fn midi_file(events: &[MidiEvent]) -> Result<Arc<MidiFile>, VoiceError> {
     ))?))
 }
 
+/// How many frames the track's clock steps at a time, and the synthesizer's
+/// block size: the two are one number because a block is exactly what the
+/// clock advances by. Written into [`SynthesizerSettings`] rather than
+/// assumed, so the walk and the render cannot drift apart.
+const TRACK_CLOCK_FRAMES: usize = 64;
+
+/// The synthesizer `font` plays through, and the sample rate it was built
+/// at, in hertz: a caller that clocks its own events needs the rate the
+/// synthesizer actually renders at, not the one it asked for.
+///
+/// Shared by [`SynthVoice`] and [`MidiPlayer`], which each own one.
+fn synthesizer(font: &Arc<SoundFont>, sample_rate: u32) -> Result<(Synthesizer, u32), VoiceError> {
+    let rate = i32::try_from(sample_rate).unwrap_or(48_000);
+    let mut settings = SynthesizerSettings::new(rate);
+    settings.block_size = TRACK_CLOCK_FRAMES;
+    let synthesizer = Synthesizer::new(font, &settings)?;
+    Ok((synthesizer, u32::try_from(rate).unwrap_or(48_000)))
+}
+
 /// A loaded soundfont and the synthesizer playing it, as one component.
+///
+/// Spawned with the [`OnFill`] that renders it, so the voice is a source
+/// of the world's mix: note jobs press its keys and the audio thread
+/// turns them into samples.
 pub struct SynthVoice {
     /// The soundfont the synthesizer reads its instruments from.
     _font: Arc<SoundFont>,
     /// The synthesizer that turns note events into samples.
     pub synthesizer: Synthesizer,
+    /// The left channel's block, reused across fills.
+    left: Vec<f32>,
+    /// The right channel's block, reused across fills.
+    right: Vec<f32>,
 }
 
 impl SynthVoice {
-    /// Spawns a voice playing `font`.
+    /// Spawns a voice playing `font`, and its fill source.
     ///
     /// # Errors
     ///
@@ -120,10 +123,15 @@ impl SynthVoice {
         font: &Arc<SoundFont>,
         sample_rate: u32,
     ) -> Result<Entity, VoiceError> {
-        Ok(world.spawn((Self {
+        let (synthesizer, _rate) = synthesizer(font, sample_rate)?;
+        let voice = Self {
             _font: font.clone(),
-            synthesizer: Self::synthesizer(font, sample_rate)?,
-        },)))
+            synthesizer,
+            left: Vec::new(),
+            right: Vec::new(),
+        };
+        let fill = world.mount_on_fill(OnFill::new(FillOrder::default(), fill_voice));
+        Ok(world.spawn((voice, fill)))
     }
 
     /// Parses `bytes` as a soundfont and spawns a voice playing it.
@@ -139,26 +147,46 @@ impl SynthVoice {
     ) -> Result<Entity, VoiceError> {
         Self::from_font(world, &load_soundfont(bytes)?, sample_rate)
     }
-
-    /// The synthesizer `font` plays through, at `sample_rate`.
-    fn synthesizer(font: &Arc<SoundFont>, sample_rate: u32) -> Result<Synthesizer, VoiceError> {
-        let settings = SynthesizerSettings::new(i32::try_from(sample_rate).unwrap_or(48000));
-        Ok(Synthesizer::new(font, &settings)?)
-    }
 }
 
-/// A MIDI file sequencer and its own synthesizer, as one component.
+/// One MIDI track and its own synthesizer, as one component.
 ///
-/// The sequencer keeps its own clock, advanced by the samples its render
-/// pulls, so playback stays sample-accurate no matter how the host paces
-/// its ticks.
+/// The player walks the sequence's own timed events — a list of
+/// `(`seconds`, message)` pairs — and keeps the clock that walk needs:
+/// `current_time` advances by exactly the samples each fill renders, so
+/// playback stays sample-accurate no matter how the host paces its ticks.
+/// Each player carries a name so transport jobs can address it
+/// independently: a background loop and a one-shot sequence coexist on
+/// the same audio world, each with its own [`OnFill`] source.
 pub struct MidiPlayer {
-    /// The sequencer walking the current file's events.
-    sequencer: MidiFileSequencer,
+    /// The name transport jobs address this track by.
+    name: String,
+    /// The synthesizer the track's messages drive.
+    synthesizer: Synthesizer,
+    /// The sample rate that synthesizer renders at, in hertz: the clock
+    /// converts rendered samples back into seconds through it.
+    sample_rate: u32,
+    /// The file the track plays and whether it loops, kept so a rewind
+    /// restarts the same sequence without its sender holding onto it.
+    track: Option<(Arc<MidiFile>, bool)>,
+    /// Where the track has read to, in seconds since its start.
+    current_time: f64,
+    /// The index of the next event to apply.
+    message_index: usize,
+    /// Where a loop restarts: the file's loop marker, or its start.
+    loop_index: usize,
+    /// Whether the track is paused; a paused track renders silence and
+    /// its clock stands still, so the resume picks up exactly where the
+    /// pause left off.
+    paused: bool,
+    /// The left channel's block, reused across fills.
+    left: Vec<f32>,
+    /// The right channel's block, reused across fills.
+    right: Vec<f32>,
 }
 
 impl MidiPlayer {
-    /// Spawns a player reading `font`.
+    /// Spawns a player named `name` reading `font`, and its fill source.
     ///
     /// # Errors
     ///
@@ -167,12 +195,120 @@ impl MidiPlayer {
         world: &mut World,
         font: &Arc<SoundFont>,
         sample_rate: u32,
+        name: &str,
     ) -> Result<Entity, VoiceError> {
-        let sequencer = MidiFileSequencer::new(Self::synthesizer(font, sample_rate)?);
-        Ok(world.spawn((Self { sequencer },)))
+        let (synthesizer, rate) = synthesizer(font, sample_rate)?;
+        let player = Self {
+            name: name.to_owned(),
+            synthesizer,
+            sample_rate: rate,
+            track: None,
+            current_time: 0.0,
+            message_index: 0,
+            loop_index: 0,
+            paused: false,
+            left: Vec::new(),
+            right: Vec::new(),
+        };
+        let fill = world.mount_on_fill(OnFill::new(FillOrder::default(), fill_track));
+        Ok(world.spawn((player, fill)))
     }
 
-    /// Parses `bytes` as a soundfont and spawns a player reading it.
+    /// Puts the track back at its start: the clock, the event cursor and
+    /// the synthesizer's sounding voices all reset, so a fresh sequence
+    /// begins in silence rather than under whatever was held.
+    fn start(&mut self, file: Arc<MidiFile>, loop_play: bool) {
+        self.track = Some((file, loop_play));
+        self.current_time = 0.0;
+        self.message_index = 0;
+        self.loop_index = 0;
+        self.synthesizer.reset();
+    }
+
+    /// Renders `frames` of the track into its own block, applying every
+    /// event whose time the clock has passed along the way.
+    ///
+    /// The clock walks in [`TRACK_CLOCK_FRAMES`] steps, so an event lands
+    /// within that granularity of the sample it belongs to rather than at
+    /// the start of a whole fill chunk.
+    fn advance(&mut self, frames: usize) {
+        self.left.resize(frames, 0.0);
+        self.right.resize(frames, 0.0);
+        let track = self.track.clone();
+        let mut wrote = 0;
+        while wrote < frames {
+            let step = TRACK_CLOCK_FRAMES.min(frames - wrote);
+            if let Some((file, loop_play)) = &track {
+                self.process_events(file, *loop_play);
+            }
+            self.synthesizer.render(
+                &mut self.left[wrote..wrote + step],
+                &mut self.right[wrote..wrote + step],
+            );
+            self.current_time += step as f64 / f64::from(self.sample_rate);
+            wrote += step;
+        }
+    }
+
+    /// Puts the track down: no sequence, the clock back at zero, and every
+    /// sounding voice released, so a stop leaves silence rather than tails.
+    fn stop(&mut self) {
+        self.track = None;
+        self.paused = false;
+        self.current_time = 0.0;
+        self.message_index = 0;
+        self.loop_index = 0;
+        self.synthesizer.reset();
+    }
+
+    /// Applies the events up to the clock, and loops the track when it runs
+    /// out with looping on.
+    ///
+    /// A loop restarts at the file's `LoopStart` marker when it carries one
+    /// and at its first event otherwise; the held voices are released
+    /// first, so a restart is a seam and not a chord of everything the
+    /// pass left sounding.
+    fn process_events(&mut self, file: &MidiFile, loop_play: bool) {
+        let (messages, times) = (file.get_messages(), file.get_times());
+        while self.message_index < messages.len() {
+            let time = times[self.message_index];
+            if time > self.current_time {
+                break;
+            }
+            match messages[self.message_index] {
+                MidiMessage::Normal {
+                    status,
+                    data1,
+                    data2,
+                } => self.synthesizer.process_midi_message(
+                    i32::from(status & 0x0F),
+                    i32::from(status & 0xF0),
+                    i32::from(data1),
+                    i32::from(data2),
+                ),
+                MidiMessage::LoopStart if loop_play => self.loop_index = self.message_index,
+                MidiMessage::LoopEnd if loop_play => {
+                    self.restart_at(times[self.loop_index], self.loop_index);
+                }
+                _ => {}
+            }
+            self.message_index += 1;
+        }
+        if loop_play && self.message_index == messages.len() {
+            let (time, index) = (times[self.loop_index], self.loop_index);
+            self.restart_at(time, index);
+        }
+    }
+
+    /// Jump the clock and the event cursor back to a loop point.
+    fn restart_at(&mut self, time: f64, index: usize) {
+        self.current_time = time;
+        self.message_index = index;
+        self.synthesizer.note_off_all(false);
+    }
+
+    /// Parses `bytes` as a soundfont and spawns a player named `name`
+    /// reading it.
     ///
     /// # Errors
     ///
@@ -182,14 +318,9 @@ impl MidiPlayer {
         world: &mut World,
         bytes: &[u8],
         sample_rate: u32,
+        name: &str,
     ) -> Result<Entity, VoiceError> {
-        Self::from_font(world, &load_soundfont(bytes)?, sample_rate)
-    }
-
-    /// The synthesizer `font` plays through, at `sample_rate`.
-    fn synthesizer(font: &Arc<SoundFont>, sample_rate: u32) -> Result<Synthesizer, VoiceError> {
-        let settings = SynthesizerSettings::new(i32::try_from(sample_rate).unwrap_or(48000));
-        Ok(Synthesizer::new(font, &settings)?)
+        Self::from_font(world, &load_soundfont(bytes)?, sample_rate, name)
     }
 }
 
@@ -234,74 +365,51 @@ impl From<SynthesizerError> for VoiceError {
     }
 }
 
-/// Renders every [`SynthVoice`] and [`MidiPlayer`] in the world into
-/// interleaved frames.
-#[derive(Clone, Debug)]
-struct SynthMixer {
-    /// The left channel's scratch, reused across fills.
-    left: Vec<f32>,
-    /// The right channel's scratch, reused across fills.
-    right: Vec<f32>,
-    /// The left channel's accumulator: every source overwrites the
-    /// scratch, so the mix adds each render on top of it.
-    mixed_left: Vec<f32>,
-    /// The right channel's accumulator.
-    mixed_right: Vec<f32>,
-    /// The factor every rendered sample scales by.
-    gain: f32,
+/// Adds one voice's block to the chunk it was asked to fill.
+fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
+    let Some(mut guard) = world.get_mut::<SynthVoice>(entity) else {
+        return;
+    };
+    // Borrowed through the guard the fields are not disjoint; reborrowed as a
+    // reference they are, so the render can fill the voice's own block.
+    let voice = &mut *guard;
+    let frames = chunk.frames();
+    voice.left.resize(frames, 0.0);
+    voice.right.resize(frames, 0.0);
+    voice.synthesizer.render(&mut voice.left, &mut voice.right);
+    add_stereo(&voice.left, &voice.right, chunk);
 }
 
-impl SynthMixer {
-    /// A mixer whose samples scale by `gain`.
-    fn new(gain: f32) -> Self {
-        Self {
-            left: Vec::new(),
-            right: Vec::new(),
-            mixed_left: Vec::new(),
-            mixed_right: Vec::new(),
-            gain,
-        }
+/// Adds one track's block to the chunk, unless the track is paused.
+fn fill_track(world: &World, entity: Entity, chunk: &mut AudioChunk) {
+    let Some(mut guard) = world.get_mut::<MidiPlayer>(entity) else {
+        return;
+    };
+    // Reborrowed, as in [`fill_voice`], so the block and the clock are
+    // separate borrows.
+    let player = &mut *guard;
+    // A paused track renders nothing at all: its clock stands still, so
+    // the resume continues where the pause stopped.
+    if player.paused {
+        return;
     }
-
-    /// Adds the scratch's samples onto the accumulator.
-    fn accumulate(&mut self) {
-        for (mixed, sample) in self.mixed_left.iter_mut().zip(&self.left) {
-            *mixed += sample;
-        }
-        for (mixed, sample) in self.mixed_right.iter_mut().zip(&self.right) {
-            *mixed += sample;
-        }
-    }
+    let frames = chunk.frames();
+    player.advance(frames);
+    add_stereo(&player.left, &player.right, chunk);
 }
 
-impl PcmSource for SynthMixer {
-    fn fill(&mut self, world: &World, out: &mut [f32], _sample_rate: u32, channels: u16) {
-        let channels = usize::from(channels.max(1));
-        let frames = out.len() / channels;
-        self.left.resize(frames, 0.0);
-        self.right.resize(frames, 0.0);
-        self.mixed_left.clear();
-        self.mixed_left.resize(frames, 0.0);
-        self.mixed_right.clear();
-        self.mixed_right.resize(frames, 0.0);
-        for (_, mut voice) in world.query::<&mut SynthVoice>() {
-            voice.synthesizer.render(&mut self.left, &mut self.right);
-            self.accumulate();
+/// Adds a stereo block onto the chunk's interleaved frames.
+///
+/// A stream wider than stereo gets the voice's two channels in its first
+/// two and nothing in the rest, which keeps whatever other sources added.
+fn add_stereo(left: &[f32], right: &[f32], chunk: &mut AudioChunk) {
+    let channels = usize::from(chunk.channels.max(1));
+    for (frame, samples) in chunk.out.chunks_mut(channels).enumerate() {
+        if let Some(sample) = samples.first_mut() {
+            *sample += left[frame];
         }
-        for (_, mut player) in world.query::<&mut MidiPlayer>() {
-            player.sequencer.render(&mut self.left, &mut self.right);
-            self.accumulate();
-        }
-        // Everything past the first two channels of a wider stream is
-        // silent.
-        for (frame, out) in out.chunks_mut(channels).enumerate() {
-            for (channel, sample) in out.iter_mut().enumerate() {
-                *sample = (match channel {
-                    0 => self.mixed_left[frame],
-                    _ => self.mixed_right[frame],
-                } * self.gain)
-                    .clamp(-1.0, 1.0);
-            }
+        if let Some(sample) = samples.get_mut(1) {
+            *sample += right[frame];
         }
     }
 }
@@ -338,44 +446,62 @@ pub fn note_off_job(channel: i32, key: i32) -> Job<()> {
     })
 }
 
-/// A job that releases every key, immediately or with the envelope decayed.
-pub fn notes_off_all_job(immediate: bool) -> Job<()> {
+/// A job that plays a MIDI file on the track named `name`, looping or
+/// stopping at the end. Playing restarts the track's position at zero and
+/// resumes it if it was paused.
+pub fn play_track_job(name: &str, file: Arc<MidiFile>, loop_play: bool) -> Job<()> {
+    let name = name.to_owned();
     Box::new(move |world| {
-        for (_, mut voice) in world.query::<&mut SynthVoice>() {
-            voice.synthesizer.note_off_all(immediate);
+        for (_, mut player) in world.query::<&mut MidiPlayer>() {
+            if player.name != name {
+                continue;
+            }
+            player.paused = false;
+            player.start(file.clone(), loop_play);
         }
     })
 }
 
-/// A job that plays a MIDI file on every player in the world, looping or
-/// stopping at the end.
-pub fn play_midi_job(file: Arc<MidiFile>, loop_play: bool) -> Job<()> {
+/// A job that pauses or resumes the track named `name`. A paused track
+/// renders nothing and its sequencer clock stands still, so the resume
+/// continues where the pause stopped rather than skipping ahead.
+pub fn pause_track_job(name: &str, paused: bool) -> Job<()> {
+    let name = name.to_owned();
     Box::new(move |world| {
         for (_, mut player) in world.query::<&mut MidiPlayer>() {
-            player.sequencer.play(&file, loop_play);
+            if player.name == name {
+                player.paused = paused;
+            }
         }
     })
 }
 
-/// A job that stops every player's MIDI playback.
-pub fn stop_midi_job() -> Job<()> {
+/// A job that returns the track named `name` to its start, keeping its
+/// loop setting and its pause. A track with nothing loaded ignores it.
+pub fn rewind_track_job(name: &str) -> Job<()> {
+    let name = name.to_owned();
     Box::new(move |world| {
         for (_, mut player) in world.query::<&mut MidiPlayer>() {
-            player.sequencer.stop();
+            if player.name != name {
+                continue;
+            }
+            let Some((file, loop_play)) = player.track.clone() else {
+                continue;
+            };
+            player.start(file, loop_play);
         }
     })
 }
 
-/// A job that stops the background audio dead: every sounding key is
-/// released immediately, every player's sequence stops, and what plays
-/// afterwards is only what someone starts again.
-pub fn stop_audio_job() -> Job<()> {
+/// A job that stops the track named `name`: its sequence is put down and
+/// its sounding keys released, so only what someone starts again follows.
+pub fn stop_track_job(name: &str) -> Job<()> {
+    let name = name.to_owned();
     Box::new(move |world| {
-        for (_, mut voice) in world.query::<&mut SynthVoice>() {
-            voice.synthesizer.note_off_all(true);
-        }
         for (_, mut player) in world.query::<&mut MidiPlayer>() {
-            player.sequencer.stop();
+            if player.name == name {
+                player.stop();
+            }
         }
     })
 }

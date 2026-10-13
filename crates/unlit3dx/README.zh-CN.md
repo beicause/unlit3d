@@ -19,6 +19,8 @@ use unlit_ecs::World;
 let mut host = World::new();
 
 // 远程 world：一个 `World` 加一条线程，由这个闭包驱动 tick。
+// spawn 返回一个 `WorldHandle`——代理所在的实体、命令队列与线程状态
+// 合于一身。
 let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control| {
     // ... 在 `world` 里推进模拟 ...
     control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
@@ -26,9 +28,8 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 });
 
 // job 在远程线程的 tick 之间运行；request 会在答案就绪时把它带回来。
-let proxy = host.get::<RemoteWorld>(simulation).expect("the proxy exists");
-proxy.send(Box::new(|world: &mut World| world.spawn((0u8,))));
-let spawned = proxy.request(Box::new(|world: &mut World| world.spawn((0u8,)).to_bits()));
+simulation.send(Box::new(|world: &mut World| world.spawn((0u8,)))).expect("room in the queue");
+let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,)).to_bits()));
 // job 一旦运行过，`spawned.poll()` 就是 `Some(entity_bits)`。
 
 // 快照是唯一回传的数据：在 world 的线程上 publish，在任意地方读最新一份，
@@ -45,12 +46,12 @@ if let Some(frame) = reader.latest() {
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, 64); // 64 个排队 job
-let mut nested = host.get_mut::<World>(render).expect("the nested world");
+let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 
-**render** 桥的 `RenderServer` 把它变成资源服务器：`create_mesh`、
-`create_material` 与 `spawn_instance` 这些 job 返回实体位，远程的玩法 world
+**render** 桥把它变成资源服务器：`create_mesh`、`create_material_from_texture`
+与 `spawn_instance` 这些 job 在渲染 world 里运行并返回实体位，远程的玩法 world
 把它们当作句柄持有。**physics** 桥发布刚体变换与碰撞事件的 `PhysicsSnapshot`，
 **synth** 桥把 note job 与 MIDI 文件变成音色库音频。`unlit3dx_examples` crate 把所有桥
 放进同一个场景。
@@ -64,8 +65,8 @@ drain_sub_world(&mut nested); // 运行其他线程投递的 job
 
 - **子 world（sub-world）** 是挂在宿主实体上的嵌套 `World`，由同一条线程持有。
   渲染 world 就是其一：它在主线程上绘制，宿主只在事件之间进入它。它同样有一个
-  job 收件箱：`spawn_sub_world` 把收件箱接好，其他线程通过宿主实体携带的
-  `SubWorld` 代理投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
+  job 收件箱：`spawn_sub_world` 把收件箱接好，其他线程通过它返回的
+  `WorldHandle` 投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
   与远程 world 相同的协议，只是没有线程。
 - **远程 world（remote world）** 是属于自己的线程的 `World`。物理、音频与玩法
   各运行一个。
@@ -75,12 +76,17 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 
 ## Job 与请求
 
-`Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`RemoteWorld::send` 把一个 job 排入
-队列；远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
-`RemoteWorld::request` 给 job 配上一个有界回复通道，返回一个可以稍后 `poll` 或
-`recv` 的 `Request<R>`：发送是即发即忘的，答案什么时候到就什么时候到。`poll_all`
-只在整批答案都就绪时才取出整批结果——过早地取批不会弄丢已经作答的请求。丢弃一个
-`Request` 没有任何代价；丢弃一个 job 的结果只是没人去读而已。
+`Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`WorldHandle::send` 把一个 job 排入
+队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
+`Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
+远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
+`WorldHandle::request` 给 job 配上回复通道，返回一个可以 `poll`、`recv` 或
+await 的 `Request<R>`：`poll` 得到 `Option<R>`，`recv` 得到
+`Result<R, RequestError>`，而 job 被丢弃（队列拒绝、world 已死，或 job 自己
+panic）的请求报告 `Err(RequestError::Dropped)`，而不是永久阻塞。`Request` 实现了
+`Future`，所以一批请求可以被 join 而不是轮询：`poll_all` 同步地取出整批答案，
+`executor::JoinAll` 则是同一件事的 future 形态，由 `executor::LocalPool` 在调用方
+线程上驱动——`unlit3dx_examples` 里搭建场景用的就是这个形状。
 
 ## 快照
 
@@ -91,38 +97,54 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 
 ## 线程
 
-`WorldThread::spawn` 持有这个循环：它检查 `ThreadControl::stop_requested`，在
-`catch_unwind` 里运行 tick，并在线程结束前把 panic 通过通道报告出去，于是宿主
-知道自己的 world 为何而死，而不是 join 到一具尸体。`ThreadControl::wait_timeout`
-为 tick 配速，`FixedClock` 在其上为想要稳定步率、独立于帧率的世界服务。丢弃一个
-`RemoteWorld` 会停止并 join 它的线程。
+`WorldThread::spawn_with` 持有这个循环：它先运行一次性的 `init` 闭包（在第一次
+清空 job 队列之前），再检查 `ThreadControl::stop_requested`，在 `catch_unwind` 里
+运行 tick，并在线程结束前报告 panic，于是宿主知道自己的 world 为何而死，而不是
+join 到一具尸体。`ThreadControl::wait_timeout` 为 tick 配速，`FixedClock` 在其上
+为想要稳定步率、独立于帧率的世界服务。销毁代理实体会请求停止其线程并至多等待
+两秒；拒绝停止的 tick 会被遗弃（detach），而不是把销毁方挂住。句柄负责汇报线程
+状态——`is_finished`、`panic_message`——`stop` 则请求它结束；`join_timeout` 与
+`detach` 在 `WorldThread` 本身之上，留给直接持有它的调用方。
 
 ## 桥
 
-按 feature 划分的模块就是世界之间的桥：
+按 feature 划分的模块是世界之间的桥。它们是核心之上的便利层，而非特权：render 桥建立在
+`unlit3d` 的 `MeshSource` 这个通用注册表之上，调用方可以用同样的方式注册自己的管线族并
+分配资源。在 render world 里放入一个 `UnlitPipelineKey` 组件即可选择各 server job 使用的
+选项；不放则由 mesh source 的设备推导出标准选项。
+
+各桥如下：
 
 - **render**（默认开启）：`apply_transform_frames` 每帧把 `TransformFrame` 快照
-  变成渲染 world 里的变换，赶在任何绘制之前；`RenderEntity` 标记被模拟驱动的
-  渲染实体。`RenderServer` 是资源服务器的那一半：`create_mesh`、
-  `create_material` 与 `spawn_instance` 这些 job 在渲染 world 里运行并返回
-  实体位，远程的玩法 world 借此搭建它从不直接触碰的场景——`GpuMesh` 持有
-  `Rc`，所以跨线程的句柄就是实体位。
+  变成渲染 world 里的变换，赶在任何绘制之前。`create_mesh`、
+  `create_material_from_texture` 与 `spawn_instance` 这些 job 在渲染 world 里
+  运行并返回实体位，远程的玩法
+  world 借此搭建它从不直接触碰的场景——`GpuMesh` 持有 `Rc`，所以跨线程的句柄
+  就是实体位。
 - **physics**（默认开启）：`spawn_physics_world` 以固定步率（`PHYSICS_HZ`，64）
   驱动 rapier 的 `PhysicsWorld`，并发布一份 `PhysicsSnapshot`——每个运动刚体的
   变换，加上这一步开始与结束的碰撞对，以及每个新接触的速度。
-  `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件，
-  `PhysicsBody` 标记实体拥有的刚体。
+  `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
+  `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
 - **audio**（默认开启）：`spawn_audio_world` 打开输出设备并在音频线程上持有其
-  流。`PcmSource` 填充由 `AudioConfig` 定长的环形缓冲；设备回调消费它，欠载时静音。
-  玩法从不直接触碰音频——它发送 job。代理还携带一个 `AudioReadyInbox`：world 在真正
-  能出声时发布状态，调用方由此区分音色库加载中与设备损坏，并丢弃过期的音符而非
-  把它们排在加载之后一次性齐放。
-- **synth**（默认开启，蕴含 audio）：`synth_source_bytes` 从音色库字节构建混音器——通常是 `include_bytes!`，不经过文件系统——在音频线程上加载
-  [rustysynth-ext](https://docs.rs/rustysynth-ext) 合成器，
-  `note_on_job`/`note_off_job`/`notes_off_all_job` 是作用于它的现成 job。
-  `play_midi_job` 与 `stop_midi_job` 驱动一台 `MidiPlayer`：MIDI 文件音序器，
-  由 `load_midi_file`（SMF 文件）或 `midi_file`（一列定时消息）喂入。`gain`
-  参数缩放混音，补上音色库预留的余量。
+  流。它的 `OnFill` 组件就是音源：`dispatch_fill` 每块运行一次它们，把各自叠加的
+  样本混进由 `AudioConfig` 定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
+  设备回调消费这个缓冲，欠载时静音。没有任何音源的 world 不出声。
+  玩法从不直接触碰音频——它发送 job。代理实体携带两个收件箱：`AudioFormatInbox`
+  由音频线程在流打开的那一刻填满——按固定速率渲染的音源必须按设备实际采用的速率构建，
+  而这一点在流打开之前无从知晓；以及 `AudioReadyInbox`，报告 world 真正能出声的时刻，
+  调用方由此区分音色库加载中与设备损坏，并丢弃过期的音符而非把它们排在加载之后一次性齐放。
+  因此安装音源就是这个 world 的普通工作：等待格式，再把生成音源的 job 排进队列。
+- **synth**（默认开启，蕴含 audio）：安装所需的构件，构建在
+  [rustysynth-ext](https://docs.rs/rustysynth-ext) 之上——`load_soundfont` 解析字节
+  （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台实时音色，
+  `MidiPlayer::from_font` 生成一条按序列播放的音轨，各自带着渲染它的 `OnFill` 音源；
+  world 的 `AudioGain` 由调用方生成，补上音色库预设预留的余量。`note_on_job`/`note_off_job`
+  是作用于合成器的现成 job。传送 job 按名字寻址音轨——`play_track_job` 播放一个文件（可选循环），
+  `pause_track_job` 冻结它的音序器时钟，于是恢复时正好接在暂停处，`rewind_track_job` 回到开头，
+  `stop_track_job` 放下文件。音轨彼此独立，故一段背景音乐循环与一段单次序列可共存于同一个音频 world 并各自暂停。
+  文件来自 `load_midi_file`（SMF 文件）或 `midi_file`（一列定时消息）。示例里的 `install_synth`
+  把整个安装收进一个函数，作为 job 排给音频 world。
 - **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其子 world 通过
   [模型上下文协议](../crates/unlit3d_mcp/README.zh-CN.md)对外服务，场景
   运行时即可从终端检视与截图。
@@ -130,7 +152,8 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 ## 应用骨架
 
 多 world 应用面向窗口的那一半同样与应用无关，所以随运行时一起提供。**gpu**
-模块在主线程之外请求 `Gpu`，把答案送回主线程上的一个闭包——wasm 安全，不阻塞：
+模块把 `Gpu` 请求做成一个 future，由帧行为在 `LocalPool` 上驱动，答案落地后
+把 `ready` 作为排队的 command 运行——什么都不阻塞，wasm 安全：
 
 ```rust,ignore
 world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
@@ -139,13 +162,18 @@ world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
 ```
 
 `Gpu::headless` 是同一个请求的免窗口版本，供测试与工具使用。**present** 模块
-持有从子 world 到窗口的全部管线：`setup_presenter` 把场景渲染进离屏目标再
-blit 到交换链（这也让帧存活得足够久、可以读回——截图与快照测试正依赖这一点），
-`draw_presented` 是每帧排空子 world、分发帧并呈现的行为，`pump_presented` 在窗口
+持有从子 world 到窗口的全部管线：`setup_presenter` 默认让场景直接画进交换链；
+打开离屏路径后，每帧渲染进一个常驻目标，再由第二个 world blit 到表面——这让帧
+存活得足够久、可以读回，截图与快照测试就走这条路。`draw_presented` 是每帧排空
+子 world、分发帧并呈现的行为，`pump_presented` 在窗口
 存活期间让帧持续到来，`resize_presented` 跟随窗口变化。网格与相机辅助——
 `uv_sphere`、`cuboid_mesh`、`camera_looking_at`、`linear_sampler`——补全骨架。
 
 ## 测试
 
 `cargo nextest run -p unlit3dx` 覆盖核心：job 往返、请求回复、快照替换、线程停止
-与 panic 报告，以及远程 world 的已发送 job 运行。
+与 panic 报告，以及远程 world 的已发送 job 运行。集成测试补上各桥：物理 world
+把球丢到地板上并报告接触、音频 world 运行 job 并发布就绪状态、多 world 的 job 与
+快照往来，以及 render 桥的失败路径——panic 的 job 只失败自己的请求，变换帧移动
+活着的实体、跳过已失效的实体。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
+world 列表、路由到嵌套 world，以及指向不带 world 的实体时给出可读的失败。

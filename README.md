@@ -251,7 +251,8 @@ Per-crate notes:
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`) and the fixed-step playback clock (`src/lib.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.md) | An end-to-end test that builds a real GPU world on a thread, serves it over a pair of streams, and speaks JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks the screenshot pixel by pixel. |
-| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: job round trips, request replies, snapshot replacement, thread stop and panic reporting, and a remote world's sent jobs running. |
+| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: job round trips, request replies, snapshot replacement, thread stop and panic reporting, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
+| [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule. |
 
 A GPU is needed for the rendering crates' integration tests and for the example.
 On a headless CI runner, Mesa's `lavapipe` serves as the software Vulkan

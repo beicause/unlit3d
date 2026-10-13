@@ -1,17 +1,22 @@
-//! The presentation path: an offscreen render target, a blit into the
-//! window surface, and the frame loop that drives them.
+//! The presentation path: the window surface, the frame loop that drives
+//! it, and the offscreen target an image tool can read.
 //!
-//! A scene renders into a persistent offscreen color texture instead of
-//! straight into the swap chain. The texture survives present, so tools
-//! can read the last frame back from it, and the swap chain's format or
-//! size changes never touch the scene's pipeline. A second, minimal
-//! world owns the surface and copies the target over it each frame.
+//! By default the scene draws straight into the swap chain: one renderer,
+//! one world, no copy. Turning the offscreen path on with
+//! [`setup_presenter`]'s last argument renders every frame into a
+//! persistent offscreen color texture instead, and a second, minimal world
+//! copies it over the swap chain. The texture survives present, so a
+//! screenshot can read the last frame back from it, and the swap chain's
+//! format or size changes never touch the scene's pipeline — which is why
+//! an MCP-driven scene asks for it.
 //!
 //! [`setup_presenter`] builds all of that once the GPU context exists;
 //! [`draw_presented`], [`pump_presented`] and [`resize_presented`]
 //! are the behaviours a windowed app spawns to drive it.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use unlit_ecs::{Command, Entity, World};
 use unlit_wgpu::render_attachments::create_color_target;
@@ -20,12 +25,12 @@ use unlit3d::attachments::FrameAttachments;
 use unlit3d::blit::{BlitSource, BlitTexture};
 use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
 use unlit3d::renderer::Renderer;
-use unlit3d::source::WorldSourceExt;
-use unlit3d::source::spawn_context;
+use unlit3d::source::{WorldSourceExt, spawn_context};
 use unlit3d::winit::WindowSurface;
 use unlit3d::winit::builtin::window;
 use unlit3d::winit::event::{OnAboutToWait, OnWindowEvent};
 use winit::event::WindowEvent;
+use winit::window::Window;
 
 use crate::gpu::Gpu;
 use crate::host::drain_sub_world;
@@ -34,14 +39,15 @@ use crate::host::drain_sub_world;
 /// surface's own format.
 pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// The sample count the offscreen target resolves with.
-pub const OFFSCREEN_SAMPLES: u32 = 4;
+/// The sample count a windowed frame resolves with, whether it lands in
+/// the swap chain or in an offscreen target.
+pub const FRAME_SAMPLES: u32 = 4;
 
 /// The frame-behaviour order the draw runs at: after any behaviour that
 /// feeds the frame, before behaviours that read its result.
 pub const DRAW_ORDER: i32 = 10;
 
-/// Everything needed to render a frame offscreen and present it.
+/// Everything needed to render a frame and present it.
 ///
 /// The presenter is a component of its own entity, spawned by
 /// [`setup_presenter`]: everything it holds arrives after the GPU
@@ -54,78 +60,113 @@ pub struct Presenter {
     renderer: Entity,
     /// The GPU context the offscreen target is rebuilt with on resize.
     gpu: Gpu,
-    /// The swap chain wrapper the blit world presents through.
+    /// The swap chain wrapper, held by whichever world presents.
     surface: WindowSurface,
-    /// The blit world's frame attachments: one sample, no depth.
+    /// The presenting world's attachments to the swap chain: the scene's
+    /// own sample count without the offscreen path, one sample and no
+    /// depth with it, since the blit covers the target with one triangle.
     attachments: FrameAttachments,
-    /// The persistent color texture frames land in.
-    offscreen: wgpu::Texture,
-    /// The host entity carrying the blit world.
-    blit_world: Entity,
-    /// The renderer inside the blit world.
-    blit_renderer: Entity,
-    /// The blit world's texture entity, replaced on resize.
-    blit_texture: Entity,
+    /// The second world that copies the offscreen target over the surface;
+    /// `None` when the scene presents itself.
+    blit: Option<Blit>,
     /// The size used until the window reports its own.
     fallback_size: (u32, u32),
 }
 
+/// The world that copies the offscreen target into the swap chain.
+struct Blit {
+    /// The host entity carrying the blit world.
+    world: Entity,
+    /// The renderer inside the blit world.
+    renderer: Entity,
+    /// The blit world's texture entity, replaced on resize.
+    texture: Entity,
+}
+
 impl Presenter {
-    /// Copy the offscreen target into the swap chain and present it.
+    /// The world a frame is presented through, and its renderer.
+    ///
+    /// The scene presents itself unless an offscreen target sits in front
+    /// of the swap chain.
+    fn presented(&self) -> (Entity, Entity) {
+        self.blit
+            .as_ref()
+            .map_or((self.render, self.renderer), |blit| {
+                (blit.world, blit.renderer)
+            })
+    }
+
+    /// Draw the frame's result into the swap chain and present it.
+    ///
+    /// The world that owns the surface is the one rendered here: the
+    /// blit world, whose only source copies the offscreen target over the
+    /// image, or the scene's own — which therefore renders straight into
+    /// the swap chain.
     fn present(&mut self, host: &World) {
-        let Some(blit_nested) = host.get::<World>(self.blit_world) else {
+        let (world, renderer) = self.presented();
+        let Some(nested) = host.get::<World>(world) else {
             return;
         };
-        let _ = blit_nested.with_mut::<Renderer, _>(self.blit_renderer, |renderer| {
-            let Some(swap_frame) = self.surface.acquire(&blit_nested, renderer) else {
+        let _ = nested.with_mut::<Renderer, _>(renderer, |renderer| {
+            let Some(swap_frame) = self.surface.acquire(&nested, renderer) else {
                 return;
             };
             self.attachments
-                .bind(&blit_nested, renderer, swap_frame.color_view().clone());
-            renderer.render(&blit_nested);
-            let queue = blit_nested
+                .bind(&nested, renderer, swap_frame.color_view().clone());
+            renderer.render(&nested);
+            let queue = nested
                 .get::<wgpu::Queue>(renderer.context().queue)
-                .expect("the blit world carries its queue resource");
+                .expect("the presented world carries its queue resource");
             swap_frame.present(&queue);
         });
     }
 
-    /// Match the surface, the blit attachments and the offscreen target
-    /// to a new size.
+    /// Match the surface, the attachments and the offscreen target to a
+    /// new size.
+    ///
+    /// The surface belongs to the presenting world, so that world resizes
+    /// first and reports the size the surface ended up with; its
+    /// attachments follow it, and the offscreen target is rebuilt for that
+    /// size.
     fn resize(&mut self, host: &World, size: (u32, u32)) {
-        let Some(blit_nested) = host.get::<World>(self.blit_world) else {
+        let (world, renderer) = self.presented();
+        let Some(nested) = host.get::<World>(world) else {
             return;
         };
-        let _ = blit_nested.with_mut::<Renderer, _>(self.blit_renderer, |renderer| {
-            self.surface.resize(&blit_nested, renderer, size.0, size.1);
-        });
-        self.attachments.resize(&blit_nested, self.surface.size());
-        let Some(nested) = host.get::<World>(self.render) else {
-            return;
-        };
-        let offscreen = nested
-            .with_mut::<Renderer, _>(self.renderer, |renderer| {
-                bind_offscreen(&nested, renderer, &self.gpu.device, self.surface.size())
+        let Some(size) = nested
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                self.surface.resize(&nested, renderer, size.0, size.1);
+                self.surface.size()
             })
-            .flatten();
-        let Some(offscreen) = offscreen else {
+            .filter(|size| size.0 > 0 && size.1 > 0)
+        else {
+            return;
+        };
+        self.attachments.resize(&nested, size);
+        let Some(blit) = self.blit.as_mut() else {
+            return;
+        };
+        let Some(render_nested) = host.get::<World>(self.render) else {
+            return;
+        };
+        let Some(offscreen) = render_nested
+            .with_mut::<Renderer, _>(self.renderer, |renderer| {
+                bind_offscreen(&render_nested, renderer, &self.gpu.device, size)
+            })
+            .flatten()
+        else {
             return;
         };
         // Point the blit at the new target: the replaced texture component
         // is what makes the blit source rebuild its bind group on the next
         // frame.
         let view = TextureExt::create_view(&offscreen, &wgpu::TextureViewDescriptor::default());
-        let context = blit_nested
-            .get::<Renderer>(self.blit_renderer)
-            .expect("the blit renderer is a resource entity")
+        let context = nested
+            .get::<Renderer>(renderer)
+            .expect("the presenting renderer is a resource entity")
             .context();
-        let texture = BlitTexture::new(&blit_nested, context, view);
-        let replaced =
-            blit_nested.with_mut::<BlitTexture, _>(self.blit_texture, |slot| *slot = texture);
-        if replaced.is_none() {
-            return;
-        }
-        self.offscreen = offscreen;
+        let texture = BlitTexture::new(&nested, context, view);
+        let _ = nested.with_mut::<BlitTexture, _>(blit.texture, |slot| *slot = texture);
     }
 }
 
@@ -162,11 +203,48 @@ pub fn bind_offscreen(
         renderer.context(),
         OFFSCREEN_FORMAT,
         size,
-        OFFSCREEN_SAMPLES,
+        FRAME_SAMPLES,
         true,
     );
     attachments.bind(world, renderer, color_view);
     Some(color)
+}
+
+/// Open the window surface in `world`, through its `renderer`, and build
+/// the attachments its frames draw with.
+///
+/// The surface is configured for the world that presents it, which is the
+/// scene's own unless an offscreen target is in use.
+fn open_surface(
+    world: &World,
+    renderer: Entity,
+    gpu: &Gpu,
+    window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    samples: u32,
+    with_depth: bool,
+) -> Option<(WindowSurface, FrameAttachments)> {
+    world
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            let surface = WindowSurface::new(
+                world,
+                renderer,
+                &gpu.instance,
+                &gpu.adapter,
+                Arc::clone(&window),
+                surface,
+            );
+            let attachments = FrameAttachments::new(
+                world,
+                renderer.context(),
+                surface.color_format(),
+                surface.size(),
+                samples,
+                with_depth,
+            );
+            Some((surface, attachments))
+        })
+        .flatten()
 }
 
 /// Build the presentation path for a live render sub-world and spawn its
@@ -175,12 +253,19 @@ pub fn bind_offscreen(
 /// `render` and `renderer` name the sub-world and its renderer, both
 /// already filled in. The window comes from the host world; when it has
 /// not reported a size yet, `fallback_size` stands in.
+///
+/// `offscreen` chooses the path. With it the scene's frames land in a
+/// persistent target that a screenshot reads back, copied over the swap
+/// chain by a second world holding nothing else; without it the scene
+/// draws straight into the swap chain — one world, one render pass and one
+/// copy fewer, which is what a plain window wants.
 pub fn setup_presenter(
     world: &mut World,
     render: Entity,
     renderer: Entity,
     gpu: &Gpu,
     fallback_size: (u32, u32),
+    offscreen: bool,
 ) -> Result<(), String> {
     let window = window(world).ok_or("the scene setup found no window")?;
     let surface = gpu
@@ -193,72 +278,72 @@ pub fn setup_presenter(
     } else {
         (raw_size.width, raw_size.height)
     };
-    let offscreen = {
+
+    // The offscreen path keeps the scene away from the swap chain, so its
+    // renderer rebinds to a target of its own and the surface moves to the
+    // blit world.
+    if offscreen {
+        let texture = {
+            let nested = world
+                .get::<World>(render)
+                .ok_or("the scene setup found no render world")?;
+            nested
+                .with_mut::<Renderer, _>(renderer, |renderer| {
+                    bind_offscreen(&nested, renderer, &gpu.device, size)
+                })
+                .flatten()
+                .ok_or("failed to bind the offscreen target: the resource graph was gone")?
+        };
+        let mut blit_world = World::new();
+        let blit_frame = spawn_context(
+            &mut blit_world,
+            gpu.device.clone(),
+            gpu.queue.clone(),
+            ResourceGraph::new(),
+            gpu.capabilities,
+        );
+        let blit_renderer = blit_world.spawn((Renderer::new(blit_frame),));
+        let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
+        let blit_texture = blit_world.spawn((BlitTexture::new(&blit_world, blit_frame, view),));
+        blit_world.spawn_source(BlitSource::new());
+        let blit_entity = world.spawn((blit_world,));
+        let (surface, attachments) = {
+            let nested = world
+                .get::<World>(blit_entity)
+                .ok_or("the blit world did not land in the host")?;
+            open_surface(&nested, blit_renderer, gpu, window, surface, 1, false)
+                .ok_or("failed to open the window surface: the blit renderer was gone")?
+        };
+        world.spawn((Presenter {
+            render,
+            renderer,
+            gpu: gpu.clone(),
+            surface,
+            attachments,
+            blit: Some(Blit {
+                world: blit_entity,
+                renderer: blit_renderer,
+                texture: blit_texture,
+            }),
+            fallback_size,
+        },));
+        return Ok(());
+    }
+
+    let (surface, attachments) = {
         let nested = world
             .get::<World>(render)
             .ok_or("the scene setup found no render world")?;
-        nested
-            .with_mut::<Renderer, _>(renderer, |renderer| {
-                bind_offscreen(&nested, renderer, &gpu.device, size)
-            })
-            .flatten()
-            .ok_or("failed to bind the offscreen target: the resource graph was gone")?
+        open_surface(&nested, renderer, gpu, window, surface, FRAME_SAMPLES, true)
+            .ok_or("failed to open the window surface: the renderer was gone")?
     };
-
-    // The blit world owns the swap chain and copies the offscreen target
-    // over it every frame. It draws with one sample and no depth: the
-    // blit covers the target with a single triangle.
-    let mut blit_world = World::new();
-    let blit_frame = spawn_context(
-        &mut blit_world,
-        gpu.device.clone(),
-        gpu.queue.clone(),
-        ResourceGraph::new(),
-        gpu.capabilities,
-    );
-    let blit_renderer = blit_world.spawn((Renderer::new(blit_frame),));
-    let created = blit_world.with_mut::<Renderer, _>(blit_renderer, |blit_renderer| {
-        let window_surface = WindowSurface::new(
-            &blit_world,
-            blit_renderer,
-            &gpu.instance,
-            &gpu.adapter,
-            window.clone(),
-            surface,
-        );
-        let attachments = FrameAttachments::new(
-            &blit_world,
-            blit_renderer.context(),
-            window_surface.color_format(),
-            window_surface.size(),
-            1,
-            false,
-        );
-        (window_surface, attachments)
-    });
-    let (surface, attachments) =
-        created.ok_or("failed to open the window surface: the renderer was gone")?;
-    let blit_texture = {
-        let context = blit_world
-            .get::<Renderer>(blit_renderer)
-            .expect("the blit renderer is a resource entity")
-            .context();
-        let view = TextureExt::create_view(&offscreen, &wgpu::TextureViewDescriptor::default());
-        blit_world.spawn((BlitTexture::new(&blit_world, context, view),))
-    };
-    blit_world.spawn_source(BlitSource::new());
-    let blit_entity = world.spawn((blit_world,));
-
     world.spawn((Presenter {
         render,
         renderer,
         gpu: gpu.clone(),
         surface,
         attachments,
-        offscreen,
-        blit_world: blit_entity,
-        blit_renderer,
-        blit_texture,
+        blit: None,
         fallback_size,
     },));
     Ok(())
@@ -274,6 +359,11 @@ struct DrawFrame {
     /// The instant the previous frame dispatched, shared by both
     /// producers.
     last: Arc<Mutex<Option<web_time::Instant>>>,
+    /// The index the next dispatched frame takes.
+    index: Arc<AtomicU32>,
+    /// Set while a draw is queued but not yet applied, so the pump and a
+    /// redraw request in the same turn coalesce into one frame.
+    pending: Arc<AtomicBool>,
 }
 
 impl Command for DrawFrame {
@@ -299,20 +389,25 @@ impl Command for DrawFrame {
             .unwrap_or((1, 1));
         let mut frame = Frame {
             delta_time,
-            index: 0,
+            index: self.index.fetch_add(1, Ordering::Relaxed),
             size,
         };
         dispatch_frame(world, &mut frame);
+        // A frame has been dispatched, so the next producer may queue one.
+        self.pending.store(false, Ordering::Release);
     }
 }
 
 /// The draw behaviour: drain the render sub-world's command queue, then
-/// dispatch the frame into it, render into the offscreen target, and
-/// present the target through the window surface.
+/// dispatch the frame into it and present the result.
 ///
 /// Draining is what makes the sub-world a server: clients' requests land
 /// as jobs here, on the main thread, between one frame's render and the
 /// next.
+///
+/// The scene is only rendered here when an offscreen target is in use: the
+/// presenter renders the world that owns the swap chain, and that is the
+/// scene's own world otherwise.
 pub fn draw_presented() -> OnFrame {
     OnFrame::new(
         FrameBehaviourOrder(DRAW_ORDER),
@@ -326,9 +421,12 @@ pub fn draw_presented() -> OnFrame {
             };
             drain_sub_world(&mut nested);
             dispatch_frame(&mut nested, frame);
-            let _ = nested.with_mut::<Renderer, _>(renderer, |renderer| {
-                renderer.render(&nested);
-            });
+            if presenter.blit.is_some() {
+                let _ = nested.with_mut::<Renderer, _>(renderer, |renderer| {
+                    renderer.render(&nested);
+                });
+            }
+            drop(nested);
             presenter.present(world);
         },
     )
@@ -342,25 +440,44 @@ pub fn draw_presented() -> OnFrame {
 /// freezes with it; the pump keeps the scene advancing on its own.
 pub fn pump_presented() -> (OnAboutToWait, OnWindowEvent) {
     let last: Arc<Mutex<Option<web_time::Instant>>> = Arc::default();
+    let index: Arc<AtomicU32> = Arc::default();
+    let pending: Arc<AtomicBool> = Arc::default();
     let pump = {
-        let last = Arc::clone(&last);
+        let (last, index, pending) = (Arc::clone(&last), Arc::clone(&index), Arc::clone(&pending));
         OnAboutToWait::new(move |world, _entity, ()| {
-            world.queue().push(DrawFrame {
-                last: Arc::clone(&last),
-            });
+            queue_draw(world, &last, &index, &pending);
         })
     };
     let redraw = {
-        let last = Arc::clone(&last);
+        let (last, index, pending) = (Arc::clone(&last), Arc::clone(&index), Arc::clone(&pending));
         OnWindowEvent::new(move |world, _entity, payload| {
             if matches!(payload.event, WindowEvent::RedrawRequested) {
-                world.queue().push(DrawFrame {
-                    last: Arc::clone(&last),
-                });
+                queue_draw(world, &last, &index, &pending);
             }
         })
     };
     (pump, redraw)
+}
+
+/// Queue one frame unless a queued one has not been applied yet.
+///
+/// The pump and a redraw request can both fire in the same turn of the
+/// event loop; without the flag that turn would dispatch two frames and
+/// advance the simulation twice.
+fn queue_draw(
+    world: &World,
+    last: &Arc<Mutex<Option<web_time::Instant>>>,
+    index: &Arc<AtomicU32>,
+    pending: &Arc<AtomicBool>,
+) {
+    if pending.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    world.queue().push(DrawFrame {
+        last: Arc::clone(last),
+        index: Arc::clone(index),
+        pending: Arc::clone(pending),
+    });
 }
 
 /// The resize behaviour: match the presenter to the window's new size,

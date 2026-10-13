@@ -196,7 +196,8 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_scenes.rs` 的渲染快照。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.zh-CN.md) | 端到端测试：在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。 |
-| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 往返、请求回复、快照替换、线程停止与 panic 报告，以及远程 world 的已发送 job 运行。 |
+| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 往返、请求回复、快照替换、线程停止与 panic 报告、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
+| [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
 `lavapipe` 作为软件 Vulkan 实现。wasm 那一遍不需要 GPU：浏览器会回退到软件 WebGL2。

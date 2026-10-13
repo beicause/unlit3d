@@ -106,3 +106,125 @@ impl Command for RunInWorld {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unlit3d_mcp::Output;
+
+    /// A component the host command counts.
+    struct Marker;
+
+    /// A host world wired like `serve_mcp` wires one, plus the channel
+    /// the fake transport posts commands through.
+    fn host_with_inbox() -> (World, async_channel::Sender<McpCommand>) {
+        let mut host = World::new();
+        let (sender, receiver) = unbounded::<McpCommand>();
+        host.spawn((
+            McpInbox {
+                receiver: Arc::new(receiver),
+            },
+            drain_mcp(),
+        ));
+        (host, sender)
+    }
+
+    /// Run one turn of the host's event loop: the drain behaviour takes
+    /// whatever the transport posted and queues it, then the queued
+    /// commands apply — the order the real loop runs them in.
+    fn run_turn(host: &mut World) {
+        for (_, mut behaviour) in host.query::<&mut OnAboutToWait>() {
+            behaviour.run(host, Entity::from_bits(0), &());
+        }
+        host.apply();
+    }
+
+    /// The host answers a world list with itself and every entity that
+    /// carries a nested world — the render sub-world among them.
+    #[test]
+    fn list_worlds_answers_with_the_host_and_its_nested_worlds() {
+        let (mut host, transport) = host_with_inbox();
+        let nested = host.spawn((World::new(),));
+
+        let (command, reply) = McpCommand::list_worlds();
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Ok(Output::Json(value)) = answer else {
+            panic!("a world list answers with JSON")
+        };
+        let text = value.to_string();
+        assert!(text.contains("Host"), "the host names itself: {text}");
+        assert!(
+            text.contains(&nested.to_bits().to_string()),
+            "the host names its nested world {nested:?}: {text}"
+        );
+    }
+
+    /// A command aimed at a host entity that carries no world fails with
+    /// a readable message instead of being dropped or panicking.
+    #[test]
+    fn a_command_for_a_worldless_entity_fails_readably() {
+        let (mut host, transport) = host_with_inbox();
+        let bare = host.spawn((Marker,));
+
+        let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
+        let command = command.with_world(WorldId::handle(bare));
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Err(message) = answer else {
+            panic!("the command fails")
+        };
+        assert!(
+            message.contains("carries no world"),
+            "the failure says why: {message}"
+        );
+    }
+
+    /// A command aimed at a nested world runs against that world, not the
+    /// host: the marker only the nested world carries is the one counted.
+    #[test]
+    fn a_command_runs_against_the_nested_world_it_names() {
+        let (mut host, transport) = host_with_inbox();
+        let mut nested = World::new();
+        nested.spawn((Marker,));
+        let nested_world = host.spawn((nested,));
+
+        let (command, reply) = McpCommand::new(|world| {
+            let count = world.query::<&Marker>().count();
+            Ok(Output::Json(serde_json::Value::from(count as u64)))
+        });
+        let command = command.with_world(WorldId::handle(nested_world));
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Ok(Output::Json(value)) = answer else {
+            panic!("the job answers with JSON")
+        };
+        assert_eq!(value.as_u64(), Some(1), "the nested world was seen");
+    }
+
+    /// A command aimed at the host runs against the host world itself.
+    #[test]
+    fn a_host_command_runs_against_the_host_world() {
+        let (mut host, transport) = host_with_inbox();
+        host.spawn((Marker,));
+
+        let (command, reply) = McpCommand::new(|world| {
+            let count = world.query::<&Marker>().count();
+            Ok(Output::Json(serde_json::Value::from(count as u64)))
+        });
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Ok(Output::Json(value)) = answer else {
+            panic!("the job answers with JSON")
+        };
+        assert_eq!(value.as_u64(), Some(1), "the host world was seen");
+    }
+}
