@@ -371,17 +371,41 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    /// How long a test waits for a thread to reach the state it asserts on.
+    ///
+    /// Generous, because the wait is not what is being measured: on a loaded
+    /// runner a thread can go a long while without being scheduled at all,
+    /// and a short budget would fail a thread that was merely slow to start.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Poll until `ready` yields a value, or give up when the timeout runs
+    /// out.
+    ///
+    /// Some of what a test waits for can only be read once - a panic message
+    /// is taken out of its slot - so the poll takes it rather than asking
+    /// twice. Returns `None` on giving up, so the caller asserts on it
+    /// instead of looping without end when a thread never gets to run.
+    fn wait_until<T>(ready: impl Fn() -> Option<T>) -> Option<T> {
+        let deadline = Instant::now() + TEST_TIMEOUT;
+        loop {
+            if let Some(value) = ready() {
+                return Some(value);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
     /// The thread stops when its tick asks it to, and the stop is observable.
     #[test]
     fn a_false_tick_ends_the_thread() {
         let thread = WorldThread::spawn("test", |_, _| false);
-        let finished = (0..1_000).any(|_| {
-            thread.is_finished() || {
-                std::thread::sleep(Duration::from_millis(1));
-                thread.is_finished()
-            }
-        });
-        assert!(finished, "the thread never finished");
+        assert!(
+            wait_until(|| thread.is_finished().then_some(())).is_some(),
+            "the thread never finished"
+        );
         assert!(thread.panic_message().is_none());
     }
 
@@ -389,12 +413,8 @@ mod tests {
     #[test]
     fn a_tick_panic_is_reported() {
         let thread = WorldThread::spawn("test", |_, _| panic!("the tick died"));
-        let message = loop {
-            if let Some(message) = thread.panic_message() {
-                break message;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        };
+        let message =
+            wait_until(|| thread.panic_message()).expect("the tick never reported its panic");
         assert_eq!(message, "the tick died");
     }
 
@@ -406,21 +426,25 @@ mod tests {
             |_| -> () { panic!("the setup died") },
             |_, _, ()| false,
         );
-        let message = loop {
-            if let Some(message) = thread.panic_message() {
-                break message;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        };
+        let message =
+            wait_until(|| thread.panic_message()).expect("the setup never reported its panic");
         assert_eq!(message, "the setup died");
     }
 
-    /// A stop signalled while the tick sleeps wakes it up early.
+    /// A stop ends the tick's wait early instead of sleeping it out.
     #[test]
     fn a_stop_wakes_a_sleeping_tick() {
+        // The stop can only cut a wait short if a tick has begun one, so the
+        // drop waits for the tick to say it is about to wait rather than
+        // sleeping a while and hoping. A thread on a loaded runner has not
+        // reached its first tick ten milliseconds in, and a stop that lands
+        // before it does has nothing to wake.
+        let waiting = Arc::new(AtomicBool::new(false));
+        let about_to_wait = Arc::clone(&waiting);
         let wakeups = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&wakeups);
         let thread = WorldThread::spawn("test", move |_, control| {
+            about_to_wait.store(true, Ordering::SeqCst);
             let before = Instant::now();
             control.wait_timeout(Duration::from_millis(1_000));
             if before.elapsed() < Duration::from_millis(900) {
@@ -428,9 +452,9 @@ mod tests {
             }
             true
         });
-        // The first tick is asleep when the stop lands: the sleep ends early.
-        std::thread::sleep(Duration::from_millis(10));
+        let waited = wait_until(|| waiting.load(Ordering::SeqCst).then_some(()));
         drop(thread);
+        assert!(waited.is_some(), "the tick never reached its wait");
         assert!(
             wakeups.load(Ordering::SeqCst) >= 1,
             "the stop never woke the sleeping tick"
@@ -469,9 +493,10 @@ mod tests {
             std::thread::sleep(Duration::from_secs(30));
             false
         });
-        while !started.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        assert!(
+            wait_until(|| started.load(Ordering::SeqCst).then_some(())).is_some(),
+            "the tick never ran"
+        );
         let before = Instant::now();
         drop(thread);
         assert!(
