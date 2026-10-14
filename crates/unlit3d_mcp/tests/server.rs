@@ -7,6 +7,8 @@
 //! offscreen target, so the whole path — protocol, host, render, readback — is
 //! exercised, not just the pieces in isolation.
 
+use std::path::Path;
+
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, ReadHalf, WriteHalf};
 use unlit_wgpu::render_attachments::create_color_target;
@@ -430,7 +432,12 @@ fn the_server_lists_its_tools_and_renders() {
         let path = saved["path"]
             .as_str()
             .expect("save_screenshot reports a path");
-        let default_name = path.rsplit('/').next().expect("the path names a file");
+        // The path's own file name, rather than what follows the last `/`:
+        // a path is spelled with the separator of the platform that wrote it.
+        let default_name = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("the path names a file");
         assert!(
             default_name.starts_with("screenshot-") && default_name.ends_with(".webp"),
             "save_screenshot defaults to a fresh webp file: {saved}"
