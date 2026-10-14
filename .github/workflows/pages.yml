@@ -2,8 +2,8 @@ name: Pages
 
 # Publishing lives in its own workflow rather than in `ci.yml` because the two
 # want different triggers and different tokens: this one publishes the site —
-# the web example with the workspace's API docs beside it — and therefore runs
-# only where a site may be written, while `ci.yml` validates every pull
+# the web examples with the workspace's API docs beside them — and therefore
+# runs only where a site may be written, while `ci.yml` validates every pull
 # request and must never publish.
 #
 # Pages has to be set to build from a workflow once, in the repository's
@@ -82,15 +82,24 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v6.0.0
 
-      # The same pipeline a contributor runs locally: build for the target,
-      # then let wasm-bindgen write the JS loader and the page beside it. The
-      # task builds every wasm under the workspace's `wasm-dev` profile, so this
-      # is what a visitor downloads: a smaller binary than `--release` gives,
-      # and none of the debug size or compile time.
-      - name: Build the web example
+      # The same pipeline a contributor runs locally: build each example for
+      # the target, then let wasm-bindgen write the JS loader and the page
+      # beside it. The task builds every wasm under the workspace's `wasm-dev`
+      # profile, so this is what a visitor downloads: a smaller binary than
+      # `--release` gives, and none of the debug size or compile time. It also
+      # writes the landing page that links the examples and the docs.
+      - name: Build the web examples
         run: cargo xtask run-wasm --no-serve
 
-      # The API docs ship beside the example, under `docs/`. Rustdoc writes the
+      # `--all-features` below turns on the audio bridge, whose Linux backend
+      # is built by `alsa-sys`; its build script needs ALSA's headers, which
+      # the runner image does not carry. The same install is in `ci.yml`.
+      - name: Install ALSA headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev
+
+      # The API docs ship beside the examples, under `docs/`. Rustdoc writes the
       # page that lists the crates only with `--enable-index-page`, and the
       # crates' `doc(cfg(...))` labels appear only under `--cfg docsrs`; both are
       # nightly-only, so this is the one step that uses nightly. `--all-features`
@@ -110,7 +119,7 @@ jobs:
           path: target/generated/wasm-dev
 
   deploy:
-    name: Deploy the web example
+    name: Deploy the site
     needs: build
     # runtime is normally 30 seconds
     timeout-minutes: 5

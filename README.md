@@ -45,7 +45,7 @@ Not supported: lighting and shadows, and post-processing.
 - **Mobile-first, and cross-platform.** One pass per frame, transient depth and
   multisample textures, compressed vertices, and no pre-pass, compute shader,
   lighting or shadow path. The same frame loop drives a window, a headless
-  offscreen target, the web example and the Android APK.
+  offscreen target, the web examples and the Android APK.
 - **Runs on WebGL2 and on WebGPU-baseline devices.** The adapter is picked at
   runtime, WebGPU first and WebGL2 when that is all the platform has. WebGL2
   lacks parts of the WebGPU baseline — no storage buffers, no `base_vertex` — so
@@ -104,10 +104,10 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
-| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; also the Android example, packaged as an APK. |
+| [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; it is also one of the two examples the Android APK packages. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.md) | A Model Context Protocol server that reads and drives a running world over stdio, built only from the public API. |
-| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: jobs and snapshot mailboxes joining a render sub-world with physics, audio and gameplay remote worlds, each on its own thread. |
+| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: jobs and snapshot mailboxes joining a render sub-world with physics, audio and gameplay worlds, each on a thread of its own or stepped by the host's frames. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
 
@@ -150,19 +150,21 @@ Commands follow the `cargo xtask` convention:
   `--release` uses the release profile.
 - **`cargo xtask test-wasm`** — build the GPU tests for
   `wasm32-unknown-unknown`, bindgen them, and run them in a real browser through
-  WebGL2, one page per test; then load the example and check it drew something.
-  Needs `wasm-bindgen-cli` at the version the workspace resolves,
+  WebGL2, one page per test; then load each example and check it drew
+  something. Needs `wasm-bindgen-cli` at the version the workspace resolves,
   `cargo nextest`, and Node; it installs the runner's own dependencies and a
   browser, unless `CHROME_PATH` names one to reuse. `--show` opens a visible
   window to watch a failure happen.
-- **`cargo xtask run-wasm`** — build the web example and serve it from a built-in
-  static server (WebGPU needs a secure context; `file://` will not do).
-  `--no-serve` only builds it. Every wasm build, here and in `test-wasm`, uses
+- **`cargo xtask run-wasm`** — build the web examples and serve them from a
+  built-in static server (WebGPU needs a secure context; `file://` will not
+  do). `--app` picks which are built — `unlit3d`, `unlit3dx` or `all`, the
+  default — and the landing page at the root links whichever are there;
+  `--no-serve` only builds. Every wasm build, here and in `test-wasm`, uses
   the workspace's `wasm-dev` cargo profile: release's settings at an
   `opt-level` aimed at size, since a browser downloads the binary.
-- **`cargo xtask build-android`** — cross-compile the example's shared library
-  with `cargo ndk` into `android/app/src/main/jniLibs`, then run Gradle to build
-  the APK. Debug by default; `--release` builds an unsigned release APK. Needs
+- **`cargo xtask build-android`** — cross-compile both examples' shared
+  libraries with `cargo ndk` into `android/app/src/main/jniLibs`, then run
+  Gradle to build the APK. Debug by default; `--release` builds an unsigned release APK. Needs
   JDK 17+ and `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
 - **`cargo xtask publish`** — upload the publishable crates (`unlit_ecs`,
   `unlit_wgpu`, `unlit3d`, `unlit3d_mcp`) to crates.io in dependency order,
@@ -238,9 +240,9 @@ rasterizer is not the one the snapshots were captured on, a `Tolerance` can name
 how far a frame may differ; the cube snapshots use it, and carry the
 measurements behind their bound.
 
-It also starts the example in the browser and checks that it drew a shaded image
-rather than a blank canvas. The GPU tests never start the example, so without
-this a change that compiles and still leaves the page empty would pass them.
+It also starts each example in the browser and checks that it drew a shaded
+image rather than a blank canvas. The GPU tests never start them, so without
+this a change that compiles and still leaves a page empty would pass them.
 
 Per-crate notes:
 
@@ -254,7 +256,7 @@ Per-crate notes:
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.md) | An end-to-end test that builds a real GPU world on a thread, serves it over a pair of streams, and speaks JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks the screenshot pixel by pixel. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: job round trips, request replies, snapshot replacement, thread stop and panic reporting, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
-| [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule. |
+| [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule; the same worlds also run stepped in a browser and behind an Android activity. |
 
 A GPU is needed for the rendering crates' integration tests and for the example.
 On a headless CI runner, Mesa's `lavapipe` serves as the software Vulkan
@@ -303,10 +305,11 @@ platform showing through rather than a regression, so having the frame is what
 makes the difference something to look at rather than to infer from a score.
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) publishes the site
-to GitHub Pages on every push to `main`: the web example at the root, with the
-workspace's API docs under `docs/` and the example's corner linking to them.
-The docs build on nightly, because the page listing the crates and the
-`doc(cfg(...))` labels are nightly-only; `ci.yml` keeps checking them on stable
+to GitHub Pages on every push to `main`: a landing page at the root linking the
+two web examples and the API docs, each example in a directory of its own
+beside it, and the workspace's rustdoc under `docs/`. The `unlit3d` example's
+corner links to those docs as well. The docs build on nightly, because the
+page listing the crates and the `doc(cfg(...))` labels are nightly-only; `ci.yml` keeps checking them on stable
 so a break is caught on the pull request rather than at the deploy.
 
 ## Workspace layout
@@ -317,12 +320,14 @@ crates/unlit3d/              the ECS-integrated rendering API
 crates/unlit_ecs/            the archetype ECS
 crates/unlit_wgpu_test_util/ the shared GPU test harness
 crates/unlit3d_mcp/          the Model Context Protocol server over the public API
-crates/unlit3dx/             the multi-world runtime: jobs, snapshots, world threads
+crates/unlit3dx/             the multi-world runtime: jobs, snapshots, threaded
+                             and stepped worlds
 unlit3d_examples/            the windowed example, its scenes and their snapshot tests
-unlit3dx_examples/           the multi-world demo: five worlds, one window
+unlit3dx_examples/           the multi-world demo: five worlds, one window, a web
+                             page and an Android activity
 unlit3d_cli/                 the glTF-to-image command-line tool and its end-to-end test
 unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
-android/                     the Gradle project that packages the example as an APK
+android/                     the Gradle project that packages the examples as an APK
 xtask/                       the `cargo xtask` task runner
 ```
 

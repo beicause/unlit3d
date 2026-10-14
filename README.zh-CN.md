@@ -76,10 +76,10 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
 | [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
-| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是打包成 APK 的 Android 示例。 |
+| [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是 Android APK 所打包的两个示例之一。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 把 glTF 文档渲染成图片的命令行工具，由 JSON 配置文件驱动、并可被自身选项覆盖；其 `tests/gpu_cli.rs` 是端到端快照检查。 |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.zh-CN.md) | 一个 Model Context Protocol 服务器，经 stdio 读取并驱动运行中的 world，只由公开 API 构成。 |
-| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 运行时：以 job 与快照信箱连接渲染子 world 与物理、音频、玩法远程世界，各占一条线程。 |
+| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 运行时：以 job 与快照信箱连接渲染子 world 与物理、音频、玩法 world，各占一条线程或由宿主的帧步进。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
 
@@ -113,15 +113,17 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 - **`cargo xtask test`** — 用 `cargo nextest run` 覆盖单元与集成测试，随后
   `cargo test --doc` 补上 nextest 不跑的 doctest。加 `--release` 走 release profile。
 - **`cargo xtask test-wasm`** — 把 GPU 测试构建到 `wasm32-unknown-unknown`、做
-  bindgen，再经由 WebGL2 在真实浏览器里逐个测试各开一个页面运行；随后加载示例并检查
-  它确实画出了东西。需要与工作区解析版本一致的 `wasm-bindgen-cli`、`cargo nextest`
+  bindgen，再经由 WebGL2 在真实浏览器里逐个测试各开一个页面运行；随后加载每个示例并
+  检查它确实画出了东西。需要与工作区解析版本一致的 `wasm-bindgen-cli`、`cargo nextest`
   与 Node；它会自行安装 runner 的依赖与一个浏览器，除非用 `CHROME_PATH` 指定现成的。
   `--show` 打开可见窗口以观察失败。
 - **`cargo xtask run-wasm`** — 构建 web 示例并用内置静态服务器提供（WebGPU 需要 secure
-  context，`file://` 不行）。`--no-serve` 只构建。这里和 `test-wasm` 的每一次 wasm
+  context，`file://` 不行）。`--app` 选择构建哪些——`unlit3d`、`unlit3dx` 或默认的
+  `all`——根目录的首页会链接已经构建出来的那些；`--no-serve` 只构建。这里和
+  `test-wasm` 的每一次 wasm
   构建都用工作区的 `wasm-dev` cargo profile：沿用 release 的设定，但 `opt-level`
   以体积为目标，因为二进制是要被浏览器下载的。
-- **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译示例的动态库放进
+- **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译两个示例的动态库放进
   `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，`--release` 构建
   未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`（NDK 由 cargo-ndk 自动探测）。
 - **`cargo xtask publish`** — 按依赖顺序把可发布的 crate（`unlit_ecs`、`unlit_wgpu`、
@@ -183,7 +185,7 @@ cargo xtask test-wasm            # 同一批 GPU 测试，再在浏览器里跑�
 limits、自己的着色器翻译和自己的光栅化器。由于该光栅化器并不是采集快照时所用的那个，
 `Tolerance` 可以指定一帧允许相差多少；立方体快照正是这么用的，并附有其阈值的实测依据。
 
-它还会在浏览器里启动示例，并检查画布上留下的是一幅有明暗的画面、而不是一片空白。
+它还会在浏览器里启动每个示例，并检查画布上留下的是一幅有明暗的画面、而不是一片空白。
 GPU 测试从不会启动示例，因此没有这一步的话，某个「能编过、但页面仍是空的」改动会照样
 通过。
 
@@ -199,7 +201,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
 | [`unlit3d_mcp`](crates/unlit3d_mcp/README.zh-CN.md) | 端到端测试：在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 往返、请求回复、快照替换、线程停止与 panic 报告、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
-| [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较。 |
+| [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的
 `lavapipe` 作为软件 Vulkan 实现。wasm 那一遍不需要 GPU：浏览器会回退到软件 WebGL2。
@@ -238,8 +240,9 @@ pull request 上运行上述检查以及各 lint 关卡：
 一帧，才能让人直接查看差异，而不是从分数去推断。
 
 [`.github/workflows/pages.yml`](.github/workflows/pages.yml) 在每次推送到 `main` 时
-把站点发布到 GitHub Pages：根目录是 web 示例，工作区的 API 文档放在 `docs/` 下，示例
-页角上有指向它的链接。文档用 nightly 构建，因为列出各 crate 的索引页与 `doc(cfg(...))`
+把站点发布到 GitHub Pages：根目录是一个首页，链接两个 web 示例与 API 文档，每个示例
+各占旁边的一个目录，工作区的 rustdoc 放在 `docs/` 下；`unlit3d` 示例的页角也链接到这些
+文档。文档用 nightly 构建，因为列出各 crate 的索引页与 `doc(cfg(...))`
 标签都只存在于 nightly；`ci.yml` 仍在 stable 上检查文档，好让问题在 pull request 上
 就被发现，而不是等到发布时。
 
@@ -251,12 +254,12 @@ crates/unlit3d/              与 ECS 集成的渲染 API
 crates/unlit_ecs/            archetype ECS
 crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
 crates/unlit3d_mcp/          Model Context Protocol 服务器，只建立在公开 API 之上
-crates/unlit3dx/             多 world 运行时：job、快照与 world 线程
+crates/unlit3dx/             多 world 运行时：job、快照、线程化与步进的 world
 unlit3d_examples/            窗口化示例、它的场景与场景的快照测试
-unlit3dx_examples/           多 world 示例：五个 world，一个窗口
+unlit3dx_examples/           多 world 示例：五个 world、一个窗口、一个 web 页面与一条 Android activity
 unlit3d_cli/                 glTF 转图片的命令行工具与端到端测试
 unlit3d_benchmarks/          帧路径基准测试与剖析运行
-android/                     把示例打包成 APK 的 Gradle 工程
+android/                     把两个示例打包成 APK 的 Gradle 工程
 xtask/                       cargo xtask 任务执行器
 ```
 
