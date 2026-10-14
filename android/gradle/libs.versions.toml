@@ -5,11 +5,16 @@ core = "1.19.1"
 # The 4.4 line android-activity supports; its native interface is what the
 # crate's glue layer is compiled against.
 gamesActivity = "4.4.2"
+# The tab bar floating over the examples is a `TabLayout`, which comes from
+# Material Components. The activity's theme is the app's rather than a
+# Material one, so the bar's colors are set in code instead.
+material = "1.14.0"
 
 [libraries]
 appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 core = { group = "androidx.core", name = "core", version.ref = "core" }
 games-activity = { group = "androidx.games", name = "games-activity", version.ref = "gamesActivity" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

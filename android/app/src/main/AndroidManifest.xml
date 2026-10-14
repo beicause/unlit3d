@@ -9,6 +9,10 @@
         android:theme="@style/Theme.AppCompat.NoActionBar"
         android:appCategory="game"
         tools:targetApi="36">
+        <!-- One activity per example: `GameActivity` loads the shared library
+             named by `android.app.lib_name`, and reads that entry once, when the
+             activity starts. The two share everything else, the floating tab bar
+             among it, through `TabbedExampleActivity`. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -24,6 +28,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".Unlit3dxActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|orientation|keyboardHidden|screenSize|smallestScreenSize|density|keyboard|navigation|screenLayout|uiMode"
+            android:theme="@style/Theme.AppCompat.NoActionBar">
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="unlit3dx_examples" />
         </activity>
     </application>
 

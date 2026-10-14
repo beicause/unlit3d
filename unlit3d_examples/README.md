@@ -6,7 +6,8 @@ A windowed example with selectable scenes, rendered through
 [`unlit3d::winit::WindowSurface`]. Its scenes are also drawn offscreen by
 `tests/gpu_scenes.rs`, which compares every frame against a stored snapshot, so
 the crate is both the workspace's example program and a rendering regression
-check. It is also the Android example, packaged as an APK.
+check. The Android APK packages it as one of its two examples, the other
+being [`unlit3dx_examples`](../unlit3dx_examples/README.md).
 
 It is at an **early stage** along with the crates it uses, and it exercises
 parts of them that are still under construction.
@@ -146,11 +147,13 @@ To run the same example in a browser — where WebGPU needs a secure context, so
 `localhost` rather than `file://` — use the task runner:
 
 ```text
-cargo xtask run-wasm
+cargo xtask run-wasm --app unlit3d
 ```
 
-The page it serves sizes the canvas to the viewport less a small margin of its
-own, rather than to the window the example asks for, so the example fills a
+The task builds this example and `unlit3dx_examples` into one site by default
+and serves a landing page linking both, so `--app unlit3d` builds only this
+one. The page it serves sizes the canvas to the viewport less a small margin of
+its own, rather than to the window the example asks for, so the example fills a
 phone's screen and follows a window that is resized. The canvas is not the
 picture, though: each 3D scene is drawn into the baseline-aspect region of it,
 so the same picture fills whatever shape the page gives the canvas.
@@ -187,6 +190,12 @@ builds the event loop with the activity winit requires on that platform and
 hands it to the same windowed loop the binary drives, starting with the default
 scene.
 
+The APK carries one activity per example, because `GameActivity` reads the
+library name out of its own `android.app.lib_name` manifest entry once and has
+no way to load a second one. A floating tab bar over the game surface switches
+between them; picking the other tab starts its activity and finishes the one it
+leaves, so only one native window is ever alive.
+
 To build the APK, which cross-compiles the library, stages it in the Gradle
 project's `jniLibs` directory and then runs the Gradle wrapper there:
 
@@ -200,12 +209,17 @@ leaves unsigned. The project's Gradle setup and the task's own constants have to
 agree; see the
 [task runner's README](https://github.com/beicause/unlit3d/blob/main/xtask/README.md#cargo-xtask-build-android).
 
-The activity is
-[`MainActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/MainActivity.kt).
-It extends `GameActivity`, which loads the library named by the
-`android.app.lib_name` manifest entry and calls into it, so the activity itself
-only takes the screen over. The whole application — window, GPU context, frame
-loop — is this crate's.
+The activities are
+[`MainActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/MainActivity.kt)
+and
+[`Unlit3dxActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/Unlit3dxActivity.kt).
+Each is a few lines over
+[`TabbedExampleActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/TabbedExampleActivity.kt),
+which extends `GameActivity`, installs the floating tab bar and takes the
+screen over; the activity only says which example it is and which tab is
+selected. `GameActivity` loads the library named by the `android.app.lib_name`
+manifest entry and calls into it, so the whole application — window, GPU
+context, frame loop — is the example crate's.
 
 ## Snapshot tests
 

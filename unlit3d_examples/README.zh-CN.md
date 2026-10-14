@@ -5,7 +5,8 @@
 一个带 egui 叠加层、可切换场景的窗口化示例，通过
 [`unlit3d::winit::WindowSurface`](https://github.com/beicause/unlit3d/blob/main/crates/unlit3d/README.zh-CN.md)
 渲染。它的场景也会由 `tests/gpu_scenes.rs` 离屏绘制，逐帧与存储的快照比较，因此它既是
-本工作区的示例程序，也是一项渲染回归检查。它同时还是 Android 示例，会打包成 APK。
+本工作区的示例程序，也是一项渲染回归检查。Android APK 把它作为所打包的两个示例
+之一，另一个是 [`unlit3dx_examples`](../unlit3dx_examples/README.zh-CN.md)。
 
 与本示例所用到的那些 crate 一样，示例也处于**早期阶段**，并且会用到其中仍在建设中
 的部分。
@@ -108,10 +109,11 @@ cargo run -p unlit3d_examples -- --scene ecs_skinned
 `file://`——请用任务执行器：
 
 ```text
-cargo xtask run-wasm
+cargo xtask run-wasm --app unlit3d
 ```
 
-它提供的页面会把 canvas 按视口减去一圈自己的边距来设置尺寸，而不是按示例请求的窗口
+该任务默认把本示例与 `unlit3dx_examples` 构建进同一个站点，并提供一个链接两者的首页，
+因此 `--app unlit3d` 只构建本示例。它提供的页面会把 canvas 按视口减去一圈自己的边距来设置尺寸，而不是按示例请求的窗口
 尺寸，因此示例能铺满手机屏幕，也会跟随被缩放的窗口。但 canvas 并不等于画面：每个 3D
 场景都画在它的基准宽高比区域内，所以页面给 canvas 什么形状，同一幅画面都能填满它。
 
@@ -141,6 +143,11 @@ Android 启动的是一个 *activity*，而不是进程：activity 加载动态�
 `android_main`。`android_main` 用该平台要求的 activity 构建事件循环，然后交给二进制
 所驱动的那个同样的窗口化循环，从默认场景开始。
 
+APK 为每个示例各带一条 activity，因为 `GameActivity` 只会从自己的
+`android.app.lib_name` 清单项里读一次动态库名，无法再加载第二个。游戏画面之上有一条
+悬浮 tab 条在两者间切换；选中另一个 tab 会启动它的 activity 并结束离开的那条，
+因此任何时刻只有一个原生窗口存活。
+
 构建 APK：先交叉编译动态库，把它放进 Gradle 工程的 `jniLibs` 目录，再在那里运行
 Gradle wrapper：
 
@@ -153,10 +160,14 @@ cargo xtask build-android
 中的常量一致，参见
 [任务执行器的 README](https://github.com/beicause/unlit3d/blob/main/xtask/README.zh-CN.md#cargo-xtask-build-android)。
 
-activity 位于
-[`MainActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/MainActivity.kt)。
-它继承 `GameActivity`，后者会加载清单项 `android.app.lib_name` 指定的动态库并调用进去，
-因此 activity 本身只负责接管屏幕。整个应用——窗口、GPU 上下文、帧循环——都在本 crate 中。
+两条 activity 是
+[`MainActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/MainActivity.kt)
+与
+[`Unlit3dxActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/Unlit3dxActivity.kt)。
+每条都只是在 [`TabbedExampleActivity.kt`](https://github.com/beicause/unlit3d/blob/main/android/app/src/main/java/org/unlit3d/example/TabbedExampleActivity.kt)
+之上的几行：后者继承 `GameActivity`、装上悬浮 tab 条并接管屏幕，activity 只声明自己是
+哪个示例、当前选中哪个 tab。`GameActivity` 会加载清单项 `android.app.lib_name` 指定的
+动态库并调用进去，因此整个应用——窗口、GPU 上下文、帧循环——都在示例 crate 中。
 
 ## 快照测试
 

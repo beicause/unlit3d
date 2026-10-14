@@ -154,21 +154,25 @@ app.get("/run_test", async (req, res) => {
   }
 });
 
-// The example's own page, built and bindgened by `cargo xtask test-wasm`.
-// Serving it here is what lets one route load it in a browser.
-const EXAMPLE = path.join(HERE, "..", "example");
+// The examples' own pages, built and bindgened by `cargo xtask test-wasm`.
+// Serving them here is what lets one route load either in a browser.
+const EXAMPLES = path.join(HERE, "..", "examples");
 
-// Load the example and check that it really draws something.
+// Load one example and check that it really draws something.
 //
 // The GPU tests above exercise the rendering paths directly, but they never
 // start the example — the program a browser actually runs — so a change that
 // compiles and still leaves the page blank passes them. This is the check that
 // the example boots, finds a backend and puts pixels on its canvas.
 //
+// The `app` query names the example's directory under `examples/`; the harness
+// passes the same names `run-wasm` publishes them under.
+//
 // A rendered scene is neither empty nor flat, so both are tested: an unstarted
 // canvas is transparent, and a canvas that never drew reads as one color.
-app.get("/run_example", async (_req, res) => {
-  console.error("run the example");
+app.get("/run_example", async (req, res) => {
+  const app = String(req.query.app ?? "");
+  console.error(`run the ${app} example`);
 
   const context = await browser.newContext({ viewport: { width: 800, height: 600 } });
   context.setDefaultTimeout(TIMEOUT_MS);
@@ -179,7 +183,7 @@ app.get("/run_example", async (_req, res) => {
   page.on("pageerror", (error) => logs.push(`[pageerror] ${error.message}`));
 
   try {
-    await page.goto(`${BASE_URL}/example/`);
+    await page.goto(`${BASE_URL}/examples/${app}/`);
 
     // Polled rather than awaited on a fixed sleep: software WebGL2 takes a
     // while to reach its first frame, and how long varies by machine. This
@@ -217,7 +221,7 @@ app.get("/run_example", async (_req, res) => {
   }
 });
 
-app.use("/example", express.static(EXAMPLE));
+app.use("/examples", express.static(EXAMPLES));
 app.use("/", express.static(DIST));
 
 app.listen(PORT, () => {
