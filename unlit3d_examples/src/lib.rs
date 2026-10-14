@@ -603,7 +603,13 @@ struct BlitEntity(Option<Entity>);
 /// The example keeps its own component rather than borrowing the core's: it
 /// does not depend on unlit3dx, and a name is all the report needs. Targets
 /// without the MCP dependency never read it back.
-#[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+#[cfg_attr(
+    any(target_arch = "wasm32", target_os = "android"),
+    expect(
+        dead_code,
+        reason = "only the MCP bridge reads the name back, and it is not built for these targets"
+    )
+)]
 struct WorldName(&'static str);
 
 /// The swap chain the presented world draws through, absent while suspended.
