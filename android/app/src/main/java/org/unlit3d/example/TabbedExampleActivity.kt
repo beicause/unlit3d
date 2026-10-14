@@ -3,6 +3,7 @@ package org.unlit3d.example
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.os.Process
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.ViewGroup
@@ -31,8 +32,12 @@ val EXAMPLES = listOf(
  * `GameActivity` loads the shared library named by the activity's
  * `android.app.lib_name` manifest entry, so one activity runs exactly one
  * example. The bar is therefore a switcher between activities rather than a
- * container inside one: picking another tab starts its activity and finishes
- * this one, which is what keeps a single native window alive at a time.
+ * container inside one: picking another tab starts its activity and ends this
+ * one, which is what keeps a single native window alive at a time.
+ *
+ * Each activity is declared with its own `android:process`: `GameActivity`
+ * keeps the one native handle it can own in a process-wide static, so two
+ * activities sharing a process cannot both be alive.
  */
 abstract class TabbedExampleActivity : GameActivity() {
     /** The examples the bar offers, in order. */
@@ -109,10 +114,16 @@ abstract class TabbedExampleActivity : GameActivity() {
             return
         }
         // Started before this activity finishes, so the switch has no gap to
-        // flash the launcher in; only one of the two is ever resumed, so no
-        // second native window is ever created.
+        // flash the launcher in. The other example runs in its own process, so
+        // its activity's `onCreate` never terminates this one's native context.
         startActivity(Intent(this, tab.activity))
         finish()
+        // Winit does not forward the activity's destroy to the event loop (its
+        // Android backend logs a TODO and keeps polling the looper), so the
+        // native loop of a finished activity never stops on its own. Ending the
+        // process is what releases it; the activity just started lives in
+        // another process and is unaffected.
+        Process.killProcess(Process.myPid())
     }
 
     private fun hideSystemUi() {

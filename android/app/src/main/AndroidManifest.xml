@@ -12,9 +12,15 @@
         <!-- One activity per example: `GameActivity` loads the shared library
              named by `android.app.lib_name`, and reads that entry once, when the
              activity starts. The two share everything else, the floating tab bar
-             among it, through `TabbedExampleActivity`. -->
+             among it, through `TabbedExampleActivity`.
+
+             Each activity runs in a process of its own because `GameActivity`
+             keeps its single native handle in a process-wide static: in one
+             shared process, starting the second example terminates the first
+             one's native context while its event loop is still running. -->
         <activity
             android:name=".MainActivity"
+            android:process=":unlit3d"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
             android:configChanges="layoutDirection|locale|orientation|keyboardHidden|screenSize|smallestScreenSize|density|keyboard|navigation|screenLayout|uiMode"
@@ -32,6 +38,7 @@
 
         <activity
             android:name=".Unlit3dxActivity"
+            android:process=":unlit3dx"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
             android:configChanges="layoutDirection|locale|orientation|keyboardHidden|screenSize|smallestScreenSize|density|keyboard|navigation|screenLayout|uiMode"
