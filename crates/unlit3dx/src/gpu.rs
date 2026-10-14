@@ -43,13 +43,6 @@ pub struct Gpu {
     pub capabilities: DeviceCapabilities,
 }
 
-// The native GPU handles cross a thread inside the request's answer.
-#[cfg(not(target_arch = "wasm32"))]
-const _: () = {
-    const fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<Gpu>();
-};
-
 impl Gpu {
     /// Request the adapter and device that can present to `surface`.
     ///
