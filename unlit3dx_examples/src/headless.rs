@@ -81,14 +81,18 @@ pub fn run(
     // builds, so the headless run's samples match the windowed one's by
     // construction; a stepped world has no device, so its sources are
     // installed up front at the rate the run mixes at.
-    let worlds = spawn_scene::<Stepped>(
-        &mut host,
-        render.clone(),
+    // An empty soundfont — the build embeds a stub when the asset is absent —
+    // is not a synthesizer to build: the world stays silent instead of
+    // failing to load it on the first tick.
+    let audio_setup = if config.soundfont.is_empty() {
+        AudioSetup::Silent
+    } else {
         AudioSetup::Sources {
             soundfont: config.soundfont.clone(),
             sample_rate: config.audio_sample_rate,
-        },
-    );
+        }
+    };
+    let worlds = spawn_scene::<Stepped>(&mut host, render.clone(), audio_setup);
     let renderer = setup_render_world(
         &mut host,
         render.entity(),
