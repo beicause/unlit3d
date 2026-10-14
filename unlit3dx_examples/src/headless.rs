@@ -11,6 +11,7 @@
 //! every world stepped at a fixed rate, a run is reproducible down to
 //! the captured frames and audio samples.
 
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use std::path::Path;
 use std::sync::Arc;
 
@@ -19,9 +20,7 @@ use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
-use crate::scene::{
-    GAMEPLAY_TICKS_PER_FRAME, Gameplay, RENDER_HZ, SceneWiring, setup_render_world,
-};
+use crate::scene::{AudioSetup, RENDER_HZ, SceneStepper, setup_render_world, spawn_scene};
 
 /// The audio sample rate the headless run renders at, in hertz.
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
@@ -30,7 +29,9 @@ pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
 /// audio world's fill dispatch writes, and the stream the encoder reads.
 pub const AUDIO_CHANNELS: usize = 2;
 
-/// The resolution the mix is quantized to, in bits per sample.
+/// The resolution the mix is quantized to, in bits per sample. Only the
+/// FLAC encoder, which a browser cannot run, needs it.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 const BITS_PER_SAMPLE: usize = i16::BITS as usize;
 
 /// The headless run's settings.
@@ -70,25 +71,31 @@ pub fn run(
 ) -> HeadlessOutput {
     let mut host = World::new();
 
-    // The physics and audio worlds, inline: the same worlds, queues and
-    // mailboxes the windowed mode builds on threads, wired through the
-    // shared SceneWiring so both modes share one scene graph. The
-    // synthesizer is the same factory the audio thread builds, so the
-    // headless run's samples match the windowed one's by construction.
-    let mut inline = SceneWiring::inline(config.soundfont.clone(), config.audio_sample_rate);
-    let scene = inline.wiring.clone();
-    scene.spawn_ground();
-
     // The render sub-world, drained inline every frame, exactly as the
     // windowed mode's draw behaviour drains it.
     let render = spawn_sub_world(&mut host, 64);
+
+    // The scene's worlds, stepped by this run: the same worlds, queues and
+    // mailboxes the windowed mode builds on threads, so both modes share
+    // one scene graph. The synthesizer is the same factory the audio thread
+    // builds, so the headless run's samples match the windowed one's by
+    // construction; a stepped world has no device, so its sources are
+    // installed up front at the rate the run mixes at.
+    let worlds = spawn_scene::<Stepped>(
+        &mut host,
+        render.clone(),
+        AudioSetup::Sources {
+            soundfont: config.soundfont.clone(),
+            sample_rate: config.audio_sample_rate,
+        },
+    );
     let renderer = setup_render_world(
         &mut host,
         render.entity(),
         device,
         queue,
         capabilities,
-        scene.frame_reader.clone(),
+        worlds.wiring.frame_reader.clone(),
         // No control panel headless: nothing is there to click.
         None,
     );
@@ -102,10 +109,6 @@ pub fn run(
         });
     }
 
-    // The gameplay world, ticked inline at the gameplay rate.
-    let mut gameplay_world = World::new();
-    gameplay_world.spawn((scene.gameplay(render.clone()),));
-
     let mut output = HeadlessOutput {
         frames: Vec::new(),
         audio: Vec::new(),
@@ -115,14 +118,11 @@ pub fn run(
         index: 0,
         size: config.size,
     };
-    // Step remainders: physics runs at 64 Hz and the synthesizer at its
-    // own sample rate, neither an integer multiple of the render rate, so
-    // both accumulate their fractional steps across frames.
-    let mut physics_debt = 0.0f64;
-    let mut audio_debt = 0.0f64;
-    let frame_seconds = 1.0 / RENDER_HZ;
-    let physics_period = 1.0 / PHYSICS_HZ;
-    let sample_period = 1.0 / config.audio_sample_rate as f64;
+    // The stepper carries the step remainders: physics runs at 64 Hz and
+    // the synthesizer at its own sample rate, neither an integer multiple
+    // of the render rate, so both accumulate their fractional steps across
+    // frames.
+    let mut stepper = SceneStepper::new(RENDER_HZ, PHYSICS_HZ, Some(config.audio_sample_rate));
     // The interleaved sample buffer, reused across frames so the audio
     // loop does not allocate one per frame.
     let mut samples_out: Vec<f32> = Vec::new();
@@ -130,43 +130,25 @@ pub fn run(
     for index in 0..config.frames {
         frame.index = index;
 
-        // Gameplay ticks first: its requests reach the other worlds
-        // before they step.
-        for _ in 0..GAMEPLAY_TICKS_PER_FRAME {
-            if let Some((_, mut game)) = gameplay_world.query::<&mut Gameplay>().next() {
-                game.tick();
-            }
-        }
+        // The worlds step once for this frame: gameplay first, so its
+        // requests reach the others before they step, then physics as its
+        // rate comes due and audio for the transport jobs booked.
+        stepper.step(&host, &worlds);
 
-        // Physics: drain the jobs gameplay queued, then step and publish.
-        while let Ok(job) = inline.physics_jobs.try_recv() {
-            job(&mut inline.physics);
-        }
-        physics_debt += frame_seconds;
-        while physics_debt >= physics_period {
-            if let Some(snapshot) = step_once(&inline.physics) {
-                inline.physics_writer.publish(snapshot);
-            }
-            physics_debt -= physics_period;
-        }
-
-        // Audio: drain the transport jobs gameplay booked, then render
-        // whatever samples the frame's duration asks for.
-        while let Ok(job) = inline.audio_jobs.try_recv() {
-            job(&mut inline.audio);
-        }
-        audio_debt += frame_seconds;
-        let frames = (audio_debt / sample_period) as usize;
+        // Audio: render whatever samples the frame's duration asks for.
+        let frames = stepper.audio_frames();
         if frames > 0 {
-            audio_debt -= frames as f64 * sample_period;
             samples_out.clear();
             samples_out.resize(frames * AUDIO_CHANNELS, 0.0);
-            dispatch_fill(
-                &inline.audio,
-                &mut samples_out,
-                config.audio_sample_rate,
-                AUDIO_CHANNELS as u16,
-            );
+            let filled = with_stepped_world(&host, worlds.audio.entity(), |audio| {
+                dispatch_fill(
+                    audio,
+                    &mut samples_out,
+                    config.audio_sample_rate,
+                    AUDIO_CHANNELS as u16,
+                );
+            });
+            assert!(filled.is_some(), "the audio world is a stepped world");
             output.audio.extend_from_slice(&samples_out);
         }
 
@@ -201,11 +183,13 @@ pub fn run(
 /// from. FLAC is the smaller deliverable: the same ten-second mix takes a
 /// third of the WAV's bytes, which is why the stored baselines are streams
 /// rather than a raw header and samples.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 pub fn write_flac(path: &Path, samples: &[f32], sample_rate: u32) -> std::io::Result<()> {
     std::fs::write(path, encode_flac(samples, sample_rate)?)
 }
 
 /// Quantize interleaved samples to 16 bits and encode them as FLAC.
+#[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 fn encode_flac(samples: &[f32], sample_rate: u32) -> std::io::Result<Vec<u8>> {
     use flacenc::component::BitRepr;
     use flacenc::error::Verify;

@@ -9,12 +9,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use glam::Vec3;
 use hashbrown::HashMap;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
+use unlit3d::winit::event::OnAboutToWait;
 use unlit3dx::prelude::*;
 
 /// The soundfont the demo plays, embedded at build time by `build.rs`.
@@ -383,6 +385,11 @@ pub fn shape_body(kind: ShapeKind) -> BodyShape {
 /// events.
 pub const FRAME_DISPATCH_INPUT: i32 = 5;
 
+/// The host frame's behaviour order: the inline worlds step here, after
+/// the input dispatch and before the draw, so the transforms they publish
+/// are the ones the frame draws.
+pub const FRAME_INLINE_STEP: i32 = 6;
+
 /// The host frame's behaviour order: the frame's events are forgotten
 /// after the draw, once every consumer has read them.
 pub const FRAME_CLEAR_INPUT: i32 = 20;
@@ -406,13 +413,16 @@ pub const ORBIT_TARGET: Vec3 = Vec3::new(0.0, 0.6, 0.0);
 pub const ORBIT_START: f32 = 0.65;
 
 /// The handles the control panel uses to reach the other worlds: the
-/// gameplay command sender for the shapes, and the audio command sender
-/// for the two music tracks.
+/// gameplay command sender for the shapes, and — where there is a
+/// synthesizer to drive — the audio command sender for the two music
+/// tracks.
+#[derive(Clone)]
 pub struct ControlHooks {
     /// The gameplay world's command sender.
     pub gameplay: JobSender,
-    /// The audio world's command sender.
-    pub audio: JobSender,
+    /// The audio world's command sender, absent when the audio world has
+    /// no synthesizer and so no tracks to transport.
+    pub audio: Option<JobSender>,
 }
 
 /// One track's transport: its name, then a pause toggle and a rewind.
@@ -446,7 +456,8 @@ fn track_controls(ui: &mut egui::Ui, audio: &JobSender, name: &str, paused: &mut
 /// Both tracks start on their own once the audio world can sound, so the
 /// panel only ever changes what is already playing: each track pauses,
 /// resumes and rewinds on its own, and the shapes drop or clear without
-/// touching the music.
+/// touching the music. A world with no synthesizer has nothing to
+/// transport, so its panel shows the shapes alone.
 pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     world.spawn_source(UiSource::new());
     let gameplay = hooks.gameplay;
@@ -455,9 +466,11 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     let mut sequence_paused = false;
     world.spawn((UiPanel::new(move |_world, _entity, ui| {
         egui::Window::new("Controls").show(ui.ctx(), |ui| {
-            track_controls(ui, &audio, BGM_TRACK, &mut bgm_paused);
-            track_controls(ui, &audio, SEQUENCE_TRACK, &mut sequence_paused);
-            ui.separator();
+            if let Some(audio) = &audio {
+                track_controls(ui, audio, BGM_TRACK, &mut bgm_paused);
+                track_controls(ui, audio, SEQUENCE_TRACK, &mut sequence_paused);
+                ui.separator();
+            }
             ui.horizontal(|ui| {
                 if ui.button("Drop the next shape").clicked() {
                     request_drop(&gameplay);
@@ -662,6 +675,11 @@ enum BuildState {
     Failed,
 }
 
+/// One body request in flight: the request itself, the pool slot its
+/// render entity was reserved for, the tick the request was made, and
+/// the scene generation it belongs to.
+type PendingBody = (Request<RigidBodyHandle>, (u64, ShapeKind), u32, u32);
+
 /// The gameplay state, living on its own entity in the gameplay world.
 ///
 /// Gameplay is authoritative and the render world's client: it owns which
@@ -670,10 +688,6 @@ enum BuildState {
 /// render server, and publishes transforms. It also starts the demo's two
 /// music tracks once the audio world can sound; the panel drives them
 /// afterwards without going through gameplay at all.
-/// One body request in flight: the request itself, the pool slot its
-/// render entity was reserved for, the tick the request was made, and
-/// the scene generation it belongs to.
-type PendingBody = (Request<RigidBodyHandle>, (u64, ShapeKind), u32, u32);
 pub struct Gameplay {
     /// The mailbox gameplay publishes the per-frame transforms into.
     writer: SnapshotWriter<TransformFrame>,
@@ -1080,7 +1094,11 @@ pub fn install_synth(
 /// A job that installs the demo's two tracks on an audio world that has
 /// just reported its output format.
 pub fn install_audio_job(sample_rate: u32) -> Job<()> {
-    let soundfont: Arc<[u8]> = SOUNDFONT.into();
+    install_audio_job_with(SOUNDFONT.into(), sample_rate)
+}
+
+/// The same install, from a soundfont the caller already holds.
+pub fn install_audio_job_with(soundfont: Arc<[u8]>, sample_rate: u32) -> Job<()> {
     Box::new(move |world: &mut World| {
         install_synth(
             world,
@@ -1092,75 +1110,7 @@ pub fn install_audio_job(sample_rate: u32) -> Job<()> {
     })
 }
 
-/// The worlds a headless run steps inline, with the channels the scene's
-/// wiring talks to them through.
-///
-/// Built by [`SceneWiring::inline`]: the same worlds, queues and mailboxes
-/// the windowed mode spreads across threads, here on one thread and driven
-/// by the caller's loop.
-pub struct InlineWorlds {
-    /// The scene's channels, over the inline worlds.
-    pub wiring: SceneWiring,
-    /// The rapier world gameplay drops bodies into.
-    pub physics: World,
-    /// Physics jobs waiting to run.
-    pub physics_jobs: async_channel::Receiver<Job<()>>,
-    /// Where the physics world publishes its snapshots.
-    pub physics_writer: SnapshotWriter<PhysicsSnapshot>,
-    /// The synthesizer's world.
-    pub audio: World,
-    /// Audio jobs waiting to run.
-    pub audio_jobs: async_channel::Receiver<Job<()>>,
-}
-
 impl SceneWiring {
-    /// Build the scene's worlds inline on one thread: no remote worlds,
-    /// no output stream, and unbounded queues, so nothing ever blocks.
-    /// The caller drains and steps the worlds in the order the windowed
-    /// mode's threads do.
-    ///
-    /// The audio world is ready from the first frame: the soundfont is
-    /// parsed here, before any gameplay tick runs, so no note is ever
-    /// dropped as stale.
-    #[must_use]
-    pub fn inline(soundfont: Arc<[u8]>, sample_rate: u32) -> InlineWorlds {
-        let mut physics = World::new();
-        init_physics_world(&mut physics, &PhysicsConfig::default());
-        let (physics_sender, physics_jobs) = async_channel::unbounded::<Job<()>>();
-        let (physics_writer, physics_reader) = snapshot_pair::<PhysicsSnapshot>();
-
-        let mut audio = World::new();
-        let (audio_sender, audio_jobs) = async_channel::unbounded::<Job<()>>();
-        // The same install the windowed run queues as a job: the sources
-        // it spawns are what the run's fills render.
-        install_synth(
-            &mut audio,
-            &soundfont,
-            SYNTH_GAIN,
-            &[BGM_TRACK, SEQUENCE_TRACK],
-            sample_rate,
-        );
-        let (ready_writer, audio_ready) = snapshot_pair::<AudioReady>();
-        ready_writer.publish(AudioReady(true));
-
-        let (frame_writer, frame_reader) = snapshot_pair::<TransformFrame>();
-        InlineWorlds {
-            wiring: Self {
-                frame_writer,
-                frame_reader,
-                physics_sender: JobSender::new(physics_sender),
-                physics_reader,
-                audio_sender: JobSender::new(audio_sender),
-                audio_ready,
-            },
-            physics,
-            physics_jobs,
-            physics_writer,
-            audio,
-            audio_jobs,
-        }
-    }
-
     /// Queue the ground the balls land on: the physics world must carry
     /// it before the first drop, in both run modes.
     pub fn spawn_ground(&self) {
@@ -1186,6 +1136,270 @@ impl SceneWiring {
     }
 }
 
+/// How a scene's audio world gets its synthesizer.
+pub enum AudioSetup {
+    /// No synthesizer: the world stays silent, and nothing ever reports
+    /// it ready.
+    Silent,
+    /// Install the demo's sources before the first frame, at `sample_rate`.
+    ///
+    /// A world the host steps has no device to wait for, so its rate is
+    /// known up front and the sources are ready the moment the scene is.
+    Sources {
+        /// The soundfont to build the synthesizer from.
+        soundfont: Arc<[u8]>,
+        /// The rate the sources render at.
+        sample_rate: u32,
+    },
+    /// Install the demo's sources once the output device reports its
+    /// format.
+    ///
+    /// A self-driven world opens its own output on its first tick, and a
+    /// synthesizer built at any rate but the device's would render at the
+    /// wrong speed. The caller watches [`SceneWorlds::audio_format`] and
+    /// calls [`install_sources_when_ready`].
+    WaitForDevice,
+}
+
+/// The scene's worlds, however they are driven.
+///
+/// Every world is a host entity carrying the runner's proxy, so the host's
+/// data is the same whether the worlds run on threads or the host steps
+/// them; only who calls their ticks differs.
+#[derive(Clone)]
+pub struct SceneWorlds {
+    /// The channels between the worlds.
+    pub wiring: SceneWiring,
+    /// The rapier world.
+    pub physics: WorldHandle,
+    /// The synthesizer's world.
+    pub audio: WorldHandle,
+    /// The client that drives the scene; its sender is the control
+    /// panel's handle on it.
+    pub gameplay: WorldHandle,
+    /// The audio device's format, when the setup waits for it.
+    pub audio_format: Option<SnapshotReader<AudioFormat>>,
+    /// Whether the audio world carries sources to transport.
+    audio_sources: bool,
+}
+
+impl SceneWorlds {
+    /// The sender for the audio world's transport jobs, when the scene
+    /// gave it a synthesizer: the control panel's handle on the tracks.
+    #[must_use]
+    pub fn audio_tracks(&self) -> Option<JobSender> {
+        self.audio_sources.then(|| self.wiring.audio_sender.clone())
+    }
+}
+
+/// Build the scene's worlds with the runner `R`: on their own threads, or
+/// stepped by the host.
+///
+/// The worlds are spawned in the order they depend on each other - physics
+/// and audio first, so the wiring can read their inboxes off their proxy
+/// entities, then gameplay - and the ground is queued before gameplay
+/// starts dropping bodies on it.
+pub fn spawn_scene<R: WorldRunner>(
+    host: &mut World,
+    render: WorldHandle,
+    audio_setup: AudioSetup,
+) -> SceneWorlds {
+    // The physics world: fixed step, default gravity, a ground plane
+    // ready before the first ball drops.
+    let physics = spawn_physics_world_with::<R>(host, PhysicsConfig::default());
+    let physics_sender = physics.sender();
+    let physics_reader = host
+        .get::<PhysicsInbox>(physics.entity())
+        .expect("the physics world carries its inbox")
+        .0
+        .clone();
+
+    // The audio world: a synthesizer voice plus one MIDI player per track,
+    // all fed by the soundfont, mixed into the output stream. A stepped
+    // world opens no device, so its sources are what a host pulls with
+    // dispatch_fill.
+    let audio = spawn_audio_world_with::<R>(host, AudioConfig::default());
+    let audio_sender = audio.sender();
+    let audio_ready = host
+        .get::<AudioReadyInbox>(audio.entity())
+        .expect("the audio world carries its readiness inbox")
+        .0
+        .clone();
+    let (audio_format, audio_sources) = match audio_setup {
+        AudioSetup::Silent => (None, false),
+        AudioSetup::Sources {
+            soundfont,
+            sample_rate,
+        } => {
+            // The sources travel as a job, exactly as the windowed mode
+            // queues them once its device reports a rate; a stepped world
+            // has no device to wait for, so one step installs them before
+            // the first gameplay tick reads the readiness mailbox.
+            if let Err(error) = audio_sender.send(install_audio_job_with(soundfont, sample_rate)) {
+                log::error!("the audio world refused its sources ({error:?})");
+            }
+            step_stepped_world(host, audio.entity());
+            (None, true)
+        }
+        AudioSetup::WaitForDevice => {
+            let format = host
+                .get::<AudioFormatInbox>(audio.entity())
+                .expect("the audio world carries its format inbox")
+                .0
+                .clone();
+            (Some(format), true)
+        }
+    };
+
+    let (frame_writer, frame_reader) = snapshot_pair::<TransformFrame>();
+    let wiring = SceneWiring {
+        frame_writer,
+        frame_reader,
+        physics_sender,
+        physics_reader,
+        audio_sender,
+        audio_ready,
+    };
+    wiring.spawn_ground();
+
+    // The gameplay world: one entity of state, driving the scene as the
+    // render server's client. A world the host steps is ticked once per
+    // call, so it does not pace itself; a thread of its own runs at the
+    // gameplay rate and sleeps between ticks.
+    let gameplay = R::spawn(
+        host,
+        "gameplay",
+        64,
+        (),
+        {
+            let render = render.clone();
+            let wiring = wiring.clone();
+            move |world: &mut World| {
+                world.spawn((wiring.gameplay(render),));
+            }
+        },
+        {
+            let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / GAME_HZ));
+            move |world: &mut World, control: &ThreadControl, ()| {
+                if control.stop_requested() {
+                    return false;
+                }
+                if let Some((_, mut game)) = world.query::<&mut Gameplay>().next() {
+                    game.tick();
+                }
+                if R::SELF_DRIVEN {
+                    clock.wait(control);
+                }
+                true
+            }
+        },
+    );
+
+    SceneWorlds {
+        wiring,
+        physics,
+        audio,
+        gameplay,
+        audio_format,
+        audio_sources,
+    }
+}
+
+/// Queue the demo's sources on the audio world once its device reports a
+/// format.
+///
+/// Only a self-driven world needs this: it opens its output on its own
+/// first tick, so the rate is not known before then. A scene whose setup
+/// installed the sources up front has nothing to wait for.
+pub fn install_sources_when_ready(world: &mut World, worlds: &SceneWorlds) {
+    let Some(format) = worlds.audio_format.clone() else {
+        return;
+    };
+    let audio_sender = worlds.wiring.audio_sender.clone();
+    let mut installed = false;
+    world.spawn((OnAboutToWait::new(move |_world: &World, _entity, ()| {
+        if installed {
+            return;
+        }
+        let Some(format) = format.latest() else {
+            return;
+        };
+        installed = true;
+        if let Err(error) = audio_sender.send(install_audio_job(format.sample_rate)) {
+            log::error!("the audio world refused its sources ({error:?})");
+        }
+    }),));
+}
+
+/// The pacing a host uses to step a scene's worlds frame by frame.
+///
+/// Physics runs at a rate that is not an integer multiple of the render
+/// rate, so each frame carries the fraction of a step it did not spend
+/// into the next one. The same remainders make a stepped run reproducible:
+/// the same frames give the same steps.
+pub struct SceneStepper {
+    /// The physics time the last frame did not spend.
+    physics_debt: f64,
+    /// The audio time the last frame did not spend.
+    audio_debt: f64,
+    /// How long one frame lasts.
+    frame_seconds: f64,
+    /// How long one physics step lasts.
+    physics_period: f64,
+    /// How long one audio frame lasts, or none when the host pulls no
+    /// audio.
+    sample_period: Option<f64>,
+}
+
+impl SceneStepper {
+    /// A stepper for a scene rendered at `frame_hz`, simulated at
+    /// `physics_hz`, and - when `sample_rate` is given - mixed at that
+    /// rate.
+    #[must_use]
+    pub fn new(frame_hz: f64, physics_hz: f64, sample_rate: Option<u32>) -> Self {
+        Self {
+            physics_debt: 0.0,
+            audio_debt: 0.0,
+            frame_seconds: 1.0 / frame_hz,
+            physics_period: 1.0 / physics_hz,
+            sample_period: sample_rate.map(|rate| 1.0 / f64::from(rate)),
+        }
+    }
+
+    /// Step the scene once for a frame: gameplay ticks, physics steps as
+    /// its rate comes due, and the audio world drains the transport jobs
+    /// those ticks booked.
+    ///
+    /// The render world is not stepped here: it is a sub-world the draw
+    /// drains, not one with a rate of its own.
+    pub fn step(&mut self, host: &World, worlds: &SceneWorlds) {
+        // Gameplay first: its requests reach the other worlds before they
+        // step.
+        for _ in 0..GAMEPLAY_TICKS_PER_FRAME {
+            step_stepped_world(host, worlds.gameplay.entity());
+        }
+        self.physics_debt += self.frame_seconds;
+        while self.physics_debt >= self.physics_period {
+            step_stepped_world(host, worlds.physics.entity());
+            self.physics_debt -= self.physics_period;
+        }
+        step_stepped_world(host, worlds.audio.entity());
+    }
+
+    /// The audio frames this frame's duration asks for, carrying the
+    /// fraction it did not spend into the next frame.
+    ///
+    /// Zero when the stepper was built without a sample rate.
+    pub fn audio_frames(&mut self) -> usize {
+        let Some(period) = self.sample_period else {
+            return 0;
+        };
+        self.audio_debt += self.frame_seconds;
+        let frames = (self.audio_debt / period) as usize;
+        self.audio_debt -= frames as f64 * period;
+        frames
+    }
+}
 /// The slots a clear hands back: every slot except the ones an in-flight
 /// request reserved. A reserved slot returns when its body is despawned
 /// instead, so handing it back here too would sell one render entity to

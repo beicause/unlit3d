@@ -4,7 +4,8 @@
 
 一个多 world 示例：渲染、物理与音频各自运行在自己的 world 里，以 job 与快照相连，
 建立在 [`unlit3dx`](../crates/unlit3dx/README.zh-CN.md) 之上。包名为
-`unlit3dx_examples`；二进制名为 `unlit3dx-examples`。
+`unlit3dx_examples`；二进制名为 `unlit3dx-examples`。它能在窗口中运行，也能在
+浏览器里、在一条 Android activity 之后运行，同一个场景还会为快照测试无头运行。
 
 ## 你会看到什么
 
@@ -34,17 +35,23 @@ cargo run -p unlit3dx_examples
 对外服务，而不是随窗口一起退出：工具随后可以检视每个 world，并为渲染 world
 保存截图。
 
+在 web 上它是 `cargo xtask run-wasm` 构建、并由 Pages 工作流发布的两个页面之一。
+浏览器没有可放置 world 的线程，于是改由库的步进 runner 从帧循环驱动它们全部。
+Android APK 加载的也是同一个库：`cargo xtask build-android` 把它构建成 `.so`，
+悬浮的 tab 条则在 `unlit3d` 与 `unlit3dx` 两条 activity 之间切换。
+
 ## 离屏模式
 
 ```sh
 cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 ```
 
-`--headless` 开关运行同一个场景，但不用窗口、线程或音频设备：各个 world
-在单线程上按各自的固定频率内联步进——玩法 120 Hz、物理 64 Hz、渲染 60 Hz——
-共 `--frames` 帧，随后这一运行的最后一帧与整段混音写入 `--out` 下的
-`screenshot.png` 与 `audio.flac`。步进是固定频率的，生成骰子也是确定的，
-因此每次运行都可复现——快照测试（[English](tests/headless.rs)、
+`--headless` 开关运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
+路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
+宿主自己的 world，`SceneStepper` 按各自的固定频率推进它们——玩法 120 Hz、
+物理 64 Hz、渲染 60 Hz——共 `--frames` 帧，随后这一运行的最后一帧与整段混音
+写入 `--out` 下的 `screenshot.png` 与 `audio.flac`。步进是固定频率的，生成骰子也是
+确定的，因此每次运行都可复现——快照测试（[English](tests/headless.rs)、
 [简体中文](tests/headless.rs)）正建立在此之上：渲染帧与 webp 基准比较，
 混音与 FLAC 基准比较，基准都保存在
 [`unlit3d_asset_files`](../unlit3d_asset_files) 子模块里；
@@ -53,7 +60,9 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 ## 各 world 如何相连
 
 五个 world，遵循 `unlit3dx` 的协议：job 发出去，快照传回来。其余 world
-扮演服务器，玩法是驱动它们的客户端。
+扮演服务器，玩法是驱动它们的客户端。`spawn_scene` 通过一个 runner 构建
+它们——窗口里是 `Threaded`，浏览器与离屏运行是 `Stepped`——因此宿主在两种
+情况下都携带同样的实体与组件，差别只在于谁调用 tick、以及如何配速。
 
 - **宿主（host）** 拥有窗口并驱动帧。它请求 GPU；GPU 应答之后，一切交给库里的
   行为：`draw_presented` 每帧排空渲染 world 的 job 收件箱、分发帧并呈现，

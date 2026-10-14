@@ -5,7 +5,9 @@ English | [简体中文](https://github.com/beicause/unlit3d/blob/main/unlit3dx_
 A multi-world demo: one scene where rendering, physics and audio each run in
 their own world, joined by jobs and snapshots, built on
 [`unlit3dx`](../crates/unlit3dx/README.md). The package is `unlit3dx_examples`;
-the binary is `unlit3dx-examples`.
+the binary is `unlit3dx-examples`. It runs in a window, in a browser and
+behind an Android activity, and the same scene also runs headless for its
+snapshot tests.
 
 ## What you see
 
@@ -42,6 +44,13 @@ Protocol](../crates/unlit3d_mcp/README.md) instead of exiting with the
 window: tools can then inspect every world and save screenshots of the
 render world.
 
+On the web it is one of the two pages `cargo xtask run-wasm` builds and the
+Pages workflow publishes. A browser has no thread to put a world on, so the
+library's stepped runner drives them all from the frame loop instead. The
+same library is what the Android APK loads: `cargo xtask build-android`
+builds it into a `.so`, and the floating tab bar switches between the
+`unlit3d` and `unlit3dx` activities.
+
 ## The headless mode
 
 ```sh
@@ -49,7 +58,9 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 ```
 
 The `--headless` switch runs the very same scene without a window, threads
-or an audio device: the worlds step inline on one thread at their fixed
+or an audio device. It is the browser's path with the frames handed over by
+the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
+in the host's own world, and `SceneStepper` advances them at their fixed
 rates — gameplay at 120 Hz, physics at 64 Hz, render at 60 Hz — for
 `--frames` frames, then the run's last frame and its whole audio mix land
 in `--out` as `screenshot.png` and `audio.flac`. Because the stepping is
@@ -64,6 +75,10 @@ webp baselines and the mix against a FLAC baseline, both kept in the
 
 Five worlds, per the `unlit3dx` protocol: jobs go out, snapshots come back.
 The other worlds act as servers; gameplay is the client that drives them.
+`spawn_scene` builds them through one runner — `Threaded` in a window,
+`Stepped` in a browser or a headless run — so the host carries the same
+entities and components either way, and only who calls a tick and how it is
+paced differs.
 
 - The **host** owns the window and drives frames. It requests the GPU, and
   once the GPU answers, the library's behaviours take over: `draw_presented`

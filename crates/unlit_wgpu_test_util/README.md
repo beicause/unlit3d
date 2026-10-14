@@ -52,6 +52,12 @@ the host catches the unwind, while a wasm panic traps its instance and cannot be
 caught at all — so the harness installs a panic hook that compares the message
 against the expectation and reports through the same channel as a pass.
 
+A test that only the host can run carries `#[host_only]` in the list instead of
+a target `cfg` around a second call to `gpu_tests!`. The wasm suite lists trials
+from the host build but runs them in a browser, so a host-only test is compiled
+out of the wasm registry and the proxy drops its trial: both sides then list the
+same names, and one list stays the whole truth about what the file declares.
+
 There is a third mode. With `UNLIT3D_WASM_TEST` in the environment, a native run
 becomes a *proxy* instead of a runner: it lists every test so `cargo nextest` can
 drive it, and each trial asks a local Node runner to run that test in a real

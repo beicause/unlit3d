@@ -8,17 +8,28 @@ license.workspace = true
 keywords = ["audio", "example", "gamedev", "physics", "webgpu"]
 publish = false
 
+# The library is what the browser and the Android build run: the binary is a
+# thin command line over it, the wasm-bindgen output is built from the library
+# the page loads, and `cdylib` is what the Android activity loads.
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "unlit3dx_examples"
+
 [[bin]]
 name = "unlit3dx-examples"
 path = "src/main.rs"
+
+# The snapshot tests step the same worlds the windowed binary runs, so the
+# page the wasm suite loads is a test target rather than the binary.
+[[test]]
+harness = false
+name = "headless"
 
 [dependencies]
 argh.workspace = true
 # The headless run builds the same job queues the threaded worlds use,
 # without spawning the threads.
 async-channel.workspace = true
-# The headless run encodes its audio deliverable losslessly.
-flacenc.workspace = true
 glam.workspace = true
 hashbrown.workspace = true
 log.workspace = true
@@ -31,8 +42,6 @@ wgpu.workspace = true
 winit.workspace = true
 
 [dev-dependencies]
-# The audio baseline is a FLAC stream, so the tests decode it to compare.
-claxon.workspace = true
 # The headless run's snapshot tests compare captured frames and audio
 # against baselines kept in the asset submodule.
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1.0-dev.2", features = ["snapshot"] }
@@ -48,6 +57,9 @@ env_logger.workspace = true
 # demo serves with --mcp.
 unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2", features = ["mcp"] }
 
+# The headless run encodes its audio deliverable losslessly. Both this and
+# the decoder below write and read files, which a browser cannot do.
+flacenc.workspace = true
 # The headless mode encodes its last frame as a PNG on the way out.
 image = { workspace = true, default-features = false, features = ["png"] }
 
@@ -56,5 +68,31 @@ image = { workspace = true, default-features = false, features = ["png"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The audio baseline is a FLAC stream, so the tests decode it to compare.
+claxon.workspace = true
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The browser has no terminal: the web build logs to the console and
+# reports panics there.
+console_error_panic_hook.workspace = true
+console_log.workspace = true
 wasm-bindgen-futures.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+# The export the test page calls is what `gpu_test_main!` generates.
+wasm-bindgen.workspace = true
+
+# Winit needs one of its Android activity backends selected to build for
+# Android, and the choice belongs to whoever starts the event loop. Picking it
+# here rather than passing a feature means a plain Android build works; a
+# feature would have to be turned on by every caller. `GameActivity` supports
+# the wider range of Android versions.
+#
+# There is no terminal behind an activity, so the logger backend is logcat.
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = "0.15.1"
+winit = { workspace = true, features = ["android-game-activity"] }
+
+[lints]
+workspace = true

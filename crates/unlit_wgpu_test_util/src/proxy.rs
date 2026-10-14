@@ -40,8 +40,12 @@ const WASM_MARKER: &str = "[wasm]";
 /// Never returns: it exits the process with libtest's status.
 pub fn run_wasm(tests: Vec<TestEntry>, wasm_module: &'static str) -> ! {
     let args = libtest_mimic::Arguments::from_args();
+    // A host-only test is not in the wasm build, so a browser could not run
+    // it. The host build is the one nextest lists trials from, so dropping it
+    // here is what keeps the two sides' listings equal.
     let trials = tests
         .into_iter()
+        .filter(|entry| !entry.host_only)
         .map(|entry| {
             // The marker leads, so the profile's filter matches on it without
             // having to know any test's name.

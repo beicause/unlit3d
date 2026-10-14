@@ -40,6 +40,14 @@ pub struct TestEntry {
     /// before the test runs: a panic aborts a wasm instance instead of
     /// unwinding, so the panic hook has to decide the verdict itself.
     pub expected_panic: Option<&'static str>,
+    /// Whether only the host can run the test, never a browser.
+    ///
+    /// The wasm suite drives the host build of a test binary but runs each
+    /// trial in a browser, and a browser has neither a filesystem to read a
+    /// baseline from nor a device to play a mix through. Such a test is
+    /// compiled out of the wasm build and the proxy skips it, so both sides
+    /// list the same trials.
+    pub host_only: bool,
 }
 
 impl TestEntry {
@@ -59,6 +67,10 @@ impl TestEntry {
 /// A test that must panic carries `#[should_panic(expected = "...")]` in the
 /// list rather than on its body, because the attribute is what the runner
 /// compares a caught panic against and the body is not itself a test item.
+///
+/// A test only the host can run carries `#[host_only]` in the list instead of
+/// a target `cfg` around a second invocation of this macro, so one list stays
+/// the whole truth about what the file declares.
 ///
 /// # Example
 ///
@@ -94,6 +106,23 @@ macro_rules! gpu_tests {
     };
 
     (@acc [$($acc:tt)*]
+     #[host_only]
+     $name:ident,
+     $($rest:tt)*) => {
+        $crate::gpu_tests!(@acc
+            [$($acc)*
+             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+             $crate::TestEntry {
+                module: module_path!(),
+                name: stringify!($name),
+                body: (|| ::std::boxed::Box::pin($name())) as $crate::TestFn,
+                expected_panic: ::core::option::Option::None,
+                host_only: true,
+            },]
+            $($rest)*);
+    };
+
+    (@acc [$($acc:tt)*]
      #[should_panic(expected = $msg:literal)]
      $name:ident,
      $($rest:tt)*) => {
@@ -103,6 +132,7 @@ macro_rules! gpu_tests {
                 name: stringify!($name),
                 body: (|| ::std::boxed::Box::pin($name())) as $crate::TestFn,
                 expected_panic: ::core::option::Option::Some($msg),
+                host_only: false,
             },]
             $($rest)*);
     };
@@ -114,6 +144,7 @@ macro_rules! gpu_tests {
                 name: stringify!($name),
                 body: (|| ::std::boxed::Box::pin($name())) as $crate::TestFn,
                 expected_panic: ::core::option::Option::None,
+                host_only: false,
             },]
             $($rest)*);
     };
