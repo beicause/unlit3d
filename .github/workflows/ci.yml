@@ -78,11 +78,11 @@ jobs:
       # `UNLIT3D_REQUIRE_SOUNDFONT`, so a checkout that silently stopped
       # exercising the mix fails rather than passing.
       - name: Fetch the demo soundfont
+        # One line: the default shell on Windows is PowerShell, which does not
+        # continue a command on a trailing backslash.
         run: |
           mkdir -p assets
-          gh api -H "Accept: application/vnd.github.raw" \
-            repos/beicause/soundfont/contents/FluidR3Mono_GM.sf3 \
-            > assets/FluidR3Mono_GM.sf3
+          gh api -H "Accept: application/vnd.github.raw" repos/beicause/soundfont/contents/FluidR3Mono_GM.sf3 > assets/FluidR3Mono_GM.sf3
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -94,10 +94,13 @@ jobs:
         # Linux runners have no GPU: lavapipe is the software Vulkan
         # implementation the GPU tests render through. macOS has Metal and
         # Windows has DX12, so neither needs anything installed.
+        #
+        # libasound2-dev is the ALSA headers cpal's Linux host links through,
+        # which any host build of unlit3dx needs.
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes mesa-vulkan-drivers
+          sudo apt-get install --yes mesa-vulkan-drivers libasound2-dev
 
       - name: Caching
         uses: Swatinem/rust-cache@v2
@@ -206,6 +209,12 @@ jobs:
         run: |
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add wasm32-unknown-unknown
+
+      # The Clippy step below builds for the host, where cpal links ALSA.
+      - name: Install ALSA headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev
 
       # One cache for the whole job: its two builds share this key, and the
       # features they differ in are the only reason there are two.
