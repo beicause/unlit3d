@@ -1,12 +1,12 @@
-//! `cargo xtask build-android`: build the example's shared library, then the
-//! APK that packages it.
+//! `cargo xtask build-android`: build the examples' shared libraries, then the
+//! APK that packages them.
 //!
 //! Two tools, split along the language boundary. `cargo ndk` cross-compiles the
-//! example for Android and drops the `.so` into the app's `jniLibs` directory,
-//! which is where Gradle looks for native libraries and packages whatever it
-//! finds; Gradle then compiles the activity and assembles the APK around it.
-//! The library is built first because an APK without it is an activity that
-//! cannot start.
+//! examples for Android and drops each `.so` into the app's `jniLibs`
+//! directory, which is where Gradle looks for native libraries and packages
+//! whatever it finds; Gradle then compiles the activities and assembles the APK
+//! around them. The libraries are built first because an APK without them is an
+//! activity that cannot start.
 //!
 //! Both tools configure themselves from the environment: `cargo ndk` reads the
 //! NDK out of `ANDROID_NDK_HOME` (or the newest one under `ANDROID_HOME/ndk`)
@@ -18,8 +18,10 @@ use std::process::Command;
 use super::BuildAndroidArgs;
 use super::step;
 
-/// The crate whose library the activity loads.
-const EXAMPLE_CRATE: &str = "unlit3d_examples";
+/// The crates whose libraries the activities load, in the order the tab bar
+/// lists them. Each is a `cdylib` exporting `android_main`, and each activity
+/// names the one it loads in its `android.app.lib_name` manifest entry.
+const EXAMPLE_CRATES: &[&str] = &["unlit3d_examples", "unlit3dx_examples"];
 /// The ABI the APK carries. Kept in step with `abiFilters` in
 /// `android/app/build.gradle.kts`, which is what decides what the APK accepts.
 const ABI: &str = "arm64-v8a";
@@ -40,13 +42,19 @@ pub fn run(args: &BuildAndroidArgs) -> Result<(), String> {
     apk(args)
 }
 
-/// Cross-compile the example and stage its library for the APK.
+/// Cross-compile the examples and stage their libraries for the APK.
+///
+/// One `cargo ndk` run builds them all: it passes the packages through to
+/// `cargo build` and writes every resulting `.so` into the same `jniLibs`
+/// directory, which is what the activities load from at run time.
 fn library(args: &BuildAndroidArgs) -> Result<(), String> {
     let profile: &[&str] = if args.release { &["--release"] } else { &[] };
     let mut cargo = Command::new("cargo");
     cargo
         .args(["ndk", "-t", ABI, "-P", PLATFORM, "-o", JNI_LIBS_DIR])
-        .args(["build", "-p", EXAMPLE_CRATE, "--lib"])
+        .arg("build")
+        .args(EXAMPLE_CRATES.iter().flat_map(|krate| ["-p", krate]))
+        .arg("--lib")
         .args(profile);
     step::run(&mut cargo, "the Android build")
 }

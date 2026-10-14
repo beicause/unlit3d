@@ -59,7 +59,7 @@ enum Task {
     Test(TestArgs),
     /// Run the GPU tests in a real browser, through wasm and WebGL2.
     TestWasm(TestWasmArgs),
-    /// Build and serve the web example.
+    /// Build and serve the web examples.
     RunWasm(RunWasmArgs),
     /// Build the Android example's shared library and the APK around it.
     BuildAndroid(BuildAndroidArgs),
@@ -111,15 +111,30 @@ struct TestWasmArgs {
 #[argh(
     subcommand,
     name = "run-wasm",
-    description = "build the web example and serve it for a browser"
+    description = "build the web examples and serve them for a browser"
 )]
 struct RunWasmArgs {
+    /// which examples to build and serve.
+    #[argh(option, default = "WebApp::All")]
+    app: WebApp,
     /// build and bindgen only; do not serve.
     #[argh(switch)]
     no_serve: bool,
     /// extra arguments for the cargo build.
     #[argh(positional, greedy)]
     cargo_args: Vec<String>,
+}
+
+/// Which web examples a wasm task covers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, argh::FromArgValue)]
+enum WebApp {
+    /// the unlit3d example alone.
+    Unlit3d,
+    /// the unlit3dx example alone.
+    Unlit3dx,
+    /// the landing page and both examples.
+    #[default]
+    All,
 }
 
 /// Arguments of `cargo xtask build-android`.

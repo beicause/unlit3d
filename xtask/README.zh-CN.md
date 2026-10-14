@@ -72,9 +72,9 @@ downlevel 能力。第二趟才是在一台适配器为 Vulkan、Metal 或 DX12 
 而不是 unwind——这也是 `#[should_panic]` 由 panic hook 判定、而不是靠捕获 panic 的
 原因。
 
-在跑测试之前，runner 还会加载示例——也就是浏览器真正运行的那个程序，GPU 测试从不会
-启动它——并检查它能启动、能选到后端、并在画布上留下带明暗的画面而不是一片空白。它用的
-正是 `run-wasm` 所提供的同一个页面、由同一份代码构建，因此两者不会走样。
+在跑测试之前，runner 还会加载每个示例——也就是浏览器真正运行的那些程序，GPU 测试从不会
+启动它们——并检查它能启动、能选到后端、并在画布上留下带明暗的画面而不是一片空白。它们用
+的正是 `run-wasm` 所提供的同一批页面、由同一份代码构建，因此两者不会走样。
 
 runner 的 JS 依赖与浏览器会在首次运行时安装；用 `CHROME_PATH` 指定现成的浏览器可
 免于下载，`--show` 打开可见窗口以观察失败。nextest 那一趟使用的 profile 是 `wasm`，
@@ -92,6 +92,10 @@ debug 的 wasm 才是这里慢的东西：链接要几分钟，下载体积是�
 WebGPU 只在*安全上下文*中可用，`localhost` 是安全上下文而 `file://` URL 不是。服务器
 内置于任务执行器中，因此无需安装任何东西。
 
+`--app` 选择构建什么：`unlit3d`、`unlit3dx` 或默认的 `all`。构建会按 Pages 工作流
+发布站点的方式布局——根目录一个首页，每个示例各占旁边一个目录——首页只链接已经构建
+出来的示例，因此 `--app unlit3dx` 得到的是一个单卡片页面，而不是一个坏链接。
+
 它绑定到回环地址的 8000 端口；若该端口被占用，则尝试其后的端口，并打印要打开的 URL。
 `--no-serve` 只构建并跑 bindgen、不提供服务；尾部的位置参数会透传给 `cargo build`。
 
@@ -99,15 +103,21 @@ WebGPU 只在*安全上下文*中可用，`localhost` 是安全上下文而 `fil
 以体积为目标——所以没有 profile 开关可传：产物总是落在
 `target/generated/wasm-dev`，浏览器也永远不会拿到 debug 二进制。
 
-这里显式指定了二进制 target，而不是交给默认的 target 选择：示例 crate 同时是
+这里显式指定了每个二进制 target，而不是交给默认的 target 选择：每个示例 crate 同时是
 `cdylib` 和二进制，而在 `wasm32-unknown-unknown` 上浏览器运行的是二进制，不是
 cdylib。
 
 ### `cargo xtask build-android`
 
-两个工具，沿语言边界分工。`cargo ndk` 为 Android 交叉编译示例并把 `.so` 放进 app 的
-`jniLibs` 目录——Gradle 正是在那里寻找原生库并打包它找到的一切；随后 Gradle 编译
-activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK 就是一个无法启动的 activity。
+两个工具，沿语言边界分工。`cargo ndk` 为 Android 交叉编译两个示例并把各自的 `.so` 放进
+app 的 `jniLibs` 目录——Gradle 正是在那里寻找原生库并打包它找到的一切；随后 Gradle
+编译 activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK 就是一个无法启动的
+activity。
+
+APK 里每个示例各有一条 activity，各自通过自己的 `android.app.lib_name` 清单项加载自己
+的动态库——`GameActivity` 对每条 activity 只读取一次该名字，所以切换示例是启动另一条
+activity，而不是复用正在运行的那条。由 `TabbedExampleActivity` 绘制的悬浮 tab 条负责
+在两者间切换，并结束它离开的那条 activity。
 
 两个工具都从环境变量自我配置：`cargo ndk` 从 `ANDROID_NDK_HOME` 读取 NDK（否则取
 `ANDROID_HOME/ndk` 下最新的一版），Gradle 从 `ANDROID_HOME` 读取 SDK（否则看

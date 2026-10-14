@@ -28,7 +28,12 @@ use crate::{TestWasmArgs, step};
 /// Named rather than taken from the workspace, because these are the ones whose
 /// test targets are wasm-test binaries. The example's own snapshot tests are
 /// among them: its scenes run in the browser the same way the crates' tests do.
-const PACKAGES: &[&str] = &["unlit_wgpu", "unlit3d", "unlit3d_examples"];
+const PACKAGES: &[&str] = &[
+    "unlit_wgpu",
+    "unlit3d",
+    "unlit3d_examples",
+    "unlit3dx_examples",
+];
 
 /// The target the tests are built for.
 const TARGET: &str = "wasm32-unknown-unknown";
@@ -36,12 +41,12 @@ const TARGET: &str = "wasm32-unknown-unknown";
 /// Where the page, the built modules and `wasm_paths.json` are assembled.
 const DIST: &str = "tests/wasm/dist";
 
-/// Where the built example is assembled for the runner to serve.
+/// Where the built examples are assembled for the runner to serve.
 ///
-/// The runner serves the example from its own tree rather than reaching into
-/// `target/`, so one directory holds everything the page needs and the runner
+/// The runner serves them from its own tree rather than reaching into
+/// `target/`, so one directory holds everything a page needs and the runner
 /// has no reason to know how the build laid it out.
-const EXAMPLE_DIST: &str = "tests/wasm/example";
+const EXAMPLE_DIST: &str = "tests/wasm/examples";
 
 /// The page the runner serves, copied into [`DIST`] as-is.
 const WEB: &str = "tests/wasm/web";
@@ -100,9 +105,8 @@ pub fn run(args: &TestWasmArgs) -> Result<(), String> {
     println!("==> building the workspace for wasm");
     build_workspace()?;
 
-    println!("==> building the example");
-    let example = crate::run_wasm::build_example(&[])?;
-    copy_example(&example)?;
+    println!("==> building the examples");
+    copy_examples()?;
 
     println!("==> building the wasm test binaries and binding them");
     let modules = build_wasm_tests()?;
@@ -114,8 +118,8 @@ pub fn run(args: &TestWasmArgs) -> Result<(), String> {
     let mut runner = Runner::start(args.show)?;
     runner.wait_until_listening()?;
 
-    println!("==> running the example in the browser");
-    check_example()?;
+    println!("==> running the examples in the browser");
+    check_examples()?;
 
     println!("==> running the tests in the browser");
     let result = run_through_nextest();
@@ -235,11 +239,11 @@ fn build_workspace() -> Result<(), String> {
     // whose wasm randomness source this crate does not ask for. A browser drives
     // the world through the example's own UI, not through the protocol.
     //
-    // `unlit3dx_examples` builds for this target: its GPU request runs on the
-    // browser's task queue, and its `--mcp` dependency is target-gated away.
-    // It cannot run here, though: its remote worlds own OS threads, which a
-    // threads-enabled target provides, and it reads its soundfont from the
-    // filesystem.
+    // `unlit3dx_examples` runs its worlds inline on this target: the library
+    // spawns them through its stepped runner, so the host carries the same
+    // entities a threaded run would and the browser needs no thread support.
+    // Its GPU request runs on the browser's task queue, and its `--mcp`
+    // dependency is target-gated away.
     let mut build = Command::new("cargo");
     build
         .args(["build", "--workspace", "--exclude", "xtask"])
@@ -372,13 +376,31 @@ fn write_page(modules: &[String]) -> Result<(), String> {
     std::fs::write(&path, json).map_err(|error| format!("writing {}: {error}", path.display()))
 }
 
-/// Copy the built example into [`EXAMPLE_DIST`], where the runner serves it.
-fn copy_example(built: &Path) -> Result<(), String> {
-    let target = Path::new(EXAMPLE_DIST);
+/// Build every example the site shows and copy it where the runner serves it.
+///
+/// The same pages `cargo xtask run-wasm` writes are built here, from the same
+/// description, so the program under test is the one the site publishes.
+fn copy_examples() -> Result<(), String> {
+    let root = Path::new(EXAMPLE_DIST);
     // Removed first: a stale module would keep being served after the build
     // that produced it stopped being the one on disk.
-    std::fs::remove_dir_all(target).ok();
-    std::fs::create_dir_all(target).map_err(|error| format!("creating {EXAMPLE_DIST}: {error}"))?;
+    std::fs::remove_dir_all(root).ok();
+    std::fs::create_dir_all(root).map_err(|error| format!("creating {EXAMPLE_DIST}: {error}"))?;
+
+    for example in crate::run_wasm::EXAMPLES {
+        let built = Path::new("target")
+            .join(crate::run_wasm::OUT_DIR)
+            .join(crate::run_wasm::PROFILE);
+        crate::run_wasm::build_example(example, &[], &built.join(example.dir))?;
+        copy_example(&built.join(example.dir), &root.join(example.dir))?;
+    }
+    Ok(())
+}
+
+/// Copy one built example into the runner's tree.
+fn copy_example(built: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target)
+        .map_err(|error| format!("creating {}: {error}", target.display()))?;
 
     for entry in
         std::fs::read_dir(built).map_err(|error| format!("reading {}: {error}", built.display()))?
@@ -391,18 +413,31 @@ fn copy_example(built: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Ask the runner to load the example and confirm it drew something.
+/// Ask the runner to load each example and confirm it drew something.
 ///
-/// The GPU tests cover the rendering paths; this covers the program a browser
-/// actually runs, which they never start. A change that compiles but leaves the
+/// The GPU tests cover the rendering paths; this covers the programs a browser
+/// actually runs, which they never start. A change that compiles but leaves a
 /// page blank passes those and fails here.
-fn check_example() -> Result<(), String> {
-    let response = ureq::get(&format!("{BASE_URL}/run_example"))
+fn check_examples() -> Result<(), String> {
+    for example in crate::run_wasm::EXAMPLES {
+        check_example(example)?;
+    }
+    Ok(())
+}
+
+/// Ask the runner to load one example and confirm it drew something.
+fn check_example(example: &crate::run_wasm::Example) -> Result<(), String> {
+    let response = ureq::get(&format!("{BASE_URL}/run_example?app={}", example.dir))
         .config()
         .http_status_as_error(false)
         .build()
         .call()
-        .map_err(|error| format!("running the example in the browser: {error}"))?;
+        .map_err(|error| {
+            format!(
+                "running the {} example in the browser: {error}",
+                example.label
+            )
+        })?;
 
     if response.status().is_success() {
         return Ok(());
@@ -411,7 +446,10 @@ fn check_example() -> Result<(), String> {
         .into_body()
         .read_to_string()
         .unwrap_or_else(|error| format!("the runner's failure message could not be read: {error}"));
-    Err(format!("the example did not render:\n{message}"))
+    Err(format!(
+        "the {} example did not render:\n{message}",
+        example.label
+    ))
 }
 
 /// Run the tests through the proxy, so nextest reports the browser's results.
