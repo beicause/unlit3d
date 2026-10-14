@@ -22,7 +22,7 @@ fail-fast = false
 # a native one; the timeout is what keeps a wedged page from hanging the suite.
 [profile.wasm]
 default-filter = "test([wasm])"
-slow-timeout = { period = "45s", terminate-after = 2 }
+slow-timeout = { period = "60s", terminate-after = 2 }
 fail-fast = false
 # A browser that failed once is not worth retrying: a snapshot mismatch or a
 # missing adapter will reproduce, and a retry only doubles the wait.

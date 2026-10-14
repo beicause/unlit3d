@@ -35,8 +35,16 @@ const MISMATCH_DIR =
   path.resolve(HERE, "..", "..", "..", "target", "snapshot-mismatches-wasm");
 
 const PORT = Number(process.env.PORT ?? 3000);
-/** How long one test may take. Software WebGL is slow, so this is generous. */
-const TIMEOUT_MS = Number(process.env.TIMEOUT ?? 30_000);
+/**
+ * How long one test may take.
+ *
+ * Software WebGL is slow and a shared CI runner is slower still: the
+ * full-scene example steps 300 frames before it reports, and that has been
+ * measured past the half-minute mark on a loaded runner. This stays under
+ * the wasm nextest profile's slow-timeout, so a wedged page fails with the
+ * browser's own log rather than a bare kill from the harness.
+ */
+const TIMEOUT_MS = Number(process.env.TIMEOUT ?? 90_000);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 /** Run with a visible window, to watch a failure happen. */
 const SHOW = process.argv.includes("--show");

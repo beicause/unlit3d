@@ -15,13 +15,6 @@
 //! missing one fails the run instead of skipping it, so a checkout that
 //! silently stopped exercising the mix cannot pass.
 
-// A skipped audio check has to say so out loud: a green run that quietly
-// tested nothing is worse than a red one.
-#![expect(
-    clippy::print_stderr,
-    reason = "naming the reason a test skipped is part of the test's output"
-)]
-
 use std::sync::Arc;
 
 use unlit_wgpu_test_util::{
@@ -189,8 +182,15 @@ async fn frames_match_the_baselines() {
 }
 
 /// The audio baseline is a host-only check: it needs the real soundfont and
-/// a filesystem, neither of which a browser has.
+/// a filesystem, neither of which a browser has. A skipped check has to say
+/// so out loud: a green run that quietly tested nothing is worse than a red
+/// one, and the expectation sits here rather than on the file so a target
+/// that drops the check does not leave it unfulfilled.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+#[expect(
+    clippy::print_stderr,
+    reason = "naming the reason a test skipped is part of the test's output"
+)]
 async fn audio_matches_the_baseline() {
     let Some(soundfont) = required_soundfont() else {
         eprintln!("skipping: no soundfont under assets");
