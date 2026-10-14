@@ -65,7 +65,7 @@ pub mod prelude {
     #[cfg(feature = "audio")]
     pub use crate::audio::{
         AudioChunk, AudioConfig, AudioFormat, AudioFormatInbox, AudioGain, AudioReady,
-        AudioReadyInbox, FillOrder, OnFill, WorldFillExt, dispatch_fill, spawn_audio_world,
+        AudioReadyInbox, FillOrder, OnFill, WorldFillExt, dispatch_fill, spawn_audio_world_with,
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};
@@ -75,7 +75,7 @@ pub mod prelude {
     pub use crate::physics::{
         BodyDesc, BodyShape, PHYSICS_HZ, PhysicsConfig, PhysicsInbox, PhysicsSnapshot,
         RigidBodyHandle, despawn_body, init_physics_world, spawn_body, spawn_fixed_cuboid,
-        spawn_physics_world, step_once,
+        spawn_physics_world_with, step_once,
     };
     #[cfg(feature = "render")]
     pub use crate::present::{
@@ -101,6 +101,10 @@ pub mod prelude {
         host::{drain_sub_world, spawn_sub_world},
         job::{Job, JobSender, Request, RequestError, SendError},
         thread::{FixedClock, ThreadControl, ThreadStatus, WorldThread},
-        world::{spawn_remote_world, spawn_remote_world_with, spawn_remote_world_with_init},
+        world::{
+            Stepped, Threaded, WorldRunner, spawn_remote_world, spawn_remote_world_with,
+            spawn_remote_world_with_init, spawn_stepped_world_with_init, step_stepped_world,
+            with_stepped_world,
+        },
     };
 }

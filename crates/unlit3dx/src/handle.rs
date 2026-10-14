@@ -2,7 +2,7 @@
 //!
 //! A spawned world — a sub-world on the host thread, a remote world on its
 //! own — is reached the same way: a bounded command channel that never
-//! blocks. [`WorldHandle`](crate::handle::WorldHandle) is that uniform handle. The spawn functions
+//! blocks. [`WorldHandle`] is that uniform handle. The spawn functions
 //! return it instead of a bare entity, so a caller queues work without a
 //! second lookup for the proxy component on the host.
 

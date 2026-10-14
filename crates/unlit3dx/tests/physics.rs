@@ -21,7 +21,7 @@ const STEPS: usize = 256;
 /// A physics world at the default rate, with the floor already queued.
 fn floored_host() -> (World, WorldHandle) {
     let mut host = World::new();
-    let world = spawn_physics_world(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
     world
         .send(Box::new(move |world: &mut World| {
             spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
@@ -170,7 +170,7 @@ fn a_landing_reports_the_closing_speed() {
 #[test]
 fn an_empty_world_publishes_empty_snapshots() {
     let mut host = World::new();
-    let world = spawn_physics_world(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
 
     assert!(
         wait_for(|| latest(&host, &world).is_some()),
@@ -189,7 +189,7 @@ fn an_empty_world_publishes_empty_snapshots() {
 fn the_configured_gravity_reaches_the_world() {
     let gravity = Vec3::new(0.0, -1.5, 0.0);
     let mut host = World::new();
-    let world = spawn_physics_world(
+    let world = spawn_physics_world_with::<Threaded>(
         &mut host,
         PhysicsConfig {
             gravity,

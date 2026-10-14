@@ -39,14 +39,19 @@ impl Stop {
     }
 }
 
-/// How a world thread's tick paces itself and observes a stop.
+/// How a world's tick paces itself and observes a stop.
 ///
 /// Every method may be called from inside the tick, which holds the control
 /// by shared reference only: the stop lives in a shared flag, so a tick that
 /// sleeps through the stop signal still sees it when it wakes.
 pub struct ThreadControl {
-    /// The stop signal the thread's owner sends.
+    /// The stop signal the world's owner sends.
     stop: Arc<Stop>,
+    /// Whether a thread drives the world.
+    ///
+    /// A world the host steps has no thread to sleep on: its waits return
+    /// at once, and the host paces it by stepping it when a step is due.
+    self_driven: bool,
 }
 
 impl ThreadControl {
@@ -57,8 +62,24 @@ impl ThreadControl {
         self.stop.requested()
     }
 
+    /// Whether a thread drives the world.
+    ///
+    /// A world the host steps is not self-driven: its waits return at once,
+    /// because the host is what decides when a step is due.
+    #[must_use]
+    pub fn self_driven(&self) -> bool {
+        self.self_driven
+    }
+
     /// Sleep for at most `timeout`, returning early when a stop is requested.
+    ///
+    /// A world the host steps has no thread to sleep on, so this returns at
+    /// once: the host owns the pacing, and one tick body then serves both
+    /// modes unchanged.
     pub fn wait_timeout(&self, timeout: Duration) {
+        if !self.self_driven {
+            return;
+        }
         let requested = sync::lock(&self.stop.requested);
         if *requested {
             return;
@@ -101,6 +122,19 @@ impl ThreadStatus {
     /// Ask the thread to stop, without waiting for it to finish.
     pub fn stop(&self) {
         self.stop.request();
+    }
+
+    /// Mark the world as finished.
+    ///
+    /// A world on its own thread marks itself when its loop ends; a stepped
+    /// world's host calls this when its tick returns `false` or panics.
+    pub(crate) fn finish(&self) {
+        self.finished.store(true, Ordering::Release);
+    }
+
+    /// Record the panic that ended the world.
+    pub(crate) fn record_panic(&self, message: String) {
+        *sync::lock(&self.panics) = Some(message);
     }
 }
 
@@ -156,7 +190,10 @@ impl WorldThread {
         let joined = std::thread::Builder::new()
             .name(name)
             .spawn(move || {
-                let control = ThreadControl { stop: thread_stop };
+                let control = ThreadControl {
+                    stop: thread_stop,
+                    self_driven: true,
+                };
                 let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let mut world = World::new();
                     let mut state = init(&mut world);
@@ -260,6 +297,9 @@ impl Drop for WorldThread {
 /// The boundary advances by exactly one step per wait, so a tick that
 /// finishes early does not shift the schedule; a tick that overruns a whole
 /// step resynchronizes to the present instead of catching up in a burst.
+///
+/// The clock paces a self-driven world; a world the host steps does not
+/// need it, because the host decides when each step is due.
 pub struct FixedClock {
     /// Seconds per step.
     step: Duration,
@@ -295,6 +335,24 @@ impl FixedClock {
     pub fn step_seconds(&self) -> f32 {
         self.step.as_secs_f32()
     }
+}
+
+/// A control and status pair for a world the host steps.
+///
+/// Nothing is spawned here: the world has no thread, its waits return at
+/// once, and the host steps it whenever a step is due.
+pub(crate) fn stepped_control() -> (ThreadControl, ThreadStatus) {
+    let stop = Arc::new(Stop::default());
+    let status = ThreadStatus {
+        stop: Arc::clone(&stop),
+        finished: Arc::default(),
+        panics: Arc::default(),
+    };
+    let control = ThreadControl {
+        stop,
+        self_driven: false,
+    };
+    (control, status)
 }
 
 /// The message a panic payload carries, whatever shape it arrived in.

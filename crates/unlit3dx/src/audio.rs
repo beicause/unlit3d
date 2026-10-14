@@ -20,7 +20,7 @@ use unlit_ecs::{Entity, World};
 use crate::channel::{SnapshotReader, snapshot_pair};
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
-use crate::world::spawn_remote_world_with;
+use crate::world::WorldRunner;
 
 /// How many frames the filler generates per pass, the unit the pacing and
 /// the ring's headroom are measured in.
@@ -287,21 +287,32 @@ struct OpenOutput {
     channels: u16,
 }
 
-/// Spawn the audio remote world on a fresh thread, and return the handle to
-/// it. Its entity carries the command channel, [`AudioFormatInbox`] and
-/// [`AudioReadyInbox`].
+/// Spawn the audio world driven by `R`: on its own thread
+/// ([`Threaded`](crate::world::Threaded)), or stepped by the host
+/// ([`Stepped`](crate::world::Stepped)).
 ///
-/// The thread opens the default output device on its first tick and keeps it
-/// open; until then, and whenever no device exists, the world runs silently.
-/// Once the stream is open its format is in the inbox, and the world mixes
-/// whatever [`OnFill`] sources a caller has since queued into it — a world
-/// nobody has installed stays silent.
+/// The world's entity carries the command channel, [`AudioFormatInbox`] and
+/// [`AudioReadyInbox`]. A self-driven world opens the default output device
+/// on its first tick and keeps it open, publishing its format once it
+/// knows it; until then, and whenever no device exists, the world runs
+/// silently. A stepped world opens no device at all — the host pulls its
+/// fills with [`dispatch_fill`] — and its format inbox stays empty. Either
+/// way the world mixes whatever [`OnFill`] sources a caller has since
+/// queued into it, and a world nobody has installed stays silent.
+///
+/// Both runners share one tick body, so a stepped world opens its output and
+/// fills its ring exactly as a threaded one does; the only difference is
+/// that its host calls [`crate::world::step_stepped_world`] once per frame
+/// instead of a thread pacing itself.
 ///
 /// # Panics
 ///
 /// Panics when `buffer_frames` cannot hold two fill chunks, or when
 /// `command_capacity` is zero.
-pub fn spawn_audio_world(host: &mut World, config: AudioConfig) -> WorldHandle {
+pub fn spawn_audio_world_with<R: WorldRunner>(
+    host: &mut World,
+    config: AudioConfig,
+) -> WorldHandle {
     // The filler writes in chunks of FILL_FRAMES frames, so a ring smaller
     // than one chunk would never see room and the stream would stay silent
     // forever. Two chunks leave room to top the ring up between wakeups.
@@ -320,7 +331,7 @@ pub fn spawn_audio_world(host: &mut World, config: AudioConfig) -> WorldHandle {
     // sample rate is known and then keeps its own cadence, so a slow tick
     // does not push every later wakeup out.
     let mut clock: Option<FixedClock> = None;
-    spawn_remote_world_with(
+    R::spawn(
         host,
         "audio",
         config.command_capacity,
@@ -328,11 +339,16 @@ pub fn spawn_audio_world(host: &mut World, config: AudioConfig) -> WorldHandle {
             AudioFormatInbox(format_reader),
             AudioReadyInbox(ready_reader),
         ),
-        move |world, control| {
+        |_| (),
+        move |world, control, ()| {
             if control.stop_requested() {
                 return false;
             }
-            if output.is_none() {
+            // A self-driven world owns an output device, which it opens on
+            // its first tick and retries until one appears. A world the
+            // host steps has no device: the host pulls its fills, so it is
+            // open from the first tick and never fills a ring.
+            if control.self_driven() && output.is_none() {
                 match open_output(&config) {
                     Some(opened) => {
                         log::info!(
@@ -362,7 +378,8 @@ pub fn spawn_audio_world(host: &mut World, config: AudioConfig) -> WorldHandle {
             // thread — so a device may be open for seconds before the world
             // carries one. Publish the transition, not the state, so the
             // mailbox stays quiet.
-            let sounding = output.is_some() && world.query::<&OnFill>().next().is_some();
+            let open = output.is_some() || !control.self_driven();
+            let sounding = open && world.query::<&OnFill>().next().is_some();
             if sounding != ready {
                 ready = sounding;
                 ready_writer.publish(AudioReady(sounding));
@@ -384,7 +401,7 @@ pub fn spawn_audio_world(host: &mut World, config: AudioConfig) -> WorldHandle {
                 } else {
                     control.wait_timeout(Duration::from_secs(1));
                 }
-            } else {
+            } else if control.self_driven() {
                 control.wait_timeout(Duration::from_secs(1));
             }
             true

@@ -97,16 +97,35 @@ panic）的请求报告 `Err(RequestError::Dropped)`，而不是永久阻塞。`
 未被读取的那份直接被替换。按 tick 产出快照的世界与按帧读取快照的消费者在中间
 会合，谁也不阻塞谁。
 
-## 线程
+## 线程与步进
 
-`WorldThread::spawn_with` 持有这个循环：它先运行一次性的 `init` 闭包（在第一次
-清空 job 队列之前），再检查 `ThreadControl::stop_requested`，在 `catch_unwind` 里
-运行 tick，并在线程结束前报告 panic，于是宿主知道自己的 world 为何而死，而不是
-join 到一具尸体。`ThreadControl::wait_timeout` 为 tick 配速，`FixedClock` 在其上
-为想要稳定步率、独立于帧率的世界服务。销毁代理实体会请求停止其线程并至多等待
-两秒；拒绝停止的 tick 会被遗弃（detach），而不是把销毁方挂住。句柄负责汇报线程
-状态——`is_finished`、`panic_message`——`stop` 则请求它结束；`join_timeout` 与
-`detach` 在 `WorldThread` 本身之上，留给直接持有它的调用方。
+world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`WorldRunner` 就是把这个
+选择做成泛型，而它是两种模式之间唯一的差别：有界 job 队列、快照信箱、宿主上的代理
+实体、生成返回的句柄全都一样，因此宿主的实体与组件不随 runner 改变，tick 体内也
+无需知道自己在哪种模式下。
+
+- **`Threaded`** 给 world 一条自己的线程。`WorldThread::spawn_with` 持有这个循环：
+  它先运行一次性的 `init` 闭包（在第一次清空 job 队列之前），再检查
+  `ThreadControl::stop_requested`，在 `catch_unwind` 里运行 tick，并在线程结束前
+  报告 panic，于是宿主知道自己的 world 为何而死，而不是 join 到一具尸体。销毁代理
+  实体会请求停止其线程并至多等待两秒；拒绝停止的 tick 会被遗弃（detach），而不是把
+  销毁方挂住。句柄负责汇报线程状态——`is_finished`、`panic_message`——`stop` 则
+  请求它结束；`join_timeout` 与 `detach` 在 `WorldThread` 本身之上，留给直接持有
+  它的调用方。
+- **`Stepped`** 让 world 留在它被生成的地方。`spawn_stepped_world_with_init` 把嵌套的
+  `World` 放进宿主实体上的代理组件里，`step_stepped_world` 在调用方的线程上跑一次
+  迭代：先清空队列，再跑 tick，各自都在 `catch_unwind` 下——与线程版的顺序一致。
+  某次步进让 world 走到终点后它被标记为已完成；`with_stepped_world` 把嵌套 `World`
+  借出来，供需要直接触达它的工作使用，例如从 render world 读回一帧。
+
+模式改变的是配速。`ThreadControl::wait_timeout` 会阻塞一条真实线程，而当 control
+并非自驱时立刻返回，于是同一个 tick 体服务两者：在 `Threaded` 下 `FixedClock` 等
+一个挂钟期限过去，在 `Stepped` 下这次 tick 在下次调用时就又到期了。因此步进一个
+world 的调用方自己拥有节奏——由它决定一帧值多少步，示例里的 `SceneStepper` 正是
+这么做的。
+
+浏览器与离屏运行用的就是步进模式。`wasm32-unknown-unknown` 没有线程可生成，而快照
+测试想要自己掌控的帧数，而不是由时钟决定的那一个。
 
 ## 桥
 
@@ -123,13 +142,13 @@ join 到一具尸体。`ThreadControl::wait_timeout` 为 tick 配速，`FixedClo
   运行并返回实体位，远程的玩法
   world 借此搭建它从不直接触碰的场景——`GpuMesh` 持有 `Rc`，所以跨线程的句柄
   就是实体位。
-- **physics**（默认开启）：`spawn_physics_world` 以固定步率（`PHYSICS_HZ`，64）
+- **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，64）
   驱动 rapier 的 `PhysicsWorld`，并发布一份 `PhysicsSnapshot`——每个运动刚体的
   变换，加上这一步开始与结束的碰撞对，以及每个新接触的速度。
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
   `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
-- **audio**（默认开启）：`spawn_audio_world` 打开输出设备并在音频线程上持有其
-  流。它的 `OnFill` 组件就是音源：`dispatch_fill` 每块运行一次它们，把各自叠加的
+- **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
+  持有其流。它的 `OnFill` 组件就是音源：`dispatch_fill` 每块运行一次它们，把各自叠加的
   样本混进由 `AudioConfig` 定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
   设备回调消费这个缓冲，欠载时静音。没有任何音源的 world 不出声。
   玩法从不直接触碰音频——它发送 job。代理实体携带两个收件箱：`AudioFormatInbox`
@@ -137,6 +156,11 @@ join 到一具尸体。`ThreadControl::wait_timeout` 为 tick 配速，`FixedClo
   而这一点在流打开之前无从知晓；以及 `AudioReadyInbox`，报告 world 真正能出声的时刻，
   调用方由此区分音色库加载中与设备损坏，并丢弃过期的音符而非把它们排在加载之后一次性齐放。
   因此安装音源就是这个 world 的普通工作：等待格式，再把生成音源的 job 排进队列。
+
+  步进的音频 world 完全不打开设备：没有可播放的目标，也没有回调来消费环形缓冲。它
+  也不发布格式，因此想要出声的调用方自行提前安装音源，并在需要一块时自己调用
+  `dispatch_fill`——示例的离屏运行正是这样把混音写成文件的。`dispatch_fill` 就是
+  音频线程每块的全部工作，所以直接步进它得到的是同一套混音，只是少了环形缓冲。
 - **synth**（默认开启，蕴含 audio）：安装所需的构件，构建在
   [rustysynth-ext](https://docs.rs/rustysynth-ext) 之上——`load_soundfont` 解析字节
   （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台实时音色，
@@ -174,7 +198,9 @@ world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
 ## 测试
 
 `cargo nextest run -p unlit3dx` 覆盖核心：job 往返、请求回复、快照替换、线程停止
-与 panic 报告，以及远程 world 的已发送 job 运行。集成测试补上各桥：物理 world
+与 panic 报告、远程 world 的已发送 job 运行，以及步进 world 的同一批行为——它的
+job 在步进时运行、走完终点的 tick 会结束它、步进一个不携带步进 world 的实体什么
+也不做。集成测试补上各桥：物理 world
 把球丢到地板上并报告接触、音频 world 运行 job 并发布就绪状态、多 world 的 job 与
 快照往来，以及 render 桥的失败路径——panic 的 job 只失败自己的请求，变换帧移动
 活着的实体、跳过已失效的实体。打开 `mcp` feature 后，MCP 命令分发也有覆盖：

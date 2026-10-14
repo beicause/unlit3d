@@ -142,7 +142,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     let mut host = World::new();
     let fills = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&fills);
-    let world = spawn_audio_world(&mut host, AudioConfig::default());
+    let world = spawn_audio_world_with::<Threaded>(&mut host, AudioConfig::default());
     // The source arrives the way a caller's would: an ordinary job. Jobs
     // are answered whether or not a device exists, so a device-less world
     // runs silently but stays alive.
@@ -184,7 +184,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
 #[test]
 fn the_audio_world_publishes_its_readiness() {
     let mut host = World::new();
-    let world = spawn_audio_world(&mut host, AudioConfig::default());
+    let world = spawn_audio_world_with::<Threaded>(&mut host, AudioConfig::default());
     let inbox = host
         .get::<AudioReadyInbox>(world.entity())
         .expect("the audio proxy carries its readiness inbox")

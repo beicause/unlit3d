@@ -1,7 +1,7 @@
 //! Jobs and requests: work handed to another world.
 //!
-//! A [`Job`](crate::job::Job) is a boxed closure the target world runs on its own thread. A
-//! [`Request`](crate::job::Request) pairs a job with a reply slot: the job's result lands in the
+//! A [`Job`] is a boxed closure the target world runs on its own thread. A
+//! [`Request`] pairs a job with a reply slot: the job's result lands in the
 //! slot, and the sender reads it synchronously with [`Request::poll`](crate::job::Request::poll) or
 //! awaits it as a [`Future`].
 

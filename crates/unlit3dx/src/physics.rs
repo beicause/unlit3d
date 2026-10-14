@@ -18,7 +18,7 @@ use unlit_ecs::World;
 use crate::channel::{SnapshotReader, SnapshotWriter, snapshot_pair};
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
-use crate::world::spawn_remote_world_with_init;
+use crate::world::WorldRunner;
 
 /// The simulation's default step rate, in hertz.
 pub const PHYSICS_HZ: f64 = 64.0;
@@ -167,7 +167,7 @@ pub struct BodyDesc {
 ///
 /// Panics when the world carries no [`PhysicsWorld`]. The physics world is
 /// created before any job runs, so jobs sent through
-/// [`spawn_physics_world`] never see this.
+/// [`spawn_physics_world_with`] never see this.
 #[must_use]
 pub fn spawn_body(world: &mut World, desc: BodyDesc) -> RigidBodyHandle {
     let mut physics = physics_world(world);
@@ -236,18 +236,28 @@ fn physics_world(world: &World) -> unlit_ecs::CellRefMut<'_, PhysicsWorld> {
         .1
 }
 
-/// Spawn the physics remote world on a fresh thread, and return the handle
-/// to it. Its entity carries the command channel and [`PhysicsInbox`].
+/// Spawn the physics world driven by `R`: on its own thread
+/// ([`Threaded`](crate::world::Threaded)), or stepped by the host
+/// ([`Stepped`](crate::world::Stepped)).
 ///
-/// The thread owns the rapier world as a [`PhysicsWorld`] component.
-/// Gameplay never touches it: jobs build bodies, and every step publishes a
-/// snapshot the host reads through the inbox. The world is created before
-/// the first job runs, so a job that builds a body — the static geometry,
-/// usually — finds it ready.
-pub fn spawn_physics_world(host: &mut World, config: PhysicsConfig) -> WorldHandle {
+/// The world's entity carries the command channel and [`PhysicsInbox`]. It
+/// owns the rapier world as a [`PhysicsWorld`] component, and gameplay
+/// never touches it: jobs build bodies, and every step publishes a snapshot
+/// the host reads through the inbox. The world is created before the first
+/// job runs, so a job that builds a body — the static geometry, usually —
+/// finds it ready.
+///
+/// Both runners share one tick body, so a stepped world simulates exactly
+/// what a threaded one does: the only difference is that its host calls
+/// [`crate::world::step_stepped_world`] once per frame instead of a thread
+/// pacing itself.
+pub fn spawn_physics_world_with<R: WorldRunner>(
+    host: &mut World,
+    config: PhysicsConfig,
+) -> WorldHandle {
     let (writer, reader) = snapshot_pair::<PhysicsSnapshot>();
     let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / config.hz));
-    spawn_remote_world_with_init(
+    R::spawn(
         host,
         "physics",
         config.command_capacity,
@@ -269,7 +279,8 @@ pub fn spawn_physics_world(host: &mut World, config: PhysicsConfig) -> WorldHand
 ///
 /// Thread-free callers that drive [`step_once`] on their own cadence —
 /// deterministic tests, offline rendering — call this to get the same world
-/// the threaded [`spawn_physics_world`] builds, contact events included.
+/// [`spawn_physics_world_with::<Threaded>`](spawn_physics_world_with) builds,
+/// contact events included.
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = PhysicsWorld::new();
     physics.gravity = config.gravity;

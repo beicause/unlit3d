@@ -1,20 +1,136 @@
-//! Remote worlds: a proxy component on the host that routes jobs to a thread.
+//! Worlds the host reaches through a proxy component: one on its own
+//! thread, or one the host steps itself.
+//!
+//! Both leave the same proxy component on the host entity, so the host's
+//! world carries the same data either way. What differs is who drives the
+//! world: a thread of its own, or the host's own frames.
 
-use async_channel::bounded;
-use unlit_ecs::{ArchetypeBuilder, Bundle, World};
+use async_channel::{Receiver, bounded};
+use unlit_ecs::{ArchetypeBuilder, Bundle, Entity, World};
 
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
-use crate::thread::{ThreadControl, ThreadStatus, WorldThread};
+use crate::thread::{ThreadControl, ThreadStatus, WorldThread, panic_message, stepped_control};
 
-/// The proxy component a remote world leaves on the host: it owns the
-/// thread, so despawning the entity requests the thread's stop.
+/// The proxy component a spawned world leaves on the host.
 ///
-/// It is an implementation detail of a remote world. Callers reach the
-/// world through the [`WorldHandle`] the spawn returns, never through this
-/// component.
-struct RemoteWorld {
-    _thread: WorldThread,
+/// It owns the world's state - a thread that drives it, or the world itself
+/// when the host steps it - so despawning the entity ends the world. It is
+/// an implementation detail: callers reach the world through the
+/// [`WorldHandle`] the spawn returns, never through this component.
+struct WorldProxy {
+    /// What drives the world.
+    kind: WorldKind,
+}
+
+/// What drives a spawned world.
+enum WorldKind {
+    /// A world on its own thread.
+    Threaded {
+        /// The thread, stopped and joined when the proxy drops.
+        _thread: WorldThread,
+    },
+    /// A world the host steps with [`step_stepped_world`].
+    Stepped(Box<SteppedWorld>),
+}
+
+/// The tick a world runs, with its one-time state already captured.
+type Tick = Box<dyn FnMut(&mut World, &ThreadControl) -> bool>;
+
+/// A world the host steps: the world, its command queue and its tick.
+///
+/// The world lives here rather than in the caller's own struct, so a host
+/// entity's data does not depend on whether the world has a thread.
+struct SteppedWorld {
+    /// The world itself.
+    world: World,
+    /// The commands queued for it.
+    commands: Receiver<Job<()>>,
+    /// The pacing and stop signal its tick reads.
+    control: ThreadControl,
+    /// The state the handle reports.
+    status: ThreadStatus,
+    /// The tick, with its one-time state already captured.
+    tick: Tick,
+    /// The name the world logs under.
+    name: String,
+}
+
+/// How a world is driven: on its own thread, or by the host's frames.
+///
+/// A runner is a zero-sized choice made at the call site, so a bridge can
+/// offer both a threaded and a stepped world without a feature or a target
+/// check. The stepped runner needs no thread at all, so a target without
+/// threads can still build and drive every world.
+pub trait WorldRunner: 'static {
+    /// Whether the runner drives the world on its own.
+    ///
+    /// A world whose runner drives itself can open devices and sleep between
+    /// ticks; a stepped world does neither, and its owner does both.
+    const SELF_DRIVEN: bool;
+
+    /// Spawn a world driven this way.
+    fn spawn<C, I, S, T>(
+        host: &mut World,
+        name: &str,
+        command_capacity: usize,
+        extra: C,
+        init: I,
+        tick: T,
+    ) -> WorldHandle
+    where
+        C: Bundle,
+        I: FnOnce(&mut World) -> S + Send + 'static,
+        S: 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static;
+}
+
+/// A world on its own thread.
+pub struct Threaded;
+
+/// A world the host steps, with no thread of its own.
+pub struct Stepped;
+
+impl WorldRunner for Threaded {
+    const SELF_DRIVEN: bool = true;
+
+    fn spawn<C, I, S, T>(
+        host: &mut World,
+        name: &str,
+        command_capacity: usize,
+        extra: C,
+        init: I,
+        tick: T,
+    ) -> WorldHandle
+    where
+        C: Bundle,
+        I: FnOnce(&mut World) -> S + Send + 'static,
+        S: 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
+    {
+        spawn_remote_world_with_init(host, name, command_capacity, extra, init, tick)
+    }
+}
+
+impl WorldRunner for Stepped {
+    const SELF_DRIVEN: bool = false;
+
+    fn spawn<C, I, S, T>(
+        host: &mut World,
+        name: &str,
+        command_capacity: usize,
+        extra: C,
+        init: I,
+        tick: T,
+    ) -> WorldHandle
+    where
+        C: Bundle,
+        I: FnOnce(&mut World) -> S + Send + 'static,
+        S: 'static,
+        T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
+    {
+        spawn_stepped_world_with_init(host, name, command_capacity, extra, init, tick)
+    }
 }
 
 /// Spawn a remote world on a fresh thread, driven by `tick`.
@@ -39,7 +155,7 @@ where
 /// Like [`spawn_remote_world`], with more components on the proxy.
 ///
 /// The components travel with the world they are bound to, which is
-/// how a world's reader halves — snapshot inboxes, say — reach the host on
+/// how a world's reader halves - snapshot inboxes, say - reach the host on
 /// the same entity its jobs are addressed by.
 pub fn spawn_remote_world_with<C, T>(
     host: &mut World,
@@ -65,8 +181,8 @@ where
 /// Like [`spawn_remote_world_with`], with a one-time setup step.
 ///
 /// `init` runs on the world's thread before the first job is drained, so
-/// a world can create the components its jobs assume exist — its physics
-/// world, say — and hand any state they need to the tick. The state it
+/// a world can create the components its jobs assume exist - its physics
+/// world, say - and hand any state they need to the tick. The state it
 /// returns is passed to every tick.
 ///
 /// # Panics
@@ -84,6 +200,7 @@ pub fn spawn_remote_world_with_init<C, I, S, T>(
 where
     C: Bundle,
     I: FnOnce(&mut World) -> S + Send + 'static,
+    S: 'static,
     T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
 {
     let (commands, receiver) = bounded::<Job<()>>(command_capacity);
@@ -95,14 +212,133 @@ where
     });
     let status: ThreadStatus = thread.status();
     let commands = JobSender::new(commands);
+    let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, extra);
+    WorldHandle::new(entity, commands, Some(status))
+}
+
+/// Spawn a world the host steps, with a one-time setup step.
+///
+/// The world and its command queue live in the proxy component on the host
+/// entity, exactly as a remote world's thread does, so the entity carries
+/// the same data either way. Nothing here runs on its own: the host calls
+/// [`step_stepped_world`] to drain the queue and run the tick once.
+///
+/// `init` runs immediately, against the fresh world, before the entity is
+/// spawned, so a job sent right after the spawn already finds what it built.
+pub fn spawn_stepped_world_with_init<C, I, S, T>(
+    host: &mut World,
+    name: &str,
+    command_capacity: usize,
+    extra: C,
+    init: I,
+    mut tick: T,
+) -> WorldHandle
+where
+    C: Bundle,
+    I: FnOnce(&mut World) -> S + 'static,
+    S: 'static,
+    T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + 'static,
+{
+    let (commands, receiver) = bounded::<Job<()>>(command_capacity);
+    let mut world = World::new();
+    let mut state = init(&mut world);
+    let (control, status) = stepped_control();
+    let tick = Box::new(move |world: &mut World, control: &ThreadControl| {
+        tick(world, control, &mut state)
+    });
+    let stepped = SteppedWorld {
+        world,
+        commands: receiver,
+        control,
+        status: status.clone(),
+        tick,
+        name: name.to_owned(),
+    };
+    let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), extra);
+    WorldHandle::new(entity, JobSender::new(commands), Some(status))
+}
+
+/// Spawn the proxy entity with the runner's components.
+fn spawn_proxy<C: Bundle>(host: &mut World, kind: WorldKind, extra: C) -> Entity {
     // The proxy and the caller's components go on together as one flat
     // bundle, so a bundle of several inboxes lands as several components
     // rather than as one tuple.
     let mut bundle = ArchetypeBuilder::new();
-    bundle.push(RemoteWorld { _thread: thread });
+    bundle.push(WorldProxy { kind });
     bundle.push_bundle(extra);
-    let entity = host.spawn(bundle);
-    WorldHandle::new(entity, commands, Some(status))
+    host.spawn(bundle)
+}
+
+/// Drain a stepped world's jobs and run its tick once.
+///
+/// Does nothing when `entity` does not name a world the host steps, or when
+/// that world has already stopped. A tick that returns `false` stops the
+/// world; a panic is caught, logged and recorded the way a remote world's
+/// thread panic is, and ends the world too.
+pub fn step_stepped_world(host: &World, entity: Entity) {
+    let Some(mut proxy) = host.get_mut::<WorldProxy>(entity) else {
+        return;
+    };
+    let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+        return;
+    };
+    if stepped.status.is_finished() {
+        return;
+    }
+    if stepped.control.stop_requested() {
+        stepped.status.finish();
+        return;
+    }
+    loop {
+        let Ok(job) = stepped.commands.try_recv() else {
+            break;
+        };
+        let outcome =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut stepped.world)));
+        if let Err(payload) = outcome {
+            let message = panic_message(payload.as_ref());
+            log::error!("the stepped world {} panicked: {message}", stepped.name);
+            stepped.status.record_panic(message);
+            stepped.status.finish();
+            return;
+        }
+    }
+    let SteppedWorld {
+        world,
+        control,
+        tick,
+        status,
+        name,
+        ..
+    } = &mut **stepped;
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(world, control)));
+    match outcome {
+        Ok(true) => {}
+        Ok(false) => status.finish(),
+        Err(payload) => {
+            let message = panic_message(payload.as_ref());
+            log::error!("the stepped world {name} panicked: {message}");
+            status.record_panic(message);
+            status.finish();
+        }
+    }
+}
+
+/// Run `f` against a stepped world's world, if `entity` names one.
+///
+/// A host that supplies its own buffers - an offline run filling an audio
+/// buffer frame by frame, say - reads the world through this instead of
+/// through the world's jobs.
+pub fn with_stepped_world<R>(
+    host: &World,
+    entity: Entity,
+    f: impl FnOnce(&World) -> R,
+) -> Option<R> {
+    let proxy = host.get::<WorldProxy>(entity)?;
+    let WorldKind::Stepped(stepped) = &proxy.kind else {
+        return None;
+    };
+    Some(f(&stepped.world))
 }
 
 #[cfg(test)]
@@ -185,6 +421,76 @@ mod tests {
         );
     }
 
-    /// The counter the tests share with their remote world.
+    /// A stepped world runs its jobs and its tick only when stepped.
+    #[test]
+    fn a_stepped_world_runs_on_its_owner_s_calls() {
+        let mut host = World::new();
+        let handle = spawn_stepped_world_with_init(
+            &mut host,
+            "stepped",
+            8,
+            (),
+            |world: &mut World| {
+                world.spawn((Count(0),));
+            },
+            |world: &mut World, _control: &ThreadControl, ()| {
+                world.query::<&mut Count>().next().expect("the counter").1.0 += 1;
+                true
+            },
+        );
+        // Nothing has run yet: the host has not stepped the world.
+        assert_eq!(
+            handle
+                .request(Box::new(|world: &mut World| {
+                    world.query::<&Count>().next().expect("the counter").1.0
+                }))
+                .poll(),
+            None
+        );
+        step_stepped_world(&host, handle.entity());
+        assert_eq!(
+            handle
+                .request(Box::new(|world: &mut World| {
+                    world.query::<&Count>().next().expect("the counter").1.0
+                }))
+                .poll(),
+            None
+        );
+        step_stepped_world(&host, handle.entity());
+        let request = handle.request(Box::new(|world: &mut World| {
+            world.query::<&Count>().next().expect("the counter").1.0
+        }));
+        // A step drains the queue before it ticks, exactly as a remote
+        // world's loop does, so this request reads the count of the two
+        // ticks that have already run.
+        step_stepped_world(&host, handle.entity());
+        assert_eq!(request.poll(), Some(2));
+    }
+
+    /// A stepped world's tick can end the world.
+    #[test]
+    fn a_stepped_tick_ends_the_world() {
+        let mut host = World::new();
+        let handle = spawn_stepped_world_with_init(
+            &mut host,
+            "stepped",
+            8,
+            (),
+            |_| (),
+            |_, _: &ThreadControl, ()| false,
+        );
+        step_stepped_world(&host, handle.entity());
+        assert!(handle.is_finished(), "a false tick ends a stepped world");
+    }
+
+    /// Stepping an entity that is not a stepped world does nothing.
+    #[test]
+    fn stepping_a_foreign_entity_does_nothing() {
+        let mut host = World::new();
+        let plain = host.spawn((Count(0),));
+        step_stepped_world(&host, plain);
+    }
+
+    /// The counter the tests share with their worlds.
     struct Count(u32);
 }

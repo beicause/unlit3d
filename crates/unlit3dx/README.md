@@ -107,19 +107,44 @@ no backlog and no ordering to reason about — the newest snapshot wins, and an
 unread one is replaced. A world that produces snapshots per tick and a
 consumer that reads per frame meet in the middle without ever blocking.
 
-## Threads
+## Threads and stepping
 
-`WorldThread::spawn_with` owns the loop: it runs a one-time `init` closure
-before the first job drains, then checks `ThreadControl::stop_requested` and
-runs the tick inside `catch_unwind`, reporting a panic before the thread ends
-so the host learns why its world died rather than joining a corpse.
-`ThreadControl::wait_timeout` paces a tick, and `FixedClock` builds on it for
-worlds that want a steady rate independent of the frame rate. Despawning the
-proxy entity stops its thread and waits at most two seconds for it; a tick
-that will not stop is left detached rather than hanging the dropper. The
-handle reports on the thread — `is_finished`, `panic_message` — and `stop`
-asks it to end; `join_timeout` and `detach` are on the `WorldThread` itself,
-for callers that own one directly.
+A world is spawned through a *runner*, which decides who calls its tick loop.
+`WorldRunner` is that choice made generic, and it is the only difference
+between the two modes: the bounded job queue, the snapshot mailboxes, the
+proxy entity on the host and the handle the spawn returns are all the same,
+so the host's entities and components do not change with the runner and
+nothing in a tick body has to know which one it is under.
+
+- **`Threaded`** gives the world a thread of its own. `WorldThread::spawn_with`
+  owns the loop: it runs a one-time `init` closure before the first job
+  drains, then checks `ThreadControl::stop_requested` and runs the tick inside
+  `catch_unwind`, reporting a panic before the thread ends so the host learns
+  why its world died rather than joining a corpse. Despawning the proxy entity
+  stops its thread and waits at most two seconds for it; a tick that will not
+  stop is left detached rather than hanging the dropper. The handle reports on
+  the thread — `is_finished`, `panic_message` — and `stop` asks it to end;
+  `join_timeout` and `detach` are on the `WorldThread` itself, for callers
+  that own one directly.
+- **`Stepped`** keeps the world where it was spawned.
+  `spawn_stepped_world_with_init` puts the nested `World` inside the proxy
+  component on the host entity, and
+  `step_stepped_world` runs one iteration on the caller's thread: drain the
+  queue, then tick, each under `catch_unwind` — the threaded loop's order.
+  A step that ticks past the end of its world marks it finished, and
+  `with_stepped_world` lends the nested `World` out for work that needs to
+  reach it directly, such as reading a frame back out of the render world.
+
+Pacing is what the mode changes. `ThreadControl::wait_timeout` blocks a real
+thread and returns at once when the control is not self-driven, so the same
+tick body serves both: `FixedClock` waits out a wall-clock deadline under
+`Threaded`, and under `Stepped` the tick is simply due again on the next
+call. A caller stepping a world therefore owns the rate — it decides how many
+steps a frame is worth, which is what the demo's `SceneStepper` does.
+
+The stepped mode is what a browser and a headless run use.
+`wasm32-unknown-unknown` has no thread to spawn, and a snapshot test wants a
+frame count it controls rather than one a clock chose.
 
 ## Bridges
 
@@ -139,15 +164,16 @@ The bridges:
   `spawn_instance` run in the render world and return entity bits, so a remote
   gameplay world can build a scene it never touches directly — a `GpuMesh`
   holds an `Rc`, so entity bits are the handles that cross threads.
-- **physics** (on by default): `spawn_physics_world` runs a rapier
+- **physics** (on by default): `spawn_physics_world_with::<R>` runs a rapier
   `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64) and publishes a
   `PhysicsSnapshot` — the transforms of every moving body, plus the collision
   pairs that started and stopped this step, with the speed of each new
   contact. `spawn_body` (a `BodyDesc` with a `BodyShape`) and
   `spawn_fixed_cuboid` are the building blocks; `init_physics_world` builds
   the same world for a caller that steps it inline with `step_once`.
-- **audio** (on by default): `spawn_audio_world` opens the output device and
-  owns its stream on the audio thread. Its `OnFill` components are the sources:
+- **audio** (on by default): `spawn_audio_world_with::<R>` opens the output
+  device and owns its stream on the audio thread. Its `OnFill` components are
+  the sources:
   `dispatch_fill` runs them once per chunk of a ring buffer sized by
   `AudioConfig`, mixing their samples and scaling the sum by the world's
   `AudioGain`; the device callback drains the ring and underruns to silence.
@@ -161,6 +187,14 @@ The bridges:
   drop stale notes instead of queueing them behind the load. Installing
   sources is therefore ordinary work for that world: wait for the format,
   queue the job that spawns them.
+
+  A stepped audio world opens no device at all: there is nothing to play to
+  and no callback to pull the ring. It publishes no format either, so a
+  caller that wants sound installs its sources up front and calls
+  `dispatch_fill` itself when it wants a chunk — which is what the demo's
+  headless run does, rendering the mix to a file. `dispatch_fill` is the
+  whole of the audio thread's per-chunk work, so stepping it directly is the
+  same mixing, minus the ring.
 - **synth** (on by default, implies audio): the pieces to install, built on
   [rustysynth-ext](https://docs.rs/rustysynth-ext) — `load_soundfont` parses
   the bytes (typically an `include_bytes!`, so no filesystem is involved),
@@ -211,9 +245,12 @@ camera helpers — `uv_sphere`, `cuboid_mesh`, `camera_looking_at`,
 ## Tests
 
 `cargo nextest run -p unlit3dx` covers the core: job round trips, request
-replies, snapshot replacement, thread stop and panic reporting, and a remote
-world's sent jobs running. The integration tests add the bridges: a physics
-world dropping a ball onto a floor and reporting the contact, the audio
+replies, snapshot replacement, thread stop and panic reporting, a remote
+world's sent jobs running, and the same for a stepped world — its jobs run on
+the step, a tick past the end finishes it, and stepping an entity that
+carries no stepped world does nothing. The integration tests add the bridges:
+a physics world dropping a ball onto a floor and reporting the contact, the
+audio
 world running jobs and publishing its readiness, multi-world job and
 snapshot traffic, and the render bridge's failure paths — a job that panics
 fails only its own request, and transform frames move live entities while
