@@ -31,15 +31,17 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 // Jobs run on the remote thread between ticks; a request brings its
 // answer back whenever it arrives.
 simulation.send(Box::new(|world: &mut World| world.spawn((0u8,)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,)).to_bits()));
-// `spawned.poll()` is `Some(entity_bits)` once the job has run.
+let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,))));
+// `spawned.poll()` is `Some(entity)` once the job has run.
 
 // Snapshots are the only data that flows back: publish on the world's
-// thread, read the newest one from anywhere, never block.
-let (writer, reader) = snapshot_pair::<TransformFrame>();
-writer.publish(TransformFrame { transforms: Vec::new() });
-if let Some(frame) = reader.latest() {
-    // ... apply `frame.transforms` ...
+// thread, read the newest one from anywhere, never block. What a snapshot
+// holds is the caller's type, and so is reading it: a behaviour that owns
+// the reader writes the payload into the world it runs in.
+let (writer, reader) = snapshot_pair::<Vec<u64>>();
+writer.publish(Vec::new());
+if let Some(latest) = reader.latest() {
+    // ... apply `latest` ...
 }
 ```
 
@@ -54,7 +56,8 @@ drain_sub_world(&mut nested); // run the jobs other threads posted
 
 The **render** bridge turns that into a resource server: `create_mesh`,
 `create_material_from_texture` and `spawn_instance` jobs run in the render
-world and return entity bits a remote gameplay world can hold as handles. The
+world and answer with the `Entity` they spawned, which a remote gameplay
+world holds as a handle. The
 **physics** bridge
 publishes a `PhysicsSnapshot` of body transforms and collision events, and
 the **synth** bridge turns note jobs and MIDI files into soundfont audio. The
@@ -158,12 +161,13 @@ one the standard options are derived from the mesh source's device.
 
 The bridges:
 
-- **render** (on by default): `apply_transform_frames` turns a
-  `TransformFrame` snapshot into render-world transforms every frame, before
-  anything draws. Jobs like `create_mesh`, `create_material_from_texture` and
-  `spawn_instance` run in the render world and return entity bits, so a remote
-  gameplay world can build a scene it never touches directly — a `GpuMesh`
-  holds an `Rc`, so entity bits are the handles that cross threads.
+- **render** (on by default): `create_mesh`, `create_material_from_texture`
+  and `spawn_instance` run in the render world and answer with the `Entity`
+  they spawned, so a remote gameplay world can build a scene it never touches
+  directly — a `GpuMesh` holds an `Rc`, so the entity is the handle that
+  crosses threads. Moving those entities is the caller's own job: a pose
+  the scene derived from a physics snapshot is sent to the render world,
+  not left in a mailbox for it to apply.
 - **physics** (on by default): `spawn_physics_world_with::<R>` runs a rapier
   `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64) and publishes a
   `PhysicsSnapshot` — the transforms of every moving body, plus the collision
@@ -220,6 +224,34 @@ The bridges:
   proxy: the sender is what lets the transport post a command into a world
   it cannot borrow, and the name is what `list_worlds` reports.
 
+## Best practices
+
+Two rules keep a scene's worlds independent, and they are what make one
+portable: the same scene runs on threads or stepped, in a window or
+headless, because no mode ever reaches into another world's data.
+
+1. **A world's setup is configuration only.** Spawning a render, physics or
+   audio world passes the configuration its runtime needs — the device,
+   queue and capabilities, the tick rate, the gravity, the buffer size —
+   and builds the generic resources that runtime owns: a resource graph and
+   a renderer, a mesh source, a rapier world, an output stream. Nothing in
+   it names a thing the game has: no ball, no track, no camera angle, no
+   control panel. A world that comes up empty is also a world that can come
+   up early — the render sub-world exists before the GPU does, so gameplay
+   holds its handle from the first tick and fills it later.
+2. **Every game-specific change to a world arrives as a job.** Meshes,
+   materials and instances are requested from the render server; bodies are
+   spawned and despawned through the physics queue; sources and transport go
+   to the audio world as jobs, and a whole install — see the demo's
+   `install_synth` — is one function wrapped in one job. A snapshot mailbox
+   carries state *out* of a world, and the world that reads it decides what
+   that means; what another world's content *becomes* is a job, so a pose
+   gameplay derived from a physics snapshot is sent to the render world
+   rather than left in a mailbox for it to apply.
+
+The test is whether a line of setup could belong to another scene: if it
+names something the game calls a thing, it belongs in a job.
+
 ## The application skeleton
 
 The window-facing half of a multi-world app is app-agnostic too, so it
@@ -257,8 +289,8 @@ a physics world dropping a ball onto a floor and reporting the contact, the
 audio
 world running jobs and publishing its readiness, multi-world job and
 snapshot traffic, and the render bridge's failure paths — a job that panics
-fails only its own request, and transform frames move live entities while
-stale ones are skipped. With the `mcp` feature on, the MCP command dispatch
+fails only its own request, and one that names an asset the world never built
+fails the instance that asked for it. With the `mcp` feature on, the MCP command dispatch
 is covered too: world listing, routing to a nested world, and routing to one
 on a thread of its own or one the host steps — plus a readable failure for
 an entity that carries no world, a world that has stopped, and a queue that

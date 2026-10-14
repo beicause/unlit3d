@@ -1,61 +1,23 @@
-//! Render-world helpers: an asset server over entities, and the frame
-//! behaviour that applies transform snapshots to render entities.
+//! Render-world helpers: an asset server over entities.
 //!
 //! The server helpers follow one rule: the world is the registry. A mesh or
 //! a material is allocated inside the render world and left there as the
 //! [`GpuMesh`] or [`GpuMaterial`] component of its own asset entity — the
 //! GPU handles inside carry `Rc`, so they cannot cross a thread, but the
-//! entity's bits can. A simulation world requests an allocation with
-//! [`create_mesh`] or [`create_material_from_texture`], holds the entity bits that come
-//! back, and names them again in [`spawn_instance`] to place a rendered
-//! instance of the assets.
+//! entity can. A simulation world requests an allocation with [`create_mesh`]
+//! or [`create_material_from_texture`], holds the entity that comes back, and
+//! names it again in [`spawn_instance`] to place a rendered instance of the
+//! assets.
 
-use glam::{Quat, Vec3};
+use glam::Vec3;
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::components::{Camera, GpuMaterial, GpuMesh, Transform};
-use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame};
 use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
 use unlit3d::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
 
-use crate::channel::SnapshotReader;
 use crate::job::Job;
-
-/// The frame-behaviour order the transform applier runs at: before anything
-/// that positions a camera relative to moved objects.
-pub const APPLY_TRANSFORMS_ORDER: i32 = i32::MIN;
-
-/// One frame's worth of transforms, keyed by render entity bits.
-#[derive(Clone, Debug, Default)]
-pub struct TransformFrame {
-    /// Entity bits with the transform each render entity should take.
-    pub transforms: Vec<(u64, Vec3, Quat)>,
-}
-
-/// The frame behaviour that applies the newest [`TransformFrame`] from
-/// `reader` to the render world's entities.
-///
-/// Entities whose bits name an entity without a `Transform` are skipped:
-/// an instance not yet spawned is not an error.
-#[must_use]
-pub fn apply_transform_frames(reader: SnapshotReader<TransformFrame>) -> OnFrame {
-    OnFrame::new(
-        FrameBehaviourOrder(APPLY_TRANSFORMS_ORDER),
-        move |world, _entity, _frame: &mut Frame| {
-            let Some(frame) = reader.latest() else {
-                return;
-            };
-            for (bits, translation, rotation) in &frame.transforms {
-                let entity = Entity::from_bits(*bits);
-                if let Some(mut transform) = world.get_mut::<Transform>(entity) {
-                    transform.translation = *translation;
-                    transform.rotation = *rotation;
-                }
-            }
-        },
-    )
-}
 
 /// A mesh description that owns its vertex data, so it can cross a thread
 /// inside a job; [`UnlitMeshDesc`] is what the render world finally sees.
@@ -111,11 +73,11 @@ fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
     Some((entity, key))
 }
 
-/// A job that allocates a mesh in the render world and answers with the
-/// bits of its asset entity, the one carrying the [`GpuMesh`].
+/// A job that allocates a mesh in the render world and answers with its
+/// asset entity, the one carrying the [`GpuMesh`].
 ///
 /// Panics inside the render world when it carries no `MeshSource`.
-pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<u64> {
+pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
     Box::new(move |world: &mut World| {
         let Some((source_entity, key)) = mesh_source(world) else {
             panic!("the render world carries no MeshSource");
@@ -128,13 +90,13 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<u64> {
                     .allocate_unlit_mesh(world, &key, desc.borrowed())
             })
             .expect("the mesh source entity exists");
-        world.spawn((mesh,)).to_bits()
+        world.spawn((mesh,))
     })
 }
 
 /// A job that allocates one material whose base-color texture is the
-/// `size.0` by `size.1` RGBA image `pixels`, and answers with the bits of
-/// its asset entity, the one carrying the [`GpuMaterial`].
+/// `size.0` by `size.1` RGBA image `pixels`, and answers with its asset
+/// entity, the one carrying the [`GpuMaterial`].
 ///
 /// The sampler is created for this material alone and `descriptor`
 /// describes it. Panics inside the render world when it carries no
@@ -146,7 +108,7 @@ pub fn create_material_from_texture(
     size: (u32, u32),
     pixels: Vec<[u8; 4]>,
     descriptor: wgpu::SamplerDescriptor<'static>,
-) -> Job<u64> {
+) -> Job<Entity> {
     assert_eq!(
         pixels.len(),
         size.0 as usize * size.1 as usize,
@@ -160,7 +122,7 @@ pub fn create_material_from_texture(
 }
 
 /// Allocate one material in the render world from a texture built on its
-/// device, and answer the bits of its asset entity.
+/// device, and answer its asset entity.
 ///
 /// It builds a texture, registers it with a default view and a sampler,
 /// then allocates the material. Panics inside the render world when it
@@ -169,7 +131,7 @@ fn allocate_material(
     world: &mut World,
     descriptor: wgpu::SamplerDescriptor<'static>,
     build_texture: impl FnOnce(&MeshSource, &World) -> wgpu::Texture,
-) -> u64 {
+) -> Entity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
@@ -184,32 +146,30 @@ fn allocate_material(
             source.allocate_unlit_material(world, &key, view, sampler)
         })
         .expect("the mesh source entity exists");
-    world.spawn((material,)).to_bits()
+    world.spawn((material,))
 }
 
 /// A job that spawns one render entity from asset entities: a [`GpuMesh`]
 /// cloned from `mesh`, a [`GpuMaterial`] cloned from `material`, and the
-/// `transform` it starts at. Answers with the new entity's bits.
+/// `transform` it starts at. Answers with the new entity.
 ///
-/// The assets are named by the bits [`create_mesh`] and
+/// The assets are named by the entities [`create_mesh`] and
 /// [`create_material_from_texture`] answered. Panics inside the render world when it carries no
 /// `MeshSource`, or when an asset entity is gone.
-pub fn spawn_instance(mesh: u64, material: u64, transform: Transform) -> Job<u64> {
+pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> Job<Entity> {
     Box::new(move |world: &mut World| {
         let Some((_, key)) = mesh_source(world) else {
             panic!("the render world carries no MeshSource");
         };
         let mesh = world
-            .get::<GpuMesh>(Entity::from_bits(mesh))
+            .get::<GpuMesh>(mesh)
             .expect("the mesh asset entity exists")
             .clone();
         let material = world
-            .get::<GpuMaterial>(Entity::from_bits(material))
+            .get::<GpuMaterial>(material)
             .expect("the material asset entity exists")
             .clone();
-        world
-            .spawn((transform, mesh, material, UnlitPipeline::new(key)))
-            .to_bits()
+        world.spawn((transform, mesh, material, UnlitPipeline::new(key)))
     })
 }
 

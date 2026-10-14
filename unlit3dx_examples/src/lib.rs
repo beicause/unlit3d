@@ -129,7 +129,6 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // The setups that open a device have no rate until it reports one;
     // the ones that pull their own fills installed their sources already.
     install_sources_when_ready(world, &worlds);
-    let wiring = worlds.wiring.clone();
     let gameplay_sender = worlds.gameplay.sender();
     let audio_sender = worlds.audio_tracks();
 
@@ -146,7 +145,6 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // requests dispatch frames into it.
     let app = world.spawn((ExitRequest(false),));
     world.spawn_frame_behaviour(request_gpu(app, {
-        let frame_reader = wiring.frame_reader.clone();
         let gameplay_sender = gameplay_sender.clone();
         // Only an MCP-driven scene needs the offscreen target: it is what
         // a screenshot reads back. A plain window draws into the swap chain.
@@ -158,7 +156,11 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 &gpu.device,
                 &gpu.queue,
                 gpu.capabilities,
-                frame_reader,
+            );
+            // The scene's own content — its camera, its control panel —
+            // reaches the world it was set up to draw as jobs.
+            mount_scene_content(
+                &render,
                 Some(ControlHooks {
                     gameplay: gameplay_sender,
                     audio: audio_sender.clone(),

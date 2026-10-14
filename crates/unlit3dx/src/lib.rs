@@ -84,9 +84,8 @@ pub mod prelude {
     };
     #[cfg(feature = "render")]
     pub use crate::render::{
-        APPLY_TRANSFORMS_ORDER, OwnedUnlitMeshDesc, TransformFrame, apply_transform_frames,
-        camera_looking_at, create_material_from_texture, create_mesh, cuboid_mesh, linear_sampler,
-        spawn_instance, uv_sphere,
+        OwnedUnlitMeshDesc, camera_looking_at, create_material_from_texture, create_mesh,
+        cuboid_mesh, linear_sampler, spawn_instance, uv_sphere,
     };
     #[cfg(feature = "synth")]
     pub use crate::synth::{

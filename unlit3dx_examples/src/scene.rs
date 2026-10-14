@@ -14,7 +14,9 @@ use std::time::Duration;
 
 use glam::Vec3;
 use hashbrown::HashMap;
+use unlit_ecs::Entity;
 use unlit_wgpu::resources::ResourceGraph;
+use unlit3d::components::Transform;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3d::winit::event::OnAboutToWait;
@@ -56,6 +58,30 @@ pub const GROUND_POSITION: Vec3 = Vec3::new(0.0, -0.5, 0.0);
 
 /// Where idle pool entities wait, far below everything the camera sees.
 pub const HIDDEN_POSITION: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
+
+/// The poses gameplay sends the render world every frame: one
+/// [`Transform`] per render entity it owns, a live body at its physics
+/// pose and a free slot parked at [`HIDDEN_POSITION`]. [`pose_job`] turns
+/// one into the job that writes them onto the entities they name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScenePoses(pub Vec<(Entity, Transform)>);
+
+/// A job that writes `poses` onto the render entities they name.
+///
+/// Moving a scene's instances is the scene's own business, so it travels
+/// to the render world as a job like every other change to it: the world
+/// applies what it is told and holds no mailbox of its own. An entity the
+/// render world has not spawned yet is not an error — it simply names
+/// nothing.
+pub fn pose_job(poses: ScenePoses) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        for (entity, pose) in poses.0.iter() {
+            let _ = world.with_mut::<Transform, _>(*entity, |transform| {
+                transform.clone_from(pose);
+            });
+        }
+    })
+}
 
 /// The factor every synthesizer sample scales by, making up the headroom
 /// soundfont presets leave.
@@ -390,7 +416,8 @@ pub const FRAME_INLINE_STEP: i32 = 6;
 /// after the draw, once every consumer has read them.
 pub const FRAME_CLEAR_INPUT: i32 = 20;
 
-/// The render world's behaviour order: the camera orbit runs last.
+/// The render world's behaviour order: the camera orbit runs here, after
+/// the scene's pose jobs have landed on a frame's drain.
 pub const RENDER_CAMERA: i32 = 100;
 
 /// How fast the camera circles the scene, in radians per second.
@@ -514,12 +541,13 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     }),));
 }
 
-/// Set up the render sub-world's content: the resource graph, the camera
-/// and its orbit, the asset-server source, and the transform mailbox
-/// reader. Answers the renderer resource entity.
+/// Set up the render sub-world: the resource graph, the renderer and the
+/// asset-server source. Answers the renderer resource entity.
 ///
-/// The world's meshes, materials and instances are not built here: they
-/// arrive as jobs from gameplay, through the sub-world's drain in the
+/// This is the whole of what a render world needs before it can draw, and
+/// none of it is this scene's: no camera, no shape, no panel. Everything
+/// the scene puts in the world — meshes, materials, instances, poses,
+/// camera, UI — arrives as a job, through the sub-world's drain in the
 /// draw behaviour.
 pub fn setup_render_world(
     host: &mut World,
@@ -527,8 +555,6 @@ pub fn setup_render_world(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
-    frame_reader: SnapshotReader<TransformFrame>,
-    controls: Option<ControlHooks>,
 ) -> Entity {
     let Some(mut nested) = host.get_mut::<World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
@@ -544,44 +570,68 @@ pub fn setup_render_world(
     let mut source = MeshSource::new(&nested, context);
     source.register_unlit_family(&nested);
     nested.spawn_source(source);
-
-    // The camera orbits the scene; its behaviour keeps the projection
-    // matched to the frame's own aspect. The azimuth advances with the
-    // frame index, so the orbit speed follows the redraw rate.
-    let mut azimuth = ORBIT_START;
-    let camera_entity = nested.spawn((camera_looking_at(
-        WINDOW_SIZE,
-        orbit_eye(ORBIT_START),
-        ORBIT_TARGET,
-        60f32.to_radians(),
-        0.1,
-    ),));
-    nested.spawn((OnFrame::new(
-        FrameBehaviourOrder(RENDER_CAMERA),
-        move |world, _entity, frame| {
-            // The orbit advances by each frame's own delta, so the speed
-            // does not follow the redraw rate.
-            azimuth += ORBIT_SPEED * frame.delta_time;
-            let camera = camera_looking_at(
-                frame.size,
-                orbit_eye(azimuth),
-                ORBIT_TARGET,
-                60f32.to_radians(),
-                0.1,
-            );
-            let _ = world.with_mut::<Camera, _>(camera_entity, |current| {
-                *current = camera;
-            });
-        },
-    ),));
-
-    // Physics snapshots become render transforms here, every frame,
-    // before anything draws.
-    let _ = nested.spawn_frame_behaviour(apply_transform_frames(frame_reader));
-    if let Some(controls) = controls {
-        mount_control_panel(&mut nested, controls);
-    }
     renderer
+}
+
+/// A job that gives the render world this scene's camera: one entity
+/// holding a camera aimed at the scene, and the frame behaviour that walks
+/// it around its orbit.
+///
+/// Where a scene looks from is the scene's to say, so it reaches the
+/// render world the same way its meshes and poses do. The behaviour keeps
+/// the projection matched to the frame's own aspect, and advances the
+/// orbit by each frame's delta, so the speed does not follow the redraw
+/// rate.
+pub fn camera_job() -> Job<()> {
+    let mut azimuth = ORBIT_START;
+    Box::new(move |world: &mut World| {
+        let camera_entity = world.spawn((camera_looking_at(
+            WINDOW_SIZE,
+            orbit_eye(azimuth),
+            ORBIT_TARGET,
+            60f32.to_radians(),
+            0.1,
+        ),));
+        world.spawn_frame_behaviour(OnFrame::new(
+            FrameBehaviourOrder(RENDER_CAMERA),
+            move |world, _entity, frame| {
+                azimuth += ORBIT_SPEED * frame.delta_time;
+                let camera = camera_looking_at(
+                    frame.size,
+                    orbit_eye(azimuth),
+                    ORBIT_TARGET,
+                    60f32.to_radians(),
+                    0.1,
+                );
+                let _ = world.with_mut::<Camera, _>(camera_entity, |current| {
+                    *current = camera;
+                });
+            },
+        ));
+    })
+}
+
+/// A job that puts this scene's control panel into the render world: a
+/// small egui window over the frame, holding the handles it needs to
+/// reach the gameplay and audio worlds.
+pub fn control_panel_job(hooks: ControlHooks) -> Job<()> {
+    Box::new(move |world: &mut World| mount_control_panel(world, hooks))
+}
+
+/// Queue this scene's own content on the render world: its camera, and —
+/// where there is a window to click in — its control panel.
+///
+/// Both are jobs, so a world that was set up to draw can be given a
+/// scene without its setup ever hearing of one.
+pub fn mount_scene_content(render: &WorldHandle, controls: Option<ControlHooks>) {
+    if let Err(error) = render.send(camera_job()) {
+        log::error!("the render world refused its camera ({error:?})");
+    }
+    if let Some(hooks) = controls
+        && let Err(error) = render.send(control_panel_job(hooks))
+    {
+        log::error!("the render world refused its control panel ({error:?})");
+    }
 }
 
 /// The point on the orbit the camera sits at for one azimuth.
@@ -701,7 +751,7 @@ enum BuildState {
     /// The build future is still in flight.
     Building,
     /// Every instance answered; the shape pool is live.
-    Ready(Vec<(u64, ShapeKind)>),
+    Ready(Vec<(Entity, ShapeKind)>),
     /// The render world dropped a request; the scene stays empty.
     Failed,
 }
@@ -709,7 +759,7 @@ enum BuildState {
 /// One body request in flight: the request itself, the pool slot its
 /// render entity was reserved for, the tick the request was made, and
 /// the scene generation it belongs to.
-type PendingBody = (Request<RigidBodyHandle>, (u64, ShapeKind), u32, u32);
+type PendingBody = (Request<RigidBodyHandle>, (Entity, ShapeKind), u32, u32);
 
 /// The gameplay state, living on its own entity in the gameplay world.
 ///
@@ -720,8 +770,10 @@ type PendingBody = (Request<RigidBodyHandle>, (u64, ShapeKind), u32, u32);
 /// music tracks once the audio world can sound; the panel drives them
 /// afterwards without going through gameplay at all.
 pub struct Gameplay {
-    /// The mailbox gameplay publishes the per-frame transforms into.
-    writer: SnapshotWriter<TransformFrame>,
+    /// The render world's command channel: the poses gameplay derived
+    /// from the physics snapshot go to it as jobs, like every other
+    /// change to that world.
+    render: JobSender,
     /// The physics world's latest snapshot.
     physics: SnapshotReader<PhysicsSnapshot>,
     /// The physics world's command channel.
@@ -744,16 +796,16 @@ pub struct Gameplay {
     build_pending: bool,
     /// Every render entity the pool owns, for a scene restart: the free
     /// slots are [`Gameplay::pool`], this list is all of them.
-    slots: Vec<(u64, ShapeKind)>,
-    /// Render entities not yet assigned to a body, as entity bits.
-    pool: Vec<(u64, ShapeKind)>,
-    /// Body handle to render entity bits, for bodies in the snapshot.
-    by_handle: HashMap<RigidBodyHandle, u64>,
+    slots: Vec<(Entity, ShapeKind)>,
+    /// Render entities not yet assigned to a body.
+    pool: Vec<(Entity, ShapeKind)>,
+    /// Body handle to render entity, for bodies in the snapshot.
+    by_handle: HashMap<RigidBodyHandle, Entity>,
     /// The live bodies in the order they were mapped, oldest first, each
     /// with the render slot it drives: a full pool recycles the oldest
     /// instead of refusing the drop.
-    live: VecDeque<(RigidBodyHandle, (u64, ShapeKind))>,
-    /// Body requests in flight, with the entity bits reserved, the tick
+    live: VecDeque<(RigidBodyHandle, (Entity, ShapeKind))>,
+    /// Body requests in flight, with the render entity reserved, the tick
     /// the request was made, and the generation it belongs to: a request
     /// from before a restart is despawned instead of mapped when it
     /// answers.
@@ -777,8 +829,8 @@ pub struct Gameplay {
     requests: u32,
     /// Ticks since the gameplay world started, driving the auto spawn.
     ticks: u32,
-    /// Transform entries the last publish carried, for the status line.
-    transforms_published: usize,
+    /// Pose entries the last job carried, for the status line.
+    poses_sent: usize,
     /// The xorshift state for spawn placement.
     rng: u64,
 }
@@ -791,19 +843,18 @@ impl Gameplay {
     /// local pool: it awaits the meshes and materials, then the instances
     /// that use them, and leaves the pool in [`BuildState`] for the tick
     /// to pick up. The answer order matches the request order, which is
-    /// how the build reads the bits back.
+    /// how the build reads the entities back.
     fn new(
-        writer: SnapshotWriter<TransformFrame>,
+        render: JobSender,
         physics: SnapshotReader<PhysicsSnapshot>,
         physics_sender: JobSender,
         audio_sender: JobSender,
         audio_inbox: SnapshotReader<AudioReady>,
-        render: WorldHandle,
+        server: WorldHandle,
     ) -> Self {
         let builder = LocalPool::new();
         let build = Rc::new(RefCell::new(BuildState::Building));
         let slot = Rc::clone(&build);
-        let server = render.clone();
         log::info!("the gameplay world started; requesting the scene assets from the render world");
         builder.spawner().spawn_local(async move {
             let assets = request_assets(&server);
@@ -833,7 +884,7 @@ impl Gameplay {
         })
         .expect("a fresh pool takes its first task");
         Self {
-            writer,
+            render,
             physics,
             physics_sender,
             audio_sender,
@@ -853,7 +904,7 @@ impl Gameplay {
             last_snapshot: None,
             requests: 0,
             ticks: 0,
-            transforms_published: 0,
+            poses_sent: 0,
             rng: 0x853c49e6748fea9b,
         }
     }
@@ -900,7 +951,7 @@ impl Gameplay {
     /// answers. The recycled body is despawned and its mapping forgotten
     /// here, because a snapshot already in flight may still name it.
     fn drop_ball(&mut self) {
-        let (bits, kind) = match self.pool.pop() {
+        let (slot, kind) = match self.pool.pop() {
             Some(slot) => slot,
             None => {
                 let Some((handle, slot)) = self.live.pop_front() else {
@@ -932,7 +983,7 @@ impl Gameplay {
         }));
         self.physics_sender.send(job).ok();
         self.pending
-            .push((request, (bits, kind), self.ticks, self.generation));
+            .push((request, (slot, kind), self.ticks, self.generation));
         log::debug!("a body was requested at {position:?}");
     }
 
@@ -957,7 +1008,7 @@ impl Gameplay {
         self.requests = 0;
         self.pool = available_slots(&self.slots, &self.pending);
         self.last_snapshot = None;
-        self.transforms_published = 0;
+        self.poses_sent = 0;
         log::info!(
             "the shapes were cleared: {live} bodies despawned, {} slots free",
             self.pool.len()
@@ -999,23 +1050,23 @@ impl Gameplay {
         // mapped, so its slot returns to the pool.
         let generation = self.generation;
         self.pending
-            .retain_mut(|(request, (bits, kind), age, born)| {
+            .retain_mut(|(request, (slot, kind), age, born)| {
                 if self.ticks - *age > PENDING_TIMEOUT_TICKS {
-                    self.pool.push((*bits, *kind));
+                    self.pool.push((*slot, *kind));
                     return false;
                 }
                 match request.poll() {
                     Some(handle) => {
                         if *born == generation {
-                            self.by_handle.insert(handle, *bits);
-                            self.live.push_back((handle, (*bits, *kind)));
+                            self.by_handle.insert(handle, *slot);
+                            self.live.push_back((handle, (*slot, *kind)));
                         } else {
                             self.physics_sender
                                 .send(Box::new(move |world: &mut World| {
                                     let _ = despawn_body(world, handle);
                                 }))
                                 .ok();
-                            self.pool.push((*bits, *kind));
+                            self.pool.push((*slot, *kind));
                         }
                         false
                     }
@@ -1055,23 +1106,33 @@ impl Gameplay {
                 self.pending.len(),
                 self.by_handle.len(),
                 snapshot.transforms.len(),
-                // The published count goes out too: a mismatch against the
-                // visible transforms means the applier, not the flow, stalls.
-                self.transforms_published,
+                // The posed count goes out too: a mismatch against the
+                // visible transforms means the pose job, not the flow,
+                // stalls.
+                self.poses_sent,
             );
         }
 
-        // The render transform set: every pool slot, holding its body's
-        // pose or the hidden position.
-        let mut poses: HashMap<u64, (Vec3, glam::Quat)> =
+        // The render pose set: every pool slot, holding its body's pose or
+        // the hidden position.
+        let mut poses: HashMap<Entity, Transform> =
             HashMap::with_capacity(snapshot.transforms.len());
         for (handle, translation, rotation) in snapshot.transforms.iter() {
-            if let Some(bits) = self.by_handle.get(handle) {
-                poses.entry(*bits).or_insert((*translation, *rotation));
+            if let Some(slot) = self.by_handle.get(handle) {
+                poses.entry(*slot).or_insert(Transform {
+                    translation: *translation,
+                    rotation: *rotation,
+                    ..Default::default()
+                });
             }
         }
-        self.transforms_published = poses.len();
-        self.writer.publish(scene_frame(&self.slots, &poses));
+        self.poses_sent = poses.len();
+        // The poses travel as a job: what the render world shows is its
+        // own to hold, so gameplay sends the state rather than leaving it
+        // in a mailbox for the world to apply.
+        if let Err(error) = self.render.send(pose_job(scene_frame(&self.slots, &poses))) {
+            log::warn!("the render world refused a pose job ({error:?})");
+        }
     }
 }
 
@@ -1086,10 +1147,9 @@ impl Gameplay {
 /// state through the same two methods, so the wiring is written once.
 #[derive(Clone)]
 pub struct SceneWiring {
-    /// The mailbox gameplay publishes render transforms into.
-    pub frame_writer: SnapshotWriter<TransformFrame>,
-    /// The render world's end of the same mailbox.
-    pub frame_reader: SnapshotReader<TransformFrame>,
+    /// Commands into the render world: gameplay builds its scene and
+    /// moves its instances through them.
+    pub render_sender: JobSender,
     /// Commands into the physics world.
     pub physics_sender: JobSender,
     /// The physics world's latest snapshot.
@@ -1178,14 +1238,14 @@ impl SceneWiring {
     /// The gameplay state this wiring drives, talking to `render` as
     /// its asset server.
     #[must_use]
-    pub fn gameplay(&self, render: WorldHandle) -> Gameplay {
+    pub fn gameplay(&self, server: WorldHandle) -> Gameplay {
         Gameplay::new(
-            self.frame_writer.clone(),
+            self.render_sender.clone(),
             self.physics_reader.clone(),
             self.physics_sender.clone(),
             self.audio_sender.clone(),
             self.audio_ready.clone(),
-            render,
+            server,
         )
     }
 }
@@ -1311,10 +1371,8 @@ pub fn spawn_scene<R: WorldRunner>(
         }
     };
 
-    let (frame_writer, frame_reader) = snapshot_pair::<TransformFrame>();
     let wiring = SceneWiring {
-        frame_writer,
-        frame_reader,
+        render_sender: render.sender(),
         physics_sender,
         physics_reader,
         audio_sender,
@@ -1473,7 +1531,10 @@ impl SceneStepper {
 /// request reserved. A reserved slot returns when its body is despawned
 /// instead, so handing it back here too would sell one render entity to
 /// two bodies.
-fn available_slots(slots: &[(u64, ShapeKind)], pending: &[PendingBody]) -> Vec<(u64, ShapeKind)> {
+fn available_slots(
+    slots: &[(Entity, ShapeKind)],
+    pending: &[PendingBody],
+) -> Vec<(Entity, ShapeKind)> {
     slots
         .iter()
         .copied()
@@ -1481,35 +1542,34 @@ fn available_slots(slots: &[(u64, ShapeKind)], pending: &[PendingBody]) -> Vec<(
         .collect()
 }
 
-/// The frame a tick publishes: every pool slot named, each either at its
+/// The poses a tick publishes: every pool slot named, each either at its
 /// body's pose or parked at the hidden position.
 ///
-/// A transform frame only moves the entities it names, so a frame that
-/// lists just the live bodies leaves every other entity standing where it
-/// last was: a despawn — a clear, or a body that timed out — would be
-/// invisible until its slot dropped again. Naming every slot makes each
-/// frame a complete picture of the scene, and one that any reader can
-/// apply on its own.
-fn scene_frame(
-    slots: &[(u64, ShapeKind)],
-    poses: &HashMap<u64, (Vec3, glam::Quat)>,
-) -> TransformFrame {
-    TransformFrame {
-        transforms: slots
+/// A reader only moves the entities it names, so a publish that lists just
+/// the live bodies leaves every other entity standing where it last was: a
+/// despawn — a clear, or a body that timed out — would be invisible until
+/// its slot dropped again. Naming every slot makes each publish a complete
+/// picture of the scene, and one that any reader can apply on its own.
+fn scene_frame(slots: &[(Entity, ShapeKind)], poses: &HashMap<Entity, Transform>) -> ScenePoses {
+    ScenePoses(
+        slots
             .iter()
-            .map(|(bits, _)| match poses.get(bits) {
-                Some((translation, rotation)) => (*bits, *translation, *rotation),
-                None => (*bits, HIDDEN_POSITION, glam::Quat::IDENTITY),
+            .map(|(slot, _)| {
+                let pose = poses.get(slot).cloned().unwrap_or(Transform {
+                    translation: HIDDEN_POSITION,
+                    ..Default::default()
+                });
+                (*slot, pose)
             })
             .collect(),
-    }
+    )
 }
 
 /// Request the scene's meshes and materials, in the order the build
 /// reads their answers back: one mesh per shape kind, the ground mesh,
 /// one patterned material per shape kind and color (kind-major), then the
 /// ground's checker.
-fn request_assets(render: &WorldHandle) -> Vec<Request<u64>> {
+fn request_assets(render: &WorldHandle) -> Vec<Request<Entity>> {
     let mut requests =
         Vec::with_capacity(SHAPE_KINDS.len() + 1 + SHAPE_KINDS.len() * BALL_COLORS.len() + 1);
     // One mesh per shape kind, then the ground.
@@ -1540,18 +1600,18 @@ fn request_assets(render: &WorldHandle) -> Vec<Request<u64>> {
 /// the ground, which never moves; the rest are the pool slots, already
 /// parked at the hidden position, each entry remembering the kind its
 /// index draws.
-fn pool_from_instances(answers: Vec<u64>) -> Vec<(u64, ShapeKind)> {
+fn pool_from_instances(answers: Vec<Entity>) -> Vec<(Entity, ShapeKind)> {
     answers
         .into_iter()
         .skip(1)
         .enumerate()
-        .map(|(index, bits)| (bits, shape_kind(index)))
+        .map(|(index, slot)| (slot, shape_kind(index)))
         .collect()
 }
 
 /// Request one instance per pool slot plus the ground, reading the mesh
-/// and material bits out of the answers [`request_assets`] produced.
-fn request_instances(render: &WorldHandle, answers: &[u64]) -> Vec<Request<u64>> {
+/// and material entities out of the answers [`request_assets`] produced.
+fn request_instances(render: &WorldHandle, answers: &[Entity]) -> Vec<Request<Entity>> {
     let shape_count = SHAPE_KINDS.len();
     let ground = answers[shape_count];
     let materials = &answers[shape_count + 1..];
@@ -1657,7 +1717,9 @@ mod tests {
     /// bodies.
     #[test]
     fn a_clear_returns_only_unreserved_slots() {
-        let slots: Vec<(u64, ShapeKind)> = (0..4).map(|i| (i, ShapeKind::Ball)).collect();
+        let slots: Vec<(Entity, ShapeKind)> = (0..4)
+            .map(|index| (Entity::from_raw(index, 0), ShapeKind::Ball))
+            .collect();
         // A request the physics world has not answered yet holds slot 2.
         let (commands, _receiver) = async_channel::unbounded::<Job<()>>();
         let sender = JobSender::new(commands);
@@ -1671,7 +1733,9 @@ mod tests {
         }
         let free = available_slots(&slots, &pending);
         assert_eq!(
-            free.iter().map(|(bits, _)| *bits).collect::<Vec<_>>(),
+            free.iter()
+                .map(|(slot, _)| slot.index())
+                .collect::<Vec<_>>(),
             vec![0, 1, 3],
             "the reserved slot must not come back while its request is in flight",
         );
@@ -1679,31 +1743,49 @@ mod tests {
         assert_eq!(available_slots(&slots, &[]).len(), slots.len());
     }
 
-    /// Every frame names every slot: the ones with a live body at their
-    /// pose, the rest parked. A frame that merely omitted the despawned
+    /// Every publish names every slot: the ones with a live body at their
+    /// pose, the rest parked. A publish that merely omitted the despawned
     /// bodies would leave them standing where they were, and a clear nobody
     /// can see is no clear at all.
     #[test]
     fn a_frame_names_every_slot() {
-        let slots: Vec<(u64, ShapeKind)> = (0..4).map(|i| (i, ShapeKind::Cube)).collect();
+        let slots: Vec<(Entity, ShapeKind)> = (0..4)
+            .map(|index| (Entity::from_raw(index, 0), ShapeKind::Cube))
+            .collect();
         let pose = Vec3::new(1.0, 2.0, 3.0);
         let mut poses = HashMap::new();
-        poses.insert(2u64, (pose, glam::Quat::IDENTITY));
+        poses.insert(
+            slots[2].0,
+            Transform {
+                translation: pose,
+                ..Default::default()
+            },
+        );
         let frame = scene_frame(&slots, &poses);
-        assert_eq!(frame.transforms.len(), slots.len());
-        for (bits, translation, rotation) in &frame.transforms {
-            assert!(slots.iter().any(|(slot, _)| slot == bits));
-            assert_eq!(*rotation, glam::Quat::IDENTITY);
-            let expected = if *bits == 2 { pose } else { HIDDEN_POSITION };
-            assert_eq!(*translation, expected, "slot {bits} carries the wrong pose");
+        assert_eq!(frame.0.len(), slots.len());
+        for (slot, transform) in &frame.0 {
+            assert!(slots.iter().any(|(known, _)| known == slot));
+            let expected = if *slot == slots[2].0 {
+                pose
+            } else {
+                HIDDEN_POSITION
+            };
+            assert_eq!(
+                transform.translation,
+                expected,
+                "slot {} carries the wrong pose",
+                slot.index()
+            );
+            assert_eq!(transform.rotation, glam::Quat::IDENTITY);
+            assert_eq!(transform.scale, Vec3::ONE);
         }
         // An empty pose map is the cleared scene: every slot parked.
         let cleared = scene_frame(&slots, &HashMap::new());
         assert!(
             cleared
-                .transforms
+                .0
                 .iter()
-                .all(|(_, translation, _)| *translation == HIDDEN_POSITION)
+                .all(|(_, pose)| pose.translation == HIDDEN_POSITION)
         );
     }
 
@@ -1728,13 +1810,15 @@ mod tests {
     /// the slot list and the shape list stay in step.
     #[test]
     fn instance_answers_map_onto_the_pool() {
-        let answers: Vec<u64> = (0..POOL_SIZE as u64 + 1).collect();
+        let answers: Vec<Entity> = (0..POOL_SIZE as u32 + 1)
+            .map(|index| Entity::from_raw(index, 0))
+            .collect();
         let pool = pool_from_instances(answers);
         assert_eq!(pool.len(), POOL_SIZE);
-        // The ground's bit 0 is gone; the pool starts at bit 1.
-        assert_eq!(pool[0].0, 1);
-        for (index, (bits, kind)) in pool.iter().enumerate() {
-            assert_eq!(*bits, index as u64 + 1);
+        // The ground is dropped; the pool starts at the answer after it.
+        assert_eq!(pool[0].0.index(), 1);
+        for (index, (slot, kind)) in pool.iter().enumerate() {
+            assert_eq!(slot.index(), index as u32 + 1);
             assert_eq!(*kind, shape_kind(index));
         }
     }
@@ -1743,7 +1827,11 @@ mod tests {
     /// pool's kind lookup never falls off the end.
     #[test]
     fn pool_kinds_cover_the_shapes() {
-        let pool = pool_from_instances((0..POOL_SIZE as u64 + 1).collect());
+        let pool = pool_from_instances(
+            (0..POOL_SIZE as u32 + 1)
+                .map(|index| Entity::from_raw(index, 0))
+                .collect(),
+        );
         for (_, kind) in &pool {
             assert!(SHAPE_KINDS.contains(kind));
         }

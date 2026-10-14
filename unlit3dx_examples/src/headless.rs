@@ -20,7 +20,10 @@ use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
-use crate::scene::{AudioSetup, GAME_HZ, RENDER_HZ, SceneStepper, setup_render_world, spawn_scene};
+use crate::scene::{
+    AudioSetup, GAME_HZ, RENDER_HZ, SceneStepper, mount_scene_content, setup_render_world,
+    spawn_scene,
+};
 
 /// The audio sample rate the headless run renders at, in hertz.
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
@@ -93,16 +96,10 @@ pub fn run(
         }
     };
     let worlds = spawn_scene::<Stepped>(&mut host, render.clone(), audio_setup);
-    let renderer = setup_render_world(
-        &mut host,
-        render.entity(),
-        device,
-        queue,
-        capabilities,
-        worlds.wiring.frame_reader.clone(),
-        // No control panel headless: nothing is there to click.
-        None,
-    );
+    let renderer = setup_render_world(&mut host, render.entity(), device, queue, capabilities);
+    // No control panel headless: nothing is there to click. The camera is
+    // still the scene's, so it arrives as a job like the meshes do.
+    mount_scene_content(&render, None);
     let mut offscreen = None;
     {
         let nested = host

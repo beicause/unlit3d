@@ -88,10 +88,11 @@ paced differs.
   nothing about physics or audio. Space is forwarded to gameplay as a job.
 - The **render world** is a sub-world on the main thread that behaves like a
   Godot-style resource server: gameplay requests meshes, materials and
-  instances with jobs, and the entity bits of the spawned instances come
-  back as the handles. It also holds the orbiting camera, the control
-  panel, and one behaviour that applies the latest transform snapshot
-  before anything draws.
+  instances with jobs, and the entity of each spawned instance comes back
+  as its handle. Everything the scene puts in it arrives the same way —
+  its orbiting camera, its control panel, and the poses its bodies carry
+  are jobs too, drained before anything draws. The world's own setup is
+  only the resource graph, the renderer and the mesh source.
 - The **physics world** steps rapier at 64 Hz and publishes body transforms
   and collision events. The ground is its first job.
 - The **audio world** owns the output stream and mixes whatever sources it
@@ -103,8 +104,9 @@ paced differs.
   address.
 - The **gameplay world** is the only place that knows about all three. It
   builds the scene by awaiting assets and instances from the render server
-  as one async future on a `LocalPool`, requests bodies from physics, maps
-  them to the instance handles and publishes the transform snapshot. Once
+  as one async future on a `LocalPool`, requests bodies from physics, and
+  maps them to the instance handles, sending their poses back as a job.
+  Once
   the audio world reports it can sound, gameplay starts both tracks; the
   panel drives them afterwards without going through gameplay. It ticks at
   a fixed 120 Hz, independent of the frame rate.

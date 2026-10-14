@@ -29,15 +29,16 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 
 // job 在远程线程的 tick 之间运行；request 会在答案就绪时把它带回来。
 simulation.send(Box::new(|world: &mut World| world.spawn((0u8,)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,)).to_bits()));
-// job 一旦运行过，`spawned.poll()` 就是 `Some(entity_bits)`。
+let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,))));
+// job 一旦运行过，`spawned.poll()` 就是 `Some(entity)`。
 
 // 快照是唯一回传的数据：在 world 的线程上 publish，在任意地方读最新一份，
-// 谁也不阻塞谁。
-let (writer, reader) = snapshot_pair::<TransformFrame>();
-writer.publish(TransformFrame { transforms: Vec::new() });
-if let Some(frame) = reader.latest() {
-    // ... 应用 `frame.transforms` ...
+// 谁也不阻塞谁。快照装什么是调用方自己的类型，怎么读也是：拥有 reader 的那个
+// 帧行为负责把内容写进它所在的 world。
+let (writer, reader) = snapshot_pair::<Vec<u64>>();
+writer.publish(Vec::new());
+if let Some(latest) = reader.latest() {
+    // ... 应用 `latest` ...
 }
 ```
 
@@ -51,8 +52,8 @@ drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 
 **render** 桥把它变成资源服务器：`create_mesh`、`create_material_from_texture`
-与 `spawn_instance` 这些 job 在渲染 world 里运行并返回实体位，远程的玩法 world
-把它们当作句柄持有。**physics** 桥发布刚体变换与碰撞事件的 `PhysicsSnapshot`，
+与 `spawn_instance` 这些 job 在渲染 world 里运行，并回答它们 spawn 出的 `Entity`，
+远程的玩法 world 把它当作句柄持有。**physics** 桥发布刚体变换与碰撞事件的 `PhysicsSnapshot`，
 **synth** 桥把 note job 与 MIDI 文件变成音色库音频。`unlit3dx_examples` crate 把所有桥
 放进同一个场景。
 
@@ -136,12 +137,11 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 
 各桥如下：
 
-- **render**（默认开启）：`apply_transform_frames` 每帧把 `TransformFrame` 快照
-  变成渲染 world 里的变换，赶在任何绘制之前。`create_mesh`、
-  `create_material_from_texture` 与 `spawn_instance` 这些 job 在渲染 world 里
-  运行并返回实体位，远程的玩法
-  world 借此搭建它从不直接触碰的场景——`GpuMesh` 持有 `Rc`，所以跨线程的句柄
-  就是实体位。
+- **render**（默认开启）：`create_mesh`、`create_material_from_texture` 与
+  `spawn_instance` 这些 job 在渲染 world 里运行，并回答它们 spawn 出的
+  `Entity`，远程的玩法 world 借此搭建它从不直接触碰的场景——`GpuMesh` 持有
+  `Rc`，所以跨线程的句柄就是这个实体。移动这些实体是调用方自己的 job：场景从物理
+  快照推得的姿态是发给渲染 world 的，而不是留在信箱里等它自己去应用。
 - **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，64）
   驱动 rapier 的 `PhysicsWorld`，并发布一份 `PhysicsSnapshot`——每个运动刚体的
   变换，加上这一步开始与结束的碰撞对，以及每个新接触的速度。
@@ -178,6 +178,27 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `WorldSender` 与一个 `WorldName`：前者让传输层能把命令投进一个它借不到的
   world，后者就是 `list_worlds` 报告的名字。
 
+## 最佳实践
+
+两条规则让场景的各个 world 彼此独立，也正是场景可移植的原因：同一个场景跑在线程上或
+被步进、跑在窗口里或离屏，都是因为没有一种模式需要伸手进另一个 world 的数据。
+
+1. **world 的搭建只做配置。** 生成 render、physics 或 audio world 时传入的是它运行时
+   所需的配置——设备、队列与能力，tick 频率，重力，缓冲大小——并构建该运行时自己拥有
+   的通用资源：资源图与渲染器、网格源、rapier world、输出流。其中不出现任何游戏里的
+   东西：没有球、没有音轨、没有机位、没有控制面板。一个空着启动的 world 也能早早
+   启动——render 子 world 在 GPU 到位之前就存在，于是玩法从第一次 tick 起就持有它的
+   句柄，之后再填充它。
+2. **对 world 的一切游戏性改动都以 job 到来。** 网格、材质与实例向 render server
+   请求；刚体通过 physics 队列生成与销毁；音源与传送作为 job 送往音频 world，而一整套
+   安装——见示例的 `install_synth`——就是一个函数包成一个 job。快照信箱承载的是从
+   world 里**取出**的状态，读它的一方决定这意味着什么；而另一个 world 的内容**变成**
+   什么仍然是 job，因此玩法从物理快照推出的姿态是发给 render world 的 job，而不是留在
+   信箱里等它自己去应用。
+
+检验标准是一行搭建代码能否属于另一个场景：若它提到了游戏称之为某个东西的东西，
+它就该是一个 job。
+
 ## 应用骨架
 
 多 world 应用面向窗口的那一半同样与应用无关，所以随运行时一起提供。**gpu**
@@ -205,7 +226,7 @@ world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
 job 在步进时运行、走完终点的 tick 会结束它、步进一个不携带步进 world 的实体什么
 也不做。集成测试补上各桥：物理 world
 把球丢到地板上并报告接触、音频 world 运行 job 并发布就绪状态、多 world 的 job 与
-快照往来，以及 render 桥的失败路径——panic 的 job 只失败自己的请求，变换帧移动
-活着的实体、跳过已失效的实体。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
+快照往来，以及 render 桥的失败路径——panic 的 job 只失败自己的请求，而请求一个
+world 从未构建的资源的 job 只失败索取它的那个实例。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
 world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，
 以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败。
