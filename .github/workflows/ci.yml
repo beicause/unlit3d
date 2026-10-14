@@ -47,12 +47,15 @@ jobs:
 
   build:
     name: Build ${{matrix.os}}
-    # runtime is normally 2 minutes. The install of nextest is what sets the
-    # ceiling: when the release lookup is rate-limited it falls back to a source
-    # build, which is several hundred crates and takes minutes of its own, so
-    # the timeout leaves room for that run rather than assuming the prebuilt
-    # binary is always there.
-    timeout-minutes: 20
+    # Measured on the slowest runner, Windows, which spends about ten minutes
+    # building the workspace and five more on clippy: a cold cache there puts
+    # the whole job near twenty minutes before the tests even start, and the
+    # build, the tests and the doc build all still have to run. The install of
+    # nextest is the other thing that sets the ceiling: when the release lookup
+    # is rate-limited it falls back to a source build, which is several hundred
+    # crates and takes minutes of its own, so the timeout leaves room for that
+    # run rather than assuming the prebuilt binary is always there.
+    timeout-minutes: 35
     runs-on: ${{matrix.os}}
     strategy:
       fail-fast: false
