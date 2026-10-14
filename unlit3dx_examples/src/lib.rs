@@ -82,14 +82,7 @@ pub fn init_logging() {
 /// go out, snapshots come back, and nothing but data crosses a thread
 /// boundary. With the mcp flag, a Model Context Protocol server over
 /// stdio reads the host and its render world.
-pub fn windowed(
-    #[cfg_attr(
-        any(target_arch = "wasm32", target_os = "android"),
-        allow(unused_variables)
-    )]
-    mcp: bool,
-    event_loop: EventLoop<()>,
-) {
+pub fn windowed(mcp: bool, event_loop: EventLoop<()>) {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = WinitHost::<()>::new();
     let world = host.world_mut();
