@@ -19,7 +19,7 @@ use unlit_ecs::{Entity, World};
 
 use crate::channel::{SnapshotReader, snapshot_pair};
 use crate::handle::WorldHandle;
-use crate::thread::FixedClock;
+use crate::thread::{FixedClock, ThreadControl};
 use crate::world::WorldRunner;
 
 /// How many frames the filler generates per pass, the unit the pacing and
@@ -37,6 +37,13 @@ pub struct AudioConfig {
     pub preferred_sample_rate: u32,
     /// The command channel's capacity, in queued jobs.
     pub command_capacity: usize,
+    /// Whether a world the host steps still opens an output device.
+    ///
+    /// A stepped world opens none by default: a headless run pulls its
+    /// fills by hand and has nothing to play to. A browser is the
+    /// exception - its output is a Web Audio context, which the page
+    /// drives, so it needs no thread of its own to live on.
+    pub stepped_device: bool,
 }
 
 impl Default for AudioConfig {
@@ -45,6 +52,7 @@ impl Default for AudioConfig {
             buffer_frames: 4096,
             preferred_sample_rate: 48000,
             command_capacity: 256,
+            stepped_device: false,
         }
     }
 }
@@ -295,10 +303,12 @@ struct OpenOutput {
 /// [`AudioReadyInbox`]. A self-driven world opens the default output device
 /// on its first tick and keeps it open, publishing its format once it
 /// knows it; until then, and whenever no device exists, the world runs
-/// silently. A stepped world opens no device at all — the host pulls its
-/// fills with [`dispatch_fill`] — and its format inbox stays empty. Either
-/// way the world mixes whatever [`OnFill`] sources a caller has since
-/// queued into it, and a world nobody has installed stays silent.
+/// silently. A stepped world opens no device either — the host pulls its
+/// fills with [`dispatch_fill`] — unless its config asks for the browser's,
+/// which a page drives with no thread at all; without one its format inbox
+/// stays empty. Either way the world mixes whatever [`OnFill`] sources a
+/// caller has since queued into it, and a world nobody has installed stays
+/// silent.
 ///
 /// Both runners share one tick body, so a stepped world opens its output and
 /// fills its ring exactly as a threaded one does; the only difference is
@@ -321,6 +331,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
         "buffer_frames must hold at least two fill chunks of {FILL_FRAMES} frames"
     );
     let mut output: Option<OpenOutput> = None;
+    // Whether opening an output has been attempted: a self-driven world
+    // keeps retrying until a device appears, while a browser's context
+    // either opens or never will.
+    let mut attempted = false;
     let mut scratch: Vec<f32> = Vec::new();
     let (format_writer, format_reader) = snapshot_pair::<AudioFormat>();
     let (ready_writer, ready_reader) = snapshot_pair::<AudioReady>();
@@ -344,11 +358,15 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             if control.stop_requested() {
                 return false;
             }
-            // A self-driven world owns an output device, which it opens on
-            // its first tick and retries until one appears. A world the
-            // host steps has no device: the host pulls its fills, so it is
-            // open from the first tick and never fills a ring.
-            if control.self_driven() && output.is_none() {
+            // A world that owns an output device opens it on its first
+            // tick. A stepped world owns one only when its config asks for
+            // the browser's: the host pulls the fills of every other
+            // stepped world by hand.
+            if opens_output(&config, control)
+                && output.is_none()
+                && (!attempted || control.self_driven())
+            {
+                attempted = true;
                 match open_output(&config) {
                     Some(opened) => {
                         log::info!(
@@ -378,7 +396,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             // thread — so a device may be open for seconds before the world
             // carries one. Publish the transition, not the state, so the
             // mailbox stays quiet.
-            let open = output.is_some() || !control.self_driven();
+            // A stepped world that asked for no device is open by
+            // definition: its host pulls the fills. One that asked for a
+            // browser's context sounds only once that context exists.
+            let open = output.is_some() || (!control.self_driven() && !config.stepped_device);
             let sounding = open && world.query::<&OnFill>().next().is_some();
             if sounding != ready {
                 ready = sounding;
@@ -402,11 +423,23 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                     control.wait_timeout(Duration::from_secs(1));
                 }
             } else if control.self_driven() {
+                // A self-driven world with no device yet waits for one; a
+                // browser's context that failed to open is not worth
+                // retrying every frame, so a stepped world just returns.
                 control.wait_timeout(Duration::from_secs(1));
             }
             true
         },
     )
+}
+
+/// Whether a world driven this way owns an output device.
+///
+/// A self-driven world always does. A world the host steps does only when
+/// its config asks for the browser's output: a Web Audio context is driven
+/// by the page, so it needs no thread of its own to live on.
+fn opens_output(config: &AudioConfig, control: &ThreadControl) -> bool {
+    control.self_driven() || config.stepped_device
 }
 
 /// Open the default output stream and the ring feeding it, preferring a

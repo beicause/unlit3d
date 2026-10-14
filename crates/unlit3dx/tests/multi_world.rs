@@ -35,7 +35,7 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
 #[test]
 fn sub_world_jobs_drain_in_order() {
     let mut host = World::new();
-    let proxy = spawn_sub_world(&mut host, 16);
+    let proxy = spawn_sub_world(&mut host, "nested", 16);
 
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     for step in 0..4 {

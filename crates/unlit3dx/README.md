@@ -47,7 +47,7 @@ The feature-gated modules build scenes on top of that core. A **sub-world**
 keeps its owner on the main thread but takes jobs like a remote world:
 
 ```rust,ignore
-let render = spawn_sub_world(&mut host, 64); // 64 queued jobs
+let render = spawn_sub_world(&mut host, "render", 64); // 64 queued jobs
 let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // run the jobs other threads posted
 ```
@@ -211,10 +211,14 @@ The bridges:
   `load_midi_file` (an SMF file) or `midi_file` (a list of timed
   messages). The demo's `install_synth` shows the whole install as one
   function, queued to the audio world as a job.
-- **mcp** (off by default): `serve_mcp` serves the host world and its
-  sub-worlds over the [Model Context
+- **mcp** (off by default): `serve_mcp` serves the host world and every
+  world it carries — a nested sub-world, or one on a thread of its own —
+  over the [Model Context
   Protocol](../crates/unlit3d_mcp/README.md), so a live scene can be
-  inspected and screenshotted from a terminal while it runs.
+  inspected and screenshotted from a terminal while it runs. Each spawn
+  leaves a `WorldSender` and a `WorldName` on the proxy entity beside the
+  proxy: the sender is what lets the transport post a command into a world
+  it cannot borrow, and the name is what `list_worlds` reports.
 
 ## The application skeleton
 
@@ -255,5 +259,7 @@ world running jobs and publishing its readiness, multi-world job and
 snapshot traffic, and the render bridge's failure paths — a job that panics
 fails only its own request, and transform frames move live entities while
 stale ones are skipped. With the `mcp` feature on, the MCP command dispatch
-is covered too: world listing, routing to a nested world, and a readable
-failure for an entity that carries no world.
+is covered too: world listing, routing to a nested world, and routing to one
+on a thread of its own or one the host steps — plus a readable failure for
+an entity that carries no world, a world that has stopped, and a queue that
+refuses the job.

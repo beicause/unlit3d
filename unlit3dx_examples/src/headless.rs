@@ -20,7 +20,7 @@ use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::prelude::*;
 use unlit3dx::prelude::*;
 
-use crate::scene::{AudioSetup, RENDER_HZ, SceneStepper, setup_render_world, spawn_scene};
+use crate::scene::{AudioSetup, GAME_HZ, RENDER_HZ, SceneStepper, setup_render_world, spawn_scene};
 
 /// The audio sample rate the headless run renders at, in hertz.
 pub const AUDIO_SAMPLE_RATE: u32 = 48_000;
@@ -73,7 +73,7 @@ pub fn run(
 
     // The render sub-world, drained inline every frame, exactly as the
     // windowed mode's draw behaviour drains it.
-    let render = spawn_sub_world(&mut host, 64);
+    let render = spawn_sub_world(&mut host, "render", 64);
 
     // The scene's worlds, stepped by this run: the same worlds, queues and
     // mailboxes the windowed mode builds on threads, so both modes share
@@ -87,7 +87,7 @@ pub fn run(
     let audio_setup = if config.soundfont.is_empty() {
         AudioSetup::Silent
     } else {
-        AudioSetup::Sources {
+        AudioSetup::Pulled {
             soundfont: config.soundfont.clone(),
             sample_rate: config.audio_sample_rate,
         }
@@ -125,8 +125,9 @@ pub fn run(
     // The stepper carries the step remainders: physics runs at 64 Hz and
     // the synthesizer at its own sample rate, neither an integer multiple
     // of the render rate, so both accumulate their fractional steps across
-    // frames.
-    let mut stepper = SceneStepper::new(RENDER_HZ, PHYSICS_HZ, Some(config.audio_sample_rate));
+    // frames. The frame's duration is the exact render step, not a
+    // measured one, so the same frames give the same steps every run.
+    let mut stepper = SceneStepper::new(GAME_HZ, PHYSICS_HZ, Some(config.audio_sample_rate));
     // The interleaved sample buffer, reused across frames so the audio
     // loop does not allocate one per frame.
     let mut samples_out: Vec<f32> = Vec::new();
@@ -137,10 +138,10 @@ pub fn run(
         // The worlds step once for this frame: gameplay first, so its
         // requests reach the others before they step, then physics as its
         // rate comes due and audio for the transport jobs booked.
-        stepper.step(&host, &worlds);
+        stepper.step(&host, &worlds, 1.0 / RENDER_HZ);
 
         // Audio: render whatever samples the frame's duration asks for.
-        let frames = stepper.audio_frames();
+        let frames = stepper.audio_frames(1.0 / RENDER_HZ);
         if frames > 0 {
             samples_out.clear();
             samples_out.resize(frames * AUDIO_CHANNELS, 0.0);

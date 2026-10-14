@@ -34,6 +34,7 @@ use winit::window::Window;
 
 use crate::gpu::Gpu;
 use crate::host::drain_sub_world;
+use crate::world::WorldName;
 
 /// The color format the offscreen target uses; the blit converts into the
 /// surface's own format.
@@ -306,7 +307,7 @@ pub fn setup_presenter(
         let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
         let blit_texture = blit_world.spawn((BlitTexture::new(&blit_world, blit_frame, view),));
         blit_world.spawn_source(BlitSource::new());
-        let blit_entity = world.spawn((blit_world,));
+        let blit_entity = world.spawn((blit_world, WorldName("blit")));
         let (surface, attachments) = {
             let nested = world
                 .get::<World>(blit_entity)

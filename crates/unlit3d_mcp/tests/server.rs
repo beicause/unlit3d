@@ -13,7 +13,7 @@ use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit_wgpu_test_util::{Ctx, block_on};
 use unlit3d::prelude::*;
-use unlit3d_mcp::{McpCommand, WorldId, serve_with};
+use unlit3d_mcp::{McpCommand, WorldEntry, WorldId, serve_with};
 
 /// The format of the offscreen target the test world renders into.
 const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -122,7 +122,10 @@ impl Server {
                 ready_tx.send(()).expect("the test waits for the world");
                 while let Ok(command) = incoming.recv_blocking() {
                     if command.wants_worlds() {
-                        command.answer_worlds(vec![WorldId::Host]);
+                        command.answer_worlds(vec![WorldEntry {
+                            world: WorldId::Host,
+                            name: "host",
+                        }]);
                     } else {
                         command.dispatch(&mut world);
                     }
@@ -338,7 +341,8 @@ fn the_server_lists_its_tools_and_renders() {
         let worlds = server.tool("list_worlds", json!({})).await;
         let worlds = worlds.as_array().expect("list_worlds returns an array");
         assert_eq!(worlds.len(), 1, "the test host holds one world");
-        assert_eq!(worlds[0], "Host", "and it is the host world");
+        assert_eq!(worlds[0]["world"], "Host", "and it is the host world");
+        assert_eq!(worlds[0]["name"], "host", "under the name it was spawned");
 
         // A fresh offscreen world has entities, and one of them is the clear
         // state.

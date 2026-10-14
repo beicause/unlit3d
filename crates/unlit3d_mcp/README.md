@@ -63,9 +63,9 @@ assumes how many worlds there are or that a world holds a rendering device.
 The server exposes a world's public surface in four groups. Every tool names the
 world it runs against with a `WorldId`: the string `"Host"` for the world the
 owning thread holds directly, or `{"Handle": bits}` for a world carried by a
-host entity. `list_worlds` reports which worlds the host carries — including
-worlds on other threads, which only the host can name — so ask it before naming
-a world. GPU tools additionally name the entity handles they need — a render
+host entity. `list_worlds` reports which worlds the host carries, each with the
+name it was spawned under — including worlds on other threads, which only the
+host can report — so ask it before naming a world. GPU tools additionally name the entity handles they need — a render
 context, a renderer, a mesh source, a resource — and the server passes them
 through untouched, leaving their resolution to the thread that owns the world.
 
@@ -131,7 +131,8 @@ each `McpCommand` to that thread, which resolves the command's `WorldId` and
 calls `McpCommand::dispatch`. A `list_worlds` command has no job: the host
 recognises it with `McpCommand::wants_worlds` and answers it with
 `McpCommand::answer_worlds`, naming every world it carries — including worlds
-on other threads, which only the host can name. The tools are plain functions
+on other threads, which only the host can report — each with the name it was
+spawned under. The tools are plain functions
 over `&mut World` (and, for the GPU ones, the entity handles they are given), so
 a host can call one directly without the protocol in the way.
 

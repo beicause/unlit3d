@@ -11,7 +11,7 @@ use unlit3dx::prelude::*;
 /// A host world with one sub-world in it, plus the sub-world's handle.
 fn sub_world() -> (World, WorldHandle) {
     let mut host = World::new();
-    let world = spawn_sub_world(&mut host, 16);
+    let world = spawn_sub_world(&mut host, "render", 16);
     (host, world)
 }
 

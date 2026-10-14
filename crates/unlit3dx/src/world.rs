@@ -9,7 +9,7 @@ use async_channel::{Receiver, bounded};
 use unlit_ecs::{ArchetypeBuilder, Bundle, Entity, World};
 
 use crate::handle::WorldHandle;
-use crate::job::{Job, JobSender};
+use crate::job::{Job, JobSender, SendError};
 use crate::thread::{ThreadControl, ThreadStatus, WorldThread, panic_message, stepped_control};
 
 /// The proxy component a spawned world leaves on the host.
@@ -34,6 +34,45 @@ enum WorldKind {
     Stepped(Box<SteppedWorld>),
 }
 
+/// The name a spawned world answers to.
+///
+/// Every spawn leaves this component on the host entity that carries the
+/// world, so a bridge that only walks the host can name the worlds it
+/// reports instead of numbering them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldName(pub &'static str);
+
+/// The host-side view of a spawned world's command queue.
+///
+/// A spawned world is reached through the [`WorldHandle`] its spawn
+/// returns, but that handle belongs to the caller. Every spawn also leaves
+/// this component on the proxy entity, so a bridge that only has the host
+/// world — the MCP transport, say — can reach the world the same way. A
+/// job posted here is picked up by whatever drives the world: its own
+/// thread, or the host's [`step_stepped_world`] calls.
+#[derive(Clone)]
+pub struct WorldSender {
+    /// The queue the world's jobs are posted through.
+    commands: JobSender,
+    /// The liveness a sender checks before it posts.
+    status: ThreadStatus,
+}
+
+impl WorldSender {
+    /// Post a job to the world this component belongs to.
+    pub fn send(&self, job: Job<()>) -> Result<(), SendError> {
+        self.commands.send(job)
+    }
+
+    /// Whether the world has stopped.
+    ///
+    /// A job sent to a stopped world never runs, so a sender checks this
+    /// first rather than waiting for an answer that cannot come.
+    pub fn is_finished(&self) -> bool {
+        self.status.is_finished()
+    }
+}
+
 /// The tick a world runs, with its one-time state already captured.
 type Tick = Box<dyn FnMut(&mut World, &ThreadControl) -> bool>;
 
@@ -52,8 +91,8 @@ struct SteppedWorld {
     status: ThreadStatus,
     /// The tick, with its one-time state already captured.
     tick: Tick,
-    /// The name the world logs under.
-    name: String,
+    /// The name the world logs under, and the one a bridge reports.
+    name: &'static str,
 }
 
 /// How a world is driven: on its own thread, or by the host's frames.
@@ -72,7 +111,7 @@ pub trait WorldRunner: 'static {
     /// Spawn a world driven this way.
     fn spawn<C, I, S, T>(
         host: &mut World,
-        name: &str,
+        name: &'static str,
         command_capacity: usize,
         extra: C,
         init: I,
@@ -96,7 +135,7 @@ impl WorldRunner for Threaded {
 
     fn spawn<C, I, S, T>(
         host: &mut World,
-        name: &str,
+        name: &'static str,
         command_capacity: usize,
         extra: C,
         init: I,
@@ -117,7 +156,7 @@ impl WorldRunner for Stepped {
 
     fn spawn<C, I, S, T>(
         host: &mut World,
-        name: &str,
+        name: &'static str,
         command_capacity: usize,
         extra: C,
         init: I,
@@ -140,9 +179,12 @@ impl WorldRunner for Stepped {
 /// panics is a tick panic: it is reported and ends the thread. The handle
 /// returned carries the handle every later job goes through, and
 /// dropping the host entity it names stops the thread.
+///
+/// `name` labels the world for a bridge that lists the host's worlds; it
+/// lands on the proxy entity as a [`WorldName`].
 pub fn spawn_remote_world<T>(
     host: &mut World,
-    name: &str,
+    name: &'static str,
     command_capacity: usize,
     tick: T,
 ) -> WorldHandle
@@ -159,7 +201,7 @@ where
 /// the same entity its jobs are addressed by.
 pub fn spawn_remote_world_with<C, T>(
     host: &mut World,
-    name: &str,
+    name: &'static str,
     command_capacity: usize,
     extra: C,
     mut tick: T,
@@ -191,7 +233,7 @@ where
 /// a job would silently block every sender.
 pub fn spawn_remote_world_with_init<C, I, S, T>(
     host: &mut World,
-    name: &str,
+    name: &'static str,
     command_capacity: usize,
     extra: C,
     init: I,
@@ -212,7 +254,17 @@ where
     });
     let status: ThreadStatus = thread.status();
     let commands = JobSender::new(commands);
-    let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, extra);
+    let sender = WorldSender {
+        commands: commands.clone(),
+        status: status.clone(),
+    };
+    let entity = spawn_proxy(
+        host,
+        WorldKind::Threaded { _thread: thread },
+        name,
+        sender,
+        extra,
+    );
     WorldHandle::new(entity, commands, Some(status))
 }
 
@@ -225,9 +277,12 @@ where
 ///
 /// `init` runs immediately, against the fresh world, before the entity is
 /// spawned, so a job sent right after the spawn already finds what it built.
+///
+/// `name` labels the world for a bridge that lists the host's worlds; it
+/// lands on the proxy entity as a [`WorldName`].
 pub fn spawn_stepped_world_with_init<C, I, S, T>(
     host: &mut World,
-    name: &str,
+    name: &'static str,
     command_capacity: usize,
     extra: C,
     init: I,
@@ -252,19 +307,37 @@ where
         control,
         status: status.clone(),
         tick,
-        name: name.to_owned(),
+        name,
     };
-    let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), extra);
+    let sender = WorldSender {
+        commands: JobSender::new(commands.clone()),
+        status: status.clone(),
+    };
+    let entity = spawn_proxy(
+        host,
+        WorldKind::Stepped(Box::new(stepped)),
+        name,
+        sender,
+        extra,
+    );
     WorldHandle::new(entity, JobSender::new(commands), Some(status))
 }
 
 /// Spawn the proxy entity with the runner's components.
-fn spawn_proxy<C: Bundle>(host: &mut World, kind: WorldKind, extra: C) -> Entity {
+fn spawn_proxy<C: Bundle>(
+    host: &mut World,
+    kind: WorldKind,
+    name: &'static str,
+    sender: WorldSender,
+    extra: C,
+) -> Entity {
     // The proxy and the caller's components go on together as one flat
     // bundle, so a bundle of several inboxes lands as several components
     // rather than as one tuple.
     let mut bundle = ArchetypeBuilder::new();
     bundle.push(WorldProxy { kind });
+    bundle.push(WorldName(name));
+    bundle.push(sender);
     bundle.push_bundle(extra);
     host.spawn(bundle)
 }

@@ -5,12 +5,15 @@
 //! event-loop behaviour, so a world — which is not sendable — is only
 //! ever touched on its own thread.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, unbounded};
 use unlit_ecs::{Command, Entity, World};
 use unlit3d::winit::event::OnAboutToWait;
-use unlit3d_mcp::{McpCommand, WorldId};
+use unlit3d_mcp::{McpCommand, WorldEntry, WorldId};
+
+use crate::sync;
+use crate::world::{WorldName, WorldSender};
 
 /// The commands the transport thread has posted for the host to run.
 #[derive(Clone)]
@@ -49,7 +52,8 @@ pub fn serve_mcp(world: &mut World) {
 ///
 /// Running a command needs a mutable world, so each one is queued and
 /// applied between two event callbacks. The host answers the world list
-/// itself: it is the only one that knows which entities carry a world.
+/// itself: it is the only one that knows which entities carry a world —
+/// a nested one, or a sender to one that runs apart from it.
 fn drain_mcp() -> OnAboutToWait {
     OnAboutToWait::new(move |world, _entity, ()| {
         let Some(inbox) = world.query::<&McpInbox>().next().map(|(_, inbox)| inbox) else {
@@ -62,21 +66,54 @@ fn drain_mcp() -> OnAboutToWait {
 }
 
 /// Run one MCP command against the world it names.
+///
+/// A command for a world the host merely carries is queued as a command of
+/// the host's own, because only the host's thread may touch its world. The
+/// list names every world a tool can reach: the host's own, each nested
+/// world an entity carries, and each world an entity holds a
+/// [`WorldSender`] for — a world on a thread of its own or one the host
+/// steps, neither of which a nested-world lookup could find.
 fn dispatch_command(world: &World, command: McpCommand) {
     if command.wants_worlds() {
-        let mut worlds = vec![WorldId::Host];
-        worlds.extend(
-            world
-                .query::<(Entity, &World)>()
-                .map(|(entity, _)| WorldId::handle(entity)),
-        );
-        command.answer_worlds(worlds);
+        command.answer_worlds(reachable_worlds(world));
         return;
     }
     match command.world().entity() {
         Some(entity) => world.queue().push(RunInWorld { entity, command }),
         None => world.queue().push(RunInHost { command }),
     }
+}
+
+/// Every world a tool can name through the host, with its name.
+///
+/// An entity that carries a world without a [`WorldName`] is left out
+/// rather than reported under a made-up name: every world a host offers to
+/// the tools is one it can name.
+fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
+    let mut worlds = vec![WorldEntry {
+        world: WorldId::Host,
+        name: "host",
+    }];
+    let push = |entity: Entity, worlds: &mut Vec<WorldEntry>| {
+        let id = WorldId::handle(entity);
+        let Some(name) = world.get::<WorldName>(entity) else {
+            return;
+        };
+        if worlds.iter().any(|entry| entry.world == id) {
+            return;
+        }
+        worlds.push(WorldEntry {
+            world: id,
+            name: name.0,
+        });
+    };
+    for (entity, _) in world.query::<(Entity, &World)>() {
+        push(entity, &mut worlds);
+    }
+    for (entity, _) in world.query::<(Entity, &WorldSender)>() {
+        push(entity, &mut worlds);
+    }
+    worlds
 }
 
 /// Run an MCP command against the host world itself.
@@ -90,27 +127,68 @@ impl Command for RunInHost {
     }
 }
 
-/// Run an MCP command against the nested world one entity carries.
+/// Run an MCP command against the world one entity carries.
 struct RunInWorld {
     entity: Entity,
     command: McpCommand,
 }
 
 impl Command for RunInWorld {
+    /// A nested world is a component here, so its commands run on this
+    /// thread. A world the host only sends to — one on a thread of its own,
+    /// or one the host steps — is reached by posting the command as a job
+    /// instead: its queue is shared with the handle its spawn returned, so
+    /// the sender beside the proxy is enough. The reply rides the command's
+    /// own channel, so nothing here waits for the other world to answer.
     fn apply(self: Box<Self>, world: &mut World) {
-        if let Some(mut nested) = world.get_mut::<World>(self.entity) {
-            self.command.dispatch(&mut nested);
-        } else {
-            self.command
-                .fail(format!("entity {} carries no world", self.entity.to_bits()));
+        let RunInWorld { entity, command } = *self;
+        if let Some(mut nested) = world.get_mut::<World>(entity) {
+            command.dispatch(&mut nested);
+            return;
+        }
+        let Some(sender) = world
+            .get::<WorldSender>(entity)
+            .map(|sender| sender.clone())
+        else {
+            command.fail(format!("entity {} carries no world", entity.to_bits()));
+            return;
+        };
+        if sender.is_finished() {
+            command.fail(format!(
+                "the world on entity {} has stopped",
+                entity.to_bits()
+            ));
+            return;
+        }
+        // The command rides inside the job, so a slot keeps it here: a
+        // refused job hands it back, and can then be failed with the reason.
+        let pending = Arc::new(Mutex::new(Some(command)));
+        let job_slot = Arc::clone(&pending);
+        let job = Box::new(move |world: &mut World| {
+            if let Some(command) = sync::lock(&job_slot).take() {
+                command.dispatch(world);
+            }
+        });
+        if let Err(error) = sender.send(job)
+            && let Some(command) = sync::lock(&pending).take()
+        {
+            command.fail(format!(
+                "the world on entity {} refused the command: {error}",
+                entity.to_bits()
+            ));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::time::{Duration, Instant};
+
     use unlit3d_mcp::Output;
+
+    use super::*;
+    use crate::thread::ThreadControl;
+    use crate::world::{spawn_remote_world, spawn_stepped_world_with_init, step_stepped_world};
 
     /// A component the host command counts.
     struct Marker;
@@ -140,11 +218,11 @@ mod tests {
     }
 
     /// The host answers a world list with itself and every entity that
-    /// carries a nested world — the render sub-world among them.
+    /// carries a world, nested or apart — the render sub-world among them.
     #[test]
     fn list_worlds_answers_with_the_host_and_its_nested_worlds() {
         let (mut host, transport) = host_with_inbox();
-        let nested = host.spawn((World::new(),));
+        let nested = host.spawn((World::new(), WorldName("nested")));
 
         let (command, reply) = McpCommand::list_worlds();
         transport.try_send(command).expect("the inbox takes it");
@@ -155,10 +233,33 @@ mod tests {
             panic!("a world list answers with JSON")
         };
         let text = value.to_string();
-        assert!(text.contains("Host"), "the host names itself: {text}");
+        assert!(text.contains("host"), "the host names itself: {text}");
         assert!(
-            text.contains(&nested.to_bits().to_string()),
+            text.contains("nested") && text.contains(&nested.to_bits().to_string()),
             "the host names its nested world {nested:?}: {text}"
+        );
+    }
+
+    /// A world the host cannot name is left out of the list: every world the
+    /// tools are offered is one the host can name, so nothing is reported
+    /// under a made-up label.
+    #[test]
+    fn list_worlds_leaves_out_a_world_it_cannot_name() {
+        let (mut host, transport) = host_with_inbox();
+        let unnamed = host.spawn((World::new(),));
+
+        let (command, reply) = McpCommand::list_worlds();
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Ok(Output::Json(value)) = answer else {
+            panic!("a world list answers with JSON")
+        };
+        let text = value.to_string();
+        assert!(
+            !text.contains(&unnamed.to_bits().to_string()),
+            "the unnamed world is left out: {text}"
         );
     }
 
@@ -226,5 +327,157 @@ mod tests {
             panic!("the job answers with JSON")
         };
         assert_eq!(value.as_u64(), Some(1), "the host world was seen");
+    }
+    /// A world the host merely sends to is named too, so a tool can reach a
+    /// world that runs apart from the host — an example's gameplay world, say.
+    #[test]
+    fn list_worlds_names_a_world_on_its_own_thread() {
+        let (mut host, transport) = host_with_inbox();
+        let threaded = spawn_remote_world(&mut host, "listed", 8, |_, control| {
+            control.wait_timeout(Duration::from_millis(1));
+            true
+        });
+
+        let (command, reply) = McpCommand::list_worlds();
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Ok(Output::Json(value)) = answer else {
+            panic!("a world list answers with JSON")
+        };
+        let text = value.to_string();
+        assert!(
+            text.contains("listed") && text.contains(&threaded.entity().to_bits().to_string()),
+            "the host names the threaded world: {text}"
+        );
+    }
+
+    /// A command aimed at a world on its own thread runs there and answers
+    /// on the command's own channel: the host never waits for the thread.
+    #[test]
+    fn a_command_runs_against_a_world_on_its_own_thread() {
+        let (mut host, transport) = host_with_inbox();
+        let threaded = spawn_remote_world(&mut host, "counted", 8, |_, control| {
+            control.wait_timeout(Duration::from_millis(1));
+            true
+        });
+        let seeded = threaded.request(Box::new(|world: &mut World| {
+            world.spawn((Marker,));
+        }));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !seeded.answered() && !seeded.dropped() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(seeded.poll(), Some(()), "the thread ran the seeding job");
+
+        let (command, reply) = McpCommand::new(|world| {
+            let count = world.query::<&Marker>().count();
+            Ok(Output::Json(serde_json::Value::from(count as u64)))
+        });
+        let command = command.with_world(WorldId::handle(threaded.entity()));
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Ok(Output::Json(value)) = answer else {
+            panic!("the job answers with JSON")
+        };
+        assert_eq!(value.as_u64(), Some(1), "the threaded world was seen");
+    }
+
+    /// A stepped world is named and reached the same way, and its command
+    /// runs on a step: nothing else drives it.
+    #[test]
+    fn a_command_runs_against_a_world_the_host_steps() {
+        let (mut host, transport) = host_with_inbox();
+        let stepped = spawn_stepped_world_with_init(
+            &mut host,
+            "stepped",
+            8,
+            (),
+            |world: &mut World| {
+                world.spawn((Marker,));
+            },
+            |_, _: &ThreadControl, ()| true,
+        );
+
+        let (command, reply) = McpCommand::new(|world| {
+            let count = world.query::<&Marker>().count();
+            Ok(Output::Json(serde_json::Value::from(count as u64)))
+        });
+        let command = command.with_world(WorldId::handle(stepped.entity()));
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+        step_stepped_world(&host, stepped.entity());
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Ok(Output::Json(value)) = answer else {
+            panic!("the job answers with JSON")
+        };
+        assert_eq!(value.as_u64(), Some(1), "the stepped world was seen");
+    }
+
+    /// A world that has stopped answers nothing, so the host explains why
+    /// instead of leaving the job to be dropped without a word.
+    #[test]
+    fn a_command_for_a_stopped_world_fails_readably() {
+        let (mut host, transport) = host_with_inbox();
+        let stepped = spawn_stepped_world_with_init(
+            &mut host,
+            "ended",
+            8,
+            (),
+            |_: &mut World| (),
+            |_, _: &ThreadControl, ()| false,
+        );
+        step_stepped_world(&host, stepped.entity());
+        assert!(stepped.is_finished(), "the tick ended the world");
+
+        let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
+        let command = command.with_world(WorldId::handle(stepped.entity()));
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Err(message) = answer else {
+            panic!("the command fails")
+        };
+        assert!(
+            message.contains("has stopped"),
+            "the failure says why: {message}"
+        );
+    }
+
+    /// A command whose job the queue refuses fails right here with the
+    /// reason, rather than closing the channel without a word.
+    #[test]
+    fn a_command_for_a_full_queue_fails_readably() {
+        let (mut host, transport) = host_with_inbox();
+        let stepped = spawn_stepped_world_with_init(
+            &mut host,
+            "busy",
+            1,
+            (),
+            |_: &mut World| (),
+            |_, _: &ThreadControl, ()| true,
+        );
+        stepped
+            .send(Box::new(|_: &mut World| {}))
+            .expect("the first job fits");
+
+        let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
+        let command = command.with_world(WorldId::handle(stepped.entity()));
+        transport.try_send(command).expect("the inbox takes it");
+        run_turn(&mut host);
+
+        let answer = reply.recv_blocking().expect("the command was answered");
+        let Err(message) = answer else {
+            panic!("the command fails")
+        };
+        assert!(
+            message.contains("refused the command"),
+            "the failure says why: {message}"
+        );
     }
 }

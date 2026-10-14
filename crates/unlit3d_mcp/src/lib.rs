@@ -20,7 +20,7 @@ use std::error::Error;
 pub mod host;
 pub mod server;
 
-pub use host::{EncodedImage, Job, McpCommand, Output, WorldId};
+pub use host::{EncodedImage, Job, McpCommand, Output, WorldEntry, WorldId};
 pub use server::McpServer;
 pub use unlit3d::reflect::{
     ComponentEntry, contains, decode_events, encode, entries, entry, names, push, set,
@@ -39,8 +39,9 @@ pub use unlit3d::reflect::{
 ///
 /// The host answers the `list_worlds` tool itself: when a command's
 /// [`wants_worlds`](host::McpCommand::wants_worlds) is true, it names every
-/// world it carries with [`answer_worlds`](host::McpCommand::answer_worlds)
-/// instead of dispatching a job. This crate keeps no list of its own, because
+/// world it carries — with the name each was spawned under — through
+/// [`answer_worlds`](host::McpCommand::answer_worlds) instead of dispatching
+/// a job. This crate keeps no list of its own, because
 /// the worlds on other threads are not types it can recognise.
 ///
 /// # Errors

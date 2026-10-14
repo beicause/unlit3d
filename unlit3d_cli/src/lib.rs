@@ -376,7 +376,10 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
                     let _ = ready_tx.send(Ok(()));
                     while let Ok(command) = receiver.recv() {
                         if command.wants_worlds() {
-                            command.answer_worlds(vec![unlit3d_mcp::WorldId::Host]);
+                            command.answer_worlds(vec![unlit3d_mcp::WorldEntry {
+                                world: unlit3d_mcp::WorldId::Host,
+                                name: "host",
+                            }]);
                         } else {
                             command.dispatch(&mut world);
                         }

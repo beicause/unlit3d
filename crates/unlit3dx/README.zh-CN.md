@@ -45,7 +45,7 @@ if let Some(frame) = reader.latest() {
 但接收 job 的方式与远程 world 相同：
 
 ```rust,ignore
-let render = spawn_sub_world(&mut host, 64); // 64 个排队 job
+let render = spawn_sub_world(&mut host, "render", 64); // 64 个排队 job
 let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
@@ -171,9 +171,12 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `stop_track_job` 放下文件。音轨彼此独立，故一段背景音乐循环与一段单次序列可共存于同一个音频 world 并各自暂停。
   文件来自 `load_midi_file`（SMF 文件）或 `midi_file`（一列定时消息）。示例里的 `install_synth`
   把整个安装收进一个函数，作为 job 排给音频 world。
-- **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其子 world 通过
+- **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其携带的每个 world——嵌套的
+  子 world，或自有一条线程的 world——通过
   [模型上下文协议](../crates/unlit3d_mcp/README.zh-CN.md)对外服务，场景
-  运行时即可从终端检视与截图。
+  运行时即可从终端检视与截图。每次生成都会在代理实体上、紧挨着代理留下一个
+  `WorldSender` 与一个 `WorldName`：前者让传输层能把命令投进一个它借不到的
+  world，后者就是 `list_worlds` 报告的名字。
 
 ## 应用骨架
 
@@ -204,4 +207,5 @@ job 在步进时运行、走完终点的 tick 会结束它、步进一个不携�
 把球丢到地板上并报告接触、音频 world 运行 job 并发布就绪状态、多 world 的 job 与
 快照往来，以及 render 桥的失败路径——panic 的 job 只失败自己的请求，变换帧移动
 活着的实体、跳过已失效的实体。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
-world 列表、路由到嵌套 world，以及指向不带 world 的实体时给出可读的失败。
+world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，
+以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败。

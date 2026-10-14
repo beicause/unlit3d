@@ -104,6 +104,19 @@ impl WorldId {
     }
 }
 
+/// One world a host reports, with the name it was spawned under.
+///
+/// `list_worlds` answers with these: the id is what every other tool names
+/// the world by, and the name is what tells a person which world it is. The
+/// host supplies both, because only the host knows the worlds it carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, facet::Facet)]
+pub struct WorldEntry {
+    /// The id every other tool names this world by.
+    pub world: WorldId,
+    /// The name the world was spawned under.
+    pub name: &'static str,
+}
+
 /// What a command asks the host to do.
 enum Request {
     /// Run a job against one world.
@@ -178,8 +191,9 @@ impl McpCommand {
     /// Answer the `list_worlds` request with the worlds the host carries.
     ///
     /// The host names every world a tool can reach — the host world itself and
-    /// each world it routes commands to, including ones on other threads.
-    pub fn answer_worlds(self, worlds: Vec<WorldId>) {
+    /// each world it routes commands to, including ones on other threads —
+    /// each with the name it was spawned under.
+    pub fn answer_worlds(self, worlds: Vec<WorldEntry>) {
         let result = to_value(&worlds).map(Output::from);
         let _ = self.reply.send_blocking(result);
     }
@@ -1045,12 +1059,27 @@ mod tests {
         let (command, receiver) = McpCommand::list_worlds();
         assert!(command.wants_worlds());
         assert_eq!(command.world(), WorldId::Host);
-        command.answer_worlds(vec![WorldId::Host, WorldId::Handle(3)]);
+        command.answer_worlds(vec![
+            WorldEntry {
+                world: WorldId::Host,
+                name: "host",
+            },
+            WorldEntry {
+                world: WorldId::Handle(3),
+                name: "render",
+            },
+        ]);
         let answer = receiver.recv_blocking().unwrap().unwrap();
         let Output::Json(value) = answer else {
             panic!("list_worlds answers with JSON");
         };
-        assert_eq!(value, serde_json::json!(["Host", {"Handle": 3}]));
+        assert_eq!(
+            value,
+            serde_json::json!([
+                {"world": "Host", "name": "host"},
+                {"world": {"Handle": 3}, "name": "render"}
+            ])
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@ use unlit_ecs::World;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
 use crate::thread::panic_message;
+use crate::world::WorldName;
 
 /// The sub-world's command inbox, a component of the nested world itself.
 ///
@@ -18,6 +19,9 @@ struct SubWorldInbox(Receiver<Job<()>>);
 /// component of the returned entity, with a command inbox of the given
 /// capacity.
 ///
+/// `name` labels the world for a bridge that lists the host's worlds; it
+/// lands on the host entity as a [`WorldName`].
+///
 /// Sub-worlds are for work that must stay on the host thread — rendering
 /// into a window's swap chain, say — but whose state should not mix with
 /// the host's. Queued jobs run when the host calls [`drain_sub_world`], and
@@ -29,12 +33,16 @@ struct SubWorldInbox(Receiver<Job<()>>);
 /// Panics when `command_capacity` is zero: a queue that can never hold
 /// a job would silently block every sender.
 #[must_use]
-pub fn spawn_sub_world(host: &mut World, command_capacity: usize) -> WorldHandle {
+pub fn spawn_sub_world(
+    host: &mut World,
+    name: &'static str,
+    command_capacity: usize,
+) -> WorldHandle {
     let (commands, receiver) = bounded(command_capacity);
     let mut nested = World::new();
     nested.spawn((SubWorldInbox(receiver),));
     let commands = JobSender::new(commands);
-    let entity = host.spawn((nested,));
+    let entity = host.spawn((nested, WorldName(name)));
     WorldHandle::new(entity, commands, None)
 }
 

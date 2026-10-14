@@ -598,6 +598,14 @@ struct SceneEntity(Option<Entity>);
 /// The host entity carrying the MCP blit world, in MCP mode only.
 struct BlitEntity(Option<Entity>);
 
+/// The name this example reports a host world under to the MCP tools.
+///
+/// The example keeps its own component rather than borrowing the core's: it
+/// does not depend on unlit3dx, and a name is all the report needs. Targets
+/// without the MCP dependency never read it back.
+#[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+struct WorldName(&'static str);
+
 /// The swap chain the presented world draws through, absent while suspended.
 struct SurfaceSlot(Option<WindowSurface>);
 
@@ -833,7 +841,9 @@ fn present(world: &World, app: Entity) {
                 def,
                 PanelRects::read(world, app),
             );
-            let entity = world.queue().spawn((scene_world, scene));
+            let entity = world
+                .queue()
+                .spawn((scene_world, scene, WorldName("render")));
             let _ = world.with_mut::<SceneEntity, _>(app, |slot| slot.0 = Some(entity));
             window.set_title(&format!(
                 "unlit3d{} — {}",
@@ -883,7 +893,7 @@ fn present(world: &World, app: Entity) {
                 .and_then(|slot| slot.0.clone())
                 .expect("the offscreen target was just built");
             let (blit_world, blit) = build_blit_world(&gpu, &offscreen);
-            let entity = world.queue().spawn((blit_world, blit));
+            let entity = world.queue().spawn((blit_world, blit, WorldName("blit")));
             let _ = world.with_mut::<BlitEntity, _>(app, |slot| slot.0 = Some(entity));
             return;
         }
@@ -1492,16 +1502,25 @@ fn start_mcp(world: &World, app: Entity) {
 ///
 /// Running it needs `&mut World`, so it is queued as a command and applied
 /// between two event callbacks. The host answers `list_worlds` itself: it is
-/// the only one that knows which entities carry a world.
+/// the only one that knows which entities carry a world and what they are
+/// called.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 fn dispatch_command(world: &World, command: unlit3d_mcp::McpCommand) {
+    use unlit3d_mcp::{WorldEntry, WorldId};
     if command.wants_worlds() {
-        let mut worlds = vec![unlit3d_mcp::WorldId::Host];
-        worlds.extend(
-            world
-                .query::<(Entity, &World)>()
-                .map(|(entity, _)| unlit3d_mcp::WorldId::handle(entity)),
-        );
+        let mut worlds = vec![WorldEntry {
+            world: WorldId::Host,
+            name: "host",
+        }];
+        for (entity, _) in world.query::<(Entity, &World)>() {
+            let Some(name) = world.get::<WorldName>(entity) else {
+                continue;
+            };
+            worlds.push(WorldEntry {
+                world: WorldId::handle(entity),
+                name: name.0,
+            });
+        }
         command.answer_worlds(worlds);
         return;
     }

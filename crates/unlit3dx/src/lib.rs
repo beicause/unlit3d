@@ -102,7 +102,7 @@ pub mod prelude {
         job::{Job, JobSender, Request, RequestError, SendError},
         thread::{FixedClock, ThreadControl, ThreadStatus, WorldThread},
         world::{
-            Stepped, Threaded, WorldRunner, spawn_remote_world, spawn_remote_world_with,
+            Stepped, Threaded, WorldName, WorldRunner, spawn_remote_world, spawn_remote_world_with,
             spawn_remote_world_with_init, spawn_stepped_world_with_init, step_stepped_world,
             with_stepped_world,
         },

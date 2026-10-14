@@ -107,7 +107,7 @@ mod tests {
     #[test]
     fn a_handle_queues_into_its_world() {
         let mut host = World::new();
-        let handle = crate::host::spawn_sub_world(&mut host, 8);
+        let handle = crate::host::spawn_sub_world(&mut host, "nested", 8);
         let request = handle.request(Box::new(|_: &mut World| 5));
         let mut nested = host
             .get_mut::<World>(handle.entity())

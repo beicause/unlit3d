@@ -38,5 +38,5 @@ pub extern "Rust" fn android_main(app: AndroidApp) {
         .with_android_app(app)
         .build()
         .expect("an event loop");
-    crate::windowed(false, event_loop);
+    crate::windowed(false, false, event_loop);
 }

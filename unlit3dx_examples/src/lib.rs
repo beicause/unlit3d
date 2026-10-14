@@ -30,7 +30,7 @@
 //! threads: the worlds are stepped at fixed rates, the run keeps its
 //! last frame and audio mix, and writes them into --out. A browser build
 //! steps the worlds the same way, because the target has no threads to
-//! put them on.
+//! put them on, and --stepped asks a windowed run to take that same path.
 
 pub mod headless;
 pub mod scene;
@@ -81,8 +81,11 @@ pub fn init_logging() {
 /// Gameplay builds the scene by requesting from the render server, jobs
 /// go out, snapshots come back, and nothing but data crosses a thread
 /// boundary. With the mcp flag, a Model Context Protocol server over
-/// stdio reads the host and its render world.
-pub fn windowed(mcp: bool, event_loop: EventLoop<()>) {
+/// stdio reads the host and its render world. A `stepped` run drives the
+/// worlds from the frame loop instead of threads of their own: that is
+/// what a browser build always does, and what a desktop run asks for to
+/// exercise the same path.
+pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut host = WinitHost::<()>::new();
     let world = host.world_mut();
@@ -113,22 +116,18 @@ pub fn windowed(mcp: bool, event_loop: EventLoop<()>) {
     // The render sub-world: spawned empty, on the main thread, before
     // anyone needs it, so gameplay holds its proxy from the first tick.
     // Its content lands once the GPU request resolves.
-    let render = spawn_sub_world(world, RENDER_COMMAND_CAPACITY);
+    let render = spawn_sub_world(world, "render", RENDER_COMMAND_CAPACITY);
 
-    // The worlds behind the scene: threads of their own on a native build,
-    // stepped by the frame in a browser, which has none.
-    #[cfg(not(target_arch = "wasm32"))]
-    let worlds = spawn_scene::<Threaded>(world, render.clone(), AudioSetup::WaitForDevice);
-    #[cfg(target_arch = "wasm32")]
-    let worlds = spawn_scene::<Stepped>(
-        world,
-        render.clone(),
-        // A browser has no audio device before a user gesture, and a
-        // stepped world opens none: the scene runs silent and the control
-        // panel shows no tracks.
-        AudioSetup::Silent,
-    );
-    #[cfg(not(target_arch = "wasm32"))]
+    // The worlds behind the scene: threads of their own by default,
+    // stepped by the frame when the target has none to give them - a
+    // browser - or when the run asked for the stepped path.
+    let worlds = if stepped {
+        spawn_scene::<Stepped>(world, render.clone(), stepped_audio())
+    } else {
+        spawn_scene::<Threaded>(world, render.clone(), AudioSetup::Device)
+    };
+    // The setups that open a device have no rate until it reports one;
+    // the ones that pull their own fills installed their sources already.
     install_sources_when_ready(world, &worlds);
     let wiring = worlds.wiring.clone();
     let gameplay_sender = worlds.gameplay.sender();
@@ -136,9 +135,8 @@ pub fn windowed(mcp: bool, event_loop: EventLoop<()>) {
 
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.
-    #[cfg(target_arch = "wasm32")]
-    {
-        let stepper = SceneStepper::new(RENDER_HZ, PHYSICS_HZ, None);
+    if stepped {
+        let stepper = SceneStepper::new(GAME_HZ, PHYSICS_HZ, None);
         world.spawn_frame_behaviour(stepped_frame(worlds, stepper));
     }
 
@@ -226,26 +224,45 @@ pub fn windowed(mcp: bool, event_loop: EventLoop<()>) {
 
 /// Step the scene's worlds once per frame, before the draw.
 ///
-/// A browser build has no threads, so the host steps what a native build
-/// would leave to them; the stepper carries the step remainders, so the
-/// same frames give the same physics steps as the threaded run.
-#[cfg(target_arch = "wasm32")]
+/// A stepped run has no threads, so the host steps what a threaded build
+/// would leave to them. The stepper follows the frame's own duration and
+/// carries the step remainders, so the worlds keep their rates whatever
+/// the display redraws at.
 fn stepped_frame(worlds: SceneWorlds, mut stepper: SceneStepper) -> OnFrame {
     OnFrame::new(
         FrameBehaviourOrder(FRAME_INLINE_STEP),
-        move |world, _entity, _frame| {
-            stepper.step(world, &worlds);
+        move |world, _entity, frame| {
+            stepper.step(world, &worlds, f64::from(frame.delta_time));
         },
     )
 }
 
-/// The example's command line: switches for the Model Context Protocol
-/// and the headless render.
+/// The audio setup a windowed run takes when the host steps the worlds.
+///
+/// A browser's stepped world opens the page's Web Audio context: the page
+/// drives it, so it needs no thread of its own, and the scene's tracks
+/// sound once the context is running. A desktop run that asked for the
+/// stepped path has nothing to play to and stays silent.
+fn stepped_audio() -> AudioSetup {
+    if cfg!(target_arch = "wasm32") {
+        AudioSetup::Device
+    } else {
+        AudioSetup::Silent
+    }
+}
+
+/// The example's command line: switches for the Model Context Protocol,
+/// the headless render and the stepped runner.
 #[derive(argh::FromArgs)]
 pub struct Args {
     /// serve the worlds over the Model Context Protocol
     #[argh(switch)]
     mcp: bool,
+
+    /// drive the worlds from the frame loop instead of threads of their
+    /// own, the path a browser build always takes
+    #[argh(switch)]
+    stepped: bool,
 
     /// render headless instead of opening a window: the run's last frame
     /// and audio mix land in --out, then the process exits
@@ -323,7 +340,14 @@ pub fn run() -> ExitCode {
     let event_loop = EventLoop::<()>::with_user_event()
         .build()
         .expect("an event loop");
-    windowed(args.mcp, event_loop);
+    // A browser has no threads to give the worlds, so it steps them
+    // whatever the command line says; the switch is how a desktop run
+    // reaches that same path.
+    windowed(
+        args.mcp,
+        args.stepped || cfg!(target_arch = "wasm32"),
+        event_loop,
+    );
     ExitCode::SUCCESS
 }
 

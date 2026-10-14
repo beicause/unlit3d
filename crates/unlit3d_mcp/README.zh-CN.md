@@ -47,8 +47,8 @@ tokio，二者都是本 crate 的非可选依赖；workspace 的其余部分从�
 
 服务器按四组暴露一个 world 的公开能力。每个工具都用 `WorldId` 指名它作用于哪个
 world：字符串 `"Host"` 指拥有它的线程直接持有的 host world，`{"Handle": bits}` 指由某个
-宿主实体承载的 world。`list_worlds` 报告宿主承载了哪些 world——包括在其他线程上的 world，
-那些只有宿主能命名——因此在用其他工具指名某个 world 之前先问它。GPU 工具还会指名它们所需的实体句柄——渲染上下文、渲染器、网格
+宿主实体承载的 world。`list_worlds` 报告宿主承载了哪些 world，并带上各自被生成时的名字——
+包括在其他线程上的 world，那些只有宿主能报告——因此在用其他工具指名某个 world 之前先问它。GPU 工具还会指名它们所需的实体句柄——渲染上下文、渲染器、网格
 来源、资源——服务器原样透传，解析留给持有 world 的那个线程。
 
 **World 与实体**——`list_worlds`、`world_summary`、`list_components`、`list_archetypes`、
@@ -95,8 +95,8 @@ world：字符串 `"Host"` 指拥有它的线程直接持有的 host world，`{"
 宿主——某个窗口的事件循环、命令行工具，或它自己起的一个线程——调用 `serve_stdio_with`，
 传入一个把每条 `McpCommand` 投递到该线程的 sink，由该线程解析命令的 `WorldId` 并调用
 `McpCommand::dispatch`。`list_worlds` 命令没有 job：宿主用 `McpCommand::wants_worlds`
-认出它，再用 `McpCommand::answer_worlds` 作答，列出它承载的每个 world——包括在其他线程上
-的那些，那些只有宿主能命名。这些工具都是作用于 `&mut World` 的普通函数（GPU 工具还接收
+认出它，再用 `McpCommand::answer_worlds` 作答，列出它承载的每个 world，并带上各自被生成
+时的名字——包括在其他线程上的那些，那些只有宿主能报告。这些工具都是作用于 `&mut World` 的普通函数（GPU 工具还接收
 传给它们的实体句柄），因此宿主可以绕过协议直接调用其中某个。
 
 命令行工具与示例都接受 `--mcp` 开关，把原本要渲染的那个 world 经 stdio 服务出去。
