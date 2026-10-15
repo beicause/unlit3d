@@ -35,6 +35,8 @@ log.workspace = true
 # The GPU-info panel reads the device's facts from their serde description
 # rather than a hand-written field list; see limit_rows.
 serde_json.workspace = true
+# The MCP command types the `--mcp` mode carries come from the ECS crate.
+unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.2", features = ["mcp"] }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", features = ["gltf"] }
 web-time.workspace = true
@@ -59,7 +61,7 @@ env_logger.workspace = true
 # `--mcp` serves the scene over the Model Context Protocol, which needs a
 # terminal's standard input and output; neither a browser nor an Android
 # activity has one.
-unlit3d_mcp = { path = "../crates/unlit3d_mcp", version = "0.1.0-dev.2" }
+unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", features = ["gltf", "mcp"] }
 
 # The GPU context is requested asynchronously, so the setup future needs a
 # driver: a blocking executor natively, the browser's task queue on the web.

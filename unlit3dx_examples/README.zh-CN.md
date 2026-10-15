@@ -31,9 +31,9 @@ cargo run -p unlit3dx_examples
 警告，示例静音运行。把任何 SF3 音色库放到该路径并重新构建即可换音色，例如
 [FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3)。
 
-`--mcp` 开关把各个 world 通过[模型上下文协议](../crates/unlit3d_mcp/README.md)
-对外服务，而不是随窗口一起退出：工具随后可以检视每个 world，并为渲染 world
-保存截图。
+`--mcp` 开关把各个 world 通过[模型上下文协议](../crates/unlit_ecs/README.zh-CN.md)
+对外服务，而不是随窗口一起退出：工具随后可以检视每个 world，为渲染 world 保存截图，
+并把音频 world 的混音录成 WAV 文件。
 
 在 web 上它是 `cargo xtask run-wasm` 构建、并由 Pages 工作流发布的两个页面之一。
 浏览器没有可放置 world 的线程，于是改由库的步进 runner 从帧循环驱动它们全部。

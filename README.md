@@ -94,7 +94,9 @@ Not supported: lighting and shadows, and post-processing.
   its stored image with SSIMULACRA2; the wasm and Android builds are two more
   jobs.
 - **Built-in MCP support.** An MCP server can be embedded into an application,
-  letting AI agents read and write components and take screenshots.
+  letting AI agents read and write components and take screenshots. The server
+  carries no knowledge of the engine: every crate registers the tools that act
+  on the types it defines.
 
 ## Crates
 
@@ -102,11 +104,10 @@ Not supported: lighting and shadows, and post-processing.
 |-------|------|
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | The lower-level renderer: resource graph, mesh compression, buffer pools, staging, the declarative `Scene`, the built-in unlit pipeline, and an egui backend. Knows nothing about ECS. |
 | [`unlit3d`](crates/unlit3d/README.md) | The high-level rendering API: ECS components, frame sources, input, UI and winit presentation, plus an optional glTF loader that patches models into another world's `MeshSource`. |
-| [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. |
+| [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. It also carries the MCP server that exposes a running world over stdio, which each crate extends with its own tools. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; it is also one of the two examples the Android APK packages. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
-| [`unlit3d_mcp`](crates/unlit3d_mcp/README.md) | A Model Context Protocol server that reads and drives a running world over stdio, built only from the public API. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: jobs and snapshot mailboxes joining a render sub-world with physics, audio and gameplay worlds, each on a thread of its own or stepped by the host's frames. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
@@ -167,7 +168,7 @@ Commands follow the `cargo xtask` convention:
   Gradle to build the APK. Debug by default; `--release` builds an unsigned release APK. Needs
   JDK 17+ and `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
 - **`cargo xtask publish`** — upload the publishable crates (`unlit_ecs`,
-  `unlit_wgpu`, `unlit3d`, `unlit3d_mcp`) to crates.io in dependency order,
+  `unlit_wgpu`, `unlit3d`) to crates.io in dependency order,
   waiting for each to reach the index before packaging the next. Arguments
   after `--` are passed through to each `cargo publish`, so `-- --dry-run`
   runs every check without uploading.
@@ -248,13 +249,12 @@ Per-crate notes:
 
 | Crate | What its tests cover |
 |-------|----------------------|
-| [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour and deferred commands. |
+| [`unlit_ecs`](crates/unlit_ecs/README.md) | World and query behaviour, deferred commands, and the MCP server's ECS tools. |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.md) | Unit tests plus GPU integration tests that render meshes into offscreen textures and compare them against the snapshots under `tests/snapshots` (a symlink into the asset submodule). |
-| [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
+| [`unlit3d`](crates/unlit3d/README.md) | Unit tests plus GPU integration tests that render scenes into offscreen targets and inspect the pixels that come back. An end-to-end MCP test builds a real GPU world on a thread, serves it over a pair of streams, and speaks JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks the screenshot pixel by pixel. Its multi-frame snapshot coverage lives in `unlit3d_examples`. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | How the harness itself behaves — the snapshot comparison, and counting the pixels that differ. The GPU tests it makes possible live in the crates above. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`) and the fixed-step playback clock (`src/lib.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
-| [`unlit3d_mcp`](crates/unlit3d_mcp/README.md) | An end-to-end test that builds a real GPU world on a thread, serves it over a pair of streams, and speaks JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks the screenshot pixel by pixel. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: job round trips, request replies, snapshot replacement, thread stop and panic reporting, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
 | [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule; the same worlds also run stepped in a browser and behind an Android activity. |
 
@@ -319,7 +319,6 @@ crates/unlit_wgpu/           the renderer, its WESL shaders and its GPU tests
 crates/unlit3d/              the ECS-integrated rendering API
 crates/unlit_ecs/            the archetype ECS
 crates/unlit_wgpu_test_util/ the shared GPU test harness
-crates/unlit3d_mcp/          the Model Context Protocol server over the public API
 crates/unlit3dx/             the multi-world runtime: jobs, snapshots, threaded
                              and stepped worlds
 unlit3d_examples/            the windowed example, its scenes and their snapshot tests

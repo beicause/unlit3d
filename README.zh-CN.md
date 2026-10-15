@@ -66,7 +66,8 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 - **确定性渲染，CI 快照测试。** 同一场景离屏渲染的结果每次都完全相同。三个桌面平台上
   各自 lint、构建与测试，再把示例的每个场景渲染出来并与存储图像做 SSIMULACRA2 比对；
   wasm 与 Android 构建是另外两个独立 job。
-- **内置MCP支持。** 可将MCP服务器嵌入应用程序，让AI Agent读写组件、截图。
+- **内置MCP支持。** 可将MCP服务器嵌入应用程序，让AI Agent读写组件、截图。服务器不携带任何
+  引擎知识：每个 crate 各自注册作用于它所定义类型的工具。
 
 ## Crate 一览
 
@@ -74,11 +75,10 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 |-------|------|
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 底层渲染器：资源图、顶点压缩、缓冲池、staging、声明式 `Scene`、内置 unlit 管线与 egui 后端。不认识 ECS。 |
 | [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 高层渲染 API：ECS 组件、帧源、输入、UI 与 winit 呈现，以及可选的 glTF 加载器，把模型修补进另一个世界的 `MeshSource`。 |
-| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。 |
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | 高层所用的精简 archetype ECS：没有变化检测、事件、关系或调度器。它还带有把运行中的 world 经 stdio 暴露出去的 MCP 服务器，各 crate 各自为它扩展工具。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 无头 GPU 测试骨架：设备初始化、缓冲与纹理回读、SSIMULACRA2 快照。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 可切换场景的窗口化示例，其 `tests/gpu_scenes.rs` 把场景与快照比较；也是 Android APK 所打包的两个示例之一。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 把 glTF 文档渲染成图片的命令行工具，由 JSON 配置文件驱动、并可被自身选项覆盖；其 `tests/gpu_cli.rs` 是端到端快照检查。 |
-| [`unlit3d_mcp`](crates/unlit3d_mcp/README.zh-CN.md) | 一个 Model Context Protocol 服务器，经 stdio 读取并驱动运行中的 world，只由公开 API 构成。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 运行时：以 job 与快照信箱连接渲染子 world 与物理、音频、玩法 world，各占一条线程或由宿主的帧步进。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
@@ -127,7 +127,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，`--release` 构建
   未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`（NDK 由 cargo-ndk 自动探测）。
 - **`cargo xtask publish`** — 按依赖顺序把可发布的 crate（`unlit_ecs`、`unlit_wgpu`、
-  `unlit3d`、`unlit3d_mcp`）上传到 crates.io，每个都等到它出现在索引里再打包下一个。
+  `unlit3d`）上传到 crates.io，每个都等到它出现在索引里再打包下一个。
   `--` 之后的参数会透传给每次 `cargo publish`，因此 `-- --dry-run` 只做全部检查、
   不上传。
 - **`cargo nextest run`** — 需要按名筛选或重跑单个测试时直接用（`-p <crate>`、
@@ -193,13 +193,12 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 
 | Crate | 测试覆盖的内容 |
 |-------|----------------|
-| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令。 |
+| [`unlit_ecs`](crates/unlit_ecs/README.zh-CN.md) | world 与查询行为、延迟命令，以及 MCP 服务器的 ECS 工具。 |
 | [`unlit_wgpu`](crates/unlit_wgpu/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把网格渲染到离屏纹理，与 `tests/snapshots` 下的快照比较（该目录是指向 asset submodule 的软链接）。 |
-| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。其多帧快照覆盖位于 `unlit3d_examples`。 |
+| [`unlit3d`](crates/unlit3d/README.zh-CN.md) | 单元测试，以及 GPU 集成测试：把场景渲染到离屏目标并检查回读的像素。一个端到端 MCP 测试在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。其多帧快照覆盖位于 `unlit3d_examples`。 |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_scenes.rs` 的渲染快照。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
-| [`unlit3d_mcp`](crates/unlit3d_mcp/README.zh-CN.md) | 端到端测试：在一条线程上建起真实的 GPU world，用一对流把它服务出去，再用 JSON-RPC 与它对话——列出工具、读取 world、生成网格，再逐像素检查截图。 |
 | [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 往返、请求回复、快照替换、线程停止与 panic 报告、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
 | [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |
 
@@ -253,7 +252,6 @@ crates/unlit_wgpu/           渲染器、它的 WESL 着色器与 GPU 测试
 crates/unlit3d/              与 ECS 集成的渲染 API
 crates/unlit_ecs/            archetype ECS
 crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
-crates/unlit3d_mcp/          Model Context Protocol 服务器，只建立在公开 API 之上
 crates/unlit3dx/             多 world 运行时：job、快照、线程化与步进的 world
 unlit3d_examples/            窗口化示例、它的场景与场景的快照测试
 unlit3dx_examples/           多 world 示例：五个 world、一个窗口、一个 web 页面与一条 Android activity

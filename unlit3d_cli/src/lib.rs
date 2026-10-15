@@ -362,7 +362,7 @@ fn default_camera(size: (u32, u32)) -> Camera {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Result<(), Error> {
     use std::sync::mpsc;
-    let (sender, receiver) = mpsc::channel::<unlit3d_mcp::McpCommand>();
+    let (sender, receiver) = mpsc::channel::<unlit_ecs::mcp::McpCommand>();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
     let render = std::thread::Builder::new()
         .name("unlit3d-cli-mcp-render".to_owned())
@@ -376,8 +376,8 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
                     let _ = ready_tx.send(Ok(()));
                     while let Ok(command) = receiver.recv() {
                         if command.wants_worlds() {
-                            command.answer_worlds(vec![unlit3d_mcp::WorldEntry {
-                                world: unlit3d_mcp::WorldId::Host,
+                            command.answer_worlds(vec![unlit_ecs::mcp::WorldEntry {
+                                world: unlit_ecs::mcp::WorldId::Host,
                                 name: "host",
                             }]);
                         } else {
@@ -396,7 +396,7 @@ pub fn serve_stdio_offscreen(size: (u32, u32), samples: u32, depth: bool) -> Res
         Ok(Err(message)) => return Err(Error::Gpu(message)),
         Err(_) => return Err(Error::Gpu("the render thread stopped".to_owned())),
     }
-    let served = unlit3d_mcp::serve_stdio_with(move |command| sender.send(command).is_ok());
+    let served = unlit_ecs::mcp::serve_stdio_with(move |command| sender.send(command).is_ok());
     let _ = render.join();
     served.map_err(|error| Error::Gpu(error.to_string()))
 }

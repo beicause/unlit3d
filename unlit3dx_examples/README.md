@@ -40,9 +40,9 @@ example
 [FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3).
 
 The `--mcp` switch serves the worlds over the [Model Context
-Protocol](../crates/unlit3d_mcp/README.md) instead of exiting with the
-window: tools can then inspect every world and save screenshots of the
-render world.
+Protocol](../crates/unlit_ecs/README.md) instead of exiting with the
+window: tools can then inspect every world, save screenshots of the render
+world, and record the audio world's mix to a WAV file.
 
 On the web it is one of the two pages `cargo xtask run-wasm` builds and the
 Pages workflow publishes. A browser has no thread to put a world on, so the

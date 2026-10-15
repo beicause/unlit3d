@@ -124,8 +124,8 @@ frame rather than failed on, and `SNAPSHOT_UPDATE=1` rewrites one that exists.
 [Model Context Protocol](https://modelcontextprotocol.io) server. `--output` is
 not required in that mode, and the world starts empty — no document is loaded —
 so a client can build the scene itself. See
-[`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
-transport.
+[`unlit_ecs`](../crates/unlit_ecs/README.md) for the server, the tools each
+crate registers, and the transport.
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp

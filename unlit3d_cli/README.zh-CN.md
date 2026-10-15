@@ -105,8 +105,9 @@ cargo nextest run -p unlit3d_cli
 
 `--mcp` 会把一个无头 world 经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。该模式下不需要
-`--output`，且 world 从空开始——不加载任何文档——以便客户端自行搭建场景。工具与传输见
-[`unlit3d_mcp`](../crates/unlit3d_mcp/README.zh-CN.md)。
+`--output`，且 world 从空开始——不加载任何文档——以便客户端自行搭建场景。服务器、
+各 crate 注册的工具与传输见
+[`unlit_ecs`](../crates/unlit_ecs/README.zh-CN.md)。
 
 ```text
 cargo run -p unlit3d_cli --bin unlit3d-cli -- --mcp

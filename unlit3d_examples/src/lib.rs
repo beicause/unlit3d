@@ -399,7 +399,7 @@ enum UserEvent {
     /// The command is wrapped in an `Option` because a user event reaches its
     /// callbacks mutably and the one that runs it takes it out.
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-    Command(Option<unlit3d_mcp::McpCommand>),
+    Command(Option<unlit_ecs::mcp::McpCommand>),
 }
 
 /// The blit world's driving state, a component of the host alongside its
@@ -747,7 +747,7 @@ struct RunInWorld {
     /// The host entity carrying the world the command names.
     entity: Entity,
     /// The command to run.
-    command: unlit3d_mcp::McpCommand,
+    command: unlit_ecs::mcp::McpCommand,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -766,7 +766,7 @@ impl Command for RunInWorld {
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 struct RunInHost {
     /// The command to run.
-    command: unlit3d_mcp::McpCommand,
+    command: unlit_ecs::mcp::McpCommand,
 }
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -1497,7 +1497,7 @@ fn start_mcp(world: &World, app: Entity) {
         .name("unlit3d-mcp-transport".to_owned())
         .spawn(move || {
             let sink = move |command| proxy.send_event(UserEvent::Command(Some(command))).is_ok();
-            if let Err(error) = unlit3d_mcp::serve_stdio_with(sink) {
+            if let Err(error) = unlit_ecs::mcp::serve_stdio_with(sink) {
                 log::error!("the MCP server stopped: {error}");
             }
         })
@@ -1511,8 +1511,8 @@ fn start_mcp(world: &World, app: Entity) {
 /// the only one that knows which entities carry a world and what they are
 /// called.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-fn dispatch_command(world: &World, command: unlit3d_mcp::McpCommand) {
-    use unlit3d_mcp::{WorldEntry, WorldId};
+fn dispatch_command(world: &World, command: unlit_ecs::mcp::McpCommand) {
+    use unlit_ecs::mcp::{WorldEntry, WorldId};
     if command.wants_worlds() {
         let mut worlds = vec![WorldEntry {
             world: WorldId::Host,

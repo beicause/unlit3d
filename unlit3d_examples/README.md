@@ -175,8 +175,8 @@ that frame into the swap chain, so the picture follows the client. The blit
 declares no depth state and samples the offscreen frame's resolved colour
 texture, so its frames carry neither a depth nor a multisample attachment. Both
 worlds are components of one host `World`, and a tool names the one it means.
-See [`unlit3d_mcp`](../crates/unlit3d_mcp/README.md) for the tools and the
-transport.
+See [`unlit_ecs`](../crates/unlit_ecs/README.md) for the server, the tools
+each crate registers, and the transport.
 
 ```text
 cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube

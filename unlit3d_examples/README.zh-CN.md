@@ -130,8 +130,8 @@ cargo xtask run-wasm --app unlit3d
 blit 进交换链，画面便随客户端更新。该 blit 不声明深度状态，采样的是离屏帧 resolve 后的
 颜色纹理，因此它的帧既不带深度附件也不带多重采样附件。两个 world 都是同一个宿主 `World`
 的组件，工具会指名它作用于哪一个。
-工具与传输见
-[`unlit3d_mcp`](../crates/unlit3d_mcp/README.zh-CN.md)。
+服务器、各 crate 注册的工具与传输见
+[`unlit_ecs`](../crates/unlit_ecs/README.zh-CN.md)。
 
 ```text
 cargo run -p unlit3d_examples --bin unlit3d-examples -- --mcp --scene spin_cube
