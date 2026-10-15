@@ -17,10 +17,12 @@ log.workspace = true
 rapier3d = { workspace = true, optional = true }
 ringbuf = { workspace = true, optional = true }
 rustysynth-ext = { workspace = true, optional = true }
+# The audio tools describe their JSON arguments and results to an MCP client.
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2" }
 unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"], optional = true }
 unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false, optional = true }
-unlit3d_mcp = { path = "../unlit3d_mcp", version = "0.1.0-dev.2", optional = true }
 web-time.workspace = true
 wgpu = { workspace = true, optional = true }
 
@@ -47,7 +49,14 @@ default = ["audio", "physics", "render", "synth"]
 ## The audio output thread, backed by cpal and a ring buffer.
 audio = ["dep:cpal", "dep:ringbuf"]
 ## The MCP stdio server driven from the host world.
-mcp = ["dep:unlit3d", "dep:unlit3d_mcp", "unlit3d/winit"]
+mcp = [
+  "dep:schemars",
+  "dep:serde",
+  "dep:unlit3d",
+  "unlit_ecs/mcp",
+  "unlit3d/mcp",
+  "unlit3d/winit",
+]
 ## The physics world on its own thread, backed by rapier.
 physics = ["dep:rapier3d"]
 ## The render bridge: a render sub-world that acts as an asset server, plus

@@ -8,9 +8,9 @@
 use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, unbounded};
+use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId};
 use unlit_ecs::{Command, Entity, World};
 use unlit3d::winit::event::OnAboutToWait;
-use unlit3d_mcp::{McpCommand, WorldEntry, WorldId};
 
 use crate::sync;
 use crate::world::{WorldName, WorldSender};
@@ -31,7 +31,7 @@ pub fn serve_mcp(world: &mut World) {
         .name("unlit3dx-mcp-transport".to_owned())
         .spawn(move || {
             let sink = move |command| sender.try_send(command).is_ok();
-            if let Err(error) = unlit3d_mcp::serve_stdio_with(sink) {
+            if let Err(error) = unlit_ecs::mcp::serve_stdio_with(sink) {
                 log::error!("the MCP server stopped: {error}");
             }
         });
@@ -184,7 +184,7 @@ impl Command for RunInWorld {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use unlit3d_mcp::Output;
+    use unlit_ecs::mcp::Output;
 
     use super::*;
     use crate::thread::ThreadControl;

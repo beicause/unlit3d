@@ -161,6 +161,11 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   也不发布格式，因此想要出声的调用方自行提前安装音源，并在需要一块时自己调用
   `dispatch_fill`——示例的离屏运行正是这样把混音写成文件的。`dispatch_fill` 就是
   音频线程每块的全部工作，所以直接步进它得到的是同一套混音，只是少了环形缓冲。
+
+  录音也是普通工作：`start_recording` 会把自己的音源挂在填充顺序的最末，因此它
+  捕获到的是所有其他音源与 world 的 `AudioGain` 之后的混音。`RecordingHandle`
+  报告它从第一次填充学到的格式，交回的 `RecordedAudio` 携带样本，`write_wav`
+  则把它们变成一个 RIFF/WAVE 文件，无需额外依赖。
 - **synth**（默认开启，蕴含 audio）：安装所需的构件，构建在
   [rustysynth-ext](https://docs.rs/rustysynth-ext) 之上——`load_soundfont` 解析字节
   （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台实时音色，
@@ -173,10 +178,13 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   把整个安装收进一个函数，作为 job 排给音频 world。
 - **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其携带的每个 world——嵌套的
   子 world，或自有一条线程的 world——通过
-  [模型上下文协议](../crates/unlit3d_mcp/README.zh-CN.md)对外服务，场景
+  [模型上下文协议](../unlit_ecs/README.zh-CN.md)对外服务，场景
   运行时即可从终端检视与截图。每次生成都会在代理实体上、紧挨着代理留下一个
   `WorldSender` 与一个 `WorldName`：前者让传输层能把命令投进一个它借不到的
-  world，后者就是 `list_worlds` 报告的名字。
+  world，后者就是 `list_worlds` 报告的名字。本 crate 自带的四个工具——
+  `start_audio_recording`、`stop_audio_recording`、`cancel_audio_recording`
+  与 `audio_recording_status`——在指名的 world 上驱动一次录音，并把混音写成
+  WAV 文件。
 
 ## 最佳实践
 
@@ -227,6 +235,9 @@ job 在步进时运行、走完终点的 tick 会结束它、步进一个不携�
 也不做。集成测试补上各桥：物理 world
 把球丢到地板上并报告接触、音频 world 运行 job 并发布就绪状态、多 world 的 job 与
 快照往来，以及 render 桥的失败路径——panic 的 job 只失败自己的请求，而请求一个
-world 从未构建的资源的 job 只失败索取它的那个实例。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
+world 从未构建的资源的 job 只失败索取它的那个实例。录音亦然：`start_recording`
+捕获设备本会播放的混音，`write_wav` 把样本排成 RIFF/WAVE 文件，音频 MCP 工具
+则把两者串进下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
 world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，
-以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败。
+以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败；
+音频录音工具同样有覆盖，从开始录音、拒绝第二次录音，到把捕获的混音写出去。

@@ -44,12 +44,14 @@ pub mod handle;
 pub mod host;
 /// Jobs, the work handed to another world.
 pub mod job;
-#[cfg(feature = "mcp")]
+#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 pub mod mcp;
 #[cfg(feature = "physics")]
 pub mod physics;
 #[cfg(feature = "render")]
 pub mod present;
+#[cfg(feature = "audio")]
+pub mod record;
 #[cfg(feature = "render")]
 pub mod render;
 mod sync;
@@ -69,7 +71,7 @@ pub mod prelude {
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};
-    #[cfg(feature = "mcp")]
+    #[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
     pub use crate::mcp::serve_mcp;
     #[cfg(feature = "physics")]
     pub use crate::physics::{
@@ -82,6 +84,8 @@ pub mod prelude {
         Presenter, bind_offscreen, draw_presented, pump_presented, resize_presented,
         setup_presenter,
     };
+    #[cfg(feature = "audio")]
+    pub use crate::record::{RecordedAudio, RecordingHandle, start_recording, write_wav};
     #[cfg(feature = "render")]
     pub use crate::render::{
         OwnedUnlitMeshDesc, camera_looking_at, create_material_from_texture, create_mesh,

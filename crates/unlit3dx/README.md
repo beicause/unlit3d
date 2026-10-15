@@ -199,6 +199,13 @@ The bridges:
   headless run does, rendering the mix to a file. `dispatch_fill` is the
   whole of the audio thread's per-chunk work, so stepping it directly is the
   same mixing, minus the ring.
+
+  Recording is ordinary work too: `start_recording` mounts a source at the
+  end of the fill order, so what it captures is the mix after every other
+  source and the world's `AudioGain`. The `RecordingHandle` reports the
+  format it learned from the first fill, the `RecordedAudio` it hands back
+  carries the samples, and `write_wav` turns them into a RIFF/WAVE file with
+  no extra dependency.
 - **synth** (on by default, implies audio): the pieces to install, built on
   [rustysynth-ext](https://docs.rs/rustysynth-ext) — `load_soundfont` parses
   the bytes (typically an `include_bytes!`, so no filesystem is involved),
@@ -217,12 +224,16 @@ The bridges:
   function, queued to the audio world as a job.
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
-  over the [Model Context
-  Protocol](../crates/unlit3d_mcp/README.md), so a live scene can be
+  over the [Model Context Protocol](../unlit_ecs/README.md), so a live scene
+  can be
   inspected and screenshotted from a terminal while it runs. Each spawn
   leaves a `WorldSender` and a `WorldName` on the proxy entity beside the
   proxy: the sender is what lets the transport post a command into a world
-  it cannot borrow, and the name is what `list_worlds` reports.
+  it cannot borrow, and the name is what `list_worlds` reports. The crate
+  registers four tools of its own — `start_audio_recording`,
+  `stop_audio_recording`, `cancel_audio_recording` and
+  `audio_recording_status` — which drive a recording in the named world and
+  write the mix out as a WAV file.
 
 ## Best practices
 
@@ -290,8 +301,12 @@ audio
 world running jobs and publishing its readiness, multi-world job and
 snapshot traffic, and the render bridge's failure paths — a job that panics
 fails only its own request, and one that names an asset the world never built
-fails the instance that asked for it. With the `mcp` feature on, the MCP command dispatch
+fails the instance that asked for it. So is recording: `start_recording`
+captures the mix the device would play, `write_wav` lays the samples out as a
+RIFF/WAVE file, and the audio MCP tools drive both through the dispatch
+coverage below. With the `mcp` feature on, the MCP command dispatch
 is covered too: world listing, routing to a nested world, and routing to one
 on a thread of its own or one the host steps — plus a readable failure for
 an entity that carries no world, a world that has stopped, and a queue that
-refuses the job.
+refuses the job — and so are the audio recording tools, from starting a
+recording to refusing a second one and writing the captured mix out.
