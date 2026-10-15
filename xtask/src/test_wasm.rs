@@ -234,10 +234,10 @@ fn build_workspace() -> Result<(), String> {
     // reaches `async-io` and so `errno`, which does not build for this target.
     // Nothing in the browser or the APK depends on it.
     //
-    // `unlit3d_mcp` is excluded for the same reason: it speaks the Model Context
-    // Protocol over a native stdio pipe, and rmcp's server side pulls `uuid` v4,
-    // whose wasm randomness source this crate does not ask for. A browser drives
-    // the world through the example's own UI, not through the protocol.
+    // The MCP server speaks the Model Context Protocol over a native stdio
+    // pipe, and rmcp's server side pulls `uuid` v4, whose wasm randomness
+    // source nothing asks for. Its module is switched off on this target, so a
+    // browser drives the world through the example's own UI, not the protocol.
     //
     // `unlit3dx_examples` runs its worlds inline on this target: the library
     // spawns them through its stepped runner, so the host carries the same
@@ -247,7 +247,6 @@ fn build_workspace() -> Result<(), String> {
     let mut build = Command::new("cargo");
     build
         .args(["build", "--workspace", "--exclude", "xtask"])
-        .args(["--exclude", "unlit3d_mcp"])
         .args(["--target", TARGET])
         .args(["--profile", crate::run_wasm::PROFILE])
         .args(["--bins", "--tests", "--benches", "--examples"]);

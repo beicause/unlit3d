@@ -158,8 +158,8 @@ project ships no signing configuration.
 
 ### `cargo xtask publish`
 
-Publishes the crates that reach crates.io — `unlit_ecs`, `unlit_wgpu`,
-`unlit3d` and `unlit3d_mcp` — one at a time and in that order. The order is a
+Publishes the crates that reach crates.io — `unlit_ecs`, `unlit_wgpu`
+and `unlit3d` — one at a time and in that order. The order is a
 requirement rather than a preference: a crate cannot be packaged until the crates it depends on are
 in the registry, so publishing `unlit3d` first fails with
 `no matching package named unlit_ecs found`. `cargo publish` waits for each

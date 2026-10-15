@@ -130,8 +130,8 @@ activity，而不是复用正在运行的那条。由 `TabbedExampleActivity` �
 
 ### `cargo xtask publish`
 
-把会发布到 crates.io 的 crate——`unlit_ecs`、`unlit_wgpu`、`unlit3d`、
-`unlit3d_mcp`——逐个、按上述顺序发布。这个顺序是硬性要求而非偏好：一个 crate 在它
+把会发布到 crates.io 的 crate——`unlit_ecs`、`unlit_wgpu`、`unlit3d`——
+逐个、按上述顺序发布。这个顺序是硬性要求而非偏好：一个 crate 在它
 所依赖的 crate 进入 registry 之前无法打包，所以先发布 `unlit3d` 会报
 `no matching package named unlit_ecs found`。
 `cargo publish` 会等待每个已上传的 crate 出现在索引里，这正是下一个能解析成功的原因。
