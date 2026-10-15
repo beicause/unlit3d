@@ -448,44 +448,127 @@ pub struct ControlHooks {
     pub audio: Option<JobSender>,
 }
 
-/// The state the panel's two track rows show: which of the tracks its
-/// buttons have paused.
+/// What one of the panel's two track rows shows.
 ///
 /// A panel must not keep this in a closure local. egui may run a panel
 /// more than once in one frame, so whatever a panel advances belongs in
 /// a sibling component; the audio world that owns the real transport
 /// lives on its own thread, so the panel records the intent here instead
 /// of reading the tracks.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct TrackPause {
-    /// Whether the background music was paused from the panel.
-    background: bool,
-    /// Whether the MIDI sequence was paused from the panel.
-    sequence: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrackStatus {
+    /// Nothing was ever put on the track, so its row offers a start.
+    Idle,
+    /// The track is playing.
+    Playing,
+    /// The track was paused from the panel.
+    Paused,
 }
 
-/// One track's transport: its name, then a pause toggle and a rewind.
+/// The state the panel's two track rows show.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct TrackRows {
+    /// What the background row shows.
+    background: TrackStatus,
+    /// What the sequence row shows.
+    sequence: TrackStatus,
+}
+
+impl TrackRows {
+    /// What both rows show before anyone touches them: the background
+    /// loop starts itself, and the one-shot sequence waits for its row.
+    const START: Self = Self {
+        background: TrackStatus::Playing,
+        sequence: TrackStatus::Idle,
+    };
+}
+
+/// One button a track row can be drawn with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TrackButton {
+    /// Starts the track from its beginning, once: an idle row's only
+    /// button, and the only way the one-shot sequence ever gets going.
+    Play,
+    /// Pauses a playing track.
+    Pause,
+    /// Resumes a paused track where it stopped.
+    Resume,
+    /// Returns the track to its start, keeping its pause.
+    Rewind,
+}
+
+impl TrackButton {
+    /// The label the button is painted with, naming what pressing it does
+    /// next.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Play => "Play",
+            Self::Pause => "Pause",
+            Self::Resume => "Resume",
+            Self::Rewind => "Rewind",
+        }
+    }
+}
+
+impl TrackStatus {
+    /// The buttons a row in this state shows, in the order it shows them.
+    fn buttons(self) -> &'static [TrackButton] {
+        match self {
+            Self::Idle => &[TrackButton::Play],
+            Self::Playing => &[TrackButton::Pause, TrackButton::Rewind],
+            Self::Paused => &[TrackButton::Resume, TrackButton::Rewind],
+        }
+    }
+
+    /// The state a row showing this moves to when `button` is pressed.
+    ///
+    /// A rewind leaves the pause as it stands: the track restarts where it
+    /// stopped, and a paused one stays silent.
+    fn pressed(self, button: TrackButton) -> Self {
+        match (self, button) {
+            (Self::Idle, TrackButton::Play) | (Self::Paused, TrackButton::Resume) => Self::Playing,
+            (Self::Playing, TrackButton::Pause) => Self::Paused,
+            _ => self,
+        }
+    }
+}
+
+/// One track's transport: its name, then the buttons its state calls for.
 ///
-/// The row names the track so the two buttons need no suffix of their
-/// own, and the toggle's label names what pressing it does next. It
-/// answers the pause state the row now shows, for the panel to store.
-fn track_controls(ui: &mut egui::Ui, audio: &JobSender, name: &str, paused: bool) -> bool {
-    let mut paused = paused;
+/// The row names the track so the buttons need no suffix of their own. An
+/// idle row starts the track with the file only the sequence has; a row
+/// that was already started is never idle again. It answers the state the
+/// row now shows, for the panel to store.
+fn track_controls(
+    ui: &mut egui::Ui,
+    audio: &JobSender,
+    name: &str,
+    status: TrackStatus,
+    file: Option<fn() -> Arc<MidiFile>>,
+) -> TrackStatus {
+    let mut status = status;
     ui.horizontal(|ui| {
         ui.label(match name {
             SEQUENCE_TRACK => "MIDI sequence",
             _ => "Background music",
         });
-        let toggle = if paused { "Resume" } else { "Pause" };
-        if ui.button(toggle).clicked() {
-            paused = !paused;
-            audio.send(pause_track_job(name, paused)).ok();
-        }
-        if ui.button("Rewind").clicked() {
-            audio.send(rewind_track_job(name)).ok();
+        for button in status.buttons() {
+            if !ui.button(button.label()).clicked() {
+                continue;
+            }
+            let job = match button {
+                TrackButton::Play => file.map(|file| play_track_job(name, file(), false)),
+                TrackButton::Pause => Some(pause_track_job(name, true)),
+                TrackButton::Resume => Some(pause_track_job(name, false)),
+                TrackButton::Rewind => Some(rewind_track_job(name)),
+            };
+            if let Some(job) = job {
+                audio.send(job).ok();
+                status = status.pressed(*button);
+            }
         }
     });
-    paused
+    status
 }
 
 /// Mount the demo's control panel into the render sub-world.
@@ -495,37 +578,38 @@ fn track_controls(ui: &mut egui::Ui, audio: &JobSender, name: &str, paused: bool
 /// reads that handle's events each frame, and the host clears them once
 /// the frame is drawn.
 ///
-/// Both tracks start on their own once the audio world can sound, so the
-/// panel only ever changes what is already playing: each track pauses,
-/// resumes and rewinds on its own, and the shapes drop or clear without
-/// touching the music. A world with no synthesizer has nothing to
-/// transport, so its panel shows the shapes alone.
+/// The background loop starts itself once the audio world can sound; the
+/// one-shot sequence waits for its row's Play button and plays once per
+/// press. Each track then pauses, resumes and rewinds on its own, and the
+/// shapes drop or clear without touching the music. A world with no
+/// synthesizer has nothing to transport, so its panel shows the shapes
+/// alone.
 ///
-/// The panel carries a sibling TrackPause for what its buttons show, so
-/// the callback itself owns no state.
+/// The panel carries a sibling TrackRows for what its rows show, so the
+/// callback itself owns no state.
 pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     world.spawn_source(UiSource::new());
     let gameplay = hooks.gameplay;
     let audio = hooks.audio;
-    let state = world.spawn((TrackPause {
-        background: false,
-        sequence: false,
-    },));
+    let state = world.spawn((TrackRows::START,));
     world.spawn((UiPanel::new(move |world, _entity, ui| {
         egui::Window::new("Controls").show(ui.ctx(), |ui| {
             if let Some(audio) = &audio {
                 let shown = world
-                    .get::<TrackPause>(state)
-                    .map_or((false, false), |pause| (pause.background, pause.sequence));
-                let now = (
-                    track_controls(ui, audio, BGM_TRACK, shown.0),
-                    track_controls(ui, audio, SEQUENCE_TRACK, shown.1),
-                );
+                    .get::<TrackRows>(state)
+                    .map_or(TrackRows::START, |rows| *rows);
+                let now = TrackRows {
+                    background: track_controls(ui, audio, BGM_TRACK, shown.background, None),
+                    sequence: track_controls(
+                        ui,
+                        audio,
+                        SEQUENCE_TRACK,
+                        shown.sequence,
+                        Some(sequence_midi),
+                    ),
+                };
                 if now != shown {
-                    let _ = world.with_mut::<TrackPause, _>(state, |pause| {
-                        pause.background = now.0;
-                        pause.sequence = now.1;
-                    });
+                    let _ = world.with_mut::<TrackRows, _>(state, |rows| *rows = now);
                 }
                 ui.separator();
             }
@@ -1889,5 +1973,47 @@ mod tests {
             "the loop is {bars} bars long"
         );
         assert!(bars >= 4.0, "a four-bar loop is the shortest that breathes");
+    }
+
+    /// A row offers only what its track can do: an idle track offers a
+    /// start, and a started one never offers another — the sequence is one
+    /// shot, so a second play would restart it from the top mid-phrase.
+    #[test]
+    fn a_track_row_offers_the_actions_its_state_allows() {
+        assert_eq!(TrackStatus::Idle.buttons(), &[TrackButton::Play]);
+        assert_eq!(
+            TrackStatus::Playing.buttons(),
+            &[TrackButton::Pause, TrackButton::Rewind]
+        );
+        assert_eq!(
+            TrackStatus::Paused.buttons(),
+            &[TrackButton::Resume, TrackButton::Rewind]
+        );
+    }
+
+    /// Pressing a row's buttons walks it the way the audio world does: play
+    /// starts it, pause holds it, resume lets it go on, and a rewind
+    /// restarts it without changing whether it is paused.
+    #[test]
+    fn a_track_row_steps_the_way_the_transport_does() {
+        let playing = TrackStatus::Idle.pressed(TrackButton::Play);
+        assert_eq!(playing, TrackStatus::Playing);
+        // Only an idle row has a play button, and it never returns to one.
+        assert_eq!(playing.pressed(TrackButton::Play), TrackStatus::Playing);
+        let paused = playing.pressed(TrackButton::Pause);
+        assert_eq!(paused, TrackStatus::Paused);
+        assert_eq!(paused.pressed(TrackButton::Rewind), TrackStatus::Paused);
+        let resumed = paused.pressed(TrackButton::Resume);
+        assert_eq!(resumed, TrackStatus::Playing);
+        assert_eq!(resumed.pressed(TrackButton::Rewind), TrackStatus::Playing);
+    }
+
+    /// The panel opens with the background loop already going and the
+    /// one-shot sequence waiting for its Play, which is what the demo does
+    /// once the audio world reports that it can sound.
+    #[test]
+    fn the_panel_opens_with_only_the_background_playing() {
+        assert_eq!(TrackRows::START.background, TrackStatus::Playing);
+        assert_eq!(TrackRows::START.sequence, TrackStatus::Idle);
     }
 }
