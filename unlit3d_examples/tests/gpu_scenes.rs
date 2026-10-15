@@ -395,6 +395,82 @@ async fn mesh_topologies_matches_its_snapshot() {
     .await;
 }
 
+/// The scene whose sky and particles are drawn by pipelines the example owns.
+///
+/// Both families are the example's own code end to end — the shaders, the
+/// layouts, the bind groups and the per-instance records — so this is the
+/// snapshot that fails if a caller-registered family stops being able to reach
+/// the frame's camera, its own resources, or the instance stream.
+async fn custom_pipeline_matches_its_snapshots() {
+    compare_scene(
+        &scenes::custom_pipeline::SCENE,
+        SCENE_TOLERANCE,
+        &snapshots![
+            "custom_pipeline/frame_00.webp",
+            "custom_pipeline/frame_01.webp",
+            "custom_pipeline/frame_02.webp",
+            "custom_pipeline/frame_03.webp",
+            "custom_pipeline/frame_04.webp",
+            "custom_pipeline/frame_05.webp",
+            "custom_pipeline/frame_06.webp",
+            "custom_pipeline/frame_07.webp",
+        ],
+    )
+    .await;
+}
+
+/// The custom-pipeline scene animates between windowed frames instead of
+/// holding each frozen frame.
+///
+/// Its motion is parametric, so the window drives it from the frame delta and
+/// a frame a sixtieth of a second on from the last one already moves the
+/// camera. The regression this guards is the scene declaring a fixed sequence
+/// step: the window would then hold each of its eight snapshots for half a
+/// second, leaving a running camera that never moves between them.
+async fn custom_pipeline_animates_between_frames() {
+    let ctx = Ctx::headless().await;
+    let def = &scenes::custom_pipeline::SCENE;
+    // The windowed path's options, minus the selector: the sequence step the
+    // scene itself declares, and a run that accumulates real frame deltas.
+    let (mut world, mut scene) = Scene::new(
+        ctx.device.clone(),
+        ctx.queue.clone(),
+        ctx.capabilities,
+        def.size,
+        SceneOptions {
+            ui: false,
+            selector: false,
+            reproducible: false,
+            letterbox: false,
+            sequence_step: def.step_seconds,
+        },
+        def,
+        PanelRects::default(),
+    );
+
+    let mut previous = camera_eye(&world);
+    // A handful of frames is well inside the half-second a held sequence would
+    // need, so every one of them still has to move the orbit.
+    for _ in 0..4 {
+        scene.advance(&mut world, FIXED_STEP);
+        let eye = camera_eye(&world);
+        assert_ne!(
+            eye, previous,
+            "the orbit did not move between two windowed frames"
+        );
+        previous = eye;
+    }
+}
+
+/// The eye position of the scene's camera.
+fn camera_eye(world: &World) -> glam::Vec3 {
+    let (_, camera) = world
+        .query::<&Camera>()
+        .next()
+        .expect("the scene has a camera");
+    camera.position()
+}
+
 /// The default scene at a target narrower than its baseline.
 ///
 /// The scene's own snapshots are all at its baseline shape, which has no bars
@@ -419,6 +495,8 @@ gpu_tests! {
     ui_only_matches_its_snapshot,
     transparent_zsorted_matches_its_snapshot,
     mesh_topologies_matches_its_snapshot,
+    custom_pipeline_matches_its_snapshots,
+    custom_pipeline_animates_between_frames,
     the_default_scene_letterboxes_into_a_narrow_target,
 }
 

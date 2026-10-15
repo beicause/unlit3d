@@ -32,6 +32,7 @@ Scenes:
   gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
+  custom_pipeline        a caller-owned sky and particle family, eight frames of an orbit
 ```
 
 Each scene reproduces exactly what its test froze: the same world, camera and
@@ -43,6 +44,18 @@ depends on both the z-sort and the blend state. `gltf` is the other exception:
 it draws the glTF documents in `unlit3d_asset_files/assets` through
 `UnlitGltf`, so the loader's skinning and morph-target animation are checked
 against real assets rather than the hand-written ones the unit tests use.
+
+`custom_pipeline` is the third: it registers two families of its own rather than
+drawing through the built-in unlit one. A sky family reconstructs a view ray
+from the frame's camera, samples a procedurally generated cube map and blends a
+gradient and a sun from a uniform block the example writes every frame; a
+particle family takes its per-instance records from an ordinary world component
+and animates each sprite from a clock the example advances. Neither mesh carries
+a vertex attribute — the sky's three vertices and each particle's six come from
+the vertex index — so the scene is what checks that a caller can own a pipeline,
+its bind groups, its vertex layout and its instance stream, and still read the
+frame's camera. It is also the example's longest animated scene, at eight frames
+of an orbit.
 
 Every scene is built with the same public `unlit3d` API any caller would use —
 nothing in the example reaches into the crates' internals.
@@ -260,11 +273,15 @@ flashing past at the refresh rate. At most one sequence step is taken per
 windowed frame, so a stall does not skip frames.
 
 A scene whose animation carries its own timing declares no step at all and
-advances from the frame delta instead. `gltf` is the one such scene here: the
-fox's `Walk` and the morph cube's `Pulse` each play at their own duration,
-looping in real time, so the window shows the documents as an application would
-rather than through a six-frame sequence. The snapshot capture still walks that
-sequence, because a stored frame has to be reproducible.
+advances from the frame delta instead, so the window runs it at the pace the
+display refreshes rather than in the two steps a second a held sequence gives.
+Two scenes do this. `gltf` plays the fox's `Walk` and the morph cube's `Pulse`
+at each clip's own duration, looping in real time, so the window shows the
+documents as an application would rather than through a six-frame sequence.
+`custom_pipeline` is parametric — the orbit angle and the particle clock are
+both functions of time — so it accumulates the frame delta and moves every
+frame. The snapshot capture still walks each scene's sequence, because a
+stored frame has to be reproducible.
 
 ### Choosing a device tier
 

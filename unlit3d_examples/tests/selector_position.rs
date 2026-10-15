@@ -38,11 +38,22 @@ async fn selector_window_opens_where_the_previous_scene_left_it() {
     let ctx = Ctx::headless().await;
     let size = (960, 720);
 
-    // A rectangle a user might have dragged the window to; the shell would
-    // read it out of the dying scene's egui context.
+    // Lay the selector out once, so the rectangle carried below is one it can
+    // hold. egui grows a window past a `default_size` its content outgrows, and
+    // a carried rectangle smaller than that content could not be restored
+    // exactly — a fixed size here would silently assume how many scenes the
+    // table holds. The position is a spot a user might have dragged it to.
+    let (mut first_world, mut first) = scene(&ctx, size, None);
+    bind(&mut first_world, &mut first, &ctx, size);
+    first.advance(&mut first_world, FIXED_STEP);
+    first.render(&first_world);
+    first.end_frame(&mut first_world);
+    let laid_out = rect(&first_world).expect("the selector is laid out after a frame");
+
+    // The rectangle the shell would read out of the dying scene's egui context.
     let carried = Some(egui::Rect::from_min_size(
         egui::pos2(100.0, 50.0),
-        egui::vec2(340.0, 297.0),
+        laid_out.size(),
     ));
     let (mut world, mut scene) = scene(&ctx, size, carried);
     bind(&mut world, &mut scene, &ctx, size);

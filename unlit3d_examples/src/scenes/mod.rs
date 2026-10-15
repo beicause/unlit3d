@@ -18,6 +18,7 @@
 //! `unlit3d_asset_files` submodule still verify them.
 
 pub mod animated;
+pub mod custom_pipeline;
 pub mod gltf;
 pub mod instanced_skinned_morph;
 pub mod mesh_and_ui;
@@ -137,6 +138,7 @@ pub static SCENES: &[&SceneDef] = &[
     &gltf::SCENE,
     &mesh_topologies::SCENE,
     &transparent::SCENE,
+    &custom_pipeline::SCENE,
 ];
 
 /// The scene whose id is `id`, if any.

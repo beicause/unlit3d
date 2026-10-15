@@ -30,6 +30,9 @@ name = "selector_position"
 
 [dependencies]
 argh.workspace = true
+# The scene that owns a pipeline lays its uniform blocks out against WGSL's
+# alignment rules, so it declares the layout the same way the engine does.
+const_shader_layout.workspace = true
 glam.workspace = true
 log.workspace = true
 # The GPU-info panel reads the device's facts from their serde description
@@ -46,6 +49,10 @@ webbrowser.workspace = true
 # so this is the one crate that needs wgpu to serialise them.
 wgpu = { workspace = true, features = ["serde"] }
 winit.workspace = true
+# A caller-owned instance record and uniform block are written as bytes, which
+# is what these two describe and derive.
+zerocopy.workspace = true
+zerocopy-derive.workspace = true
 
 # The snapshot tests drive the example's own scenes through the harness, so they
 # read frames back and compare them with the same code the crates' GPU tests use,

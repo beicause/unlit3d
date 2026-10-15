@@ -29,6 +29,7 @@ Scenes:
   gltf                   a skinned fox and a morph-target cube playing their glTF clips
   mesh_topologies        every primitive topology, indexed and non-indexed
   transparent_zsorted    translucent panes composited back to front over opaque cubes
+  custom_pipeline        a caller-owned sky and particle family, eight frames of an orbit
 ```
 
 每个场景都精确重现其测试冻结下来的内容：同样的世界、相机与帧序列，因此存储的快照仍然
@@ -36,7 +37,15 @@ Scenes:
 来，而是补上移植场景所缺的覆盖——每种图元拓扑各画一次索引与非索引，以及重叠的半透明
 绘制，其合成结果同时取决于 z 排序与混合状态。`gltf` 是另一个例外：它通过 `UnlitGltf`
 绘制 `unlit3d_asset_files/assets` 下的 glTF 文档，因此加载器的蒙皮与形变目标动画是拿
-真实资产来检验的，而不是单元测试里手写的那些。场景全部用公开的 `unlit3d` API 构建——
+真实资产来检验的，而不是单元测试里手写的那些。
+
+`custom_pipeline` 是第三个例外：它注册了两个自己的 family，而不是走内置的 unlit
+family。天空 family 从当帧相机重建视线方向，采样一张程序化生成的 cubemap，并用示例
+每帧写入的 uniform 块混合渐变与太阳；粒子 family 的每实例记录来自普通的 world 组件，
+每个精灵的动画由一个示例自己推进的时钟驱动。两者的网格都不带任何顶点属性——天空的三个
+顶点与每个粒子的六个顶点都来自顶点索引——因此这个场景检验的正是：调用方可以拥有自己的
+管线、绑定组、顶点布局与实例流，同时仍能读到当帧相机。它也是示例里最长的动画场景，
+绕行八帧。场景全部用公开的 `unlit3d` API 构建——
 示例没有任何一处触碰到 crate 的内部实现。
 
 ## 运行方式
@@ -201,9 +210,12 @@ cargo nextest run -p unlit3d_examples
 播放：把动画冻结成若干帧的场景，每帧停留 `SEQUENCE_STEP`（当前为 0.5 秒），因此肉眼
 可看，而不是随刷新率一闪而过。窗口循环每次最多推进一帧序列，卡顿不会跳帧。
 
-自带时序的动画则不声明步长，而是按帧间隔推进。`gltf` 是这里唯一的这种场景：狐狸的
+自带时序的动画则不声明步长，而是按帧间隔推进，于是窗口按显示器刷新的节奏运行它，
+而不是被一段静止序列压成每秒两次的跳变。这里有两个这样的场景。`gltf` 让狐狸的
 `Walk` 与形变立方体的 `Pulse` 各自按自身时长实时循环播放，因此窗口展示的是文档在
-应用中的样子，而不是六帧序列。快照捕获仍然走那个序列，因为存下的帧必须可复现。
+应用中的样子，而不是六帧序列。`custom_pipeline` 的动画是参数化的——绕行角度与粒子
+时钟都是时间的函数——所以它累加帧间隔并逐帧移动。快照捕获仍然走各场景自己的序列，
+因为存下的帧必须可复现。
 
 ### 选择设备档位
 
