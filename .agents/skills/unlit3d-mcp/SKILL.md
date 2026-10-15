@@ -1,14 +1,16 @@
 ---
 name: unlit3d-mcp
 description: 通过 MCP(stdio JSON-RPC) 操纵运行中的 unlit3d / unlit3dx world：列出 world 与实体、读写组件、查看资源图、抓帧截图、发送输入。当需要调试或自动化检查 unlit3d、unlit3dx_examples、unlit3d_examples、unlit3d_cli 的运行中场景时使用。
-whenToUse: 当需要查看或修改运行中场景的状态（实体、组件、资源图）、抓一帧看渲染结果、注入输入事件，或想知道 --mcp 开关怎么用、unlit3d_mcp 有哪些工具及其参数时。
+whenToUse: 当需要查看或修改运行中场景的状态（实体、组件、资源图）、抓一帧看渲染结果、注入输入事件、录一段运行中的混音，或想知道 --mcp 开关怎么用、MCP 服务器有哪些工具及其参数时。
 ---
 
 # 用 MCP 操纵 unlit3d world
 
-`unlit3d_mcp`(`crates/unlit3d_mcp/`)是一个 MCP 服务器，让 agent 读写一个**正在运行**的
+MCP 服务器住在 `unlit_ecs`(`crates/unlit_ecs/src/mcp/`)里，让 agent 读写一个**正在运行**的
 world。它没有特权通道：每个工具都写在公开 API(`World`、`Renderer`、`MeshSource`、
-`ResourceGraph`)之上。传输是 stdio——由客户端**启动进程**，没有常驻端口，仓库里也没有
+`ResourceGraph`)之上，且服务器本身不认识引擎——工具由定义其作用对象的 crate 各自用
+`inventory::submit!` 注册(`unlit_ecs` 注册 world 与实体工具、`unlit3d` 注册渲染工具、
+`unlit3dx` 注册音频录音工具)。传输是 stdio——由客户端**启动进程**，没有常驻端口，仓库里也没有
 `.mcp.json`。
 
 ## 先决条件与驱动
@@ -74,7 +76,7 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 
 ## 工具清单
 
-26 个工具，四组。所有工具的 `world` 都可省略（默认 `"Host"`）。
+30 个工具，五组。所有工具的 `world` 都可省略（默认 `"Host"`）。
 
 ### world 与实体
 
@@ -139,6 +141,19 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 `read_*`**：内联图片或 base64 会永久占掉一块模型上下文，写到磁盘的文件可以按需读、
 也可以不读。
 
+### 音频录音
+
+| 工具 | 作用 | 关键参数 |
+| --- | --- | --- |
+| `start_audio_recording` | 开始录一个音频 world 填出的混音 | `duration_seconds`（默认 60） |
+| `stop_audio_recording` | 停止录音并把捕获的混音写成 16-bit PCM WAV | `directory`(必填)、`file_name` |
+| `cancel_audio_recording` | 停止录音并丢弃已捕获的内容 | 无 |
+| `audio_recording_status` | 报告当前录到的帧数与秒数 | 无 |
+
+录音器排在填充顺序的最末，录到的是所有音源与 world 的 `AudioGain` 之后的混音；格式
+（采样率与声道数）在第一次填充时学到，所以 `--stepped` 或设备尚未打开时也能录。同一
+个 world 同时只允许一段录音，第二段会被拒绝。
+
 ## 常见错误
 
 | 现象 | 原因 |
@@ -152,19 +167,23 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 
 ## 在源码里的位置
 
-- `crates/unlit3d_mcp/src/server.rs` —— 工具定义与参数结构体。加工具就加一个
-  `#[tool(name = ..., description = ...)]` 方法，再补一个 `*Arg` 结构体。
-- `crates/unlit3d_mcp/src/lib.rs` —— `serve_stdio_with(sink)`：建 tokio runtime，把每个
-  `McpCommand` 交给 sink。
-- `crates/unlit3dx/src/mcp.rs` —— `serve_mcp(world)` 起名为 `unlit3dx-mcp-transport` 的
-  线程，宿主侧挂 `McpInbox` + `drain_mcp()` 的 `OnAboutToWait`；`reachable_worlds` 决定
+- `crates/unlit_ecs/src/mcp/server.rs` —— `McpServer`、`ToolRouter`、`serve_stdio_with`
+  与 `serve_with`，以及 `tool()`/`ToolSource` 这套注册机制。
+- `crates/unlit_ecs/src/mcp/host.rs` —— 传输契约：`McpCommand`、`Output`、`WorldId`、
+  `WorldEntry`、`Job`，以及落盘助手。
+- `crates/unlit_ecs/src/mcp/tools.rs` —— 10 个 world 与实体工具，末尾的 `register` 是
+  它们的注册表。
+- `crates/unlit3d/src/mcp/` —— 16 个渲染工具(`host.rs`)与它们的 `register`(`mod.rs`)。
+- `crates/unlit3dx/src/mcp/mod.rs` —— 4 个音频录音工具与它们的 `register`；音频录制的
+  实现在 `crates/unlit3dx/src/record.rs`。
+- `crates/unlit3dx/src/mcp/bridge.rs` —— `serve_mcp(world)` 起名为 `unlit3dx-mcp-transport`
+  的线程，宿主侧挂 `McpInbox` + `drain_mcp()` 的 `OnAboutToWait`；`reachable_worlds` 决定
   `list_worlds` 看到什么。
 - `crates/unlit3dx/src/world.rs` —— `WorldSender`（留在代理实体上、让 bridge 够得着线程/
-  步进 world 的命令通道）与 `WorldName`（`list_worlds` 报告的名字）；
-  `crates/unlit3d_mcp/src/host.rs` —— `WorldEntry`，两者的序列化形状。
+  步进 world 的命令通道）与 `WorldName`（`list_worlds` 报告的名字）。
 - `unlit3d_examples/src/lib.rs` —— 走 winit 用户事件；`unlit3d_cli/src/lib.rs` —— 走 mpsc
   channel。
-- `crates/unlit3d_mcp/README.md` —— 设计说明(无特权路径、传输、组件反射注册)。
+- `crates/unlit_ecs/README.md` —— 设计说明(无特权路径、传输、各 crate 注册工具)。
 
 组件之所以能被 JSON 指名，是因为它们在 `unlit3d` 的 `reflect` feature 下用
 `inventory::submit!` 提交了 link-time 表项；没有注册的组件既读不到也写不了。
