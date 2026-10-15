@@ -784,8 +784,8 @@ pub struct Gameplay {
     /// world says it can sound, because a track job that reaches the world
     /// before its players exist finds nobody to address.
     audio_inbox: SnapshotReader<AudioReady>,
-    /// Whether the two tracks have been started.
-    music_started: bool,
+    /// Whether the background music has been started.
+    bgm_started: bool,
     /// The executor driving the async scene build.
     builder: LocalPool,
     /// The build future's landing slot: it fills this, the tick reads it.
@@ -889,7 +889,7 @@ impl Gameplay {
             physics_sender,
             audio_sender,
             audio_inbox,
-            music_started: false,
+            bgm_started: false,
             builder,
             build,
             ready: false,
@@ -1022,16 +1022,15 @@ impl Gameplay {
         self.ticks += 1;
         // The audio world says when it can sound. Until its players exist
         // a track job finds nobody to address and is lost, so the music
-        // starts on the first moment the world reports it is up.
-        if !self.music_started && self.audio_inbox.latest().is_some_and(|state| state.0) {
-            self.music_started = true;
+        // starts on the first moment the world reports it is up. Only the
+        // background loop autoplays; the one-shot sequence is started by
+        // hand from the panel.
+        if !self.bgm_started && self.audio_inbox.latest().is_some_and(|state| state.0) {
+            self.bgm_started = true;
             self.audio_sender
                 .send(play_track_job(BGM_TRACK, bgm_midi(), true))
                 .ok();
-            self.audio_sender
-                .send(play_track_job(SEQUENCE_TRACK, sequence_midi(), false))
-                .ok();
-            log::info!("both music tracks are playing");
+            log::info!("the background music is playing");
         }
         self.poll_build();
         if !self.ready {

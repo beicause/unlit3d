@@ -17,13 +17,13 @@ shape from above at a random position; shapes fall and bounce off the ground
 and each other. Shapes also drop on their own, about one every 0.7 seconds.
 The camera orbits the scene slowly.
 
-Two pieces of music play at once, each on its own track of the audio world:
-a background loop that runs forever, and a one-shot MIDI sequence — the
-pentatonic scale walked up and back down on a music box. The render world's
-control panel — a small egui window — pauses, resumes and rewinds each track
-independently, drops the next shape, and puts every live shape back in the
-pool. Nothing about the music depends on the shapes: clearing the scene
-leaves both tracks playing.
+A background loop plays on its own track of the audio world from the
+moment the world can sound. A second track holds a one-shot MIDI sequence —
+the pentatonic scale walked up and back down on a music box — which the
+panel starts by hand. That control panel — a small egui window — pauses,
+resumes and rewinds each track independently, drops the next shape, and puts
+every live shape back in the pool. Nothing about the music depends on the
+shapes: clearing the scene leaves the tracks playing.
 
 ## How to run
 
@@ -107,6 +107,7 @@ paced differs.
   as one async future on a `LocalPool`, requests bodies from physics, and
   maps them to the instance handles, sending their poses back as a job.
   Once
-  the audio world reports it can sound, gameplay starts both tracks; the
-  panel drives them afterwards without going through gameplay. It ticks at
+  the audio world reports it can sound, gameplay starts the background
+  loop; the panel starts the sequence and drives both tracks afterwards
+  without going through gameplay. It ticks at
   a fixed 120 Hz, independent of the frame rate.
