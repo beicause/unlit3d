@@ -17,6 +17,7 @@
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档加载为 `UnlitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
+| `mcp` | 否 | [`mcp`](mcp) 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
 
 使用 `--no-default-features` 时，本 crate 保留 ECS 组件、帧源、mesh 路径、管线抽象
 与可移植的 `input` 模块——它们都不依赖 egui 或 winit。开启 `gltf` 则在同一套 ECS 与
@@ -665,7 +666,9 @@ cargo xtask test                # 整个工作区
 cargo nextest run -p unlit3d    # 只跑本 crate
 ```
 
-GPU 集成测试把场景渲染到离屏目标并检查回读的像素。这些场景的多帧快照覆盖现在位于
+GPU 集成测试把场景渲染到离屏目标并检查回读的像素。打开 `mcp` feature 后，一个端到端
+测试会在一条线程上建起真实的 GPU world，用一对流把它服务出去，并与之说 JSON-RPC：
+它会列出工具、读取 world、生成网格，再逐像素检查截图。这些场景的多帧快照覆盖现在位于
 [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.zh-CN.md)：
 它的 `tests/gpu_scenes.rs` 把这些场景与
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md)

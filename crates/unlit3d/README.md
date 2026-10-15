@@ -20,6 +20,7 @@ directly, and you are expected to know WebGPU to use it well.
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document into an `UnlitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
+| `mcp` | no | the [`mcp`](mcp) module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
 
 With `--no-default-features` the crate keeps the ECS components, the frame
 sources, the mesh path, the pipeline abstraction and the portable [`input`]
@@ -923,7 +924,10 @@ cargo nextest run -p unlit3d    # just this crate
 ```
 
 The GPU integration tests render scenes into offscreen targets and inspect the
-pixels that come back. The multi-frame snapshot coverage of those scenes lives
+pixels that come back. With the `mcp` feature on, an end-to-end test builds a
+real GPU world on a thread, serves it over a pair of streams and speaks
+JSON-RPC to it: it lists the tools, reads the world, spawns a mesh and checks
+the screenshot pixel by pixel. The multi-frame snapshot coverage of those scenes lives
 in [`unlit3d_examples`](https://github.com/beicause/unlit3d/blob/main/unlit3d_examples/README.md),
 whose `tests/gpu_scenes.rs` compares them against the SSIMULACRA2 snapshots under
 [`unlit3d_asset_files`](https://github.com/beicause/unlit3d/blob/main/unlit3d_asset_files/README.md).

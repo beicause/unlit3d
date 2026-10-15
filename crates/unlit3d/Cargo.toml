@@ -48,6 +48,10 @@ name = "morphed_scene"
 harness = false
 name = "skinned_scene"
 
+[[test]]
+name = "mcp_server"
+required-features = ["mcp"]
+
 [dependencies]
 arrayvec.workspace = true
 bitflags.workspace = true
@@ -74,12 +78,21 @@ zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
 [dev-dependencies]
+# The end-to-end MCP test drives a real command channel, as a transport does.
+async-channel.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot"] }
 wgpu = { workspace = true, features = ["noop"] }
 
 # The GPU tests drive the shared registry rather than libtest's generated
 # harness, so one file serves both `cargo nextest` and the browser's wasm
 # build. `wasm-bindgen` is what exports the page's entry point on the web.
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Only the MCP tools encode pixels or write files; a browser build never does.
+base64 = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen.workspace = true
@@ -91,6 +104,18 @@ default = ["ui", "winit"]
 ## an existing resource graph, unload them again, and spawn entities that draw
 ## the document's default scene.
 gltf = ["dep:gltf", "dep:half"]
+## The [mcp](crate::mcp) module: the rendering tools a world answers through the
+## Model Context Protocol server defined by [unlit_ecs]. Implies `reflect`,
+## whose registry is the codec those tools use, and `gltf`, so the load_gltf tool
+## has a loader. Not built on wasm, where a browser drives the world directly.
+mcp = [
+  "dep:base64",
+  "dep:image",
+  "gltf",
+  "reflect",
+  "unlit_ecs/mcp",
+  "unlit_wgpu/reflect",
+]
 ## Reflection: derive [facet](https://docs.rs/facet) for the components whose
 ## fields cross a JSON boundary, so a component's own field list is the only
 ## place those fields are written down, plus the [reflect] module, whose

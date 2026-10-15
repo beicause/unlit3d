@@ -12,6 +12,10 @@ pub mod frame;
 #[cfg(feature = "gltf")]
 pub mod gltf;
 pub mod input;
+/// The rendering tools a world answers through the Model Context Protocol
+/// server in [`unlit_ecs::mcp`].
+#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+pub mod mcp;
 pub mod mesh;
 pub mod mesh_source;
 pub mod pipeline;
