@@ -454,15 +454,23 @@ fn asset_soundfont() -> Option<Arc<[u8]>> {
         .map(|bytes| Arc::from(bytes.as_slice()))
 }
 
-/// A one-shot track reports each play to its end, and a looping one never
-/// does. The panel reads the count to put a finished row back to its
-/// start, so it has to move exactly once per play rather than on every
+/// How many one-shot plays `track` has walked to its end.
+fn ends_of(world: &World, track: &str) -> u64 {
+    world
+        .query::<&MidiPlayer>()
+        .find(|(_, player)| player.name() == track)
+        .map_or(0, |(_, player)| player.ends())
+}
+
+/// A one-shot track counts each play to its end, and a looping one never
+/// does. A reader that remembers the count it last saw sees every end,
+/// so the count has to move exactly once per play rather than on every
 /// fill that follows.
 ///
 /// The soundfont is the workspace's own asset, so the test skips where the
 /// file is absent.
 #[test]
-fn a_finished_track_is_reported_once_per_play() {
+fn a_finished_track_is_counted_once_per_play() {
     let Some(font) = asset_soundfont() else {
         eprintln!("skipping: no soundfont under assets");
         return;
@@ -475,8 +483,6 @@ fn a_finished_track_is_reported_once_per_play() {
         &["background", "sequence"],
         SAMPLE_RATE,
     );
-    let (writer, reader) = snapshot_pair::<TrackReport>();
-    spawn_track_report(&mut world, writer);
     // Half a second of one note: short enough to end within a few fills.
     let file = midi_file(&[(0.0, 0x90, 60, 100), (0.5, 0x80, 60, 0)]).expect("a one note file");
     play_track_job("sequence", file.clone(), false)(&mut world);
@@ -485,26 +491,22 @@ fn a_finished_track_is_reported_once_per_play() {
     let mut seen = 0;
     for _ in 0..ONSET_FILLS * 2 {
         let _ = fill(&world);
-        let ends = reader.latest().map_or(0, |report| report.ends("sequence"));
-        assert!(
-            ends >= seen,
-            "the report counted {ends} ends, down from {seen}"
-        );
-        assert!(ends <= 1, "the report counted {ends} ends for one play");
+        let ends = ends_of(&world, "sequence");
+        assert!(ends >= seen, "the count fell from {seen} to {ends}");
+        assert!(ends <= 1, "one play was counted {ends} times");
         seen = ends;
     }
-    assert_eq!(seen, 1, "the sequence never reported its end");
-    let report = reader.latest().expect("the report was published");
-    assert_eq!(report.ends("background"), 0, "a loop never ends");
+    assert_eq!(seen, 1, "the sequence never reached its end");
+    assert_eq!(ends_of(&world, "background"), 0, "a loop never ends");
 
     // A second play is a second end, not the first one repeated.
     let short = midi_file(&[(0.0, 0x90, 60, 100), (0.2, 0x80, 60, 0)]).expect("a short file");
     play_track_job("sequence", short, false)(&mut world);
     for _ in 0..ONSET_FILLS * 2 {
         let _ = fill(&world);
-        if reader.latest().map_or(0, |report| report.ends("sequence")) == 2 {
+        if ends_of(&world, "sequence") == 2 {
             return;
         }
     }
-    panic!("a second play was not reported");
+    panic!("a second play was not counted");
 }

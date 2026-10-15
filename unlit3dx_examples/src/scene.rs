@@ -451,9 +451,21 @@ pub struct ControlHooks {
     /// The audio world's command sender, absent when the audio world has
     /// no synthesizer and so no tracks to transport.
     pub audio: Option<JobSender>,
-    /// The audio world's track report, so a row can put a one-shot track
-    /// that played to its end back to its start. Absent with `audio`.
-    pub report: Option<SnapshotReader<TrackReport>>,
+}
+
+/// A job that asks the audio world how many times `track` has played to
+/// its end, answering zero for a track the world does not carry.
+///
+/// The count is what carries the event: a reader that remembers the count
+/// it last saw sees every end, even when it asked nothing in between.
+fn track_ends_job(track: &str) -> Job<u64> {
+    let track = track.to_owned();
+    Box::new(move |world: &mut World| {
+        world
+            .query::<&MidiPlayer>()
+            .find(|(_, player)| player.name() == track.as_str())
+            .map_or(0, |(_, player)| player.ends())
+    })
 }
 
 /// What one of the panel's two track rows shows.
@@ -488,9 +500,8 @@ impl TrackRow {
     /// one-shot track that played to its end since the row last looked is
     /// back at its start, ready to play again.
     ///
-    /// The count is what carries the event. A snapshot only ever holds the
-    /// newest value, so a row that remembered a flag could miss an end
-    /// that came and went between two frames.
+    /// The count is what carries the event: a row that remembered a flag
+    /// could miss an end that came and went between two frames.
     fn observed(self, ends: u64) -> Self {
         if ends > self.ends {
             Self {
@@ -500,6 +511,61 @@ impl TrackRow {
         } else {
             self
         }
+    }
+}
+
+/// The panel's window on the audio world's end counts.
+///
+/// The audio world lives on its own thread, so the panel cannot read its
+/// tracks: it asks about each through [`track_ends_job`] and keeps the
+/// answers here. A query that has not answered yet is left in flight, so
+/// a panel egui runs more than once in a frame queues one query per track
+/// rather than one per pass.
+struct TrackEnds {
+    /// How many ends the audio world last counted for the background.
+    background: u64,
+    /// How many ends it last counted for the sequence.
+    sequence: u64,
+    /// The query in flight for each track, in [`TRACKS`] order.
+    pending: [Option<Request<u64>>; TRACKS.len()],
+}
+
+impl TrackEnds {
+    /// Nothing counted yet, with no query in flight.
+    const START: Self = Self {
+        background: 0,
+        sequence: 0,
+        pending: [None, None],
+    };
+}
+
+/// The tracks the panel transports, in the order its rows show them.
+const TRACKS: [&str; 2] = [BGM_TRACK, SEQUENCE_TRACK];
+
+/// Fold every answer that landed into `ends`, and ask again for each
+/// track whose query is no longer in flight.
+///
+/// One query per track is in flight at a time, so a panel egui runs
+/// several times in one frame still queues one per track: the answer is
+/// taken only once, and the slot it frees is refilled once.
+fn poll_track_ends(audio: &JobSender, ends: &mut TrackEnds) {
+    for (index, track) in TRACKS.iter().enumerate() {
+        if let Some(pending) = ends.pending[index].take() {
+            match pending.poll() {
+                Some(count) => match index {
+                    0 => ends.background = count,
+                    _ => ends.sequence = count,
+                },
+                // A query the world dropped, or one still on its way,
+                // is not a count: only an answer moves a row.
+                None if pending.dropped() => {}
+                None => {
+                    ends.pending[index] = Some(pending);
+                    continue;
+                }
+            }
+        }
+        ends.pending[index] = Some(audio.request(track_ends_job(track)));
     }
 }
 
@@ -582,20 +648,17 @@ impl TrackStatus {
 /// The row names the track so the buttons need no suffix of their own. An
 /// idle row starts the track with the file only the sequence has. A
 /// one-shot track that played to its end is idle again, so its row offers
-/// the same Play: `report` is what tells the row that happened. It answers
-/// the row to store.
+/// the same Play: `ends` is the count that tells the row that happened.
+/// It answers the row to store.
 fn track_controls(
     ui: &mut egui::Ui,
     audio: &JobSender,
     name: &str,
     row: TrackRow,
     file: Option<fn() -> Arc<MidiFile>>,
-    report: Option<&TrackReport>,
+    ends: u64,
 ) -> TrackRow {
-    let mut row = match report {
-        Some(report) => row.observed(report.ends(name)),
-        None => row,
-    };
+    let mut row = row.observed(ends);
     ui.horizontal(|ui| {
         ui.label(match name {
             SEQUENCE_TRACK => "MIDI sequence",
@@ -634,21 +697,28 @@ fn track_controls(
 /// synthesizer has nothing to transport, so its panel shows the shapes
 /// alone.
 ///
-/// The panel carries a sibling TrackRows for what its rows show, so the
+/// The panel carries a sibling TrackRows for what its rows show and a
+/// sibling TrackEnds for the counts it polls the audio world for, so the
 /// callback itself owns no state.
 pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     world.spawn_source(UiSource::new());
     let gameplay = hooks.gameplay;
     let audio = hooks.audio;
-    let report = hooks.report;
-    let state = world.spawn((TrackRows::START,));
+    let state = world.spawn((TrackRows::START, TrackEnds::START));
     world.spawn((UiPanel::new(move |world, _entity, ui| {
         egui::Window::new("Controls").show(ui.ctx(), |ui| {
             if let Some(audio) = &audio {
+                // The counts first, then the rows: a row is put back by
+                // the end the count just picked up.
+                let counts = world
+                    .with_mut::<TrackEnds, _>(state, |ends| {
+                        poll_track_ends(audio, ends);
+                        (ends.background, ends.sequence)
+                    })
+                    .unwrap_or((0, 0));
                 let shown = world
                     .get::<TrackRows>(state)
                     .map_or(TrackRows::START, |rows| *rows);
-                let report = report.as_ref().and_then(|report| report.latest());
                 let now = TrackRows {
                     background: track_controls(
                         ui,
@@ -656,7 +726,7 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
                         BGM_TRACK,
                         shown.background,
                         None,
-                        report.as_deref(),
+                        counts.0,
                     ),
                     sequence: track_controls(
                         ui,
@@ -664,7 +734,7 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
                         SEQUENCE_TRACK,
                         shown.sequence,
                         Some(sequence_midi),
-                        report.as_deref(),
+                        counts.1,
                     ),
                 };
                 if now != shown {
@@ -1296,8 +1366,6 @@ pub struct SceneWiring {
     pub audio_sender: JobSender,
     /// The audio world's readiness mailbox.
     pub audio_ready: SnapshotReader<AudioReady>,
-    /// The audio world's track report, published as its tracks end.
-    pub track_report: SnapshotWriter<TrackReport>,
 }
 
 /// Install the demo's audio sources on an audio world: the mix's gain, one
@@ -1319,7 +1387,6 @@ pub fn install_synth(
     gain: f32,
     tracks: &[&str],
     sample_rate: u32,
-    report: SnapshotWriter<TrackReport>,
 ) {
     for (index, one) in tracks.iter().enumerate() {
         assert!(
@@ -1344,25 +1411,16 @@ pub fn install_synth(
         }
         Err(error) => log::error!("the soundfont failed to load ({error})"),
     }
-    // The report rides with the tracks it reports on: a world with no
-    // players has no ends to publish, so it gets no source either.
-    if world.query::<&MidiPlayer>().next().is_some() {
-        spawn_track_report(world, report);
-    }
 }
 
 /// A job that installs the demo's two tracks on an audio world that has
-/// just reported its output format, reporting their ends to `report`.
-pub fn install_audio_job(sample_rate: u32, report: SnapshotWriter<TrackReport>) -> Job<()> {
-    install_audio_job_with(SOUNDFONT.into(), sample_rate, report)
+/// just reported its output format.
+pub fn install_audio_job(sample_rate: u32) -> Job<()> {
+    install_audio_job_with(SOUNDFONT.into(), sample_rate)
 }
 
 /// The same install, from a soundfont the caller already holds.
-pub fn install_audio_job_with(
-    soundfont: Arc<[u8]>,
-    sample_rate: u32,
-    report: SnapshotWriter<TrackReport>,
-) -> Job<()> {
+pub fn install_audio_job_with(soundfont: Arc<[u8]>, sample_rate: u32) -> Job<()> {
     Box::new(move |world: &mut World| {
         install_synth(
             world,
@@ -1370,7 +1428,6 @@ pub fn install_audio_job_with(
             SYNTH_GAIN,
             &[BGM_TRACK, SEQUENCE_TRACK],
             sample_rate,
-            report,
         );
     })
 }
@@ -1445,8 +1502,6 @@ pub struct SceneWorlds {
     pub gameplay: WorldHandle,
     /// The audio device's format, when the setup waits for it.
     pub audio_format: Option<SnapshotReader<AudioFormat>>,
-    /// The audio world's track report.
-    track_report: SnapshotReader<TrackReport>,
     /// Whether the audio world carries sources to transport.
     audio_sources: bool,
 }
@@ -1457,13 +1512,6 @@ impl SceneWorlds {
     #[must_use]
     pub fn audio_tracks(&self) -> Option<JobSender> {
         self.audio_sources.then(|| self.wiring.audio_sender.clone())
-    }
-
-    /// The audio world's track report, when the scene gave it a
-    /// synthesizer: what the panel reads to put a finished row back.
-    #[must_use]
-    pub fn track_report(&self) -> Option<SnapshotReader<TrackReport>> {
-        self.audio_sources.then(|| self.track_report.clone())
     }
 }
 
@@ -1504,7 +1552,6 @@ pub fn spawn_scene<R: WorldRunner>(
         .expect("the audio world carries its readiness inbox")
         .0
         .clone();
-    let (track_report_writer, track_report) = snapshot_pair::<TrackReport>();
     let (audio_format, audio_sources) = match audio_setup {
         AudioSetup::Silent => (None, false),
         AudioSetup::Pulled {
@@ -1516,8 +1563,7 @@ pub fn spawn_scene<R: WorldRunner>(
             // opens no device has no rate to wait for, so one step
             // installs them before the first gameplay tick reads the
             // readiness mailbox.
-            let install =
-                install_audio_job_with(soundfont, sample_rate, track_report_writer.clone());
+            let install = install_audio_job_with(soundfont, sample_rate);
             if let Err(error) = audio_sender.send(install) {
                 log::error!("the audio world refused its sources ({error:?})");
             }
@@ -1540,7 +1586,6 @@ pub fn spawn_scene<R: WorldRunner>(
         physics_reader,
         audio_sender,
         audio_ready,
-        track_report: track_report_writer,
     };
     wiring.spawn_ground();
 
@@ -1583,7 +1628,6 @@ pub fn spawn_scene<R: WorldRunner>(
         audio,
         gameplay,
         audio_format,
-        track_report,
         audio_sources,
     }
 }
@@ -1601,7 +1645,6 @@ pub fn install_sources_when_ready(world: &mut World, worlds: &SceneWorlds) {
         return;
     };
     let audio_sender = worlds.wiring.audio_sender.clone();
-    let report = worlds.wiring.track_report.clone();
     let mut installed = false;
     world.spawn((OnAboutToWait::new(move |_world: &World, _entity, ()| {
         if installed {
@@ -1611,7 +1654,7 @@ pub fn install_sources_when_ready(world: &mut World, worlds: &SceneWorlds) {
             return;
         };
         installed = true;
-        let install = install_audio_job(format.sample_rate, report.clone());
+        let install = install_audio_job(format.sample_rate);
         if let Err(error) = audio_sender.send(install) {
             log::error!("the audio world refused its sources ({error:?})");
         }

@@ -85,9 +85,9 @@ pub mod prelude {
     };
     #[cfg(feature = "synth")]
     pub use crate::synth::{
-        MidiEvent, MidiFile, MidiMessage, MidiPlayer, SynthVoice, TrackReport, VoiceError,
-        load_midi_file, load_soundfont, midi_file, note_off_job, note_on_job, pause_track_job,
-        play_track_job, program_change_job, rewind_track_job, spawn_track_report, stop_track_job,
+        MidiEvent, MidiFile, MidiMessage, MidiPlayer, SynthVoice, VoiceError, load_midi_file,
+        load_soundfont, midi_file, note_off_job, note_on_job, pause_track_job, play_track_job,
+        program_change_job, rewind_track_job, stop_track_job,
     };
     pub use crate::{
         channel::{SnapshotReader, SnapshotWriter, snapshot_pair},

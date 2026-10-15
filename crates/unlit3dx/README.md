@@ -212,11 +212,13 @@ The bridges:
   sequence coexist on one audio world and pause separately. Files come from
   `load_midi_file` (an SMF file) or `midi_file` (a list of timed
   messages). The demo's `install_synth` shows the whole install as one
-  function, queued to the audio world as a job. `spawn_track_report`
-  publishes a `TrackReport` to a snapshot writer as tracks end: it counts
-  how many times each one-shot track played to its end, which is how a
-  panel puts a finished row back to its start — a snapshot only holds the
-  newest value, so a count carries the event where a flag would drop it.
+  function, queued to the audio world as a job. `MidiPlayer::ends` counts
+  how many times a track has played to its end: a looping play never
+  counts, and a reader that remembers the count it last saw sees every
+  end, even when it polled nothing in between. The count is a plain fact
+  about a player, so whoever needs it asks the audio world for it — a
+  snapshot would only hold the newest value and drop an end that came and
+  went between two frames.
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
   over the [Model Context Protocol](../unlit_ecs/README.md), so a live scene
