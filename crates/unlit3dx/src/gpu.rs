@@ -19,7 +19,7 @@ use unlit3d::winit::builtin::{DisplayHandle, ExitRequest, Resumed, window};
 
 /// The frame-behaviour order the GPU request runs at: before everything
 /// that draws.
-pub const REQUEST_GPU_ORDER: i32 = 0;
+pub(crate) const REQUEST_GPU_ORDER: i32 = 0;
 
 /// The GPU context a scene draws with.
 ///

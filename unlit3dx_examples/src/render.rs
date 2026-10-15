@@ -1,4 +1,11 @@
-//! Render-world helpers: an asset server over entities.
+//! The demo's render bridge: an asset server over entities in the render
+//! sub-world.
+//!
+//! `unlit3dx` leaves the render bridge to its callers; this module is the
+//! demo's own, built on the runtime's core and on `unlit3d`'s generic
+//! `MeshSource` registry. It is a template for a caller's bridge: register a
+//! pipeline family and allocate through the mesh source, and the world is the
+//! same registry either way.
 //!
 //! The server helpers follow one rule: the world is the registry. A mesh or
 //! a material is allocated inside the render world and left there as the
@@ -17,7 +24,7 @@ use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
 use unlit3d::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
 
-use crate::job::Job;
+use unlit3dx::job::Job;
 
 /// A mesh description that owns its vertex data, so it can cross a thread
 /// inside a job; [`UnlitMeshDesc`] is what the render world finally sees.
@@ -55,9 +62,9 @@ impl OwnedUnlitMeshDesc {
 /// standard unlit options are built from the mesh source's device, so a
 /// caller that only wants the built-in look never has to touch a device.
 ///
-/// This is the built-in convenience layer. For a pipeline of the caller's
-/// own, register a family and allocate through `unlit3d`'s
-/// [`MeshSource`] directly; the world is the same registry either way.
+/// For a pipeline of the caller's own, register a family and allocate
+/// through `unlit3d`'s [`MeshSource`] directly; the world is the same
+/// registry either way.
 fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
     let (entity, source) = world
         .query::<&Source>()
@@ -222,7 +229,7 @@ pub fn rgba_texture(
 
 /// The opaque white every generated mesh vertex carries; materials tint
 /// via textures, so the geometry itself stays colorless.
-const WHITE_COLOR: [u8; 4] = [255, 255, 255, 255];
+pub const WHITE_COLOR: [u8; 4] = [255, 255, 255, 255];
 
 /// The sampler most textured materials want: linear filtering keeps flat
 /// colors clean under minification.

@@ -94,7 +94,11 @@ paced differs.
   as its handle. Everything the scene puts in it arrives the same way —
   its orbiting camera, its control panel, and the poses its bodies carry
   are jobs too, drained before anything draws. The world's own setup is
-  only the resource graph, the renderer and the mesh source.
+  only the resource graph, the renderer and the mesh source. The server
+  itself — `create_mesh`, `create_material_from_texture`, `spawn_instance`
+  and the mesh and camera helpers — is this crate's own `src/render.rs`,
+  built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
+  render bridge.
 - The **physics world** steps rapier at 64 Hz and publishes body transforms
   and collision events. The ground is its first job.
 - The **audio world** owns the output stream and mixes whatever sources it

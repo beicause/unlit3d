@@ -2,7 +2,7 @@
 name = "unlit3dx"
 version = "0.1.0-dev.2"
 edition.workspace = true
-description = "Multi-world extension for unlit3d: host, render, physics, audio and gameplay worlds on their own threads, joined by jobs and snapshots."
+description = "Multi-world extension for unlit3d: physics, audio and gameplay worlds on their own threads, joined by jobs and snapshots."
 repository.workspace = true
 license.workspace = true
 keywords = ["audio", "ecs", "gamedev", "multithreading", "physics"]
@@ -25,17 +25,10 @@ unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features
 unlit3d = { path = "../unlit3d", version = "0.1.0-dev.2", default-features = false, optional = true }
 web-time.workspace = true
 wgpu = { workspace = true, optional = true }
-
-# On this target cpal swaps its OS audio backends for the `wasm-bindgen` one,
-# which drives a Web Audio context; every other dependency here is pure Rust
-# and builds as-is.
 winit = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pollster = { workspace = true, optional = true }
 
 # On this target cpal swaps its OS audio backends for the `wasm-bindgen` one,
 # which drives a Web Audio context; every other dependency here is pure Rust
@@ -59,10 +52,9 @@ mcp = [
 ]
 ## The physics world on its own thread, backed by rapier.
 physics = ["dep:rapier3d"]
-## The render bridge: a render sub-world that acts as an asset server, plus
-## snapshots that drive `Transform` components in it.
+## The window-facing half: a GPU context and a presenter over a sub-world
+## that draws into the swap chain or into an offscreen target.
 render = [
-  "dep:pollster",
   "dep:unlit_wgpu",
   "dep:unlit3d",
   "dep:wasm-bindgen-futures",

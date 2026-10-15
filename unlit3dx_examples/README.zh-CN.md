@@ -73,7 +73,9 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   玩法用 job 请求网格、材质与实例，每个生成实例的实体作为句柄传回。场景往里
   放的一切都以同样的方式到达：环绕的相机、控制面板、刚体所带的姿态也都是
   job，并在任何绘制之前被排空。这个 world 自身的初始化只有资源图、renderer
-  与 mesh source。
+  与 mesh source。资源服务器本身——`create_mesh`、`create_material_from_texture`、
+  `spawn_instance` 以及网格与相机辅助——就是本 crate 自己的 `src/render.rs`，
+  建立在 `unlit3d` 的通用 `MeshSource` 注册表之上；`unlit3dx` 不自带 render 桥。
 - **物理 world** 以 64 Hz 步进 rapier，发布刚体变换与碰撞事件。地面是它的
   第一个 job。
 - **音频 world** 持有输出流，混音它所携带的任意音源，欠载时静音。它自己的采样率

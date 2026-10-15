@@ -38,15 +38,15 @@ use crate::world::WorldName;
 
 /// The color format the offscreen target uses; the blit converts into the
 /// surface's own format.
-pub const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+pub(crate) const OFFSCREEN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// The sample count a windowed frame resolves with, whether it lands in
 /// the swap chain or in an offscreen target.
-pub const FRAME_SAMPLES: u32 = 4;
+pub(crate) const FRAME_SAMPLES: u32 = 4;
 
 /// The frame-behaviour order the draw runs at: after any behaviour that
 /// feeds the frame, before behaviours that read its result.
-pub const DRAW_ORDER: i32 = 10;
+pub(crate) const DRAW_ORDER: i32 = 10;
 
 /// Everything needed to render a frame and present it.
 ///

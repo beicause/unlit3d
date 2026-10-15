@@ -51,11 +51,9 @@ let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 
-**render** 桥把它变成资源服务器：`create_mesh`、`create_material_from_texture`
-与 `spawn_instance` 这些 job 在渲染 world 里运行，并回答它们 spawn 出的 `Entity`，
-远程的玩法 world 把它当作句柄持有。**physics** 桥发布刚体变换与碰撞事件的 `PhysicsSnapshot`，
-**synth** 桥把 note job 与 MIDI 文件变成音色库音频。`unlit3dx_examples` crate 把所有桥
-放进同一个场景。
+**physics** 桥发布刚体变换与碰撞事件的 `PhysicsSnapshot`，**synth** 桥把 note job 与
+MIDI 文件变成音色库音频。render 桥是调用方自己的实现：`unlit3dx_examples` crate 在
+`unlit3d` 的 `MeshSource` 注册表之上写了一个，并把所有桥放进同一个场景。
 
 ## 为什么要分离 world
 
@@ -65,7 +63,7 @@ drain_sub_world(&mut nested); // 运行其他线程投递的 job
 一个 world，永不共享。
 
 - **子 world（sub-world）** 是挂在宿主实体上的嵌套 `World`，由同一条线程持有。
-  渲染 world 就是其一：它在主线程上绘制，宿主只在事件之间进入它。它同样有一个
+  绘制 world 就是其一：它在主线程上绘制，宿主只在事件之间进入它。它同样有一个
   job 收件箱：`spawn_sub_world` 把收件箱接好，其他线程通过它返回的
   `WorldHandle` 投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
   与远程 world 相同的协议，只是没有线程。
@@ -117,7 +115,7 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
   `World` 放进宿主实体上的代理组件里，`step_stepped_world` 在调用方的线程上跑一次
   迭代：先清空队列，再跑 tick，各自都在 `catch_unwind` 下——与线程版的顺序一致。
   某次步进让 world 走到终点后它被标记为已完成；`with_stepped_world` 把嵌套 `World`
-  借出来，供需要直接触达它的工作使用，例如从 render world 读回一帧。
+  借出来，供需要直接触达它的工作使用，例如从绘制 world 读回一帧。
 
 模式改变的是配速。`ThreadControl::wait_timeout` 会阻塞一条真实线程，而当 control
 并非自驱时立刻返回，于是同一个 tick 体服务两者：在 `Threaded` 下 `FixedClock` 等
@@ -130,18 +128,15 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 
 ## 桥
 
-按 feature 划分的模块是世界之间的桥。它们是核心之上的便利层，而非特权：render 桥建立在
-`unlit3d` 的 `MeshSource` 这个通用注册表之上，调用方可以用同样的方式注册自己的管线族并
-分配资源。在 render world 里放入一个 `UnlitPipelineKey` 组件即可选择各 server job 使用的
-选项；不放则由 mesh source 的设备推导出标准选项。
+按 feature 划分的模块是世界之间的桥。它们是核心之上的便利层，而非特权：每一座都把
+一个外部库——rapier、cpal、rustysynth-ext——包进同一套 job 与快照的形状里，想要换库的
+调用方就自己搭这套形状。`unlit3dx_examples` crate 就是现成的范例：它的 render 桥是写在
+示例 crate 里的资源服务器，建立在 `unlit3d` 的 `MeshSource` 这个通用注册表之上，注册
+自己的管线族、经由同一套 API 分配资源。渲染 world 的管线选项来自其中放入的
+`UnlitPipelineKey` 组件；不放则由 mesh source 的设备推导出标准选项。
 
 各桥如下：
 
-- **render**（默认开启）：`create_mesh`、`create_material_from_texture` 与
-  `spawn_instance` 这些 job 在渲染 world 里运行，并回答它们 spawn 出的
-  `Entity`，远程的玩法 world 借此搭建它从不直接触碰的场景——`GpuMesh` 持有
-  `Rc`，所以跨线程的句柄就是这个实体。移动这些实体是调用方自己的 job：场景从物理
-  快照推得的姿态是发给渲染 world 的，而不是留在信箱里等它自己去应用。
 - **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，64）
   驱动 rapier 的 `PhysicsWorld`，并发布一份 `PhysicsSnapshot`——每个运动刚体的
   变换，加上这一步开始与结束的碰撞对，以及每个新接触的速度。
@@ -162,10 +157,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `dispatch_fill`——示例的离屏运行正是这样把混音写成文件的。`dispatch_fill` 就是
   音频线程每块的全部工作，所以直接步进它得到的是同一套混音，只是少了环形缓冲。
 
-  录音也是普通工作：`start_recording` 会把自己的音源挂在填充顺序的最末，因此它
-  捕获到的是所有其他音源与 world 的 `AudioGain` 之后的混音。`RecordingHandle`
-  报告它从第一次填充学到的格式，交回的 `RecordedAudio` 携带样本，`write_wav`
-  则把它们变成一个 RIFF/WAVE 文件，无需额外依赖。
+  录音为音频 MCP 工具服务：录音音源挂在填充顺序的最末，因此它捕获到的是所有其他
+  音源与 world 的 `AudioGain` 之后的混音。这些工具把捕获的样本写成一个 RIFF/WAVE
+  文件，无需额外依赖。
 - **synth**（默认开启，蕴含 audio）：安装所需的构件，构建在
   [rustysynth-ext](https://docs.rs/rustysynth-ext) 之上——`load_soundfont` 解析字节
   （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台实时音色，
@@ -193,13 +187,13 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 两条规则让场景的各个 world 彼此独立，也正是场景可移植的原因：同一个场景跑在线程上或
 被步进、跑在窗口里或离屏，都是因为没有一种模式需要伸手进另一个 world 的数据。
 
-1. **world 的搭建只做配置。** 生成 render、physics 或 audio world 时传入的是它运行时
-   所需的配置——设备、队列与能力，tick 频率，重力，缓冲大小——并构建该运行时自己拥有
-   的通用资源：资源图与渲染器、网格源、rapier world、输出流。其中不出现任何游戏里的
-   东西：没有球、没有音轨、没有机位、没有控制面板。一个空着启动的 world 也能早早
-   启动——render 子 world 在 GPU 到位之前就存在，于是玩法从第一次 tick 起就持有它的
-   句柄，之后再填充它。
-2. **对 world 的一切游戏性改动都以 job 到来。** 网格、材质与实例向 render server
+1. **world 的搭建只做配置。** 生成 physics 或 audio world——或调用方自己的绘制
+   world——时传入的是它运行时所需的配置——设备、队列与能力，tick 频率，重力，缓冲
+   大小——并构建该运行时自己拥有的通用资源：资源图与渲染器、网格源、rapier world、
+   输出流。其中不出现任何游戏里的东西：没有球、没有音轨、没有机位、没有控制面板。
+   一个空着启动的 world 也能早早启动——绘制子 world 在 GPU 到位之前就存在，于是玩法
+   从第一次 tick 起就持有它的句柄，之后再填充它。
+2. **对 world 的一切游戏性改动都以 job 到来。** 网格、材质与实例向 render 桥
    请求；刚体通过 physics 队列生成与销毁；音源与传送作为 job 送往音频 world，而一整套
    安装——见示例的 `install_synth`——就是一个函数包成一个 job。快照信箱承载的是从
    world 里**取出**的状态，读它的一方决定这意味着什么；而另一个 world 的内容**变成**
@@ -226,8 +220,9 @@ world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
 打开离屏路径后，每帧渲染进一个常驻目标，再由第二个 world blit 到表面——这让帧
 存活得足够久、可以读回，截图与快照测试就走这条路。`draw_presented` 是每帧排空
 子 world、分发帧并呈现的行为，`pump_presented` 在窗口
-存活期间让帧持续到来，`resize_presented` 跟随窗口变化。网格与相机辅助——
-`uv_sphere`、`cuboid_mesh`、`camera_looking_at`、`linear_sampler`——补全骨架。
+存活期间让帧持续到来，`resize_presented` 跟随窗口变化。绘制 world 所需的 render
+桥——资源服务器及其周围的网格与相机辅助——由调用方自己构建；`unlit3dx_examples`
+自带一份，位于 `src/render.rs`。
 
 ## 测试
 
@@ -236,10 +231,8 @@ world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
 job 在步进时运行、走完终点的 tick 会结束它、步进一个不携带步进 world 的实体什么
 也不做。集成测试补上各桥：物理 world
 把球丢到地板上并报告接触、音频 world 运行 job 并发布就绪状态、多 world 的 job 与
-快照往来，以及 render 桥的失败路径——panic 的 job 只失败自己的请求，而请求一个
-world 从未构建的资源的 job 只失败索取它的那个实例。录音亦然：`start_recording`
-捕获设备本会播放的混音，`write_wav` 把样本排成 RIFF/WAVE 文件，音频 MCP 工具
-则把两者串进下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
+快照往来，以及 panic 的 job 只失败自己的请求。录音也有覆盖：它捕获设备本会播放的
+混音并把样本排成 RIFF/WAVE 文件，音频 MCP 工具则把两者串进下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
 world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，
 以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败；
 音频录音工具同样有覆盖，从开始录音、拒绝第二次录音，到把捕获的混音写出去。

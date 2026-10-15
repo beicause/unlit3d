@@ -18,15 +18,16 @@
 //! The runtime layer is small and complete: [`job`], [`channel`],
 //! [`thread`], [`host`], [`world`], and [`handle`] together are the whole
 //! low-level API, and a caller can build its own worlds on them. The
-//! feature-gated modules are the convenience layer: `render` is a built-in
-//! unlit asset server over entities, and `physics`, `audio`, and `synth`
-//! wrap rapier, cpal, and a soundfont synthesizer in the same shape.
+//! feature-gated modules are the convenience layer: `physics`, `audio`,
+//! and `synth` wrap rapier, cpal, and a soundfont synthesizer in the same
+//! shape, while `gpu` and `present` hold the window-facing half of a
+//! multi-world app.
 //!
 //! Nothing here holds a lock across a job: a world is owned by one thread,
 //! and every cross-world exchange is a channel. Reach for the low-level
 //! modules directly when a world needs a shape the convenience layer does
 //! not offer — `unlit3d`'s `MeshSource` is the generic pipeline registry
-//! beneath the `render` module, for instance.
+//! a caller can build its own render bridge on, for instance.
 #![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 
@@ -51,9 +52,7 @@ pub mod physics;
 #[cfg(feature = "render")]
 pub mod present;
 #[cfg(feature = "audio")]
-pub mod record;
-#[cfg(feature = "render")]
-pub mod render;
+mod record;
 mod sync;
 #[cfg(feature = "synth")]
 pub mod synth;
@@ -83,13 +82,6 @@ pub mod prelude {
     pub use crate::present::{
         Presenter, bind_offscreen, draw_presented, pump_presented, resize_presented,
         setup_presenter,
-    };
-    #[cfg(feature = "audio")]
-    pub use crate::record::{RecordedAudio, RecordingHandle, start_recording, write_wav};
-    #[cfg(feature = "render")]
-    pub use crate::render::{
-        OwnedUnlitMeshDesc, camera_looking_at, create_material_from_texture, create_mesh,
-        cuboid_mesh, linear_sampler, spawn_instance, uv_sphere,
     };
     #[cfg(feature = "synth")]
     pub use crate::synth::{

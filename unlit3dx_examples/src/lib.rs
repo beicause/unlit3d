@@ -33,6 +33,7 @@
 //! put them on, and --stepped asks a windowed run to take that same path.
 
 pub mod headless;
+pub mod render;
 pub mod scene;
 
 #[cfg(target_os = "android")]

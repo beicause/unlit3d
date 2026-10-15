@@ -22,6 +22,11 @@ use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3d::winit::event::OnAboutToWait;
 use unlit3dx::prelude::*;
 
+use crate::render::{
+    OwnedUnlitMeshDesc, WHITE_COLOR, camera_looking_at, create_material_from_texture, create_mesh,
+    cuboid_mesh, linear_sampler, spawn_instance, uv_sphere,
+};
+
 /// The soundfont the demo plays, embedded at build time by `build.rs`.
 ///
 /// When the soundfont file is missing the build writes an empty stub, so
@@ -783,10 +788,6 @@ fn orbit_eye(azimuth: f32) -> Vec3 {
 
 /// A mesh as raw arrays: positions, uvs, colors, indices.
 pub type RawMesh = (Vec<[f32; 3]>, Vec<[f32; 2]>, Vec<[u8; 4]>, Vec<u32>);
-
-/// The opaque white every mesh vertex carries; materials tint via
-/// textures.
-pub const WHITE_COLOR: [u8; 4] = [255, 255, 255, 255];
 
 /// A lathe along the y axis: the side wall walks the rings top to
 /// bottom, and the caps close whichever ends ask for it, so a cylinder

@@ -54,14 +54,11 @@ let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world
 drain_sub_world(&mut nested); // run the jobs other threads posted
 ```
 
-The **render** bridge turns that into a resource server: `create_mesh`,
-`create_material_from_texture` and `spawn_instance` jobs run in the render
-world and answer with the `Entity` they spawned, which a remote gameplay
-world holds as a handle. The
-**physics** bridge
-publishes a `PhysicsSnapshot` of body transforms and collision events, and
-the **synth** bridge turns note jobs and MIDI files into soundfont audio. The
-`unlit3dx_examples` crate ties every bridge into one scene.
+The **physics** bridge publishes a `PhysicsSnapshot` of body transforms and
+collision events, and the **synth** bridge turns note jobs and MIDI files
+into soundfont audio. A render bridge is a caller's own build: the
+`unlit3dx_examples` crate writes one over `unlit3d`'s `MeshSource` registry
+and ties every bridge into one scene.
 
 ## Why separate worlds
 
@@ -72,7 +69,7 @@ and every access into a borrow argument. `unlit3dx` answers differently: keep
 one world per concern, and never share one.
 
 - A **sub-world** is a nested `World` sitting on a host entity, owned by the
-  same thread. The render world is one: it draws on the main thread, and the
+  same thread. A drawing world is one: it draws on the main thread, and the
   host reaches into it only between events. It keeps a job inbox too:
   `spawn_sub_world` wires one up, other threads post jobs through the
   `WorldHandle` it returns, and the owner calls `drain_sub_world` between its
@@ -136,7 +133,7 @@ nothing in a tick body has to know which one it is under.
   queue, then tick, each under `catch_unwind` — the threaded loop's order.
   A step that ticks past the end of its world marks it finished, and
   `with_stepped_world` lends the nested `World` out for work that needs to
-  reach it directly, such as reading a frame back out of the render world.
+  reach it directly, such as reading a frame back out of a drawing world.
 
 Pacing is what the mode changes. `ThreadControl::wait_timeout` blocks a real
 thread and returns at once when the control is not self-driven, so the same
@@ -152,22 +149,18 @@ frame count it controls rather than one a clock chose.
 ## Bridges
 
 The feature-gated modules are the bridges between worlds. They are a
-convenience layer over the core, not a privilege: `unlit3d`'s
-`MeshSource` is the generic registry the render bridge builds on, and a
-caller can register its own pipeline family and allocate through it the
-same way. A caller that installs an `UnlitPipelineKey` component in the
-render world chooses the options every server job builds with; without
-one the standard options are derived from the mesh source's device.
+convenience layer over the core, not a privilege: each wraps an external
+library — rapier, cpal, rustysynth-ext — in the same job-and-snapshot shape,
+and a caller that wants another library builds that shape itself. The
+`unlit3dx_examples` crate is the worked example: its render bridge is an
+asset server written in the example crate over `unlit3d`'s generic
+`MeshSource` registry, registering its own pipeline family and allocating
+through the same API a caller would. A render world's pipeline options come
+from the `UnlitPipelineKey` component installed in it; without one they are
+derived from the mesh source's device.
 
 The bridges:
 
-- **render** (on by default): `create_mesh`, `create_material_from_texture`
-  and `spawn_instance` run in the render world and answer with the `Entity`
-  they spawned, so a remote gameplay world can build a scene it never touches
-  directly — a `GpuMesh` holds an `Rc`, so the entity is the handle that
-  crosses threads. Moving those entities is the caller's own job: a pose
-  the scene derived from a physics snapshot is sent to the render world,
-  not left in a mailbox for it to apply.
 - **physics** (on by default): `spawn_physics_world_with::<R>` runs a rapier
   `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64) and publishes a
   `PhysicsSnapshot` — the transforms of every moving body, plus the collision
@@ -200,12 +193,10 @@ The bridges:
   whole of the audio thread's per-chunk work, so stepping it directly is the
   same mixing, minus the ring.
 
-  Recording is ordinary work too: `start_recording` mounts a source at the
-  end of the fill order, so what it captures is the mix after every other
-  source and the world's `AudioGain`. The `RecordingHandle` reports the
-  format it learned from the first fill, the `RecordedAudio` it hands back
-  carries the samples, and `write_wav` turns them into a RIFF/WAVE file with
-  no extra dependency.
+  Recording backs the audio MCP tools: a recording source mounts at the end
+  of the fill order, so what it captures is the mix after every other source
+  and the world's `AudioGain`. The tools write the captured samples out as a
+  RIFF/WAVE file with no extra dependency.
 - **synth** (on by default, implies audio): the pieces to install, built on
   [rustysynth-ext](https://docs.rs/rustysynth-ext) — `load_soundfont` parses
   the bytes (typically an `include_bytes!`, so no filesystem is involved),
@@ -245,17 +236,18 @@ Two rules keep a scene's worlds independent, and they are what make one
 portable: the same scene runs on threads or stepped, in a window or
 headless, because no mode ever reaches into another world's data.
 
-1. **A world's setup is configuration only.** Spawning a render, physics or
-   audio world passes the configuration its runtime needs — the device,
-   queue and capabilities, the tick rate, the gravity, the buffer size —
-   and builds the generic resources that runtime owns: a resource graph and
-   a renderer, a mesh source, a rapier world, an output stream. Nothing in
-   it names a thing the game has: no ball, no track, no camera angle, no
-   control panel. A world that comes up empty is also a world that can come
-   up early — the render sub-world exists before the GPU does, so gameplay
-   holds its handle from the first tick and fills it later.
+1. **A world's setup is configuration only.** Spawning a physics or audio
+   world — or a drawing world of the caller's own — passes the configuration
+   its runtime needs — the device, queue and capabilities, the tick rate,
+   the gravity, the buffer size — and builds the generic resources that
+   runtime owns: a resource graph and a renderer, a mesh source, a rapier
+   world, an output stream. Nothing in it names a thing the game has: no
+   ball, no track, no camera angle, no control panel. A world that comes up
+   empty is also a world that can come up early — a drawing sub-world exists
+   before the GPU does, so gameplay holds its handle from the first tick and
+   fills it later.
 2. **Every game-specific change to a world arrives as a job.** Meshes,
-   materials and instances are requested from the render server; bodies are
+   materials and instances are requested from the render bridge; bodies are
    spawned and despawned through the physics queue; sources and transport go
    to the audio world as jobs, and a whole install — see the demo's
    `install_synth` — is one function wrapped in one job. A snapshot mailbox
@@ -289,9 +281,10 @@ the frame long enough to read back, so screenshots and snapshot tests ask
 for it. `draw_presented`
 is the per-frame behaviour that drains the sub-world, dispatches the
 frame and presents it, `pump_presented` keeps frames coming while the
-window lives, and `resize_presented` follows the window around. Mesh and
-camera helpers — `uv_sphere`, `cuboid_mesh`, `camera_looking_at`,
-`linear_sampler` — round the skeleton out.
+window lives, and `resize_presented` follows the window around. The render
+bridge a drawing world needs — the asset server and the mesh and camera
+helpers around it — is the caller's to build; `unlit3dx_examples` ships one
+as `src/render.rs`.
 
 ## Tests
 
@@ -303,12 +296,10 @@ carries no stepped world does nothing. The integration tests add the bridges:
 a physics world dropping a ball onto a floor and reporting the contact, the
 audio
 world running jobs and publishing its readiness, multi-world job and
-snapshot traffic, and the render bridge's failure paths — a job that panics
-fails only its own request, and one that names an asset the world never built
-fails the instance that asked for it. So is recording: `start_recording`
-captures the mix the device would play, `write_wav` lays the samples out as a
-RIFF/WAVE file, and the audio MCP tools drive both through the dispatch
-coverage below. With the `mcp` feature on, the MCP command dispatch
+snapshot traffic, and a job that panics failing only its own request.
+Recording is covered too: it captures the mix the device would play and lays
+the samples out as a RIFF/WAVE file, and the audio MCP tools drive both
+through the dispatch coverage below. With the `mcp` feature on, the MCP command dispatch
 is covered too: world listing, routing to a nested world, and routing to one
 on a thread of its own or one the host steps — plus a readable failure for
 an entity that carries no world, a world that has stopped, and a queue that

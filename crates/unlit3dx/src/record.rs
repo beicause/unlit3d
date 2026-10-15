@@ -28,7 +28,7 @@ use crate::sync::lock;
 /// around — as a component of the world, for instance — and hand it back to
 /// [`RecordingHandle::stop`] or [`RecordingHandle::cancel`] to finish.
 #[derive(Clone, Debug)]
-pub struct RecordingHandle {
+pub(crate) struct RecordingHandle {
     entity: Entity,
     state: Arc<Mutex<RecordingState>>,
 }
@@ -48,23 +48,23 @@ struct RecordingState {
 
 /// The samples a finished recording captured.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RecordedAudio {
+pub(crate) struct RecordedAudio {
     /// The format the recording captured at.
-    pub format: AudioFormat,
+    pub(crate) format: AudioFormat,
     /// The interleaved samples, in the format's channel order.
-    pub samples: Vec<f32>,
+    pub(crate) samples: Vec<f32>,
 }
 
 impl RecordedAudio {
     /// How many frames were captured.
     #[must_use]
-    pub fn frame_count(&self) -> usize {
+    pub(crate) fn frame_count(&self) -> usize {
         self.samples.len() / usize::from(self.format.channels).max(1)
     }
 
     /// How many seconds of audio were captured.
     #[must_use]
-    pub fn seconds(&self) -> f64 {
+    pub(crate) fn seconds(&self) -> f64 {
         self.frame_count() as f64 / f64::from(self.format.sample_rate.max(1))
     }
 }
@@ -78,7 +78,7 @@ impl RecordedAudio {
 /// keeps doing it, and the recording grows as it goes.
 ///
 /// [`dispatch_fill`]: crate::audio::dispatch_fill
-pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
+pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
     let state = Arc::new(Mutex::new(RecordingState {
         format: None,
         samples: Vec::new(),
@@ -122,7 +122,7 @@ pub fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
 ///
 /// Each sample clamps to the unit range and then scales to `i16`, the same
 /// conversion the soundfont pipeline uses for its own files.
-pub fn write_wav(format: AudioFormat, samples: &[f32]) -> Vec<u8> {
+pub(crate) fn write_wav(format: AudioFormat, samples: &[f32]) -> Vec<u8> {
     let channels = format.channels.max(1);
     let sample_rate = format.sample_rate.max(1);
     let block_align = channels * 2;
@@ -151,19 +151,13 @@ pub fn write_wav(format: AudioFormat, samples: &[f32]) -> Vec<u8> {
 impl RecordingHandle {
     /// The format the recording captured at, once it has seen a fill.
     #[must_use]
-    pub fn format(&self) -> Option<AudioFormat> {
+    pub(crate) fn format(&self) -> Option<AudioFormat> {
         lock(&self.state).format
-    }
-
-    /// How many interleaved samples the recording has captured.
-    #[must_use]
-    pub fn sample_count(&self) -> usize {
-        lock(&self.state).samples.len()
     }
 
     /// How many frames the recording has captured.
     #[must_use]
-    pub fn frame_count(&self) -> usize {
+    pub(crate) fn frame_count(&self) -> usize {
         let state = lock(&self.state);
         let channels = state
             .format
@@ -173,7 +167,7 @@ impl RecordingHandle {
 
     /// How many seconds of audio the recording has captured.
     #[must_use]
-    pub fn seconds(&self) -> f64 {
+    pub(crate) fn seconds(&self) -> f64 {
         let state = lock(&self.state);
         match state.format {
             Some(format) => {
@@ -189,7 +183,7 @@ impl RecordingHandle {
     /// A recording that has seen no fill yet is never full: its limit is not
     /// known until the format is.
     #[must_use]
-    pub fn is_full(&self) -> bool {
+    pub(crate) fn is_full(&self) -> bool {
         let state = lock(&self.state);
         state.format.is_some() && state.samples.len() >= state.max_samples
     }
@@ -199,7 +193,7 @@ impl RecordingHandle {
     /// A recording that saw no fill has no format to write, so there is
     /// nothing to hand back.
     #[must_use]
-    pub fn stop(self, world: &mut World) -> Option<RecordedAudio> {
+    pub(crate) fn stop(self, world: &mut World) -> Option<RecordedAudio> {
         world.despawn(self.entity);
         let mut state = lock(&self.state);
         let format = state.format?;
@@ -210,7 +204,7 @@ impl RecordingHandle {
     }
 
     /// Stop recording, despawn the source and discard the captured samples.
-    pub fn cancel(self, world: &mut World) {
+    pub(crate) fn cancel(self, world: &mut World) {
         world.despawn(self.entity);
     }
 }
@@ -242,7 +236,6 @@ mod tests {
         assert_eq!(handle.format(), None, "nothing fills it yet");
         let mut out = [0.0f32; 4];
         dispatch_fill(&world, &mut out, format.sample_rate, format.channels);
-        assert_eq!(handle.sample_count(), 4);
         assert_eq!(handle.frame_count(), 4);
         assert!(!handle.is_full());
         assert_eq!(handle.format(), Some(format));
@@ -263,7 +256,7 @@ mod tests {
         let handle = start_recording(&mut world, 0.5);
         let mut out = [0.0f32; 8];
         dispatch_fill(&world, &mut out, format.sample_rate, format.channels);
-        assert_eq!(handle.sample_count(), 2);
+        assert_eq!(handle.frame_count(), 2);
         assert!(handle.is_full());
         handle.cancel(&mut world);
     }

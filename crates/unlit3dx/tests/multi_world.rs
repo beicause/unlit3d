@@ -55,6 +55,32 @@ fn sub_world_jobs_drain_in_order() {
     assert_eq!(third.poll(), Some("third"));
 }
 
+/// A job that panics fails only its own request: the drain catches the
+/// panic, the request reports it, and the jobs queued behind it still run.
+#[test]
+fn a_panicking_job_fails_only_its_own_request() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 16);
+
+    let doomed = proxy.request(Box::new(|_: &mut World| -> u64 {
+        panic!("this job cannot run");
+    }));
+    let survivor = proxy.request(Box::new(|_: &mut World| 7u64));
+
+    let mut nested = host
+        .get_mut::<World>(proxy.entity())
+        .expect("the nested world");
+    drain_sub_world(&mut nested);
+
+    assert!(doomed.dropped(), "the failed request reports the drop");
+    assert_eq!(
+        doomed.recv(),
+        Err(RequestError::Dropped),
+        "a request whose job panicked answers with the failure"
+    );
+    assert_eq!(survivor.poll(), Some(7), "the queue kept draining");
+}
+
 /// A remote world's state persists between jobs: later jobs see what
 /// earlier jobs left, which is what makes a world a world.
 #[test]

@@ -73,7 +73,7 @@ pub struct PhysicsInbox(pub SnapshotReader<PhysicsSnapshot>);
 /// with owns the sending ends, and this component keeps the collector and
 /// the receiving end of the collision channel alive across steps, so each
 /// step reuses them instead of allocating fresh channels.
-pub struct PhysicsEvents {
+pub(crate) struct PhysicsEvents {
     receiver: Receiver<CollisionEvent>,
     collector: ChannelEventCollector,
     /// The moving bodies' velocities, sampled before the step so a contact

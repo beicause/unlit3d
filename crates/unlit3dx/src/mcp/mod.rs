@@ -159,7 +159,7 @@ fn take(world: &mut World) -> Result<RecordingHandle, String> {
 
 /// Arguments for starting a recording.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct StartRecording {
+pub(crate) struct StartRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
@@ -172,7 +172,7 @@ pub struct StartRecording {
 
 /// Arguments for finishing a recording.
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct StopRecording {
+pub(crate) struct StopRecording {
     /// The world to drive: `"Host"` for the world the transport thread itself
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
