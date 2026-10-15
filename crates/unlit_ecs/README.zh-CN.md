@@ -126,6 +126,51 @@ assert!(world.has::<bool>(entity));
 assert!(!world.has::<(u32, f32)>(entity));
 ```
 
+## MCP 服务器
+
+`mcp` feature（默认关闭，仅原生目标）把本 crate 变成一个经 stdio 由客户端驱动的
+[模型上下文协议](https://modelcontextprotocol.io)服务器。它放在这里，是因为协议的
+传输侧必须指名一个 `World` 并把工作交给它：`McpCommand` 携带着一个 job，由拥有该
+world 的线程运行。桥接层不在这个边界上借用任何东西，也没有别的 crate 拥有传输所需的类型。
+
+本 crate 依旧保持「只有一个哈希器依赖」的形态：该模块在 `wasm32` 上被关掉（协议的
+传输在该目标上无法构建），它新增的每个依赖都是可选且按目标门控的，因此浏览器构建
+完全不带上它们。
+
+工具来自定义其作用对象的各个 crate，而不是来自本 crate。crate 把一个 `ToolSource`
+提交到链接期表——与 `reflect` 注册表所用的同一套 `inventory` 机制——`McpServer::new`
+遍历该表逐个注册：
+
+```rust,ignore
+unlit_ecs::mcp::inventory::submit! {
+    ToolSource { extend: register }
+}
+
+fn register(router: &mut ToolRouter<McpServer>) {
+    router.add_route(tool("my_tool", "What it does.", my_tool));
+}
+```
+
+`unlit_ecs` 自己注册实体与组件工具——`world_summary`、`list_components`、
+`list_archetypes`、`list_entities`、`get_entity`、`get_component`、
+`set_component`、`spawn_entity`、`despawn_entity`——它们只需要 ECS；
+`unlit3d` 注册渲染类工具，`unlit3dx` 注册音频类工具。这些 crate 都不是本 crate 的
+依赖，而宿主建起的服务器会带上它们全部。
+
+组件经由 `reflect` 注册表按名字寻址：组件的 crate 把一个 `ComponentEntry` 提交到
+同一种链接期表，于是 `get_component` 与 `set_component` 能编解码一个 ECS 自己
+从未听说过的值。
+
+## MCP 服务器够不到什么
+
+传输线程不是 world 的线程。它读取协议，把一次调用变成一个 `McpCommand`，再经一条
+宿主负责排空的 channel 投递；拥有该 world 的一方运行 job，并在命令自带的 channel 上作答。
+world 是 `!Send` 的，正是这一形状让它保持如此。
+
+工具指名哪个 world 由客户端决定：`WorldId` 为 `"Host"` 时指服务器建立时所围绕的
+world，为 `{"Handle": bits}` 时指某个宿主实体所携带的 world。想让其余 world 也可被
+寻址的宿主自行回答 `list_worlds`，因为只有它知道哪些实体携带着 world。
+
 ## 为什么 ECS 这么小
 
 <details>

@@ -10,7 +10,11 @@ mod component;
 mod entity;
 mod hash;
 mod info;
+#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
+pub mod mcp;
 mod query;
+#[cfg(feature = "reflect")]
+pub mod reflect;
 #[cfg(test)]
 mod tests_common;
 mod world;

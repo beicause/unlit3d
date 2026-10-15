@@ -1,26 +1,12 @@
-//! The component registry: which components a JSON bridge can address.
+//! The components unlit3d submits to the reflection registry.
 //!
-//! A component is any 'static type, so a world alone cannot name one. A
-//! component becomes addressable by submitting a [ComponentEntry] to a
-//! link-time table; the entry is the only place its name and its JSON shape are
-//! written down.
-//!
-//! For a component that derives [facet::Facet] the entry carries no field list
-//! at all: its own struct fields are the JSON shape, and [ComponentEntry::new]
-//! turns that reflection into the codec. A component whose fields cannot be
-//! reflected — a GPU handle, a private field — reflects through a proxy instead,
-//! and one that cannot be written makes its proxy's conversion fail, so a write
-//! reports why rather than inventing a value.
-//!
-//! Entries are collected from wherever they are written, so a crate that
-//! defines its own components registers them itself -- nothing has to be handed
-//! a registry. The table is link-time, so a crate whose entries are never
-//! reachable from the binary is not linked in either; a binary that wants a
-//! crate's entries has to name that crate.
+//! The registry itself lives in [`unlit_ecs::reflect`]: it is a link-time table
+//! over the ECS's own types, and every crate that defines components submits its
+//! own entries. This module is what unlit3d adds -- the components whose fields
+//! cross a JSON boundary, each submitted with the reflection it derives or
+//! through a proxy from [`crate::reflect::proxies`].
 
-use facet::Facet;
-use facet::Partial;
-use unlit_ecs::{ArchetypeBuilder, Entity, World};
+use unlit_ecs::reflect::ComponentEntry;
 
 use crate::components::{
     Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, RenderLoadOps,
@@ -28,63 +14,6 @@ use crate::components::{
 };
 use crate::input::InputHandle;
 use crate::unlit::{InstanceColor, InstanceCutoff, UnlitPipelineKey};
-
-/// One component the JSON bridge can address.
-///
-/// Build one with [ComponentEntry::new] or [ComponentEntry::default] and submit
-/// it with `inventory::submit!`. Both constructors are `const`, so a submission
-/// is a static initializer and costs nothing at run time.
-#[derive(Debug)]
-pub struct ComponentEntry {
-    /// The bare type name a client addresses the component by.
-    name: &'static str,
-    /// The module the type is defined in, which with the name addresses the
-    /// component too and tells two same-named types apart.
-    module_path: Option<&'static str>,
-    /// The component's JSON text, or a message saying why it could not be read.
-    encode: fn(&World, Entity) -> Result<String, String>,
-    /// Overwrite the component from JSON text, or a message saying why not.
-    set: fn(&World, Entity, &str) -> Result<(), String>,
-    /// Push a component decoded from JSON text into a builder.
-    push: fn(&mut ArchetypeBuilder, &str) -> Result<(), String>,
-}
-
-impl ComponentEntry {
-    /// The entry for C, using the reflection C derives.
-    ///
-    /// Spawning a C from a partial value needs a base to merge it over; a C
-    /// that is [Default] is submitted with [ComponentEntry::default] instead.
-    pub const fn new<C: Facet<'static> + Clone>() -> Self {
-        Self {
-            name: C::SHAPE.type_identifier,
-            module_path: C::SHAPE.module_path,
-            encode: encode_component::<C>,
-            set: set_component::<C>,
-            push: push_component::<C>,
-        }
-    }
-
-    /// The entry for a [Default] C, using the reflection C derives.
-    ///
-    /// The default is what a partial value given to a spawn is merged over, so
-    /// a C submitted this way can be spawned from only the fields that matter.
-    pub const fn default<C: Facet<'static> + Default + Clone>() -> Self {
-        Self {
-            name: C::SHAPE.type_identifier,
-            module_path: C::SHAPE.module_path,
-            encode: encode_component::<C>,
-            set: set_component::<C>,
-            push: push_default_component::<C>,
-        }
-    }
-
-    /// The bare type name a client addresses the component by.
-    pub const fn name(&self) -> &'static str {
-        self.name
-    }
-}
-
-inventory::collect!(ComponentEntry);
 
 inventory::submit! { ComponentEntry::default::<Transform>() }
 inventory::submit! { ComponentEntry::new::<Camera>() }
@@ -101,127 +30,11 @@ inventory::submit! { ComponentEntry::default::<InstanceColor>() }
 inventory::submit! { ComponentEntry::default::<InstanceCutoff>() }
 inventory::submit! { ComponentEntry::new::<InputHandle>() }
 
-/// Every submitted entry.
-pub fn entries() -> impl Iterator<Item = &'static ComponentEntry> {
-    inventory::iter::<ComponentEntry>.into_iter()
-}
-
-/// The bare names of every submitted component.
-pub fn names() -> impl Iterator<Item = &'static str> {
-    entries().map(ComponentEntry::name)
-}
-
-/// Whether a component with this name is submitted.
-///
-/// The name may be the bare type name or the module-qualified one.
-pub fn contains(name: &str) -> bool {
-    find(name).is_some()
-}
-
-/// The entry a name addresses, or a message naming the ones that exist.
-pub fn entry(name: &str) -> Result<&'static ComponentEntry, String> {
-    find(name).ok_or_else(|| {
-        format!(
-            "unknown component {name:?}; known components: {}",
-            names().collect::<Vec<_>>().join(", ")
-        )
-    })
-}
-
-fn find(name: &str) -> Option<&'static ComponentEntry> {
-    let (module, bare) = match name.rsplit_once("::") {
-        Some((module, bare)) => (Some(module), bare),
-        None => (None, name),
-    };
-    entries().find(|entry| {
-        entry.name == bare && module.is_none_or(|module| entry.module_path == Some(module))
-    })
-}
-
-/// Encode entity's name component, or a message if either is missing.
-pub fn encode(world: &World, entity: Entity, name: &str) -> Result<String, String> {
-    (entry(name)?.encode)(world, entity)
-}
-
-/// Overwrite entity's name component from JSON text.
-pub fn set(world: &World, entity: Entity, name: &str, patch: &str) -> Result<(), String> {
-    (entry(name)?.set)(world, entity, patch)
-}
-
-/// Push a name component decoded from JSON text into builder.
-pub fn push(builder: &mut ArchetypeBuilder, name: &str, patch: &str) -> Result<(), String> {
-    (entry(name)?.push)(builder, patch)
-}
-
-/// A value as JSON text, through the reflection it derives.
-fn to_json<C: Facet<'static>>(value: &C) -> Result<String, String> {
-    facet_json::to_string(value).map_err(|error| error.to_string())
-}
-
-fn encode_component<C: Facet<'static>>(world: &World, entity: Entity) -> Result<String, String> {
-    let component = world.get::<C>(entity).ok_or_else(|| missing::<C>(entity))?;
-    to_json(&*component)
-}
-
-fn set_component<C: Facet<'static> + Clone>(
-    world: &World,
-    entity: Entity,
-    patch: &str,
-) -> Result<(), String> {
-    // Seed the new value with the one the entity holds, then let the patch
-    // overwrite the fields it names: a patch that names some fields keeps the
-    // rest, which is what setting one property at a time means.
-    let current = world
-        .get::<C>(entity)
-        .map(|component| (*component).clone())
-        .ok_or_else(|| missing::<C>(entity))?;
-    let value: C = apply(current, patch)?;
-    world
-        .with_mut::<C, _>(entity, |component| *component = value)
-        .ok_or_else(|| missing::<C>(entity))
-}
-
-/// The value a patch produces over `base`.
-fn apply<C: Facet<'static> + Clone>(base: C, patch: &str) -> Result<C, String> {
-    let partial = Partial::alloc_owned::<C>().map_err(|error| error.to_string())?;
-    let partial = partial.set(base).map_err(|error| error.to_string())?;
-    let partial = facet_json::from_str_into(patch, partial).map_err(|error| error.to_string())?;
-    materialize(partial)
-}
-
-fn push_component<C: Facet<'static> + Clone>(
-    builder: &mut ArchetypeBuilder,
-    patch: &str,
-) -> Result<(), String> {
-    let partial = Partial::alloc_owned::<C>().map_err(|error| error.to_string())?;
-    let partial = facet_json::from_str_into(patch, partial).map_err(|error| error.to_string())?;
-    builder.push(materialize::<C>(partial)?);
-    Ok(())
-}
-
-fn push_default_component<C: Facet<'static> + Default + Clone>(
-    builder: &mut ArchetypeBuilder,
-    patch: &str,
-) -> Result<(), String> {
-    builder.push(apply(C::default(), patch)?);
-    Ok(())
-}
-
-fn materialize<C: Facet<'static>>(partial: Partial<'static, false>) -> Result<C, String> {
-    let heap = partial.build().map_err(|error| error.to_string())?;
-    heap.materialize::<C>().map_err(|error| error.to_string())
-}
-
-fn missing<C: Facet<'static>>(entity: Entity) -> String {
-    format!(
-        "entity {entity:?} has no {} component",
-        C::SHAPE.type_identifier
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unlit_ecs::reflect::{contains, encode, entry, names, push, set};
+    use unlit_ecs::{ArchetypeBuilder, Entity, World};
 
     /// The reflected fields are the codec: a component's own struct is the only
     /// place its field list is written down, so reading and writing cannot

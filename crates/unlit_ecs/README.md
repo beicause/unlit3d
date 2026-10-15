@@ -150,6 +150,61 @@ assert!(world.has::<bool>(entity));
 assert!(!world.has::<(u32, f32)>(entity));
 ```
 
+## The MCP server
+
+The `mcp` feature (off by default, native only) turns the crate into a
+[Model Context Protocol](https://modelcontextprotocol.io) server that a client
+drives over stdio. It lives here because the protocol's transport side has to
+name a [`World`] and hand it work: `McpCommand` carries a job, and the thread
+that owns the world runs it. Nothing in the bridge borrows across that
+boundary, and no other crate owns a type the transport needs.
+
+The crate still keeps its one-dependency shape. The module is gated off on
+`wasm32`, where the protocol's transport cannot build, and every dependency it
+adds is optional and target-gated, so a browser build carries none of them.
+
+Tools come from the crates that define what they act on, not from this one.
+A crate submits a [`ToolSource`](crate::mcp::ToolSource) to a link-time table —
+the same `inventory` mechanism the [`reflect`] registry uses — and
+`McpServer::new` walks the table to register each one:
+
+```rust,ignore
+unlit_ecs::mcp::inventory::submit! {
+    ToolSource { extend: register }
+}
+
+fn register(router: &mut ToolRouter<McpServer>) {
+    router.add_route(tool("my_tool", "What it does.", my_tool));
+}
+```
+
+`unlit_ecs` itself registers the entity and component tools —
+`world_summary`, `list_components`, `list_archetypes`, `list_entities`,
+`get_entity`, `get_component`, `set_component`, `spawn_entity`,
+`despawn_entity` — which need nothing but the ECS; `unlit3d` registers the
+rendering ones and `unlit3dx` the audio ones. None of those crates is a
+dependency of this one, and the server a host builds carries all of them.
+
+Components are addressed by name through the [`reflect`] registry: a
+component's crate submits a [`ComponentEntry`](crate::reflect::ComponentEntry)
+to the same kind of link-time table, so `get_component` and `set_component`
+can encode and decode a value the ECS itself has never heard of.
+
+## The MCP server, and what it cannot reach
+
+The transport thread is not the world's thread. It reads the protocol, turns a
+call into a [`McpCommand`](crate::mcp::McpCommand), and posts it through a
+channel the host drains; whoever owns the world runs the job and answers on
+the command's own channel.
+A world is `!Send`, and this is the shape that keeps it that way.
+
+Which world a tool names is the client's to say:
+[`WorldId`](crate::mcp::WorldId) is `"Host"` for the world the server was built
+around, or `{"Handle": bits}` for a world a host
+entity carries. A host that wants its other worlds addressable answers
+`list_worlds` itself, because only it knows which entities carry one.
+
+
 ## Why the ECS is this small
 
 <details>

@@ -12,15 +12,44 @@ keywords = ["archetype", "ecs", "gamedev"]
 # itself never reads it, so it is off by default and the crate keeps its
 # one-dependency shape for everyone else.
 facet = { workspace = true, features = ["reflect"], optional = true }
+facet-json = { workspace = true, optional = true }
 hashbrown.workspace = true
+inventory = { workspace = true, optional = true }
+
+# The MCP server speaks the protocol over a native stdio pipe through rmcp and
+# tokio. A browser drives the world directly, so on wasm these stay out of the
+# build entirely, even under --all-features.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+async-channel = { workspace = true, optional = true }
+rmcp = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [features]
+## The [mcp](crate::mcp) module: the Model Context Protocol server, its transport
+## and the ECS tools it answers with. Pulls in the protocol stack (rmcp, tokio)
+## and implies `reflect`, whose registry is the codec those tools use. Not built
+## on wasm, where a browser drives the world directly.
+mcp = [
+  "dep:async-channel",
+  "dep:rmcp",
+  "dep:schemars",
+  "dep:serde",
+  "dep:serde_json",
+  "dep:tokio",
+  "dep:uuid",
+  "reflect",
+]
 ## Derive [facet](https://docs.rs/facet) for the [`info`](crate::WorldInfo)
-## structures, so a bridge that reports a world over JSON serialises them
-## directly instead of restating their fields. Off by default: nothing in the
-## ECS reads it, and it is the only thing that pulls in a dependency besides the
-## hasher.
-reflect = ["dep:facet"]
+## structures and provide the [`reflect`](crate::reflect) registry, whose
+## link-time table of submitted entries turns a component's reflection into the
+## codec a JSON bridge addresses components by. Off by default: nothing in the
+## ECS reads it, and it is the only feature that pulls in a dependency besides
+## the hasher.
+reflect = ["dep:facet", "dep:facet-json", "dep:inventory"]
 
 [lints]
 workspace = true

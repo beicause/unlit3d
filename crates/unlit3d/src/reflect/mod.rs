@@ -1,7 +1,7 @@
 //! Reflection support for the components that cross a JSON boundary.
 //!
 //! [facet] derives a component's own field list, and the
-//! [`crate::reflect::registry`] turns that reflection into the codec a
+//! [`unlit_ecs::reflect`] registry turns that reflection into the codec a
 //! JSON bridge addresses components by.
 //!
 //! [facet] reflects a type's own fields, but glam's vector and matrix types
@@ -19,14 +19,14 @@
 //! its [`Entity::to_bits`](unlit_ecs::Entity::to_bits) integer.
 
 pub mod proxies;
-pub mod registry;
+mod registry;
 
 pub use proxies::{
     AabbProxy, ColorLoadOpProxy, DepthLoadOpProxy, GpuMaterialProxy, GpuMeshProxy,
     GpuRenderPipelineProxy, InputStateProxy, Mat4Proxy, Mat4VecProxy, QuatProxy,
     StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
 };
-pub use registry::{ComponentEntry, contains, encode, entries, entry, names, push, set};
+pub use unlit_ecs::reflect::{ComponentEntry, contains, encode, entries, entry, names, push, set};
 
 use crate::input::InputEvent;
 
@@ -96,7 +96,6 @@ mod tests {
     #[test]
     fn the_input_state_reflects_its_events() {
         use crate::input::{InputEvent, InputHandle, Key, KeyEvent, Modifiers};
-        use crate::reflect::registry;
 
         let key = InputEvent::Key(KeyEvent {
             key: Key::A,
@@ -112,8 +111,7 @@ mod tests {
             state.push(InputEvent::FocusChanged(false));
         });
 
-        let encoded =
-            registry::encode(&world, entity, "InputHandle").expect("the input state encodes");
+        let encoded = encode(&world, entity, "InputHandle").expect("the input state encodes");
         let decoded: InputStateProxy =
             facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(decoded.events, vec![key, InputEvent::FocusChanged(false)]);
