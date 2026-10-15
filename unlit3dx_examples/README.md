@@ -23,9 +23,9 @@ the pentatonic scale walked up and back down on a music box — which stays
 idle until its row's Play button starts it. That control panel — a small
 egui window — offers each track the buttons its state calls for, drops the
 next shape, and puts every live shape back in the pool: an idle sequence
-shows Play alone, and a started track shows Pause or Resume beside Rewind.
-Nothing about the music depends on the shapes: clearing the scene leaves the
-tracks playing.
+shows Play alone, a started track shows Pause or Resume beside Rewind, and a
+sequence that plays to its end goes back to showing Play. Nothing about the
+music depends on the shapes: clearing the scene leaves the tracks playing.
 
 ## How to run
 

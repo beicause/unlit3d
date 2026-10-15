@@ -131,6 +131,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     install_sources_when_ready(world, &worlds);
     let gameplay_sender = worlds.gameplay.sender();
     let audio_sender = worlds.audio_tracks();
+    let track_report = worlds.track_report();
 
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.
@@ -164,6 +165,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 Some(ControlHooks {
                     gameplay: gameplay_sender,
                     audio: audio_sender.clone(),
+                    report: track_report.clone(),
                 }),
             );
             let outcome = setup_presenter(

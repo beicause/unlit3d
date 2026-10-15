@@ -446,6 +446,9 @@ pub struct ControlHooks {
     /// The audio world's command sender, absent when the audio world has
     /// no synthesizer and so no tracks to transport.
     pub audio: Option<JobSender>,
+    /// The audio world's track report, so a row can put a one-shot track
+    /// that played to its end back to its start. Absent with `audio`.
+    pub report: Option<SnapshotReader<TrackReport>>,
 }
 
 /// What one of the panel's two track rows shows.
@@ -465,21 +468,57 @@ enum TrackStatus {
     Paused,
 }
 
+/// The state one track row shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TrackRow {
+    /// What the row shows.
+    status: TrackStatus,
+    /// How many times the audio world had reported this track ended when
+    /// the row last looked, so a fresh count is what resets it.
+    ends: u64,
+}
+
+impl TrackRow {
+    /// The row after the audio world reports `ends` ends for its track: a
+    /// one-shot track that played to its end since the row last looked is
+    /// back at its start, ready to play again.
+    ///
+    /// The count is what carries the event. A snapshot only ever holds the
+    /// newest value, so a row that remembered a flag could miss an end
+    /// that came and went between two frames.
+    fn observed(self, ends: u64) -> Self {
+        if ends > self.ends {
+            Self {
+                status: TrackStatus::Idle,
+                ends,
+            }
+        } else {
+            self
+        }
+    }
+}
+
 /// The state the panel's two track rows show.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TrackRows {
     /// What the background row shows.
-    background: TrackStatus,
+    background: TrackRow,
     /// What the sequence row shows.
-    sequence: TrackStatus,
+    sequence: TrackRow,
 }
 
 impl TrackRows {
     /// What both rows show before anyone touches them: the background
     /// loop starts itself, and the one-shot sequence waits for its row.
     const START: Self = Self {
-        background: TrackStatus::Playing,
-        sequence: TrackStatus::Idle,
+        background: TrackRow {
+            status: TrackStatus::Playing,
+            ends: 0,
+        },
+        sequence: TrackRow {
+            status: TrackStatus::Idle,
+            ends: 0,
+        },
     };
 }
 
@@ -536,23 +575,28 @@ impl TrackStatus {
 /// One track's transport: its name, then the buttons its state calls for.
 ///
 /// The row names the track so the buttons need no suffix of their own. An
-/// idle row starts the track with the file only the sequence has; a row
-/// that was already started is never idle again. It answers the state the
-/// row now shows, for the panel to store.
+/// idle row starts the track with the file only the sequence has. A
+/// one-shot track that played to its end is idle again, so its row offers
+/// the same Play: `report` is what tells the row that happened. It answers
+/// the row to store.
 fn track_controls(
     ui: &mut egui::Ui,
     audio: &JobSender,
     name: &str,
-    status: TrackStatus,
+    row: TrackRow,
     file: Option<fn() -> Arc<MidiFile>>,
-) -> TrackStatus {
-    let mut status = status;
+    report: Option<&TrackReport>,
+) -> TrackRow {
+    let mut row = match report {
+        Some(report) => row.observed(report.ends(name)),
+        None => row,
+    };
     ui.horizontal(|ui| {
         ui.label(match name {
             SEQUENCE_TRACK => "MIDI sequence",
             _ => "Background music",
         });
-        for button in status.buttons() {
+        for button in row.status.buttons() {
             if !ui.button(button.label()).clicked() {
                 continue;
             }
@@ -564,11 +608,11 @@ fn track_controls(
             };
             if let Some(job) = job {
                 audio.send(job).ok();
-                status = status.pressed(*button);
+                row.status = row.status.pressed(*button);
             }
         }
     });
-    status
+    row
 }
 
 /// Mount the demo's control panel into the render sub-world.
@@ -591,6 +635,7 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     world.spawn_source(UiSource::new());
     let gameplay = hooks.gameplay;
     let audio = hooks.audio;
+    let report = hooks.report;
     let state = world.spawn((TrackRows::START,));
     world.spawn((UiPanel::new(move |world, _entity, ui| {
         egui::Window::new("Controls").show(ui.ctx(), |ui| {
@@ -598,14 +643,23 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
                 let shown = world
                     .get::<TrackRows>(state)
                     .map_or(TrackRows::START, |rows| *rows);
+                let report = report.as_ref().and_then(|report| report.latest());
                 let now = TrackRows {
-                    background: track_controls(ui, audio, BGM_TRACK, shown.background, None),
+                    background: track_controls(
+                        ui,
+                        audio,
+                        BGM_TRACK,
+                        shown.background,
+                        None,
+                        report.as_deref(),
+                    ),
                     sequence: track_controls(
                         ui,
                         audio,
                         SEQUENCE_TRACK,
                         shown.sequence,
                         Some(sequence_midi),
+                        report.as_deref(),
                     ),
                 };
                 if now != shown {
@@ -1241,6 +1295,8 @@ pub struct SceneWiring {
     pub audio_sender: JobSender,
     /// The audio world's readiness mailbox.
     pub audio_ready: SnapshotReader<AudioReady>,
+    /// The audio world's track report, published as its tracks end.
+    pub track_report: SnapshotWriter<TrackReport>,
 }
 
 /// Install the demo's audio sources on an audio world: the mix's gain, one
@@ -1262,6 +1318,7 @@ pub fn install_synth(
     gain: f32,
     tracks: &[&str],
     sample_rate: u32,
+    report: SnapshotWriter<TrackReport>,
 ) {
     for (index, one) in tracks.iter().enumerate() {
         assert!(
@@ -1286,16 +1343,25 @@ pub fn install_synth(
         }
         Err(error) => log::error!("the soundfont failed to load ({error})"),
     }
+    // The report rides with the tracks it reports on: a world with no
+    // players has no ends to publish, so it gets no source either.
+    if world.query::<&MidiPlayer>().next().is_some() {
+        spawn_track_report(world, report);
+    }
 }
 
 /// A job that installs the demo's two tracks on an audio world that has
-/// just reported its output format.
-pub fn install_audio_job(sample_rate: u32) -> Job<()> {
-    install_audio_job_with(SOUNDFONT.into(), sample_rate)
+/// just reported its output format, reporting their ends to `report`.
+pub fn install_audio_job(sample_rate: u32, report: SnapshotWriter<TrackReport>) -> Job<()> {
+    install_audio_job_with(SOUNDFONT.into(), sample_rate, report)
 }
 
 /// The same install, from a soundfont the caller already holds.
-pub fn install_audio_job_with(soundfont: Arc<[u8]>, sample_rate: u32) -> Job<()> {
+pub fn install_audio_job_with(
+    soundfont: Arc<[u8]>,
+    sample_rate: u32,
+    report: SnapshotWriter<TrackReport>,
+) -> Job<()> {
     Box::new(move |world: &mut World| {
         install_synth(
             world,
@@ -1303,6 +1369,7 @@ pub fn install_audio_job_with(soundfont: Arc<[u8]>, sample_rate: u32) -> Job<()>
             SYNTH_GAIN,
             &[BGM_TRACK, SEQUENCE_TRACK],
             sample_rate,
+            report,
         );
     })
 }
@@ -1377,6 +1444,8 @@ pub struct SceneWorlds {
     pub gameplay: WorldHandle,
     /// The audio device's format, when the setup waits for it.
     pub audio_format: Option<SnapshotReader<AudioFormat>>,
+    /// The audio world's track report.
+    track_report: SnapshotReader<TrackReport>,
     /// Whether the audio world carries sources to transport.
     audio_sources: bool,
 }
@@ -1387,6 +1456,13 @@ impl SceneWorlds {
     #[must_use]
     pub fn audio_tracks(&self) -> Option<JobSender> {
         self.audio_sources.then(|| self.wiring.audio_sender.clone())
+    }
+
+    /// The audio world's track report, when the scene gave it a
+    /// synthesizer: what the panel reads to put a finished row back.
+    #[must_use]
+    pub fn track_report(&self) -> Option<SnapshotReader<TrackReport>> {
+        self.audio_sources.then(|| self.track_report.clone())
     }
 }
 
@@ -1427,6 +1503,7 @@ pub fn spawn_scene<R: WorldRunner>(
         .expect("the audio world carries its readiness inbox")
         .0
         .clone();
+    let (track_report_writer, track_report) = snapshot_pair::<TrackReport>();
     let (audio_format, audio_sources) = match audio_setup {
         AudioSetup::Silent => (None, false),
         AudioSetup::Pulled {
@@ -1438,7 +1515,9 @@ pub fn spawn_scene<R: WorldRunner>(
             // opens no device has no rate to wait for, so one step
             // installs them before the first gameplay tick reads the
             // readiness mailbox.
-            if let Err(error) = audio_sender.send(install_audio_job_with(soundfont, sample_rate)) {
+            let install =
+                install_audio_job_with(soundfont, sample_rate, track_report_writer.clone());
+            if let Err(error) = audio_sender.send(install) {
                 log::error!("the audio world refused its sources ({error:?})");
             }
             step_stepped_world(host, audio.entity());
@@ -1460,6 +1539,7 @@ pub fn spawn_scene<R: WorldRunner>(
         physics_reader,
         audio_sender,
         audio_ready,
+        track_report: track_report_writer,
     };
     wiring.spawn_ground();
 
@@ -1502,6 +1582,7 @@ pub fn spawn_scene<R: WorldRunner>(
         audio,
         gameplay,
         audio_format,
+        track_report,
         audio_sources,
     }
 }
@@ -1519,6 +1600,7 @@ pub fn install_sources_when_ready(world: &mut World, worlds: &SceneWorlds) {
         return;
     };
     let audio_sender = worlds.wiring.audio_sender.clone();
+    let report = worlds.wiring.track_report.clone();
     let mut installed = false;
     world.spawn((OnAboutToWait::new(move |_world: &World, _entity, ()| {
         if installed {
@@ -1528,7 +1610,8 @@ pub fn install_sources_when_ready(world: &mut World, worlds: &SceneWorlds) {
             return;
         };
         installed = true;
-        if let Err(error) = audio_sender.send(install_audio_job(format.sample_rate)) {
+        let install = install_audio_job(format.sample_rate, report.clone());
+        if let Err(error) = audio_sender.send(install) {
             log::error!("the audio world refused its sources ({error:?})");
         }
     }),));
@@ -2013,7 +2096,28 @@ mod tests {
     /// once the audio world reports that it can sound.
     #[test]
     fn the_panel_opens_with_only_the_background_playing() {
-        assert_eq!(TrackRows::START.background, TrackStatus::Playing);
-        assert_eq!(TrackRows::START.sequence, TrackStatus::Idle);
+        assert_eq!(TrackRows::START.background.status, TrackStatus::Playing);
+        assert_eq!(TrackRows::START.sequence.status, TrackStatus::Idle);
+    }
+
+    /// A track that played to its end puts its row back to the start: the
+    /// audio world's count is what carries that, so a row that has not
+    /// seen the new one keeps showing the transport it was driving.
+    #[test]
+    fn a_row_goes_back_to_its_start_when_its_track_ends() {
+        let playing = TrackRow {
+            status: TrackStatus::Playing,
+            ends: 0,
+        };
+        assert_eq!(playing.observed(0), playing);
+        let ended = playing.observed(1);
+        assert_eq!(ended.status, TrackStatus::Idle);
+        assert_eq!(ended.ends, 1);
+        // The row it came back to is the idle one the panel started with:
+        // the same row offers the same Play again.
+        assert_eq!(ended.status.buttons(), TrackStatus::Idle.buttons());
+        // The count only moves forward, so a later frame with the same
+        // report leaves the row where it is.
+        assert_eq!(ended.observed(1), ended);
     }
 }

@@ -26,6 +26,7 @@ use rustysynth_ext::{
 use unlit_ecs::{Entity, World};
 
 use crate::audio::{AudioChunk, FillOrder, OnFill, WorldFillExt};
+use crate::channel::SnapshotWriter;
 use crate::job::Job;
 
 /// Parses the soundfont in `bytes`.
@@ -179,6 +180,13 @@ pub struct MidiPlayer {
     /// its clock stands still, so the resume picks up exactly where the
     /// pause left off.
     paused: bool,
+    /// How many one-shot plays this track has walked to their end: what
+    /// the panel reads to put a finished row back to its start.
+    finishes: u64,
+    /// Whether the play now under way has been counted in `finishes`, so
+    /// a track that finished is reported once rather than on every fill
+    /// after.
+    finished: bool,
     /// The left channel's block, reused across fills.
     left: Vec<f32>,
     /// The right channel's block, reused across fills.
@@ -207,6 +215,8 @@ impl MidiPlayer {
             message_index: 0,
             loop_index: 0,
             paused: false,
+            finishes: 0,
+            finished: false,
             left: Vec::new(),
             right: Vec::new(),
         };
@@ -216,12 +226,14 @@ impl MidiPlayer {
 
     /// Puts the track back at its start: the clock, the event cursor and
     /// the synthesizer's sounding voices all reset, so a fresh sequence
-    /// begins in silence rather than under whatever was held.
+    /// begins in silence rather than under whatever was held. A fresh
+    /// play counts its own end again, whatever the last one did.
     fn start(&mut self, file: Arc<MidiFile>, loop_play: bool) {
         self.track = Some((file, loop_play));
         self.current_time = 0.0;
         self.message_index = 0;
         self.loop_index = 0;
+        self.finished = false;
         self.synthesizer.reset();
     }
 
@@ -258,6 +270,7 @@ impl MidiPlayer {
         self.current_time = 0.0;
         self.message_index = 0;
         self.loop_index = 0;
+        self.finished = false;
         self.synthesizer.reset();
     }
 
@@ -294,9 +307,15 @@ impl MidiPlayer {
             }
             self.message_index += 1;
         }
-        if loop_play && self.message_index == messages.len() {
+        let exhausted = self.message_index == messages.len();
+        if loop_play && exhausted {
             let (time, index) = (times[self.loop_index], self.loop_index);
             self.restart_at(time, index);
+        } else if exhausted && !self.finished {
+            // A one-shot play that walked its whole file: counted once, so
+            // the report can tell a reader that it ended.
+            self.finished = true;
+            self.finishes += 1;
         }
     }
 
@@ -504,4 +523,81 @@ pub fn stop_track_job(name: &str) -> Job<()> {
             }
         }
     })
+}
+
+/// The order the track report publishes at: after every player, whose
+/// [`FillOrder::default`] is zero, so a report reflects the fills that just
+/// ran.
+const REPORT_ORDER: FillOrder = FillOrder(1);
+
+/// How many times each one-shot track has played to its end.
+///
+/// A track ending is an event, and a snapshot only ever holds the newest
+/// value, so the report counts ends rather than flagging one: a reader that
+/// remembers the count it last saw sees every end, even when it missed the
+/// fills between two reports.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TrackReport {
+    /// The tracks that have ended at least once, by name and in name order.
+    ended: Vec<(String, u64)>,
+}
+
+impl TrackReport {
+    /// How many times the track named `name` has played to its end. A track
+    /// that never ended reports zero.
+    #[must_use]
+    pub fn ends(&self, name: &str) -> u64 {
+        self.ended
+            .iter()
+            .find(|(track, _)| track == name)
+            .map_or(0, |(_, ends)| *ends)
+    }
+}
+
+/// Spawns the source that publishes a [`TrackReport`] to `report` whenever a
+/// track ends.
+///
+/// The source runs after every player, so the counts it publishes are the
+/// ones the fill just reached. Spawn it in the world that holds the players.
+pub fn spawn_track_report(world: &mut World, report: SnapshotWriter<TrackReport>) -> Entity {
+    let mut published = 0;
+    world.spawn_on_fill(OnFill::new(
+        REPORT_ORDER,
+        move |world: &World, _entity: Entity, _chunk: &mut AudioChunk| {
+            let total: u64 = world
+                .query::<&MidiPlayer>()
+                .map(|(_, player)| player.finishes)
+                .sum();
+            if total == published {
+                return;
+            }
+            published = total;
+            let mut ended: Vec<(String, u64)> = world
+                .query::<&MidiPlayer>()
+                .filter(|(_, player)| player.finishes > 0)
+                .map(|(_, player)| (player.name.clone(), player.finishes))
+                .collect();
+            ended.sort();
+            report.publish(TrackReport { ended });
+        },
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TrackReport;
+
+    /// A report answers how many times each named track ended, and zero
+    /// for a track it never heard of: a panel asks about tracks the
+    /// report may not carry.
+    #[test]
+    fn a_report_counts_the_ends_of_its_tracks() {
+        let report = TrackReport {
+            ended: vec![("background".to_owned(), 3), ("sequence".to_owned(), 1)],
+        };
+        assert_eq!(report.ends("background"), 3);
+        assert_eq!(report.ends("sequence"), 1);
+        assert_eq!(report.ends("nobody"), 0);
+        assert_eq!(TrackReport::default().ends("background"), 0);
+    }
 }
