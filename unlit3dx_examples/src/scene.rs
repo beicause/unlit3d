@@ -425,6 +425,10 @@ pub const FRAME_CLEAR_INPUT: i32 = 20;
 /// the scene's pose jobs have landed on a frame's drain.
 pub const RENDER_CAMERA: i32 = 100;
 
+/// The render world's behaviour order: the panel's audio watcher is polled
+/// here, before the UI source draws the rows its counts move.
+pub const POLL_TRACK_ENDS: i32 = 90;
+
 /// How fast the camera circles the scene, in radians per second.
 pub const ORBIT_SPEED: f32 = 0.25;
 
@@ -514,58 +518,60 @@ impl TrackRow {
     }
 }
 
-/// The panel's window on the audio world's end counts.
+/// The counts the panel's rows read.
 ///
 /// The audio world lives on its own thread, so the panel cannot read its
-/// tracks: it asks about each through [`track_ends_job`] and keeps the
-/// answers here. A query that has not answered yet is left in flight, so
-/// a panel egui runs more than once in a frame queues one query per track
-/// rather than one per pass.
+/// tracks: a watcher task asks about each through [`track_ends_job`] and
+/// lands the answer here, and the panel reads the newest counts. The
+/// panel keeps nothing in flight and asks the audio world nothing, so a
+/// panel egui runs any number of times in a frame reads the same counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TrackEnds {
     /// How many ends the audio world last counted for the background.
     background: u64,
     /// How many ends it last counted for the sequence.
     sequence: u64,
-    /// The query in flight for each track, in [`TRACKS`] order.
-    pending: [Option<Request<u64>>; TRACKS.len()],
 }
 
 impl TrackEnds {
-    /// Nothing counted yet, with no query in flight.
+    /// Nothing counted yet.
     const START: Self = Self {
         background: 0,
         sequence: 0,
-        pending: [None, None],
     };
 }
 
 /// The tracks the panel transports, in the order its rows show them.
 const TRACKS: [&str; 2] = [BGM_TRACK, SEQUENCE_TRACK];
 
-/// Fold every answer that landed into `ends`, and ask again for each
-/// track whose query is no longer in flight.
+/// Where the watcher task lands the counts the panel reads.
+type TrackEndCounts = Rc<RefCell<TrackEnds>>;
+
+/// Keep asking the audio world how many times each track played to its
+/// end, one answer at a time, until the world stops answering.
 ///
-/// One query per track is in flight at a time, so a panel egui runs
-/// several times in one frame still queues one per track: the answer is
-/// taken only once, and the slot it frees is refilled once.
-fn poll_track_ends(audio: &JobSender, ends: &mut TrackEnds) {
-    for (index, track) in TRACKS.iter().enumerate() {
-        if let Some(pending) = ends.pending[index].take() {
-            match pending.poll() {
-                Some(count) => match index {
-                    0 => ends.background = count,
-                    _ => ends.sequence = count,
-                },
-                // A query the world dropped, or one still on its way,
-                // is not a count: only an answer moves a row.
-                None if pending.dropped() => {}
-                None => {
-                    ends.pending[index] = Some(pending);
+/// A query is awaited rather than polled, so a count lands in `counts`
+/// between two frames and the query after it goes out then: the audio
+/// world never holds more than one query per watch, and a row that reads
+/// `counts` on any frame sees the newest answer. A dropped query reports
+/// the last count it gave and is asked again, so a world that restarts
+/// does not end the watch.
+async fn watch_track_ends(audio: JobSender, counts: TrackEndCounts) {
+    loop {
+        for (index, track) in TRACKS.iter().enumerate() {
+            let count = match audio.request(track_ends_job(track)).await {
+                Ok(count) => count,
+                Err(error) => {
+                    log::warn!("the audio world dropped a track-ends query ({error:?})");
                     continue;
                 }
+            };
+            let mut ends = counts.borrow_mut();
+            match index {
+                0 => ends.background = count,
+                _ => ends.sequence = count,
             }
         }
-        ends.pending[index] = Some(audio.request(track_ends_job(track)));
     }
 }
 
@@ -698,24 +704,21 @@ fn track_controls(
 /// alone.
 ///
 /// The panel carries a sibling TrackRows for what its rows show and a
-/// sibling TrackEnds for the counts it polls the audio world for, so the
-/// callback itself owns no state.
+/// sibling TrackEnds the audio watcher writes, so the callback itself owns
+/// no state.
 pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     world.spawn_source(UiSource::new());
     let gameplay = hooks.gameplay;
-    let audio = hooks.audio;
+    let panel_audio = hooks.audio.clone();
     let state = world.spawn((TrackRows::START, TrackEnds::START));
+    let counts: TrackEndCounts = Rc::new(RefCell::new(TrackEnds::START));
+    let panel_counts = Rc::clone(&counts);
     world.spawn((UiPanel::new(move |world, _entity, ui| {
         egui::Window::new("Controls").show(ui.ctx(), |ui| {
-            if let Some(audio) = &audio {
+            if let Some(audio) = &panel_audio {
                 // The counts first, then the rows: a row is put back by
-                // the end the count just picked up.
-                let counts = world
-                    .with_mut::<TrackEnds, _>(state, |ends| {
-                        poll_track_ends(audio, ends);
-                        (ends.background, ends.sequence)
-                    })
-                    .unwrap_or((0, 0));
+                // the end the watcher has already picked up.
+                let counts = *panel_counts.borrow();
                 let shown = world
                     .get::<TrackRows>(state)
                     .map_or(TrackRows::START, |rows| *rows);
@@ -726,7 +729,7 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
                         BGM_TRACK,
                         shown.background,
                         None,
-                        counts.0,
+                        counts.background,
                     ),
                     sequence: track_controls(
                         ui,
@@ -734,7 +737,7 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
                         SEQUENCE_TRACK,
                         shown.sequence,
                         Some(sequence_midi),
-                        counts.1,
+                        counts.sequence,
                     ),
                 };
                 if now != shown {
@@ -752,6 +755,45 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
             });
         });
     }),));
+    if let Some(audio) = hooks.audio {
+        let pool = LocalPool::new();
+        let task = watch_track_ends(audio, Rc::clone(&counts));
+        pool.spawner()
+            .spawn_local(task)
+            .expect("a fresh pool takes its first task");
+        world.spawn((TrackEndWatcher(pool),));
+        world.spawn_frame_behaviour(drive_track_watcher());
+    }
+}
+
+/// The local pool driving a panel's [`watch_track_ends`] task.
+///
+/// The pool is a component rather than a closure local: a frame behaviour
+/// borrows it while it runs, and it has to outlive the mount call that
+/// spawned the task.
+struct TrackEndWatcher(LocalPool);
+
+/// Drive the panel's watcher task once per frame of the render world.
+///
+/// The audio world answers on its own thread, and a wake from it is picked
+/// up by the next poll here. The counts land in the panel's sibling
+/// TrackEnds, so the same pass that reads them draws the rows they moved.
+fn drive_track_watcher() -> OnFrame {
+    OnFrame::new(
+        FrameBehaviourOrder(POLL_TRACK_ENDS),
+        |world, _entity, _frame| {
+            let Some(pool) = world
+                .query::<&TrackEndWatcher>()
+                .next()
+                .map(|(entity, _)| entity)
+            else {
+                return;
+            };
+            let _ = world.with_mut::<TrackEndWatcher, _>(pool, |watcher| {
+                watcher.0.run_until_stalled();
+            });
+        },
+    )
 }
 
 /// Set up the render sub-world: the resource graph, the renderer and the
