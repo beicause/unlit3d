@@ -48,7 +48,9 @@ hook，把消息与期望做比较，并通过与通过时相同的通道上报�
 只能由宿主机运行的测试在列表中写 `#[host_only]`，而不是用 target `cfg` 再调用一次
 `gpu_tests!`。wasm 套件从宿主机构建里列出 trial、却把每个 trial 放进浏览器运行，
 因此 host-only 测试不会进入 wasm 注册表，代理也会丢掉它的 trial：两侧列出的名字因而
-一致，一份列表也就始终是该文件所声明内容的全部真相。
+一致，一份列表也就始终是该文件所声明内容的全部真相。这样的文件也照常走注册表，而
+不是把整个文件放到 target `cfg` 后面，这样该 target 仍会编出 `wasm-bindgen` 所要
+处理的 wasm 模块，并带有 `gpu_test_main!` 加上的那个导出。
 
 还有第三种模式。环境变量中有 `UNLIT3D_WASM_TEST` 时，原生运行会变成*代理*而不是运行
 器：它列出每个测试以便 `cargo nextest` 驱动它，而每个 trial 请求本地的 Node runner

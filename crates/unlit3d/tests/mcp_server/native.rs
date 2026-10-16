@@ -1,13 +1,9 @@
-//! End-to-end test: drive the MCP server over a pair of streams, the way an
-//! MCP client does.
+//! The end-to-end MCP test's body, which only a host can run.
 //!
-//! The server runs in this process on its own thread, speaking
-//! newline-delimited JSON-RPC to a world that lives on a second thread. The
-//! test asks it to build a mesh, tint the clear colour and screenshot the
-//! offscreen target, so the whole path — protocol, host, render, readback — is
-//! exercised, not just the pieces in isolation.
-
-#![cfg(not(target_arch = "wasm32"))]
+//! The MCP server speaks newline-delimited JSON-RPC over a native pipe, so
+//! neither the protocol nor the modules it reaches exist on wasm. The registry
+//! in the parent module declares the test `host_only`, and this module is
+//! compiled only where it can run.
 
 use std::path::Path;
 
@@ -303,8 +299,12 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     directory
 }
 
-#[test]
-fn the_server_lists_its_tools_and_renders() {
+/// Drive the whole exchange, on the runtime the MCP plumbing awaits on.
+///
+/// The registered body is a future because the harness drives one, but the
+/// streams here are in-memory and the server side owns its own thread, so the
+/// work itself is the runtime's to block on.
+pub fn run() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .build()

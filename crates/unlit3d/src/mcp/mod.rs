@@ -1,10 +1,10 @@
 //! The rendering tools a world answers through the MCP server.
 //!
 //! Each tool resolves the entity handles its arguments name and routes the work
-//! to the world's thread through [command](unlit_ecs::mcp::command) or
-//! [run](unlit_ecs::mcp::run). The tools register themselves through
-//! [ToolSource](unlit_ecs::mcp::ToolSource), so a server built from [unlit_ecs] carries
-//! them without depending on this crate.
+//! to the world's thread through the [`command` function](unlit_ecs::mcp::command)
+//! or the [`run` function](unlit_ecs::mcp::run). The tools register themselves
+//! through the [`ToolSource` struct](unlit_ecs::mcp::ToolSource), so a server built
+//! from [unlit_ecs] carries them without depending on this crate.
 
 mod host;
 

@@ -49,6 +49,7 @@ harness = false
 name = "skinned_scene"
 
 [[test]]
+harness = false
 name = "mcp_server"
 required-features = ["mcp"]
 
