@@ -94,10 +94,14 @@ and a request whose job was dropped (refused, or the world died, or the job
 panicked) reports `Err(RequestError::Dropped)` instead of blocking forever.
 `Request` is a `Future`, so a batch is joined rather than polled:
 `executor::try_join_all` turns one into a future of `Result<Vec<R>,
-RequestError>` in request order, and `executor::LocalPool` drives it on the
-caller's thread — `run_until_stalled` polls every task it holds until none
-can progress and never blocks, which is what lets a fixed-step tick or a
-frame behaviour own the await. The demo's scene build is that shape.
+RequestError>` in request order, and `executor::LocalTasks` drives it. Every
+world the framework builds carries a task set as a component, so a task
+lasts as long as the world and belongs to it rather than to the call that
+started it; whoever drives the world pumps it once per turn — a thread
+before its tick, a host before the dispatch. `LocalTasks::pump` runs its
+tasks until none can progress and never blocks, which is what lets a
+fixed-step tick or a frame behaviour own the await. The demo's scene build
+is that shape.
 
 ## Snapshots
 
@@ -265,8 +269,9 @@ names something the game calls a thing, it belongs in a job.
 
 The window-facing half of a multi-world app is app-agnostic too, so it
 ships with the runtime. The **gpu** module starts the `Gpu` request as a
-future the frame behaviour drives on a `LocalPool`, and runs `ready` as a
-queued command once the answer lands — nothing blocks, wasm-safe:
+task of the world it was asked to set up, driven by the pump that opens each
+frame, and runs `ready` as a queued command once the answer lands — nothing
+blocks, wasm-safe:
 
 ```rust,ignore
 world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {

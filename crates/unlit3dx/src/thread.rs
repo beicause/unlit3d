@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use unlit_ecs::World;
 use web_time::Instant;
 
+use crate::executor::LocalTasks;
 use crate::sync;
 
 /// How long a dropped thread waits for its tick to notice the stop before it
@@ -196,8 +197,12 @@ impl WorldThread {
                 };
                 let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let mut world = World::new();
+                    // The world's async tasks are its own from here on: the
+                    // setup may spawn one, and every tick drives them.
+                    LocalTasks::install(&mut world);
                     let mut state = init(&mut world);
                     while !control.stop_requested() {
+                        LocalTasks::pump(&mut world);
                         if !tick(&mut world, &control, &mut state) {
                             break;
                         }

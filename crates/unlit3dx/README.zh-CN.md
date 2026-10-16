@@ -85,9 +85,11 @@ await 的 `Request<R>`：`poll` 得到 `Option<R>`，`recv` 得到
 panic）的请求报告 `Err(RequestError::Dropped)`，而不是永久阻塞。`Request` 实现了
 `Future`，所以一批请求是被 join 而不是被轮询：`executor::try_join_all` 把一批合成
 一个按请求顺序给出 `Result<Vec<R>, RequestError>` 的 future，由
-`executor::LocalPool` 在调用方线程上驱动——`run_until_stalled` 把池里每个任务轮到
-无法再推进就返回、从不阻塞，因此固定步长的 tick 或帧行为都能持有这个 await。
-`unlit3dx_examples` 里搭建场景用的就是这个形状。
+`executor::LocalTasks` 驱动。框架创建的每个 world 都以组件形式携带一个任务集，
+因此任务与 world 同寿、属于 world 而不属于发起它的那次调用；谁驱动 world，谁就
+每回合泵它一次——线程在 tick 之前，宿主在分发之前。`LocalTasks::pump` 把集合里
+每个任务轮到无法再推进就返回、从不阻塞，因此固定步长的 tick 或帧行为都能持有
+这个 await。`unlit3dx_examples` 里搭建场景用的就是这个形状。
 
 ## 快照
 
@@ -206,8 +208,8 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 ## 应用骨架
 
 多 world 应用面向窗口的那一半同样与应用无关，所以随运行时一起提供。**gpu**
-模块把 `Gpu` 请求做成一个 future，由帧行为在 `LocalPool` 上驱动，答案落地后
-把 `ready` 作为排队的 command 运行——什么都不阻塞，wasm 安全：
+模块把 `Gpu` 请求做成被请求搭建的那个 world 自己的任务，由每帧开头的那次泵送
+驱动，答案落地后把 `ready` 作为排队的 command 运行——什么都不阻塞，wasm 安全：
 
 ```rust,ignore
 world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {

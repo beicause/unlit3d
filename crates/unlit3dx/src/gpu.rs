@@ -1,18 +1,18 @@
 //! The GPU context and its asynchronous request.
 //!
 //! A scene is set up once the adapter and device exist, and the setup
-//! needs a mutable world — so the request is a future the frame behaviour
-//! drives on a local pool, and the ready callback lands as a command
-//! between two event callbacks. Nothing outside this module needs to know
-//! any of that: [`request_gpu`] runs the request and calls back when the
-//! context is ready.
+//! needs a mutable world — so the request is a future the world itself
+//! runs, driven by whoever drives the world, and the ready callback lands
+//! as a command between two event callbacks. Nothing outside this module
+//! needs to know any of that: [`request_gpu`] runs the request and calls
+//! back when the context is ready.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use unlit_ecs::{Command, Entity, World};
 
-use crate::executor::{LocalPool, LocalSpawnExt};
+use crate::executor::LocalTasks;
 use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::winit::builtin::{DisplayHandle, ExitRequest, Resumed, window};
@@ -114,18 +114,18 @@ async fn request_adapter(
 /// Start the app's GPU request once the window exists, and run `ready`
 /// with the context once it lands.
 ///
-/// The request runs off the main thread and its answer is polled by this
-/// behaviour on the frames that follow; the callback runs as a queued
-/// command with a mutable world, between two event callbacks. A failed
-/// request is logged and sets the app's [`ExitRequest`].
+/// The request runs as a task of the world it will set up, driven by the
+/// pump that opens each frame; this behaviour reads the answer on the frames
+/// that follow and runs the callback as a queued command with a mutable
+/// world, between two event callbacks. A failed request is logged and sets
+/// the app's [`ExitRequest`].
 pub fn request_gpu<F>(app: Entity, ready: F) -> OnFrame
 where
     F: FnOnce(&mut World, &Gpu) + 'static,
 {
-    // The pool lives inside the behaviour and is driven on the frame
-    // thread, so the answer slot needs no lock: the request future and
-    // the behaviour that reads it run on the same thread.
-    let mut pool = LocalPool::new();
+    // The request future runs among the world's own tasks, so the answer
+    // slot needs no lock: the future and the behaviour that reads it run on
+    // the same thread, and the world's pump drives the future for us.
     let answer: Rc<RefCell<Option<Result<Gpu, String>>>> = Rc::default();
     let mut state = 0u8;
     let mut ready = Some(ready);
@@ -136,9 +136,9 @@ where
                 return;
             }
             if state == 1 {
-                // Drive the request future; a wake from the wgpu callback
-                // thread is queued and picked up here.
-                pool.run_until_stalled();
+                // The request future was driven by the pump that opened
+                // this frame, and a wake from the wgpu callback thread is
+                // queued for the next one.
                 // One poll takes the answer out for good, so it is moved
                 // into the command even if the callback panics half-way.
                 let Some(result) = answer.borrow_mut().take() else {
@@ -171,25 +171,22 @@ where
             state = 1;
             log::debug!("requesting a GPU context");
             let slot = Rc::clone(&answer);
-            pool.spawner()
-                .spawn_local(async move {
-                    // The display handle is owned, not borrowed: the instance
-                    // it builds has to outlive this callback.
-                    let instance = wgpu::util::new_instance_with_webgpu_detection(
-                        wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(
-                            display,
-                        )),
-                    )
-                    .await;
-                    let result = match instance.create_surface(window) {
-                        Ok(probe) => Gpu::request(instance, probe)
-                            .await
-                            .map_err(|error| error.to_string()),
-                        Err(error) => Err(error.to_string()),
-                    };
-                    *slot.borrow_mut() = Some(result);
-                })
-                .expect("the pool outlives the behaviour that owns it");
+            let spawned = LocalTasks::spawn(world, async move {
+                // The display handle is owned, not borrowed: the instance
+                // it builds has to outlive this callback.
+                let instance = wgpu::util::new_instance_with_webgpu_detection(
+                    wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
+                )
+                .await;
+                let result = match instance.create_surface(window) {
+                    Ok(probe) => Gpu::request(instance, probe)
+                        .await
+                        .map_err(|error| error.to_string()),
+                    Err(error) => Err(error.to_string()),
+                };
+                *slot.borrow_mut() = Some(result);
+            });
+            debug_assert!(spawned, "the frame's world carries its own tasks");
         },
     )
 }

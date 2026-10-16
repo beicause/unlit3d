@@ -8,6 +8,7 @@
 use async_channel::{Receiver, bounded};
 use unlit_ecs::{ArchetypeBuilder, Bundle, Entity, World};
 
+use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender, SendError};
 use crate::thread::{ThreadControl, ThreadStatus, WorldThread, panic_message, stepped_control};
@@ -296,6 +297,9 @@ where
 {
     let (commands, receiver) = bounded::<Job<()>>(command_capacity);
     let mut world = World::new();
+    // The world's async tasks are its own from here on: the setup may spawn
+    // one, and every step drives them.
+    LocalTasks::install(&mut world);
     let mut state = init(&mut world);
     let (control, status) = stepped_control();
     let tick = Box::new(move |world: &mut World, control: &ThreadControl| {
@@ -384,6 +388,7 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
         name,
         ..
     } = &mut **stepped;
+    LocalTasks::pump(world);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(world, control)));
     match outcome {
         Ok(true) => {}

@@ -93,7 +93,7 @@ pub mod prelude {
     };
     pub use crate::{
         channel::{SnapshotReader, SnapshotWriter, snapshot_pair},
-        executor::{LocalPool, LocalSpawnExt, try_join_all},
+        executor::{LocalPool, LocalSpawnExt, LocalTasks, try_join_all},
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world},
         job::{Job, JobSender, Request, RequestError, SendError},

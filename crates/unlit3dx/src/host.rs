@@ -3,6 +3,7 @@
 use async_channel::{Receiver, bounded};
 use unlit_ecs::World;
 
+use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
 use crate::thread::panic_message;
@@ -40,6 +41,9 @@ pub fn spawn_sub_world(
 ) -> WorldHandle {
     let (commands, receiver) = bounded(command_capacity);
     let mut nested = World::new();
+    // The sub-world owns its async tasks, so a job that mounts something
+    // asynchronous hands it a task instead of an executor.
+    LocalTasks::install(&mut nested);
     nested.spawn((SubWorldInbox(receiver),));
     let commands = JobSender::new(commands);
     let entity = host.spawn((nested, WorldName(name)));

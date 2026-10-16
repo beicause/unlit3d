@@ -425,10 +425,6 @@ pub const FRAME_CLEAR_INPUT: i32 = 20;
 /// the scene's pose jobs have landed on a frame's drain.
 pub const RENDER_CAMERA: i32 = 100;
 
-/// The render world's behaviour order: the panel's audio watcher is polled
-/// here, before the UI source draws the rows its counts move.
-pub const POLL_TRACK_ENDS: i32 = 90;
-
 /// How fast the camera circles the scene, in radians per second.
 pub const ORBIT_SPEED: f32 = 0.25;
 
@@ -556,6 +552,10 @@ type TrackEndCounts = Rc<RefCell<TrackEnds>>;
 /// `counts` on any frame sees the newest answer. A dropped query reports
 /// the last count it gave and is asked again, so a world that restarts
 /// does not end the watch.
+///
+/// The render world runs it as one of its own tasks, so it lasts as long
+/// as the world rather than as long as the mount that started it, and no
+/// caller keeps an executor beside the world for it.
 async fn watch_track_ends(audio: JobSender, counts: TrackEndCounts) {
     loop {
         for (index, track) in TRACKS.iter().enumerate() {
@@ -705,7 +705,8 @@ fn track_controls(
 ///
 /// The panel carries a sibling TrackRows for what its rows show and a
 /// sibling TrackEnds the audio watcher writes, so the callback itself owns
-/// no state.
+/// no state. The watcher is submitted to the render world's own tasks, and
+/// the pump before the dispatch drives it from here on.
 pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
     world.spawn_source(UiSource::new());
     let gameplay = hooks.gameplay;
@@ -756,44 +757,13 @@ pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
         });
     }),));
     if let Some(audio) = hooks.audio {
-        let pool = LocalPool::new();
+        // The watcher is the render world's own task: this job runs on the
+        // frame that drains it, and the pump before the dispatch drives it.
         let task = watch_track_ends(audio, Rc::clone(&counts));
-        pool.spawner()
-            .spawn_local(task)
-            .expect("a fresh pool takes its first task");
-        world.spawn((TrackEndWatcher(pool),));
-        world.spawn_frame_behaviour(drive_track_watcher());
+        if !LocalTasks::spawn(world, task) {
+            log::error!("the render world has no task set for its track watcher");
+        }
     }
-}
-
-/// The local pool driving a panel's [`watch_track_ends`] task.
-///
-/// The pool is a component rather than a closure local: a frame behaviour
-/// borrows it while it runs, and it has to outlive the mount call that
-/// spawned the task.
-struct TrackEndWatcher(LocalPool);
-
-/// Drive the panel's watcher task once per frame of the render world.
-///
-/// The audio world answers on its own thread, and a wake from it is picked
-/// up by the next poll here. The counts land in the panel's sibling
-/// TrackEnds, so the same pass that reads them draws the rows they moved.
-fn drive_track_watcher() -> OnFrame {
-    OnFrame::new(
-        FrameBehaviourOrder(POLL_TRACK_ENDS),
-        |world, _entity, _frame| {
-            let Some(pool) = world
-                .query::<&TrackEndWatcher>()
-                .next()
-                .map(|(entity, _)| entity)
-            else {
-                return;
-            };
-            let _ = world.with_mut::<TrackEndWatcher, _>(pool, |watcher| {
-                watcher.0.run_until_stalled();
-            });
-        },
-    )
 }
 
 /// Set up the render sub-world: the resource graph, the renderer and the
@@ -1037,8 +1007,6 @@ pub struct Gameplay {
     audio_inbox: SnapshotReader<AudioReady>,
     /// Whether the background music has been started.
     bgm_started: bool,
-    /// The executor driving the async scene build.
-    builder: LocalPool,
     /// The build future's landing slot: it fills this, the tick reads it.
     build: Rc<RefCell<BuildState>>,
     /// Whether the build landed and the pool is live.
@@ -1090,12 +1058,13 @@ impl Gameplay {
     /// Build the state from the proxies and mailboxes the host wired up.
     ///
     /// A scene asks for this through [`SceneWiring::gameplay`], which
-    /// holds the channels. The scene is built by an async future on the
-    /// local pool: it awaits the meshes and materials, then the instances
-    /// that use them, and leaves the pool in [`BuildState`] for the tick
-    /// to pick up. The answer order matches the request order, which is
-    /// how the build reads the entities back.
+    /// holds the channels. The scene is built by an async task of the
+    /// gameplay world itself: it awaits the meshes and materials, then the
+    /// instances that use them, and leaves the pool in [`BuildState`] for
+    /// the tick to pick up. The answer order matches the request order,
+    /// which is how the build reads the entities back.
     fn new(
+        world: &World,
         render: JobSender,
         physics: SnapshotReader<PhysicsSnapshot>,
         physics_sender: JobSender,
@@ -1103,11 +1072,10 @@ impl Gameplay {
         audio_inbox: SnapshotReader<AudioReady>,
         server: WorldHandle,
     ) -> Self {
-        let builder = LocalPool::new();
         let build = Rc::new(RefCell::new(BuildState::Building));
         let slot = Rc::clone(&build);
         log::info!("the gameplay world started; requesting the scene assets from the render world");
-        builder.spawner().spawn_local(async move {
+        let spawned = LocalTasks::spawn(world, async move {
             let assets = request_assets(&server);
             let answers = match try_join_all(assets).await {
                 Ok(answers) => answers,
@@ -1132,8 +1100,8 @@ impl Gameplay {
                 }
             };
             *slot.borrow_mut() = BuildState::Ready(pool_from_instances(answers));
-        })
-        .expect("a fresh pool takes its first task");
+        });
+        debug_assert!(spawned, "the gameplay world carries its own tasks");
         Self {
             render,
             physics,
@@ -1141,7 +1109,6 @@ impl Gameplay {
             audio_sender,
             audio_inbox,
             bgm_started: false,
-            builder,
             build,
             ready: false,
             build_pending: true,
@@ -1160,13 +1127,15 @@ impl Gameplay {
         }
     }
 
-    /// Poll the build future once; when it has landed, take the shape pool.
-    /// The pool stays empty if the render world dropped a request.
+    /// Take the shape pool once the build task has landed.
+    ///
+    /// The task itself is driven by the pump that opens each tick; this only
+    /// reads what it left behind. The pool stays empty if the render world
+    /// dropped a request.
     fn poll_build(&mut self) {
         if !self.build_pending {
             return;
         }
-        self.builder.run_until_stalled();
         if matches!(&*self.build.borrow(), BuildState::Building) {
             return;
         }
@@ -1488,8 +1457,9 @@ impl SceneWiring {
     /// The gameplay state this wiring drives, talking to `render` as
     /// its asset server.
     #[must_use]
-    pub fn gameplay(&self, server: WorldHandle) -> Gameplay {
+    pub fn gameplay(&self, world: &World, server: WorldHandle) -> Gameplay {
         Gameplay::new(
+            world,
             self.render_sender.clone(),
             self.physics_reader.clone(),
             self.physics_sender.clone(),
@@ -1644,7 +1614,10 @@ pub fn spawn_scene<R: WorldRunner>(
             let render = render.clone();
             let wiring = wiring.clone();
             move |world: &mut World| {
-                world.spawn((wiring.gameplay(render),));
+                // The build task is submitted here, against the world it
+                // will run in, before the entity it fills is spawned.
+                let game = wiring.gameplay(world, render);
+                world.spawn((game,));
             }
         },
         {

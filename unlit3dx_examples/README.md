@@ -110,7 +110,7 @@ paced differs.
   address.
 - The **gameplay world** is the only place that knows about all three. It
   builds the scene by awaiting assets and instances from the render server
-  as one async future on a `LocalPool`, requests bodies from physics, and
+  as one async task of its own, requests bodies from physics, and
   maps them to the instance handles, sending their poses back as a job.
   Once
   the audio world reports it can sound, gameplay starts the background

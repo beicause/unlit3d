@@ -24,6 +24,8 @@ use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit3d::attachments::FrameAttachments;
 use unlit3d::blit::{BlitSource, BlitTexture};
 use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
+
+use crate::executor::LocalTasks;
 use unlit3d::renderer::Renderer;
 use unlit3d::source::{WorldSourceExt, spawn_context};
 use unlit3d::winit::WindowSurface;
@@ -393,6 +395,10 @@ impl Command for DrawFrame {
             index: self.index.fetch_add(1, Ordering::Relaxed),
             size,
         };
+        // The host world's own tasks run before the behaviours that read
+        // what they land, so a task spawned by one of them is polled by the
+        // next frame.
+        LocalTasks::pump(world);
         dispatch_frame(world, &mut frame);
         // A frame has been dispatched, so the next producer may queue one.
         self.pending.store(false, Ordering::Release);
@@ -421,6 +427,9 @@ pub fn draw_presented() -> OnFrame {
                 return;
             };
             drain_sub_world(&mut nested);
+            // The render world's tasks run between the jobs that queued them
+            // and the dispatch that draws what they landed.
+            LocalTasks::pump(&mut nested);
             dispatch_frame(&mut nested, frame);
             if presenter.blit.is_some() {
                 let _ = nested.with_mut::<Renderer, _>(renderer, |renderer| {
