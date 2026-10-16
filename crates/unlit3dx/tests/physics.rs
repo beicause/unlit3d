@@ -1,7 +1,6 @@
 //! Integration tests for the physics remote world: bodies built by jobs,
 //! snapshots subscribed to on the host, contacts reported as events.
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use glam::{Quat, Vec3};
@@ -38,11 +37,11 @@ fn collect_poses(world: &World) -> Option<Poses> {
     )
 }
 
-/// A physics world at the default rate, with the floor already queued and a
-/// pose subscription on the host.
-fn floored_host() -> (World, WorldHandle, SnapshotReader<Poses>) {
+/// A physics world at the default rate, driven by `R`, with the floor already
+/// queued and a pose subscription on the host.
+fn floored_host<R: WorldRunner>() -> (World, WorldHandle, SnapshotReader<Poses>) {
     let mut host = World::new();
-    let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default());
     let reader = world
         .sender()
         .subscribe(collect_poses)
@@ -66,32 +65,71 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
     false
 }
 
-/// The threaded world does the whole job round trip: a body built by a job
-/// falls, and its snapshots carry it down to rest a radius above the floor.
+/// The whole job round trip: a body built by a job falls, and the
+/// subscription carries it down to rest a radius above the floor.
 ///
 /// The contact itself is not checked here. A contact-started event appears in
 /// exactly one snapshot, and the mailbox holds only the newest, so a reader
 /// that is not scheduled within one step of the landing misses it. The speed
-/// a landing reports is what [`a_landing_reports_the_closing_speed`] checks,
-/// on a world stepped in this thread where no step can be skipped.
+/// a landing reports is what [`a_landing_reports_the_closing_speed`] checks.
+///
+/// The host steps this world itself rather than letting a thread pace it: a
+/// stepped world simulates exactly as many steps as the test asks for, so the
+/// fall to rest cannot be starved out of a wall-clock window on a slow machine.
 #[test]
 fn a_dropped_ball_settles_in_its_snapshots() {
-    let (_host, world, poses) = floored_host();
+    let (host, world, poses) = floored_host::<Stepped>();
     world
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
         .expect("the physics world accepts jobs");
 
-    let settled = |poses: &Arc<Poses>| {
+    let settled = |poses: &Poses| {
         poses.iter().any(|&(_, translation, _)| {
             (translation.y - BALL_RADIUS).abs() < 0.05 && translation.y < BALL_START.y
         })
     };
-    let rested = wait_for(|| poses.latest().is_some_and(|poses| settled(&poses)));
+    let mut rested = false;
+    for _ in 0..STEPS {
+        step_stepped_world(&host, world.entity());
+        rested = poses.latest().is_some_and(|poses| settled(&poses));
+        if rested {
+            break;
+        }
+    }
     assert!(
         rested,
         "the ball never came to rest: the last snapshot is {:?}",
+        poses.latest(),
+    );
+}
+
+/// A world on its own thread steps what a job builds: the job runs on that
+/// thread, its tick simulates the body, and the subscription carries the
+/// result back to the host.
+///
+/// The ball is only checked to be falling, not to have settled: a rest takes
+/// seconds of simulated time, which would make this a race against how fast
+/// the machine is. The fall to rest is the test above, on a world the host
+/// steps; this one covers the thread mode at all.
+#[test]
+fn a_threaded_world_steps_what_a_job_builds() {
+    let (_host, world, poses) = floored_host::<Threaded>();
+    world
+        .send(Box::new(move |world: &mut World| {
+            let _ball = spawn_body(world, ball_desc());
+        }))
+        .expect("the physics world accepts jobs");
+
+    let falling = |poses: &Poses| {
+        poses
+            .iter()
+            .any(|&(_, translation, _)| translation.y < BALL_START.y - 0.05)
+    };
+    assert!(
+        wait_for(|| poses.latest().is_some_and(|poses| falling(&poses))),
+        "the threaded world never stepped the body its job built: {:?}",
         poses.latest(),
     );
 }
@@ -114,10 +152,14 @@ fn ball_desc() -> BodyDesc {
 /// Two balls dropped from different heights land on different steps, and the
 /// collector must report both — a newest-wins mailbox polled at the end could
 /// hold only one. That is what a game needs for something like bullet damage.
+///
+/// The host steps this world itself rather than letting a thread pace it: a
+/// stepped world simulates exactly as many steps as the test asks for, so the
+/// landings cannot be starved out of a wall-clock window on a slow machine.
 #[test]
 fn a_collector_sees_contacts_from_every_step() {
     let mut host = World::new();
-    let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
+    let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default());
     let sender = world.sender();
     let (queue, contacts) = std::sync::mpsc::channel();
     // The collector queues what it sees and publishes nothing: the
@@ -157,8 +199,8 @@ fn a_collector_sees_contacts_from_every_step() {
     }));
 
     let mut landed: Vec<RigidBodyHandle> = Vec::new();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline && landed.len() < 3 {
+    for _ in 0..STEPS {
+        step_stepped_world(&host, world.entity());
         while let Ok((one, two, _speed)) = contacts.try_recv() {
             for body in [one, two] {
                 if !landed.contains(&body) {
@@ -166,7 +208,9 @@ fn a_collector_sees_contacts_from_every_step() {
                 }
             }
         }
-        std::thread::sleep(Duration::from_millis(1));
+        if landed.len() == 3 {
+            break;
+        }
     }
     // Both balls and the floor: three bodies, so both landings were reported.
     assert_eq!(
