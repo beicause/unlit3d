@@ -145,7 +145,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
   `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
 - **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
-  持有其流。它的 `OnFill` 组件就是音源：`dispatch_fill` 每块运行一次它们，把各自叠加的
+  持有其流。它的 `OnAudioFill` 组件就是音源：`dispatch_audio_fill` 每块运行一次它们，把各自叠加的
   样本混进由 `AudioConfig` 定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
   设备回调消费这个缓冲，欠载时静音。没有任何音源的 world 不出声。
   玩法从不直接触碰音频——它发送 job。代理实体携带两个收件箱：`AudioFormatInbox`
@@ -156,13 +156,13 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 
   步进的音频 world 完全不打开设备：没有可播放的目标，也没有回调来消费环形缓冲。它
   也不发布格式，因此想要出声的调用方自行提前安装音源，并在需要一块时自己调用
-  `dispatch_fill`——示例的离屏运行正是这样把混音写成文件的。`dispatch_fill` 就是
+  `dispatch_audio_fill`——示例的离屏运行正是这样把混音写成文件的。`dispatch_audio_fill` 就是
   音频线程每块的全部工作，所以直接步进它得到的是同一套混音，只是少了环形缓冲。
 
 - **synth**（默认开启，蕴含 audio）：安装所需的构件，构建在
   [rustysynth-ext](https://docs.rs/rustysynth-ext) 之上——`load_soundfont` 解析字节
   （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台实时音色，
-  `MidiPlayer::from_font` 生成一条按序列播放的音轨，各自带着渲染它的 `OnFill` 音源；
+  `MidiPlayer::from_font` 生成一条按序列播放的音轨，各自带着渲染它的 `OnAudioFill` 音源；
   world 的 `AudioGain` 由调用方生成，补上音色库预设预留的余量。`note_on_job`/`note_off_job`
   是作用于合成器的现成 job。传送 job 按名字寻址音轨——`play_track_job` 播放一个文件（可选循环），
   `pause_track_job` 冻结它的音序器时钟，于是恢复时正好接在暂停处，`rewind_track_job` 回到开头，
@@ -212,9 +212,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 驱动，答案落地后把 `ready` 作为排队的 command 运行——什么都不阻塞，wasm 安全：
 
 ```rust,ignore
-world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
+world.spawn((request_gpu(app, |world, gpu| {
     // ... 在请求发起处搭建场景 ...
-}));
+}),));
 ```
 
 `Gpu::headless` 是同一个请求的免窗口版本，供测试与工具使用。**present** 模块

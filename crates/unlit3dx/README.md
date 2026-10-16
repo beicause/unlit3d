@@ -173,9 +173,9 @@ The bridges:
   `spawn_fixed_cuboid` are the building blocks; `init_physics_world` builds
   the same world for a caller that steps it inline with `step_once`.
 - **audio** (on by default): `spawn_audio_world_with::<R>` opens the output
-  device and owns its stream on the audio thread. Its `OnFill` components are
+  device and owns its stream on the audio thread. Its `OnAudioFill` components are
   the sources:
-  `dispatch_fill` runs them once per chunk of a ring buffer sized by
+  `dispatch_audio_fill` runs them once per chunk of a ring buffer sized by
   `AudioConfig`, mixing their samples and scaling the sum by the world's
   `AudioGain`; the device callback drains the ring and underruns to silence.
   A world that carries no source plays nothing.
@@ -192,8 +192,8 @@ The bridges:
   A stepped audio world opens no device at all: there is nothing to play to
   and no callback to pull the ring. It publishes no format either, so a
   caller that wants sound installs its sources up front and calls
-  `dispatch_fill` itself when it wants a chunk — which is what the demo's
-  headless run does, rendering the mix to a file. `dispatch_fill` is the
+  `dispatch_audio_fill` itself when it wants a chunk — which is what the demo's
+  headless run does, rendering the mix to a file. `dispatch_audio_fill` is the
   whole of the audio thread's per-chunk work, so stepping it directly is the
   same mixing, minus the ring.
 
@@ -201,7 +201,7 @@ The bridges:
   [rustysynth-ext](https://docs.rs/rustysynth-ext) — `load_soundfont` parses
   the bytes (typically an `include_bytes!`, so no filesystem is involved),
   `SynthVoice::from_font` spawns a live voice and `MidiPlayer::from_font`
-  one sequenced track, each with the `OnFill` source that renders it; the
+  one sequenced track, each with the `OnAudioFill` source that renders it; the
   caller spawns the world's `AudioGain`, for the headroom soundfont presets
   leave. `note_on_job`/`note_off_job` are ready-made jobs against the voice.
   The transport jobs address a track by name —
@@ -274,9 +274,9 @@ frame, and runs `ready` as a queued command once the answer lands — nothing
 blocks, wasm-safe:
 
 ```rust,ignore
-world.spawn_frame_behaviour(request_gpu(app, |world, gpu| {
+world.spawn((request_gpu(app, |world, gpu| {
     // ... build the scene where the request started ...
-}));
+}),));
 ```
 
 `Gpu::headless` is the same request without a window, for tests and

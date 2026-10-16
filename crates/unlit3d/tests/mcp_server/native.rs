@@ -38,7 +38,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     world.spawn((RenderLoadOps::default(),));
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
-    world.spawn_source(source);
+    world.spawn((Source::new(source),));
     world.spawn((InputHandle::new(),));
 
     let color = create_color_target(&ctx.device, COLOR_FORMAT, SIZE.0, SIZE.1);

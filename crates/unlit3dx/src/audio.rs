@@ -3,7 +3,7 @@
 //! The audio thread owns the stream and a lock-free ring buffer; the
 //! operating system's callback pops whatever is newest and silences the
 //! rest, so a late simulation degrades to silence instead of stuttering.
-//! What sound plays is decided by the world's [`OnFill`] components: the
+//! What sound plays is decided by the world's [`OnAudioFill`] components: the
 //! thread runs them once per filled chunk and sums their samples into the
 //! ring. The output's format is not known until its stream opens, so the
 //! thread publishes it as [`AudioFormat`] and a caller installs its
@@ -24,7 +24,7 @@ use crate::world::WorldRunner;
 
 /// How many frames the filler generates per pass, the unit the pacing and
 /// the ring's headroom are measured in.
-const FILL_FRAMES: usize = 256;
+const AUDIO_FILL_FRAMES: usize = 256;
 
 /// How the audio world is set up before its first fill.
 #[derive(Clone, Debug)]
@@ -59,11 +59,11 @@ impl Default for AudioConfig {
 
 /// Where a fill behaviour runs among the world's other sources.
 ///
-/// Sources with the same order run in the order they were mounted, so a
-/// mix is reproducible: the same spawns give the same sum, in the same
-/// order, at the same sample offsets.
+/// Sources with the same order fall back to entity order, so a mix is
+/// reproducible while the sources live: the same entities give the same sum,
+/// in the same order, at the same sample offsets.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FillOrder(pub i32);
+pub struct AudioFillOrder(pub i32);
 
 /// One chunk of interleaved audio a fill behaviour contributes to.
 ///
@@ -91,54 +91,43 @@ impl AudioChunk<'_> {
 
 /// The callback a fill behaviour runs: it adds its source's samples to the
 /// chunk it is handed.
-type FillCallback = Box<dyn FnMut(&World, Entity, &mut AudioChunk)>;
+type AudioFillCallback = Box<dyn FnMut(&World, Entity, &mut AudioChunk)>;
 
-/// The state every fill behaviour shares: its callback, its order, and when
-/// it was mounted.
-struct FillSlot {
-    callback: FillCallback,
-    order: FillOrder,
-    mount_index: u64,
+/// The state every fill behaviour shares: its callback and its order.
+struct AudioFillSlot {
+    callback: AudioFillCallback,
+    order: AudioFillOrder,
 }
 
 /// A source of audio samples: a component the audio thread runs once per
 /// filled chunk.
 ///
-/// Spawn it on its own entity with [`WorldFillExt::spawn_on_fill`], or
-/// mount it with [`WorldFillExt::mount_on_fill`] to bundle it with the
-/// state it renders from — a synthesizer, say. [`dispatch_fill`] runs a
-/// world's sources and mixes them.
-pub struct OnFill(FillSlot);
+/// Spawn it on its own entity with [`World::spawn`](unlit_ecs::World::spawn), or
+/// bundle it with the state it renders from — a synthesizer, say — and
+/// spawn that entity directly. [`dispatch_audio_fill`] runs a world's sources and
+/// mixes them.
+pub struct OnAudioFill(AudioFillSlot);
 
-impl OnFill {
-    /// Wrap `f` as an [`OnFill`].
+impl OnAudioFill {
+    /// Wrap `f` as an [`OnAudioFill`].
     ///
     /// `order` places it among the world's other sources; a source that
-    /// only adds its own samples can keep [`FillOrder::default`].
+    /// only adds its own samples can keep [`AudioFillOrder::default`].
     #[must_use]
-    pub fn new(order: FillOrder, f: impl FnMut(&World, Entity, &mut AudioChunk) + 'static) -> Self {
-        Self(FillSlot {
+    pub fn new(
+        order: AudioFillOrder,
+        f: impl FnMut(&World, Entity, &mut AudioChunk) + 'static,
+    ) -> Self {
+        Self(AudioFillSlot {
             callback: Box::new(f),
             order,
-            mount_index: 0,
         })
     }
 
     /// The order this source runs in.
     #[must_use]
-    pub fn order(&self) -> FillOrder {
+    pub fn order(&self) -> AudioFillOrder {
         self.0.order
-    }
-
-    /// When this source was mounted, which breaks ties between equal orders.
-    #[must_use]
-    pub fn mount_index(&self) -> u64 {
-        self.0.mount_index
-    }
-
-    /// Record when this source was mounted.
-    fn set_mount_index(&mut self, index: u64) {
-        self.0.mount_index = index;
     }
 
     /// Run this source for `entity`, adding its samples to `chunk`.
@@ -147,61 +136,10 @@ impl OnFill {
     }
 }
 
-/// The next mount index to hand out.
-///
-/// Kept in the world so it is monotonic across the world's life rather than
-/// per driver: two drivers sharing a world must not hand out the same
-/// indices, or the tie-break would not be total.
-#[derive(Debug, Default)]
-struct FillMounts(u64);
-
-/// Spawning fill behaviours, which record the order they were mounted in.
-pub trait WorldFillExt {
-    /// Spawn `behaviour` on an entity of its own, as the next source
-    /// mounted in the world.
-    fn spawn_on_fill(&mut self, behaviour: OnFill) -> Entity;
-
-    /// Record `behaviour` as the next source mounted and hand it back, so
-    /// it can be bundled with the components it renders from.
-    fn mount_on_fill(&mut self, behaviour: OnFill) -> OnFill;
-}
-
-impl WorldFillExt for World {
-    fn spawn_on_fill(&mut self, behaviour: OnFill) -> Entity {
-        let behaviour = self.mount_on_fill(behaviour);
-        self.spawn((behaviour,))
-    }
-
-    fn mount_on_fill(&mut self, mut behaviour: OnFill) -> OnFill {
-        let index = next_mount_index(self);
-        behaviour.set_mount_index(index);
-        behaviour
-    }
-}
-
-/// Take the next mount index from the world's counter, spawning it if absent.
-fn next_mount_index(world: &mut World) -> u64 {
-    let counter = world
-        .query::<&FillMounts>()
-        .next()
-        .map(|(entity, _)| entity);
-    let Some(counter) = counter else {
-        world.spawn((FillMounts(1),));
-        return 0;
-    };
-    world
-        .with_mut::<FillMounts, _>(counter, |mounts| {
-            let index = mounts.0;
-            mounts.0 += 1;
-            index
-        })
-        .expect("the mount counter exists")
-}
-
 /// The factor the mixed samples scale by, read from the audio world.
 ///
 /// The gain belongs to the output rather than to one source:
-/// [`dispatch_fill`] sums every source and scales the sum once, so adding a
+/// [`dispatch_audio_fill`] sums every source and scales the sum once, so adding a
 /// source changes the mix without changing anyone's level. Soundfont presets
 /// leave a lot of headroom, so a mix of a few quiet voices usually wants a
 /// gain above one. Samples clamp to the unit range after the gain, so an
@@ -210,10 +148,10 @@ fn next_mount_index(world: &mut World) -> u64 {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AudioGain(pub f32);
 
-/// Run every [`OnFill`] in `world` once, mixing their samples into `out`.
+/// Run every [`OnAudioFill`] in `world` once, mixing their samples into `out`.
 ///
 /// `out` is interleaved frames and is zeroed first; each source adds its
-/// contribution in [`FillOrder`] order, then the world's [`AudioGain`] —
+/// contribution in [`AudioFillOrder`] order, then the world's [`AudioGain`] —
 /// one when it carries none — scales the sum, which clamps to the unit
 /// range. This is the whole of the audio thread's per-chunk work, and a
 /// caller stepping a world inline calls it the same way.
@@ -221,21 +159,21 @@ pub struct AudioGain(pub f32);
 /// A source must not change the world's set of sources while it runs: it
 /// has a shared `&World`, so structural work goes through
 /// [`World::queue`] and is applied by the world's own driver between fills.
-pub fn dispatch_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
+pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
     out.fill(0.0);
-    let mut sources: Vec<(FillOrder, u64, Entity)> = world
-        .query::<&OnFill>()
-        .map(|(entity, fill)| (fill.order(), fill.mount_index(), entity))
+    let mut sources: Vec<(AudioFillOrder, Entity)> = world
+        .query::<&OnAudioFill>()
+        .map(|(entity, fill)| (fill.order(), entity))
         .collect();
-    sources.sort_unstable_by_key(|(order, index, _)| (*order, *index));
+    sources.sort_unstable_by_key(|(order, entity)| (*order, *entity));
     let mut chunk = AudioChunk {
         out,
         sample_rate,
         channels,
     };
-    for (_, _, entity) in sources {
+    for (_, entity) in sources {
         world
-            .with_mut::<OnFill, _>(entity, |fill| fill.run(world, entity, &mut chunk))
+            .with_mut::<OnAudioFill, _>(entity, |fill| fill.run(world, entity, &mut chunk))
             .expect("the source entity exists");
     }
     let gain = world
@@ -253,7 +191,7 @@ pub fn dispatch_fill(world: &World, out: &mut [f32], sample_rate: u32, channels:
 /// A source that renders at a fixed rate — a synthesizer, a sampler — is
 /// built at the rate the device actually uses, and that is not known until
 /// the stream opens. The audio thread publishes this as soon as it does, so
-/// the job that spawns the world's [`OnFill`] sources can be sent then,
+/// the job that spawns the world's [`OnAudioFill`] sources can be sent then,
 /// like any other work for that world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioFormat {
@@ -269,7 +207,7 @@ pub struct AudioFormat {
 pub struct AudioFormatInbox(pub SnapshotReader<AudioFormat>);
 
 /// Whether the audio world can sound, published by the audio thread once
-/// its output is open and the world carries at least one [`OnFill`] source.
+/// its output is open and the world carries at least one [`OnAudioFill`] source.
 ///
 /// Impacts that happen while the world is still loading its soundfont
 /// must not queue as note jobs: they would all fire the instant the
@@ -304,9 +242,9 @@ struct OpenOutput {
 /// on its first tick and keeps it open, publishing its format once it
 /// knows it; until then, and whenever no device exists, the world runs
 /// silently. A stepped world opens no device either — the host pulls its
-/// fills with [`dispatch_fill`] — unless its config asks for the browser's,
+/// fills with [`dispatch_audio_fill`] — unless its config asks for the browser's,
 /// which a page drives with no thread at all; without one its format inbox
-/// stays empty. Either way the world mixes whatever [`OnFill`] sources a
+/// stays empty. Either way the world mixes whatever [`OnAudioFill`] sources a
 /// caller has since queued into it, and a world nobody has installed stays
 /// silent.
 ///
@@ -323,12 +261,12 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
     host: &mut World,
     config: AudioConfig,
 ) -> WorldHandle {
-    // The filler writes in chunks of FILL_FRAMES frames, so a ring smaller
+    // The filler writes in chunks of AUDIO_FILL_FRAMES frames, so a ring smaller
     // than one chunk would never see room and the stream would stay silent
     // forever. Two chunks leave room to top the ring up between wakeups.
     assert!(
-        config.buffer_frames >= FILL_FRAMES * 2,
-        "buffer_frames must hold at least two fill chunks of {FILL_FRAMES} frames"
+        config.buffer_frames >= AUDIO_FILL_FRAMES * 2,
+        "buffer_frames must hold at least two fill chunks of {AUDIO_FILL_FRAMES} frames"
     );
     let mut output: Option<OpenOutput> = None;
     // Whether opening an output has been attempted: a self-driven world
@@ -383,7 +321,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                         });
                         // Half a chunk of pacing: the ring stays ahead of
                         // the callback without the filler spinning.
-                        let pace = FILL_FRAMES as f64 / f64::from(opened.sample_rate) * 0.5;
+                        let pace = AUDIO_FILL_FRAMES as f64 / f64::from(opened.sample_rate) * 0.5;
                         clock = Some(FixedClock::new(Duration::from_secs_f64(pace)));
                         output = Some(opened);
                     }
@@ -400,7 +338,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             // definition: its host pulls the fills. One that asked for a
             // browser's context sounds only once that context exists.
             let open = output.is_some() || (!control.self_driven() && !config.stepped_device);
-            let sounding = open && world.query::<&OnFill>().next().is_some();
+            let sounding = open && world.query::<&OnAudioFill>().next().is_some();
             if sounding != ready {
                 ready = sounding;
                 ready_writer.publish(AudioReady(sounding));
@@ -411,10 +349,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                 }
             }
             if let Some(output) = output.as_mut() {
-                let chunk = FILL_FRAMES * usize::from(output.channels);
+                let chunk = AUDIO_FILL_FRAMES * usize::from(output.channels);
                 while output.producer.vacant_len() >= chunk {
                     scratch.resize(chunk, 0.0);
-                    dispatch_fill(world, &mut scratch, output.sample_rate, output.channels);
+                    dispatch_audio_fill(world, &mut scratch, output.sample_rate, output.channels);
                     output.producer.push_slice(&scratch);
                 }
                 if let Some(clock) = clock.as_mut() {

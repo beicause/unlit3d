@@ -54,15 +54,15 @@ fn install_synth(world: &mut World, bytes: &[u8], gain: f32, tracks: &[&str], sa
 /// sample, the way a synthesizer adds its block to the chunk.
 fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
     let counted = Arc::clone(counts);
-    world.spawn_on_fill(OnFill::new(
-        FillOrder::default(),
+    world.spawn((OnAudioFill::new(
+        AudioFillOrder::default(),
         move |_world, _entity, chunk| {
             counted.fetch_add(1, Ordering::SeqCst);
             for sample in chunk.out.iter_mut() {
                 *sample += level;
             }
         },
-    ));
+    ),));
 }
 
 /// A world with no sources fills with silence; a source adds to the chunk
@@ -70,18 +70,18 @@ fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
 #[test]
 fn the_dispatcher_mixes_the_worlds_sources() {
     let mut out = vec![1.0f32; 128];
-    dispatch_fill(&World::new(), &mut out, 48_000, 2);
+    dispatch_audio_fill(&World::new(), &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0), "nothing to play");
 
     let mut world = World::new();
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.25, &counts);
-    dispatch_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.25));
     assert_eq!(counts.load(Ordering::SeqCst), 1);
 
     counting_source(&mut world, 0.5, &counts);
-    dispatch_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(
         out.iter().all(|sample| (sample - 0.75).abs() < 1e-6),
         "both sources must add up"
@@ -97,41 +97,44 @@ fn the_worlds_gain_scales_the_mix() {
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.4, &counts);
     let mut out = vec![0.0f32; 8];
-    dispatch_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| (sample - 0.8).abs() < 1e-6));
 
     // A second source pushes the sum past full scale: the clamp lands on
     // the unit range, not on a wrapped sample.
     counting_source(&mut world, 0.4, &counts);
-    dispatch_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 1.0));
 }
 
-/// Equal orders run in the order they were mounted, so a mix built from
-/// several sources stays reproducible.
+/// Equal orders fall back to entity order, so a mix built from several
+/// sources stays reproducible.
 #[test]
-fn sources_run_in_mount_order() {
+fn equal_orders_run_in_entity_order() {
     let mut world = World::new();
     let ran: Arc<Mutex<Vec<&'static str>>> = Arc::default();
     for (name, level) in [("first", 0.1), ("second", 0.2)] {
         let ran = Arc::clone(&ran);
-        world.spawn_on_fill(OnFill::new(
-            FillOrder::default(),
+        world.spawn((OnAudioFill::new(
+            AudioFillOrder::default(),
             move |_world, _entity, chunk| {
                 ran.lock().unwrap().push(name);
                 for sample in chunk.out.iter_mut() {
                     *sample += level;
                 }
             },
-        ));
+        ),));
     }
-    // A later order runs after everything mounted earlier.
+    // A later order runs after every earlier one.
     let late = Arc::clone(&ran);
-    world.spawn_on_fill(OnFill::new(FillOrder(1), move |_world, _entity, _chunk| {
-        late.lock().unwrap().push("late");
-    }));
+    world.spawn((OnAudioFill::new(
+        AudioFillOrder(1),
+        move |_world, _entity, _chunk| {
+            late.lock().unwrap().push("late");
+        },
+    ),));
     let mut out = vec![0.0f32; 2];
-    dispatch_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert_eq!(*ran.lock().unwrap(), vec!["first", "second", "late"]);
 }
 
@@ -248,11 +251,11 @@ fn a_failed_soundfont_leaves_the_world_silent() {
     let mut world = World::new();
     install_synth(&mut world, b"not a soundfont", 4.0, &["a", "b"], 48_000);
     assert!(
-        world.query::<&OnFill>().next().is_none(),
+        world.query::<&OnAudioFill>().next().is_none(),
         "a world whose soundfont failed carries no sources"
     );
     let mut out = vec![1.0f32; 256];
-    dispatch_fill(&world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0));
 }
 
@@ -308,7 +311,7 @@ fn transport_jobs_for_unknown_tracks_do_nothing() {
         48_000,
     );
     let mut out = vec![1.0f32; 64];
-    dispatch_fill(&broken, &mut out, 48_000, 2);
+    dispatch_audio_fill(&broken, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0));
 }
 
@@ -430,7 +433,7 @@ fn sounding(world: &World) -> bool {
 /// Render one chunk of interleaved frames.
 fn fill(world: &World) -> Vec<f32> {
     let mut out = vec![0.0f32; BLOCK * 2];
-    dispatch_fill(world, &mut out, SAMPLE_RATE, 2);
+    dispatch_audio_fill(world, &mut out, SAMPLE_RATE, 2);
     out
 }
 

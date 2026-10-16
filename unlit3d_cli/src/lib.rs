@@ -237,7 +237,7 @@ pub fn build_world(
 
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
-    let source_entity = world.spawn_source(source);
+    let source_entity = world.spawn((Source::new(source),));
 
     for document in &config.documents {
         let gltf = UnlitGltf::load(&document.path)?;
@@ -303,7 +303,7 @@ pub fn offscreen_world(
     world.spawn((RenderLoadOps::default(),));
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
-    world.spawn_source(source);
+    world.spawn((Source::new(source),));
     world.spawn((InputHandle::new(),));
 
     let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);

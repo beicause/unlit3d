@@ -31,9 +31,8 @@ use crate::source::{
 /// Spawn it once — as a component on a resource entity — and call
 /// [`Renderer::render`] every frame. It owns the render target binding and the
 /// order bookkeeping; everything else a frame draws comes from its
-/// [`FrameSource`](crate::source::FrameSource) components, which are mounted
-/// with [`spawn_source`](crate::source::WorldSourceExt::spawn_source) and are ordinary ECS
-/// entities.
+/// [`FrameSource`](crate::source::FrameSource) components, which are spawned
+/// with [`World::spawn`](unlit_ecs::World::spawn) and are ordinary ECS entities.
 ///
 /// ```rust
 /// # use unlit3d::prelude::*;
@@ -49,7 +48,7 @@ use crate::source::{
 ///     DeviceCapabilities::default(),
 /// );
 /// let source = MeshSource::new(&world, ctx);
-/// let mesh = world.spawn_source(source);
+/// let mesh = world.spawn((Source::new(source),));
 /// let renderer = world.spawn((Renderer::new(ctx),));
 /// ```
 pub struct Renderer {

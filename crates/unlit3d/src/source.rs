@@ -401,7 +401,7 @@ pub trait FrameSource: 'static {
     /// Where this source records, relative to the others.
     ///
     /// Required, not defaulted: a source that stayed silent would be ordered
-    /// by mount position alone, which is the implicit behaviour this exists to
+    /// by entity alone, which is the implicit behaviour this exists to
     /// replace. Use [`FrameSourceOrder::MESH`], [`FrameSourceOrder::UI`], or a value
     /// of your own.
     ///
@@ -429,13 +429,6 @@ pub struct Source {
     source: Box<dyn AnySource>,
     /// An explicit order that overrides the source's own.
     order: Option<FrameSourceOrder>,
-    /// When the source was mounted.
-    ///
-    /// This is the tie-break between sources that declare the same
-    /// [`FrameSourceOrder`]. It cannot be the entity index or the query's row order:
-    /// `despawn` moves the last row into the freed one, so row order changes
-    /// as sources come and go.
-    mount_index: u64,
 }
 
 impl Source {
@@ -444,7 +437,6 @@ impl Source {
         Self {
             source: Box::new(source),
             order: None,
-            mount_index: 0,
         }
     }
 
@@ -466,11 +458,6 @@ impl Source {
     /// every frame without disturbing the ambiguity bookkeeping.
     pub fn set_order(&mut self, order: Option<FrameSourceOrder>) {
         self.order = order;
-    }
-
-    /// When the source was mounted, which breaks ties between equal orders.
-    pub fn mount_index(&self) -> u64 {
-        self.mount_index
     }
 
     /// The source as its concrete type, or `None` for a different type.
@@ -505,18 +492,9 @@ impl core::fmt::Debug for Source {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Source")
             .field("order", &self.order())
-            .field("mount_index", &self.mount_index)
             .finish_non_exhaustive()
     }
 }
-
-/// The next mount index to hand out.
-///
-/// Kept as a resource so it is monotonic across the world's life rather than
-/// per-renderer: two renderers sharing a world must not hand out the same
-/// indices, or the tie-break would not be total.
-#[derive(Debug, Default)]
-struct MountCounter(u64);
 
 /// Spawn the frame's GPU state as resources and return its addresses.
 ///
@@ -545,7 +523,6 @@ pub fn spawn_context(
     world.spawn_at(context.queue, (queue, context));
     world.spawn_at(context.capabilities, (capabilities, context));
     world.spawn_at(graph, (graph_component, context));
-    world.spawn((MountCounter::default(),));
     // The frame loop writes the target here every frame; until it does, no
     // source may draw.
     world.spawn((FrameTargetSlot::default(),));
@@ -561,51 +538,6 @@ pub fn spawn_context(
     context
 }
 
-/// Mounting a [`FrameSource`] on a [`World`].
-///
-/// The methods are the work the free functions did; the trait only gathers it
-/// onto the world the sources are mounted on.
-pub trait WorldSourceExt {
-    /// Mount `source`, taking its order from [`FrameSource::order`].
-    fn spawn_source(&mut self, source: impl FrameSource) -> Entity;
-
-    /// Mount `source`, recording it at `order`.
-    fn spawn_source_at(&mut self, order: FrameSourceOrder, source: impl FrameSource) -> Entity;
-}
-
-impl WorldSourceExt for World {
-    fn spawn_source(&mut self, source: impl FrameSource) -> Entity {
-        let source = Source::new(source);
-        let index = next_mount_index(self);
-        self.spawn((bump_mount(source, index),))
-    }
-
-    fn spawn_source_at(&mut self, order: FrameSourceOrder, source: impl FrameSource) -> Entity {
-        let source = Source::new(source).with_order(order);
-        let index = next_mount_index(self);
-        self.spawn((bump_mount(source, index),))
-    }
-}
-
-/// Take the next mount index from the world's counter.
-fn next_mount_index(world: &World) -> u64 {
-    let Some(counter) = world.query::<&MountCounter>().next().map(|(e, _)| e) else {
-        return 0;
-    };
-    world
-        .with_mut::<MountCounter, _>(counter, |counter| {
-            let index = counter.0;
-            counter.0 += 1;
-            index
-        })
-        .unwrap_or(0)
-}
-
-fn bump_mount(mut source: Source, index: u64) -> Source {
-    source.mount_index = index;
-    source
-}
-
 /// One group of sources that declared the same [`FrameSourceOrder`].
 pub type AmbiguousGroup = (FrameSourceOrder, Vec<Entity>);
 
@@ -617,10 +549,10 @@ pub type AmbiguousGroup = (FrameSourceOrder, Vec<Entity>);
 /// the capacity survives from one frame to the next.
 #[derive(Debug, Default)]
 pub struct SourceOrder {
-    /// `(order, mount_index, entity)` for every source, sorted by the first
-    /// two. Scratch: the entities are copied into [`Self::order`] once the run
-    /// boundaries have been found.
-    keys: Vec<(FrameSourceOrder, u64, Entity)>,
+    /// `(order, entity)` for every source, sorted by both. Scratch: the
+    /// entities are copied into [`Self::order`] once the run boundaries have
+    /// been found.
+    keys: Vec<(FrameSourceOrder, Entity)>,
     /// The sources to record, in the order they record.
     order: Vec<Entity>,
     /// The runs of equal orders among them, in order.
@@ -630,17 +562,17 @@ pub struct SourceOrder {
 impl SourceOrder {
     /// Resolve `world`'s sources, reusing whatever this already holds.
     ///
-    /// Sorted by `(order, mount_index)`, so equal orders keep their mount
-    /// order; every run of more than one equal order is an ambiguity.
+    /// Sorted by `(order, entity)`, so the entity breaks a tie between equal
+    /// orders; every run of more than one equal order is an ambiguity.
     pub fn resolve(&mut self, world: &World) {
         self.keys.clear();
         self.keys.extend(
             world
                 .query::<&Source>()
-                .map(|(entity, source)| (source.order(), source.mount_index(), entity)),
+                .map(|(entity, source)| (source.order(), entity)),
         );
         self.keys
-            .sort_unstable_by_key(|(order, mount_index, _)| (*order, *mount_index));
+            .sort_unstable_by_key(|(order, entity)| (*order, *entity));
 
         self.order.clear();
         self.ambiguous.clear();
@@ -653,18 +585,18 @@ impl SourceOrder {
             }
             if end - start > 1 {
                 // A run of equal orders: an ambiguity. Its entities are in
-                // mount order already, because that is what the sort used as
+                // entity order already, because that is what the sort used as
                 // the tie-break.
                 let group = self.keys[start..end]
                     .iter()
-                    .map(|(_, _, entity)| *entity)
+                    .map(|(_, entity)| *entity)
                     .collect();
                 self.ambiguous.push((order, group));
             }
             start = end;
         }
         self.order
-            .extend(self.keys.iter().map(|(_, _, entity)| *entity));
+            .extend(self.keys.iter().map(|(_, entity)| *entity));
     }
 
     /// The sources to record, in the order they record.
@@ -708,8 +640,8 @@ impl OrderWarnings {
         for (order, group) in ambiguous {
             log::warn!(
                 "{} sources declared the same FrameSourceOrder({}): entities {:?}; \
-                 recording them in mount order — give them distinct orders to \
-                 choose explicitly",
+                 recording them in an unspecified order — give them distinct orders \
+                 to choose explicitly",
                 group.len(),
                 order.0,
                 group,
@@ -725,8 +657,7 @@ mod tests {
     use super::*;
 
     /// A noop device and queue, enough to spawn a context: the tests here
-    /// exercise the ordering and mounting bookkeeping, which never touches the
-    /// GPU.
+    /// exercise the ordering bookkeeping, which never touches the GPU.
     fn test_context(world: &mut World) -> RenderContext {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         spawn_context(
@@ -787,9 +718,9 @@ mod tests {
     }
 
     /// Sources record in the order they declare, not the order they were
-    /// mounted in — the whole point of an explicit order.
+    /// spawned in — the whole point of an explicit order.
     #[test]
-    fn explicit_order_wins_over_mount_order() {
+    fn explicit_order_wins_over_spawn_order() {
         let mut world = World::new();
         spawn_context(
             &mut world,
@@ -799,52 +730,49 @@ mod tests {
             DeviceCapabilities::default(),
         );
 
-        // Mounted overlay-first, so mount order is the opposite of draw order.
-        let overlay = world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
-        let mesh = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
+        // Spawned overlay-first, so spawn order is the opposite of draw order.
+        let overlay = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
+        let mesh = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
 
         let (order, ambiguous) = record_order(&world);
         assert_eq!(order, vec![mesh, overlay], "the lower order records first");
         assert!(ambiguous.is_empty(), "distinct orders are not ambiguous");
     }
 
-    /// Equal orders keep mount order, and the mount index is stable when an
-    /// earlier source is despawned — which is why it cannot be the ECS row
-    /// order.
+    /// Equal orders fall back to entity order, which keeps them stable while
+    /// the entities live.
     #[test]
-    fn equal_orders_keep_mount_order_across_a_despawn() {
+    fn equal_orders_fall_back_to_entity_order() {
         let mut world = World::new();
         test_context(&mut world);
 
-        let first = world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
-        let second = world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
-        let third = world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
+        let first = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
+        let second = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
+        let third = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
         assert_eq!(record_order(&world).0, vec![first, second, third]);
 
-        // Despawning the first leaves the other two in mount order, even
-        // though the ECS moved the last row into the freed one.
-        world.despawn(first);
+        // An explicit order is the way to choose: the entity is only a
+        // tie-break, and it does not survive a respawn reusing the index.
+        world.despawn(second);
         assert_eq!(
             record_order(&world).0,
-            vec![second, third],
-            "mount order survives a despawn"
+            vec![first, third],
+            "the surviving sources keep their relative order"
         );
     }
 
-    /// A source mounted at an explicit order ignores what its own `order`
+    /// A source spawned at an explicit order ignores what its own `order`
     /// says, and `set_order` can change it later.
     #[test]
     fn an_explicit_order_overrides_the_one_the_source_declares() {
         let mut world = World::new();
         test_context(&mut world);
 
-        let a = world.spawn_source_at(
-            FrameSourceOrder::UI,
-            RecordingSource::new(FrameSourceOrder::MESH),
-        );
-        let b = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
+        let a = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH))
+            .with_order(FrameSourceOrder::UI),));
+        let b = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
 
-        // `a` was mounted as an overlay, so it records last despite declaring
+        // `a` was spawned as an overlay, so it records last despite declaring
         // `MESH` itself.
         assert_eq!(record_order(&world).0, vec![b, a]);
 
@@ -881,8 +809,8 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
 
-        let recording = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-        let other = world.spawn_source(OtherSource(Scene::new()));
+        let recording = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
+        let other = world.spawn((Source::new(OtherSource(Scene::new())),));
 
         assert!(
             world
@@ -931,8 +859,8 @@ mod tests {
 
         let mut world = World::new();
         let ctx = test_context(&mut world);
-        world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-        world.spawn_source(CountingSource(0, Scene::new()));
+        world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
+        world.spawn((Source::new(CountingSource(0, Scene::new())),));
 
         let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
             .0
@@ -979,11 +907,11 @@ mod tests {
         }
 
         for name in ["a", "b"] {
-            world.spawn_source(PhasedSource {
+            world.spawn((Source::new(PhasedSource {
                 name,
                 log: Rc::clone(&order),
                 scene: Scene::new(),
-            });
+            }),));
         }
 
         let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
@@ -1006,7 +934,7 @@ mod tests {
         );
     }
 
-    /// A source that was never mounted at an explicit order takes the one it
+    /// A source that was never spawned at an explicit order takes the one it
     /// declares, and a fresh source reports what it declared.
     #[test]
     fn a_source_reports_its_declared_order_until_overridden() {
@@ -1028,13 +956,13 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
 
-        let a = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-        let b = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
+        let a = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
+        let b = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
 
         let (_, ambiguous) = record_order(&world);
         assert_eq!(ambiguous.len(), 1, "the two share one order");
         assert_eq!(ambiguous[0].0, FrameSourceOrder::MESH);
-        assert_eq!(ambiguous[0].1, vec![a, b], "in mount order");
+        assert_eq!(ambiguous[0].1, vec![a, b], "in entity order");
 
         let mut warnings = OrderWarnings::default();
         assert!(warnings.check(&ambiguous), "the first frame reports it");
@@ -1066,9 +994,9 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
         for _ in 0..4 {
-            world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
+            world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         }
-        world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
+        world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let mut resolved = SourceOrder::default();
         resolved.resolve(&world);
@@ -1099,8 +1027,8 @@ mod tests {
     fn distinct_orders_are_never_ambiguous() {
         let mut world = World::new();
         test_context(&mut world);
-        world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-        world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
+        world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
+        world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let (order, ambiguous) = record_order(&world);
         assert_eq!(order.len(), 2);
@@ -1152,8 +1080,8 @@ mod tests {
     fn the_ambiguity_warning_names_the_group_order_and_entities() {
         let mut world = World::new();
         test_context(&mut world);
-        let a = world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
-        let b = world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
+        let a = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
+        let b = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let messages = capture_logs(|| {
             let (_, ambiguous) = record_order(&world);
@@ -1182,8 +1110,8 @@ mod tests {
     fn distinct_orders_log_nothing() {
         let mut world = World::new();
         test_context(&mut world);
-        world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-        world.spawn_source(RecordingSource::new(FrameSourceOrder::UI));
+        world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
+        world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let messages = capture_logs(|| {
             let (_, ambiguous) = record_order(&world);
@@ -1198,8 +1126,8 @@ mod tests {
     fn a_steady_frame_repeats_nothing_in_the_log() {
         let mut world = World::new();
         test_context(&mut world);
-        let a = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-        let _b = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
+        let a = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
+        let _b = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let mut warnings = OrderWarnings::default();
 
         let messages = capture_logs(|| {
@@ -1230,8 +1158,8 @@ mod tests {
     fn re_applying_the_same_order_keeps_the_log_quiet() {
         let mut world = World::new();
         test_context(&mut world);
-        let a = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-        let b = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
+        let a = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
+        let b = world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let mut warnings = OrderWarnings::default();
 
         let messages = capture_logs(|| {
@@ -1262,7 +1190,7 @@ mod tests {
         test_context(&mut world);
 
         let ids: Vec<Entity> = (0..3)
-            .map(|_| world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH)))
+            .map(|_| world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),)))
             .collect();
 
         let (_, ambiguous) = record_order(&world);
@@ -1270,22 +1198,17 @@ mod tests {
         assert_eq!(ambiguous[0].1, ids);
     }
 
-    /// Mounting is monotonic, so a source mounted later always breaks a tie
-    /// after one mounted earlier.
+    /// Sources spawned later break a tie after ones spawned earlier, because
+    /// the entity index is allocated in spawn order.
     #[test]
-    fn mount_indices_are_monotonic() {
+    fn later_entities_break_a_tie_last() {
         let mut world = World::new();
         test_context(&mut world);
 
-        let indices: Vec<u64> = (0..3)
-            .map(|_| {
-                let entity = world.spawn_source(RecordingSource::new(FrameSourceOrder::MESH));
-                world
-                    .with_mut::<Source, _>(entity, |s| s.mount_index())
-                    .unwrap()
-            })
+        let ids: Vec<Entity> = (0..3)
+            .map(|_| world.spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),)))
             .collect();
-        assert_eq!(indices, vec![0, 1, 2]);
+        assert_eq!(record_order(&world).0, ids);
     }
 }
 
@@ -1423,11 +1346,11 @@ mod release_tests {
     fn dropping_a_source_releases_the_nodes_it_owns() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = world.spawn_source(OwningSource {
+        let entity = world.spawn((Source::new(OwningSource {
             context: ctx,
             node: None,
             scene: Scene::new(),
-        });
+        }),));
         build_once(&mut world, entity, ctx);
         assert_eq!(
             graph_len(&world, ctx),
@@ -1459,11 +1382,11 @@ mod release_tests {
     fn removing_a_source_that_owns_nothing_still_removes_it() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = world.spawn_source(OwningSource {
+        let entity = world.spawn((Source::new(OwningSource {
             context: ctx,
             node: None,
             scene: Scene::new(),
-        });
+        }),));
 
         world.despawn(entity);
         assert!(!world.contains(entity));
@@ -1482,11 +1405,11 @@ mod release_tests {
         let ctx = noop_context(&mut world);
         let mut entities = Vec::new();
         for _ in 0..2 {
-            entities.push(world.spawn_source(OwningSource {
+            entities.push(world.spawn((Source::new(OwningSource {
                 context: ctx,
                 node: None,
                 scene: Scene::new(),
-            }));
+            }),)));
         }
 
         for &entity in &entities {
@@ -1522,11 +1445,11 @@ mod release_tests {
     fn a_build_that_returns_early_still_maintains() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = world.spawn_source(EarlyReturnSource {
+        let entity = world.spawn((Source::new(EarlyReturnSource {
             context: ctx,
             node: None,
             scene: Scene::new(),
-        });
+        }),));
 
         // The first build registers the node the source owns.
         build_once(&mut world, entity, ctx);

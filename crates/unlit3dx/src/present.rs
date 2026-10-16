@@ -27,7 +27,7 @@ use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
 
 use crate::executor::LocalTasks;
 use unlit3d::renderer::Renderer;
-use unlit3d::source::{WorldSourceExt, spawn_context};
+use unlit3d::source::{Source, spawn_context};
 use unlit3d::winit::WindowSurface;
 use unlit3d::winit::builtin::window;
 use unlit3d::winit::event::{OnAboutToWait, OnWindowEvent};
@@ -308,7 +308,7 @@ pub fn setup_presenter(
         let blit_renderer = blit_world.spawn((Renderer::new(blit_frame),));
         let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
         let blit_texture = blit_world.spawn((BlitTexture::new(&blit_world, blit_frame, view),));
-        blit_world.spawn_source(BlitSource::new());
+        blit_world.spawn((Source::new(BlitSource::new()),));
         let blit_entity = world.spawn((blit_world, WorldName("blit")));
         let (surface, attachments) = {
             let nested = world

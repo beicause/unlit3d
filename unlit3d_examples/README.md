@@ -138,7 +138,7 @@ presented, serve the scene switch and the fullscreen request, advance the scene
 and draw it. The scene's own world dispatches the same family for input
 distribution, sequence stepping and the scene's `advance` closure, which runs
 through a queued command because it needs `&mut World`. Each behaviour is
-mounted with an explicit order, so a caller can insert one between two of them
+spawned with an explicit order, so a caller can insert one between two of them
 without touching the rest.
 
 ## Running it

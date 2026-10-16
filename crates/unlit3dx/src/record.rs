@@ -1,12 +1,12 @@
 //! Recording the mix an audio world fills into its output buffer.
 //!
-//! A recording is an [`OnFill`] source ordered after every other one, so it
+//! A recording is an [`OnAudioFill`] source ordered after every other one, so it
 //! sees the samples the whole world contributed. The samples it keeps are the
 //! ones the output stream would receive: the world's [`AudioGain`] scales the
-//! sum and it clamps to the unit range, exactly as [`dispatch_fill`] finishes a
+//! sum and it clamps to the unit range, exactly as [`dispatch_audio_fill`] finishes a
 //! fill.
 //!
-//! [`dispatch_fill`]: crate::audio::dispatch_fill
+//! [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
 //!
 //! The recorder learns the format from the first fill it sees rather than being
 //! told one: an audio world publishes its rate only once a device is open, and
@@ -19,12 +19,12 @@ use std::sync::{Arc, Mutex};
 
 use unlit_ecs::{Entity, World};
 
-use crate::audio::{AudioChunk, AudioFormat, AudioGain, FillOrder, OnFill, WorldFillExt};
+use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, AudioGain, OnAudioFill};
 use crate::sync::lock;
 
 /// A recording in progress on a world.
 ///
-/// The handle owns the shared buffer the [`OnFill`] source writes into. Keep it
+/// The handle owns the shared buffer the [`OnAudioFill`] source writes into. Keep it
 /// around — as a component of the world, for instance — and hand it back to
 /// [`RecordingHandle::stop`] or [`RecordingHandle::cancel`] to finish.
 #[derive(Clone, Debug)]
@@ -71,13 +71,13 @@ impl RecordedAudio {
 
 /// Start recording everything `world` fills, for at most `max_seconds`.
 ///
-/// The recorder runs after every other [`OnFill`] source and keeps the mix after
+/// The recorder runs after every other [`OnAudioFill`] source and keeps the mix after
 /// the world's [`AudioGain`] and the unit-range clamp, so the result is what
 /// the output stream receives. No call fills the world: whichever driver
-/// usually does (the audio thread, [`dispatch_fill`] directly, a stepped world)
+/// usually does (the audio thread, [`dispatch_audio_fill`] directly, a stepped world)
 /// keeps doing it, and the recording grows as it goes.
 ///
-/// [`dispatch_fill`]: crate::audio::dispatch_fill
+/// [`dispatch_audio_fill`]: crate::audio::dispatch_audio_fill
 pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingHandle {
     let state = Arc::new(Mutex::new(RecordingState {
         format: None,
@@ -88,8 +88,8 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
         max_seconds: max_seconds.max(0.0),
     }));
     let recorder = Arc::clone(&state);
-    let entity = world.spawn_on_fill(OnFill::new(
-        FillOrder(i32::MAX),
+    let entity = world.spawn((OnAudioFill::new(
+        AudioFillOrder(i32::MAX),
         move |world: &World, _entity: Entity, chunk: &mut AudioChunk| {
             let mut state = lock(&recorder);
             if state.format.is_none() {
@@ -114,7 +114,7 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
                 state.samples.push((sample * gain).clamp(-1.0, 1.0));
             }
         },
-    ));
+    ),));
     RecordingHandle { entity, state }
 }
 
@@ -212,15 +212,15 @@ impl RecordingHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio::dispatch_fill;
+    use crate::audio::dispatch_audio_fill;
 
     fn constant_source(world: &mut World, level: f32) -> Entity {
-        world.spawn_on_fill(OnFill::new(
-            FillOrder(0),
+        world.spawn((OnAudioFill::new(
+            AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| {
                 chunk.out.fill(level);
             },
-        ))
+        ),))
     }
 
     #[test]
@@ -235,7 +235,7 @@ mod tests {
         let handle = start_recording(&mut world, 1.0);
         assert_eq!(handle.format(), None, "nothing fills it yet");
         let mut out = [0.0f32; 4];
-        dispatch_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
         assert_eq!(handle.frame_count(), 4);
         assert!(!handle.is_full());
         assert_eq!(handle.format(), Some(format));
@@ -255,7 +255,7 @@ mod tests {
         };
         let handle = start_recording(&mut world, 0.5);
         let mut out = [0.0f32; 8];
-        dispatch_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
         assert_eq!(handle.frame_count(), 2);
         assert!(handle.is_full());
         handle.cancel(&mut world);

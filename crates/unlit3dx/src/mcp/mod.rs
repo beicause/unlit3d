@@ -230,7 +230,7 @@ struct Recorded {
 mod tests {
     use super::*;
     use crate::audio::{
-        AudioChunk, AudioFormat, AudioGain, FillOrder, OnFill, WorldFillExt, dispatch_fill,
+        AudioChunk, AudioFillOrder, AudioFormat, AudioGain, OnAudioFill, dispatch_audio_fill,
     };
 
     /// A world with one source that fills a constant level, plus the format
@@ -238,10 +238,10 @@ mod tests {
     fn audio_world(level: f32) -> (World, AudioFormat) {
         let mut world = World::new();
         world.spawn((AudioGain(1.0),));
-        world.spawn_on_fill(OnFill::new(
-            FillOrder(0),
+        world.spawn((OnAudioFill::new(
+            AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),
-        ));
+        ),));
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,
@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(started["duration_seconds"], 1.0);
 
         let mut out = [0.0f32; 4];
-        dispatch_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
         let status = status(&mut world).expect("a recording reports");
         assert_eq!(status["recording"], true);
         assert_eq!(status["frames"], 4);

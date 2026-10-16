@@ -45,7 +45,7 @@ impl TestGpu {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(world, test.context);
         source.register_unlit_family(world);
-        test.source = Some(world.spawn_source(source));
+        test.source = Some(world.spawn((Source::new(source),)));
         test
     }
 

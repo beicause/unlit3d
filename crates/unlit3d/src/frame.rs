@@ -43,7 +43,7 @@ pub struct Frame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FrameBehaviourOrder(pub i32);
 
-/// A callback that runs once for the entity it is mounted on.
+/// A callback that runs once for the entity it is spawned on.
 pub type FrameCallback = Box<dyn FnMut(&World, Entity, &mut Frame)>;
 
 /// Whether this frame has been short-circuited.
@@ -101,45 +101,21 @@ pub trait FrameBehaviour: 'static {
 
     /// Run this behaviour for `entity` with `frame`.
     fn run(&mut self, world: &World, entity: Entity, frame: &mut Frame);
-
-    /// When this behaviour was mounted, which breaks ties between equal
-    /// orders.
-    fn mount_index(&self) -> u64;
-
-    /// Record when this behaviour was mounted.
-    ///
-    /// Written by [`WorldFrameExt::spawn_frame_behaviour`]; a behaviour spawned
-    /// without that helper keeps the default of zero.
-    fn set_mount_index(&mut self, index: u64);
 }
 
-/// The state every frame behaviour family shares: its callback, its order and
-/// when it was mounted.
+/// The state every frame behaviour family shares: its callback and its order.
 pub(crate) struct BehaviourSlot {
     callback: FrameCallback,
     order: FrameBehaviourOrder,
-    mount_index: u64,
 }
 
 impl BehaviourSlot {
     fn new(order: FrameBehaviourOrder, callback: FrameCallback) -> Self {
-        Self {
-            callback,
-            order,
-            mount_index: 0,
-        }
+        Self { callback, order }
     }
 
     fn order(&self) -> FrameBehaviourOrder {
         self.order
-    }
-
-    fn mount_index(&self) -> u64 {
-        self.mount_index
-    }
-
-    fn set_mount_index(&mut self, index: u64) {
-        self.mount_index = index;
     }
 
     fn run(&mut self, world: &World, entity: Entity, frame: &mut Frame) {
@@ -199,14 +175,6 @@ macro_rules! frame_behaviour {
             ) {
                 self.0.run(world, entity, frame);
             }
-
-            fn mount_index(&self) -> u64 {
-                self.0.mount_index()
-            }
-
-            fn set_mount_index(&mut self, index: u64) {
-                self.0.set_mount_index(index);
-            }
         }
     };
 }
@@ -215,47 +183,6 @@ frame_behaviour!(
     OnFrame,
     "Runs once per frame of a windowed application.\n\nDispatch it with [`dispatch_frame`]."
 );
-
-/// The next mount index to hand out.
-///
-/// Kept in the world so it is monotonic across the world's life rather than per
-/// driver: two drivers sharing a world must not hand out the same indices, or
-/// the tie-break would not be total.
-#[derive(Debug, Default)]
-struct FrameMounts(u64);
-
-/// Spawning a frame behaviour, which records the order it was mounted in.
-pub trait WorldFrameExt {
-    /// Spawn `behaviour`, recording it as the next one mounted.
-    fn spawn_frame_behaviour<B: FrameBehaviour>(&mut self, behaviour: B) -> Entity;
-}
-
-impl WorldFrameExt for World {
-    fn spawn_frame_behaviour<B: FrameBehaviour>(&mut self, mut behaviour: B) -> Entity {
-        let index = next_mount_index(self);
-        behaviour.set_mount_index(index);
-        self.spawn((behaviour,))
-    }
-}
-
-/// Take the next mount index from the world's counter, spawning it if absent.
-fn next_mount_index(world: &mut World) -> u64 {
-    let counter = world
-        .query::<&FrameMounts>()
-        .next()
-        .map(|(entity, _)| entity);
-    let Some(counter) = counter else {
-        world.spawn((FrameMounts(1),));
-        return 0;
-    };
-    world
-        .with_mut::<FrameMounts, _>(counter, |mounts| {
-            let index = mounts.0;
-            mounts.0 += 1;
-            index
-        })
-        .expect("the mount counter exists")
-}
 
 /// Run every [`OnFrame`] in `world`, in resolved order, then apply what they
 /// queued.
@@ -270,18 +197,18 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
 
 /// Run every `B` in `world`, in the order their components declare.
 ///
-/// Sorted by `(order, mount_index)`, so equal orders keep their mount order. A
-/// callback must not change the frame's behaviour set: the list is resolved
-/// before the first one runs, and a change landing inside the dispatch would
-/// leave it stale. Queue structural work instead; the driver applies it after
-/// the dispatch.
+/// Sorted by `(order, entity)`, so the entity breaks a tie between equal
+/// orders. A callback must not change the frame's behaviour set: the list is
+/// resolved before the first one runs, and a change landing inside the dispatch
+/// would leave it stale. Queue structural work instead; the driver applies it
+/// after the dispatch.
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
-    let mut order: Vec<(FrameBehaviourOrder, u64, Entity)> = world
+    let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
         .query::<&B>()
-        .map(|(entity, behaviour)| (behaviour.order(), behaviour.mount_index(), entity))
+        .map(|(entity, behaviour)| (behaviour.order(), entity))
         .collect();
-    order.sort_unstable_by_key(|(order, mount_index, _)| (*order, *mount_index));
-    for (_, _, entity) in order {
+    order.sort_unstable_by_key(|(order, entity)| (*order, *entity));
+    for (_, entity) in order {
         world
             .with_mut::<B, _>(entity, |behaviour| behaviour.run(world, entity, frame))
             .expect("the behaviour entity exists");
@@ -324,21 +251,21 @@ mod tests {
                 log.borrow_mut().push(1)
             })
         };
-        world.spawn_frame_behaviour(later);
-        world.spawn_frame_behaviour(earlier);
+        world.spawn((later,));
+        world.spawn((earlier,));
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec![1, 2]);
     }
 
     #[test]
-    fn equal_orders_keep_their_mount_order() {
+    fn equal_orders_keep_their_spawn_order() {
         let mut world = World::new();
         let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
         for value in [1, 2, 3] {
             let log = log.clone();
-            world.spawn_frame_behaviour(OnFrame::new(UPDATE, move |_world, _entity, _frame| {
+            world.spawn((OnFrame::new(UPDATE, move |_world, _entity, _frame| {
                 log.borrow_mut().push(value);
-            }));
+            }),));
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec![1, 2, 3]);
@@ -350,9 +277,9 @@ mod tests {
         let seen: Rc<RefCell<Option<Frame>>> = Rc::new(RefCell::new(None));
         {
             let seen = seen.clone();
-            world.spawn_frame_behaviour(OnFrame::new(UPDATE, move |_world, _entity, frame| {
+            world.spawn((OnFrame::new(UPDATE, move |_world, _entity, frame| {
                 *seen.borrow_mut() = Some(*frame);
-            }));
+            }),));
         }
         let mut frame = Frame {
             delta_time: 0.5,
@@ -373,9 +300,9 @@ mod tests {
     #[test]
     fn a_frame_behaviour_may_advance_the_index() {
         let mut world = World::new();
-        world.spawn_frame_behaviour(OnFrame::new(UPDATE, |_world, _entity, frame| {
+        world.spawn((OnFrame::new(UPDATE, |_world, _entity, frame| {
             frame.index += 1;
-        }));
+        }),));
         let mut frame = frame();
         dispatch_frame(&mut world, &mut frame);
         assert_eq!(frame.index, 1);
@@ -385,29 +312,29 @@ mod tests {
     fn dispatch_applies_what_a_behaviour_queued() {
         struct Marker;
         let mut world = World::new();
-        world.spawn_frame_behaviour(OnFrame::new(UPDATE, |world, _entity, _frame| {
+        world.spawn((OnFrame::new(UPDATE, |world, _entity, _frame| {
             let _ = world.queue().spawn((Marker,));
-        }));
+        }),));
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(world.query::<&Marker>().count(), 1);
     }
 
-    /// A later order runs after an earlier one, however the two were mounted.
+    /// A later order runs after an earlier one, however the two were spawned.
     #[test]
     fn a_later_order_runs_after_an_earlier_one() {
         let mut world = World::new();
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
         {
             let log = log.clone();
-            world.spawn_frame_behaviour(OnFrame::new(END, move |_world, _entity, _frame| {
+            world.spawn((OnFrame::new(END, move |_world, _entity, _frame| {
                 log.borrow_mut().push("end");
-            }));
+            }),));
         }
         {
             let log = log.clone();
-            world.spawn_frame_behaviour(OnFrame::new(UPDATE, move |_world, _entity, _frame| {
+            world.spawn((OnFrame::new(UPDATE, move |_world, _entity, _frame| {
                 log.borrow_mut().push("update");
-            }));
+            }),));
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec!["update", "end"]);
@@ -438,12 +365,12 @@ mod tests {
         world.spawn((FrameSkip::default(),));
         {
             let first = first.clone();
-            world.spawn_frame_behaviour(OnFrame::new(UPDATE, move |world, _entity, _frame| {
+            world.spawn((OnFrame::new(UPDATE, move |world, _entity, _frame| {
                 assert!(!FrameSkip::is_skipped(world), "the flag starts whole");
                 if first.replace(false) {
                     FrameSkip::skip(world);
                 }
-            }));
+            }),));
         }
         dispatch_frame(&mut world, &mut frame());
         assert!(FrameSkip::is_skipped(&world));

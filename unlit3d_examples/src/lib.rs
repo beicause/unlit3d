@@ -226,7 +226,7 @@ fn build_blit_world(context: &Gpu, offscreen: &wgpu::Texture) -> (World, BlitVie
     let view = TextureExt::create_view(offscreen, &wgpu::TextureViewDescriptor::default());
     let texture = BlitTexture::new(&world, frame, view);
     let texture = world.spawn((texture,));
-    world.spawn_source(BlitSource::new());
+    world.spawn((Source::new(BlitSource::new()),));
     (world, BlitView { renderer, texture })
 }
 
@@ -366,11 +366,11 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     ));
     // The frame's own behaviours, in order: request the GPU, build the scene
     // and its surface, serve the controls, advance the scene, present it.
-    world.spawn_frame_behaviour(request_gpu(app));
-    world.spawn_frame_behaviour(ensure_presented(app));
-    world.spawn_frame_behaviour(serve_scene_controls(app));
-    world.spawn_frame_behaviour(advance_scene(app));
-    world.spawn_frame_behaviour(present_frame(app));
+    world.spawn((request_gpu(app),));
+    world.spawn((ensure_presented(app),));
+    world.spawn((serve_scene_controls(app),));
+    world.spawn((advance_scene(app),));
+    world.spawn((present_frame(app),));
     // A resize is a second `OnWindowEvent` behaviour, so it sits on its own
     // entity: two of one family on an entity would be two borrows of one cell.
     world.spawn((resize_scene(app),));
@@ -1592,9 +1592,9 @@ impl Scene {
         // The frame's own dispatch, in order: run the frame's input, step the
         // index a fixed sequence holds each frame for, then advance the scene
         // by the frame the index names.
-        world.spawn_frame_behaviour(dispatch_input_on_frame());
-        world.spawn_frame_behaviour(step_sequence(frame_entity));
-        world.spawn_frame_behaviour(run_scene_advance(frame_entity));
+        world.spawn((dispatch_input_on_frame(),));
+        world.spawn((step_sequence(frame_entity),));
+        world.spawn((run_scene_advance(frame_entity),));
         // A scene world has no window: it starts whole and nothing short-
         // circuits it. Spawning the flag lets a scene behaviour do so.
         world.spawn((FrameSkip::default(),));
@@ -1613,7 +1613,7 @@ impl Scene {
                     .context_mut()
                     .all_styles_mut(|style| style.animation_time = 0.0);
             }
-            world.spawn_source(source_ui);
+            world.spawn((Source::new(source_ui),));
         }
 
         if options.selector {

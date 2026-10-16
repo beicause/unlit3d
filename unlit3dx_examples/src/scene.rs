@@ -708,7 +708,7 @@ fn track_controls(
 /// no state. The watcher is submitted to the render world's own tasks, and
 /// the pump before the dispatch drives it from here on.
 pub fn mount_control_panel(world: &mut World, hooks: ControlHooks) {
-    world.spawn_source(UiSource::new());
+    world.spawn((Source::new(UiSource::new()),));
     let gameplay = hooks.gameplay;
     let panel_audio = hooks.audio.clone();
     let state = world.spawn((TrackRows::START, TrackEnds::START));
@@ -794,7 +794,7 @@ pub fn setup_render_world(
     let renderer = nested.spawn((Renderer::new(context),));
     let mut source = MeshSource::new(&nested, context);
     source.register_unlit_family(&nested);
-    nested.spawn_source(source);
+    nested.spawn((Source::new(source),));
     renderer
 }
 
@@ -817,7 +817,7 @@ pub fn camera_job() -> Job<()> {
             60f32.to_radians(),
             0.1,
         ),));
-        world.spawn_frame_behaviour(OnFrame::new(
+        world.spawn((OnFrame::new(
             FrameBehaviourOrder(RENDER_CAMERA),
             move |world, _entity, frame| {
                 azimuth += ORBIT_SPEED * frame.delta_time;
@@ -832,7 +832,7 @@ pub fn camera_job() -> Job<()> {
                     *current = camera;
                 });
             },
-        ));
+        ),));
     })
 }
 
@@ -1381,7 +1381,7 @@ pub struct SceneWiring {
 
 /// Install the demo's audio sources on an audio world: the mix's gain, one
 /// live voice for note jobs and one `MidiPlayer` per name in `tracks`,
-/// each with the `OnFill` that renders it.
+/// each with the `OnAudioFill` that renders it.
 ///
 /// The rate is not a choice but the output's: an audio thread publishes its
 /// [`AudioFormat`] when its stream opens, and a synthesizer built before
@@ -1485,7 +1485,7 @@ pub enum AudioSetup {
     /// [`SceneWorlds::audio_format`] and calls
     /// [`install_sources_when_ready`].
     Device,
-    /// Open no device: the host pulls the fills with [`dispatch_fill`],
+    /// Open no device: the host pulls the fills with [`dispatch_audio_fill`],
     /// so the sources are installed before the first frame, at
     /// `sample_rate`.
     Pulled {

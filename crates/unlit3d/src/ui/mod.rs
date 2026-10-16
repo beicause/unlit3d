@@ -22,7 +22,7 @@
 //!
 //! // The source, and one interface held as a behaviour component. More
 //! // panels are more entities, each with its own sibling state.
-//! world.spawn_source(UiSource::new());
+//! world.spawn((Source::new(UiSource::new()),));
 //! world.spawn((
 //!     UiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
@@ -127,8 +127,8 @@ struct Gpu {
 ///
 /// The source owns egui's [`Context`](egui::Context) — its font atlas and
 /// memory survive across frames — and drives every [`UiPanel`] in the world.
-/// Mount it like any other source
-/// ([`spawn_source`](crate::source::WorldSourceExt::spawn_source)); it declares
+/// Spawn it like any other source ([`Source::new`](crate::source::Source::new));
+/// it declares
 /// [`FrameSourceOrder::UI`], so it records after the meshes.
 ///
 /// Nothing is built until the first frame: the source's pipeline is

@@ -80,7 +80,7 @@ fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture) {
     let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
     let blit = BlitTexture::new(&world, gpu.context, view);
     world.spawn((blit,));
-    world.spawn_source(BlitSource::new());
+    world.spawn((Source::new(BlitSource::new()),));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     (world, gpu, target)
 }

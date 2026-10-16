@@ -20,9 +20,8 @@
 //!
 //! # A world owns its tasks
 //!
-//! The tasks live in the world they belong to, as a
-//! [`LocalTasks`](crate::executor::LocalTasks) component, rather than in a
-//! [`LocalPool`](crate::executor::LocalPool) the caller keeps beside it.
+//! The tasks live in the world they belong to, as a [`LocalTasks`] component,
+//! rather than in a [`LocalPool`] the caller keeps beside it.
 //! A task therefore lasts as long as the world does, whatever call started
 //! it, and no caller has to thread an executor through to the code that
 //! spawns. Every world the framework builds is given one at creation, before

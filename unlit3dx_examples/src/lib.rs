@@ -137,7 +137,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // publish are the ones this frame shows.
     if stepped {
         let stepper = SceneStepper::new(GAME_HZ, PHYSICS_HZ, None);
-        world.spawn_frame_behaviour(stepped_frame(worlds, stepper));
+        world.spawn((stepped_frame(worlds, stepper),));
     }
 
     // The app entity and the behaviours that drive it. The GPU request
@@ -145,7 +145,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // builds the presentation path; from then on the pump and the redraw
     // requests dispatch frames into it.
     let app = world.spawn((ExitRequest(false),));
-    world.spawn_frame_behaviour(request_gpu(app, {
+    world.spawn((request_gpu(app, {
         let gameplay_sender = gameplay_sender.clone();
         // Only an MCP-driven scene needs the offscreen target: it is what
         // a screenshot reads back. A plain window draws into the swap chain.
@@ -185,8 +185,8 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 serve_mcp(world);
             }
         }
-    }));
-    world.spawn_frame_behaviour(draw_presented());
+    }),));
+    world.spawn((draw_presented(),));
     let (pump, redraw) = pump_presented();
     world.spawn((pump,));
     world.spawn((redraw,));
@@ -206,13 +206,13 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // before the draw, the render world's UI source reads the same
     // events while it draws, and the events are forgotten once the
     // frame is out, so nothing hears them twice.
-    world.spawn_frame_behaviour(OnFrame::new(
+    world.spawn((OnFrame::new(
         FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
         |world, _entity, _frame| {
             dispatch_input(world);
         },
-    ));
-    world.spawn_frame_behaviour(OnFrame::new(
+    ),));
+    world.spawn((OnFrame::new(
         FrameBehaviourOrder(FRAME_CLEAR_INPUT),
         |world, _entity, _frame| {
             let handle = world.query::<&InputHandle>().next().map(|(_, h)| h.clone());
@@ -220,7 +220,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 handle.write().clear_events();
             }
         },
-    ));
+    ),));
 
     host.run(event_loop).expect("the event loop runs");
 }

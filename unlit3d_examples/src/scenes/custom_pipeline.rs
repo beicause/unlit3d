@@ -1142,7 +1142,7 @@ fn build(
 
     // No family of the built-in unlit pipeline is registered: every draw in this
     // scene goes through a pipeline the example compiled itself.
-    let _source_entity = world.spawn_source(source);
+    let _source_entity = world.spawn((Source::new(source),));
     let camera_entity = world.spawn((camera_looking_at(
         orbit_eye(ORBIT_START),
         CAMERA_TARGET,

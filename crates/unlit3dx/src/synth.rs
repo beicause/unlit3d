@@ -3,7 +3,7 @@
 //!
 //! The soundfont loads on the audio thread, where the [`SynthVoice`] and
 //! one [`MidiPlayer`] per named track it feeds are spawned as components
-//! of the audio world — each with the [`OnFill`] that renders it, so a
+//! of the audio world — each with the [`OnAudioFill`] that renders it, so a
 //! source plays by existing and a world with no sources plays nothing.
 //! Installing them is ordinary work for that world: queue a job once the
 //! output's format ([`AudioFormat`](crate::audio::AudioFormat)) has landed.
@@ -25,7 +25,7 @@ use rustysynth_ext::{
 };
 use unlit_ecs::{Entity, World};
 
-use crate::audio::{AudioChunk, FillOrder, OnFill, WorldFillExt};
+use crate::audio::{AudioChunk, AudioFillOrder, OnAudioFill};
 use crate::job::Job;
 
 /// Parses the soundfont in `bytes`.
@@ -98,7 +98,7 @@ fn synthesizer(font: &Arc<SoundFont>, sample_rate: u32) -> Result<(Synthesizer, 
 
 /// A loaded soundfont and the synthesizer playing it, as one component.
 ///
-/// Spawned with the [`OnFill`] that renders it, so the voice is a source
+/// Spawned with the [`OnAudioFill`] that renders it, so the voice is a source
 /// of the world's mix: note jobs press its keys and the audio thread
 /// turns them into samples.
 pub struct SynthVoice {
@@ -130,7 +130,7 @@ impl SynthVoice {
             left: Vec::new(),
             right: Vec::new(),
         };
-        let fill = world.mount_on_fill(OnFill::new(FillOrder::default(), fill_voice));
+        let fill = OnAudioFill::new(AudioFillOrder::default(), fill_voice);
         Ok(world.spawn((voice, fill)))
     }
 
@@ -157,7 +157,7 @@ impl SynthVoice {
 /// playback stays sample-accurate no matter how the host paces its ticks.
 /// Each player carries a name so transport jobs can address it
 /// independently: a background loop and a one-shot sequence coexist on
-/// the same audio world, each with its own [`OnFill`] source.
+/// the same audio world, each with its own [`OnAudioFill`] source.
 pub struct MidiPlayer {
     /// The name transport jobs address this track by.
     name: String,
@@ -235,7 +235,7 @@ impl MidiPlayer {
             left: Vec::new(),
             right: Vec::new(),
         };
-        let fill = world.mount_on_fill(OnFill::new(FillOrder::default(), fill_track));
+        let fill = OnAudioFill::new(AudioFillOrder::default(), fill_track);
         Ok(world.spawn((player, fill)))
     }
 

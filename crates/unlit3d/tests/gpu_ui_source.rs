@@ -284,7 +284,7 @@ fn count_in(frame: &Frame, x0: u32, x1: u32, color: egui::Color32, tolerance: u8
 /// `MeshSource` and no camera.
 fn ui_only_world(world: &mut World, ctx: &Ctx) -> TestGpu {
     let gpu = TestGpu::frame_only(world, ctx);
-    world.spawn_source(UiSource::new());
+    world.spawn((Source::new(UiSource::new()),));
     gpu
 }
 
@@ -507,7 +507,7 @@ fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPane
     spawn_load_ops(world);
 
     world.spawn((panel,));
-    let ui = world.spawn_source(UiSource::new());
+    let ui = world.spawn((Source::new(UiSource::new()),));
     if ui_first {
         let _ = world.with_mut::<Source, _>(ui, |source| {
             source.set_order(Some(FrameSourceOrder(FrameSourceOrder::MESH.0 - 1)))
@@ -526,7 +526,7 @@ const OVERLAP_PIXEL: (u32, u32) = (128, 144);
 /// A pixel inside the band that the cube does not cover.
 const PANEL_PIXEL: (u32, u32) = (16, 144);
 
-/// Record order follows the declared `FrameSourceOrder`, not the mount order.
+/// Record order follows the declared `FrameSourceOrder`, not the spawn order.
 ///
 /// The panel is opaque so each order leaves one colour on top: with the UI
 /// last the panel's colour survives the overlap, and with the UI first the
@@ -595,7 +595,7 @@ async fn ui_does_not_clip_the_mesh() {
             RED,
         );
     }),));
-    world.spawn_source(UiSource::new());
+    world.spawn((Source::new(UiSource::new()),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
@@ -634,7 +634,7 @@ async fn mesh_and_ui_survive_a_second_frame() {
     spawn_load_ops(&mut world);
 
     world.spawn((rich_panel(),));
-    world.spawn_source(UiSource::new());
+    world.spawn((Source::new(UiSource::new()),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     // One frame warms egui up, then two are compared.

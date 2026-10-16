@@ -67,8 +67,8 @@ pub mod world;
 pub mod prelude {
     #[cfg(feature = "audio")]
     pub use crate::audio::{
-        AudioChunk, AudioConfig, AudioFormat, AudioFormatInbox, AudioGain, AudioReady,
-        AudioReadyInbox, FillOrder, OnFill, WorldFillExt, dispatch_fill, spawn_audio_world_with,
+        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioFormatInbox, AudioGain,
+        AudioReady, AudioReadyInbox, OnAudioFill, dispatch_audio_fill, spawn_audio_world_with,
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};

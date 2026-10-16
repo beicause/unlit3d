@@ -694,7 +694,7 @@ let ctx = spawn_context(
 let mut mesh_source = MeshSource::new(&world, ctx);
 mesh_source.register_unlit_family(&world);
 let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world)));
-let source = world.spawn_source(mesh_source);
+let source = world.spawn((Source::new(mesh_source),));
 let renderer = world.spawn((Renderer::new(ctx),));
 
 // 2. Allocate geometry and a material through the mesh source.
@@ -886,12 +886,12 @@ has one family, [`OnFrame`](frame::OnFrame), dispatched by
 the entity it sits on, and a `&mut` [`Frame`](frame::Frame) carrying the frame's
 delta time, index and size. That is the same shape as the event families, with
 the frame context in place of an event. Ordering is by
-[`FrameBehaviourOrder`](frame::FrameBehaviourOrder) then mount order, and the
-library declares no order values of its own: what runs before what is the
-application's to define. A windowed application's host world and each world it
-drives dispatch the same family, so the scene side is componentised the same way.
-Mount a behaviour with [`WorldFrameExt::spawn_frame_behaviour`](frame::WorldFrameExt::spawn_frame_behaviour),
-which assigns the mount index. A behaviour that needs the rest of the frame
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder), then by entity for equal
+orders, and the library declares no order values of its own: what runs before
+what is the application's to define. A windowed application's host world and each
+world it drives dispatch the same family, so the scene side is componentised the
+same way. Spawn a behaviour with [`World::spawn`](unlit_ecs::World::spawn).
+A behaviour that needs the rest of the frame
 skipped sets a flag its siblings read; a behaviour that needs structural change
 queues it, because a callback only holds `&World`.
 
