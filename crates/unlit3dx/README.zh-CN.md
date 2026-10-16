@@ -157,9 +157,6 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `dispatch_fill`——示例的离屏运行正是这样把混音写成文件的。`dispatch_fill` 就是
   音频线程每块的全部工作，所以直接步进它得到的是同一套混音，只是少了环形缓冲。
 
-  录音为音频 MCP 工具服务：录音音源挂在填充顺序的最末，因此它捕获到的是所有其他
-  音源与 world 的 `AudioGain` 之后的混音。这些工具把捕获的样本写成一个 RIFF/WAVE
-  文件，无需额外依赖。
 - **synth**（默认开启，蕴含 audio）：安装所需的构件，构建在
   [rustysynth-ext](https://docs.rs/rustysynth-ext) 之上——`load_soundfont` 解析字节
   （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台实时音色，
@@ -181,7 +178,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   world，后者就是 `list_worlds` 报告的名字。本 crate 自带的四个工具——
   `start_audio_recording`、`stop_audio_recording`、`cancel_audio_recording`
   与 `audio_recording_status`——在指名的 world 上驱动一次录音，并把混音写成
-  WAV 文件。
+  WAV 文件。录音音源挂在填充顺序的最末，因此它捕获到的是所有其他音源与 world 的
+  `AudioGain` 之后的混音，样本写成一个 RIFF/WAVE 文件，无需额外依赖。录音器只为这
+  些工具编译，故 `mcp` 自身蕴含 `audio`。
 
 ## 最佳实践
 

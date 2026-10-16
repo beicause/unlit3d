@@ -193,10 +193,6 @@ The bridges:
   whole of the audio thread's per-chunk work, so stepping it directly is the
   same mixing, minus the ring.
 
-  Recording backs the audio MCP tools: a recording source mounts at the end
-  of the fill order, so what it captures is the mix after every other source
-  and the world's `AudioGain`. The tools write the captured samples out as a
-  RIFF/WAVE file with no extra dependency.
 - **synth** (on by default, implies audio): the pieces to install, built on
   [rustysynth-ext](https://docs.rs/rustysynth-ext) — `load_soundfont` parses
   the bytes (typically an `include_bytes!`, so no filesystem is involved),
@@ -230,7 +226,11 @@ The bridges:
   registers four tools of its own — `start_audio_recording`,
   `stop_audio_recording`, `cancel_audio_recording` and
   `audio_recording_status` — which drive a recording in the named world and
-  write the mix out as a WAV file.
+  write the mix out as a WAV file. A recording source mounts at the end of
+  the fill order, so it captures the mix after every other source and the
+  world's `AudioGain`, and the samples become a RIFF/WAVE file with no extra
+  dependency. The recorder is compiled only for these tools, so `mcp` turns
+  `audio` on itself.
 
 ## Best practices
 

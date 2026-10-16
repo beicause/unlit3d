@@ -41,8 +41,11 @@ wasm-bindgen-futures = { workspace = true, optional = true }
 default = ["audio", "physics", "render", "synth"]
 ## The audio output thread, backed by cpal and a ring buffer.
 audio = ["dep:cpal", "dep:ringbuf"]
-## The MCP stdio server driven from the host world.
+## The MCP stdio server driven from the host world. Its audio tools record
+## what a world fills, so it turns the audio feature on itself rather than
+## leaving a caller to pair the two — the recorder is compiled only for them.
 mcp = [
+  "audio",
   "dep:schemars",
   "dep:serde",
   "dep:unlit3d",

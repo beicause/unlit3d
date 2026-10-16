@@ -51,7 +51,9 @@ pub mod mcp;
 pub mod physics;
 #[cfg(feature = "render")]
 pub mod present;
-#[cfg(feature = "audio")]
+// The recorder exists for the MCP audio tools, which are the only thing that
+// constructs one, so it is compiled exactly where they are.
+#[cfg(all(feature = "mcp", not(target_arch = "wasm32")))]
 mod record;
 mod sync;
 #[cfg(feature = "synth")]

@@ -143,8 +143,11 @@ ECS is as small as it is.
 
 Commands follow the `cargo xtask` convention:
 
-- **`cargo xtask check`** — clippy over the whole workspace, all targets and all
-  features (`-D warnings`), then `cargo fmt --check`. The gate before a commit.
+- **`cargo xtask check`** — clippy over the whole workspace, with the default
+  features and then with all of them, plus each package on its own with the
+  default features (`-D warnings`); then `cargo fmt --check`. The gate before a
+  commit. The per-package pass is what catches an optional feature a crate's own
+  code no longer uses, which a workspace-wide run hides by unifying features.
   `--release` uses the release profile.
 - **`cargo xtask test`** — `cargo nextest run` over the unit and integration
   tests, then `cargo test --doc` for the doctests nextest does not cover.

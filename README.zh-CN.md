@@ -107,9 +107,10 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 
 常用命令遵循`cargo xtask`约定：
 
-- **`cargo xtask check`** — 对全工作区、全 target、全 feature 跑 clippy
-  （`-D warnings`），随后 `cargo fmt --check`。提交前的门槛。加 `--release` 走 release
-  profile。
+- **`cargo xtask check`** — 先以默认 features、再以全 feature 对全工作区跑 clippy，
+  另外每个包各自以默认 features 单独跑（`-D warnings`）；随后 `cargo fmt --check`。
+  提交前的门槛。逐包那一趟能抓出某个 crate 自身代码已不再使用的可选 feature——
+  全工作区一起跑会因 feature 统一而掩盖它。加 `--release` 走 release profile。
 - **`cargo xtask test`** — 用 `cargo nextest run` 覆盖单元与集成测试，随后
   `cargo test --doc` 补上 nextest 不跑的 doctest。加 `--release` 走 release profile。
 - **`cargo xtask test-wasm`** — 把 GPU 测试构建到 `wasm32-unknown-unknown`、做

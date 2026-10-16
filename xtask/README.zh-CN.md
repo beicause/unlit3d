@@ -22,9 +22,18 @@ cargo xtask publish        # 按依赖顺序把工作区的 crate 发布到 crat
 
 ### `cargo xtask check`
 
-依次运行 `cargo clippy --workspace --all-targets --all-features` 与
-`cargo fmt --all -- --check`。clippy 排在前面，因为它的诊断可能让代码树处于
-`rustfmt` 会重写的状态，因此格式化拥有最后发言权。接受 `--release`。
+先在整个工作区上运行 clippy，再运行 `cargo fmt --all -- --check`。clippy 排在
+前面，因为它的诊断可能让代码树处于 `rustfmt` 会重写的状态，因此格式化拥有最后
+发言权。接受 `--release`。
+
+clippy 跑三趟，因为每一趟编译的代码集合不同：
+
+1. 工作区加默认 features——平台产物构建时用的组合。
+2. 每个包各自单独、默认 features、只编库目标。点名一个包会去掉整个工作区构建时
+   应用的 feature 统一，因此这一趟能抓出某个 crate 自身代码已不再使用的可选
+   feature——别的趟都看不见它，因为 `--all-features` 会把该 feature 在那个包里
+   也打开，而单元测试也算一次使用。
+3. 工作区加全部 features，文档构建与全量测试编译的就是这一组合。
 
 ### `cargo xtask test`
 

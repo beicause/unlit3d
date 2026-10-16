@@ -24,10 +24,21 @@ cargo xtask publish        # publish the workspace's crates to crates.io, in dep
 
 ### `cargo xtask check`
 
-Runs `cargo clippy --workspace --all-targets --all-features` and then
-`cargo fmt --all -- --check`. Clippy goes first because its diagnostics may
-leave the tree in a state `rustfmt` would rewrite, so formatting is the last
-word. Accepts `--release`.
+Runs clippy over the workspace, then `cargo fmt --all -- --check`. Clippy goes
+first because its diagnostics may leave the tree in a state `rustfmt` would
+rewrite, so formatting is the last word. Accepts `--release`.
+
+Clippy runs three times, because each compiles a different set of code:
+
+1. The workspace with its default features — the combination the platform
+   artifacts are built with.
+2. Every package on its own, default features, library targets only. Naming a
+   package stops the feature unification a workspace-wide run applies, so this
+   is the pass that catches an optional feature a crate's own code no longer
+   uses — visible to no other pass, because `--all-features` turns that feature
+   on there too and a unit test counts as a use.
+3. The workspace with every feature, which the doc build and the full test run
+   compile.
 
 ### `cargo xtask test`
 
