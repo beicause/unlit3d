@@ -11,9 +11,11 @@
 //!   through a [`job::Request`].
 //! - A **sub-world** runs a nested world on the host's thread, drained
 //!   with [`host::drain_sub_world`] between frames.
-//! - **Snapshots** are the way back: a world publishes a `T` through a
-//!   [`channel::SnapshotWriter`], the host reads the newest through a
-//!   [`channel::SnapshotReader`] and never blocks.
+//! - **Snapshots** are the way back, and they are opt-in: a world runs a
+//!   collector for every subscription it carries and publishes what each
+//!   returns, so nothing is collected until someone asks. A subscriber
+//!   reads the newest `T` through a [`channel::SnapshotReader`] and never
+//!   blocks; dropping the reader unsubscribes.
 //!
 //! The runtime layer is small and complete: [`job`], [`channel`],
 //! [`thread`], [`host`], [`world`], and [`handle`] together are the whole
@@ -33,7 +35,7 @@
 
 #[cfg(feature = "audio")]
 pub mod audio;
-/// The one-slot snapshot mailbox between worlds.
+/// The snapshot subscriptions between worlds.
 pub mod channel;
 /// A single-threaded executor for awaiting batches of requests.
 pub mod executor;
@@ -67,8 +69,8 @@ pub mod world;
 pub mod prelude {
     #[cfg(feature = "audio")]
     pub use crate::audio::{
-        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioFormatInbox, AudioGain,
-        AudioReady, AudioReadyInbox, OnAudioFill, dispatch_audio_fill, spawn_audio_world_with,
+        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioGain, AudioOutputOpen,
+        OnAudioFill, dispatch_audio_fill, spawn_audio_world_with,
     };
     #[cfg(feature = "render")]
     pub use crate::gpu::{Gpu, request_gpu};
@@ -76,9 +78,9 @@ pub mod prelude {
     pub use crate::mcp::serve_mcp;
     #[cfg(feature = "physics")]
     pub use crate::physics::{
-        BodyDesc, BodyShape, PHYSICS_HZ, PhysicsConfig, PhysicsInbox, PhysicsSnapshot,
-        RigidBodyHandle, despawn_body, init_physics_world, spawn_body, spawn_fixed_cuboid,
-        spawn_physics_world_with, step_once,
+        BodyDesc, BodyShape, PHYSICS_HZ, PhysicsConfig, PhysicsContacts, RigidBodyHandle,
+        despawn_body, init_physics_world, spawn_body, spawn_fixed_cuboid, spawn_physics_world_with,
+        step_once,
     };
     #[cfg(feature = "render")]
     pub use crate::present::{
@@ -92,14 +94,14 @@ pub mod prelude {
         program_change_job, rewind_track_job, stop_track_job,
     };
     pub use crate::{
-        channel::{SnapshotReader, SnapshotWriter, snapshot_pair},
+        channel::{SnapshotReader, publish_subscribed},
         executor::{LocalPool, LocalSpawnExt, LocalTasks, try_join_all},
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world},
         job::{Job, JobSender, Request, RequestError, SendError},
         thread::{FixedClock, ThreadControl, ThreadStatus, WorldThread},
         world::{
-            Stepped, Threaded, WorldName, WorldRunner, spawn_remote_world, spawn_remote_world_with,
+            Stepped, Threaded, WorldName, WorldRunner, spawn_remote_world,
             spawn_remote_world_with_init, spawn_stepped_world_with_init, step_stepped_world,
             with_stepped_world,
         },

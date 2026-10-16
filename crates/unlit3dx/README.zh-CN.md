@@ -23,6 +23,8 @@ let mut host = World::new();
 // 合于一身。
 let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control| {
     // ... 在 `world` 里推进模拟 ...
+    // 状态更新完毕后，world 向订阅者发布快照。
+    publish_subscribed(world);
     control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
     !control.stop_requested()
 });
@@ -32,14 +34,17 @@ simulation.send(Box::new(|world: &mut World| world.spawn((0u8,)))).expect("room 
 let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,))));
 // job 一旦运行过，`spawned.poll()` 就是 `Some(entity)`。
 
-// 快照是唯一回传的数据：在 world 的线程上 publish，在任意地方读最新一份，
-// 谁也不阻塞谁。快照装什么是调用方自己的类型，怎么读也是：拥有 reader 的那个
-// 帧行为负责把内容写进它所在的 world。
-let (writer, reader) = snapshot_pair::<Vec<u64>>();
-writer.publish(Vec::new());
+// 快照是唯一回传的数据，而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
+// 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
+// 所以场景想要什么，由收集闭包决定。
+let reader = simulation.sender().subscribe(|world: &World| {
+    let bodies: Vec<u64> = world.query::<&u64>().map(|(_, id)| *id).collect();
+    Some(bodies)
+}).expect("room in the queue");
 if let Some(latest) = reader.latest() {
     // ... 应用 `latest` ...
 }
+// 丢弃 reader 即退订：world 不再为它收集。
 ```
 
 按 feature 划分的模块在这套核心之上搭场景。**子 world** 让持有者留在主线程上，
@@ -51,8 +56,8 @@ let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 
-**physics** 桥发布刚体变换与碰撞事件的 `PhysicsSnapshot`，**synth** 桥把 note job 与
-MIDI 文件变成音色库音频。render 桥是调用方自己的实现：`unlit3dx_examples` crate 在
+**physics** 桥每步把 rapier 的碰撞事件排空进 `PhysicsContacts` 组件，**synth** 桥把
+note job 与 MIDI 文件变成音色库音频。render 桥是调用方自己的实现：`unlit3dx_examples` crate 在
 `unlit3d` 的 `MeshSource` 注册表之上写了一个，并把所有桥放进同一个场景。
 
 ## 为什么要分离 world
@@ -71,7 +76,8 @@ MIDI 文件变成音色库音频。render 桥是调用方自己的实现：`unli
   各运行一个。
 
 world 之间从不互相调用。调用者发送一个 **job**——一个接收远程 world 的
-`&mut World` 的装箱闭包——然后一份 **快照** 经由单槽信箱传回来。这就是全部协议。
+`&mut World` 的装箱闭包——或者 **订阅** 一份快照，后者在那个 world 里装一个收集闭包
+并把 reader 交回来。这就是全部协议。
 
 ## Job 与请求
 
@@ -93,15 +99,28 @@ panic）的请求报告 `Err(RequestError::Dropped)`，而不是永久阻塞。`
 
 ## 快照
 
-`SnapshotWriter<T>` 与 `SnapshotReader<T>` 是一个单槽信箱：写入方 `publish` 最新
-状态，读取方 `latest` 窥视它。没有积压，也没有需要推演的顺序——最新的快照获胜，
-未被读取的那份直接被替换。按 tick 产出快照的世界与按帧读取快照的消费者在中间
-会合，谁也不阻塞谁。
+快照是交给索要者自己的状态。`JobSender::subscribe` 在目标 world 里装一个收集闭包，
+并返回一个 `SnapshotReader<T>`；world 每 tick 在自身状态更新完毕后运行它携带的每个
+收集闭包，把各自的返回值发布出去。载荷是调用方自己的类型——本库不定义任何载荷——
+所以场景只收集它真正要的数据，不为别的付出代价。
+
+reader 是一个单槽信箱：`latest` 窥视最新一份，没有积压，也没有需要推演的顺序，
+未被读取的那份直接被替换。按 tick 收集的世界与按帧读取的消费者在中间会合，谁也不
+阻塞谁。收集闭包返回 `None` 时保留最新一份快照，状态未变的世界因此保持安静。
+
+不订阅就什么都不收集，而订阅的寿命与 reader 相同：最后一个 `SnapshotReader` 克隆被
+丢弃后，收集闭包会在下一 tick 被清除。订阅本身是一个 job，因此队列已满或 world 已
+停止时，它按队列自身的错误被拒绝。
+
+由于信箱只保留最新一份，它承载的是状态而非事件。两次读取之间发生又结束的碰撞会
+消失；必须看到每一次碰撞的调用方——比如子弹伤害——要让收集闭包把它们推进自己的
+队列并返回 `None`。只有收集闭包能看到它们：它在产出 world 的线程上、每 tick 都运行，
+赶在下一次覆盖缓冲区之前。
 
 ## 线程与步进
 
 world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`WorldRunner` 就是把这个
-选择做成泛型，而它是两种模式之间唯一的差别：有界 job 队列、快照信箱、宿主上的代理
+选择做成泛型，而它是两种模式之间唯一的差别：有界 job 队列、订阅、宿主上的代理
 实体、生成返回的句柄全都一样，因此宿主的实体与组件不随 runner 改变，tick 体内也
 无需知道自己在哪种模式下。
 
@@ -140,19 +159,20 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 各桥如下：
 
 - **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，64）
-  驱动 rapier 的 `PhysicsWorld`，并发布一份 `PhysicsSnapshot`——每个运动刚体的
-  变换，加上这一步开始与结束的碰撞对，以及每个新接触的速度。
+  驱动 rapier 的 `PhysicsWorld`。每一步把 rapier 的碰撞事件排空进 `PhysicsContacts`
+  组件——这一步开始的碰撞对（含每对相互接近的速度）与结束的碰撞对——然后运行该
+  world 的订阅者。它自己不发布任何载荷：调用方用收集闭包订阅，由闭包指名要什么状态。
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
   `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
 - **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
   持有其流。它的 `OnAudioFill` 组件就是音源：`dispatch_audio_fill` 每块运行一次它们，把各自叠加的
   样本混进由 `AudioConfig` 定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
   设备回调消费这个缓冲，欠载时静音。没有任何音源的 world 不出声。
-  玩法从不直接触碰音频——它发送 job。代理实体携带两个收件箱：`AudioFormatInbox`
-  由音频线程在流打开的那一刻填满——按固定速率渲染的音源必须按设备实际采用的速率构建，
-  而这一点在流打开之前无从知晓；以及 `AudioReadyInbox`，报告 world 真正能出声的时刻，
-  调用方由此区分音色库加载中与设备损坏，并丢弃过期的音符而非把它们排在加载之后一次性齐放。
-  因此安装音源就是这个 world 的普通工作：等待格式，再把生成音源的 job 排进队列。
+  玩法从不直接触碰音频——它发送 job。world 在流打开的那一刻生成 `AudioFormat`
+  组件——按固定速率渲染的音源必须按设备实际采用的速率构建，而这一点在流打开之前
+  无从知晓——并同时生成 `AudioOutputOpen` 标记，调用方由此区分有地方播放的 world
+  与仍在等设备的 world，并丢弃过期的音符而非把它们排在音色库加载之后一次性齐放。
+  因此安装音源就是这个 world 的普通工作：订阅格式，再把生成音源的 job 排进队列。
 
   步进的音频 world 完全不打开设备：没有可播放的目标，也没有回调来消费环形缓冲。它
   也不发布格式，因此想要出声的调用方自行提前安装音源，并在需要一块时自己调用
@@ -228,11 +248,13 @@ world.spawn((request_gpu(app, |world, gpu| {
 
 ## 测试
 
-`cargo nextest run -p unlit3dx` 覆盖核心：job 往返、请求回复、快照替换、线程停止
-与 panic 报告、远程 world 的已发送 job 运行，以及步进 world 的同一批行为——它的
-job 在步进时运行、走完终点的 tick 会结束它、步进一个不携带步进 world 的实体什么
-也不做。集成测试补上各桥：物理 world
-把球丢到地板上并报告接触、音频 world 运行 job 并发布就绪状态、多 world 的 job 与
+`cargo nextest run -p unlit3dx` 覆盖核心：job 往返、请求回复、订阅——多个 reader 各自
+拿到自己的快照、收集闭包返回空时保留最新一份、reader 被丢弃后订阅被清除、队列满时
+订阅被拒绝——线程停止与 panic 报告、远程 world 的已发送 job 运行，以及步进 world 的
+同一批行为——它的 job 在步进时运行、走完终点的 tick 会结束它、步进一个不携带步进
+world 的实体什么也不做。集成测试补上各桥：物理 world
+把球丢到地板上并报告接触、订阅者把两次分别落地的碰撞都排进队列（信箱会把它们并成
+一次）、音频 world 运行 job 并报告输出已打开、多 world 的 job 与
 快照往来，以及 panic 的 job 只失败自己的请求。录音也有覆盖：它捕获设备本会播放的
 混音并把样本排成 RIFF/WAVE 文件，音频 MCP 工具则把两者串进下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
 world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，

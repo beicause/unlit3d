@@ -76,12 +76,14 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   与 mesh source。资源服务器本身——`create_mesh`、`create_material_from_texture`、
   `spawn_instance` 以及网格与相机辅助——就是本 crate 自己的 `src/render.rs`，
   建立在 `unlit3d` 的通用 `MeshSource` 注册表之上；`unlit3dx` 不自带 render 桥。
-- **物理 world** 以 64 Hz 步进 rapier，发布刚体变换与碰撞事件。地面是它的
-  第一个 job。
+- **物理 world** 以 64 Hz 步进 rapier，每一步排空碰撞事件。玩法用自己的收集闭包
+  订阅它——`GamePhysics` 载荷属于本 crate，不属于库——闭包在姿态未变时什么都不
+  返回，因此刚体都睡着的场景根本不发布快照。地面是它的第一个 job。
 - **音频 world** 持有输出流，混音它所携带的任意音源，欠载时静音。它自己的采样率
-  要等流打开才知晓，于是届时发布一个 `AudioFormat`，由示例以一个 job 应答，
-  按这个速率生成一台合成器与每条音轨各一台 MIDI 播放器。音色库加载期间它会发布
-  就绪状态：在播放器存在之前发出的传送 job 找不到可寻址的音轨。
+  要等流打开才知晓，于是届时生成 `AudioFormat` 组件，由示例以一个 job 应答，
+  按这个速率生成一台合成器与每条音轨各一台 MIDI 播放器。它能否出声由
+  `AudioOutputOpen` 标记与收集闭包看到的音源共同决定，玩法等待的正是它：在播放器
+  存在之前发出的传送 job 找不到可寻址的音轨。
 - **玩法 world** 是唯一知道其余三者的地方。它把搭建场景写成自己的一个 async
   任务，await 渲染服务器的资产与实例，向物理请求刚体、
   把它们映射到实例句柄、再把姿态作为一个 job 发回去。音频 world 报告自己能出声后，玩法启动

@@ -99,14 +99,18 @@ paced differs.
   and the mesh and camera helpers — is this crate's own `src/render.rs`,
   built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
   render bridge.
-- The **physics world** steps rapier at 64 Hz and publishes body transforms
-  and collision events. The ground is its first job.
+- The **physics world** steps rapier at 64 Hz and drains its contacts each
+  step. Gameplay subscribes to it with a collector of its own — the
+  `GamePhysics` payload lives in this crate, not in the library — and the
+  collector answers nothing while the poses are unchanged, so a scene whose
+  bodies are asleep publishes no snapshot at all. The ground is its first job.
 - The **audio world** owns the output stream and mixes whatever sources it
   carries, underrunning to silence. Its own sample rate is not known until
-  the stream opens, so it publishes an `AudioFormat` then and the demo
+  the stream opens, so it spawns an `AudioFormat` component then and the demo
   answers with a job that spawns one synthesizer and one MIDI player per
-  track at that rate. While the soundfont loads it publishes its readiness,
-  since a transport job sent before the players exist would find no track to
+  track at that rate. Its readiness — the `AudioOutputOpen` marker plus the
+  sources the collector sees — is what gameplay waits on, since a transport
+  job sent before the players exist would find no track to
   address.
 - The **gameplay world** is the only place that knows about all three. It
   builds the scene by awaiting assets and instances from the render server

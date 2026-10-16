@@ -24,6 +24,8 @@ let mut host = World::new();
 // the command queue and the thread's status in one value.
 let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control| {
     // ... advance the simulation inside `world` ...
+    // The world publishes to its subscribers once its state is current.
+    publish_subscribed(world);
     control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
     !control.stop_requested()
 });
@@ -34,15 +36,19 @@ simulation.send(Box::new(|world: &mut World| world.spawn((0u8,)))).expect("room 
 let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,))));
 // `spawned.poll()` is `Some(entity)` once the job has run.
 
-// Snapshots are the only data that flows back: publish on the world's
-// thread, read the newest one from anywhere, never block. What a snapshot
-// holds is the caller's type, and so is reading it: a behaviour that owns
-// the reader writes the payload into the world it runs in.
-let (writer, reader) = snapshot_pair::<Vec<u64>>();
-writer.publish(Vec::new());
+// Snapshots are the only data that flows back, and they are opt-in: the
+// world runs the collector this subscription carries once per tick and
+// publishes whatever it returns. The payload is the caller's type — the
+// library defines none — so the collector is where a scene decides what it
+// wants to see.
+let reader = simulation.sender().subscribe(|world: &World| {
+    let bodies: Vec<u64> = world.query::<&u64>().map(|(_, id)| *id).collect();
+    Some(bodies)
+}).expect("room in the queue");
 if let Some(latest) = reader.latest() {
     // ... apply `latest` ...
 }
+// Dropping the reader unsubscribes: the world stops collecting for it.
 ```
 
 The feature-gated modules build scenes on top of that core. A **sub-world**
@@ -54,8 +60,8 @@ let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world
 drain_sub_world(&mut nested); // run the jobs other threads posted
 ```
 
-The **physics** bridge publishes a `PhysicsSnapshot` of body transforms and
-collision events, and the **synth** bridge turns note jobs and MIDI files
+The **physics** bridge drains rapier's contacts into a `PhysicsContacts`
+component each step, and the **synth** bridge turns note jobs and MIDI files
 into soundfont audio. A render bridge is a caller's own build: the
 `unlit3dx_examples` crate writes one over `unlit3d`'s `MeshSource` registry
 and ties every bridge into one scene.
@@ -78,8 +84,9 @@ one world per concern, and never share one.
   audio and gameplay each run one.
 
 The worlds never call each other. A caller sends a **job** — a boxed closure
-that receives the remote world's `&mut World` — and a **snapshot** comes back
-through a single-slot mailbox. That is the whole protocol.
+that receives the remote world's `&mut World` — or **subscribes** to a
+snapshot, which installs a collector in that world and hands back a reader.
+That is the whole protocol.
 
 ## Jobs and requests
 
@@ -105,20 +112,40 @@ is that shape.
 
 ## Snapshots
 
-`SnapshotWriter<T>` and `SnapshotReader<T>` are a single-slot mailbox: the
-writer `publish`es the newest state and the reader `latest` peeks it. There is
-no backlog and no ordering to reason about — the newest snapshot wins, and an
-unread one is replaced. A world that produces snapshots per tick and a
-consumer that reads per frame meet in the middle without ever blocking.
+A snapshot is state handed to whoever asked for it. `JobSender::subscribe`
+installs a collector in the target world and returns a `SnapshotReader<T>`;
+the world runs every collector it carries once per tick, after its state is
+current, and publishes what each returns. The payload is the caller's type —
+the library defines none — so a scene collects exactly the data it wants and
+pays for nothing else.
+
+A reader is a single-slot mailbox: `latest` peeks the newest snapshot, there
+is no backlog and no ordering to reason about, and an unread one is replaced.
+A world that collects per tick and a consumer that reads per frame meet in the
+middle without ever blocking. A collector that returns `None` leaves the
+newest snapshot in place, which is how a world that has not changed stays
+quiet.
+
+Nothing is collected unasked, and a subscription lives exactly as long as its
+reader: dropping the last clone of a `SnapshotReader` prunes the collector on
+the next tick. Subscribing is a job, so it is refused with the queue's own
+error when the world is full or has stopped.
+
+Because a mailbox keeps only the newest snapshot, it carries state and not
+events. A contact that began and ended between two reads is gone; a caller
+that must see every one of them — bullet damage, say — has its collector
+push them into a queue of its own and return `None`. The collector is the
+only place that can see them: it runs on the producing world's thread, on
+every tick, before the next one overwrites the buffer.
 
 ## Threads and stepping
 
 A world is spawned through a *runner*, which decides who calls its tick loop.
 `WorldRunner` is that choice made generic, and it is the only difference
-between the two modes: the bounded job queue, the snapshot mailboxes, the
-proxy entity on the host and the handle the spawn returns are all the same,
-so the host's entities and components do not change with the runner and
-nothing in a tick body has to know which one it is under.
+between the two modes: the bounded job queue, the subscriptions, the proxy
+entity on the host and the handle the spawn returns are all the same, so the
+host's entities and components do not change with the runner and nothing in a
+tick body has to know which one it is under.
 
 - **`Threaded`** gives the world a thread of its own. `WorldThread::spawn_with`
   owns the loop: it runs a one-time `init` closure before the first job
@@ -166,12 +193,14 @@ derived from the mesh source's device.
 The bridges:
 
 - **physics** (on by default): `spawn_physics_world_with::<R>` runs a rapier
-  `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64) and publishes a
-  `PhysicsSnapshot` — the transforms of every moving body, plus the collision
-  pairs that started and stopped this step, with the speed of each new
-  contact. `spawn_body` (a `BodyDesc` with a `BodyShape`) and
-  `spawn_fixed_cuboid` are the building blocks; `init_physics_world` builds
-  the same world for a caller that steps it inline with `step_once`.
+  `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64). Each step drains rapier's
+  contacts into a `PhysicsContacts` component — the collision pairs that
+  started, with the speed each pair was closing at, and those that stopped —
+  and then runs the world's subscribers. It publishes no payload of its own:
+  a caller subscribes with the collector that names the state it wants.
+  `spawn_body` (a `BodyDesc` with a `BodyShape`) and `spawn_fixed_cuboid` are
+  the building blocks; `init_physics_world` builds the same world for a
+  caller that steps it inline with `step_once`.
 - **audio** (on by default): `spawn_audio_world_with::<R>` opens the output
   device and owns its stream on the audio thread. Its `OnAudioFill` components are
   the sources:
@@ -179,14 +208,14 @@ The bridges:
   `AudioConfig`, mixing their samples and scaling the sum by the world's
   `AudioGain`; the device callback drains the ring and underruns to silence.
   A world that carries no source plays nothing.
-  Gameplay never touches audio directly — it sends jobs. The proxy entity
-  carries two inboxes: an `AudioFormatInbox`, which the thread fills the
-  moment its stream opens — a source that renders at a fixed rate has to be
-  built at the rate the device really uses, and that is not known until
-  then — and an `AudioReadyInbox`, which says when the world can actually
-  sound, so a caller can tell a loading soundfont from a broken device and
-  drop stale notes instead of queueing them behind the load. Installing
-  sources is therefore ordinary work for that world: wait for the format,
+  Gameplay never touches audio directly — it sends jobs. The world spawns an
+  `AudioFormat` component the moment its stream opens — a source that renders
+  at a fixed rate has to be built at the rate the device really uses, and that
+  is not known until then — and an `AudioOutputOpen` marker with it, so a
+  subscriber can tell a world with somewhere to play from one still waiting
+  for a device and drop stale notes instead of queueing them behind a
+  soundfont load. Installing sources is therefore ordinary work for that
+  world: subscribe to the format, then
   queue the job that spawns them.
 
   A stepped audio world opens no device at all: there is nothing to play to
@@ -217,8 +246,9 @@ The bridges:
   counts, and a reader that remembers the count it last saw sees every
   end, even when it polled nothing in between. The count is a plain fact
   about a player, so whoever needs it asks the audio world for it — a
-  snapshot would only hold the newest value and drop an end that came and
-  went between two frames.
+  mailbox would only hold the newest value and drop an end that came and
+  went between two frames, and an event that must not be missed belongs in
+  a queue the collector fills.
 - **mcp** (off by default): `serve_mcp` serves the host world and every
   world it carries — a nested sub-world, or one on a thread of its own —
   over the [Model Context Protocol](../unlit_ecs/README.md), so a live scene
@@ -256,8 +286,8 @@ headless, because no mode ever reaches into another world's data.
    materials and instances are requested from the render bridge; bodies are
    spawned and despawned through the physics queue; sources and transport go
    to the audio world as jobs, and a whole install — see the demo's
-   `install_synth` — is one function wrapped in one job. A snapshot mailbox
-   carries state *out* of a world, and the world that reads it decides what
+   `install_synth` — is one function wrapped in one job. A snapshot carries
+   state *out* of a world, and the world that reads it decides what
    that means; what another world's content *becomes* is a job, so a pose
    gameplay derived from a physics snapshot is sent to the render world
    rather than left in a mailbox for it to apply.
@@ -296,13 +326,16 @@ as `src/render.rs`.
 ## Tests
 
 `cargo nextest run -p unlit3dx` covers the core: job round trips, request
-replies, snapshot replacement, thread stop and panic reporting, a remote
-world's sent jobs running, and the same for a stepped world — its jobs run on
-the step, a tick past the end finishes it, and stepping an entity that
-carries no stepped world does nothing. The integration tests add the bridges:
-a physics world dropping a ball onto a floor and reporting the contact, the
-audio
-world running jobs and publishing its readiness, multi-world job and
+replies, subscriptions — several readers each getting their own snapshot, a
+collector that answers nothing leaving the newest in place, a dropped reader
+pruning its subscription, and a full queue refusing one — thread stop and
+panic reporting, a remote world's sent jobs running, and the same for a
+stepped world — its jobs run on the step, a tick past the end finishes it,
+and stepping an entity that carries no stepped world does nothing. The
+integration tests add the bridges: a physics world dropping a ball onto a
+floor and reporting the contact, a subscriber queueing the contacts of two
+separate landings that a mailbox would have collapsed into one, the audio
+world running jobs and reporting its output opening, multi-world job and
 snapshot traffic, and a job that panics failing only its own request.
 Recording is covered too: it captures the mix the device would play and lays
 the samples out as a RIFF/WAVE file, and the audio MCP tools drive both

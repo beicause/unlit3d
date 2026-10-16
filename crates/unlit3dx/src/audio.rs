@@ -6,9 +6,10 @@
 //! What sound plays is decided by the world's [`OnAudioFill`] components: the
 //! thread runs them once per filled chunk and sums their samples into the
 //! ring. The output's format is not known until its stream opens, so the
-//! thread publishes it as [`AudioFormat`] and a caller installs its
-//! sources then, with an ordinary job: a world that carries none plays
-//! nothing and says so through [`AudioReady`].
+//! thread spawns it as an [`AudioFormat`] component, marks the world with
+//! [`AudioOutputOpen`], and a caller subscribes to either — the format to
+//! build its sources at the rate the device really uses, the marker to know
+//! when the world can sound at all.
 
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
 use unlit_ecs::{Entity, World};
 
-use crate::channel::{SnapshotReader, snapshot_pair};
+use crate::channel::publish_subscribed;
 use crate::handle::WorldHandle;
 use crate::thread::{FixedClock, ThreadControl};
 use crate::world::WorldRunner;
@@ -190,9 +191,9 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
 ///
 /// A source that renders at a fixed rate — a synthesizer, a sampler — is
 /// built at the rate the device actually uses, and that is not known until
-/// the stream opens. The audio thread publishes this as soon as it does, so
-/// the job that spawns the world's [`OnAudioFill`] sources can be sent then,
-/// like any other work for that world.
+/// the stream opens. The audio thread spawns this component the moment it
+/// does, so a subscriber can build the world's [`OnAudioFill`] sources at
+/// that rate, like any other work for that world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioFormat {
     /// The stream's sample rate, in hertz.
@@ -201,26 +202,17 @@ pub struct AudioFormat {
     pub channels: u16,
 }
 
-/// The audio world's output-format mailbox, carried on the proxy entity the
-/// host spawned the world through.
-#[derive(Clone, Debug)]
-pub struct AudioFormatInbox(pub SnapshotReader<AudioFormat>);
-
-/// Whether the audio world can sound, published by the audio thread once
-/// its output is open and the world carries at least one [`OnAudioFill`] source.
+/// The marker the audio world carries once its output is open.
 ///
-/// Impacts that happen while the world is still loading its soundfont
-/// must not queue as note jobs: they would all fire the instant the
-/// synth appears, a burst instead of the spread of hits that made them.
-/// Consumers read this and drop the sounds that belong to the silent
-/// past.
+/// A world that opens a device gains it on the tick the stream comes up; a
+/// world whose host pulls its fills carries it from its first tick, because
+/// the host is the thing that would have opened a device. A subscriber reads
+/// it to tell a world with somewhere to play from one still waiting for a
+/// device, and combines it with whatever else it needs — the world carrying
+/// an [`OnAudioFill`] source, say — to decide when to start playing.
 #[derive(Clone, Copy, Debug)]
-pub struct AudioReady(pub bool);
+pub struct AudioOutputOpen;
 
-/// The audio world's readiness mailbox, carried on the proxy entity the
-/// host spawned the world through.
-#[derive(Clone, Debug)]
-pub struct AudioReadyInbox(pub SnapshotReader<AudioReady>);
 /// Everything the open output stream needs to keep running.
 struct OpenOutput {
     /// The stream, kept alive by being held.
@@ -237,16 +229,19 @@ struct OpenOutput {
 /// ([`Threaded`](crate::world::Threaded)), or stepped by the host
 /// ([`Stepped`](crate::world::Stepped)).
 ///
-/// The world's entity carries the command channel, [`AudioFormatInbox`] and
-/// [`AudioReadyInbox`]. A self-driven world opens the default output device
-/// on its first tick and keeps it open, publishing its format once it
-/// knows it; until then, and whenever no device exists, the world runs
-/// silently. A stepped world opens no device either — the host pulls its
-/// fills with [`dispatch_audio_fill`] — unless its config asks for the browser's,
-/// which a page drives with no thread at all; without one its format inbox
-/// stays empty. Either way the world mixes whatever [`OnAudioFill`] sources a
+/// The world's entity carries the command channel. A self-driven world opens
+/// the default output device on its first tick and keeps it open, spawning
+/// [`AudioFormat`] and [`AudioOutputOpen`] once it knows them; until then,
+/// and whenever no device exists, the world runs silently. A stepped world
+/// opens no device either — the host pulls its fills with
+/// [`dispatch_audio_fill`] — unless its config asks for the browser's, which
+/// a page drives with no thread at all; without one the world gains neither
+/// component. Either way the world mixes whatever [`OnAudioFill`] sources a
 /// caller has since queued into it, and a world nobody has installed stays
 /// silent.
+///
+/// Nothing is published until someone subscribes: a subscriber's collector
+/// runs once per tick, after the output's state has been updated.
 ///
 /// Both runners share one tick body, so a stepped world opens its output and
 /// fills its ring exactly as a threaded one does; the only difference is
@@ -274,10 +269,8 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
     // either opens or never will.
     let mut attempted = false;
     let mut scratch: Vec<f32> = Vec::new();
-    let (format_writer, format_reader) = snapshot_pair::<AudioFormat>();
-    let (ready_writer, ready_reader) = snapshot_pair::<AudioReady>();
-    // The readiness flips only when the output and the sources appear or
-    // vanish, so the mailbox sees one publish per transition.
+    // The sounding state flips only when the output and the sources appear
+    // or vanish, so the log carries one line per transition.
     let mut ready = false;
     // The pacing clock follows the ring: it is created once the stream's
     // sample rate is known and then keeps its own cadence, so a slow tick
@@ -287,10 +280,6 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
         host,
         "audio",
         config.command_capacity,
-        (
-            AudioFormatInbox(format_reader),
-            AudioReadyInbox(ready_reader),
-        ),
         |_| (),
         move |world, control, ()| {
             if control.stop_requested() {
@@ -312,13 +301,13 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                             opened.sample_rate,
                             opened.channels
                         );
-                        // Published once, before the first fill: whoever
+                        // Spawned once, before the first fill: whoever
                         // waits on it builds their sources at the rate the
                         // device really uses.
-                        format_writer.publish(AudioFormat {
+                        world.spawn((AudioFormat {
                             sample_rate: opened.sample_rate,
                             channels: opened.channels,
-                        });
+                        },));
                         // Half a chunk of pacing: the ring stays ahead of
                         // the callback without the filler spinning.
                         let pace = AUDIO_FILL_FRAMES as f64 / f64::from(opened.sample_rate) * 0.5;
@@ -332,22 +321,27 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             }
             // A source takes time to build — a soundfont is parsed on this
             // thread — so a device may be open for seconds before the world
-            // carries one. Publish the transition, not the state, so the
-            // mailbox stays quiet.
+            // carries one. Log the transition, not the state, so the log
+            // stays quiet.
             // A stepped world that asked for no device is open by
             // definition: its host pulls the fills. One that asked for a
             // browser's context sounds only once that context exists.
             let open = output.is_some() || (!control.self_driven() && !config.stepped_device);
+            // The marker goes on the first tick the output is open, and the
+            // world keeps it: an entity's components are fixed once spawned.
+            if open && world.query::<&AudioOutputOpen>().next().is_none() {
+                world.spawn((AudioOutputOpen,));
+            }
             let sounding = open && world.query::<&OnAudioFill>().next().is_some();
             if sounding != ready {
                 ready = sounding;
-                ready_writer.publish(AudioReady(sounding));
                 if sounding {
                     log::info!("the audio world can sound");
                 } else {
                     log::warn!("the audio world cannot sound");
                 }
             }
+            publish_subscribed(world);
             if let Some(output) = output.as_mut() {
                 let chunk = AUDIO_FILL_FRAMES * usize::from(output.channels);
                 while output.producer.vacant_len() >= chunk {

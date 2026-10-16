@@ -3,7 +3,6 @@
 //! snapshots cross between them.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use unlit_ecs::World;
@@ -151,21 +150,34 @@ fn despawning_the_proxy_stops_the_world() {
     );
 }
 
-/// A world's snapshot mailbox hands its newest state to a reader on the
-/// host, which sees every update the thread publishes.
+/// A subscription hands a world's newest state to a reader on the host,
+/// which sees the updates the thread collects.
+///
+/// The collector runs inside the world's own tick, so a world publishes only
+/// while the reader that asked for the snapshot is alive.
 #[test]
-fn snapshots_flow_from_thread_to_host() {
+fn subscriptions_flow_from_thread_to_host() {
     let mut host = World::new();
-    let (writer, reader) = snapshot_pair::<u32>();
-    let world = spawn_remote_world(&mut host, "test", 8, move |_, control| {
-        static NEXT: AtomicUsize = AtomicUsize::new(1);
-        writer.publish(NEXT.fetch_add(1, Ordering::SeqCst) as u32);
+    // The world's own tick is what runs its subscribers: a world that never
+    // publishes collects nothing, whatever it carries.
+    let world = spawn_remote_world(&mut host, "test", 8, |world, control| {
+        publish_subscribed(world);
         control.wait_timeout(Duration::from_millis(1));
         true
     });
+    // The collector owns its own counter: it runs inside the world's tick,
+    // so it sees a fresh value on every one.
+    let mut tick: u32 = 0;
+    let reader = world
+        .sender()
+        .subscribe(move |_world: &World| {
+            tick += 1;
+            Some(tick)
+        })
+        .expect("the world accepts a subscription");
     assert!(
         wait_for(|| reader.latest().is_some_and(|value| *value >= 3)),
-        "the reader never saw the published values"
+        "the reader never saw the collected values"
     );
     assert!(
         host.contains(world.entity()),

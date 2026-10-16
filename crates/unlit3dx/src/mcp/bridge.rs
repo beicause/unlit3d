@@ -395,7 +395,6 @@ mod tests {
             &mut host,
             "stepped",
             8,
-            (),
             |world: &mut World| {
                 world.spawn((Marker,));
             },
@@ -427,7 +426,6 @@ mod tests {
             &mut host,
             "ended",
             8,
-            (),
             |_: &mut World| (),
             |_, _: &ThreadControl, ()| false,
         );
@@ -458,7 +456,6 @@ mod tests {
             &mut host,
             "busy",
             1,
-            (),
             |_: &mut World| (),
             |_, _: &ThreadControl, ()| true,
         );

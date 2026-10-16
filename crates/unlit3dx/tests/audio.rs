@@ -179,51 +179,38 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     }
 }
 
-/// The audio world announces when it can sound, and says nothing until
-/// it can: the inbox stays empty while the output is shut or the world
-/// carries no source, and publishes the moment both hold. A caller can
-/// therefore tell silence from a still-loading soundfont by waiting on
-/// the mailbox rather than guessing.
+/// The audio world announces when its output is open, and says nothing
+/// until it is: a subscriber's collector sees the marker the tick the
+/// stream comes up, and a device-less world never gains one. A caller can
+/// therefore tell a world with nowhere to play from a still-loading
+/// soundfont by waiting on the subscription rather than guessing.
 #[test]
-fn the_audio_world_publishes_its_readiness() {
+fn the_audio_world_reports_its_output_opening() {
     let mut host = World::new();
     let world = spawn_audio_world_with::<Threaded>(&mut host, AudioConfig::default());
-    let inbox = host
-        .get::<AudioReadyInbox>(world.entity())
-        .expect("the audio proxy carries its readiness inbox")
-        .0
-        .clone();
-    let format = host
-        .get::<AudioFormatInbox>(world.entity())
-        .expect("the audio proxy carries its format inbox")
-        .0
-        .clone();
-    // The source is queued only once the output's format has landed, the
-    // way a caller installs one: readiness then depends on the device
-    // alone.
+    let sender = world.sender();
+    // Both subscriptions are made the way a caller installs sources: the
+    // format says which rate to build them at, the marker says the output
+    // exists at all.
+    let format = sender
+        .subscribe(|world: &World| world.query::<&AudioFormat>().next().map(|(_, f)| *f))
+        .expect("the audio world accepts a subscription");
+    let opened = sender
+        .subscribe(|world: &World| world.query::<&AudioOutputOpen>().next().map(|_| ()))
+        .expect("the audio world accepts a subscription");
     let installed = wait_for(|| format.latest().is_some());
     if !has_output_device() {
         assert!(!installed, "a device-less world published a format");
         assert!(
-            !wait_for(|| inbox.latest().is_some()),
-            "a world without an output announced it can sound"
+            !wait_for(|| opened.latest().is_some()),
+            "a world without an output announced it is open"
         );
         return;
     }
     assert!(installed, "the output opened but no format was published");
-    world
-        .send(Box::new(|world: &mut World| {
-            counting_source(world, 0.0, &Arc::new(AtomicUsize::new(0)));
-        }))
-        .expect("the audio world takes its source");
     assert!(
-        wait_for(|| inbox.latest().is_some()),
-        "the readiness inbox never published a state"
-    );
-    assert_eq!(
-        inbox.latest().map(|state| state.0),
-        Some(true),
-        "an open output with a source is ready"
+        wait_for(|| opened.latest().is_some()),
+        "the output opened but the marker never landed"
     );
 }
 

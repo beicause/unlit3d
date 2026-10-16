@@ -1,9 +1,10 @@
 //! Integration tests for the physics remote world: bodies built by jobs,
-//! snapshots read back on the host, contacts reported as events.
+//! snapshots subscribed to on the host, contacts reported as events.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use unlit_ecs::World;
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
@@ -18,24 +19,40 @@ const BALL_RADIUS: f32 = 0.25;
 /// ball to reach the floor, bounce and come to rest.
 const STEPS: usize = 256;
 
-/// A physics world at the default rate, with the floor already queued.
-fn floored_host() -> (World, WorldHandle) {
+/// The test's own snapshot payload: every body's pose.
+type Poses = Vec<(RigidBodyHandle, Vec3, Quat)>;
+
+/// Collect the moving bodies' poses, the snapshot the tests subscribe to.
+///
+/// The library defines no payload of its own, so the demo and the tests each
+/// name the state they want: this is the whole of the subscription's work.
+fn collect_poses(world: &World) -> Option<Poses> {
+    let physics = world.query::<&PhysicsWorld>().next()?.1;
+    Some(
+        physics
+            .bodies
+            .iter()
+            .filter(|(_, body)| body.is_dynamic() || body.is_kinematic())
+            .map(|(handle, body)| (handle, body.translation(), *body.rotation()))
+            .collect(),
+    )
+}
+
+/// A physics world at the default rate, with the floor already queued and a
+/// pose subscription on the host.
+fn floored_host() -> (World, WorldHandle, SnapshotReader<Poses>) {
     let mut host = World::new();
     let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
+    let reader = world
+        .sender()
+        .subscribe(collect_poses)
+        .expect("the physics world accepts a subscription");
     world
         .send(Box::new(move |world: &mut World| {
             spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
         }))
         .expect("the physics world accepts jobs");
-    (host, world)
-}
-
-/// The newest snapshot from the physics inbox, if one has landed.
-fn latest(host: &World, world: &WorldHandle) -> Option<std::sync::Arc<PhysicsSnapshot>> {
-    host.get::<PhysicsInbox>(world.entity())
-        .expect("the proxy carries the inbox")
-        .0
-        .latest()
+    (host, world, reader)
 }
 
 /// Waits until `probe` answers `true`, giving up after five seconds.
@@ -59,25 +76,23 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
 /// on a world stepped in this thread where no step can be skipped.
 #[test]
 fn a_dropped_ball_settles_in_its_snapshots() {
-    let (host, world) = floored_host();
+    let (_host, world, poses) = floored_host();
     world
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
         .expect("the physics world accepts jobs");
 
-    let rested = wait_for(|| {
-        let Some(snapshot) = latest(&host, &world) else {
-            return false;
-        };
-        snapshot.transforms.iter().any(|&(_, translation, _)| {
+    let settled = |poses: &Arc<Poses>| {
+        poses.iter().any(|&(_, translation, _)| {
             (translation.y - BALL_RADIUS).abs() < 0.05 && translation.y < BALL_START.y
         })
-    });
+    };
+    let rested = wait_for(|| poses.latest().is_some_and(|poses| settled(&poses)));
     assert!(
         rested,
-        "the ball never came to rest: the last snapshot is {latest:?}",
-        latest = latest(&host, &world).map(|snapshot| snapshot.transforms.clone()),
+        "the ball never came to rest: the last snapshot is {:?}",
+        poses.latest(),
     );
 }
 
@@ -90,6 +105,79 @@ fn ball_desc() -> BodyDesc {
         restitution: 0.3,
         shape: BodyShape::Ball(BALL_RADIUS),
     }
+}
+
+/// A subscriber sees the contacts of every step, which a mailbox cannot.
+///
+/// Contacts are events: a step's contacts are overwritten by the next step's,
+/// so a reader that is not scheduled within one step of a landing misses it.
+/// Two balls dropped from different heights land on different steps, and the
+/// collector must report both — a newest-wins mailbox polled at the end could
+/// hold only one. That is what a game needs for something like bullet damage.
+#[test]
+fn a_collector_sees_contacts_from_every_step() {
+    let mut host = World::new();
+    let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
+    let sender = world.sender();
+    let (queue, contacts) = std::sync::mpsc::channel();
+    // The collector queues what it sees and publishes nothing: the
+    // subscription's state is the queue, which is the app's to own. The
+    // reader is only the subscription's liveness token here.
+    let _events: SnapshotReader<()> = sender
+        .subscribe(move |world: &World| {
+            if let Some(contacts) = world.query::<&PhysicsContacts>().next() {
+                for &contact in &contacts.1.started {
+                    let _ = queue.send(contact);
+                }
+            }
+            None
+        })
+        .expect("the physics world accepts a subscription");
+    // Two balls, far enough apart in height that their landings fall in
+    // different steps.
+    let dropped = sender.request(Box::new(|world: &mut World| {
+        spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
+        let low = spawn_body(
+            world,
+            BodyDesc {
+                position: Vec3::new(-1.0, BALL_START.y, 0.0),
+                restitution: 0.6,
+                ..ball_desc()
+            },
+        );
+        let high = spawn_body(
+            world,
+            BodyDesc {
+                position: Vec3::new(1.0, BALL_START.y + 4.0, 0.0),
+                restitution: 0.6,
+                ..ball_desc()
+            },
+        );
+        (low, high)
+    }));
+
+    let mut landed: Vec<RigidBodyHandle> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && landed.len() < 3 {
+        while let Ok((one, two, _speed)) = contacts.try_recv() {
+            for body in [one, two] {
+                if !landed.contains(&body) {
+                    landed.push(body);
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // Both balls and the floor: three bodies, so both landings were reported.
+    assert_eq!(
+        landed.len(),
+        3,
+        "the collector saw {landed:?}, so a landing was dropped"
+    );
+    assert!(
+        dropped.poll().is_some(),
+        "the bodies were built before the contacts arrived"
+    );
 }
 
 /// A landing is reported as the speed the pair closed at, not the speed it
@@ -118,13 +206,26 @@ fn a_landing_reports_the_closing_speed() {
     let mut landings = Vec::new();
     let mut height = BALL_START.y;
     for _ in 0..STEPS {
-        let snapshot = step_once(&world).expect("the world carries a physics world");
-        landings.extend(snapshot.started.iter().copied());
-        height = snapshot
-            .transforms
-            .iter()
-            .find(|(handle, _, _)| *handle == ball)
-            .map_or(height, |(_, translation, _)| translation.y);
+        assert!(step_once(&world), "the world carries a physics world");
+        // The contacts live in the world until the next step overwrites
+        // them, so read them before stepping again.
+        {
+            let contacts = world
+                .query::<&PhysicsContacts>()
+                .next()
+                .expect("the setup creates the contact buffer")
+                .1;
+            landings.extend(contacts.started.iter().copied());
+        }
+        let physics = world
+            .query::<&PhysicsWorld>()
+            .next()
+            .expect("the setup created the world")
+            .1;
+        height = physics
+            .bodies
+            .get(ball)
+            .map_or(height, |body| body.translation().y);
     }
 
     assert!(!landings.is_empty(), "the ball never touched the floor");
@@ -165,21 +266,25 @@ fn a_landing_reports_the_closing_speed() {
     );
 }
 
-/// A world with no bodies still steps and publishes empty snapshots, so
-/// readers can tell a quiet world from a stopped one.
+/// A world with no bodies still steps and publishes empty contacts, so a
+/// reader can tell a quiet world from a stopped one.
 #[test]
-fn an_empty_world_publishes_empty_snapshots() {
+fn an_empty_world_publishes_empty_contacts() {
     let mut host = World::new();
     let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
+    let reader = world
+        .sender()
+        .subscribe(|world: &World| {
+            let contacts = world.query::<&PhysicsContacts>().next()?;
+            Some((contacts.1.started.len(), contacts.1.stopped.len()))
+        })
+        .expect("the physics world accepts a subscription");
 
     assert!(
-        wait_for(|| latest(&host, &world).is_some()),
+        wait_for(|| reader.latest().is_some()),
         "the empty world never published a snapshot"
     );
-    let snapshot = latest(&host, &world).expect("the snapshot exists");
-    assert!(snapshot.transforms.is_empty());
-    assert!(snapshot.started.is_empty());
-    assert!(snapshot.stopped.is_empty());
+    assert_eq!(*reader.latest().expect("the snapshot exists"), (0, 0));
 }
 
 /// The one-time setup runs before any job, so a probe sent immediately

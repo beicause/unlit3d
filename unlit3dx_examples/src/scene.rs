@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use hashbrown::HashMap;
 use unlit_ecs::Entity;
 use unlit_wgpu::resources::ResourceGraph;
@@ -20,6 +20,7 @@ use unlit3d::components::Transform;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3d::winit::event::OnAboutToWait;
+use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
 
 use crate::render::{
@@ -982,6 +983,18 @@ enum BuildState {
 /// the scene generation it belongs to.
 type PendingBody = (Request<RigidBodyHandle>, (Entity, ShapeKind), u32, u32);
 
+/// The physics state the demo subscribes to: where every body is.
+///
+/// The library defines no snapshot payload of its own, so this one belongs to
+/// the demo: the collector gameplay subscribes with fills it from the rapier
+/// world. It holds the newest poses, not a history — a body that moved twice
+/// between two reads appears once, where it is now.
+#[derive(Default)]
+pub struct GamePhysics {
+    /// Every moving body's transform.
+    pub transforms: Vec<(RigidBodyHandle, Vec3, Quat)>,
+}
+
 /// The gameplay state, living on its own entity in the gameplay world.
 ///
 /// Gameplay is authoritative and the render world's client: it owns which
@@ -995,8 +1008,8 @@ pub struct Gameplay {
     /// from the physics snapshot go to it as jobs, like every other
     /// change to that world.
     render: JobSender,
-    /// The physics world's latest snapshot.
-    physics: SnapshotReader<PhysicsSnapshot>,
+    /// The physics world's latest pose snapshot.
+    physics: SnapshotReader<GamePhysics>,
     /// The physics world's command channel.
     physics_sender: JobSender,
     /// The audio world's command channel.
@@ -1004,7 +1017,7 @@ pub struct Gameplay {
     /// The audio world's readiness mailbox: the music starts only once the
     /// world says it can sound, because a track job that reaches the world
     /// before its players exist finds nobody to address.
-    audio_inbox: SnapshotReader<AudioReady>,
+    audio_ready: SnapshotReader<()>,
     /// Whether the background music has been started.
     bgm_started: bool,
     /// The build future's landing slot: it fills this, the tick reads it.
@@ -1043,7 +1056,7 @@ pub struct Gameplay {
     /// Bumped on every clear, so stale requests are told apart.
     generation: u32,
     /// The snapshot the previous tick published, to skip repeated work.
-    last_snapshot: Option<Arc<PhysicsSnapshot>>,
+    last_snapshot: Option<Arc<GamePhysics>>,
     /// Ball spawns requested but not yet consumed by the tick.
     requests: u32,
     /// Ticks since the gameplay world started, driving the auto spawn.
@@ -1066,10 +1079,10 @@ impl Gameplay {
     fn new(
         world: &World,
         render: JobSender,
-        physics: SnapshotReader<PhysicsSnapshot>,
+        physics: SnapshotReader<GamePhysics>,
         physics_sender: JobSender,
         audio_sender: JobSender,
-        audio_inbox: SnapshotReader<AudioReady>,
+        audio_ready: SnapshotReader<()>,
         server: WorldHandle,
     ) -> Self {
         let build = Rc::new(RefCell::new(BuildState::Building));
@@ -1107,7 +1120,7 @@ impl Gameplay {
             physics,
             physics_sender,
             audio_sender,
-            audio_inbox,
+            audio_ready,
             bgm_started: false,
             build,
             ready: false,
@@ -1235,8 +1248,8 @@ impl Gameplay {
         );
     }
 
-    /// Advance the build, publish the newest physics snapshot, and keep
-    /// the drop cadence going: assign render transforms to the bodies the
+    /// Advance the build, read the newest physics snapshot, and keep the
+    /// drop cadence going: assign render transforms to the bodies the
     /// snapshot carries and drop a new shape on the beat.
     pub fn tick(&mut self) {
         self.ticks += 1;
@@ -1245,7 +1258,7 @@ impl Gameplay {
         // starts on the first moment the world reports it is up. Only the
         // background loop autoplays; the one-shot sequence is started by
         // hand from the panel.
-        if !self.bgm_started && self.audio_inbox.latest().is_some_and(|state| state.0) {
+        if !self.bgm_started && self.audio_ready.latest().is_some() {
             self.bgm_started = true;
             self.audio_sender
                 .send(play_track_job(BGM_TRACK, bgm_midi(), true))
@@ -1358,7 +1371,8 @@ impl Gameplay {
 /// The channels between the scene's worlds, wired the same way in both
 /// run modes: transforms flow to the render world, body commands to
 /// physics, transport jobs to audio, and one [`Gameplay`] state ties them
-/// to the render server.
+/// to the render server. Each subscription belongs to the world it reads,
+/// so a run that never asks for a snapshot pays nothing for it.
 ///
 /// Each mode builds the struct from the worlds it has — remote worlds on
 /// threads for the windowed show, inline worlds with unbounded queues for
@@ -1371,22 +1385,76 @@ pub struct SceneWiring {
     pub render_sender: JobSender,
     /// Commands into the physics world.
     pub physics_sender: JobSender,
-    /// The physics world's latest snapshot.
-    pub physics_reader: SnapshotReader<PhysicsSnapshot>,
+    /// The physics world's latest pose snapshot.
+    pub physics_reader: SnapshotReader<GamePhysics>,
     /// Commands into the audio world.
     pub audio_sender: JobSender,
     /// The audio world's readiness mailbox.
-    pub audio_ready: SnapshotReader<AudioReady>,
+    pub audio_ready: SnapshotReader<()>,
+}
+
+/// Subscribe gameplay to the physics world's body poses.
+///
+/// The collector walks the rapier world on the physics thread and copies the
+/// moving bodies' transforms; it answers nothing while they are unchanged, so
+/// a world whose bodies are all asleep publishes no snapshot at all. The
+/// mailbox carries state, not history: a body that moved twice between two
+/// reads is seen once, where it is now.
+fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
+    let mut previous: Vec<(RigidBodyHandle, Vec3, Quat)> = Vec::new();
+    sender
+        .subscribe(move |world: &World| {
+            let mut transforms = Vec::new();
+            if let Some(physics) = world.query::<&PhysicsWorld>().next() {
+                for (handle, body) in physics.1.bodies.iter() {
+                    if body.is_dynamic() || body.is_kinematic() {
+                        transforms.push((handle, body.translation(), *body.rotation()));
+                    }
+                }
+            }
+            if transforms == previous {
+                return None;
+            }
+            // The collector keeps what it published to compare the next step
+            // against, so the world allocates only when the poses changed.
+            previous = transforms.clone();
+            Some(GamePhysics { transforms })
+        })
+        .expect("the physics world accepts a subscription")
+}
+
+/// Subscribe gameplay to the audio world's readiness.
+///
+/// The world can sound once its output is open *and* it carries the sources a
+/// transport job addresses: a job that reaches it before the soundfont is
+/// parsed finds nobody to address and is lost. The collector answers once, on
+/// the first tick both hold, and nothing after it — the state never goes
+/// back, and a mailbox that stopped changing stops waking its reader.
+fn subscribe_audio(sender: &JobSender) -> SnapshotReader<()> {
+    let mut published = false;
+    sender
+        .subscribe(move |world: &World| {
+            if published
+                || world.query::<&AudioOutputOpen>().next().is_none()
+                || world.query::<&OnAudioFill>().next().is_none()
+            {
+                return None;
+            }
+            published = true;
+            Some(())
+        })
+        .expect("the audio world accepts a subscription")
 }
 
 /// Install the demo's audio sources on an audio world: the mix's gain, one
 /// live voice for note jobs and one `MidiPlayer` per name in `tracks`,
 /// each with the `OnAudioFill` that renders it.
 ///
-/// The rate is not a choice but the output's: an audio thread publishes its
-/// [`AudioFormat`] when its stream opens, and a synthesizer built before
-/// that would render at the wrong speed. Until someone installs sources a
-/// world stays silent, which is what its readiness inbox reports.
+/// The rate is not a choice but the output's: an audio thread spawns its
+/// [`AudioFormat`] component when its stream opens, and a synthesizer built
+/// before that would render at the wrong speed. Until someone installs
+/// sources a world stays silent, and gameplay's readiness subscription does
+/// not fire.
 ///
 /// # Panics
 ///
@@ -1531,9 +1599,9 @@ impl SceneWorlds {
 /// stepped by the host.
 ///
 /// The worlds are spawned in the order they depend on each other - physics
-/// and audio first, so the wiring can read their inboxes off their proxy
-/// entities, then gameplay - and the ground is queued before gameplay
-/// starts dropping bodies on it.
+/// and audio first, so the wiring can subscribe to their state, then
+/// gameplay - and the ground is queued before gameplay starts dropping
+/// bodies on it.
 pub fn spawn_scene<R: WorldRunner>(
     host: &mut World,
     render: WorldHandle,
@@ -1543,11 +1611,10 @@ pub fn spawn_scene<R: WorldRunner>(
     // ready before the first ball drops.
     let physics = spawn_physics_world_with::<R>(host, PhysicsConfig::default());
     let physics_sender = physics.sender();
-    let physics_reader = host
-        .get::<PhysicsInbox>(physics.entity())
-        .expect("the physics world carries its inbox")
-        .0
-        .clone();
+    // The demo asks for the poses it needs; the library collects nothing on
+    // its own. The subscription lives in the physics world, so it runs
+    // between that world's steps whatever drives it.
+    let physics_reader = subscribe_physics(&physics_sender);
 
     // The audio world: a synthesizer voice plus one MIDI player per track,
     // all fed by the soundfont, mixed into the output stream. Only the
@@ -1559,11 +1626,7 @@ pub fn spawn_scene<R: WorldRunner>(
     };
     let audio = spawn_audio_world_with::<R>(host, config);
     let audio_sender = audio.sender();
-    let audio_ready = host
-        .get::<AudioReadyInbox>(audio.entity())
-        .expect("the audio world carries its readiness inbox")
-        .0
-        .clone();
+    let audio_ready = subscribe_audio(&audio_sender);
     let (audio_format, audio_sources) = match audio_setup {
         AudioSetup::Silent => (None, false),
         AudioSetup::Pulled {
@@ -1583,11 +1646,17 @@ pub fn spawn_scene<R: WorldRunner>(
             (None, true)
         }
         AudioSetup::Device => {
-            let format = host
-                .get::<AudioFormatInbox>(audio.entity())
-                .expect("the audio world carries its format inbox")
-                .0
-                .clone();
+            // The format is a component the audio world spawns on the tick
+            // its stream opens, so the subscription is made before that
+            // tick and answers the rate the device really uses.
+            let format = audio_sender
+                .subscribe(|world: &World| {
+                    world
+                        .query::<&AudioFormat>()
+                        .next()
+                        .map(|(_, format)| *format)
+                })
+                .expect("the audio world accepts a subscription");
             (Some(format), true)
         }
     };
@@ -1609,7 +1678,6 @@ pub fn spawn_scene<R: WorldRunner>(
         host,
         "gameplay",
         64,
-        (),
         {
             let render = render.clone();
             let wiring = wiring.clone();
@@ -1650,11 +1718,15 @@ pub fn spawn_scene<R: WorldRunner>(
 /// Queue the demo's sources on the audio world once its device reports a
 /// format.
 ///
-/// Only a setup that opens a device needs this: the output appears on a
+/// Only a setup that opens a device needs this: the format appears on a
 /// tick, so the rate is not known before then - a browser's stepped world
 /// opens the page's context that way too. A scene that installed its
 /// sources up front has no format to wait for, and one with no
 /// synthesizer at all has nothing to queue.
+///
+/// The job this queues is what makes the world sound: gameplay starts its
+/// music once the sources are in, so the install must run before the tick
+/// that reads the readiness subscription.
 pub fn install_sources_when_ready(world: &mut World, worlds: &SceneWorlds) {
     let Some(format) = worlds.audio_format.clone() else {
         return;
@@ -1668,6 +1740,10 @@ pub fn install_sources_when_ready(world: &mut World, worlds: &SceneWorlds) {
         let Some(format) = format.latest() else {
             return;
         };
+        // Gameplay's readiness subscription fires on the tick the sources
+        // appear, so it cannot see them before this job has run: the frame
+        // that queues the install steps the audio world itself, and the
+        // music then starts a frame later at the earliest.
         installed = true;
         let install = install_audio_job(format.sample_rate);
         if let Err(error) = audio_sender.send(install) {

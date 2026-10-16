@@ -1,10 +1,17 @@
 //! The physics remote world: a fixed-step rapier simulation on its own thread.
 //!
 //! Gameplay sends jobs that build bodies; the thread steps the simulation at
-//! a fixed rate and publishes a [`PhysicsSnapshot`] — body transforms, plus
-//! which contacts began or ended — for whoever reads it back. Rapier's math
-//! types are glam aliases, so a snapshot's vectors and rotations cross
-//! threads with no conversion.
+//! a fixed rate. A step drains rapier's contact events into
+//! [`PhysicsContacts`], the world's own component, and publishes nothing by
+//! itself: a caller that wants the body transforms or the contacts subscribes
+//! with a collector of its own. Rapier's math types are glam aliases, so
+//! whatever a collector copies crosses threads with no conversion.
+//!
+//! Contacts are events, not state. A step's contacts sit in
+//! [`PhysicsContacts`] until the next step overwrites them, so a caller that
+//! must see every one of them — bullet damage, say — has its collector queue
+//! them as they appear. A snapshot mailbox keeps only the newest, which is
+//! right for transforms and wrong for contacts.
 
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
@@ -15,7 +22,7 @@ use rapier3d::prelude::*;
 pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
 use unlit_ecs::World;
 
-use crate::channel::{SnapshotReader, SnapshotWriter, snapshot_pair};
+use crate::channel::publish_subscribed;
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
 use crate::world::WorldRunner;
@@ -44,28 +51,24 @@ impl Default for PhysicsConfig {
     }
 }
 
-/// One step's worth of state, published to the reader's side.
+/// The contacts rapier reported on the last step.
+///
+/// The component lives in the physics world and is rewritten by every step:
+/// it holds the contacts that began during that step, with the speed the pair
+/// was closing at, and those that ended. It is a reusable buffer, so a
+/// collector reads the contacts where they are instead of asking the world to
+/// build a copy it may not want.
+///
+/// A contact lives in exactly one step. A caller that must react to every one
+/// of them has its collector queue them as they appear; a caller that only
+/// wants the newest state can ignore them.
 #[derive(Clone, Debug, Default)]
-pub struct PhysicsSnapshot {
-    /// Every moving body's transform.
-    pub transforms: Vec<(RigidBodyHandle, Vec3, Quat)>,
+pub struct PhysicsContacts {
     /// Contacts that began this step, with the closing speed of the pair.
     pub started: Vec<(RigidBodyHandle, RigidBodyHandle, f32)>,
     /// Contacts that ended this step.
     pub stopped: Vec<(RigidBodyHandle, RigidBodyHandle)>,
 }
-
-/// The reader side of the physics world's snapshot mailbox, on the host
-/// entity the proxy lives on.
-///
-/// The mailbox holds one snapshot: each step overwrites the last, so a reader
-/// that polls less often than the world steps at [`PhysicsConfig::hz`] sees
-/// only the newest. Transforms survive that — the newest is the current
-/// state — but a contact lives in exactly one snapshot, so a slow reader
-/// misses it. A caller that must see every contact reads on its own thread
-/// or drives [`step_once`] directly.
-#[derive(Clone, Debug)]
-pub struct PhysicsInbox(pub SnapshotReader<PhysicsSnapshot>);
 
 /// The event plumbing a physics world carries between steps.
 ///
@@ -123,6 +126,14 @@ fn physics_events(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsEven
         .query::<&mut PhysicsEvents>()
         .next()
         .map(|(_, events)| events)
+}
+
+/// The contact buffer a physics world carries, if it has one.
+fn physics_contacts(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsContacts>> {
+    world
+        .query::<&mut PhysicsContacts>()
+        .next()
+        .map(|(_, contacts)| contacts)
 }
 
 /// The collider shape a dynamic body carries.
@@ -240,12 +251,15 @@ fn physics_world(world: &World) -> unlit_ecs::CellRefMut<'_, PhysicsWorld> {
 /// ([`Threaded`](crate::world::Threaded)), or stepped by the host
 /// ([`Stepped`](crate::world::Stepped)).
 ///
-/// The world's entity carries the command channel and [`PhysicsInbox`]. It
-/// owns the rapier world as a [`PhysicsWorld`] component, and gameplay
-/// never touches it: jobs build bodies, and every step publishes a snapshot
-/// the host reads through the inbox. The world is created before the first
-/// job runs, so a job that builds a body — the static geometry, usually —
-/// finds it ready.
+/// The world owns the rapier world as a [`PhysicsWorld`] component, and
+/// gameplay never touches it: jobs build bodies, and a subscriber reads the
+/// state back. The world is created before the first job runs, so a job that
+/// builds a body — the static geometry, usually — finds it ready.
+///
+/// Nothing is published until someone subscribes: the world runs a
+/// subscriber's collector once per step, after the step has drained its
+/// contacts. Subscribing with the handle's [`JobSender`](crate::job::JobSender)
+/// is how a host asks for transforms, contacts, or both.
 ///
 /// Both runners share one tick body, so a stepped world simulates exactly
 /// what a threaded one does: the only difference is that its host calls
@@ -255,19 +269,18 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
     host: &mut World,
     config: PhysicsConfig,
 ) -> WorldHandle {
-    let (writer, reader) = snapshot_pair::<PhysicsSnapshot>();
     let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / config.hz));
     R::spawn(
         host,
         "physics",
         config.command_capacity,
-        (PhysicsInbox(reader),),
         move |world| init_physics_world(world, &config),
         move |world, control, ()| {
             if control.stop_requested() {
                 return false;
             }
-            step_world(world, &writer);
+            step_once(world);
+            publish_subscribed(world);
             clock.wait(control);
             true
         },
@@ -278,27 +291,28 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
 /// `config` applied.
 ///
 /// Thread-free callers that drive [`step_once`] on their own cadence —
-/// deterministic tests, offline rendering — call this to get the same world
-/// [`spawn_physics_world_with::<Threaded>`](spawn_physics_world_with) builds,
-/// contact events included.
+/// deterministic tests, offline rendering — call this to get the world
+/// [`spawn_physics_world_with`] builds, contact events included.
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = PhysicsWorld::new();
     physics.gravity = config.gravity;
-    world.spawn((physics, PhysicsEvents::new()));
+    world.spawn((physics, PhysicsEvents::new(), PhysicsContacts::default()));
 }
 
-/// Step the rapier world once and publish what happened.
-fn step_world(world: &World, writer: &SnapshotWriter<PhysicsSnapshot>) {
-    if let Some(snapshot) = step_once(world) {
-        writer.publish(snapshot);
-    }
-}
-
-/// Step the rapier world once and return the snapshot a threaded world would
-/// publish. Thread-free callers — deterministic tests, offline rendering —
-/// drive the same simulation on a cadence of their own.
-pub fn step_once(world: &World) -> Option<PhysicsSnapshot> {
-    let mut physics = world.query::<&mut PhysicsWorld>().next()?.1;
+/// Step the rapier world once, draining its contacts into
+/// [`PhysicsContacts`].
+///
+/// Returns whether `world` carries a [`PhysicsWorld`] at all. A physics
+/// world's own tick calls this; thread-free callers — deterministic tests,
+/// offline rendering — drive the same simulation on a cadence of their own.
+pub fn step_once(world: &World) -> bool {
+    let Some(mut physics) = world
+        .query::<&mut PhysicsWorld>()
+        .next()
+        .map(|(_, physics)| physics)
+    else {
+        return false;
+    };
     // The contact events rapier reports this step describe contacts that
     // began during it, and by the time the step returns the solver has
     // already turned the approach into a bounce. Sampling the velocities
@@ -312,19 +326,14 @@ pub fn step_once(world: &World) -> Option<PhysicsSnapshot> {
         Some(events) => physics.step_with_events(&(), &events.collector),
         None => physics.step(),
     }
-    let (mut transforms, mut started, mut stopped) = (Vec::new(), Vec::new(), Vec::new());
-    for (handle, body) in physics.bodies.iter() {
-        if body.is_dynamic() || body.is_kinematic() {
-            transforms.push((handle, body.translation(), *body.rotation()));
-        }
-    }
     let Some(events) = events.as_ref() else {
-        return Some(PhysicsSnapshot {
-            transforms,
-            started,
-            stopped,
-        });
+        return true;
     };
+    let Some(mut contacts) = physics_contacts(world) else {
+        return true;
+    };
+    contacts.started.clear();
+    contacts.stopped.clear();
     while let Ok(event) = events.receiver.try_recv() {
         let (one, two) = match event {
             CollisionEvent::Started(one, two, _) => (one, two),
@@ -336,16 +345,12 @@ pub fn step_once(world: &World) -> Option<PhysicsSnapshot> {
         match event {
             CollisionEvent::Started(..) => {
                 let speed = contact_speed(&physics, events, one, two);
-                started.push((body_one, body_two, speed));
+                contacts.started.push((body_one, body_two, speed));
             }
-            _ => stopped.push((body_one, body_two)),
+            _ => contacts.stopped.push((body_one, body_two)),
         }
     }
-    Some(PhysicsSnapshot {
-        transforms,
-        started,
-        stopped,
-    })
+    true
 }
 
 /// The speed two colliders close at along their contact normal, from the

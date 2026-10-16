@@ -6,7 +6,7 @@
 //! world: a thread of its own, or the host's own frames.
 
 use async_channel::{Receiver, bounded};
-use unlit_ecs::{ArchetypeBuilder, Bundle, Entity, World};
+use unlit_ecs::{ArchetypeBuilder, Entity, World};
 
 use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
@@ -110,16 +110,14 @@ pub trait WorldRunner: 'static {
     const SELF_DRIVEN: bool;
 
     /// Spawn a world driven this way.
-    fn spawn<C, I, S, T>(
+    fn spawn<I, S, T>(
         host: &mut World,
         name: &'static str,
         command_capacity: usize,
-        extra: C,
         init: I,
         tick: T,
     ) -> WorldHandle
     where
-        C: Bundle,
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
         T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static;
@@ -134,42 +132,38 @@ pub struct Stepped;
 impl WorldRunner for Threaded {
     const SELF_DRIVEN: bool = true;
 
-    fn spawn<C, I, S, T>(
+    fn spawn<I, S, T>(
         host: &mut World,
         name: &'static str,
         command_capacity: usize,
-        extra: C,
         init: I,
         tick: T,
     ) -> WorldHandle
     where
-        C: Bundle,
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
         T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
     {
-        spawn_remote_world_with_init(host, name, command_capacity, extra, init, tick)
+        spawn_remote_world_with_init(host, name, command_capacity, init, tick)
     }
 }
 
 impl WorldRunner for Stepped {
     const SELF_DRIVEN: bool = false;
 
-    fn spawn<C, I, S, T>(
+    fn spawn<I, S, T>(
         host: &mut World,
         name: &'static str,
         command_capacity: usize,
-        extra: C,
         init: I,
         tick: T,
     ) -> WorldHandle
     where
-        C: Bundle,
         I: FnOnce(&mut World) -> S + Send + 'static,
         S: 'static,
         T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
     {
-        spawn_stepped_world_with_init(host, name, command_capacity, extra, init, tick)
+        spawn_stepped_world_with_init(host, name, command_capacity, init, tick)
     }
 }
 
@@ -187,41 +181,21 @@ pub fn spawn_remote_world<T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
-    tick: T,
-) -> WorldHandle
-where
-    T: FnMut(&mut World, &ThreadControl) -> bool + Send + 'static,
-{
-    spawn_remote_world_with(host, name, command_capacity, (), tick)
-}
-
-/// Like [`spawn_remote_world`], with more components on the proxy.
-///
-/// The components travel with the world they are bound to, which is
-/// how a world's reader halves - snapshot inboxes, say - reach the host on
-/// the same entity its jobs are addressed by.
-pub fn spawn_remote_world_with<C, T>(
-    host: &mut World,
-    name: &'static str,
-    command_capacity: usize,
-    extra: C,
     mut tick: T,
 ) -> WorldHandle
 where
-    C: Bundle,
     T: FnMut(&mut World, &ThreadControl) -> bool + Send + 'static,
 {
     spawn_remote_world_with_init(
         host,
         name,
         command_capacity,
-        extra,
         |_| (),
         move |world, control, ()| tick(world, control),
     )
 }
 
-/// Like [`spawn_remote_world_with`], with a one-time setup step.
+/// Like [`spawn_remote_world`], with a one-time setup step.
 ///
 /// `init` runs on the world's thread before the first job is drained, so
 /// a world can create the components its jobs assume exist - its physics
@@ -232,16 +206,14 @@ where
 ///
 /// Panics when `command_capacity` is zero: a queue that can never hold
 /// a job would silently block every sender.
-pub fn spawn_remote_world_with_init<C, I, S, T>(
+pub fn spawn_remote_world_with_init<I, S, T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
-    extra: C,
     init: I,
     mut tick: T,
 ) -> WorldHandle
 where
-    C: Bundle,
     I: FnOnce(&mut World) -> S + Send + 'static,
     S: 'static,
     T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
@@ -259,13 +231,7 @@ where
         commands: commands.clone(),
         status: status.clone(),
     };
-    let entity = spawn_proxy(
-        host,
-        WorldKind::Threaded { _thread: thread },
-        name,
-        sender,
-        extra,
-    );
+    let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, name, sender);
     WorldHandle::new(entity, commands, Some(status))
 }
 
@@ -281,16 +247,14 @@ where
 ///
 /// `name` labels the world for a bridge that lists the host's worlds; it
 /// lands on the proxy entity as a [`WorldName`].
-pub fn spawn_stepped_world_with_init<C, I, S, T>(
+pub fn spawn_stepped_world_with_init<I, S, T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
-    extra: C,
     init: I,
     mut tick: T,
 ) -> WorldHandle
 where
-    C: Bundle,
     I: FnOnce(&mut World) -> S + 'static,
     S: 'static,
     T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + 'static,
@@ -317,32 +281,21 @@ where
         commands: JobSender::new(commands.clone()),
         status: status.clone(),
     };
-    let entity = spawn_proxy(
-        host,
-        WorldKind::Stepped(Box::new(stepped)),
-        name,
-        sender,
-        extra,
-    );
+    let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), name, sender);
     WorldHandle::new(entity, JobSender::new(commands), Some(status))
 }
 
 /// Spawn the proxy entity with the runner's components.
-fn spawn_proxy<C: Bundle>(
+fn spawn_proxy(
     host: &mut World,
     kind: WorldKind,
     name: &'static str,
     sender: WorldSender,
-    extra: C,
 ) -> Entity {
-    // The proxy and the caller's components go on together as one flat
-    // bundle, so a bundle of several inboxes lands as several components
-    // rather than as one tuple.
     let mut bundle = ArchetypeBuilder::new();
     bundle.push(WorldProxy { kind });
     bundle.push(WorldName(name));
     bundle.push(sender);
-    bundle.push_bundle(extra);
     host.spawn(bundle)
 }
 
@@ -461,7 +414,6 @@ mod tests {
             &mut host,
             "test",
             8,
-            (),
             |world: &mut World| {
                 world.spawn((Count(0),));
             },
@@ -507,7 +459,6 @@ mod tests {
             &mut host,
             "stepped",
             8,
-            (),
             |world: &mut World| {
                 world.spawn((Count(0),));
             },
@@ -553,7 +504,6 @@ mod tests {
             &mut host,
             "stepped",
             8,
-            (),
             |_| (),
             |_, _: &ThreadControl, ()| false,
         );

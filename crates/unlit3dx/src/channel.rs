@@ -1,42 +1,48 @@
-//! Single-slot snapshot mailboxes: the newest snapshot wins.
+//! Snapshot mailboxes: a world reports its state to whoever subscribed.
 //!
-//! A snapshot is how a world reports its state to the others without ever
-//! calling back: the producer replaces the slot's contents, the consumers
-//! read whatever is newest, and no older snapshot is ever queued behind a
-//! slow reader. A reader that skips a snapshot misses nothing but history.
+//! A snapshot is how a world reports state to the others without ever calling
+//! back: the producer replaces the slot's contents, the consumers read
+//! whatever is newest, and no older snapshot is ever queued behind a slow
+//! reader. A reader that skips a snapshot misses nothing but history, which is
+//! what makes a mailbox right for state and wrong for events: an event that
+//! must not be missed belongs in a queue the collector fills, not in the slot.
+//!
+//! Nothing is published unasked: a world collects a snapshot only while
+//! someone holds the reader that subscribed for it. A subscription is a job
+//! like any other, so every world offers it the same way, built-in or not.
 
-use std::sync::{Arc, RwLock};
+use std::fmt;
+use std::sync::{Arc, RwLock, Weak};
 
+use unlit_ecs::World;
+
+use crate::job::{JobSender, SendError};
 use crate::sync;
 
-/// The writing half of a snapshot mailbox.
-#[derive(Clone, Debug)]
-pub struct SnapshotWriter<T> {
-    slot: Arc<RwLock<Option<Arc<T>>>>,
-}
-
-/// The reading half of a snapshot mailbox.
-#[derive(Clone, Debug)]
+/// The reading half of a snapshot mailbox, and the subscription that fills it.
+///
+/// A world runs the collector its subscription carries once per tick and
+/// publishes what it returns. The subscription lives as long as this reader:
+/// once every clone of it is dropped, the world stops collecting for it.
 pub struct SnapshotReader<T> {
     slot: Arc<RwLock<Option<Arc<T>>>>,
 }
 
-/// A writer and a reader sharing one slot.
-#[must_use]
-pub fn snapshot_pair<T>() -> (SnapshotWriter<T>, SnapshotReader<T>) {
-    let slot = Arc::new(RwLock::new(None));
-    (
-        SnapshotWriter {
-            slot: Arc::clone(&slot),
-        },
-        SnapshotReader { slot },
-    )
+// Both are hand-written: a reader is a handle to a slot, so it is cloneable
+// and debuggable whether or not the payload it carries is.
+impl<T> Clone for SnapshotReader<T> {
+    fn clone(&self) -> Self {
+        Self {
+            slot: Arc::clone(&self.slot),
+        }
+    }
 }
 
-impl<T> SnapshotWriter<T> {
-    /// Replace the slot's contents, returning the snapshot it displaced.
-    pub fn publish(&self, snapshot: T) -> Option<Arc<T>> {
-        sync::write(&self.slot).replace(Arc::new(snapshot))
+impl<T> fmt::Debug for SnapshotReader<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SnapshotReader")
+            .field("published", &sync::read(&self.slot).is_some())
+            .finish()
     }
 }
 
@@ -48,36 +54,191 @@ impl<T> SnapshotReader<T> {
     }
 }
 
+impl JobSender {
+    /// Subscribe to a snapshot of this world.
+    ///
+    /// `collect` runs on the world's own thread once per tick, after its state
+    /// has been updated, and whatever it returns is published to the reader.
+    /// Returning [`None`] leaves the newest snapshot in place, which is how a
+    /// collector stays quiet while nothing has changed.
+    ///
+    /// The subscription is a job: it is refused with the queue's error when
+    /// the queue is full or the world has stopped, and the returned reader
+    /// then never sees a snapshot.
+    ///
+    /// # Panics
+    ///
+    /// A collector that publishes into its own world — by calling
+    /// [`publish_subscribed`] — panics on the borrow it takes of the
+    /// subscription list. A collector only reads the world.
+    pub fn subscribe<T, F>(&self, collect: F) -> Result<SnapshotReader<T>, SendError>
+    where
+        T: Send + Sync + 'static,
+        F: FnMut(&World) -> Option<T> + Send + 'static,
+    {
+        let slot = Arc::new(RwLock::new(None));
+        let reader = SnapshotReader {
+            slot: Arc::clone(&slot),
+        };
+        let weak = Arc::downgrade(&slot);
+        self.send(Box::new(move |world: &mut World| {
+            let entry: Box<dyn Entry> = Box::new(Collector {
+                collect,
+                slot: weak,
+            });
+            install(world, entry);
+        }))?;
+        Ok(reader)
+    }
+}
+
+/// Run every subscription the world carries, publishing what each collects.
+///
+/// Returns how many subscriptions are still alive, so a world can skip the
+/// work its collectors would have done when there are none. A reader that has
+/// been dropped is pruned here: the world stops collecting for it on the next
+/// tick.
+///
+/// Call this from the world's own tick, after the state a collector reads has
+/// been updated.
+pub fn publish_subscribed(world: &World) -> usize {
+    let Some(mut outlet) = world
+        .query::<&mut SnapshotOutlet>()
+        .next()
+        .map(|(_, outlet)| outlet)
+    else {
+        return 0;
+    };
+    outlet.entries.retain_mut(|entry| entry.publish(world));
+    outlet.entries.len()
+}
+
+/// One subscription inside a world: what to collect and where to put it.
+trait Entry {
+    /// Collect and publish one snapshot; answers whether the reader is alive.
+    fn publish(&mut self, world: &World) -> bool;
+}
+
+/// A subscription's collector and a way back to the mailbox it fills.
+struct Collector<T, F> {
+    collect: F,
+    slot: Weak<RwLock<Option<Arc<T>>>>,
+}
+
+impl<T, F> Entry for Collector<T, F>
+where
+    T: Send + Sync + 'static,
+    F: FnMut(&World) -> Option<T> + 'static,
+{
+    fn publish(&mut self, world: &World) -> bool {
+        let Some(slot) = self.slot.upgrade() else {
+            return false;
+        };
+        if let Some(snapshot) = (self.collect)(world) {
+            sync::write(&slot).replace(Arc::new(snapshot));
+        }
+        true
+    }
+}
+
+/// Every subscription a world carries, as one component.
+///
+/// The first subscription to arrive creates it; it lives as long as the world
+/// does, and an entry is pruned once its reader is dropped.
+struct SnapshotOutlet {
+    entries: Vec<Box<dyn Entry>>,
+}
+
+/// Add one subscription to `world`, creating the outlet on first use.
+fn install(world: &mut World, entry: Box<dyn Entry>) {
+    let existing = world
+        .query::<&SnapshotOutlet>()
+        .next()
+        .map(|(entity, _)| entity);
+    match existing {
+        Some(entity) => world
+            .get_mut::<SnapshotOutlet>(entity)
+            .expect("the subscription outlet exists")
+            .entries
+            .push(entry),
+        None => {
+            world.spawn((SnapshotOutlet {
+                entries: vec![entry],
+            },));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
 
-    /// Publishing twice leaves the newest snapshot in the slot.
-    #[test]
-    fn the_newest_snapshot_wins() {
-        let (writer, reader) = snapshot_pair();
-        writer.publish(1);
-        writer.publish(2);
-        assert_eq!(*reader.latest().expect("a snapshot is published"), 2);
+    /// Install a collector into a fresh world, returning the reader it fills.
+    fn subscribe_in(
+        world: &mut World,
+        collect: impl FnMut(&World) -> Option<u32> + 'static,
+    ) -> SnapshotReader<u32> {
+        let slot = Arc::new(RwLock::new(None));
+        let reader = SnapshotReader {
+            slot: Arc::clone(&slot),
+        };
+        install(
+            world,
+            Box::new(Collector {
+                collect,
+                slot: Arc::downgrade(&slot),
+            }),
+        );
+        reader
     }
 
-    /// Publishing returns the snapshot it replaced.
+    /// A world with no subscription has nothing to run.
     #[test]
-    fn publish_returns_the_replaced_snapshot() {
-        let (writer, _reader) = snapshot_pair();
-        assert!(writer.publish(1).is_none());
-        assert_eq!(*writer.publish(2).expect("the first snapshot"), 1);
+    fn a_world_without_subscriptions_publishes_nothing() {
+        assert_eq!(publish_subscribed(&World::new()), 0);
     }
 
-    /// A panic while a snapshot is held does not poison the mailbox.
+    /// Each tick publishes what the collector returns, newest wins.
     #[test]
-    fn a_panic_while_publishing_does_not_poison_the_mailbox() {
-        let (writer, reader) = snapshot_pair();
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _held = sync::write(&writer.slot);
-            panic!("while holding the write lock");
-        }));
-        writer.publish(1);
-        assert_eq!(*reader.latest().expect("the mailbox still works"), 1);
+    fn a_subscription_publishes_what_its_collector_returns() {
+        let ticks = Arc::new(AtomicU32::new(0));
+        let counted = Arc::clone(&ticks);
+        let mut world = World::new();
+        let reader = subscribe_in(&mut world, move |_| {
+            Some(counted.fetch_add(1, Ordering::SeqCst))
+        });
+
+        assert_eq!(publish_subscribed(&world), 1);
+        assert_eq!(publish_subscribed(&world), 1);
+        assert_eq!(*reader.latest().expect("a snapshot"), 1);
+        assert_eq!(ticks.load(Ordering::SeqCst), 2);
+    }
+
+    /// A collector that answers nothing leaves the newest snapshot in place.
+    #[test]
+    fn a_collector_that_returns_nothing_leaves_the_newest() {
+        let mut first = true;
+        let mut world = World::new();
+        let reader = subscribe_in(&mut world, move |_| {
+            let value = if first { Some(1) } else { None };
+            first = false;
+            value
+        });
+
+        publish_subscribed(&world);
+        publish_subscribed(&world);
+        assert_eq!(*reader.latest().expect("the first snapshot"), 1);
+    }
+
+    /// Dropping the reader prunes the subscription on the next tick.
+    #[test]
+    fn dropping_the_reader_prunes_the_subscription() {
+        let mut world = World::new();
+        let reader = subscribe_in(&mut world, |_| Some(1));
+        assert_eq!(publish_subscribed(&world), 1);
+        drop(reader);
+        assert_eq!(publish_subscribed(&world), 0);
     }
 }
