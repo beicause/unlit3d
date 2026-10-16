@@ -8,6 +8,9 @@ repository = "https://github.com/beicause/unlit3d"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+# The snapshot mailbox's slot: a producer swaps the newest snapshot in without
+# taking a lock a reader holds.
+arc-swap = { version = "1.9.2", default-features = false }
 argh = "0.1.19"
 arrayvec = { version = "0.7.8", default-features = false, features = ["std"] }
 async-channel = { version = "2.5.0", default-features = false, features = ["std"] }

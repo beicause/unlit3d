@@ -121,10 +121,12 @@ pays for nothing else.
 
 A reader is a single-slot mailbox: `latest` peeks the newest snapshot, there
 is no backlog and no ordering to reason about, and an unread one is replaced.
-A world that collects per tick and a consumer that reads per frame meet in the
-middle without ever blocking. A collector that returns `None` leaves the
-newest snapshot in place, which is how a world that has not changed stays
-quiet.
+The slot is an `ArcSwapOption`, so neither side takes a lock the other
+contends on: the world swaps the newest snapshot in, and a reader that already
+holds one keeps reading that copy to the end. A world that collects per tick
+and a consumer that reads per frame meet in the middle without ever blocking.
+A collector that returns `None` leaves the newest snapshot in place, which is
+how a world that has not changed stays quiet.
 
 Nothing is collected unasked, and a subscription lives exactly as long as its
 reader: dropping the last clone of a `SnapshotReader` prunes the collector on

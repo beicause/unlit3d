@@ -10,14 +10,18 @@
 //! Nothing is published unasked: a world collects a snapshot only while
 //! someone holds the reader that subscribed for it. A subscription is a job
 //! like any other, so every world offers it the same way, built-in or not.
+//!
+//! The slot is an `ArcSwapOption`, so a producer never waits on a reader: it
+//! swaps the newest snapshot in, and a reader already holding the previous one
+//! keeps reading that one to the end.
 
 use std::fmt;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Weak};
 
+use arc_swap::ArcSwapOption;
 use unlit_ecs::World;
 
 use crate::job::{JobSender, SendError};
-use crate::sync;
 
 /// The reading half of a snapshot mailbox, and the subscription that fills it.
 ///
@@ -25,7 +29,7 @@ use crate::sync;
 /// publishes what it returns. The subscription lives as long as this reader:
 /// once every clone of it is dropped, the world stops collecting for it.
 pub struct SnapshotReader<T> {
-    slot: Arc<RwLock<Option<Arc<T>>>>,
+    slot: Arc<ArcSwapOption<T>>,
 }
 
 // Both are hand-written: a reader is a handle to a slot, so it is cloneable
@@ -41,7 +45,7 @@ impl<T> Clone for SnapshotReader<T> {
 impl<T> fmt::Debug for SnapshotReader<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SnapshotReader")
-            .field("published", &sync::read(&self.slot).is_some())
+            .field("published", &self.slot.load().is_some())
             .finish()
     }
 }
@@ -50,7 +54,7 @@ impl<T> SnapshotReader<T> {
     /// The newest snapshot, or [`None`] if none was ever published.
     #[must_use]
     pub fn latest(&self) -> Option<Arc<T>> {
-        sync::read(&self.slot).clone()
+        self.slot.load_full()
     }
 }
 
@@ -76,7 +80,7 @@ impl JobSender {
         T: Send + Sync + 'static,
         F: FnMut(&World) -> Option<T> + Send + 'static,
     {
-        let slot = Arc::new(RwLock::new(None));
+        let slot = Arc::new(ArcSwapOption::empty());
         let reader = SnapshotReader {
             slot: Arc::clone(&slot),
         };
@@ -122,7 +126,7 @@ trait Entry {
 /// A subscription's collector and a way back to the mailbox it fills.
 struct Collector<T, F> {
     collect: F,
-    slot: Weak<RwLock<Option<Arc<T>>>>,
+    slot: Weak<ArcSwapOption<T>>,
 }
 
 impl<T, F> Entry for Collector<T, F>
@@ -135,7 +139,7 @@ where
             return false;
         };
         if let Some(snapshot) = (self.collect)(world) {
-            sync::write(&slot).replace(Arc::new(snapshot));
+            slot.store(Some(Arc::new(snapshot)));
         }
         true
     }
@@ -180,7 +184,7 @@ mod tests {
         world: &mut World,
         collect: impl FnMut(&World) -> Option<u32> + 'static,
     ) -> SnapshotReader<u32> {
-        let slot = Arc::new(RwLock::new(None));
+        let slot = Arc::new(ArcSwapOption::empty());
         let reader = SnapshotReader {
             slot: Arc::clone(&slot),
         };
@@ -240,5 +244,27 @@ mod tests {
         assert_eq!(publish_subscribed(&world), 1);
         drop(reader);
         assert_eq!(publish_subscribed(&world), 0);
+    }
+
+    /// A snapshot already read stays valid and unchanged while later ones are
+    /// published: the producer swaps the slot, it does not write into what a
+    /// reader holds.
+    #[test]
+    fn a_read_snapshot_survives_later_publications() {
+        let mut tick = 0;
+        let mut world = World::new();
+        let reader = subscribe_in(&mut world, move |_| {
+            tick += 1;
+            Some(tick)
+        });
+
+        publish_subscribed(&world);
+        let first = reader.latest().expect("the first snapshot");
+        assert_eq!(*first, 1);
+
+        publish_subscribed(&world);
+        let second = reader.latest().expect("the second snapshot");
+        assert_eq!(*second, 2);
+        assert_eq!(*first, 1, "the held snapshot did not change under it");
     }
 }
