@@ -416,6 +416,16 @@ the built-in one and supplies its own pipeline — a hand-written
 [`wgpu::RenderPipeline`] or a WESL module composed against the crate's public
 shader package — plus, if it needs any, its own per-instance vertex data.
 
+A caller who wants the built-in family — its layouts, its vertex streams, its
+per-instance record — and only a different entry shader does not register
+anything: they put the source in
+[`UnlitOptions::shader`](unlit_wgpu::pipeline::UnlitOptions::shader) before
+building the [`UnlitPipelineKey`](unlit::UnlitPipelineKey). The variant's flags
+and the built-in package are in scope, so the source declares the bindings the
+built-in shader would have declared, and the layouts stay the variant's, which is
+what makes the swap one field. A family of one's own is the other way, and the
+one to take when more than the shader differs.
+
 ### Per-instance vertex data
 
 Per-instance state lives in a vertex stream, not in a bind group, because it

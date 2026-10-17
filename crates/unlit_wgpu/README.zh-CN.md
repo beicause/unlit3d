@@ -423,12 +423,16 @@ device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 本 crate 附带的着色器以 WESL 编写，并在构建期打包；见 `shader`。该包始终带有镜像
 调用者所绑定 Rust 类型的模块（`globals`、`view`、`mesh_metadata` 与
 `mesh_compression` 解码函数）；`unlit` feature 额外加入内置入口着色器，由
-`pipeline::SpecializedUnlitPipeline` 把内置入口着色器与一次绘制解析出的
-`pipeline::UnlitVariant` 组合起来。
+`pipeline::SpecializedUnlitPipeline` 把它与一次绘制解析出的 `pipeline::UnlitVariant`
+组合起来。
 
-若要编写自己的入口着色器，请直接用 [`wesl`](https://docs.rs/wesl) 组合它：`shader`
-是一个 WESL `StaticPackage`，因此 `wesl::resolver::PackageResolver` 可以针对内置
-管线所用的同一批模块解析 `import unlit_wgpu::mesh_compression;`。
+若要编写自己的入口着色器，有两条路。最近的一条是
+`pipeline::UnlitOptions::shader`：源码会替换该 options 触及的每个变体所用的内置
+`unlit.wesl`，并在同样的 feature flag 下、针对同一个包组合，因此它声明的绑定、顶点属性
+与入口点必须与它所替换的变体完全一致——布局仍由变体决定，变的只有源码。另一条是用
+[`wesl`](https://docs.rs/wesl) 直接组合：`shader` 是一个 WESL `StaticPackage`，因此
+`wesl::resolver::PackageResolver` 可以针对内置管线所用的同一批模块解析
+`import unlit_wgpu::mesh_compression;`，调用者自己的家族走的正是这条路。
 
 ## 设计
 

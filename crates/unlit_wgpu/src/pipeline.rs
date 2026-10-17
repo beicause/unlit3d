@@ -1,10 +1,11 @@
 //! The built-in unlit pipeline and the WESL composition behind it.
 //!
-//! [`SpecializedUnlitPipeline`] composes the built-in `unlit.wesl` with an
-//! [`UnlitVariant`], builds the layouts the shader expects, and exposes the
-//! vertex-buffer layouts the caller declares when creating meshes. Each variant
-//! contains exactly the bindings and attributes the selected channels need, so
-//! nothing unused reaches the GPU.
+//! [`SpecializedUnlitPipeline`] composes an [`UnlitVariant`]'s entry shader —
+//! the built-in `unlit.wesl`, or the caller's own when
+//! [`UnlitOptions::shader`] carries one — builds the layouts the shader
+//! expects, and exposes the vertex-buffer layouts the caller declares when
+//! creating meshes. Each variant contains exactly the bindings and attributes
+//! the selected channels need, so nothing unused reaches the GPU.
 
 #[cfg(feature = "unlit")]
 use crate::mesh::{
@@ -19,6 +20,8 @@ use crate::specialize::{
 };
 #[cfg(feature = "unlit")]
 use crate::util::Hashed;
+#[cfg(feature = "unlit")]
+use std::sync::Arc;
 
 /// Binding slot of the camera uniform in the global bind group.
 pub const CAMERA_BINDING: u32 = 0;
@@ -122,6 +125,10 @@ pub const VS_MAIN: &str = "vs_main";
 /// Entry point name of the built-in shader's fragment stage.
 #[cfg(feature = "unlit")]
 pub const FS_MAIN: &str = "fs_main";
+/// Label of the built-in entry shader: its shader module's label, and the name
+/// a composition error is reported under.
+#[cfg(feature = "unlit")]
+const BUILT_IN_SHADER_LABEL: &str = "unlit_wgpu::unlit";
 
 /// The per-vertex channels the built-in shader variant reads.
 ///
@@ -253,6 +260,67 @@ pub enum BaseColorChannels {
     LuminanceAlpha,
 }
 
+/// A caller's replacement for the built-in `unlit.wesl`.
+///
+/// The source is composed in place of the built-in entry shader, so it has to
+/// declare exactly what the variant it is drawn with declares: the same entry
+/// points ([`VS_MAIN`] and [`FS_MAIN`]), the same bindings, and the
+/// same per-vertex attributes. The layouts come from the variant rather than
+/// from the shader, so a source that declares anything else fails pipeline
+/// creation instead of drawing something else.
+///
+/// The variant's flags are in scope exactly as they are for the built-in
+/// shader, so one source can serve every variant and select its code paths with
+/// the same `@if(FLAG)` names the built-in shader documents. The built-in
+/// package resolves too: `import unlit_wgpu::view::View;` and the
+/// `mesh_compression` decode functions are the modules the built-in shader
+/// itself imports.
+///
+/// The label names the shader: it is the shader module's label, a composition
+/// error is reported under it, and — where it is a single WESL identifier — it
+/// is the module name the source is composed as, so a diagnostic can tell it
+/// apart. Any other label is composed as `main`.
+#[cfg(feature = "unlit")]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct UnlitShader {
+    label: Arc<str>,
+    source: Arc<str>,
+}
+
+#[cfg(feature = "unlit")]
+impl UnlitShader {
+    /// A shader named `label` whose WESL `source` replaces the built-in entry
+    /// shader.
+    pub fn new(label: impl Into<Arc<str>>, source: impl Into<Arc<str>>) -> Self {
+        Self {
+            label: label.into(),
+            source: source.into(),
+        }
+    }
+
+    /// The name this shader is reported under.
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// The WESL source composed in place of the built-in entry shader.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+}
+
+#[cfg(feature = "unlit")]
+impl core::fmt::Debug for UnlitShader {
+    /// Prints the label and the source's length rather than the whole source,
+    /// so an [`UnlitOptions`] dump stays readable.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UnlitShader")
+            .field("label", &self.label)
+            .field("source", &format_args!("{} bytes", self.source.len()))
+            .finish()
+    }
+}
+
 /// The policy a caller decides about a built-in unlit pipeline.
 ///
 /// Everything a draw resolves is absent: the vertex channels, whether the draw
@@ -267,6 +335,14 @@ pub enum BaseColorChannels {
 #[cfg(feature = "unlit")]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct UnlitOptions {
+    /// The entry shader this policy draws with, or `None` for the built-in
+    /// `unlit.wesl`.
+    ///
+    /// A caller's shader replaces the built-in source and nothing else: the
+    /// layouts, the vertex streams and the entry-point names stay the
+    /// variant's, so the source has to declare exactly what the variant
+    /// declares. See [`UnlitShader`].
+    pub shader: Option<UnlitShader>,
     /// The color target is sRGB-aware: it encodes the values written to it, so
     /// the fragment converts them from sRGB to linear first.
     ///
@@ -370,6 +446,7 @@ impl UnlitOptions {
     /// construct the standard configuration without one.
     pub(crate) fn standard_shape() -> Self {
         Self {
+            shader: None,
             srgb_to_linear_output: false,
             base_color: BaseColorChannels::Rgba,
             alpha_cutoff: false,
@@ -771,14 +848,22 @@ impl PipelineVariant<wgpu::RenderPipeline> for UnlitVariant {
 
 #[cfg(feature = "unlit")]
 impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
-    /// Compose the built-in `unlit.wesl` for this variant and build the
-    /// pipeline, so a variant compiles through the same [PipelineDescriptor]
-    /// mechanism a caller's own descriptor does.
+    /// Compose this variant's entry shader and build the pipeline, so a variant
+    /// compiles through the same [PipelineDescriptor] mechanism a caller's own
+    /// descriptor does.
+    ///
+    /// The entry shader is the built-in `unlit.wesl` unless the options carry a
+    /// caller's own ([`UnlitOptions::shader`]), which is composed in its place
+    /// against the same package and under the same flags.
     fn create(&self, device: &wgpu::Device) -> wgpu::RenderPipeline {
         let texel_arrays = !supports_storage_buffers(device);
-        let wgsl = compose_builtin(self, texel_arrays).expect("the built-in unlit shader composes");
+        let label = match &self.options.shader {
+            Some(shader) => shader.label(),
+            None => BUILT_IN_SHADER_LABEL,
+        };
+        let wgsl = compose(self, texel_arrays).unwrap_or_else(|error| panic!("{label}: {error}"));
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("unlit_wgpu::unlit"),
+            label: Some(label),
             source: wgpu::ShaderSource::Wgsl(wgsl.into()),
         });
 
@@ -832,7 +917,56 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
     }
 }
 
-/// Compose the built-in `unlit.wesl` for `variant`.
+/// The module path a variant's entry shader is composed at.
+///
+/// The built-in entry shader is the `unlit` module of the crate's package. A
+/// caller's shader has no file to name it, so it takes its label as its module
+/// name; a label that cannot be a WESL identifier falls back to
+/// [`DEFAULT_SHADER_NAME`], and the label still names the shader everywhere it
+/// is reported.
+#[cfg(feature = "unlit")]
+fn entry_shader_path(shader: &Option<UnlitShader>) -> wesl::syntax::ModulePath {
+    match shader {
+        None => wesl::syntax::ModulePath::new(
+            wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
+            vec!["unlit".to_owned()],
+        ),
+        Some(shader) => {
+            let name = if is_module_name(shader.label()) {
+                shader.label()
+            } else {
+                DEFAULT_SHADER_NAME
+            };
+            wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, vec![name.to_owned()])
+        }
+    }
+}
+
+/// The module name a caller's shader takes when its label cannot be one.
+#[cfg(feature = "unlit")]
+const DEFAULT_SHADER_NAME: &str = "main";
+
+/// Whether `label` is one WESL identifier, and so a module path component.
+#[cfg(feature = "unlit")]
+fn is_module_name(label: &str) -> bool {
+    let mut characters = label.chars();
+    match characters.next() {
+        Some(first) => {
+            (first.is_ascii_alphabetic() || first == '_')
+                && characters.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// Compose `variant`'s entry shader into one WGSL module.
+///
+/// The main module is the built-in `unlit.wesl` unless the variant's options
+/// carry a caller's own shader, which is composed in its place; either way
+/// everything the source imports resolves against the built-in package, so a
+/// replacement reaches the same `globals`, `view`, `mesh_metadata` and
+/// `mesh_compression` modules the built-in shader does, and sees the same
+/// flags.
 ///
 /// `texel_arrays` is the device answer rather than the variant one, so it is
 /// passed in from whoever read the device; it selects the shader array path
@@ -851,7 +985,8 @@ impl PipelineDescriptor<wgpu::RenderPipeline> for UnlitVariant {
 /// stream is bound for every variant, so there is no state in which one is
 /// read without the stream that carries it.
 #[cfg(feature = "unlit")]
-fn compose_builtin(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, ComposeError> {
+fn compose(variant: &UnlitVariant, texel_arrays: bool) -> Result<String, ComposeError> {
+    let main_path = &entry_shader_path(&variant.options.shader);
     assert!(
         !variant.base_color_texture || variant.channels.uv_color.contains(UvColorFlags::UV),
         "the base-color texture is sampled with the per-vertex UV, so sampling one requires a UV channel"
@@ -869,24 +1004,41 @@ fn compose_builtin(variant: &UnlitVariant, texel_arrays: bool) -> Result<String,
         "the luminance flags describe how a sampled base-color texel expands, so `BASE_COLOR_LUMINANCE` and `BASE_COLOR_LUMINANCE_ALPHA` require a sampled base-color texture"
     );
 
-    let main_path = wesl::syntax::ModulePath::new(
-        wesl::syntax::PathOrigin::Package("unlit_wgpu".to_owned()),
-        vec!["unlit".to_owned()],
-    );
     let mut compile_options = wesl::CompileOptions::default();
     for (name, enabled) in variant.features(texel_arrays) {
         compile_options.features.set(name, enabled);
     }
     compile_options.keep_main = true;
 
-    let mut resolver = wesl::resolver::PackageResolver::new();
-    resolver.add_package(&crate::shader::PACKAGE);
-    wesl::Compiler::new_with_resolver(compile_options, resolver)
-        .compile_module(&main_path)
+    let mut packages = wesl::resolver::PackageResolver::new();
+    packages.add_package(&crate::shader::PACKAGE);
+
+    let composed = match &variant.options.shader {
+        None => {
+            wesl::Compiler::new_with_resolver(compile_options, packages).compile_module(main_path)
+        }
+        Some(shader) => {
+            // The caller's source is the main module, mounted at the root so
+            // that its own path resolves to it: the label names the module,
+            // while anything else it imports — `unlit_wgpu::` and
+            // `package::` alike — falls through to the built-in package.
+            let mut modules: wesl::resolver::VirtualResolver<'static> =
+                wesl::resolver::VirtualResolver::new();
+            modules.add_module(main_path.clone(), shader.source().to_owned().into());
+            let mut resolver = wesl::resolver::Router::new();
+            resolver.mount_resolver(
+                wesl::syntax::ModulePath::new(wesl::syntax::PathOrigin::Absolute, Vec::new()),
+                modules,
+            );
+            resolver.mount_fallback_resolver(packages);
+            wesl::Compiler::new_with_resolver(compile_options, resolver).compile_module(main_path)
+        }
+    };
+    composed
         .map(|result| result.syntax.to_string())
         .map_err(ComposeError::Compile)
 }
-/// Failure reasons reported by [`compose_builtin`].
+/// Failure reasons reported by [`compose`].
 #[cfg(feature = "unlit")]
 #[derive(Debug)]
 enum ComposeError {
@@ -1193,6 +1345,53 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         assert!(wgsl.contains("decode_position"));
     }
 
+    /// A caller's source replaces the built-in entry shader, under the same
+    /// flags and against the same package: the variant's own entry points come
+    /// from the caller, and the built-in `unlit` module is not composed at all.
+    #[test]
+    fn a_caller_shader_replaces_the_built_in_source() {
+        let shader = UnlitShader::new(
+            "caller",
+            "\
+import unlit_wgpu::view::View;
+
+@group(0) @binding(0) var<uniform> camera: View;
+
+@vertex
+fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let corner = f32(index % 2u) * 4.0 - 1.0;
+    return camera.clip_from_world * vec4<f32>(corner, corner, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+}
+",
+        );
+        let mut options = UnlitOptions::standard_shape();
+        options.shader = Some(shader);
+        let candidate = variant(
+            options,
+            channels(
+                Some(ChannelEncoding::UncompressedPosition),
+                false,
+                UvColorFlags::empty(),
+            ),
+            false,
+            false,
+        );
+
+        let wgsl = compose(&candidate, false).expect("the caller's shader composes");
+        assert!(wgsl.contains("fn vs_main"));
+        assert!(
+            wgsl.contains("camera.clip_from_world"),
+            "the caller's body is what the module carries"
+        );
+        // The built-in fragment never ran, so its texel expansion is absent.
+        assert!(!wgsl.contains("textureSample"));
+    }
+
     /// The render target the test variants are built for.
     fn surface() -> SurfaceKey {
         SurfaceKey {
@@ -1243,7 +1442,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     /// The instance stream is not a dimension: every built-in variant binds one,
     /// so a per-instance field never has to be declared separately. The array path
     /// is not one either: it is the device's answer and is passed to
-    /// [`compose_builtin`] rather than carried by the variant.
+    /// [`compose`] rather than carried by the variant.
     fn all_variants() -> Vec<UnlitVariant> {
         // A position is absent — leaving the geometry a point at the instance
         // origin — or present in one of the three encodings.
@@ -1326,7 +1525,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let composed = |srgb_to_linear_output: bool| {
             let mut options = UnlitOptions::standard_shape();
             options.srgb_to_linear_output = srgb_to_linear_output;
-            compose_builtin(
+            compose(
                 &variant(options, UnlitVertexChannels::empty(), false, false),
                 false,
             )
@@ -1357,7 +1556,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let composed = |base_color: BaseColorChannels| {
             let mut options = UnlitOptions::standard_shape();
             options.base_color = base_color;
-            compose_builtin(
+            compose(
                 &variant(
                     options,
                     channels(
@@ -1407,7 +1606,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         let composed = |alpha_cutoff: bool| {
             let mut options = UnlitOptions::standard_shape();
             options.alpha_cutoff = alpha_cutoff;
-            compose_builtin(
+            compose(
                 &variant(
                     options,
                     channels(
@@ -1482,7 +1681,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
     fn a_luminance_layout_without_a_texture_is_rejected() {
         let mut options = UnlitOptions::standard_shape();
         options.base_color = BaseColorChannels::Luminance;
-        let _ = compose_builtin(
+        let _ = compose(
             &variant(
                 options,
                 channels(
@@ -1743,7 +1942,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
         for candidate in all_variants() {
             // The array path is the device's, so both are exercised here.
             for texel_arrays in [false, true] {
-                let wgsl = compose_builtin(&candidate, texel_arrays)
+                let wgsl = compose(&candidate, texel_arrays)
                     .unwrap_or_else(|error| panic!("variant {candidate:?} failed: {error}"));
                 assert!(wgsl.contains("fn vs_main"), "variant {candidate:?}");
                 assert!(wgsl.contains("fn fs_main"), "variant {candidate:?}");
@@ -1892,7 +2091,7 @@ fn vs_main(@location(0) position: vec4<f32>) -> @builtin(position) vec4<f32> {
                 false,
             ),
         ] {
-            let result = std::panic::catch_unwind(|| compose_builtin(&candidate, false));
+            let result = std::panic::catch_unwind(|| compose(&candidate, false));
             assert!(result.is_err(), "variant {candidate:?} must be rejected");
         }
     }

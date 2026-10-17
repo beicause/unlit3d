@@ -62,6 +62,9 @@ impl Frame {
         // per-entity work on the frame path rather than on binding a fuller
         // material.
         let key = UnlitPipelineKey::new(UnlitOptions {
+            // The built-in entry shader: a benchmark measures the frame path
+            // rather than a replacement shader.
+            shader: None,
             // No base-color texture, so the material group goes unused and the
             // choice of filtering cannot be observed.
             srgb_to_linear_output: false,

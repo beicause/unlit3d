@@ -451,14 +451,19 @@ The shaders this crate ships are authored in WESL and bundled at build time; see
 [`shader`]. The package always carries the modules mirroring the Rust types a
 caller binds (`globals`, `view`, `mesh_metadata` and the `mesh_compression`
 decode functions); the `unlit` feature adds the built-in entry shader, which
-`SpecializedUnlitPipeline` composes the built-in entry shader with the
+`SpecializedUnlitPipeline` composes with the
 [`UnlitVariant`](pipeline::UnlitVariant) a draw resolves.
 
-A caller who wants their own entry shader composes it directly with
-[`wesl`](https://docs.rs/wesl): [`shader`] is a WESL `StaticPackage`, so
-`wesl::resolver::PackageResolver` can resolve
+A caller who wants their own entry shader has two ways to it. The closest is
+[`UnlitOptions::shader`](pipeline::UnlitOptions::shader): the source replaces the
+built-in `unlit.wesl` for every variant the options reach, and is composed under
+the same flags and against the same package, so it declares exactly the
+bindings, attributes and entry points the variant it replaces declares — the
+layouts stay the variant's, and only the source changes. The other is to compose
+the shader directly with [`wesl`](https://docs.rs/wesl): [`shader`] is a WESL
+`StaticPackage`, so `wesl::resolver::PackageResolver` can resolve
 `import unlit_wgpu::mesh_compression;` against the same modules the built-in
-pipeline uses.
+pipeline uses, which is what a caller's own family does.
 
 ## Design
 
