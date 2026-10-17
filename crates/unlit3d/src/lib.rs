@@ -57,7 +57,7 @@ pub mod prelude {
             Modifiers, MouseButton, MouseButtons, MouseEvent, OnIme, OnInput, OnKey, OnMouse,
             OnPointer, OnText, OnTouch, PointerAction, PointerContact, PointerEvent, PointerKind,
             TextEvent, TouchEvent, TouchPhase, WheelUnit, dispatch_input, distribute_input,
-            subscribe_input,
+            refresh_input, subscribe_input,
         },
         mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
         mesh_source::MeshSource,

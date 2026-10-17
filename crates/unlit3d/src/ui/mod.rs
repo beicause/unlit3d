@@ -36,6 +36,7 @@
 //! frame-globals buffer of its own, plus the bind group binding them.
 
 use core::ops::DerefMut;
+use core::time::Duration;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use unlit_ecs::{Entity, World};
@@ -617,6 +618,17 @@ pub struct ExternalFrame {
     pub primitives: Vec<egui::ClippedPrimitive>,
     /// What the frame asked the platform to do, such as a URL to open.
     pub platform_output: egui::PlatformOutput,
+    /// How long after the pass the frame asked to be laid out again, where
+    /// [Duration::MAX] is a frame that asked for nothing.
+    ///
+    /// A panel running an animation or a field being edited keeps asking, and
+    /// the delay is how egui paces those requests: zero asks for the next
+    /// possible pass, a finite non-zero value names a moment, and the largest
+    /// value means the picture is settled. It travels with the frame because
+    /// the pass that produced it is the only chance to read it — egui clears
+    /// the request as the next pass begins — so the world laying frames out
+    /// turns it into a deadline of its own.
+    pub repaint_delay: Duration,
     /// The size and density the frame was laid out at.
     ///
     /// The drawing side packs this frame's clip rectangles into pixels with
@@ -629,9 +641,10 @@ pub struct ExternalFrame {
 impl Drop for ExternalFrame {
     fn drop(&mut self) {
         // egui panics when a texture delta is dropped unapplied, and a frame
-        // that crosses worlds can legitimately be dropped: a provider that has
-        // not been asked for one, or a request a full queue refused. What it
-        // carries was never uploaded, so the deltas are simply forgotten.
+        // that crosses worlds can legitimately be dropped: a publisher that
+        // replaced an older frame, or a drawing side that dropped one laid out
+        // at another target. What it carries was never uploaded, so the
+        // deltas are simply forgotten.
         self.textures.clear();
     }
 }
@@ -680,18 +693,6 @@ impl ExternalFrames {
     pub fn with_frames<R>(&self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
         let mut slots = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         f(&mut slots)
-    }
-
-    /// How many slots have been created.
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner).len()
-    }
-
-    /// Whether no slot has been created.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 }
 
@@ -808,12 +809,19 @@ pub fn lay_out(
             panel.run(world, entity, ui);
         }
     });
+    // Read before the pass's other output is taken apart: the request only
+    // exists for this pass, and egui clears it as the next one begins.
+    let repaint_delay = output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .map_or(Duration::MAX, |viewport| viewport.repaint_delay);
     let primitives = ctx.tessellate(output.shapes, screen.pixels_per_point);
     let textures = core::mem::take(&mut output.textures_delta);
     ExternalFrame {
         textures,
         primitives,
         platform_output: output.platform_output,
+        repaint_delay,
         screen,
     }
 }

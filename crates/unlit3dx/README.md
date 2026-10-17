@@ -261,9 +261,10 @@ The bridges:
   at, and hand those to the drawing side's source with
   [`unlit3d::ui::UiSource::draw_published`]. The handover is one way: the
   panel world publishes on its own tick and the drawing side draws whatever a
-  slot holds. A tick with nothing to draw — a settled panel and no input —
-  publishes nothing, so a still UI costs nothing, and the frame already there
-  is drawn until a newer one replaces it. They keep separate contexts: sharing
+  slot holds. A tick that could not change the picture — a settled panel, no
+  input, the same target, no repaint due — publishes nothing, so a still UI
+  costs nothing, and the frame already there is drawn until a newer one
+  replaces it. They keep separate contexts: sharing
   one would have both worlds writing the same memory and font atlas, and egui
   treats one `run_ui` call as one whole frame. Their texture ids both start
   at zero, so a frame keeps the ids it was laid out with and the GPU

@@ -14,8 +14,9 @@
 //! whether they run on threads of their own or are stepped by the host's
 //! frames. The gameplay world holds the scene's objects: one entity each for
 //! the shape pool, the floor, the shapes and the music, every one of them
-//! ticking itself. The panel is the fifth object, and lives in the render
-//! world because that is the world its UI source draws from.
+//! ticking itself. The panel is the fifth object, and lives in the gameplay
+//! world with the rest: it lays its frames out there and publishes them, and
+//! the render world draws whatever the slots hold.
 //!
 //! Space drops a body. The render world's control panel drives two music
 //! tracks — a looping background piece and a one-shot MIDI sequence — each
@@ -48,7 +49,6 @@ use crate::scene::*;
 use image::ImageEncoder;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
-use unlit3d::ui::{ExternalFrames, UiScreen};
 use unlit3d::winit::builtin::{
     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume, exit_on_close_requested,
     exit_on_escape, request_redraw_while_foreground, winit_input_behaviour,
@@ -98,7 +98,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // The host world dispatches its own key behaviours, so it subscribes for
     // the events it has not read yet rather than reading a shared list.
     world.spawn((input.subscribe(),));
-    world.spawn((winit_input_behaviour(WinitInput::new(input)),));
+    world.spawn((winit_input_behaviour(WinitInput::new(input.clone())),));
 
     let attributes = Window::default_attributes()
         .with_title("unlit3dx multi-world")
@@ -130,16 +130,23 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // The control panel lives in the gameplay world and publishes its frames
     // into these slots; the render world draws whatever is there. Neither asks
     // the other for anything.
-    let panel_frames = ExternalFrames::new();
-    let panel_screen = UiScreen::new();
-    let panels = PanelSlots {
-        frames: panel_frames.clone(),
-        screen: panel_screen.clone(),
-    };
+    let panels = PanelSlots::default();
     let worlds = if stepped {
-        spawn_scene::<Stepped>(world, render.clone(), stepped_audio(), panels.clone())
+        spawn_scene::<Stepped>(
+            world,
+            render.clone(),
+            stepped_audio(),
+            panels.clone(),
+            &input,
+        )
     } else {
-        spawn_scene::<Threaded>(world, render.clone(), AudioSetup::Device, panels.clone())
+        spawn_scene::<Threaded>(
+            world,
+            render.clone(),
+            AudioSetup::Device,
+            panels.clone(),
+            &input,
+        )
     };
     let gameplay_sender = worlds.gameplay.sender();
 

@@ -95,11 +95,16 @@ pub fn run(
             sample_rate: config.audio_sample_rate,
         }
     };
+    // Nothing feeds input to a run with no window, but the gameplay world
+    // still takes a buffer: a panel lays its frames out from it, and a run
+    // that never pushes an event simply never sees one.
+    let input = InputWriter::new();
     let worlds = spawn_scene::<Stepped>(
         &mut host,
         render.clone(),
         audio_setup,
         PanelSlots::default(),
+        &input,
     );
     let renderer = setup_render_world(&mut host, render.entity(), device, queue, capabilities);
     // No control panel headless: nothing is there to click. The camera is

@@ -835,7 +835,11 @@ world that ticks less often than input arrives still reads every event in
 order, and nothing has to clear anything afterwards.
 [`distribute_input`](input::distribute_input) copies the writer into every
 nested world and subscribes it there, so one stream feeds them all while each
-builds its own state. Translation
+builds its own state; a world spawned outside that hierarchy — one a runner
+started as a sibling — subscribes itself from its own setup. A world that
+reads input without dispatching anything calls
+[`refresh_input`](input::refresh_input) once per tick instead, before
+anything reads the batch. Translation
 from a windowing library's events lives behind the corresponding feature:
 `input::winit::WinitInput` forwards `WindowEvent`s, and `ui::convert` turns the
 crate's events into egui's.

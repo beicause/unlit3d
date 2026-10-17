@@ -283,10 +283,10 @@ impl Controls {
     /// Mount the panel: one entity carrying the source that runs it, the
     /// panel itself, and the rows it shows.
     ///
-    /// The panel rides on the input handle the host distributes into every
-    /// nested world, so nothing input-related is spawned here: the UI source
-    /// reads that handle's events each frame, and the host clears them once
-    /// the frame is drawn.
+    /// The panel reads its input from the gameplay world's own buffer, which
+    /// the world subscribes when it is set up and dispatches on its tick, so
+    /// nothing input-related is spawned here: the events the panel reacts to
+    /// are the ones the rest of this world saw on the same tick.
     ///
     /// The background loop starts itself once the audio world can sound; the
     /// one-shot sequence waits for its row's Play button and plays once per

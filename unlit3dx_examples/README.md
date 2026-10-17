@@ -136,22 +136,24 @@ it is paced differs.
 
 `Controls` is the fifth object, and it lives in the **gameplay world** with the
 rest. A panel can only be built where its egui context runs, so this world
-lays it out and the render world draws what comes back: the panel's entity
-carries the `UiPanel`, the rows it shows, and the `UiHost` holding the context
-they are built in. It needs no tick of its own — the render world asks that
-context for a frame through this world's command queue, as a job, and the
-frame comes back through the job's reply slot. The render world holds only a
-`UiSource` with that queue attached, which uploads and records what it
-collects.
+lays it out and publishes the frame, and the render world draws whatever the
+slots hold: the panel's entity carries the `UiPanel`, the rows it shows, the
+`UiHost` holding the context they are built in, and the `PanelHost` that
+publishes for it. It has a tick of its own, late enough in the frame that
+everything which could change what it shows has already run. The render world
+holds only a `UiSource` with those slots attached, which uploads and records
+what it finds there.
 
 The two sides keep separate egui contexts. Sharing one would have both worlds
 writing the same memory and font atlas, and egui treats one `run_ui` call as
 one whole frame, so two worlds running it against one context would interleave
-two frames into one. Their texture ids therefore come from different
-namespaces, and the drawing side renumbers each provider's as its frame
-arrives.
+two frames into one. Their texture ids both start at zero, so a frame keeps the
+ids it was laid out with and the GPU integration keys textures by origin and
+id — nothing renumbers them.
 
-A frame the drawing side does not need is not laid out: one is asked for only
-when the last one asked to be redrawn or input arrived, so a panel nobody is
-touching costs nothing on the wire. The frame it last collected keeps being
-drawn until a newer one replaces it.
+A frame that could not differ from the one the drawing side holds is not laid
+out at all: one is laid out only when there is none yet, the target the drawing
+side reports has moved, input arrived, or the last frame asked to be laid out
+again — at once, or once a delay it named has elapsed. A panel nobody is
+touching therefore costs nothing on the wire, and the frame it last published
+keeps being drawn until a newer one replaces it.

@@ -1375,8 +1375,6 @@ mod tests {
         }
     }
 
-    /// One tessellated primitive carrying `vertices` points, clipped to the
-    /// whole screen.
     /// Tag `primitives` with the local source: these tests exercise packing,
     /// not the namespaces a frame arrives from.
     fn local(primitives: &[egui::ClippedPrimitive]) -> Vec<(Source, &egui::ClippedPrimitive)> {
@@ -1386,6 +1384,8 @@ mod tests {
             .collect()
     }
 
+    /// One tessellated primitive carrying `vertices` points, clipped to the
+    /// whole screen.
     fn primitive(texture: egui::TextureId, vertices: usize) -> egui::ClippedPrimitive {
         let mut mesh = egui::epaint::Mesh::with_texture(texture);
         for index in 0..vertices {

@@ -791,8 +791,8 @@ impl Default for InputState {
             cursor: None,
             buttons: MouseButtons::empty(),
             touches: Vec::new(),
-            // A window starts focused, and a caller that knows better seeds it
-            // through `set_focused` or a `FocusChanged` event.
+            // A window starts focused; only a `FocusChanged` event says
+            // otherwise.
             focused: true,
             size_px: (0, 0),
             // One physical pixel per logical point until a window says
@@ -833,25 +833,6 @@ impl InputState {
             InputEvent::Resized { size_px } => self.size_px = *size_px,
             InputEvent::ScaleFactorChanged { scale_factor } => self.scale_factor = *scale_factor,
         }
-    }
-
-    /// Seed the window size, for a caller that learns it outside an event.
-    pub fn set_size_px(&mut self, width: u32, height: u32) {
-        self.size_px = (width, height);
-    }
-
-    /// Seed the pixel density, for a caller that learns it outside an event.
-    pub fn set_scale_factor(&mut self, scale_factor: f32) {
-        self.scale_factor = scale_factor;
-    }
-
-    /// Move the pointer without an event, for a caller that tracks it itself.
-    ///
-    /// Only the hover position is set: which pointers are down is a fact only
-    /// the events carry, so a caller that synthesises a move cannot invent a
-    /// press through this.
-    pub fn set_pointer(&mut self, position: Option<[f32; 2]>) {
-        self.pointer = position;
     }
 
     /// Update the state a mouse event leaves behind.
@@ -1108,8 +1089,11 @@ impl InputWriter {
 ///
 /// [`dispatch_input`] calls this, so a world that dispatches needs nothing
 /// else. A world that reads input without dispatching — one where a
-/// [`FrameSource`](crate::source::FrameSource) is the only reader — calls this
-/// once per tick instead, before anything reads the batch.
+/// [`FrameSource`](crate::source::FrameSource) or a panel is the only reader —
+/// calls this once per tick instead, before anything reads the batch.
+///
+/// Calling it in the same tick as [`dispatch_input`] is harmless but wasteful:
+/// the refresh has already happened, and the dispatch finds nothing new.
 ///
 /// Returns whether the world has an input buffer at all.
 pub fn refresh_input(world: &World) -> bool {
@@ -1134,8 +1118,9 @@ pub fn refresh_input(world: &World) -> bool {
 /// nothing to subscribe to.
 ///
 /// A world that never ticks keeps every event it is fed until it does, which
-/// is why [`distribute_input`] subscribes the nested worlds and nothing else
-/// subscribes a world on its own behalf.
+/// is why [`distribute_input`] subscribes the nested worlds, and why a world
+/// spawned outside that hierarchy — one a runner started as a sibling —
+/// subscribes itself from its own setup.
 pub fn subscribe_input(world: &mut World) -> bool {
     if world.query::<&InputEvents>().next().is_some() {
         return false;

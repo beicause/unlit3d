@@ -16,13 +16,14 @@
 //! - [`SceneAudio`] installs the synthesizer's sources and starts the music.
 //! - [`Controls`] is the panel. It lives here with the rest, and the render
 //!   world draws it: the panel's egui context runs in this world, which lays it
-//!   out, and the render world's `UiSource` draws the frames that come back.
+//!   out, and the render world's `UiSource` draws whatever the slots it
+//!   publishes into hold.
 //!
 //! The panel is the one object whose drawing happens in another world, so it
-//! carries a `UiHost` holding the context its interface is built in; the
-//! render world asks that context for a frame through this world's command
-//! queue, and draws the answer. Everything else reaches its neighbours
-//! through the same channels every world uses.
+//! carries a `UiHost` holding the context its interface is built in: each tick
+//! it lays a frame out and publishes it into the slots both worlds share. It
+//! reads input like any other object, from this world's own buffer, so the
+//! events that move it are the ones this world's tick dispatched.
 
 use std::time::Duration;
 
@@ -128,6 +129,15 @@ pub const FRAME_DISPATCH_INPUT: i32 = 5;
 /// are the ones the frame draws.
 pub const FRAME_INLINE_STEP: i32 = 6;
 
+/// The gameplay frame's behaviour order: its input is dispatched here,
+/// before any object ticks, so every object sees the events of its own tick
+/// and the panel publishes a frame that already accounts for them.
+pub const GAMEPLAY_DISPATCH_INPUT: i32 = 10;
+
+/// The order the panel publishes at: after every object has ticked, so the
+/// frame it lays out shows what this tick settled on.
+pub const GAMEPLAY_PUBLISH_PANEL: i32 = 400;
+
 /// The render world's behaviour order: the camera orbit runs here, after
 /// the scene's pose jobs have landed on a frame's drain.
 pub const RENDER_CAMERA: i32 = 100;
@@ -222,8 +232,8 @@ pub fn camera_job() -> Job<()> {
 ///
 /// Both are jobs, so a world that was set up to draw can be given a scene
 /// without its setup ever hearing of one. The panel itself lives in the
-/// gameplay world, so what arrives here is that world's command queue: the
-/// source asks it for a frame, and draws what comes back.
+/// gameplay world and nothing here reaches it: the source draws whatever the
+/// slots hold, and the world holding the panel fills them.
 pub fn mount_scene_content(render: &WorldHandle, panels: Option<PanelSlots>) {
     if let Err(error) = render.send(camera_job()) {
         log::error!("the render world refused its camera ({error:?})");
@@ -364,11 +374,18 @@ pub struct PanelSlots {
 /// The worlds are spawned in the order they depend on each other — physics
 /// and audio first, so the wiring can subscribe to their state, then the
 /// gameplay world with its objects.
+///
+/// `input` is the writer the host feeds. The gameplay world is a sibling of
+/// the host rather than a world nested inside it, so nothing distributes the
+/// writer to it: it subscribes here, once, before its first tick. A run with
+/// no input of its own — the headless capture — passes a writer nothing is
+/// fed, and the panel still lays its frames out.
 pub fn spawn_scene<R: WorldRunner>(
     host: &mut World,
     render: WorldHandle,
     audio_setup: AudioSetup,
     panels: PanelSlots,
+    input: &InputWriter,
 ) -> SceneWorlds {
     // The physics world: fixed step, default gravity. The ground is queued
     // by the floor object before the first ball drops.
@@ -446,7 +463,18 @@ pub fn spawn_scene<R: WorldRunner>(
             let audio_format = audio_format.clone();
             let panel_audio = audio_sources.then(|| wiring.audio_sender.clone());
             let panels = panels.clone();
+            let input = input.clone();
             move |world: &mut World| {
+                // This world is a sibling of the host, not a world nested in
+                // it, so the host's fan-out never reaches it: it takes its own
+                // buffer, once, before the first tick reads one.
+                world.spawn((input.subscribe(),));
+                world.spawn((OnFrame::new(
+                    FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
+                    |world, _entity, _frame| {
+                        dispatch_input(world);
+                    },
+                ),));
                 let state = SceneState::new(world, render.clone());
                 world.spawn((state, tick_behaviour::<SceneState>(TICK_SCENE)));
                 let floor = Floor::new(&wiring, render.clone());
@@ -458,8 +486,9 @@ pub fn spawn_scene<R: WorldRunner>(
                     world.spawn((audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
                 }
                 // The panel is the fifth object, and lives here with the rest.
-                // It lays its frames out on this world's own tick and
-                // publishes them; the render world draws whatever is there.
+                // It publishes on its own place in this world's frame, after
+                // everything that could change what it shows has ticked, and
+                // the render world draws whatever is there.
                 let host = PanelHost::new(
                     UiHost::new(),
                     panels.frames.clone(),
@@ -467,6 +496,10 @@ pub fn spawn_scene<R: WorldRunner>(
                     PANEL_SLOT,
                 );
                 Controls::new(panel_audio).mount(world, host);
+                world.spawn((OnFrame::new(
+                    FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
+                    |world, _entity, _frame| publish_panels(world),
+                ),));
             }
         },
         {
@@ -486,7 +519,6 @@ pub fn spawn_scene<R: WorldRunner>(
                 };
                 index = index.wrapping_add(1);
                 dispatch_frame(world, &mut frame);
-                publish_panels(world);
                 if R::SELF_DRIVEN {
                     clock.wait(control);
                 }
@@ -507,19 +539,11 @@ pub fn spawn_scene<R: WorldRunner>(
 /// Lay this tick's panel out and publish it, if it could differ from the one
 /// the drawing side holds.
 ///
-/// The events are this world's own, taken from the buffer its tick filled:
-/// they are what decides whether laying a frame out is worth it at all.
+/// The events the panel reads are this world's own, from the buffer its tick
+/// filled, so what the user clicked on is what this tick dispatched.
 fn publish_panels(world: &World) {
-    // The events are read into a scratch list before the host is borrowed:
-    // publishing takes the world by reference, and both borrows cannot be
-    // held at once.
-    let events = world
-        .query::<&InputEvents>()
-        .next()
-        .map(|(_, events)| events.with_batch(|batch| batch.to_vec()))
-        .unwrap_or_default();
     if let Some((_, mut host)) = world.query::<&mut PanelHost>().next() {
-        host.publish(world, &events);
+        host.publish(world);
     }
 }
 
@@ -624,5 +648,117 @@ pub fn request_drop_in(world: &World) {
 pub fn request_clear_in(world: &World) {
     if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
         balls.request_clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use unlit3d::ui::{UiPanel, egui};
+
+    /// The gameplay world is a sibling of the host, so nothing distributes
+    /// the input writer into it: the world subscribes itself when it is set
+    /// up. This checks that an event fed to the writer reaches that world and
+    /// brings its panel back to lay a frame out.
+    #[test]
+    fn input_reaches_a_panel_published_from_a_stepped_world() {
+        let mut host = World::new();
+        let render = spawn_sub_world(&mut host, "render", 8);
+        let input = InputWriter::new();
+        let worlds = spawn_scene::<Stepped>(
+            &mut host,
+            render,
+            AudioSetup::Silent,
+            PanelSlots::default(),
+            &input,
+        );
+        let runs = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&runs);
+        worlds
+            .gameplay
+            .sender()
+            .send(Box::new(move |world: &mut World| {
+                world.spawn((UiPanel::new(move |_, _, _ui: &mut egui::Ui| {
+                    counted.fetch_add(1, Ordering::Relaxed);
+                }),));
+            }))
+            .expect("the gameplay world accepts a job");
+
+        // The first ticks settle the panel: egui answers its own first pass
+        // with a request for another, and once the picture is settled with no
+        // input arriving, no frame is laid out at all.
+        let mut settled = 0;
+        for _ in 0..8 {
+            step_stepped_world(&host, worlds.gameplay.entity());
+            let now = runs.load(Ordering::Relaxed);
+            if now == settled {
+                break;
+            }
+            settled = now;
+        }
+        assert!(settled > 0, "the panel was laid out");
+
+        // A press fed to the writer is what a window would push.
+        input.push(InputEvent::Key(KeyEvent {
+            key: Key::Space,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        }));
+        step_stepped_world(&host, worlds.gameplay.entity());
+
+        assert!(
+            runs.load(Ordering::Relaxed) > settled,
+            "the event brought the panel back to lay a frame out"
+        );
+    }
+
+    /// The events a panel sees are the ones this world's own dispatch
+    /// delivered on that tick, which is what makes the two agree.
+    #[test]
+    fn a_panel_reads_the_events_its_own_tick_dispatched() {
+        let mut host = World::new();
+        let render = spawn_sub_world(&mut host, "render", 8);
+        let input = InputWriter::new();
+        let pressed = Arc::new(AtomicUsize::new(0));
+        // The wiring is the scene's, but the panel is this test's: it counts
+        // the space presses it saw, the way the real one reads a click.
+        let worlds = spawn_scene::<Stepped>(
+            &mut host,
+            render,
+            AudioSetup::Silent,
+            PanelSlots::default(),
+            &input,
+        );
+        let counted = Arc::clone(&pressed);
+        worlds
+            .gameplay
+            .sender()
+            .send(Box::new(move |world: &mut World| {
+                world.spawn((UiPanel::new(move |world, _, _ui: &mut egui::Ui| {
+                    if let Some((_, events)) = world.query::<&InputEvents>().next() {
+                        events.with_batch(|batch| {
+                            counted.fetch_add(batch.len(), Ordering::Relaxed);
+                        });
+                    }
+                }),));
+            }))
+            .expect("the gameplay world accepts a job");
+
+        input.push(InputEvent::Key(KeyEvent {
+            key: Key::Space,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        }));
+        step_stepped_world(&host, worlds.gameplay.entity());
+
+        assert_eq!(
+            pressed.load(Ordering::Relaxed),
+            1,
+            "the panel saw the event its tick dispatched"
+        );
     }
 }

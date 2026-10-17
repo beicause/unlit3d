@@ -595,7 +595,9 @@ world.spawn((UiPanel::new(|_world, _entity, ui| {
 队列取作本次 tick 的批次、折进状态并驱动这些行为。世界独占它还没 tick 的事件，因此
 tick 频率低于输入到达频率的世界依然按顺序读到每一条，之后也不需要谁去清空。
 `distribute_input` 把 `InputWriter` 复制进每个嵌套世界并在那里订阅，一条流即可供给
-全部世界，而每个世界各建自己的状态。来自窗口库的事件转换位于相应 feature 之后：
+全部世界，而每个世界各建自己的状态；不在这个层级里的世界——由 runner 作为兄弟世界
+启动的那个——则在自己的初始化里自行订阅。只读输入而完全不分发的世界改为每 tick 调用
+一次 `refresh_input`，在任何读者读批次之前。来自窗口库的事件转换位于相应 feature 之后：
 `input::winit::WinitInput` 转发 `WindowEvent`，`ui::convert` 把本 crate 的事件转成
 egui 的事件。
 
