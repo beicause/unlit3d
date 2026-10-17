@@ -1,22 +1,30 @@
 //! Input events and the behaviour components that react to them.
 //!
 //! This module is the platform-independent half of input handling: the event
-//! types, the [`InputState`] that accumulates them behind an [`InputHandle`],
-//! and the behaviour components something drives once a frame. It depends on
-//! neither winit nor egui, so game logic written here stays portable; the
-//! translation from a windowing library's events lives behind the corresponding
-//! feature module (for example [`crate::winit`] on the winit side).
+//! types, the [`InputState`] each world keeps, the [`InputWriter`] that feeds
+//! them, and the behaviour components something drives once a frame. It
+//! depends on neither winit nor egui, so game logic written here stays
+//! portable; the translation from a windowing library's events lives behind the
+//! corresponding feature module (for example [`crate::winit`] on the winit
+//! side).
 //!
 //! # The frame loop
 //!
-//! Input flows in three steps, and the caller owns all three:
+//! Input is level state plus a per-world buffer, and the caller owns both steps:
 //!
-//! 1. Something feeds events into the [`InputState`], one [`InputState::push`]
-//!    per event, through the [`InputHandle`] the world holds.
-//! 2. [`dispatch_input`] runs the behaviour components for the events that
-//!    arrived. It does not apply structural changes; the caller does.
-//! 3. [`InputState::clear_events`] drops the frame's events once every
-//!    consumer has read them.
+//! 1. Something feeds events through the world's [`InputWriter`], one
+//!    [`InputWriter::push`] per event. Each one lands in the buffer of every
+//!    world that has one.
+//! 2. [`dispatch_input`] starts this world's input tick: everything buffered
+//!    since the last tick becomes the tick's batch, the batch is folded into
+//!    this world's [`InputState`] — modifiers, pointers, buttons, focus, size
+//!    — and the behaviour components run for it. It does not apply structural
+//!    changes; the caller does.
+//!
+//! Nothing clears the events afterwards. A world's [`InputEvents`] is the one
+//! buffer everything in that world reads — the events of this tick and the
+//! state they built — replaced on the next tick, so a slower world still sees
+//! every event in order and no two readers of one world can disagree.
 //!
 //! ```rust
 //! use unlit3d::prelude::*;
@@ -26,10 +34,10 @@
 //! struct Presses(u32);
 //!
 //! let mut world = World::new();
-//! // The handle is spawned so `dispatch_input` finds the state, and it is
-//! // also what feeds the events in.
-//! let input = InputHandle::new();
-//! world.spawn((input.clone(),));
+//! // The handle feeds the events in; the buffer is the world's own, holding
+//! // what arrived since its last tick.
+//! let input = InputWriter::new();
+//! world.spawn((input.clone(), input.subscribe()));
 //! // A behaviour that reacts to the keyboard.
 //! world.spawn((
 //!     Presses(0),
@@ -41,19 +49,19 @@
 //! ));
 //!
 //! // This frame's events, as a translation layer would feed them in.
-//! input.write().push(InputEvent::Key(KeyEvent {
+//! input.push(InputEvent::Key(KeyEvent {
 //!     key: Key::W,
 //!     pressed: true,
 //!     repeat: false,
 //!     modifiers: Modifiers::default(),
 //! }));
 //!
-//! // End of the frame: deliver the events, land what the callbacks queued,
-//! // then forget the events (the state they left behind stays).
+//! // End of the tick: take what arrived as this tick's batch, deliver it,
+//! // and land what the callbacks queued. The state the events left stays.
 //! assert!(dispatch_input(&world));
 //! world.apply();
-//! input.write().clear_events();
-//! assert!(input.read().events().is_empty());
+//! // A second dispatch has nothing left to deliver.
+//! assert!(!dispatch_input(&world));
 //! ```
 //!
 //! # Constraints on a callback
@@ -65,8 +73,9 @@
 //! cells, so [`OnKey`] and [`OnInput`] never conflict.
 
 use core::ops::Deref;
-use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
+use async_channel::{Receiver, Sender, unbounded};
 use bitflags::bitflags;
 use unlit_ecs::World;
 
@@ -681,49 +690,59 @@ pub enum InputEvent {
     ModifiersChanged(Modifiers),
     /// The window gained or lost focus.
     FocusChanged(bool),
+    /// The window's drawable size changed, in physical pixels.
+    Resized {
+        /// The new size.
+        size_px: (u32, u32),
+    },
+    /// The window's pixel density changed.
+    ScaleFactorChanged {
+        /// The new physical pixels per logical point.
+        scale_factor: f32,
+    },
 }
 
-/// The frame's input: the events that arrived since they were last cleared,
-/// plus the state they left behind.
+/// How the input devices are now: the state the events left behind.
 ///
-/// The two halves have different lifetimes. Events belong to one frame and are
-/// cleared once every consumer has read them. The state fields describe how
-/// the input devices are now — which modifiers are held, where the pointer is,
-/// which buttons are down — and outlive the events that set them.
+/// Which modifiers are held, where the pointer is, which buttons are down —
+/// things that outlive the event that set them. The events themselves are not
+/// here: they belong to the tick of the world that received them, in its
+/// [`InputEvents`].
 ///
-/// It lives in the world as a resource entity, so a behaviour component can
-/// read the state while it handles an event:
+/// It lives inside a world's [`InputEvents`], built by that world's own tick,
+/// so a behaviour component reads it while it handles an event:
 ///
 /// ```rust
 /// use unlit3d::prelude::*;
 ///
-/// // A callback reads the resource through the handle it captured. Keeping
-/// // the count in a sibling component, not in the behaviour, is what makes
-/// // that borrow legal.
+/// // A callback reads the state from the world it was handed, through the
+/// // buffer that holds it. Keeping the count in a sibling component, not in
+/// // the behaviour, is what makes that borrow legal.
 /// struct CtrlPresses(u32);
 ///
 /// let mut world = World::new();
-/// let input = InputHandle::new();
-/// world.spawn((input.clone(),));
-/// let callback_input = input.clone();
+/// let input = InputWriter::new();
+/// world.spawn((input.clone(), input.subscribe()));
 /// let observer = world.spawn((
 ///     CtrlPresses(0),
-///     OnInput::new(move |world, entity, _event| {
-///         let ctrl = callback_input.read().modifiers.ctrl;
+///     OnInput::new(|world, entity, _event| {
+///         let ctrl = world
+///             .query::<&InputEvents>()
+///             .next()
+///             .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
 ///         if ctrl {
 ///             let _ = world.with_mut::<CtrlPresses, _>(entity, |presses| presses.0 += 1);
 ///         }
 ///     }),
 /// ));
 ///
-/// input.write().push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
+/// input.push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
 /// dispatch_input(&world);
 ///
 /// assert_eq!(world.get::<CtrlPresses>(observer).unwrap().0, 1);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputState {
-    events: Vec<InputEvent>,
     /// The modifier keys currently held.
     pub modifiers: Modifiers,
     /// Every pointer currently down, in the order they went down.
@@ -765,7 +784,6 @@ pub struct InputState {
 impl Default for InputState {
     fn default() -> Self {
         Self {
-            events: Vec::new(),
             modifiers: Modifiers::default(),
             pointers: Vec::new(),
             pointer: None,
@@ -784,37 +802,37 @@ impl Default for InputState {
     }
 }
 
+#[cfg(test)]
 impl InputState {
-    /// The events that have arrived since they were last cleared.
-    #[must_use]
-    pub fn events(&self) -> &[InputEvent] {
-        &self.events
+    /// Apply `event` without a world to hand it to.
+    ///
+    /// A test about the state machine alone does not need a buffer; feeding
+    /// input for real goes through [`InputWriter::push`], which reaches a
+    /// world's own [`InputEvents`] instead.
+    fn push(&mut self, event: InputEvent) {
+        self.record(&event);
     }
+}
 
+impl InputState {
     /// Record `event` and update the state it leaves behind.
     ///
-    /// This is the entry point a translation layer feeds; it is also the whole
-    /// state machine, because every state change a frame makes is carried by
-    /// the event that caused it.
-    pub fn push(&mut self, event: InputEvent) {
+    /// This is the whole state machine, because every state change a frame
+    /// makes is carried by the event that caused it. It is private: a world's
+    /// state is only ever built by its own [`InputEvents::refresh`], from the
+    /// events fed to it.
+    fn record(&mut self, event: &InputEvent) {
         match event {
             InputEvent::Key(event) => self.modifiers = event.modifiers,
-            InputEvent::Mouse(event) => self.apply_mouse(event),
-            InputEvent::Pointer(event) => self.apply_pointer(event),
-            InputEvent::Touch(event) => self.apply_touch(&event),
+            InputEvent::Mouse(event) => self.apply_mouse(*event),
+            InputEvent::Pointer(event) => self.apply_pointer(*event),
+            InputEvent::Touch(event) => self.apply_touch(event),
             InputEvent::Ime(_) | InputEvent::Text(_) => {}
-            InputEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers,
-            InputEvent::FocusChanged(focused) => self.focused = focused,
+            InputEvent::ModifiersChanged(modifiers) => self.modifiers = *modifiers,
+            InputEvent::FocusChanged(focused) => self.focused = *focused,
+            InputEvent::Resized { size_px } => self.size_px = *size_px,
+            InputEvent::ScaleFactorChanged { scale_factor } => self.scale_factor = *scale_factor,
         }
-        self.events.push(event);
-    }
-
-    /// Drop the frame's events, keeping the state they left behind.
-    ///
-    /// Call this once every consumer of the frame has read the events: the
-    /// dispatcher and any UI source share the one list.
-    pub fn clear_events(&mut self) {
-        self.events.clear();
     }
 
     /// Seed the window size, for a caller that learns it outside an event.
@@ -935,98 +953,245 @@ impl InputState {
     }
 }
 
-/// A shared handle to the frame's input.
+/// A world's input: the state the events left behind, and this tick's events.
 ///
-/// One [`InputState`] is kept, and every world that reads input holds a clone
-/// of this handle: a window callback that feeds events and a scene that reads
-/// them see the same state, however many worlds the scene is nested in. A
-/// handle is `Send + Sync`, so it can also be carried across a thread boundary.
+/// This is the one input buffer a world has. [`InputWriter`] drops every event
+/// into the queue here, and the world's tick — [`dispatch_input`] — moves
+/// whatever queued into the batch and folds it into the state. Everything in
+/// the world then reads that same batch and that same state, so a world that
+/// ticks slower than input arrives still sees every event, in order, and no two
+/// readers of one world can disagree or steal from each other.
 ///
-/// The state lives behind a lock because feeding and reading happen at
-/// different times and through a shared world: a caller takes a [`read`] or
-/// [`write`] guard for as long as it needs the state and no longer. No guard is
-/// held across a behaviour callback, so a callback may lock freely.
-///
-/// [`read`]: Self::read
-/// [`write`]: Self::write
+/// The batch is replaced by the next tick, which is what keeps an event from
+/// arriving twice. The state outlives it: which modifiers are held, where the
+/// pointer is and which buttons are down describe the devices now rather than
+/// one tick, and are what a drag asks about on every move.
 #[derive(Clone, Debug)]
 #[cfg_attr(
     feature = "reflect",
     derive(facet::Facet),
-    facet(opaque, proxy = crate::reflect::InputStateProxy)
+    facet(opaque, proxy = crate::reflect::InputEventsProxy)
 )]
-pub struct InputHandle(Arc<RwLock<InputState>>);
+pub struct InputEvents(Arc<RwLock<Buffer>>);
 
-impl InputHandle {
-    /// A handle to a fresh, default state.
+/// What one world's [`InputEvents`] holds.
+#[derive(Debug)]
+struct Buffer {
+    /// The state the events so far left behind.
+    state: InputState,
+    /// Events fed since the last refresh.
+    queue: Receiver<InputEvent>,
+    /// This tick's events, oldest first.
+    batch: Vec<InputEvent>,
+}
+
+impl InputEvents {
+    /// Run `f` over the state the events so far left behind.
+    ///
+    /// Reading takes the lock shared, so every reader in the world reads the
+    /// same batch at once; only a tick takes it exclusively. A panicking
+    /// writer leaves the lock poisoned, and the value is still readable, so
+    /// the poison is ignored rather than propagated.
+    pub fn with_state<R>(&self, f: impl FnOnce(&InputState) -> R) -> R {
+        let buffer = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        f(&buffer.state)
+    }
+
+    /// Run `f` over this tick's events, oldest first.
+    ///
+    /// Reading does not consume: the whole world reads the same batch, so no
+    /// reader can take an event away from the next one. A caller that only
+    /// transforms the batch does it here, rather than copying it out first.
+    pub fn with_batch<R>(&self, f: impl FnOnce(&[InputEvent]) -> R) -> R {
+        let buffer = self.0.read().unwrap_or_else(PoisonError::into_inner);
+        f(&buffer.batch)
+    }
+
+    /// Append this tick's events, oldest first, to `out`.
+    pub fn copy_events_into(&self, out: &mut Vec<InputEvent>) {
+        self.with_batch(|batch| out.extend_from_slice(batch));
+    }
+
+    /// What this tick has, as its own list.
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<InputEvent> {
+        let mut events = Vec::new();
+        self.copy_events_into(&mut events);
+        events
+    }
+
+    /// Start this world's input tick: take everything queued as the batch, and
+    /// fold it into the state.
+    ///
+    /// Whatever the previous tick left is dropped, so an event is delivered on
+    /// exactly one tick. [`dispatch_input`] calls this; a world that reads
+    /// input without dispatching anything calls it itself, once per tick,
+    /// before anything reads the batch.
+    pub fn refresh(&self) {
+        let mut buffer = self.0.write().unwrap_or_else(PoisonError::into_inner);
+        let Buffer {
+            state,
+            queue,
+            batch,
+        } = &mut *buffer;
+        batch.clear();
+        batch.extend(core::iter::from_fn(|| queue.try_recv().ok()));
+        for event in batch.iter() {
+            state.record(event);
+        }
+    }
+}
+
+/// Feeds a frame's input to every world that reads it.
+///
+/// One writer is fed by whoever translates the platform's events, and every
+/// world that reads input holds a clone: it is `Send + Sync`, so it can also be
+/// carried across a thread boundary. Feeding an event drops it into the buffer
+/// of every world subscribed through [`subscribe`](Self::subscribe).
+///
+/// No state is kept here on purpose. Each world derives its own state from the
+/// same stream during its own tick, so a world that ticks at a different rate
+/// from the one feeding still ends up with the state its own events describe,
+/// and there is no shared lock for a reader to wait on.
+#[derive(Clone, Debug, Default)]
+pub struct InputWriter(Arc<Mutex<Vec<Sender<InputEvent>>>>);
+
+impl InputWriter {
+    /// A writer nothing is subscribed to yet.
     pub fn new() -> Self {
-        Self::from_state(InputState::default())
+        Self::default()
     }
 
-    /// A handle to `state`.
-    pub fn from_state(state: InputState) -> Self {
-        Self(Arc::new(RwLock::new(state)))
+    /// Feed one event.
+    pub fn push(&self, event: InputEvent) {
+        self.push_all([event]);
     }
 
-    /// Read the state.
+    /// Feed several events, in the order given.
     ///
-    /// A panicking writer leaves the lock poisoned; the value is still
-    /// readable, so the poison is ignored rather than propagated.
-    pub fn read(&self) -> RwLockReadGuard<'_, InputState> {
-        self.0.read().unwrap_or_else(PoisonError::into_inner)
+    /// One lock is held for the batch, so a device event and the
+    /// device-agnostic one describing the same action reach every world
+    /// together.
+    pub fn push_all(&self, events: impl IntoIterator<Item = InputEvent>) {
+        let mut subscribers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        // A world that dropped its buffer is pruned the next time input
+        // arrives, rather than by whoever happens to notice.
+        subscribers.retain(|sender| !sender.is_closed());
+        for event in events {
+            for sender in subscribers.iter() {
+                // The channel is unbounded, so the only way this fails is a
+                // subscriber that went away since the prune above.
+                let _ = sender.try_send(event.clone());
+            }
+        }
     }
 
-    /// Read and write the state.
+    /// A buffer of this writer's future events, for one world.
     ///
-    /// See [`Self::read`] for why a poison is ignored.
-    pub fn write(&self) -> RwLockWriteGuard<'_, InputState> {
-        self.0.write().unwrap_or_else(PoisonError::into_inner)
+    /// The buffer lives as long as the component holding it: a world that drops
+    /// it stops being fed on the next push.
+    pub fn subscribe(&self) -> InputEvents {
+        let (sender, receiver) = unbounded();
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(sender);
+        InputEvents(Arc::new(RwLock::new(Buffer {
+            state: InputState::default(),
+            queue: receiver,
+            batch: Vec::new(),
+        })))
     }
 }
 
-impl Default for InputHandle {
-    fn default() -> Self {
-        Self::new()
+/// Start `world`'s input tick: everything queued becomes the tick's batch.
+///
+/// [`dispatch_input`] calls this, so a world that dispatches needs nothing
+/// else. A world that reads input without dispatching — one where a
+/// [`FrameSource`](crate::source::FrameSource) is the only reader — calls this
+/// once per tick instead, before anything reads the batch.
+///
+/// Returns whether the world has an input buffer at all.
+pub fn refresh_input(world: &World) -> bool {
+    let entities: Vec<_> = world
+        .query::<&InputEvents>()
+        .map(|(entity, _)| entity)
+        .collect();
+    let present = !entities.is_empty();
+    for entity in entities {
+        if let Some(buffer) = world.get::<InputEvents>(entity) {
+            buffer.refresh();
+        }
     }
+    present
 }
 
-/// Give every nested world the same input handle the root world holds.
+/// Give `world` an input buffer of its own.
+///
+/// The buffer is subscribed from the world's [`InputWriter`], and a world that
+/// already has one is left alone, so a buffer someone else made keeps its
+/// events. Returns whether a buffer was added: a world with no writer has
+/// nothing to subscribe to.
+///
+/// A world that never ticks keeps every event it is fed until it does, which
+/// is why [`distribute_input`] subscribes the nested worlds and nothing else
+/// subscribes a world on its own behalf.
+pub fn subscribe_input(world: &mut World) -> bool {
+    if world.query::<&InputEvents>().next().is_some() {
+        return false;
+    }
+    let Some(events) = world
+        .query::<&InputWriter>()
+        .next()
+        .map(|(_, writer)| writer.subscribe())
+    else {
+        return false;
+    };
+    world.spawn((events,));
+    true
+}
+
+/// Give every nested world the root world's input writer, and a buffer of
+/// its own.
 ///
 /// Input arrives in one world — the host's, where the window callbacks run —
 /// while the worlds that read it are nested inside that one. A nested world
-/// cannot see its parent's components, so the handle is copied down: every
-/// world that has none gets one, and a world that already has one is left
-/// alone, so a handle put there deliberately is not replaced.
+/// cannot see its parent's components, so the writer is copied down, and
+/// subscribing to it here is what gives the nested world the state it reads:
+/// a world with no buffer has no input at all. A writer or buffer already
+/// there is left alone, so one put there deliberately is not replaced.
 ///
 /// Returns whether anything was added. Recurses, so a world nested more than
 /// one level deep is reached too.
 pub fn distribute_input(world: &World) -> bool {
-    let Some(handle) = world
-        .query::<&InputHandle>()
+    let Some(writer) = world
+        .query::<&InputWriter>()
         .next()
-        .map(|(_, handle)| InputHandle::clone(&handle))
+        .map(|(_, writer)| InputWriter::clone(&writer))
     else {
         return false;
     };
-    distribute_into(world, &handle)
+    distribute_into(world, &writer)
 }
 
 /// The recursion behind [`distribute_input`].
-fn distribute_into(world: &World, handle: &InputHandle) -> bool {
+fn distribute_into(world: &World, writer: &InputWriter) -> bool {
     let mut changed = false;
     for (entity, child) in world.query::<&World>() {
-        let has = child.query::<&InputHandle>().next().is_some();
+        let has = child.query::<&InputWriter>().next().is_some();
         // The child is borrowed to ask the question; release it before
         // writing, or the write finds the cell already borrowed.
         drop(child);
         let nested = world.with_mut::<World, _>(entity, |child| {
             if !has {
-                child.spawn((handle.clone(),));
+                child.spawn((writer.clone(),));
             }
-            distribute_into(child, handle)
+            // A buffer subscribed here is what the child's own tick reads.
+            let subscribed = subscribe_input(child);
+            (subscribed, distribute_into(child, writer))
         });
-        if let Some(nested) = nested {
-            changed |= !has || nested;
+        if let Some((subscribed, nested)) = nested {
+            changed |= !has || subscribed || nested;
         }
     }
     changed
@@ -1055,13 +1220,17 @@ behaviour!(OnTouch, TouchEvent, "Runs for every [`TouchEvent`].");
 behaviour!(OnText, TextEvent, "Runs for every [`TextEvent`].");
 behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 
-/// Run the world's behaviour components once for each event of the frame.
+/// Run the world's behaviour components once for each event it has not read.
+///
+/// The events come from this world's [`InputEvents`] and are consumed by the
+/// dispatch, so a world that ticks slower than input arrives still reads all
+/// of it, and a world that dispatches twice in a frame delivers the second
+/// time only what arrived in between. With no queue in the world this does
+/// nothing and returns `false`: a world that never asked for input has
+/// nothing to deliver, and that is not an error.
 ///
 /// Returns whether any event was delivered, so a caller can skip the
-/// [`World::apply`] that would otherwise follow an empty dispatch. With
-/// no [`InputHandle`] in the world this does nothing and returns `false`: a
-/// world that never asked for input has nothing to deliver, and that is not
-/// an error.
+/// [`World::apply`] that would otherwise follow an empty dispatch.
 ///
 /// Each event goes to its category's behaviour component and, in addition, to
 /// every [`OnInput`]:
@@ -1078,9 +1247,10 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 ///
 /// # What a callback may not do
 ///
-/// The events are copied out of the [`InputState`] before any callback runs, so
-/// a callback may freely read and write that resource — a common need, since
-/// the resource is where "is Ctrl still held?" lives.
+/// The events are taken out of the queue before any callback runs, so a
+/// callback may freely read and write the [`InputState`] — a common need,
+/// since the resource is where "is Ctrl still held?" lives — and may even
+/// feed input, which lands in the next dispatch.
 ///
 /// Two things stay off limits, both consequences of `unlit_ecs` borrowing a
 /// component to call it:
@@ -1105,10 +1275,19 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// }
 /// ```
 pub fn dispatch_input(world: &World) -> bool {
+    // The tick starts by moving everything queued into the batch, before any
+    // behaviour runs: a callback may feed input itself, and that belongs to
+    // the next tick rather than to this dispatch.
+    if !refresh_input(world) {
+        return false;
+    }
+
+    // The batch is copied out while the component is borrowed, so a callback
+    // may read the world — including this component — freely.
     let Some(events) = world
-        .query::<&InputHandle>()
+        .query::<&InputEvents>()
         .next()
-        .map(|(_, handle)| handle.read().events().to_vec())
+        .map(|(_, events)| events.to_vec())
     else {
         return false;
     };
@@ -1147,9 +1326,12 @@ pub fn dispatch_input(world: &World) -> bool {
                     behaviour.run(world, entity, event);
                 }
             }
-            // These two carry no per-category payload to route, so only the
+            // These carry no per-category payload to route, so only the
             // catch-all hears them.
-            InputEvent::ModifiersChanged(_) | InputEvent::FocusChanged(_) => {}
+            InputEvent::ModifiersChanged(_)
+            | InputEvent::FocusChanged(_)
+            | InputEvent::Resized { .. }
+            | InputEvent::ScaleFactorChanged { .. } => {}
         }
 
         for (entity, mut behaviour) in world.query::<&mut OnInput>() {
@@ -1255,8 +1437,8 @@ mod tests {
             seen_ime.set(seen_ime.get() + 1);
         }),));
 
-        let input_handle = InputHandle::new();
-        world.spawn((input_handle.clone(),));
+        let input_handle = InputWriter::new();
+        world.spawn((input_handle.clone(), input_handle.subscribe()));
         let events = [
             key_event(Key::W),
             mouse_event(),
@@ -1271,11 +1453,8 @@ mod tests {
             InputEvent::FocusChanged(false),
         ];
         let event_count = events.len();
-        {
-            let mut state = input_handle.write();
-            for event in events {
-                state.push(event);
-            }
+        for event in events {
+            input_handle.push(event);
         }
 
         assert!(dispatch_input(&world), "events were delivered");
@@ -1301,13 +1480,10 @@ mod tests {
             OnKey::new(move |_, _, _| keys.set(keys.get() + 1)),
             OnInput::new(move |_, _, _| all.set(all.get() + 1)),
         ));
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        {
-            let mut state = input.write();
-            state.push(key_event(Key::A));
-            state.push(mouse_event());
-        }
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
+        input.push(mouse_event());
 
         dispatch_input(&world);
 
@@ -1324,9 +1500,9 @@ mod tests {
             world.spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
         }
 
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        input.write().push(key_event(Key::A));
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
 
         dispatch_input(&world);
 
@@ -1349,9 +1525,9 @@ mod tests {
         // Another entity of the same kind must not be substituted.
         world.spawn((9u32, OnKey::new(|_, _, _| {})));
 
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        input.write().push(key_event(Key::A));
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
 
         dispatch_input(&world);
 
@@ -1359,18 +1535,23 @@ mod tests {
     }
 
     #[test]
-    fn a_callback_may_read_and_write_the_input_state() {
-        // The events are copied out before the callbacks run, so the resource
-        // is not borrowed while they execute.
+    fn a_callback_may_read_the_input_state() {
+        // The batch is copied out and the state folded in before any callback
+        // runs, so a callback reads the state its own event produced.
         let mut world = World::new();
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        let callback_input = input.clone();
-        world.spawn((OnKey::new(move |_, _, _| {
-            let held = callback_input.read().modifiers.ctrl;
-            callback_input.write().focused = held;
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        let (held, seen) = counter();
+        world.spawn((OnKey::new(move |world, _, _| {
+            let ctrl = world
+                .query::<&InputEvents>()
+                .next()
+                .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
+            if ctrl {
+                held.set(held.get() + 1);
+            }
         }),));
-        input.write().push(InputEvent::Key(KeyEvent {
+        input.push(InputEvent::Key(KeyEvent {
             key: Key::C,
             pressed: true,
             repeat: false,
@@ -1382,7 +1563,7 @@ mod tests {
 
         dispatch_input(&world);
 
-        assert!(input.read().focused);
+        assert_eq!(seen.get(), 1, "the callback read the state the event built");
     }
 
     #[test]
@@ -1397,9 +1578,9 @@ mod tests {
         }),));
         world.spawn((OnKey::new(|_, _, _| {}),));
 
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        input.write().push(key_event(Key::A));
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
 
         dispatch_input(&world);
 
@@ -1412,9 +1593,9 @@ mod tests {
         world.spawn((OnKey::new(|world, _, _| {
             world.queue().spawn((42u32,));
         }),));
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        input.write().push(key_event(Key::A));
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
 
         assert!(dispatch_input(&world));
         assert_eq!(world.len(), 2, "queued, not applied");
@@ -1429,13 +1610,10 @@ mod tests {
         let doomed = world.spawn((OnKey::new(|world, entity, _| {
             world.queue().despawn(entity);
         }),));
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        {
-            let mut state = input.write();
-            state.push(key_event(Key::A));
-            state.push(key_event(Key::B));
-        }
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
+        input.push(key_event(Key::B));
 
         dispatch_input(&world);
         world.apply();
@@ -1448,7 +1626,7 @@ mod tests {
         let mut world = World::new();
         let (count, seen) = counter();
         world.spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
-        world.spawn((InputHandle::new(),));
+        world.spawn((InputWriter::new(),));
 
         assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
@@ -1467,16 +1645,16 @@ mod tests {
     #[test]
     fn events_without_behaviours_are_delivered_to_nobody() {
         let mut world = World::new();
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        input.write().push(key_event(Key::A));
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
 
         // Events did arrive, so the caller still owes an `apply`.
         assert!(dispatch_input(&world));
     }
 
     #[test]
-    fn push_updates_the_state_and_keeps_the_event() {
+    fn push_updates_the_state_it_leaves_behind() {
         let mut state = InputState::default();
 
         state.push(InputEvent::ModifiersChanged(Modifiers {
@@ -1505,7 +1683,6 @@ mod tests {
             force: Some(0.5),
         }));
 
-        assert_eq!(state.events().len(), 6);
         assert!(state.modifiers.shift);
         assert!(!state.focused);
         assert_eq!(state.cursor, Some(CURSOR));
@@ -1751,58 +1928,123 @@ mod tests {
     }
 
     #[test]
-    fn clear_events_keeps_the_state() {
-        let mut state = InputState::default();
-        state.set_size_px(1280, 720);
-        state.set_scale_factor(2.0);
-        state.push(InputEvent::ModifiersChanged(Modifiers {
-            alt: true,
-            ..Modifiers::default()
-        }));
-        state.push(InputEvent::FocusChanged(false));
-        state.push(InputEvent::Mouse(MouseEvent::Moved { position: CURSOR }));
-        state.push(InputEvent::Mouse(MouseEvent::Button {
-            position: CURSOR,
-            button: MouseButton::Secondary,
-            pressed: true,
-            modifiers: Modifiers::default(),
-        }));
-
-        state.clear_events();
-
-        assert!(state.events().is_empty());
-        assert!(state.modifiers.alt);
-        assert_eq!(state.cursor, Some(CURSOR));
-        assert_eq!(state.buttons, MouseButtons::SECONDARY);
-        assert!(!state.focused);
-        assert_eq!(state.size_px, (1280, 720));
-        assert_eq!(state.scale_factor, 2.0);
-    }
-
-    #[test]
-    fn a_seeded_state_survives_a_dispatch_and_a_clear() {
-        // The documented frame loop, end to end: deliver, apply, clear, and
-        // the state a later frame reads is still there.
+    fn a_dispatch_leaves_the_state_the_events_built() {
+        // The documented frame loop, end to end: deliver, apply, and the
+        // state a later frame reads is still there.
         let mut world = World::new();
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        {
-            let mut state = input.write();
-            state.set_size_px(800, 600);
-            state.set_scale_factor(1.5);
-            state.push(InputEvent::FocusChanged(false));
-            state.push(key_event(Key::S));
-        }
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(InputEvent::Resized {
+            size_px: (800, 600),
+        });
+        input.push(InputEvent::ScaleFactorChanged { scale_factor: 1.5 });
+        input.push(InputEvent::FocusChanged(false));
+        input.push(key_event(Key::S));
 
         assert!(dispatch_input(&world));
         world.apply();
-        input.write().clear_events();
 
-        let state = input.read();
-        assert!(state.events().is_empty());
-        assert_eq!(state.size_px, (800, 600));
-        assert_eq!(state.scale_factor, 1.5);
-        assert!(!state.focused);
+        let (_, events) = world
+            .query::<&InputEvents>()
+            .next()
+            .expect("the world has a buffer");
+        events.with_state(|state| {
+            assert_eq!(state.size_px, (800, 600));
+            assert_eq!(state.scale_factor, 1.5);
+            assert!(!state.focused);
+        });
+    }
+
+    /// A world that ticks less often than input arrives still reads every
+    /// event, in order: what is queued waits for the dispatch that takes it.
+    #[test]
+    fn a_slow_consumer_reads_every_event() {
+        let mut world = World::new();
+        let (count, seen) = counter();
+        world.spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+
+        // Three frames of input arrive before the world dispatches once.
+        input.push(key_event(Key::A));
+        input.push(key_event(Key::B));
+        input.push(key_event(Key::C));
+
+        assert!(dispatch_input(&world));
+        assert_eq!(seen.get(), 3, "every event waited for this dispatch");
+
+        // And the queue is empty afterwards, so nothing is delivered twice.
+        assert!(!dispatch_input(&world));
+        assert_eq!(seen.get(), 3);
+    }
+
+    /// Everything in a world reads the same batch: a reader cannot take an
+    /// event away from the reader after it.
+    #[test]
+    fn every_reader_of_a_world_sees_the_same_batch() {
+        let input = InputWriter::new();
+        let buffer = input.subscribe();
+
+        input.push(key_event(Key::A));
+        buffer.refresh();
+
+        assert_eq!(buffer.to_vec(), [key_event(Key::A)]);
+        assert_eq!(
+            buffer.to_vec(),
+            [key_event(Key::A)],
+            "reading leaves the batch for the next reader"
+        );
+
+        // The next tick replaces it, so an event is delivered exactly once.
+        buffer.refresh();
+        assert!(buffer.to_vec().is_empty());
+    }
+
+    /// Two worlds fed by one writer build their own state: neither sees the
+    /// other's, and each is built from the events it ticked on.
+    #[test]
+    fn each_world_builds_its_own_state() {
+        let input = InputWriter::new();
+        let first = input.subscribe();
+        let second = input.subscribe();
+
+        input.push(InputEvent::ModifiersChanged(Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        }));
+
+        // One world ticks, the other has not yet.
+        first.refresh();
+        assert!(first.with_state(|state| state.modifiers.shift));
+        assert!(
+            !second.with_state(|state| state.modifiers.shift),
+            "a world that has not ticked is still in its previous state"
+        );
+
+        second.refresh();
+        assert!(second.with_state(|state| state.modifiers.shift));
+    }
+
+    /// A world that ticks slower still ends up with the state its own event
+    /// stream describes, in order, whatever the writer's rate.
+    #[test]
+    fn a_slow_world_builds_the_state_its_events_describe() {
+        let input = InputWriter::new();
+        let buffer = input.subscribe();
+
+        input.push(InputEvent::ModifiersChanged(Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        }));
+        input.push(InputEvent::ModifiersChanged(Modifiers::default()));
+
+        buffer.refresh();
+
+        assert!(
+            !buffer.with_state(|state| state.modifiers.ctrl),
+            "the later event is what the state ends up as"
+        );
+        assert_eq!(buffer.to_vec().len(), 2, "both events are still delivered");
     }
 
     #[test]
@@ -1814,9 +2056,9 @@ mod tests {
         world.spawn((OnKey::new(|world, entity, _| {
             let _ = world.get::<OnKey>(entity);
         }),));
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        input.write().push(key_event(Key::A));
+        let input = InputWriter::new();
+        world.spawn((input.clone(), input.subscribe()));
+        input.push(key_event(Key::A));
 
         dispatch_input(&world);
     }

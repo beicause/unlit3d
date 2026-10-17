@@ -71,7 +71,7 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   变化——宿主对物理与音频一无所知。空格键作为一个 job 转发给玩法 world。
 - **渲染 world** 是主线程上的子 world，表现得像一台 Godot 式的资源服务器：
   玩法用 job 请求网格、材质与实例，每个生成实例的实体作为句柄传回。场景往里
-  放的一切都以同样的方式到达：环绕的相机、控制面板、刚体所带的姿态也都是
+  放的一切都以同样的方式到达：环绕的相机、绘制控制面板的那个 source、刚体所带的姿态也都是
   job，并在任何绘制之前被排空。这个 world 自身的初始化只有资源图、renderer
   与 mesh source。资源服务器本身——`create_mesh`、`create_material_from_texture`、
   `spawn_instance` 以及网格与相机辅助——就是本 crate 自己的 `src/render.rs`，
@@ -100,6 +100,17 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 
   它以固定 120 Hz 步进，独立于帧率。
 
-`Controls` 是第五个对象，也是唯一住在**渲染 world** 里的那个：`UiSource` 只运行
-自己所在 world 的面板，放在别处永远不会被画出来。它的生成方式与其余对象一致——一个
-实体携带面板、面板要显示的行，以及运行它的那个 source。
+`Controls` 是第五个对象，和其余对象一样住在**玩法 world** 里。面板只能在它自己的
+egui context 所运行的地方构建，所以由这个 world 负责布局，渲染 world 负责绘制：面板
+实体携带 `UiPanel`、它要显示的行，以及承载那个 context 的 `UiHost`。它不需要自己的
+tick——渲染 world 通过这个 world 的命令队列以 job 的形式向那个 context 要一帧，帧从
+job 的回复槽里回来。渲染 world 只持有一个挂上该队列的 `UiSource`，负责上传并记录它
+收到的帧。
+
+两侧各持有一个 egui context。共用会让两个 world 同时写同一份 memory 与字体图集，而
+egui 把一次 `run_ui` 调用当作一个完整帧，两个 world 对同一个 context 跑它就会把两帧
+交错成一帧。因此两侧的纹理 id 来自不同的命名空间，绘制侧在帧到达时会给每个提供方重编号。
+
+绘制侧不需要的帧不会被布局：只有当上一帧要求重绘、或有输入到达时才会去要一帧，因此
+没人操作的面板不会在通道上产生任何开销。它最后收到的那一帧会一直被绘制，直到有更新的
+一帧取代它。

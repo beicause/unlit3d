@@ -15,7 +15,7 @@ use glam::{Mat4, Quat, Vec3, Vec4};
 
 use crate::bounds::Aabb;
 use crate::components::{GpuMaterial, GpuMesh, GpuRenderPipeline};
-use crate::input::{InputEvent, InputHandle, InputState};
+use crate::input::{InputEvent, InputEvents};
 
 /// A [wgpu::LoadOp] over an `f32` as either a clear to a value or a load.
 ///
@@ -221,16 +221,15 @@ impl<Key> TryFrom<GpuRenderPipelineProxy> for GpuRenderPipeline<Key> {
     }
 }
 
-/// An [InputState] as a reader sees it: the state and the frame's events.
+/// A world's input as a reader sees it: how the devices are, and this tick's
+/// events.
 ///
-/// The state alone cannot say what happened this frame — which key went down,
-/// where the wheel turned — so the events that arrived since they were last
-/// cleared are part of what a reader reads. They are read-only like the rest
-/// of the state: a writer sends events with
-/// [InputState::push](crate::input::InputState::push) instead.
+/// Both halves are one component because both are built by the same tick: the
+/// state is what the events left behind, so a reader that wants to know what
+/// happened and what it means reads the same place.
 #[derive(Facet, Default)]
-pub struct InputStateProxy {
-    /// The events that arrived since they were last cleared.
+pub struct InputEventsProxy {
+    /// This tick's events, oldest first.
     #[facet(default)]
     pub events: Vec<InputEvent>,
     /// Where the pointer is, or `None` while it is outside the window.
@@ -259,10 +258,10 @@ pub struct InputStateProxy {
     pub touches: Vec<(u64, [f32; 2])>,
 }
 
-impl From<&InputState> for InputStateProxy {
-    fn from(state: &InputState) -> Self {
-        Self {
-            events: state.events().to_vec(),
+impl From<&InputEvents> for InputEventsProxy {
+    fn from(events: &InputEvents) -> Self {
+        let state = events.with_state(|state| Self {
+            events: Vec::new(),
             pointer: state.pointer,
             cursor: state.cursor,
             pointer_down: state.pointer_down,
@@ -271,21 +270,19 @@ impl From<&InputState> for InputStateProxy {
             size_px: [state.size_px.0, state.size_px.1],
             scale_factor: state.scale_factor,
             touches: state.touches.clone(),
+        });
+        Self {
+            events: events.to_vec(),
+            ..state
         }
     }
 }
 
-impl From<&InputHandle> for InputStateProxy {
-    fn from(handle: &InputHandle) -> Self {
-        Self::from(&*handle.read())
-    }
-}
-
-impl TryFrom<InputStateProxy> for InputHandle {
+impl TryFrom<InputEventsProxy> for InputEvents {
     type Error = String;
 
-    fn try_from(_proxy: InputStateProxy) -> Result<Self, Self::Error> {
-        Err("InputHandle is read-only; send events with send_input".to_string())
+    fn try_from(_proxy: InputEventsProxy) -> Result<Self, Self::Error> {
+        Err("InputEvents is built by a world's own tick; feed it with send_input".to_string())
     }
 }
 

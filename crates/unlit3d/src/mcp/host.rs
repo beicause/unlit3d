@@ -447,42 +447,45 @@ pub fn save_texture_as_image(
     to_value(&save_image(directory, &file_name, &frame)?)
 }
 
-/// The input state `handle` names, or the world's only one.
-fn input_state_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
+/// The entity carrying `T` that `handle` names, or the world's only one.
+fn single_entity<T: 'static>(
+    world: &World,
+    handle: Option<Entity>,
+    what: &str,
+) -> Result<Entity, String> {
     if let Some(entity) = handle {
         return world
-            .has::<InputHandle>(entity)
+            .has::<T>(entity)
             .then_some(entity)
-            .ok_or_else(|| format!("entity {} carries no input state", entity.to_bits()));
+            .ok_or_else(|| format!("entity {} carries no {what}", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.query::<&InputHandle>() {
+    for (entity, _) in world.query::<&T>() {
         if found.is_some() {
-            return Err("the world has more than one input state; pass `entity`".to_string());
+            return Err(format!("the world has more than one {what}; pass `entity`"));
         }
         found = Some(entity);
     }
-    found.ok_or_else(|| "the world has no input state".to_string())
+    found.ok_or_else(|| format!("the world has no {what}"))
 }
 
-/// The input state, encoded, events included.
+/// A world's input for this tick, encoded: its state and the events that built
+/// it.
 pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
-    let entity = input_state_entity(world, entity)?;
-    let text = reflect::encode(world, entity, "InputHandle")?;
+    let entity = single_entity::<InputEvents>(world, entity, "input buffer")?;
+    let text = reflect::encode(world, entity, "InputEvents")?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
-/// Push input events into the world and deliver them.
+/// Feed input events to the world and deliver them.
+///
+/// The events go to the world's [`InputWriter`], which reaches every world
+/// subscribed to it; the dispatch that follows is this world's own tick.
 pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Result<Value, String> {
     let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
     let decoded = reflect::decode_events(&text)?;
-    let entity = input_state_entity(world, entity)?;
-    let _ = world.with_mut::<InputHandle, _>(entity, |handle| {
-        let mut state = handle.write();
-        for event in decoded {
-            state.push(event);
-        }
-    });
+    let entity = single_entity::<InputWriter>(world, entity, "input writer")?;
+    let _ = world.with_mut::<InputWriter, _>(entity, |writer| writer.push_all(decoded));
     let delivered = dispatch_input(world);
     to_value(&Delivered { delivered })
 }

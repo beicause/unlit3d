@@ -288,15 +288,18 @@ fn ui_only_world(world: &mut World, ctx: &Ctx) -> TestGpu {
     gpu
 }
 
-/// Spawn an `InputHandle` stating the window's size and density.
+/// Spawn an input buffer stating the window's size and density.
 ///
 /// The UI reads both from it, so this is how a test sets the pixel density.
 fn spawn_input(world: &mut World, scale_factor: f32) {
-    let input = InputHandle::new();
-    world.spawn((input.clone(),));
-    let mut state = input.write();
-    state.set_size_px(WIDTH, HEIGHT);
-    state.set_scale_factor(scale_factor);
+    let input = InputWriter::new();
+    let events = input.subscribe();
+    world.spawn((events.clone(),));
+    input.push(InputEvent::Resized {
+        size_px: (WIDTH, HEIGHT),
+    });
+    input.push(InputEvent::ScaleFactorChanged { scale_factor });
+    events.refresh();
 }
 
 /// Spawn the load ops every UI test opens its pass with.

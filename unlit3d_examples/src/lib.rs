@@ -312,10 +312,10 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     let mut host = WinitHost::<UserEvent>::new();
     let world = host.world_mut();
 
-    // One input state, shared: the host world carries the handle and the
-    // adapter that feeds it, and every nested world the host reaches gets a
-    // clone of it.
-    let input = InputHandle::new();
+    // One writer, shared: the host world carries it and the adapter that
+    // feeds it, and every nested world the host reaches gets a clone of it.
+    // Each world then builds its own buffer from the same stream.
+    let input = InputWriter::new();
     world.spawn((input.clone(),));
     world.spawn((winit_input_behaviour(WinitInput::new(input)),));
 
@@ -1746,12 +1746,11 @@ impl Scene {
             .expect("the renderer is a resource entity");
     }
 
-    /// Finish the frame: drop the events every consumer has read, and apply
-    /// whatever a behaviour component or panel queued.
+    /// Finish the frame: apply whatever a behaviour component or panel queued.
+    ///
+    /// Nothing is cleared: every consumer reads the events from its own
+    /// subscription, and the dispatch that reads them takes them.
     pub fn end_frame(&mut self, world: &mut World) {
-        if let Some(handle) = world.query::<&InputHandle>().next().map(|(_, h)| h.clone()) {
-            handle.write().clear_events();
-        }
         world.apply();
     }
 }

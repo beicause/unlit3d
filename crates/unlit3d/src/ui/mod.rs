@@ -36,6 +36,7 @@
 //! frame-globals buffer of its own, plus the bind group binding them.
 
 use core::ops::DerefMut;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::globals::{Globals, View};
@@ -44,15 +45,16 @@ use unlit_wgpu::resources::{ResHandle, ResourceGraph};
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
-use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, screen_view, ui_variant};
+use unlit_wgpu::ui::{EguiIntegration, ScreenDescriptor, Source, UiFrame, screen_view, ui_variant};
 // `std::time::Instant` panics on `wasm32-unknown-unknown`, where the standard
 // library has no clock; `web-time` reads the browser's `Performance.now()`
 // there and re-exports `std::time` everywhere else.
 use web_time::Instant;
 use zerocopy::IntoBytes;
 
-use crate::input::InputHandle;
-pub use crate::source::{InputCapture, OpenUrl, OpenUrls};
+pub use crate::source::{OpenUrl, OpenUrls};
+
+use crate::input::InputEvents;
 
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
 /// egui, re-exported because a [`UiPanel`] is written against its types.
@@ -150,10 +152,20 @@ pub struct UiSource {
     scene: Scene,
     /// The GPU state, built on the first frame that knows its target.
     gpu: Option<Gpu>,
+    /// The events translated for the frame being laid out, reclaimed from egui
+    /// once its pass is over so the next frame reuses the allocation.
+    event_scratch: Vec<egui::Event>,
     /// The target the current pipeline is specialized for.
     surface: Option<SurfaceKey>,
-    /// The [`InputHandle`] found on the last frame, if the world has one.
-    input: Option<Entity>,
+    /// The slots other worlds publish their frames into, still drawn until a
+    /// newer frame arrives.
+    external: ExternalFrames,
+    /// The size and density this source draws at, published for the worlds
+    /// laying frames out.
+    screen: UiScreen,
+    /// The URLs every frame drawn this frame asked to open, gathered before
+    /// they are published together, reused across frames.
+    url_scratch: Vec<OpenUrl>,
 }
 
 impl UiSource {
@@ -168,9 +180,32 @@ impl UiSource {
             start: Instant::now(),
             scene: Scene::new(),
             gpu: None,
+            event_scratch: Vec::new(),
             surface: None,
-            input: None,
+            external: ExternalFrames::new(),
+            screen: UiScreen::new(),
+            url_scratch: Vec::new(),
         }
+    }
+
+    /// Draw the frames other worlds publish, as well as this world's own panels.
+    ///
+    /// This is the seam for a UI that lives in another world: a panel can only
+    /// be built where its egui context runs, so the world holding it lays the
+    /// frame out and publishes it into a slot of `frames`, and the source
+    /// draws whatever is there. Slots are drawn in order, under this world's
+    /// own panels, and a slot's frame is drawn again until a newer one
+    /// replaces it.
+    ///
+    /// `screen` is the size and density the frame is drawn at, published by
+    /// this source for the worlds that lay frames out: a frame laid out at one
+    /// size and drawn at another would have its clip rectangles computed in
+    /// the wrong pixels, so the laying-out side reads the descriptor back from
+    /// here rather than deriving one of its own.
+    pub fn draw_published(&mut self, frames: ExternalFrames, screen: UiScreen) -> &mut Self {
+        self.external = frames;
+        self.screen = screen;
+        self
     }
 
     /// egui's context, for reading its style or memory.
@@ -316,37 +351,17 @@ impl FrameSource for UiSource {
             .expect("the context's queue resource exists")
             .clone();
 
-        // Input arrives as a world resource: the source looks it up by type
-        // and remembers the entity. A world without one is not an error — the
-        // UI still lays out at the target's own size — but nothing feeds it.
-        //
-        // The events are translated to egui's own here, while the state is
-        // borrowed, rather than cloned out of the world first: the conversion
-        // only reads them, so egui's list is the one allocation this makes.
-        let input_state = world
-            .query::<&InputHandle>()
-            .next()
-            .map(|(entity, handle)| {
-                let state = handle.read();
-                let pixels_per_point = if state.scale_factor > 0.0 {
-                    state.scale_factor
-                } else {
-                    1.0
-                };
-                (
-                    entity,
-                    state.scale_factor,
-                    state.size_px,
-                    state.focused,
-                    convert::to_egui_events(state.events(), pixels_per_point),
-                )
-            });
-        self.input = input_state.as_ref().map(|(entity, ..)| *entity);
-        let (scale_factor, size_px, focused, events) = match input_state {
-            Some((_, scale_factor, size_px, focused, events)) => {
-                (scale_factor, size_px, focused, events)
-            }
-            None => (1.0, (target.width, target.height), true, Vec::new()),
+        // Input arrives as world resources: the world's own [`InputEvents`] is
+        // both the state and what arrived for this tick. It is shared with
+        // everything else in the world — the UI reads this tick's batch, it
+        // does not take it. A world without one is not an error: the UI still
+        // lays out at the target's own size, unfeed.
+        let state = world.query::<&InputEvents>().next().map(|(_, events)| {
+            events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
+        });
+        let (scale_factor, size_px, focused) = match state {
+            Some(state) => state,
+            None => (1.0, (target.width, target.height), true),
         };
         // A caller that has not learned the window's size yet leaves `size_px`
         // at zero; the target's own pixel size lays the UI out correctly, where
@@ -362,52 +377,126 @@ impl FrameSource for UiSource {
         } else {
             1.0
         };
+        // The batch is translated into this source's own list, which the frame
+        // takes over and the next frame takes back: egui keeps the raw input
+        // it was handed for the length of a pass, so the buffer is reclaimed
+        // once the pass is over rather than allocated again.
+        let mut event_scratch = core::mem::take(&mut self.event_scratch);
+        event_scratch.clear();
+        if let Some((_, events)) = world.query::<&InputEvents>().next() {
+            events.with_batch(|batch| {
+                convert::to_egui_events_into(batch, pixels_per_point, &mut event_scratch);
+            });
+        }
         let screen = ScreenDescriptor {
             size_in_pixels: [size_px.0, size_px.1],
             pixels_per_point,
         };
+        let target_screen = UiTarget {
+            screen,
+            max_texture_side: device.limits().max_texture_dimension_2d,
+        };
+        // Published before anything is laid out anywhere, and before this
+        // frame's own input is built: a world laying a frame out reads it back,
+        // so its layout is built against the same target this one draws at.
+        self.screen.publish(target_screen);
 
         let mut graph = Self::graph(world, ctx);
         if self.gpu.is_none() || self.surface != Some(target.surface) {
             self.build_gpu(&device, &mut graph, target.surface);
         }
 
-        // egui lays out in logical points, so the screen rectangle and the
-        // projection both take the point size; the clip rectangles the
-        // integration derives are scaled to pixels by `pixels_per_point`.
-        let points = screen.size_in_points();
-        // The events reached egui's own types while the `InputHandle` was read,
-        // and they stay in the world afterwards: the UI reads them, it does not
-        // consume them, so a game behaviour sees the same frame.
-        let mut input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::Vec2::new(points[0], points[1]),
-            )),
-            time: Some(self.start.elapsed().as_secs_f64()),
+        // The events reached egui's own types while the world's `InputEvents`
+        // were read, and they stay in the world afterwards: the UI reads them,
+        // it does not consume them, so a game behaviour sees the same tick.
+        let input = raw_input(
+            target_screen,
+            Some(self.start.elapsed().as_secs_f64()),
             focused,
-            events,
-            max_texture_side: Some(device.limits().max_texture_dimension_2d as usize),
-            ..Default::default()
-        };
-        input
-            .viewports
-            .get_mut(&input.viewport_id)
-            .expect("the root viewport is always present")
-            .native_pixels_per_point = Some(pixels_per_point);
+            event_scratch,
+        );
 
-        let output = self.run_panels(world, input);
+        // The URLs every frame asked to open are gathered here and published
+        // in one go below, so a published frame's requests join this world's
+        // own instead of overwriting them.
+        let mut url_scratch = core::mem::take(&mut self.url_scratch);
+        url_scratch.clear();
+        self.external.with_frames(|slots| {
+            for slot in slots.iter().flatten() {
+                url_scratch.extend(open_urls(&slot.platform_output));
+            }
+        });
+
+        let mut output = self.run_panels(world, input);
+        // The pass is over, so egui no longer needs the list it was handed:
+        // taking it back is what turns the next frame's fill into a reuse.
+        self.event_scratch = self
+            .ctx
+            .input_mut(|input| core::mem::take(&mut input.raw.events));
 
         // A URL egui was asked to open is a request for the host rather than
-        // the frame, the same way a claim on the input is: a panel cannot open
-        // a browser tab itself, so the request is published in the world for
-        // whoever owns the page to serve. Read before the integration takes
-        // the output, because it consumes it.
-        publish_open_urls(world, &output.platform_output);
+        // the frame: a panel cannot open a browser tab itself, so the requests
+        // of every frame drawn here are published in the world for whoever
+        // owns the page to serve. Read before the integration takes the
+        // output, because it consumes it.
+        url_scratch.extend(open_urls(&output.platform_output));
+        publish_open_urls(world, &mut url_scratch);
+        self.url_scratch = url_scratch;
 
+        // Every source and this world's own go into one upload: the
+        // integration packs one vertex and index buffer per frame, and the two
+        // vertex streams meet at a single split point, so uploading them
+        // separately would have each call overwrite the last.
+        //
+        // Each source keeps its own namespace. Two egui contexts both allocate
+        // texture ids from zero, so the same id names different atlases in
+        // different worlds; the integration keys textures by (source, id) and
+        // the ids a frame arrived with are the ids it is drawn by. Nothing
+        // rewrites them, so a frame held across many drawn frames is never
+        // renumbered twice.
+        //
+        // One upload carries them all, which means one screen descriptor packs
+        // every clip rectangle: a frame laid out at another size is dropped
+        // instead, because its rectangles would be computed in the wrong
+        // pixels. The world that published it lays a new one out at the size
+        // this source now draws at.
+        //
+        // A published frame's geometry is borrowed from its slot rather than
+        // copied — it is drawn again on every frame that brings no newer one —
+        // so the gather runs under the slots' lock and the upload happens
+        // inside it.
+        let own = self.ctx.tessellate(output.shapes, screen.pixels_per_point);
+        let own_textures = core::mem::take(&mut output.textures_delta);
         let gpu = self.gpu.as_mut().expect("built above");
-        gpu.integration
-            .update(&mut graph, &queue, encoder, &self.ctx, output, screen);
+        self.external.with_frames(|slots| {
+            let mut sources = Vec::with_capacity(slots.len() + 1);
+            sources.push(UiFrame {
+                source: Source::LOCAL,
+                textures: own_textures,
+                primitives: &own,
+            });
+            for (index, slot) in slots.iter_mut().enumerate() {
+                // A frame laid out at another size is dropped rather than
+                // drawn: its clip rectangles were computed in the wrong
+                // pixels, and the world that published it lays a new one out
+                // at the size this source now draws at.
+                if slot.as_ref().is_some_and(|frame| frame.screen != screen) {
+                    *slot = None;
+                }
+                let Some(frame) = slot else {
+                    continue;
+                };
+                sources.push(UiFrame {
+                    source: Source::published(index),
+                    textures: core::mem::take(&mut frame.textures),
+                    primitives: &frame.primitives,
+                });
+            }
+            gpu.integration
+                .update_with(&mut graph, &queue, encoder, &mut sources, screen);
+            // The deltas were applied and cleared; a frame's geometry stayed
+            // where it was, so the slot still holds what it will draw again.
+        });
 
         // The UI's own camera: `screen_view` maps egui's points onto clip
         // space, and its frame globals stay at their defaults — nothing the UI
@@ -430,11 +519,6 @@ impl FrameSource for UiSource {
         let mut ui_scene = gpu.integration.scene(&graph);
         self.scene.extend(&mut ui_scene);
         self.surface = Some(target.surface);
-
-        // What the UI claimed, read from the context after the frame is laid
-        // out, so a game control can decide whether to act on the same frame's
-        // input. Written every frame the UI draws.
-        publish_capture(world, &self.ctx);
     }
 
     fn scene(&self) -> &Scene {
@@ -446,31 +530,12 @@ impl FrameSource for UiSource {
     }
 }
 
-/// Publish what the UI claimed this frame as an [`InputCapture`] resource.
+/// The URLs a frame asked the host to open.
 ///
-/// The resource is looked up by type, so a world gets one from `spawn_context`
-/// — the frame's own setup — and a caller never has to create it. A world
-/// without one is not an error: the UI still draws, and there is simply
-/// nowhere to report what it claimed.
-fn publish_capture(world: &World, ctx: &egui::Context) {
-    let capture = InputCapture {
-        pointer: ctx.egui_wants_pointer_input(),
-        keyboard: ctx.egui_wants_keyboard_input(),
-    };
-    let Some(entity) = world.query::<&InputCapture>().next().map(|(e, _)| e) else {
-        return;
-    };
-    let _ = world.with_mut::<InputCapture, _>(entity, |slot| *slot = capture);
-}
-
-/// Publish the URLs egui was asked to open as an [`OpenUrls`] resource.
-///
-/// The resource is looked up by type, so a world gets one from `spawn_context`
-/// — the frame's own setup — and a caller never has to create it. A world
-/// without one is not an error: the UI still draws, and the request is simply
-/// dropped, the same way a claim on the input is.
-fn publish_open_urls(world: &World, output: &egui::PlatformOutput) {
-    let urls = output.commands.iter().filter_map(|command| match command {
+/// Reading them is all this does; a frame's requests join every other frame's
+/// before they reach the world, so one frame's list cannot drop another's.
+fn open_urls(output: &egui::PlatformOutput) -> impl Iterator<Item = OpenUrl> + '_ {
+    output.commands.iter().filter_map(|command| match command {
         egui::OutputCommand::OpenUrl(open) => Some(OpenUrl {
             url: open.url.clone(),
             new_tab: open.new_tab,
@@ -479,11 +544,23 @@ fn publish_open_urls(world: &World, output: &egui::PlatformOutput) {
         // platform it runs on; only a URL needs something a frame source is
         // not: a page to open it in.
         _ => None,
-    });
+    })
+}
+
+/// Publish the URLs egui was asked to open as an [`OpenUrls`] resource.
+///
+/// The resource is looked up by type, so a world gets one from `spawn_context`
+/// — the frame's own setup — and a caller never has to create it. A world
+/// without one is not an error: the UI still draws, and the request is simply
+/// dropped. The queue is replaced rather than appended to, so a request that
+/// a previous frame left behind cannot be served twice; `urls` is emptied
+/// either way, so its allocation is reused by the next frame.
+fn publish_open_urls(world: &World, urls: &mut Vec<OpenUrl>) {
     let Some(entity) = world.query::<&OpenUrls>().next().map(|(e, _)| e) else {
+        urls.clear();
         return;
     };
-    let _ = world.with_mut::<OpenUrls, _>(entity, |slot| slot.replace(urls));
+    let _ = world.with_mut::<OpenUrls, _>(entity, |slot| slot.replace(urls.drain(..)));
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.
@@ -522,6 +599,225 @@ fn global_group(
     })
 }
 
+/// A frame of UI that was laid out somewhere other than the world drawing it.
+///
+/// A [`UiPanel`] callback takes a `&mut egui::Ui`, which belongs to the egui
+/// pass running it, so a panel can only be built where its own context lives.
+/// A UI that lives in one world and is drawn in another therefore splits the
+/// work: the world holding the panels lays them out and tessellates them —
+/// [`lay_out`] does that — and the world holding the [`UiSource`] uploads and
+/// draws what comes back.
+///
+/// Everything here is plain owned data, which is what lets it cross the
+/// boundary: it carries neither egui's context nor any borrow of it.
+pub struct ExternalFrame {
+    /// The frame's texture updates, keyed by the context that laid it out.
+    pub textures: egui::TexturesDelta,
+    /// The frame's tessellated geometry.
+    pub primitives: Vec<egui::ClippedPrimitive>,
+    /// What the frame asked the platform to do, such as a URL to open.
+    pub platform_output: egui::PlatformOutput,
+    /// The size and density the frame was laid out at.
+    ///
+    /// The drawing side packs this frame's clip rectangles into pixels with
+    /// it, so it has to be the descriptor the frame was built against: the
+    /// laying-out side reads [`UiScreen`] rather than deriving one, and this
+    /// is that descriptor travelling with the frame it describes.
+    pub screen: ScreenDescriptor,
+}
+
+impl Drop for ExternalFrame {
+    fn drop(&mut self) {
+        // egui panics when a texture delta is dropped unapplied, and a frame
+        // that crosses worlds can legitimately be dropped: a provider that has
+        // not been asked for one, or a request a full queue refused. What it
+        // carries was never uploaded, so the deltas are simply forgotten.
+        self.textures.clear();
+    }
+}
+
+/// The slots worlds publish frames into, drawn by a [`UiSource`] elsewhere.
+///
+/// Each slot holds the newest frame its world published. A world holds a clone
+/// and writes its own slot when it has a new frame; the drawing side holds the
+/// same map and draws every slot's frame. Nothing is asked for in return: a
+/// slot that has not been written since the last frame draws the frame it
+/// already holds, so a settled UI costs nothing on the wire.
+///
+/// The slots are numbered rather than named so a world needs no identity to
+/// publish under: whoever mounts the publishing side picks the slot and hands
+/// the number to the world that lays the frames out.
+#[derive(Clone, Default)]
+pub struct ExternalFrames(Arc<Mutex<Vec<Option<ExternalFrame>>>>);
+
+impl ExternalFrames {
+    /// A map with no slots.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Publish `frame` into `slot`.
+    ///
+    /// The frame replaces whatever the slot held, which is what the next
+    /// frame drawn will show. Slots are grown on demand, so a publisher may
+    /// write a slot number before the drawing side has looked at any.
+    ///
+    /// The displaced frame is dropped here, and a frame that is dropped
+    /// without being drawn clears its own texture deltas.
+    pub fn publish(&self, slot: usize, frame: ExternalFrame) {
+        let mut slots = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if slots.len() <= slot {
+            slots.resize_with(slot + 1, || None);
+        }
+        slots[slot] = Some(frame);
+    }
+
+    /// Run `f` over every slot's frame, in slot order.
+    ///
+    /// The frames stay where they are: drawing one does not consume it, so a
+    /// slot published once is drawn until it is replaced.
+    pub fn with_frames<R>(&self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
+        let mut slots = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        f(&mut slots)
+    }
+
+    /// How many slots have been created.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).len()
+    }
+
+    /// Whether no slot has been created.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// What a frame has to be laid out against, published by the drawing side.
+///
+/// A frame's clip rectangles are packed into physical pixels while its
+/// geometry and projection are in logical points, so the two sides have to
+/// agree on one descriptor: the drawing side knows the target's real size, so
+/// it writes this and the laying-out side reads it instead of deriving one of
+/// its own.
+///
+/// The texture limit travels with it because it is the same kind of fact: the
+/// drawing side holds the device that will upload egui's atlases, and the
+/// laying-out side decides how large they may grow. A world laying frames out
+/// has no device of its own to ask.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UiTarget {
+    /// The target the frame is drawn into, and the density it is drawn at.
+    pub screen: ScreenDescriptor,
+    /// The largest texture the drawing side's device can hold, on either side.
+    pub max_texture_side: u32,
+}
+
+/// The target frames are laid out against, published by the drawing side.
+///
+/// The drawing side publishes it on every frame it draws, and the world laying
+/// frames out reads it back, so a resize or a density change reaches the
+/// layout one frame later rather than never.
+#[derive(Clone, Default)]
+pub struct UiScreen(Arc<Mutex<Option<UiTarget>>>);
+
+impl UiScreen {
+    /// A screen nothing has been drawn at yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Publish the target the next frames are drawn at.
+    pub fn publish(&self, target: UiTarget) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(target);
+    }
+
+    /// The target to lay a frame out against, with `fallback` if nothing was
+    /// ever published.
+    ///
+    /// A world that lays frames out before anything has been drawn has no
+    /// target to match yet, so it lays out at the size it was given and the
+    /// drawing side picks that frame up only once the sizes agree.
+    #[must_use]
+    pub fn current(&self, fallback: UiTarget) -> UiTarget {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or(fallback)
+    }
+}
+
+/// The egui input for one frame laid out against `target`.
+///
+/// Both worlds lay frames out — the drawing side its own panels, every other
+/// world the frames it publishes — and egui only produces the same picture for
+/// the same input. Building it in one place is what keeps a published frame's
+/// capture and the drawing side's own layout agreeing on the screen rectangle,
+/// the density and the texture limit.
+///
+/// `events` is taken by value so a caller can hand over a buffer it keeps
+/// across frames; it reaches egui as this frame's events.
+pub fn raw_input(
+    target: UiTarget,
+    time: Option<f64>,
+    focused: bool,
+    events: Vec<egui::Event>,
+) -> egui::RawInput {
+    let [width, height] = target.screen.size_in_points();
+    let mut input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::Vec2::new(width, height),
+        )),
+        time,
+        focused,
+        events,
+        max_texture_side: Some(target.max_texture_side as usize),
+        ..Default::default()
+    };
+    input
+        .viewports
+        .get_mut(&input.viewport_id)
+        .expect("the root viewport is always present")
+        .native_pixels_per_point = Some(target.screen.pixels_per_point);
+    input
+}
+
+/// Lay out the world's panels and tessellate them, without drawing them.
+///
+/// The caller owns `ctx` — its font atlas, memory and style — and keeps it
+/// across frames; this runs the world's [`UiPanel`]s against it and returns
+/// what a [`UiSource`] would have drawn.
+///
+/// `screen` is the descriptor the frame is laid out at, which travels with
+/// the frame: the drawing side packs its clip rectangles with that descriptor
+/// rather than with one of its own, so a frame is drawn exactly as it was laid
+/// out. Read it from [`UiScreen`] to work at the size the drawing side is
+/// about to draw at.
+pub fn lay_out(
+    world: &World,
+    ctx: &egui::Context,
+    input: egui::RawInput,
+    screen: ScreenDescriptor,
+) -> ExternalFrame {
+    let mut output = ctx.run_ui(input, |ui| {
+        for (entity, mut panel) in world.query::<&mut UiPanel>() {
+            panel.run(world, entity, ui);
+        }
+    });
+    let primitives = ctx.tessellate(output.shapes, screen.pixels_per_point);
+    let textures = core::mem::take(&mut output.textures_delta);
+    ExternalFrame {
+        textures,
+        primitives,
+        platform_output: output.platform_output,
+        screen,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,6 +825,7 @@ mod tests {
     use std::rc::Rc;
     use unlit_wgpu::capabilities::DeviceCapabilities;
 
+    use crate::input::{InputEvent, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent};
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
 
     /// How many times a panel's closure ran, in a sibling component: a panel
@@ -539,6 +836,19 @@ mod tests {
     ///
     /// Nothing here records a pass, so only the target's key and size matter —
     /// no attachment has to exist behind them.
+    /// The target a frame is laid out against in these tests: the same size
+    /// the source was built for, so its clip rectangles are packed in pixels
+    /// that agree.
+    fn test_ui_target() -> UiTarget {
+        UiTarget {
+            screen: ScreenDescriptor {
+                size_in_pixels: [128, 96],
+                pixels_per_point: 1.0,
+            },
+            max_texture_side: 2048,
+        }
+    }
+
     fn test_target() -> FrameTarget {
         FrameTarget {
             surface: SurfaceKey {
@@ -807,8 +1117,8 @@ mod tests {
 
     /// The frame's events reach the panels.
     ///
-    /// A panel that records the events egui gave it proves the `InputHandle`
-    /// resource was read and translated, not merely looked up.
+    /// A panel that records the events egui gave it proves the world's
+    /// `InputEvents` were read and translated, not merely looked up.
     #[test]
     fn the_frame_events_reach_the_panels() {
         let (mut world, ctx) = test_world();
@@ -835,23 +1145,19 @@ mod tests {
         }),));
 
         // The pointer and a typed key arrive in the world's own event types.
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        {
-            let mut state = input.write();
-            state.set_size_px(128, 96);
-            state.push(crate::input::InputEvent::Text(crate::input::TextEvent(
-                "hi".to_string(),
-            )));
-        }
+        let input = InputWriter::new();
+        let events = input.subscribe();
+        world.spawn((input.clone(), events.clone()));
+        input.push(InputEvent::Resized { size_px: (128, 96) });
+        events.refresh();
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        // Two frames: egui only lays a text field out once it knows its fonts.
-        // The caller clears the events between frames, which is what keeps a
-        // frame's text from being delivered twice.
+        // egui only lays a text field out once it knows its fonts, so the
+        // first frame establishes them; the text is then this tick's batch.
         source.build_scene(&world, ctx, &mut encoder);
-        input.write().clear_events();
+        input.push(InputEvent::Text(TextEvent("hi".to_string())));
+        events.refresh();
         source.build_scene(&world, ctx, &mut encoder);
 
         assert_eq!(
@@ -885,9 +1191,11 @@ mod tests {
             }
         }),));
 
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        input.write().set_size_px(128, 96);
+        let input = InputWriter::new();
+        let events = input.subscribe();
+        world.spawn((input.clone(), events.clone()));
+        input.push(InputEvent::Resized { size_px: (128, 96) });
+        events.refresh();
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -900,27 +1208,26 @@ mod tests {
         // in *physical* pixels at a density of one, so points and pixels
         // coincide. A click is complete within the frame egui sees it, which
         // is how a fast click looks to a frame loop.
-        {
-            let mut state = input.write();
-            let centre = [button().center().x, button().center().y];
-            for event in [
-                crate::input::MouseEvent::Moved { position: centre },
-                crate::input::MouseEvent::Button {
-                    position: centre,
-                    button: crate::input::MouseButton::Primary,
-                    pressed: true,
-                    modifiers: crate::input::Modifiers::default(),
-                },
-                crate::input::MouseEvent::Button {
-                    position: centre,
-                    button: crate::input::MouseButton::Primary,
-                    pressed: false,
-                    modifiers: crate::input::Modifiers::default(),
-                },
-            ] {
-                state.push(crate::input::InputEvent::Mouse(event));
-            }
+        let centre = [button().center().x, button().center().y];
+        for event in [
+            MouseEvent::Moved { position: centre },
+            MouseEvent::Button {
+                position: centre,
+                button: MouseButton::Primary,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            },
+            MouseEvent::Button {
+                position: centre,
+                button: MouseButton::Primary,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            },
+        ] {
+            input.push(InputEvent::Mouse(event));
         }
+        // The tick's batch: what the pointer did since the last frame.
+        events.refresh();
         source.build_scene(&world, ctx, &mut encoder);
 
         assert!(
@@ -929,51 +1236,104 @@ mod tests {
         );
     }
 
-    /// What the UI claims is published for the rest of the world to read.
+    /// A published frame is drawn on every frame it is the newest one, not
+    /// just the frame it arrived: a settled UI is neither laid out nor
+    /// published again, so the drawing side has to keep what it was given.
     #[test]
-    fn the_ui_publishes_what_it_claimed() {
-        let (mut world, ctx) = test_world();
+    fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
+        let (world, ctx) = test_world();
         assert!(set_frame_target(&world, test_target()));
-        // A widget the pointer is over wants the pointer, which is what makes
-        // the claim observable at all.
-        world.spawn((UiPanel::new(|_world, _entity, ui| {
-            let _ = ui.allocate_rect(
-                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(64.0)),
-                egui::Sense::click(),
+        // Laid out in a context of its own, the way a publishing world would:
+        // its texture ids start where every context's do.
+        let mut other = World::new();
+        other.spawn((UiPanel::new(|_world, _entity, ui| {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
+                0.0,
+                egui::Color32::RED,
             );
         }),));
-
-        let input = InputHandle::new();
-        world.spawn((input.clone(),));
-        {
-            let mut state = input.write();
-            state.set_size_px(128, 96);
-            state.push(crate::input::InputEvent::Mouse(
-                crate::input::MouseEvent::Moved {
-                    position: [16.0, 16.0],
-                },
-            ));
-        }
+        let target = test_ui_target();
+        let frame = lay_out(
+            &other,
+            &egui::Context::default(),
+            raw_input(target, Some(0.0), true, Vec::new()),
+            target.screen,
+        );
 
         let mut source = UiSource::new();
+        source.draw_published(ExternalFrames::new(), UiScreen::new());
+        source.external.publish(0, frame);
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world, ctx, &mut encoder);
-        // The claim describes the frame just laid out, so a second frame makes
-        // the first one's answer readable.
-        source.build_scene(&world, ctx, &mut encoder);
 
-        let capture = world
-            .query::<&InputCapture>()
-            .next()
-            .map(|(_, capture)| *capture)
-            .expect("the frame context spawns a capture resource");
+        source.build_scene(&world, ctx, &mut encoder);
         assert!(
-            capture.pointer,
-            "a widget under the pointer claims it: {capture:?}"
+            !source.scene().is_empty(),
+            "the published frame is drawn when it arrives"
         );
-        assert!(capture.any());
-    }
 
+        // The publisher has nothing new, and the frame it published must not
+        // have been emptied by drawing it.
+        source.build_scene(&world, ctx, &mut encoder);
+        assert!(
+            !source.scene().is_empty(),
+            "the same frame is drawn again while no newer one arrives"
+        );
+    }
+    /// Two contexts allocate texture ids from zero, so the same id names
+    /// different images in different worlds. Keys carry the origin, so a
+    /// publisher's atlas and the drawing world's own do not collide.
+    #[test]
+    fn two_contexts_keep_their_textures_apart() {
+        let (world, _ctx) = test_world();
+        assert!(set_frame_target(&world, test_target()));
+        let target = test_ui_target();
+
+        // A separate world, with a context whose ids start at zero like any
+        // other, paints the frame that gets published.
+        let mut other = World::new();
+        other.spawn((UiPanel::new(|_world, _entity, ui| {
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
+                0.0,
+                egui::Color32::RED,
+            );
+        }),));
+        let frame = lay_out(
+            &other,
+            &egui::Context::default(),
+            raw_input(target, Some(0.0), true, Vec::new()),
+            target.screen,
+        );
+        let ids = frame
+            .primitives
+            .iter()
+            .filter_map(|primitive| match &primitive.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => Some(mesh.texture_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!ids.is_empty(), "the frame names a texture");
+
+        // The ids are whatever its context allocated: publishing rewrites
+        // nothing, because the drawing side keys by (source, id).
+        let mut source = UiSource::new();
+        source.draw_published(ExternalFrames::new(), UiScreen::new());
+        source.external.publish(0, frame);
+        let drawn = source.external.with_frames(|slots| {
+            slots[0]
+                .as_ref()
+                .expect("published")
+                .primitives
+                .iter()
+                .filter_map(|primitive| match &primitive.primitive {
+                    egui::epaint::Primitive::Mesh(mesh) => Some(mesh.texture_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(ids, drawn, "publishing leaves the ids alone");
+    }
     /// Without an event source the UI still draws, with an idle frame.
     #[test]
     fn a_world_without_input_state_draws_an_idle_frame() {

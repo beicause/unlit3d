@@ -67,21 +67,29 @@ pub fn to_egui_event(event: &InputEvent, pixels_per_point: f32) -> Vec<EguiEvent
             vec![EguiEvent::ModifiersChanged(to_modifiers(*modifiers))]
         }
         InputEvent::FocusChanged(focused) => vec![EguiEvent::WindowFocused(*focused)],
+        // egui learns the screen's size from the frame's target and its
+        // density from the viewport, not from events, so these carry nothing
+        // it needs.
+        InputEvent::Resized { .. } | InputEvent::ScaleFactorChanged { .. } => Vec::new(),
     }
 }
 
-/// Translate a whole frame's events.
+/// Translate a whole frame's events into `out`, appending them.
 ///
 /// The order events arrive in is preserved: egui's own input handling depends
-/// on a press coming before the release that follows it.
-pub fn to_egui_events<'a>(
+/// on a press coming before the release that follows it. The caller clears
+/// `out` first and keeps it across frames, so a run of frames reuses one
+/// allocation for the events egui is handed.
+pub fn to_egui_events_into<'a>(
     events: impl IntoIterator<Item = &'a InputEvent>,
     pixels_per_point: f32,
-) -> Vec<EguiEvent> {
-    events
-        .into_iter()
-        .flat_map(|event| to_egui_event(event, pixels_per_point))
-        .collect()
+    out: &mut Vec<EguiEvent>,
+) {
+    out.extend(
+        events
+            .into_iter()
+            .flat_map(|event| to_egui_event(event, pixels_per_point)),
+    );
 }
 
 /// A key event. The crate carries the text a key produced as a separate
@@ -991,7 +999,8 @@ mod tests {
             }),
             InputEvent::Mouse(MouseEvent::Left),
         ];
-        let converted = to_egui_events(&events, 1.0);
+        let mut converted = Vec::new();
+        to_egui_events_into(&events, 1.0, &mut converted);
         assert_eq!(
             converted,
             vec![
@@ -1009,7 +1018,9 @@ mod tests {
 
     #[test]
     fn an_empty_frame_converts_to_nothing() {
-        assert!(to_egui_events([], 1.0).is_empty());
+        let mut converted = Vec::new();
+        to_egui_events_into([], 1.0, &mut converted);
+        assert!(converted.is_empty());
     }
 
     /// The density must be usable, since every position is divided by it.

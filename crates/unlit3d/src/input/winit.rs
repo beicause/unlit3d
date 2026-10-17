@@ -1,12 +1,13 @@
-//! Feeding a winit window's events into the shared [`InputHandle`].
+//! Feeding a winit window's events to the worlds that read input.
 //!
 //! [`WinitInput`] is the winit half of [`crate::input`]: a caller forwards
 //! every [`WindowEvent`] the window produces, and the adapter translates the
-//! ones that carry input into [`InputEvent`]s, pushing each into the
-//! [`InputState`](super::InputState) behind an [`InputHandle`]. It decides
+//! ones that carry input into [`InputEvent`]s, pushing each through an
+//! [`InputWriter`] to every world subscribed to it. It decides
 //! nothing about what the
-//! input *means* — that is a behaviour component's job — so it holds no state
-//! of its own beyond the handle.
+//! input *means* — that is a behaviour component's job. The little it must
+//! remember (the modifiers held, the cursor a button press lands at) is what
+//! an event that carries neither is stamped with.
 //!
 //! # Coordinates
 //!
@@ -35,13 +36,15 @@
 //! key must not move with the layout. The text the key produced comes from
 //! `KeyEvent::text` instead, as a separate [`TextEvent`].
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use winit::event::{
     Ime, MouseButton, MouseScrollDelta, TouchPhase as WinitTouchPhase, WindowEvent,
 };
 use winit::keyboard::{KeyCode, ModifiersState, NativeKeyCode, PhysicalKey};
 
 use super::{
-    ImeEvent, ImeKind, InputEvent, InputHandle, Key, KeyEvent, Modifiers,
+    ImeEvent, ImeKind, InputEvent, InputWriter, Key, KeyEvent, Modifiers,
     MouseButton as CrateButton, MouseEvent, PointerAction, PointerEvent, PointerKind, TextEvent,
     TouchEvent, TouchPhase, WheelUnit,
 };
@@ -79,28 +82,43 @@ const GESTURE_KIND: PointerKind = PointerKind::Touch;
 /// there is nothing left to tell them apart by.
 const UNIDENTIFIED_CODE: u32 = 0;
 
-/// Feeds a winit window's events into the shared [`InputState`](super::InputState).
+/// Feeds a winit window's events to the worlds that read input.
 ///
-/// The adapter is cheap to copy around: it holds only the [`InputHandle`] of
-/// the shared state it writes, so a frame loop can keep it beside the window.
+/// The adapter is cheap to copy around: it holds the [`InputWriter`] and the
+/// little device state an event needs when it does not carry its own (the
+/// modifiers held, the cursor a button press lands at), so a frame loop can
+/// keep it beside the window.
+///
+/// Tracking that state here rather than reading it back from a world is what
+/// lets each world keep its own [`InputState`](super::InputState): the adapter
+/// is the one place that sees every platform event in order, so an event it
+/// stamps reaches every world the same way.
 #[derive(Clone)]
 pub struct WinitInput {
-    handle: InputHandle,
+    writer: InputWriter,
+    device: Arc<Mutex<Device>>,
+}
+
+/// The device state an event that carries none of its own is stamped with.
+#[derive(Debug, Default)]
+struct Device {
+    modifiers: Modifiers,
+    /// Where the mouse last was, or `None` while it is outside the window.
+    cursor: Option<[f32; 2]>,
 }
 
 impl WinitInput {
-    /// Feed the `InputState` behind `handle`.
-    ///
-    /// The handle comes from the world that owns the one input state — see
-    /// [`distribute_input`](super::distribute_input) for how a nested world
-    /// gets the same one.
-    pub fn new(handle: InputHandle) -> Self {
-        Self { handle }
+    /// Feed the worlds `writer` reaches.
+    pub fn new(writer: InputWriter) -> Self {
+        Self {
+            writer,
+            device: Arc::new(Mutex::new(Device::default())),
+        }
     }
 
-    /// The shared input state this adapter writes.
-    pub fn handle(&self) -> &InputHandle {
-        &self.handle
+    /// The writer this adapter feeds.
+    pub fn writer(&self) -> &InputWriter {
+        &self.writer
     }
 
     /// Translate the parts of `event` that carry input and push them.
@@ -123,11 +141,16 @@ impl WinitInput {
                 event.repeat,
                 event.text.as_deref(),
             ),
-            WindowEvent::ModifiersChanged(modifiers) => self.emit(InputEvent::ModifiersChanged(
-                to_modifiers(modifiers.state()),
+            // Recorded before it is pushed, because the next event's own
+            // modifiers are read from that record.
+            WindowEvent::ModifiersChanged(modifiers) => self.push(InputEvent::ModifiersChanged(
+                self.set_modifiers(to_modifiers(modifiers.state())),
             )),
             WindowEvent::CursorMoved { position, .. } => {
                 let position = [position.x as f32, position.y as f32];
+                // Recorded before the batch is pushed, because the events a
+                // button press is stamped with read it back.
+                let modifiers = self.set_cursor(Some(position));
                 self.push_all([
                     InputEvent::Mouse(MouseEvent::Moved { position }),
                     InputEvent::Pointer(PointerEvent {
@@ -135,56 +158,54 @@ impl WinitInput {
                         id: MOUSE_POINTER,
                         action: PointerAction::Moved,
                         position: Some(position),
-                        modifiers: self.modifiers(),
+                        modifiers,
                     }),
                 ])
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let pressed = state.is_pressed();
                 let button = to_button(*button);
-                let mut state = self.handle.write();
-                let position = state.cursor.unwrap_or(NO_CURSOR);
-                let modifiers = state.modifiers;
-                state.push(InputEvent::Mouse(MouseEvent::Button {
-                    position,
-                    button,
-                    pressed,
-                    modifiers,
-                }));
-                state.push(InputEvent::Pointer(PointerEvent {
-                    kind: PointerKind::Mouse,
-                    id: MOUSE_POINTER,
-                    action: if pressed {
-                        PointerAction::Pressed
-                    } else {
-                        PointerAction::Released { cancelled: false }
-                    },
-                    position: Some(position),
-                    modifiers,
-                }));
-                true
+                let (position, modifiers) = self.stamp();
+                let position = position.unwrap_or(NO_CURSOR);
+                self.push_all([
+                    InputEvent::Mouse(MouseEvent::Button {
+                        position,
+                        button,
+                        pressed,
+                        modifiers,
+                    }),
+                    InputEvent::Pointer(PointerEvent {
+                        kind: PointerKind::Mouse,
+                        id: MOUSE_POINTER,
+                        action: if pressed {
+                            PointerAction::Pressed
+                        } else {
+                            PointerAction::Released { cancelled: false }
+                        },
+                        position: Some(position),
+                        modifiers,
+                    }),
+                ])
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
                 let (delta, unit) = to_wheel(delta);
                 let phase = to_phase(*phase);
-                let mut state = self.handle.write();
                 // A wheel step is a mouse's alone: a touch produces no wheel
                 // event, so there is no pointer event to pair it with.
-                let modifiers = state.modifiers;
-                state.push(InputEvent::Mouse(MouseEvent::Wheel {
+                let modifiers = self.stamp().1;
+                self.push_all([InputEvent::Mouse(MouseEvent::Wheel {
                     delta,
                     unit,
                     phase,
                     modifiers,
-                }));
-                true
+                })])
             }
             // A pinch or rotation is a gesture, not a button and not a touch
             // point, so it enters the stream as a pointer action. The touch
             // points a two-finger gesture is built from arrive separately as
             // their own `WindowEvent::Touch`es.
             WindowEvent::PinchGesture { delta, .. } => {
-                self.emit(InputEvent::Pointer(PointerEvent {
+                self.push(InputEvent::Pointer(PointerEvent {
                     kind: GESTURE_KIND,
                     // A gesture is not a contact, so it shares the mouse's id.
                     id: MOUSE_POINTER,
@@ -194,7 +215,7 @@ impl WinitInput {
                 }))
             }
             WindowEvent::RotationGesture { delta, .. } => {
-                self.emit(InputEvent::Pointer(PointerEvent {
+                self.push(InputEvent::Pointer(PointerEvent {
                     kind: GESTURE_KIND,
                     // A gesture is not a contact, so it shares the mouse's id.
                     id: MOUSE_POINTER,
@@ -207,6 +228,7 @@ impl WinitInput {
                 let phase = to_phase(touch.phase);
                 let position = [touch.location.x as f32, touch.location.y as f32];
                 let (action, pointer_position) = pointer_of_touch(phase, position);
+                let modifiers = self.modifiers();
                 self.push_all([
                     InputEvent::Touch(TouchEvent {
                         id: touch.id,
@@ -219,33 +241,35 @@ impl WinitInput {
                         id: touch.id,
                         action,
                         position: pointer_position,
-                        modifiers: self.modifiers(),
+                        modifiers,
                     }),
                 ])
             }
-            WindowEvent::Ime(ime) => self.emit(InputEvent::Ime(ImeEvent {
+            WindowEvent::Ime(ime) => self.push(InputEvent::Ime(ImeEvent {
                 kind: to_ime_kind(ime),
             })),
-            WindowEvent::Focused(focused) => self.emit(InputEvent::FocusChanged(*focused)),
-            WindowEvent::CursorLeft { .. } => self.push_all([
-                // The pointer leaves with the mouse: a touch that is still
-                // down on the screen is not gone because the cursor left the
-                // canvas.
-                InputEvent::Mouse(MouseEvent::Left),
-                InputEvent::Pointer(PointerEvent {
-                    kind: PointerKind::Mouse,
-                    id: MOUSE_POINTER,
-                    action: PointerAction::Left,
-                    position: None,
-                    modifiers: self.modifiers(),
-                }),
-            ]),
-            // These two carry no event of their own; they only refresh the
-            // state later events read from.
-            WindowEvent::Resized(size) => {
-                self.handle.write().set_size_px(size.width, size.height);
-                false
+            WindowEvent::Focused(focused) => self.push(InputEvent::FocusChanged(*focused)),
+            WindowEvent::CursorLeft { .. } => {
+                let modifiers = self.modifiers();
+                self.push_all([
+                    // The pointer leaves with the mouse: a touch that is still
+                    // down on the screen is not gone because the cursor left
+                    // the canvas.
+                    InputEvent::Mouse(MouseEvent::Left),
+                    InputEvent::Pointer(PointerEvent {
+                        kind: PointerKind::Mouse,
+                        id: MOUSE_POINTER,
+                        action: PointerAction::Left,
+                        position: None,
+                        modifiers,
+                    }),
+                ])
             }
+            // The window's own size and density travel as events too, so a
+            // world that reads them gets them in order with the rest.
+            WindowEvent::Resized(size) => self.push(InputEvent::Resized {
+                size_px: (size.width, size.height),
+            }),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.on_scale_factor(*scale_factor)
             }
@@ -267,21 +291,19 @@ impl WinitInput {
         repeat: bool,
         text: Option<&str>,
     ) -> bool {
-        let mut state = self.handle.write();
-        let modifiers = state.modifiers;
-        state.push(InputEvent::Key(KeyEvent {
+        let key = InputEvent::Key(KeyEvent {
             key: key_of(physical_key),
             pressed,
             repeat,
-            modifiers,
-        }));
+            modifiers: self.modifiers(),
+        });
         // A key press also carries the character the layout produced there;
         // `logical_key` is deliberately not consulted, because `text` already
         // has that character, alone or with the dead key that preceded it.
-        if let (true, Some(text)) = (pressed, text) {
-            state.push(InputEvent::Text(TextEvent(text.to_owned())));
-        }
-        true
+        let typed = text
+            .filter(|_| pressed)
+            .map(|text| InputEvent::Text(TextEvent(text.to_owned())));
+        self.push_all(core::iter::once(key).chain(typed))
     }
 
     /// The translation [`WindowEvent::ScaleFactorChanged`] performs.
@@ -291,35 +313,53 @@ impl WinitInput {
     /// crate can build. The window size that changes with the factor arrives as
     /// its own [`WindowEvent::Resized`].
     fn on_scale_factor(&self, scale_factor: f64) -> bool {
-        self.handle.write().set_scale_factor(scale_factor as f32);
-        false
+        self.push(InputEvent::ScaleFactorChanged {
+            scale_factor: scale_factor as f32,
+        })
     }
 
-    /// Push one event and report that something was pushed.
-    fn emit(&self, event: InputEvent) -> bool {
-        self.handle.write().push(event);
-        true
+    /// Push one event, reporting that it was pushed.
+    fn push(&self, event: InputEvent) -> bool {
+        self.push_all([event])
     }
 
-    /// Push several events from one window event under a single borrow.
+    /// Push several events, reporting whether there were any.
     ///
     /// The events keep the order they are given in, which is what lets a
     /// device-specific event precede the device-agnostic one describing the
     /// same action.
     fn push_all(&self, events: impl IntoIterator<Item = InputEvent>) -> bool {
         let mut pushed = false;
-        let mut state = self.handle.write();
-        for event in events {
-            state.push(event);
-            pushed = true;
-        }
+        self.writer
+            .push_all(events.into_iter().inspect(|_| pushed = true));
         pushed
+    }
+
+    /// Record the modifiers a later event is stamped with, and report them.
+    fn set_modifiers(&self, modifiers: Modifiers) -> Modifiers {
+        let mut device = self.device.lock().unwrap_or_else(PoisonError::into_inner);
+        device.modifiers = modifiers;
+        modifiers
+    }
+
+    /// Record where the mouse is, and report the modifiers held.
+    fn set_cursor(&self, cursor: Option<[f32; 2]>) -> Modifiers {
+        let mut device = self.device.lock().unwrap_or_else(PoisonError::into_inner);
+        device.cursor = cursor;
+        device.modifiers
+    }
+
+    /// The cursor position and modifiers an event that carries neither is
+    /// stamped with.
+    fn stamp(&self) -> (Option<[f32; 2]>, Modifiers) {
+        let device = self.device.lock().unwrap_or_else(PoisonError::into_inner);
+        (device.cursor, device.modifiers)
     }
 
     /// The modifier keys held right now, for an event that does not carry its
     /// own.
     fn modifiers(&self) -> Modifiers {
-        self.handle.read().modifiers
+        self.stamp().1
     }
 }
 
@@ -558,11 +598,14 @@ fn to_ime_kind(ime: &Ime) -> ImeKind {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::RefCell;
+    use core::ops::Deref;
+
     use winit::dpi::{PhysicalPosition, PhysicalSize};
     use winit::event::{DeviceId, Force, Touch};
 
     use super::*;
-    use crate::input::{InputState, MouseButtons};
+    use crate::input::{InputEvents, InputState, MouseButtons};
 
     /// The pointer position tests move to before producing a button or wheel
     /// event, deliberately not the fallback origin.
@@ -572,19 +615,59 @@ mod tests {
         PhysicalPosition::new(f64::from(CURSOR[0]), f64::from(CURSOR[1]))
     }
 
-    fn input() -> WinitInput {
-        WinitInput::new(InputHandle::new())
+    /// An adapter, plus a subscription that sees everything it feeds from the
+    /// moment it exists.
+    ///
+    /// The subscription is taken before any event is fed, because a subscriber
+    /// only hears what arrives after it subscribed.
+    struct TestInput {
+        input: WinitInput,
+        buffer: InputEvents,
+        /// What the subscription has yielded so far, kept so a test can look at
+        /// a stream it has already read.
+        seen: RefCell<Vec<InputEvent>>,
     }
 
-    /// The frame's events, copied out so a test can compare them after further
-    /// events have been fed in.
-    fn events(input: &WinitInput) -> Vec<InputEvent> {
-        input.handle().read().events().to_vec()
+    impl Deref for TestInput {
+        type Target = WinitInput;
+
+        fn deref(&self) -> &Self::Target {
+            &self.input
+        }
     }
 
-    /// Run `f` over the state the adapter feeds.
-    fn state<R>(input: &WinitInput, f: impl FnOnce(&InputState) -> R) -> R {
-        f(&input.handle().read())
+    fn input() -> TestInput {
+        let writer = InputWriter::new();
+        let buffer = writer.subscribe();
+        let input = WinitInput::new(writer);
+        TestInput {
+            input,
+            buffer,
+            seen: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Everything the adapter has fed, as a world ticking after each feed sees
+    /// it.
+    ///
+    /// The adapter feeds a writer, so this is the same stream a world
+    /// dispatching input reads.
+    fn events(input: &TestInput) -> Vec<InputEvent> {
+        input.buffer.refresh();
+        let mut batch = Vec::new();
+        input.buffer.copy_events_into(&mut batch);
+        let mut seen = input.seen.borrow_mut();
+        seen.extend(batch);
+        seen.clone()
+    }
+
+    /// Run `f` over the state the events so far left behind.
+    ///
+    /// Building it means ticking first, which is what a world does before it
+    /// reads anything.
+    fn state<R>(input: &TestInput, f: impl FnOnce(&InputState) -> R) -> R {
+        input.buffer.refresh();
+        input.buffer.with_state(f)
     }
 
     fn moved() -> WindowEvent {
@@ -1051,25 +1134,35 @@ mod tests {
     }
 
     #[test]
-    fn a_resize_updates_the_state_without_pushing_an_event() {
+    fn a_resize_travels_as_an_event_and_lands_in_the_state() {
         let input = input();
 
-        assert!(!input.on_window_event(&WindowEvent::Resized(PhysicalSize::new(800, 600))));
+        assert!(input.on_window_event(&WindowEvent::Resized(PhysicalSize::new(800, 600))));
 
-        assert!(events(&input).is_empty());
+        // The world that reads it sees the event, and its own state records
+        // it: writing the state directly would reach one world only.
+        assert_eq!(
+            events(&input),
+            [InputEvent::Resized {
+                size_px: (800, 600),
+            }]
+        );
         assert_eq!(state(&input, |state| state.size_px), (800, 600));
     }
 
     #[test]
-    fn a_scale_factor_change_updates_the_state_without_pushing_an_event() {
+    fn a_scale_factor_change_travels_as_an_event_and_lands_in_the_state() {
         // `WindowEvent::ScaleFactorChanged` carries an `InnerSizeWriter` that
         // cannot be built outside winit, so the translation its match arm
         // performs is driven directly.
         let input = input();
 
-        assert!(!input.on_scale_factor(1.5));
+        assert!(input.on_scale_factor(1.5));
 
-        assert!(events(&input).is_empty());
+        assert_eq!(
+            events(&input),
+            [InputEvent::ScaleFactorChanged { scale_factor: 1.5 }]
+        );
         assert_eq!(state(&input, |state| state.scale_factor), 1.5);
     }
 

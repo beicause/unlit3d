@@ -631,6 +631,23 @@ an interface is an entity — a frame can hold as many panels as entities, and t
 `ui::UiSource` driver runs whatever panels the world carries, in
 query order.
 
+A panel can only be built where its egui context runs, because the callback is
+handed a `&mut egui::Ui` that belongs to the pass building it. A UI whose
+panels live in one world and whose drawing belongs to another therefore crosses
+that boundary as data: `ui::lay_out` runs a world's panels against a context
+the caller owns and returns an `ui::ExternalFrame` — tessellated primitives,
+texture updates and the platform output, all plain owned values. The panel's
+world publishes those frames into `ui::ExternalFrames` and the drawing side
+draws whatever is there; nothing is asked for in return. The two contexts stay
+separate: sharing one would have both worlds writing the same memory and font
+atlas, and egui treats one `run_ui` call as one whole frame. Their texture ids
+are never rewritten, though both contexts allocate from zero: a frame keeps the
+ids its context gave it and the GPU integration keys textures by (origin, id),
+so a published frame is drawn from the same tessellation until a newer one
+replaces it. `unlit3dx` builds the cross-world plumbing — a host in the panel's
+world, and a `PanelHost` that publishes on that world's own tick — on these
+pieces.
+
 <details>
 <summary>Why the panel is a component, and the unit convention that is easy to get wrong</summary>
 
@@ -806,16 +823,20 @@ world.spawn((UiPanel::new(|_world, _entity, ui| {
 ## Input
 
 [`input`] is the portable half of input handling: event types and the behaviour
-components that react to them, depending on neither winit nor egui. A world
-holds an [`InputHandle`](input::InputHandle) — a shared handle to one
-[`InputState`](input::InputState) — and a frame feeds events through it, runs
-[`dispatch_input`](input::dispatch_input) to drive the behaviours, then calls
-[`InputState::clear_events`](input::InputState::clear_events) once every
-consumer has read them — the events are traversed read-only, never taken,
-because more than one consumer sees the same frame.
-[`distribute_input`](input::distribute_input) copies the handle into every
-nested world, so one state serves them all. Translation from a
-windowing library's events lives behind the corresponding feature:
+components that react to them, depending on neither winit nor egui. A frame
+feeds events through an [`InputWriter`](input::InputWriter), which drops each
+one into the buffer of every world subscribed to it. A world's buffer is its
+[`InputEvents`](input::InputEvents): the events that arrived since its last
+tick, plus the [`InputState`](input::InputState) they built — modifiers,
+pointers, buttons, window size. [`dispatch_input`](input::dispatch_input)
+takes this world's queue as this tick's batch, folds it into the state, and
+drives the behaviours. A world owns the events it has not ticked on, so a
+world that ticks less often than input arrives still reads every event in
+order, and nothing has to clear anything afterwards.
+[`distribute_input`](input::distribute_input) copies the writer into every
+nested world and subscribes it there, so one stream feeds them all while each
+builds its own state. Translation
+from a windowing library's events lives behind the corresponding feature:
 `input::winit::WinitInput` forwards `WindowEvent`s, and `ui::convert` turns the
 crate's events into egui's.
 
@@ -836,15 +857,24 @@ crate's events into egui's.
   touchscreen; `Touch` keeps what is unique to a finger (touch id, pressure).
   Conversely, touch **does not** set mouse buttons, and the button state in
   `InputState` is mouse-only.
-- **`InputState` holds "the events that arrived since it was last cleared" plus
-  the state the events left behind** (modifiers, pointer position and the
-  pointers pressed, cursor, buttons pressed, focus, window size and scale). An
-  `InputHandle` is how a world reaches it: an `Arc<RwLock<InputState>>` that
-  copies freely between worlds and threads, so nested worlds share one state
-  rather than each carrying its own. A
+- **`InputState` holds the state the events left behind** (modifiers, pointer
+  position and the pointers pressed, cursor, buttons pressed, focus, window
+  size and scale) and no events. It lives inside a world's `InputEvents`,
+  which is how everything in that world reaches it: one buffer per world,
+  refreshed by that world's own tick. A shared state would make one world's
+  reading depend on another's rate, and `InputWriter` therefore keeps none —
+  it is only the fan-out. A
   pointer's pressed state is recorded per "contact point"
   (`PointerContact`, identified by kind and id), so lifting one finger out of
   several does not misread as the gesture ending.
+- **Events are per world, not per frame**: feeding an event pushes it into
+  every subscribed world's queue, and that world's own tick is what takes it
+  as the tick's batch. A shared list plus a per-frame `clear_events` would
+  instead make the slowest reader's view depend on how often the fastest ran:
+  a world ticking at 60 Hz fed by a 120 Hz frame loses every other event, and
+  a world that skipped a frame loses all of them. A queue is unbounded for the
+  same reason — dropping the oldest event to keep a bound would reintroduce
+  exactly the loss the queue exists to prevent.
 - **Dispatch is called explicitly by the caller in the frame loop**, not done
   automatically inside `render`. The reason: structural changes queued inside a
   callback need `&mut world` to land, while `render` only gets `&World`;
@@ -859,10 +889,14 @@ crate's events into egui's.
   re-enter a dispatch of the same kind; state is kept in sibling components
   instead.
 
-UI's **capture** of input (whether it wants to monopolize the pointer/keyboard)
-needs the previous frame's result by egui's semantics: the source writes these
-two flags back into the world, and game logic can read them to decide whether to
-respond. This iteration provides the data only, with no automatic interception.
+Whether the UI wants the pointer or the keyboard is **egui's own answer**, not
+one the source republishes: after a frame is laid out, `egui_wants_pointer_input`
+and `egui_wants_keyboard_input` on the source's context describe what the frame
+claimed. A caller reaches that context through the world's `Source` value —
+`source.as_ref::<UiSource>()` — the same way it reaches any other source's
+state, and game logic reads it to decide whether to respond. By egui's
+semantics the answer describes the frame just laid out. Nothing is
+intercepted automatically.
 
 </details>
 

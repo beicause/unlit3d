@@ -39,7 +39,11 @@ fn offscreen_world(ctx: &Ctx) -> World {
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
     world.spawn((Source::new(source),));
-    world.spawn((InputHandle::new(),));
+    // The world dispatches its own input, so it holds a buffer of its own and
+    // the writer that feeds it.
+    let input = InputWriter::new();
+    world.spawn((input.subscribe(),));
+    world.spawn((input,));
 
     let color = create_color_target(&ctx.device, COLOR_FORMAT, SIZE.0, SIZE.1);
     let color_view = {
@@ -565,22 +569,39 @@ pub fn run() {
             "a buffer without COPY_SRC is refused rather than crashing the host"
         );
 
-        // A sent event stays in the state until it is cleared, and reading the
-        // state reports it, so a caller can see what happened this frame.
+        // A sent event lands in the queue of every subscriber, and the queue is
+        // a component: a caller reads what a world has not dispatched yet
+        // through the same reflection it reads any other component with.
         server
             .tool(
                 "send_input",
                 json!({ "events": [{ "Key": { "key": "A", "pressed": true } }] }),
             )
             .await;
-        let input = server.tool("input_state", json!({})).await;
-        let events = input["events"]
+        let entities = server.tool("list_entities", json!({})).await;
+        let queue = entities
             .as_array()
-            .expect("the input state lists its events");
-        assert_eq!(events.len(), 1, "the one sent event is reported: {input}");
+            .and_then(|entities| {
+                entities.iter().find(|entity| {
+                    entity["components"]
+                        .as_array()
+                        .is_some_and(|names| names.iter().any(|name| name == "InputEvents"))
+                })
+            })
+            .expect("the world carries a subscription");
+        let entity = queue["entity"].clone();
+        let args = json!({ "entity": entity, "component": "InputEvents" });
+        let events = server.tool("get_component", args.clone()).await;
+        let pending = events["events"]
+            .as_array()
+            .expect("the subscription lists what it has not read");
+        assert_eq!(pending.len(), 1, "the one sent event is pending: {events}");
         assert!(
-            input.to_string().contains("\"A\""),
-            "the event names the key that was sent: {input}"
+            events.to_string().contains("\"A\""),
+            "the event names the key that was sent: {events}"
         );
+        // Reading does not consume: the world still dispatches the event.
+        let again = server.tool("get_component", args).await;
+        assert_eq!(again["events"], events["events"]);
     });
 }

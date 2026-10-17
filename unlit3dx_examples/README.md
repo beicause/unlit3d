@@ -93,8 +93,9 @@ it is paced differs.
   Godot-style resource server: gameplay requests meshes, materials and
   instances with jobs, and the entity of each spawned instance comes back
   as its handle. Everything the scene puts in it arrives the same way —
-  its orbiting camera, its control panel, and the poses its bodies carry
-  are jobs too, drained before anything draws. The world's own setup is
+  its orbiting camera, the source that draws its control panel, and the
+  poses its bodies carry are jobs too, drained before anything draws. The
+  world's own setup is
   only the resource graph, the renderer and the mesh source. The server
   itself — `create_mesh`, `create_material_from_texture`, `spawn_instance`
   and the mesh and camera helpers — is this crate's own `src/render.rs`,
@@ -133,8 +134,24 @@ it is paced differs.
 
   The world ticks at a fixed 120 Hz, independent of the frame rate.
 
-`Controls` is the fifth object, and the one that lives in the **render
-world**: a `UiSource` runs the panels of its own world and no other, so a
-panel anywhere else would never be drawn. It is spawned the same way as the
-rest — one entity carrying the panel, the rows it shows and the source that
-runs it.
+`Controls` is the fifth object, and it lives in the **gameplay world** with the
+rest. A panel can only be built where its egui context runs, so this world
+lays it out and the render world draws what comes back: the panel's entity
+carries the `UiPanel`, the rows it shows, and the `UiHost` holding the context
+they are built in. It needs no tick of its own — the render world asks that
+context for a frame through this world's command queue, as a job, and the
+frame comes back through the job's reply slot. The render world holds only a
+`UiSource` with that queue attached, which uploads and records what it
+collects.
+
+The two sides keep separate egui contexts. Sharing one would have both worlds
+writing the same memory and font atlas, and egui treats one `run_ui` call as
+one whole frame, so two worlds running it against one context would interleave
+two frames into one. Their texture ids therefore come from different
+namespaces, and the drawing side renumbers each provider's as its frame
+arrives.
+
+A frame the drawing side does not need is not laid out: one is asked for only
+when the last one asked to be redrawn or input arrived, so a panel nobody is
+touching costs nothing on the wire. The frame it last collected keeps being
+drawn until a newer one replaces it.

@@ -62,6 +62,9 @@ mod sync;
 pub mod synth;
 /// World threads and their pacing.
 pub mod thread;
+#[cfg(feature = "render")]
+/// UI panels laid out in one world and drawn in another.
+pub mod ui;
 /// Remote worlds, which run on their own thread.
 pub mod world;
 

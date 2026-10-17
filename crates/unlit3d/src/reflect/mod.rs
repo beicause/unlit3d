@@ -23,7 +23,7 @@ mod registry;
 
 pub use proxies::{
     AabbProxy, ColorLoadOpProxy, DepthLoadOpProxy, GpuMaterialProxy, GpuMeshProxy,
-    GpuRenderPipelineProxy, InputStateProxy, Mat4Proxy, Mat4VecProxy, QuatProxy,
+    GpuRenderPipelineProxy, InputEventsProxy, Mat4Proxy, Mat4VecProxy, QuatProxy,
     StencilLoadOpProxy, Vec3Proxy, Vec4Proxy,
 };
 pub use unlit_ecs::reflect::{ComponentEntry, contains, encode, entries, entry, names, push, set};
@@ -93,9 +93,12 @@ mod tests {
 
     /// The frame's events are part of what a reader reads: a state alone
     /// cannot say which key went down, so the reflection carries them too.
+    /// A world's buffer is a component, so both what it has not ticked on yet
+    /// and the state the events it did tick on left are readable from outside,
+    /// which is how a tool sees another world's input.
     #[test]
-    fn the_input_state_reflects_its_events() {
-        use crate::input::{InputEvent, InputHandle, Key, KeyEvent, Modifiers};
+    fn a_buffer_reflects_its_events_and_the_state_they_left() {
+        use crate::input::{InputEvent, InputEvents, InputWriter, Key, KeyEvent, Modifiers};
 
         let key = InputEvent::Key(KeyEvent {
             key: Key::A,
@@ -103,22 +106,21 @@ mod tests {
             repeat: false,
             modifiers: Modifiers::default(),
         });
+        let writer = InputWriter::new();
         let mut world = unlit_ecs::World::new();
-        let entity = world.spawn((InputHandle::new(),));
-        let _ = world.with_mut::<InputHandle, _>(entity, |handle| {
-            let mut state = handle.write();
-            state.push(key.clone());
-            state.push(InputEvent::FocusChanged(false));
-        });
+        let entity = world.spawn((writer.subscribe(),));
+        writer.push(key.clone());
+        writer.push(InputEvent::FocusChanged(false));
+        world
+            .get::<InputEvents>(entity)
+            .expect("the buffer spawned")
+            .refresh();
 
-        let encoded = encode(&world, entity, "InputHandle").expect("the input state encodes");
-        let decoded: InputStateProxy =
+        let encoded = encode(&world, entity, "InputEvents").expect("the buffer encodes");
+        let decoded: InputEventsProxy =
             facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(decoded.events, vec![key, InputEvent::FocusChanged(false)]);
-        assert!(
-            !decoded.focused,
-            "the state the events left behind is read too"
-        );
+        assert!(!decoded.focused, "the state the events left is read too");
     }
 
     /// A caller's events decode through the same reflection the encoder

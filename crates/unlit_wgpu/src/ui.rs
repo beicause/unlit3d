@@ -260,12 +260,15 @@ struct GeometryCounts {
 
 /// Count the vertices and indices every tessellated primitive in `primitives`
 /// contributes.
-fn measure(primitives: &[egui::ClippedPrimitive]) -> GeometryCounts {
+fn measure(primitives: &[(Source, &egui::ClippedPrimitive)]) -> GeometryCounts {
     let mut counts = GeometryCounts {
         vertices: 0,
         indices: 0,
     };
-    for mesh in primitives.iter().filter_map(mesh_of) {
+    for mesh in primitives
+        .iter()
+        .filter_map(|(_, primitive)| mesh_of(primitive))
+    {
         counts.vertices += mesh.vertices.len();
         counts.indices += mesh.indices.len();
     }
@@ -283,9 +286,9 @@ fn measure(primitives: &[egui::ClippedPrimitive]) -> GeometryCounts {
 /// `counts` must be what [`measure`] returned for `primitives`: it is both how
 /// much is written and where the two vertex streams meet.
 fn pack_geometry(
-    primitives: &[egui::ClippedPrimitive],
+    primitives: &[(Source, &egui::ClippedPrimitive)],
     screen: ScreenDescriptor,
-    texture_options: &HashMap<egui::TextureId, egui::TextureOptions>,
+    texture_options: &HashMap<TextureKey, egui::TextureOptions>,
     counts: GeometryCounts,
     vertices: &mut Vec<u8>,
     indices: &mut Vec<u8>,
@@ -307,7 +310,7 @@ fn pack_geometry(
 
     let mut vertex_cursor = 0usize;
     let mut index_cursor = 0usize;
-    for primitive in primitives {
+    for (source, primitive) in primitives {
         // A paint callback draws its own way; this renderer handles tessellated
         // meshes only.
         let Some(mesh) = mesh_of(primitive) else {
@@ -353,17 +356,18 @@ fn pack_geometry(
         }
         index_cursor += mesh.indices.len();
 
+        let texture = TextureKey {
+            source: *source,
+            id: mesh.texture_id,
+        };
         draws.push(UiDraw {
             indices: first_index..index_cursor as u32,
-            texture: mesh.texture_id,
+            texture,
             // The texture's own sampling options, not a default: a texture egui
             // asked to sample nearest or to tile would otherwise be sampled
             // linearly and clamped, and the sampler that matches `options` is
             // the one the material binds.
-            options: texture_options
-                .get(&mesh.texture_id)
-                .copied()
-                .unwrap_or_default(),
+            options: texture_options.get(&texture).copied().unwrap_or_default(),
             scissor: scissor_rect(primitive.clip_rect, screen),
         });
     }
@@ -378,7 +382,8 @@ struct UiDraw {
     /// pool, so a draw needs no `base_vertex` to address them; see
     /// [`pack_geometry`].
     indices: Range<u32>,
-    texture: egui::TextureId,
+    /// The texture this primitive samples, and the context it came from.
+    texture: TextureKey,
     options: egui::TextureOptions,
     scissor: ScissorRect,
 }
@@ -413,8 +418,8 @@ pub struct EguiIntegration {
     /// Graph node of the caller's global bind group: camera and frame
     /// globals, written by the caller.
     global_group: ResHandle<wgpu::BindGroup>,
-    /// Graph nodes of every allocated texture slot, keyed by egui's own id.
-    textures: HashMap<egui::TextureId, TextureSlot>,
+    /// Graph nodes of every allocated texture slot, keyed by origin and id.
+    textures: HashMap<TextureKey, TextureSlot>,
     /// The sampling options egui last stated for each texture.
     ///
     /// Kept separately from the texture itself because every [`ImageDelta`]
@@ -424,7 +429,7 @@ pub struct EguiIntegration {
     /// uploaded as nearest samples nearest.
     ///
     /// [`ImageDelta`]: egui::epaint::ImageDelta
-    texture_options: HashMap<egui::TextureId, egui::TextureOptions>,
+    texture_options: HashMap<TextureKey, egui::TextureOptions>,
     /// One sampler per distinct set of egui sampling options seen, with its
     /// graph node.
     samplers: Vec<(egui::TextureOptions, ResHandle<wgpu::Sampler>)>,
@@ -469,10 +474,60 @@ pub struct EguiIntegration {
     packed_indices: Vec<u8>,
 }
 
+/// Which context a texture belongs to.
+///
+/// Every egui context allocates its texture ids from zero, so one id names
+/// different images in different contexts. A UI drawn from several contexts —
+/// the world's own panels plus a frame laid out in another world — therefore
+/// keys its textures by this pair rather than by the id alone, which is what
+/// keeps two contexts' atlases apart without rewriting the ids a frame
+/// carries.
+///
+/// The origin of the world's own panels is [`Source::LOCAL`]; every other
+/// publisher picks its own, and the numbers are that publisher's to allocate.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Source(pub u32);
+
+impl Source {
+    /// The context of the world doing the drawing.
+    pub const LOCAL: Self = Self(0);
+
+    /// The context of the world publishing into `slot`.
+    ///
+    /// The number is the slot's plus one, so no publisher collides with the
+    /// drawing world's own panels and each slot has a namespace of its own.
+    #[must_use]
+    pub const fn published(slot: usize) -> Self {
+        Self(slot as u32 + 1)
+    }
+}
+
+/// One texture of one source.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct TextureKey {
+    source: Source,
+    id: egui::TextureId,
+}
+
+/// One source's contribution to a frame: what to upload and what it owns.
+///
+/// The textures are consumed — a delta is applied once, and egui panics when
+/// one is dropped unapplied — while the primitives are borrowed: a frame laid
+/// out in another world is drawn again on every drawn frame until that world
+/// publishes a newer one, so its tessellation has to outlive the upload.
+pub struct UiFrame<'a> {
+    /// Which context this contribution came from.
+    pub source: Source,
+    /// The context's texture updates for this frame.
+    pub textures: egui::TexturesDelta,
+    /// The context's tessellated geometry.
+    pub primitives: &'a [egui::ClippedPrimitive],
+}
+
 /// What one material bind group was built from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct MaterialKey {
-    texture: egui::TextureId,
+    texture: TextureKey,
     options: egui::TextureOptions,
 }
 
@@ -570,6 +625,11 @@ impl EguiIntegration {
     ///
     /// `screen` tells egui how to rasterise text and scales the tessellated points
     /// and their clip rectangles; see [`ScreenDescriptor`].
+    ///
+    /// This tessellates `output` with `ctx`, which is right when the context
+    /// and the drawing share a world. A caller whose shapes were laid out
+    /// elsewhere — in another world, by another context — uses
+    /// [`Self::update_with`] and tessellates where the context lives.
     pub fn update(
         &mut self,
         graph: &mut ResourceGraph,
@@ -579,11 +639,60 @@ impl EguiIntegration {
         mut output: egui::FullOutput,
         screen: ScreenDescriptor,
     ) {
-        self.apply_textures(graph, queue, &output.textures_delta);
-        // egui panics if a delta is dropped unapplied, so mark it handled.
-        output.textures_delta.clear();
-
         let primitives = ctx.tessellate(output.shapes, screen.pixels_per_point);
+        let textures = core::mem::take(&mut output.textures_delta);
+        let mut sources = [UiFrame {
+            source: Source::LOCAL,
+            textures,
+            primitives: &primitives,
+        }];
+        self.update_with(graph, queue, encoder, &mut sources, screen);
+    }
+
+    /// Apply texture updates and upload primitives from every source, ready
+    /// for [`Self::scene`].
+    ///
+    /// Tessellation needs the [`egui::Context`] that produced the shapes — its
+    /// font atlas and tessellation options — so a UI laid out in one world and
+    /// drawn in another cannot be tessellated by the drawing side. Such a
+    /// caller tessellates where each context lives and hands each result over
+    /// with the [`Source`] it came from.
+    ///
+    /// A source is a namespace, not an identity: every context allocates its
+    /// texture ids from zero, so the same id names different images in
+    /// different sources. Keys carry the pair, and the ids a frame arrived
+    /// with are the ids it is drawn by — nothing rewrites them.
+    ///
+    /// One call per frame: the integration packs one vertex and index buffer,
+    /// and the two vertex streams meet at a single split point, so a second
+    /// call would overwrite the first.
+    ///
+    /// Each `textures` delta is applied and then cleared, so the caller may
+    /// drop it afterwards: egui panics when a delta is dropped unapplied.
+    pub fn update_with(
+        &mut self,
+        graph: &mut ResourceGraph,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        sources: &mut [UiFrame<'_>],
+        screen: ScreenDescriptor,
+    ) {
+        for frame in sources.iter_mut() {
+            self.apply_textures(graph, queue, frame.source, &frame.textures);
+            // egui panics if a delta is dropped unapplied, so mark it handled.
+            frame.textures.clear();
+        }
+
+        let mut primitives: Vec<(Source, &egui::ClippedPrimitive)> = Vec::new();
+        for frame in sources.iter() {
+            primitives.extend(
+                frame
+                    .primitives
+                    .iter()
+                    .map(|primitive| (frame.source, primitive)),
+            );
+        }
+
         let counts = measure(&primitives);
         if counts.vertices == 0 {
             self.draws.clear();
@@ -659,7 +768,7 @@ impl EguiIntegration {
     fn upload_geometry(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,
-        primitives: &[egui::ClippedPrimitive],
+        primitives: &[(Source, &egui::ClippedPrimitive)],
         screen: ScreenDescriptor,
         counts: GeometryCounts,
     ) {
@@ -802,13 +911,10 @@ impl EguiIntegration {
     fn material<'a>(
         &self,
         graph: &'a ResourceGraph,
-        id: egui::TextureId,
+        texture: TextureKey,
         options: egui::TextureOptions,
     ) -> Option<&'a wgpu::BindGroup> {
-        let key = MaterialKey {
-            texture: id,
-            options,
-        };
+        let key = MaterialKey { texture, options };
         let index = self.materials.iter().position(|(seen, _)| *seen == key)?;
         graph.get(&self.materials[index].1)
     }
@@ -825,17 +931,14 @@ impl EguiIntegration {
     fn build_material(
         &mut self,
         graph: &mut ResourceGraph,
-        id: egui::TextureId,
+        texture: TextureKey,
         options: egui::TextureOptions,
     ) {
-        let key = MaterialKey {
-            texture: id,
-            options,
-        };
+        let key = MaterialKey { texture, options };
         if self.materials.iter().any(|(seen, _)| *seen == key) {
             return;
         }
-        let Some(slot) = self.textures.get(&id).cloned() else {
+        let Some(slot) = self.textures.get(&texture).cloned() else {
             return;
         };
         let sampler_id = self.sampler(graph, options);
@@ -907,15 +1010,17 @@ impl EguiIntegration {
         &mut self,
         graph: &mut ResourceGraph,
         queue: &wgpu::Queue,
+        source: Source,
         delta: &egui::TexturesDelta,
     ) {
         for (&id, deltas) in &delta.set {
+            let key = TextureKey { source, id };
             for image in deltas {
                 // Every delta for a texture states its sampling options, and
                 // the last one wins: they describe the texture as a whole, not
                 // the patch being written.
-                self.texture_options.insert(id, image.options);
-                self.upload_texture(graph, queue, id, image);
+                self.texture_options.insert(key, image.options);
+                self.upload_texture(graph, queue, key, image);
             }
         }
         for &id in &delta.free {
@@ -926,9 +1031,14 @@ impl EguiIntegration {
             // own entries go here, before that pass, so egui reusing the
             // (texture, options) pair rebuilds a material rather than finding
             // a stale one.
-            self.textures.remove(&id);
-            self.texture_options.remove(&id);
-            self.materials.retain(|(key, _)| key.texture != id);
+            //
+            // The key carries the source: two contexts both free id zero at
+            // some point, and the other context's texture is not this one's to
+            // drop.
+            let key = TextureKey { source, id };
+            self.textures.remove(&key);
+            self.texture_options.remove(&key);
+            self.materials.retain(|(seen, _)| seen.texture != key);
         }
     }
 
@@ -936,7 +1046,7 @@ impl EguiIntegration {
         &mut self,
         graph: &mut ResourceGraph,
         queue: &wgpu::Queue,
-        id: egui::TextureId,
+        key: TextureKey,
         delta: &egui::epaint::ImageDelta,
     ) {
         let [width, height] = delta.image.size();
@@ -959,7 +1069,7 @@ impl EguiIntegration {
         match delta.pos {
             // A patch written into the texture already there.
             Some([x, y]) => {
-                let Some(slot) = self.textures.get(&id) else {
+                let Some(slot) = self.textures.get(&key) else {
                     return;
                 };
                 let Some(texture) = graph.get(&slot.texture) else {
@@ -999,7 +1109,7 @@ impl EguiIntegration {
                 let view_id = graph.insert(view, None);
                 graph.add_dependency(&view_id, &texture_id);
                 self.textures.insert(
-                    id,
+                    key,
                     TextureSlot {
                         texture: texture_id,
                         view: view_id,
@@ -1267,6 +1377,15 @@ mod tests {
 
     /// One tessellated primitive carrying `vertices` points, clipped to the
     /// whole screen.
+    /// Tag `primitives` with the local source: these tests exercise packing,
+    /// not the namespaces a frame arrives from.
+    fn local(primitives: &[egui::ClippedPrimitive]) -> Vec<(Source, &egui::ClippedPrimitive)> {
+        primitives
+            .iter()
+            .map(|primitive| (Source::LOCAL, primitive))
+            .collect()
+    }
+
     fn primitive(texture: egui::TextureId, vertices: usize) -> egui::ClippedPrimitive {
         let mut mesh = egui::epaint::Mesh::with_texture(texture);
         for index in 0..vertices {
@@ -1295,9 +1414,10 @@ mod tests {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut draws = Vec::new();
-        let counts = measure(&primitives);
+        let tagged = local(&primitives);
+        let counts = measure(&tagged);
         pack_geometry(
-            &primitives,
+            &tagged,
             test_screen(),
             &HashMap::new(),
             counts,
@@ -1361,9 +1481,10 @@ mod tests {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut draws = Vec::new();
-        let counts = measure(&primitives);
+        let tagged = local(&primitives);
+        let counts = measure(&tagged);
         pack_geometry(
-            &primitives,
+            &tagged,
             test_screen(),
             &HashMap::new(),
             counts,
@@ -1405,9 +1526,10 @@ mod tests {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
         let mut draws = Vec::new();
-        let big_counts = measure(&big);
+        let big_tagged = local(&big);
+        let big_counts = measure(&big_tagged);
         pack_geometry(
-            &big,
+            &big_tagged,
             test_screen(),
             &HashMap::new(),
             big_counts,
@@ -1420,9 +1542,10 @@ mod tests {
 
         // A later, smaller frame keeps both allocations rather than taking new
         // ones; a fresh `Vec` per frame would have exactly its own length.
-        let small_counts = measure(&small);
+        let small_tagged = local(&small);
+        let small_counts = measure(&small_tagged);
         pack_geometry(
-            &small,
+            &small_tagged,
             test_screen(),
             &HashMap::new(),
             small_counts,

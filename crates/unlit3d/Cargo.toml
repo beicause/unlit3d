@@ -55,6 +55,9 @@ required-features = ["mcp"]
 
 [dependencies]
 arrayvec.workspace = true
+# One unbounded channel per input subscriber: a world that reads input at its
+# own pace is exactly a channel consumer.
+async-channel.workspace = true
 bitflags.workspace = true
 const_shader_layout.workspace = true
 egui = { workspace = true, optional = true }
@@ -79,8 +82,6 @@ zerocopy.workspace = true
 zerocopy-derive.workspace = true
 
 [dev-dependencies]
-# The end-to-end MCP test drives a real command channel, as a transport does.
-async-channel.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 unlit_wgpu_test_util = { path = "../unlit_wgpu_test_util", features = ["snapshot"] }

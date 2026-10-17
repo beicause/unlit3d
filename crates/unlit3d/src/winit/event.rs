@@ -44,7 +44,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{WindowAttributes, WindowId};
 
 use crate::behaviour::{EventCallback, behaviour};
-use crate::input::{InputHandle, distribute_input};
+use crate::input::{InputEvent, InputWriter, distribute_input, subscribe_input};
 
 use super::builtin::{CreateWindowRequest, DisplayHandle, ExitRequest, Resumed, WinitWindow};
 
@@ -233,11 +233,14 @@ impl<U: 'static> WinitHost<U> {
     /// 1. Apply the queue, so a structural change a callback queued lands.
     /// 2. Execute the window and exit requests.
     /// 3. Lay the input handle into every nested world.
+    /// 4. Subscribe this world to the events, so whatever it dispatches next
+    ///    reads them.
     fn settle(&mut self, event_loop: &ActiveEventLoop) {
         self.world.apply();
         self.create_windows(event_loop);
         self.exit_requested(event_loop);
         distribute_input(&self.world);
+        subscribe_input(&mut self.world);
     }
 
     /// Create the window of every pending [`CreateWindowRequest`].
@@ -257,13 +260,13 @@ impl<U: 'static> WinitHost<U> {
             match event_loop.create_window(attributes) {
                 Ok(window) => {
                     // A platform reports the scale factor only when it changes,
-                    // and a window is already laid out by then: record the one
-                    // it starts with, or nothing that needs logical points ever
+                    // and a window is already laid out by then: feed the one it
+                    // starts with, or nothing that needs logical points ever
                     // learns it.
-                    if let Some((_, handle)) = self.world.query::<&InputHandle>().next() {
-                        handle
-                            .write()
-                            .set_scale_factor(window.scale_factor() as f32);
+                    if let Some((_, writer)) = self.world.query::<&InputWriter>().next() {
+                        writer.push(InputEvent::ScaleFactorChanged {
+                            scale_factor: window.scale_factor() as f32,
+                        });
                     }
                     self.world.spawn((WinitWindow(Arc::new(window)),));
                 }

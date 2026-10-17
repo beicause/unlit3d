@@ -1,11 +1,15 @@
 //! The control panel: the scene's UI, drawn over the frame.
 //!
-//! The panel lives in the render world, not in the gameplay world, because
-//! that is where a panel can be drawn: a [`UiSource`] runs the [`UiPanel`]
-//! components of its own world and no other, so a panel in any other world
-//! would never be seen. It is still an object like the others — one entity
-//! carrying what it owns — and it reaches the gameplay world the way every
-//! world reaches another: through the command channels it was spawned with.
+//! The panel lives in the gameplay world with the rest of the scene's objects,
+//! and the render world draws it. A [`UiPanel`] can only be built where its
+//! egui context runs, so the gameplay world lays the panel out on its own tick
+//! and publishes the frame; the render world's [`UiSource`] draws whatever the
+//! slots hold.
+//!
+//! Everything the panel decides is decided here, beside the objects it acts
+//! on: the drop and clear buttons call the scene's own request helpers, and
+//! the transport buttons reach the audio world through the sender it was
+//! spawned with.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,30 +19,17 @@ use unlit_ecs::World;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
+use unlit3dx::ui::PanelHost;
 
 use super::music::sequence_midi;
-use super::{BGM_TRACK, SEQUENCE_TRACK, request_clear, request_drop};
+use super::{BGM_TRACK, PanelSlots, SEQUENCE_TRACK, request_clear_in, request_drop_in};
 
-/// The handles the panel uses to reach the other worlds: the gameplay
-/// command sender for the shapes, and — where there is a synthesizer to
-/// drive — the audio command sender for the two music tracks.
-#[derive(Clone)]
-pub struct ControlHooks {
-    /// The gameplay world's command sender.
-    pub gameplay: JobSender,
-    /// The audio world's command sender, absent when the audio world has
-    /// no synthesizer and so no tracks to transport.
-    pub audio: Option<JobSender>,
-}
-
-/// The panel, living on its own entity in the render world.
+/// The panel, living on its own entity in the gameplay world.
 ///
-/// The entity carries the [`UiPanel`] that draws it and the source that runs
-/// it, so the panel is mounted by spawning one entity rather than by editing
-/// the render world's setup.
+/// The entity carries the [`UiPanel`] that draws it and the [`PanelHost`] that
+/// lays it out for the render world, so the panel is mounted by spawning one
+/// entity rather than by editing either world's setup.
 pub struct Controls {
-    /// The gameplay world's command sender: the shapes' buttons.
-    gameplay: JobSender,
     /// The audio world's command sender, when the scene has tracks.
     audio: Option<JobSender>,
 }
@@ -280,14 +271,13 @@ fn track_controls(
 }
 
 impl Controls {
-    /// The panel for a scene whose gameplay and audio worlds `hooks`
-    /// reaches.
+    /// The panel for a scene whose audio world `audio` reaches.
+    ///
+    /// The gameplay world needs no handle: the panel lives in it, so its own
+    /// buttons call the scene's request helpers directly.
     #[must_use]
-    pub fn new(hooks: ControlHooks) -> Self {
-        Self {
-            gameplay: hooks.gameplay,
-            audio: hooks.audio,
-        }
+    pub fn new(audio: Option<JobSender>) -> Self {
+        Self { audio }
     }
 
     /// Mount the panel: one entity carrying the source that runs it, the
@@ -309,7 +299,7 @@ impl Controls {
     /// callback owns no state of its own; the end counts the watcher lands are
     /// shared with it rather than stored, because the watcher cannot borrow
     /// the world it runs beside.
-    pub fn mount(self, world: &mut World) {
+    pub fn mount(self, world: &mut World, host: PanelHost) {
         let watcher_audio = self.audio.clone();
         let counts: TrackEndCounts = Rc::new(RefCell::new(TrackEnds::START));
         let panel_counts = Rc::clone(&counts);
@@ -322,13 +312,11 @@ impl Controls {
             (
                 self,
                 TrackRows::START,
+                host,
                 UiPanel::new(move |world, entity, ui| {
-                    // The panel reads its own handles: the object on this entity
-                    // owns them, so the callback carries nothing but the counts.
-                    let Some((gameplay, audio)) = world
-                        .get::<Controls>(entity)
-                        .map(|controls| (controls.gameplay.clone(), controls.audio.clone()))
-                    else {
+                    // The panel reads its own handle: the object on this entity
+                    // owns it, so the callback carries nothing but the counts.
+                    let Some(audio) = world.get::<Controls>(entity).map(|c| c.audio.clone()) else {
                         return;
                     };
                     egui::Window::new("Controls").show(ui.ctx(), |ui| {
@@ -364,35 +352,38 @@ impl Controls {
                         }
                         ui.horizontal(|ui| {
                             if ui.button("Drop the next shape").clicked() {
-                                request_drop(&gameplay);
+                                request_drop_in(world);
                             }
                             if ui.button("Clear the shapes").clicked() {
-                                request_clear(&gameplay);
+                                request_clear_in(world);
                             }
                         });
                     });
                 }),
-                // The source that runs the panel lives on the same entity: a panel
-                // is drawn by the source in its own world, and this is that world.
-                Source::new(UiSource::new()),
             ),
         );
         if let Some(audio) = watcher_audio {
-            // The watcher is the render world's own task: this job runs on the
+            // The watcher is the gameplay world's own task: this job runs on the
             // frame that drains it, and the pump before the dispatch drives it.
             let task = watch_track_ends(audio, counts);
             if !LocalTasks::spawn(world, task) {
-                log::error!("the render world has no task set for its track watcher");
+                log::error!("the gameplay world has no task set for its track watcher");
             }
         }
     }
 }
 
-/// A job that puts this scene's control panel into the render world: a
-/// small egui window over the frame, holding the handles it needs to
-/// reach the gameplay and audio worlds.
-pub fn control_panel_job(hooks: ControlHooks) -> Job<()> {
-    Box::new(move |world: &mut World| Controls::new(hooks).mount(world))
+/// A job that gives the render world the source drawing this scene's panel.
+///
+/// The panel itself is not here: it lives in the gameplay world, which lays it
+/// out and publishes it. This world draws whatever the slots hold, so the two
+/// worlds share the slots and nothing else.
+pub fn control_panel_job(panels: PanelSlots) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        let mut source = UiSource::new();
+        source.draw_published(panels.frames, panels.screen);
+        world.spawn((Source::new(source),));
+    })
 }
 
 #[cfg(test)]

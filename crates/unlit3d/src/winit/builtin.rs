@@ -142,8 +142,8 @@ pub fn request_redraw_while_foreground() -> OnAboutToWait {
 
 /// Feed every window event into a [`WinitInput`].
 ///
-/// The adapter translates the event and pushes it into the shared
-/// [`InputHandle`](crate::input::InputHandle); dispatch it with
+/// The adapter translates the event and pushes it through the world's
+/// [`InputWriter`](crate::input::InputWriter); dispatch it with
 /// [`dispatch_input`](crate::input::dispatch_input).
 pub fn winit_input_behaviour(input: WinitInput) -> OnWindowEvent {
     OnWindowEvent::new(move |_world, _entity, payload| {

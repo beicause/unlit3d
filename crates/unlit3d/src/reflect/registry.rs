@@ -12,7 +12,7 @@ use crate::components::{
     Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, RenderLoadOps,
     SkinBinding, SkinPose, Transform, ZSortedDrawing,
 };
-use crate::input::InputHandle;
+use crate::input::InputEvents;
 use crate::unlit::{InstanceColor, InstanceCutoff, UnlitPipelineKey};
 
 inventory::submit! { ComponentEntry::default::<Transform>() }
@@ -28,7 +28,7 @@ inventory::submit! { ComponentEntry::new::<SkinBinding>() }
 inventory::submit! { ComponentEntry::new::<MorphBinding>() }
 inventory::submit! { ComponentEntry::default::<InstanceColor>() }
 inventory::submit! { ComponentEntry::default::<InstanceCutoff>() }
-inventory::submit! { ComponentEntry::new::<InputHandle>() }
+inventory::submit! { ComponentEntry::new::<InputEvents>() }
 
 #[cfg(test)]
 mod tests {

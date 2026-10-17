@@ -14,9 +14,15 @@
 //! - [`Balls`] drops the shapes, maps physics bodies onto pool slots, and
 //!   publishes their poses.
 //! - [`SceneAudio`] installs the synthesizer's sources and starts the music.
-//! - [`Controls`] is the panel. It lives in the render world, because that is
-//!   the world its [`UiSource`] draws from: a panel is drawn by the source in
-//!   its own world and by no other.
+//! - [`Controls`] is the panel. It lives here with the rest, and the render
+//!   world draws it: the panel's egui context runs in this world, which lays it
+//!   out, and the render world's `UiSource` draws the frames that come back.
+//!
+//! The panel is the one object whose drawing happens in another world, so it
+//! carries a `UiHost` holding the context its interface is built in; the
+//! render world asks that context for a frame through this world's command
+//! queue, and draws the answer. Everything else reaches its neighbours
+//! through the same channels every world uses.
 
 use std::time::Duration;
 
@@ -26,8 +32,10 @@ use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::components::Transform;
 use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::prelude::*;
+use unlit3d::ui::{ExternalFrames, UiScreen};
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
+use unlit3dx::ui::{PanelHost, UiHost};
 
 use crate::render::camera_looking_at;
 
@@ -51,7 +59,7 @@ pub use shared::{
     POOL_SIZE, SceneState, pool_from_instances, request_pool_instances, request_shape_assets,
 };
 pub use tick::{TICK_AUDIO, TICK_BALLS, TICK_FLOOR, TICK_SCENE, Tick, tick_behaviour};
-pub use ui::{ControlHooks, Controls, control_panel_job};
+pub use ui::{Controls, control_panel_job};
 
 mod audio;
 mod balls;
@@ -119,10 +127,6 @@ pub const FRAME_DISPATCH_INPUT: i32 = 5;
 /// the input dispatch and before the draw, so the transforms they publish
 /// are the ones the frame draws.
 pub const FRAME_INLINE_STEP: i32 = 6;
-
-/// The host frame's behaviour order: the frame's events are forgotten
-/// after the draw, once every consumer has read them.
-pub const FRAME_CLEAR_INPUT: i32 = 20;
 
 /// The render world's behaviour order: the camera orbit runs here, after
 /// the scene's pose jobs have landed on a frame's drain.
@@ -214,16 +218,18 @@ pub fn camera_job() -> Job<()> {
 }
 
 /// Queue this scene's own content on the render world: its camera, and —
-/// where there is a window to click in — its control panel.
+/// where there is a panel to draw — the UI source that draws it.
 ///
-/// Both are jobs, so a world that was set up to draw can be given a
-/// scene without its setup ever hearing of one.
-pub fn mount_scene_content(render: &WorldHandle, controls: Option<ControlHooks>) {
+/// Both are jobs, so a world that was set up to draw can be given a scene
+/// without its setup ever hearing of one. The panel itself lives in the
+/// gameplay world, so what arrives here is that world's command queue: the
+/// source asks it for a frame, and draws what comes back.
+pub fn mount_scene_content(render: &WorldHandle, panels: Option<PanelSlots>) {
     if let Err(error) = render.send(camera_job()) {
         log::error!("the render world refused its camera ({error:?})");
     }
-    if let Some(hooks) = controls
-        && let Err(error) = render.send(control_panel_job(hooks))
+    if let Some(panels) = panels
+        && let Err(error) = render.send(control_panel_job(panels))
     {
         log::error!("the render world refused its control panel ({error:?})");
     }
@@ -334,6 +340,24 @@ impl SceneWorlds {
     }
 }
 
+/// The slot a panel publishes its frames into.
+const PANEL_SLOT: usize = 0;
+
+/// The one-way handover from the world holding the panels to the one drawing
+/// them.
+///
+/// The gameplay world writes its frames into `frames`; the render world reads
+/// them there. Neither asks the other for anything, so a settled panel costs
+/// nothing on the wire.
+#[derive(Clone, Default)]
+pub struct PanelSlots {
+    /// The slots frames are published into.
+    pub frames: ExternalFrames,
+    /// The target the drawing side last drew at, which a publisher has to
+    /// match for its clip rectangles to be packed in the right pixels.
+    pub screen: UiScreen,
+}
+
 /// Build the scene's worlds with the runner `R`: on their own threads, or
 /// stepped by the host.
 ///
@@ -344,6 +368,7 @@ pub fn spawn_scene<R: WorldRunner>(
     host: &mut World,
     render: WorldHandle,
     audio_setup: AudioSetup,
+    panels: PanelSlots,
 ) -> SceneWorlds {
     // The physics world: fixed step, default gravity. The ground is queued
     // by the floor object before the first ball drops.
@@ -419,6 +444,8 @@ pub fn spawn_scene<R: WorldRunner>(
             let render = render.clone();
             let wiring = wiring.clone();
             let audio_format = audio_format.clone();
+            let panel_audio = audio_sources.then(|| wiring.audio_sender.clone());
+            let panels = panels.clone();
             move |world: &mut World| {
                 let state = SceneState::new(world, render.clone());
                 world.spawn((state, tick_behaviour::<SceneState>(TICK_SCENE)));
@@ -430,6 +457,16 @@ pub fn spawn_scene<R: WorldRunner>(
                     let audio = SceneAudio::new(&wiring, audio_format);
                     world.spawn((audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
                 }
+                // The panel is the fifth object, and lives here with the rest.
+                // It lays its frames out on this world's own tick and
+                // publishes them; the render world draws whatever is there.
+                let host = PanelHost::new(
+                    UiHost::new(),
+                    panels.frames.clone(),
+                    panels.screen.clone(),
+                    PANEL_SLOT,
+                );
+                Controls::new(panel_audio).mount(world, host);
             }
         },
         {
@@ -449,6 +486,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 };
                 index = index.wrapping_add(1);
                 dispatch_frame(world, &mut frame);
+                publish_panels(world);
                 if R::SELF_DRIVEN {
                     clock.wait(control);
                 }
@@ -463,6 +501,25 @@ pub fn spawn_scene<R: WorldRunner>(
         audio,
         gameplay,
         audio_sources,
+    }
+}
+
+/// Lay this tick's panel out and publish it, if it could differ from the one
+/// the drawing side holds.
+///
+/// The events are this world's own, taken from the buffer its tick filled:
+/// they are what decides whether laying a frame out is worth it at all.
+fn publish_panels(world: &World) {
+    // The events are read into a scratch list before the host is borrowed:
+    // publishing takes the world by reference, and both borrows cannot be
+    // held at once.
+    let events = world
+        .query::<&InputEvents>()
+        .next()
+        .map(|(_, events)| events.with_batch(|batch| batch.to_vec()))
+        .unwrap_or_default();
+    if let Some((_, mut host)) = world.query::<&mut PanelHost>().next() {
+        host.publish(world, &events);
     }
 }
 
@@ -543,25 +600,29 @@ impl SceneStepper {
     }
 }
 
-/// The gameplay entry job: send one ball drop request into the tick.
+/// Ask the shapes to drop the next one, from another world.
+///
+/// The host's keyboard behaviour lives outside the gameplay world, so it
+/// reaches the shapes through a job; the panel, which lives inside it, calls
+/// [`request_drop_in`] instead.
 pub fn request_drop(sender: &JobSender) {
     sender
-        .send(Box::new(|world: &mut World| {
-            if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
-                balls.request_drop();
-            }
-        }))
+        .send(Box::new(|world: &mut World| request_drop_in(world)))
         .ok();
 }
 
-/// The gameplay entry job: ask the shapes to go back in the pool. The music
-/// keeps playing; the panel drives it.
-pub fn request_clear(sender: &JobSender) {
-    sender
-        .send(Box::new(|world: &mut World| {
-            if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
-                balls.request_clear();
-            }
-        }))
-        .ok();
+/// Ask the shapes to drop the next one, from inside the gameplay world.
+pub fn request_drop_in(world: &World) {
+    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
+        balls.request_drop();
+    }
+}
+
+/// Ask the shapes to go back in the pool, from inside the gameplay world.
+///
+/// The music keeps playing; the panel drives it.
+pub fn request_clear_in(world: &World) {
+    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
+        balls.request_clear();
+    }
 }

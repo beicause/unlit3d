@@ -7,7 +7,7 @@
 use super::{BASELINE_SIZE, SceneControl, SceneDef, SceneOptions};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::prelude::*;
-use unlit3d::ui::egui;
+use unlit3d::ui::{UiSource, egui};
 
 /// The number of samples every frame is rendered with.
 pub const SAMPLE_COUNT: u32 = 4;
@@ -162,9 +162,9 @@ fn build(
                     // the user is working in.
                     ui.separator();
                     let held = world
-                        .query::<&InputHandle>()
+                        .query::<&InputEvents>()
                         .next()
-                        .is_some_and(|(_, handle)| handle.read().pointer_down);
+                        .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
                     match world.get::<CameraOrbit>(camera) {
                         Some(orbit) => ui.label(format!(
@@ -201,17 +201,17 @@ fn build(
         };
 
         // A press or drag over one of the panels drives the panel, not the
-        // camera: the UI publishes an [`InputCapture`] resource each frame
-        // with what it claimed of the frame's input, and a pointer behaviour
-        // yields to it. The claim is broad — it is `true` whenever the pointer
-        // hangs over a panel, let alone drags one — so a gesture that started
-        // on the scene keeps working even when it sweeps over a panel. The
-        // contact is dropped here too, so a press that ends over a UI never
-        // leaves a drag behind for the scene.
-        let over_ui = world
-            .query::<&InputCapture>()
-            .next()
-            .is_some_and(|(_, capture)| capture.pointer);
+        // camera: the UI's context knows what it claimed of the frame it laid
+        // out, and a pointer behaviour yields to it. The claim is broad — it
+        // is `true` whenever the pointer hangs over a panel, let alone drags
+        // one — so a gesture that started on the scene keeps working even when
+        // it sweeps over a panel. The contact is dropped here too, so a press
+        // that ends over a UI never leaves a drag behind for the scene.
+        let over_ui = world.query::<&Source>().any(|(_, source)| {
+            source
+                .as_ref::<UiSource>()
+                .is_some_and(|ui| ui.context().egui_wants_pointer_input())
+        });
         if over_ui {
             let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
             return;

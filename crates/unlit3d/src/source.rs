@@ -211,30 +211,6 @@ pub struct FrameViewport(pub ViewportRect);
 #[derive(Clone, Copy, Debug, Default)]
 struct FrameViewportSlot(Option<FrameViewport>);
 
-/// What a source claimed of the frame's input.
-///
-/// A UI toolkit decides whether it wants the pointer or the keyboard while it
-/// lays a frame out, and the answer belongs to the frame just laid out: a game
-/// control reading it is asking whether the input it is about to handle has
-/// already been claimed by an interface. Sources write it; nothing is
-/// intercepted automatically, so a caller decides what the claim means.
-///
-/// The frame context spawns it, so a world that draws a frame has one.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct InputCapture {
-    /// A source wants the pointer, so a click belongs to it.
-    pub pointer: bool,
-    /// A source wants the keyboard, so a key belongs to it.
-    pub keyboard: bool,
-}
-
-impl InputCapture {
-    /// Whether either kind of input was claimed.
-    pub fn any(self) -> bool {
-        self.pointer || self.keyboard
-    }
-}
-
 /// A URL a frame source asked the host to open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenUrl {
@@ -529,9 +505,6 @@ pub fn spawn_context(
     // Where in that target the frame's 3D content belongs; the whole of it
     // until a frame loop states a letterbox.
     world.spawn((FrameViewportSlot::default(),));
-    // What the frame's sources claimed of its input, written by whichever
-    // source consumes input and read by the caller's own logic.
-    world.spawn((InputCapture::default(),));
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
     world.spawn((OpenUrls::default(),));

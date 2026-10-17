@@ -48,6 +48,7 @@ use crate::scene::*;
 use image::ImageEncoder;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
+use unlit3d::ui::{ExternalFrames, UiScreen};
 use unlit3d::winit::builtin::{
     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume, exit_on_close_requested,
     exit_on_escape, request_redraw_while_foreground, winit_input_behaviour,
@@ -92,8 +93,11 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     let mut host = WinitHost::<()>::new();
     let world = host.world_mut();
 
-    let input = InputHandle::new();
+    let input = InputWriter::new();
     world.spawn((input.clone(),));
+    // The host world dispatches its own key behaviours, so it subscribes for
+    // the events it has not read yet rather than reading a shared list.
+    world.spawn((input.subscribe(),));
     world.spawn((winit_input_behaviour(WinitInput::new(input)),));
 
     let attributes = Window::default_attributes()
@@ -123,13 +127,21 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // The worlds behind the scene: threads of their own by default,
     // stepped by the frame when the target has none to give them - a
     // browser - or when the run asked for the stepped path.
+    // The control panel lives in the gameplay world and publishes its frames
+    // into these slots; the render world draws whatever is there. Neither asks
+    // the other for anything.
+    let panel_frames = ExternalFrames::new();
+    let panel_screen = UiScreen::new();
+    let panels = PanelSlots {
+        frames: panel_frames.clone(),
+        screen: panel_screen.clone(),
+    };
     let worlds = if stepped {
-        spawn_scene::<Stepped>(world, render.clone(), stepped_audio())
+        spawn_scene::<Stepped>(world, render.clone(), stepped_audio(), panels.clone())
     } else {
-        spawn_scene::<Threaded>(world, render.clone(), AudioSetup::Device)
+        spawn_scene::<Threaded>(world, render.clone(), AudioSetup::Device, panels.clone())
     };
     let gameplay_sender = worlds.gameplay.sender();
-    let audio_sender = worlds.audio_tracks();
 
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.
@@ -144,7 +156,6 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // requests dispatch frames into it.
     let app = world.spawn((ExitRequest(false),));
     world.spawn((request_gpu(app, {
-        let gameplay_sender = gameplay_sender.clone();
         // Only an MCP-driven scene needs the offscreen target: it is what
         // a screenshot reads back. A plain window draws into the swap chain.
         let offscreen = mcp;
@@ -156,15 +167,12 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 &gpu.queue,
                 gpu.capabilities,
             );
-            // The scene's own content — its camera, its control panel —
-            // reaches the world it was set up to draw as jobs.
-            mount_scene_content(
-                &render,
-                Some(ControlHooks {
-                    gameplay: gameplay_sender,
-                    audio: audio_sender.clone(),
-                }),
-            );
+            // The scene's own content — its camera, and the source that draws
+            // whatever the gameplay world publishes — reaches the world it was
+            // set up to draw as jobs. The panels themselves never leave the
+            // world that holds them; what crosses is the slots they publish
+            // into.
+            mount_scene_content(&render, Some(panels.clone()));
             let outcome = setup_presenter(
                 world,
                 render.entity(),
@@ -200,23 +208,13 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             request_drop(&gameplay_sender);
         }
     }),));
-    // The frame's input: the host dispatches its own key behaviours
-    // before the draw, the render world's UI source reads the same
-    // events while it draws, and the events are forgotten once the
-    // frame is out, so nothing hears them twice.
+    // The frame's input: the host dispatches its own key behaviours before
+    // the draw. Nothing clears anything afterwards — each world and the
+    // render world's UI source read their own copy of the stream.
     world.spawn((OnFrame::new(
         FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
         |world, _entity, _frame| {
             dispatch_input(world);
-        },
-    ),));
-    world.spawn((OnFrame::new(
-        FrameBehaviourOrder(FRAME_CLEAR_INPUT),
-        |world, _entity, _frame| {
-            let handle = world.query::<&InputHandle>().next().map(|(_, h)| h.clone());
-            if let Some(handle) = handle {
-                handle.write().clear_events();
-            }
         },
     ),));
 
