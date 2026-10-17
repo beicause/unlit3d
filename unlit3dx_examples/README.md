@@ -63,7 +63,7 @@ The `--headless` switch runs the very same scene without a window, threads
 or an audio device. It is the browser's path with the frames handed over by
 the test instead of by a redraw: `spawn_scene::<Stepped>` puts every world
 in the host's own world, and `SceneStepper` advances them at their fixed
-rates — gameplay at 120 Hz, physics at 64 Hz, render at 60 Hz — for
+rates — gameplay at 68 Hz, physics at 64 Hz, render at 60 Hz — for
 `--frames` frames, then the run's last frame and its whole audio mix land
 in `--out` as `screenshot.png` and `audio.flac`. Because the stepping is
 fixed-rate and the spawn rolls are seeded, a run is reproducible, which is
@@ -132,7 +132,7 @@ it is paced differs.
     it can sound. The panel starts the sequence and drives both tracks
     afterwards, without going through the gameplay world.
 
-  The world ticks at a fixed 120 Hz, independent of the frame rate.
+  The world ticks at a fixed 68 Hz, independent of the frame rate.
 
 `Controls` is the fifth object, and it lives in the **gameplay world** with the
 rest. A panel can only be built where its egui context runs, so this world

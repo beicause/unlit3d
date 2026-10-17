@@ -18,14 +18,20 @@ use unlit3dx::prelude::*;
 use super::shapes::{ShapeKind, shape_body};
 use super::shared::SceneState;
 use super::tick::Tick;
-use super::{GamePhysics, ScenePoses, SceneWiring, pose_job};
+use super::{GAME_HZ, GamePhysics, ScenePoses, SceneWiring, pose_job};
+
+/// How long between automatic ball drops, in seconds.
+const SPAWN_PERIOD: f64 = 0.7;
 
 /// How many gameplay ticks pass between automatic ball drops.
-pub const SPAWN_TICKS: u32 = 84;
+pub const SPAWN_TICKS: u32 = (SPAWN_PERIOD * GAME_HZ) as u32;
+
+/// How long a spawn request may stay unanswered, in seconds.
+const PENDING_TIMEOUT: f64 = 5.0;
 
 /// How many gameplay ticks a spawn request may stay unanswered before its
 /// render entity returns to the pool.
-pub const PENDING_TIMEOUT_TICKS: u32 = 600;
+pub const PENDING_TIMEOUT_TICKS: u32 = (PENDING_TIMEOUT * GAME_HZ) as u32;
 
 /// Where balls spawn, in metres above the ground.
 pub const SPAWN_HEIGHT: f32 = 7.0;

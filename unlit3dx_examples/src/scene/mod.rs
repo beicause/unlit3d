@@ -88,8 +88,10 @@ pub const RENDER_COMMAND_CAPACITY: usize = 64;
 /// Where idle pool entities wait, far below everything the camera sees.
 pub const HIDDEN_POSITION: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
 
-/// The gameplay world's tick rate, in hertz.
-pub const GAME_HZ: f64 = 120.0;
+/// The gameplay world's tick rate, in hertz: a little above the physics
+/// rate and the render pace, so the world that drives the others is not
+/// the slowest of them.
+pub const GAME_HZ: f64 = 68.0;
 
 /// The render pace, in hertz: the windowed mode draws as fast as the
 /// compositor asks, but the headless run steps its frames at this rate.

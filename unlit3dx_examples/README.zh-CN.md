@@ -49,7 +49,7 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 
 `--headless` 开关运行同一个场景，但不用窗口、线程或音频设备。它就是浏览器那条
 路径，只是帧由测试而非重绘交来：`spawn_scene::<Stepped>` 把每个 world 都放进
-宿主自己的 world，`SceneStepper` 按各自的固定频率推进它们——玩法 120 Hz、
+宿主自己的 world，`SceneStepper` 按各自的固定频率推进它们——玩法 68 Hz、
 物理 64 Hz、渲染 60 Hz——共 `--frames` 帧，随后这一运行的最后一帧与整段混音
 写入 `--out` 下的 `screenshot.png` 与 `audio.flac`。步进是固定频率的，生成骰子也是
 确定的，因此每次运行都可复现——快照测试（[English](tests/headless.rs)、
@@ -98,7 +98,7 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
     能出声后启动背景音乐循环。序列由面板启动，此后面板直接驱动两条音轨，不再经过
     玩法 world。
 
-  它以固定 120 Hz 步进，独立于帧率。
+  它以固定 68 Hz 步进，独立于帧率。
 
 `Controls` 是第五个对象，和其余对象一样住在**玩法 world** 里。面板只能在它自己的
 egui context 所运行的地方构建，所以由这个 world 负责布局并发布帧，渲染 world 负责绘制
