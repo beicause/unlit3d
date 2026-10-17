@@ -61,14 +61,14 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 ## 各 world 如何相连
 
 五个 world，遵循 `unlit3dx` 的协议：job 发出去，快照传回来。其余 world
-扮演服务器，玩法是驱动它们的客户端。`spawn_scene` 通过一个 runner 构建
-它们——窗口里是 `Threaded`，浏览器与离屏运行是 `Stepped`——因此宿主在两种
+扮演服务器，玩法 world 里则是驱动它们的那些对象。`spawn_scene` 通过一个 runner
+构建它们——窗口里是 `Threaded`，浏览器与离屏运行是 `Stepped`——因此宿主在两种
 情况下都携带同样的实体与组件，差别只在于谁调用 tick、以及如何配速。
 
 - **宿主（host）** 拥有窗口并驱动帧。它请求 GPU；GPU 应答之后，一切交给库里的
   行为：`draw_presented` 每帧排空渲染 world 的 job 收件箱、分发帧并呈现，
   `pump_presented` 在窗口存活期间让帧持续到来，`resize_presented` 跟随窗口
-  变化——宿主对物理与音频一无所知。空格键作为一个 job 转发给玩法。
+  变化——宿主对物理与音频一无所知。空格键作为一个 job 转发给玩法 world。
 - **渲染 world** 是主线程上的子 world，表现得像一台 Godot 式的资源服务器：
   玩法用 job 请求网格、材质与实例，每个生成实例的实体作为句柄传回。场景往里
   放的一切都以同样的方式到达：环绕的相机、控制面板、刚体所带的姿态也都是
@@ -76,16 +76,30 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   与 mesh source。资源服务器本身——`create_mesh`、`create_material_from_texture`、
   `spawn_instance` 以及网格与相机辅助——就是本 crate 自己的 `src/render.rs`，
   建立在 `unlit3d` 的通用 `MeshSource` 注册表之上；`unlit3dx` 不自带 render 桥。
-- **物理 world** 以 64 Hz 步进 rapier，每一步排空碰撞事件。玩法用自己的收集闭包
+- **物理 world** 以 64 Hz 步进 rapier，每一步排空碰撞事件。球们用自己的收集闭包
   订阅它——`GamePhysics` 载荷属于本 crate，不属于库——闭包在姿态未变时什么都不
   返回，因此刚体都睡着的场景根本不发布快照。地面是它的第一个 job。
 - **音频 world** 持有输出流，混音它所携带的任意音源，欠载时静音。它自己的采样率
   要等流打开才知晓，于是届时生成 `AudioFormat` 组件，由示例以一个 job 应答，
   按这个速率生成一台合成器与每条音轨各一台 MIDI 播放器。它能否出声由
-  `AudioOutputOpen` 标记与收集闭包看到的音源共同决定，玩法等待的正是它：在播放器
+  `AudioOutputOpen` 标记与收集闭包看到的音源共同决定，音乐等待的正是它：在播放器
   存在之前发出的传送 job 找不到可寻址的音轨。
-- **玩法 world** 是唯一知道其余三者的地方。它把搭建场景写成自己的一个 async
-  任务，await 渲染服务器的资产与实例，向物理请求刚体、
-  把它们映射到实例句柄、再把姿态作为一个 job 发回去。音频 world 报告自己能出声后，玩法启动
-  背景音乐循环；序列由面板启动，此后面板直接驱动两条音轨，不再经过玩法。它以固定 120 Hz 步进，
-  独立于帧率。
+- **玩法 world** 是唯一知道其余三者的地方，它是一组对象而不是一坨状态。每个对象是一个
+  组件，携带它自己拥有的东西，外加一个推进它的 `Tick`；每个对象都以 `OnFrame` 行为的
+  形式、按各自的 order 推进自己：
+
+  - `SceneState`（tick 100）把自己的 async 任务搭出形状池——网格、带图案的材质与
+    四十八个实例——并把槽位发出去。
+  - `Floor`（tick 50）在第一次落球可能发生之前就排队地面这个固定刚体，随后搭建
+    绘制它的棋盘格实例。
+  - `Balls`（tick 200）向池子要槽位、向物理要刚体、把快照里的句柄映射到自己的槽位，
+    再把姿态作为一个 job 发回去。
+  - `SceneAudio`（tick 300）在音频 world 报告输出后装上合成器的音源，再在它报告
+    能出声后启动背景音乐循环。序列由面板启动，此后面板直接驱动两条音轨，不再经过
+    玩法 world。
+
+  它以固定 120 Hz 步进，独立于帧率。
+
+`Controls` 是第五个对象，也是唯一住在**渲染 world** 里的那个：`UiSource` 只运行
+自己所在 world 的面板，放在别处永远不会被画出来。它的生成方式与其余对象一致——一个
+实体携带面板、面板要显示的行，以及运行它的那个 source。

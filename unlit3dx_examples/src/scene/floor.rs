@@ -1,0 +1,166 @@
+//! The ground the shapes land on: one fixed body in physics, one instance in
+//! the render world, wearing a checker so motion reads against it.
+//!
+//! The floor is the scene's only fixed body, and the only instance that never
+//! moves, so it is built once and then left alone: the tick that spawns it
+//! runs before anything can drop on it, and afterwards it has nothing to do.
+
+use glam::Vec3;
+use unlit_ecs::World;
+use unlit3d::components::Transform;
+use unlit3dx::prelude::*;
+
+use super::SceneWiring;
+use super::tick::Tick;
+use crate::render::{
+    create_material_from_texture, create_mesh, cuboid_mesh, linear_sampler, spawn_instance,
+};
+
+/// The ground box's half extents, in metres.
+pub const GROUND_HALF: Vec3 = Vec3::new(12.0, 0.5, 12.0);
+
+/// Where the ground box sits; its top face is the y = 0 plane.
+pub const GROUND_POSITION: Vec3 = Vec3::new(0.0, -0.5, 0.0);
+
+/// The ground's base color, as sRGB bytes.
+pub const GROUND_COLOR: [u8; 4] = [126, 130, 138, 255];
+
+/// The checker's darker square, as sRGB bytes.
+pub const GROUND_CHECKER_DARK: [u8; 4] = [88, 92, 100, 255];
+
+/// The ground texture's edge length in pixels; the checker draws eight
+/// squares per side, so each square is a block of
+/// `GROUND_CHECKER_SIZE / 8` pixels.
+pub const GROUND_CHECKER_SIZE: u32 = 256;
+
+/// The checker squares per texture side.
+const GROUND_CHECKER_SQUARES: u32 = 8;
+
+/// The friction the ground gives the shapes.
+const GROUND_FRICTION: f32 = 0.9;
+
+/// The ground's checker texture: `GROUND_CHECKER_SQUARES` squares per
+/// side, the light ones in [`GROUND_COLOR`] and the dark ones in
+/// [`GROUND_CHECKER_DARK`].
+#[must_use]
+pub fn checker_ground() -> Vec<[u8; 4]> {
+    let block = GROUND_CHECKER_SIZE / GROUND_CHECKER_SQUARES;
+    let mut pixels = Vec::with_capacity((GROUND_CHECKER_SIZE * GROUND_CHECKER_SIZE) as usize);
+    for y in 0..GROUND_CHECKER_SIZE {
+        for x in 0..GROUND_CHECKER_SIZE {
+            let square = (x / block + y / block).is_multiple_of(2);
+            pixels.push(if square {
+                GROUND_COLOR
+            } else {
+                GROUND_CHECKER_DARK
+            });
+        }
+    }
+    pixels
+}
+
+/// The ground, living on its own entity in the gameplay world.
+///
+/// Its tick runs once: it queues the fixed body in physics, so the shapes have
+/// something to land on before the first one drops, and starts the task that
+/// builds the render instance. A scene that never ticks its floor has shapes
+/// falling through nothing.
+pub struct Floor {
+    /// The physics world's command channel.
+    physics: JobSender,
+    /// The render world, for the instance the ground draws as.
+    render: WorldHandle,
+    /// Whether the one-time spawn has run.
+    spawned: bool,
+}
+
+impl Floor {
+    /// The ground for the worlds `wiring` reaches, drawn through `render`.
+    #[must_use]
+    pub fn new(wiring: &SceneWiring, render: WorldHandle) -> Self {
+        Self {
+            physics: wiring.physics_sender.clone(),
+            render,
+            spawned: false,
+        }
+    }
+
+    /// Queue the fixed body and start building the instance that draws it.
+    fn spawn(&mut self, world: &World) {
+        self.spawned = true;
+        if let Err(error) = self.physics.send(Box::new(|world: &mut World| {
+            spawn_fixed_cuboid(world, GROUND_POSITION, GROUND_HALF, GROUND_FRICTION);
+        })) {
+            log::error!("the physics world refused the ground ({error:?})");
+        }
+        // The instance is built the way the pool is: the mesh and the
+        // checker first, then the instance that names them. Nothing waits
+        // for the answer — an instance that arrives a frame late is simply a
+        // frame without a floor.
+        let render = self.render.clone();
+        let spawned = LocalTasks::spawn(world, async move {
+            let assets = [
+                render.request(create_mesh(cuboid_mesh(GROUND_HALF))),
+                render.request(create_material_from_texture(
+                    (GROUND_CHECKER_SIZE, GROUND_CHECKER_SIZE),
+                    checker_ground(),
+                    linear_sampler(),
+                )),
+            ];
+            let answers = match try_join_all(assets).await {
+                Ok(answers) => answers,
+                Err(error) => {
+                    log::error!("the render world dropped a ground request ({error})");
+                    return;
+                }
+            };
+            let instance = render.request(spawn_instance(
+                answers[0],
+                answers[1],
+                Transform {
+                    translation: GROUND_POSITION,
+                    ..Default::default()
+                },
+            ));
+            if let Err(error) = instance.await {
+                log::error!("the render world dropped the ground instance ({error})");
+            }
+        });
+        debug_assert!(spawned, "the gameplay world carries its own tasks");
+    }
+}
+
+impl Tick for Floor {
+    fn tick(&mut self, world: &World) {
+        if !self.spawned {
+            self.spawn(world);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::cuboid_mesh;
+    use crate::scene::shapes::tests::assert_faces_outward;
+
+    /// The ground's box faces outward like every other mesh: the unlit
+    /// pipeline culls back faces, so an inward face would show the floor as a
+    /// hole.
+    #[test]
+    fn the_ground_mesh_faces_outward() {
+        assert_faces_outward("cuboid", &cuboid_mesh(GROUND_HALF));
+    }
+
+    /// The checker alternates both ways: a texture of one color would draw a
+    /// flat floor, and the tumbling shapes would read as sliding.
+    #[test]
+    fn the_checker_alternates_both_ways() {
+        let block = GROUND_CHECKER_SIZE / GROUND_CHECKER_SQUARES;
+        let pixels = checker_ground();
+        let at = |x: u32, y: u32| pixels[(y * GROUND_CHECKER_SIZE + x) as usize];
+        assert_ne!(at(0, 0), at(block, 0));
+        assert_ne!(at(0, 0), at(0, block));
+        assert_eq!(at(0, 0), at(block, block));
+    }
+}

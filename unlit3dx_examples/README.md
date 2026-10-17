@@ -76,18 +76,19 @@ webp baselines and the mix against a FLAC baseline, both kept in the
 ## How the worlds are wired
 
 Five worlds, per the `unlit3dx` protocol: jobs go out, snapshots come back.
-The other worlds act as servers; gameplay is the client that drives them.
-`spawn_scene` builds them through one runner — `Threaded` in a window,
-`Stepped` in a browser or a headless run — so the host carries the same
-entities and components either way, and only who calls a tick and how it is
-paced differs.
+The other worlds act as servers; the gameplay world holds the objects that
+drive them. `spawn_scene` builds them through one runner — `Threaded` in a
+window, `Stepped` in a browser or a headless run — so the host carries the
+same entities and components either way, and only who calls a tick and how
+it is paced differs.
 
 - The **host** owns the window and drives frames. It requests the GPU, and
   once the GPU answers, the library's behaviours take over: `draw_presented`
   drains the render world's job inbox every frame, dispatches the frame and
   presents it, `pump_presented` keeps the frames coming while the window
   lives, and `resize_presented` follows the window around — the host knows
-  nothing about physics or audio. Space is forwarded to gameplay as a job.
+  nothing about physics or audio. Space is forwarded to the gameplay world
+  as a job.
 - The **render world** is a sub-world on the main thread that behaves like a
   Godot-style resource server: gameplay requests meshes, materials and
   instances with jobs, and the entity of each spawned instance comes back
@@ -100,7 +101,7 @@ paced differs.
   built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
   render bridge.
 - The **physics world** steps rapier at 64 Hz and drains its contacts each
-  step. Gameplay subscribes to it with a collector of its own — the
+  step. The shapes subscribe to it with a collector of their own — the
   `GamePhysics` payload lives in this crate, not in the library — and the
   collector answers nothing while the poses are unchanged, so a scene whose
   bodies are asleep publishes no snapshot at all. The ground is its first job.
@@ -109,15 +110,31 @@ paced differs.
   the stream opens, so it spawns an `AudioFormat` component then and the demo
   answers with a job that spawns one synthesizer and one MIDI player per
   track at that rate. Its readiness — the `AudioOutputOpen` marker plus the
-  sources the collector sees — is what gameplay waits on, since a transport
+  sources the collector sees — is what the music waits on, since a transport
   job sent before the players exist would find no track to
   address.
-- The **gameplay world** is the only place that knows about all three. It
-  builds the scene by awaiting assets and instances from the render server
-  as one async task of its own, requests bodies from physics, and
-  maps them to the instance handles, sending their poses back as a job.
-  Once
-  the audio world reports it can sound, gameplay starts the background
-  loop; the panel starts the sequence and drives both tracks afterwards
-  without going through gameplay. It ticks at
-  a fixed 120 Hz, independent of the frame rate.
+- The **gameplay world** is the only place that knows about all three, and it
+  is a set of objects rather than one state blob. Each object is a component
+  carrying what it owns plus a `Tick` that advances it, and each ticks itself
+  as an `OnFrame` behaviour at an order of its own:
+
+  - `SceneState` (tick 100) builds the shape pool — meshes, patterned
+    materials and the forty-eight instances — as one async task of its own,
+    and hands slots out.
+  - `Floor` (tick 50) queues the fixed ground body before the first drop can
+    happen, then builds the checker instance that draws it.
+  - `Balls` (tick 200) asks the pool for a slot, asks physics for a body,
+    maps the handles the snapshot names onto its slots, and sends their poses
+    back as a job.
+  - `SceneAudio` (tick 300) installs the synthesizer's sources once the audio
+    world reports an output, then starts the background loop once it reports
+    it can sound. The panel starts the sequence and drives both tracks
+    afterwards, without going through the gameplay world.
+
+  The world ticks at a fixed 120 Hz, independent of the frame rate.
+
+`Controls` is the fifth object, and the one that lives in the **render
+world**: a `UiSource` runs the panels of its own world and no other, so a
+panel anywhere else would never be drawn. It is spawned the same way as the
+rest — one entity carrying the panel, the rows it shows and the source that
+runs it.

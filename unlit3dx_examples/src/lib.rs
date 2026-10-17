@@ -7,14 +7,15 @@
 //!
 //! The host world owns the window and drives the frame. A render sub-world
 //! sits on the main thread as a nested world and serves the others: it
-//! allocates meshes, materials and instances when gameplay asks, and the
+//! allocates meshes, materials and instances when the scene asks, and the
 //! entity bits it answers with are the handles the rest of the show uses.
 //! The scene's other worlds — physics, audio and gameplay — are spawned
 //! through one runner, so the host carries the same entities and components
 //! whether they run on threads of their own or are stepped by the host's
-//! frames. Gameplay is the client that drives the scene: it requests bodies
-//! from physics, builds the render scene through the render server, and
-//! publishes transforms.
+//! frames. The gameplay world holds the scene's objects: one entity each for
+//! the shape pool, the floor, the shapes and the music, every one of them
+//! ticking itself. The panel is the fifth object, and lives in the render
+//! world because that is the world its UI source draws from.
 //!
 //! Space drops a body. The render world's control panel drives two music
 //! tracks — a looping background piece and a one-shot MIDI sequence — each
@@ -79,7 +80,7 @@ pub fn init_logging() {
 ///
 /// The host world owns the window and the render sub-world, which serves
 /// the scene's assets; the physics, audio and gameplay worlds are remote.
-/// Gameplay builds the scene by requesting from the render server, jobs
+/// The scene's objects build it by requesting from the render server, jobs
 /// go out, snapshots come back, and nothing but data crosses a thread
 /// boundary. With the mcp flag, a Model Context Protocol server over
 /// stdio reads the host and its render world. A `stepped` run drives the
@@ -127,9 +128,6 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     } else {
         spawn_scene::<Threaded>(world, render.clone(), AudioSetup::Device)
     };
-    // The setups that open a device have no rate until it reports one;
-    // the ones that pull their own fills installed their sources already.
-    install_sources_when_ready(world, &worlds);
     let gameplay_sender = worlds.gameplay.sender();
     let audio_sender = worlds.audio_tracks();
 
