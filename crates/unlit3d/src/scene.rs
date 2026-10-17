@@ -483,18 +483,23 @@ pub(crate) fn collect_and_sort_visible(
     // share a bind group; z-sorted ones by view-axis depth so they are
     // composited back-to-front.
     profiling::scope!("scene.sort");
-    visible.sort_unstable_by(|a, b| {
-        a.z_sorted
-            .cmp(&b.z_sorted)
-            .then_with(|| a.pipeline_id.cmp(&b.pipeline_id))
-            .then_with(|| {
-                if a.z_sorted {
-                    // Back-to-front: the deepest entity is drawn first.
-                    b.depth.partial_cmp(&a.depth).unwrap_or(Ordering::Equal)
-                } else {
-                    a.sort_key.cmp(&b.sort_key)
-                }
-            })
+    // Opaque and z-sorted entries are ordered by different keys, so each pair
+    // is compared by the kind it belongs to rather than through one chain: a
+    // z-sorted pair's order is its blend order and only depth decides it, while
+    // a pipeline id decides nothing about which of two blended draws lies
+    // deeper. Chaining the pipeline in first would settle every z-sorted pair
+    // that resolved to different variants before the depth ever ran.
+    visible.sort_unstable_by(|a, b| match (a.z_sorted, b.z_sorted) {
+        (false, false) => a
+            .pipeline_id
+            .cmp(&b.pipeline_id)
+            .then_with(|| a.sort_key.cmp(&b.sort_key)),
+        (true, true) => {
+            // Back-to-front: the deepest entity is drawn first.
+            b.depth.partial_cmp(&a.depth).unwrap_or(Ordering::Equal)
+        }
+        (false, true) => Ordering::Less,
+        (true, false) => Ordering::Greater,
     });
 }
 

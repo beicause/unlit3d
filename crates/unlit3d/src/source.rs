@@ -90,28 +90,6 @@ impl RenderContext {
     }
 }
 
-/// A [`RenderContext`] as plain data.
-///
-/// The context's four resource entities, for a reader — a debug overlay, an MCP
-/// server — that reports the GPU state without borrowing the world. The handles
-/// round-trip through [`Entity::to_bits`] and [`Entity::from_bits`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "reflect", derive(facet::Facet))]
-pub struct RenderContextInfo {
-    /// The entity carrying the [`wgpu::Device`].
-    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
-    pub device: Entity,
-    /// The entity carrying the [`wgpu::Queue`].
-    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
-    pub queue: Entity,
-    /// The entity carrying the [`ResourceGraph`].
-    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
-    pub graph: Entity,
-    /// The entity carrying the [`DeviceCapabilities`].
-    #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
-    pub capabilities: Entity,
-}
-
 impl RenderContext {
     /// The context the world holds, found from any one of its addresses.
     ///
@@ -122,16 +100,6 @@ impl RenderContext {
     #[must_use]
     pub fn of(world: &World, anchor: Entity) -> Option<Self> {
         world.get::<RenderContext>(anchor).map(|context| *context)
-    }
-
-    /// The context's resource addresses as plain data.
-    pub fn info(self) -> RenderContextInfo {
-        RenderContextInfo {
-            device: self.device,
-            queue: self.queue,
-            graph: self.graph,
-            capabilities: self.capabilities,
-        }
     }
 }
 

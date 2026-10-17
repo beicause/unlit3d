@@ -123,9 +123,7 @@ given, in the order each source declares through
   resource components, addressed by a [`RenderContext`](source::RenderContext).
   [`spawn_context`](source::spawn_context) spawns it and returns the addresses;
   [`RenderContext::of`](source::RenderContext::of) resolves the context back
-  from any one of its four entities, and
-  [`RenderContextInfo`](source::RenderContextInfo) is the same picture as plain
-  data for a reader that only reports it.
+  from any one of its four entities.
   It also takes the frame's
   [`DeviceCapabilities`](unlit_wgpu::capabilities::DeviceCapabilities), which
   the caller derives from the adapter — what the device cannot report about

@@ -3152,4 +3152,85 @@ mod tests {
         // An empty allocator still ends up with one unit.
         assert_eq!(grown_capacity(0, 0), 1);
     }
+
+    /// Two z-sorted entities resolving to DIFFERENT concrete pipelines must still
+    /// be ordered by view-axis depth, not by pipeline id.
+    ///
+    /// The discriminating case: the entity that resolves to the LOWER pipeline id
+    /// is the NEARER one, so a comparator that consulted the pipeline before the
+    /// depth would draw near-before-far and composite it wrongly.
+    #[test]
+    fn z_sorted_entries_of_different_variants_sort_by_depth() {
+        let mut h = harness();
+        let plain = h.tri_mesh();
+        // A different policy specializes to a different variant, hence a
+        // different RenderPipelineId.
+        let other_key = UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
+        let other = h.source.allocate_unlit_mesh(
+            &h.world,
+            &other_key,
+            UnlitMeshDesc {
+                positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                indices: Some(&[0u32, 1, 2]),
+                ..Default::default()
+            },
+        );
+
+        let near = h.world.spawn((
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.0, 4.0),
+                ..Default::default()
+            },
+            plain,
+            UnlitPipeline::new(h.key.clone()),
+            ZSortedDrawing,
+        ));
+        let far = h.world.spawn((
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.0, -4.0),
+                ..Default::default()
+            },
+            other,
+            UnlitPipeline::new(other_key),
+            ZSortedDrawing,
+        ));
+
+        let camera = test_camera(glam::Vec3::new(0.0, 0.0, 40.0));
+        h.source
+            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+
+        let order: Vec<Entity> = h
+            .source
+            .visible_cache
+            .iter()
+            .map(|entry| entry.mesh.entity)
+            .collect();
+        let pipelines: Vec<_> = h
+            .source
+            .visible_cache
+            .iter()
+            .map(|entry| entry.pipeline_id)
+            .collect();
+        let depths: Vec<f32> = h
+            .source
+            .visible_cache
+            .iter()
+            .map(|entry| entry.depth)
+            .collect();
+
+        assert_eq!(order.len(), 2, "both entities are visible");
+        assert_ne!(
+            pipelines[0], pipelines[1],
+            "the two resolve to different pipelines"
+        );
+        assert_eq!(
+            order,
+            vec![far, near],
+            "back-to-front: the deeper entity draws first, not the lower pipeline id"
+        );
+        assert!(
+            depths[0] > depths[1],
+            "the first draw is the deeper one: {depths:?}"
+        );
+    }
 }
