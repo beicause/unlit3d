@@ -19,11 +19,12 @@
 //!   out, and the render world's `UiSource` draws whatever the slots it
 //!   publishes into hold.
 //!
-//! The panel is the one object whose drawing happens in another world, so it
-//! carries a `UiHost` holding the context its interface is built in: each tick
-//! it lays a frame out and publishes it into the slots both worlds share. It
-//! reads input like any other object, from this world's own buffer, so the
-//! events that move it are the ones this world's tick dispatched.
+//! The panel is the one object whose drawing happens in another world: it
+//! carries a `UiPanel`, and the `UiPanelHost` spawned beside it holds the
+//! context its interface is built in, laying a frame out each tick and
+//! publishing it into the slots both worlds share. It reads input like any
+//! other object, from this world's own buffer, so the events that move it are
+//! the ones this world's tick dispatched.
 
 use std::time::Duration;
 
@@ -36,7 +37,7 @@ use unlit3d::prelude::*;
 use unlit3d::ui::{ExternalFrames, UiScreen};
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
-use unlit3dx::ui::{PanelHost, UiHost};
+use unlit3dx::ui::UiPanelHost;
 
 use crate::render::camera_looking_at;
 
@@ -488,16 +489,18 @@ pub fn spawn_scene<R: WorldRunner>(
                     world.spawn((audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
                 }
                 // The panel is the fifth object, and lives here with the rest.
-                // It publishes on its own place in this world's frame, after
-                // everything that could change what it shows has ticked, and
-                // the render world draws whatever is there.
-                let host = PanelHost::new(
-                    UiHost::new(),
+                // The host that lays it out is an entity of its own, so the
+                // world it belongs to is the only thing tying the two
+                // together. Publishing sits on its own place in this world's
+                // frame, after everything that could change what the panel
+                // shows has ticked, and the render world draws whatever is
+                // there.
+                world.spawn((UiPanelHost::new(
                     panels.frames.clone(),
                     panels.screen.clone(),
                     PANEL_SLOT,
-                );
-                Controls::new(panel_audio).mount(world, host);
+                ),));
+                Controls::new(panel_audio).mount(world);
                 world.spawn((OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
                     |world, _entity, _frame| publish_panels(world),
@@ -544,7 +547,7 @@ pub fn spawn_scene<R: WorldRunner>(
 /// The events the panel reads are this world's own, from the buffer its tick
 /// filled, so what the user clicked on is what this tick dispatched.
 fn publish_panels(world: &World) {
-    if let Some((_, mut host)) = world.query::<&mut PanelHost>().next() {
+    if let Some((_, mut host)) = world.query::<&mut UiPanelHost>().next() {
         host.publish(world);
     }
 }

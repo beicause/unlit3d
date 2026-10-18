@@ -8,13 +8,13 @@
 //! drawing world uploads and records what comes back.
 //!
 //! The handover is one way and needs no reply: the panel world writes an
-//! [`ExternalFrame`](unlit3d::ui::ExternalFrame) into a slot of the
-//! [`ExternalFrames`](unlit3d::ui::ExternalFrames) both worlds hold, and the
-//! drawing world draws whatever a slot holds. Nothing is ever asked for, so a
-//! settled panel publishes nothing and the frame already there keeps being
-//! drawn. What comes back is only the target the drawing side draws at, carried
-//! by a [`UiScreen`](unlit3d::ui::UiScreen), so a frame is laid out at the size
-//! and density it will be drawn at.
+//! [`unlit3d::ui::ExternalFrame`] into a slot of the
+//! [`unlit3d::ui::ExternalFrames`] both worlds hold,
+//! and the drawing world draws whatever a slot holds. Nothing is ever asked
+//! for, so a settled panel publishes nothing and the frame already there keeps
+//! being drawn. What comes back is only the target the drawing side draws at,
+//! carried by a [`unlit3d::ui::UiScreen`], so a frame is laid out at the size and density it
+//! will be drawn at.
 //!
 //! The two sides hold **separate** contexts. Sharing one would have both worlds
 //! writing egui's memory and its font atlas, and egui treats one `run_ui` call
@@ -28,78 +28,26 @@ use core::time::Duration;
 use unlit_ecs::World;
 use unlit_wgpu::ui::ScreenDescriptor;
 use unlit3d::input::{InputEvent, InputEvents};
-use unlit3d::ui::{ExternalFrame, ExternalFrames, UiScreen, UiTarget, egui, lay_out, raw_input};
+use unlit3d::ui::{ExternalFrames, UiScreen, UiTarget, egui, lay_out, raw_input};
 use web_time::Instant;
 
-/// The providing side: a world's panels, laid out for another world's
-/// [`unlit3d::ui::UiSource`].
+/// A world's panel publishing: the context its panels are built in, the slots
+/// it writes and the screen it lays out against.
 ///
-/// Spawn it in the world holding the panels and tick it through a
-/// [`PanelHost`]. The context, its font atlas and its memory belong to that
-/// world and stay there: what crosses to the drawing side is the laid-out
-/// frame, which carries no borrow of any of them.
-pub struct UiHost {
+/// Spawn it in the world holding the panels. Nothing drives this from outside:
+/// the world ticks it, the way it ticks any other behaviour, and each tick that
+/// produced a frame publishes it into the slot the drawing side reads. A tick
+/// that could not change the picture — a settled panel, no input, the same
+/// target — publishes nothing, so an idle UI costs nothing.
+///
+/// The context, its font atlas and its memory belong to this world and stay
+/// there: what crosses to the drawing side is the laid-out frame, which carries
+/// no borrow of any of them.
+pub struct UiPanelHost {
     /// The context the panels in this world are built in.
     ctx: egui::Context,
     /// When the host was created, the origin of egui's frame clock.
     start: Instant,
-}
-
-impl UiHost {
-    /// A host with a fresh context.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            ctx: egui::Context::default(),
-            start: Instant::now(),
-        }
-    }
-
-    /// egui's context, for restyling the interfaces this host builds.
-    pub fn context(&self) -> &egui::Context {
-        &self.ctx
-    }
-
-    /// Lay out one frame of this world's panels and tessellate it.
-    ///
-    /// `target` is the size and density the drawing side will draw at, and
-    /// `events` are this tick's, already translated into egui's types. egui's
-    /// clock is this host's own, so a panel's animations run on the world that
-    /// builds it, however fast that world ticks.
-    pub fn lay_out(
-        &self,
-        world: &World,
-        target: UiTarget,
-        events: Vec<egui::Event>,
-    ) -> ExternalFrame {
-        let input = raw_input(
-            target,
-            Some(self.start.elapsed().as_secs_f64()),
-            true,
-            events,
-        );
-        lay_out(world, &self.ctx, input, target.screen)
-    }
-}
-
-impl Default for UiHost {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A world's panel publishing: its host, the slots it writes and the screen it
-/// lays out against.
-///
-/// Spawn it in the world holding the panels, beside the [`UiHost`]. Nothing
-/// drives this from outside: the world ticks it, the way it ticks any other
-/// behaviour, and each tick that produced a frame publishes it into the slot
-/// the drawing side reads. A tick that could not change the picture — a
-/// settled panel, no input, the same target — publishes nothing, so an idle
-/// UI costs nothing.
-pub struct PanelHost {
-    /// The host carrying the context the panels are built in.
-    host: UiHost,
     /// The slots every frame is published into.
     frames: ExternalFrames,
     /// The target the drawing side last drew at.
@@ -125,13 +73,14 @@ pub struct PanelHost {
     repaint_at: Option<Instant>,
 }
 
-impl PanelHost {
+impl UiPanelHost {
     /// Publish `world`'s panels into `frames`' slot `slot`, against the target
     /// `screen` carries.
     #[must_use]
-    pub fn new(host: UiHost, frames: ExternalFrames, screen: UiScreen, slot: usize) -> Self {
+    pub fn new(frames: ExternalFrames, screen: UiScreen, slot: usize) -> Self {
         Self {
-            host,
+            ctx: egui::Context::default(),
+            start: Instant::now(),
             frames,
             screen,
             slot,
@@ -183,12 +132,19 @@ impl PanelHost {
             &mut scratch,
         );
         self.input_scratch = events;
-        let frame = self.host.lay_out(world, target, scratch);
+        // egui's clock is this host's own, so a panel's animations run on the
+        // world that builds it, however fast that world ticks.
+        let input = raw_input(
+            target,
+            Some(self.start.elapsed().as_secs_f64()),
+            true,
+            scratch,
+        );
+        let frame = lay_out(world, &self.ctx, input, target.screen);
         // The pass is over, so egui no longer needs the list it was handed:
         // taking it back is what turns the next frame's fill into a reuse.
         self.event_scratch = self
-            .host
-            .context()
+            .ctx
             .input_mut(|input| core::mem::take(&mut input.raw.events));
         // A frame that asked for nothing named no moment, and the picture is
         // settled. One that asked for the next possible pass is answered on
@@ -250,12 +206,12 @@ mod tests {
 
     /// A world holding a host, its slots and the screen the drawing side draws
     /// at.
-    fn test_host() -> (World, PanelHost) {
+    fn test_host() -> (World, UiPanelHost) {
         let world = World::new();
         let frames = ExternalFrames::new();
         let screen = UiScreen::new();
         screen.publish(test_target());
-        let host = PanelHost::new(UiHost::new(), frames, screen, 0);
+        let host = UiPanelHost::new(frames, screen, 0);
         (world, host)
     }
 
@@ -286,13 +242,13 @@ mod tests {
     }
 
     /// How many slots hold a frame.
-    fn published_slots(host: &PanelHost) -> usize {
+    fn published_slots(host: &UiPanelHost) -> usize {
         host.frames
             .with_frames(|slots| slots.iter().filter(|slot| slot.is_some()).count())
     }
 
     /// Publish until the panel stops asking to be laid out again.
-    fn settle(host: &mut PanelHost, world: &World) {
+    fn settle(host: &mut UiPanelHost, world: &World) {
         for _ in 0..8 {
             host.publish(world);
             if host.repaint_at.is_none() {

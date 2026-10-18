@@ -102,8 +102,8 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 
 `Controls` 是第五个对象，和其余对象一样住在**玩法 world** 里。面板只能在它自己的
 egui context 所运行的地方构建，所以由这个 world 负责布局并发布帧，渲染 world 负责绘制
-槽位里存着的那一帧：面板实体携带 `UiPanel`、它要显示的行、承载那个 context 的 `UiHost`，
-以及替它发布的 `PanelHost`。它有自己的 tick，位置足够靠后，凡是可能改变它显示内容的东西
+槽位里存着的那一帧：面板实体携带 `UiPanel` 与它要显示的行，而生成在它旁边的
+`UiPanelHost` 承载那个 context 并替它发布。它有自己的 tick，位置足够靠后，凡是可能改变它显示内容的东西
 都已经跑完。渲染 world 只持有一个挂上那些槽位的 `UiSource`，负责上传并记录它在槽位里
 找到的帧。
 

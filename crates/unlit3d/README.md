@@ -642,9 +642,8 @@ atlas, and egui treats one `run_ui` call as one whole frame. Their texture ids
 are never rewritten, though both contexts allocate from zero: a frame keeps the
 ids its context gave it and the GPU integration keys textures by (origin, id),
 so a published frame is drawn from the same tessellation until a newer one
-replaces it. `unlit3dx` builds the cross-world plumbing — a host in the panel's
-world, and a `PanelHost` that publishes on that world's own tick — on these
-pieces.
+replaces it. `unlit3dx` builds the cross-world plumbing — a `UiPanelHost` in the
+panel's world, publishing on that world's own tick — on these pieces.
 
 <details>
 <summary>Why the panel is a component, and the unit convention that is easy to get wrong</summary>

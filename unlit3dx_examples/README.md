@@ -137,9 +137,9 @@ it is paced differs.
 `Controls` is the fifth object, and it lives in the **gameplay world** with the
 rest. A panel can only be built where its egui context runs, so this world
 lays it out and publishes the frame, and the render world draws whatever the
-slots hold: the panel's entity carries the `UiPanel`, the rows it shows, the
-`UiHost` holding the context they are built in, and the `PanelHost` that
-publishes for it. It has a tick of its own, late enough in the frame that
+slots hold: the panel's entity carries the `UiPanel` and the rows it shows,
+while the `UiPanelHost` spawned beside it holds the context they are built in
+and publishes for it. It has a tick of its own, late enough in the frame that
 everything which could change what it shows has already run. The render world
 holds only a `UiSource` with those slots attached, which uploads and records
 what it finds there.

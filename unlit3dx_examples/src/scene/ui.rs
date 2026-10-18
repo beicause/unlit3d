@@ -19,16 +19,16 @@ use unlit_ecs::World;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
-use unlit3dx::ui::PanelHost;
 
 use super::music::sequence_midi;
 use super::{BGM_TRACK, PanelSlots, SEQUENCE_TRACK, request_clear_in, request_drop_in};
 
 /// The panel, living on its own entity in the gameplay world.
 ///
-/// The entity carries the [`UiPanel`] that draws it and the [`PanelHost`] that
-/// lays it out for the render world, so the panel is mounted by spawning one
-/// entity rather than by editing either world's setup.
+/// The entity carries the [`UiPanel`] that draws it, so the panel is mounted by
+/// spawning one entity rather than by editing either world's setup. The
+/// [`UiPanelHost`](unlit3dx::ui::UiPanelHost) that lays it out is an entity of
+/// its own, spawned beside the panel it serves.
 pub struct Controls {
     /// The audio world's command sender, when the scene has tracks.
     audio: Option<JobSender>,
@@ -299,7 +299,7 @@ impl Controls {
     /// callback owns no state of its own; the end counts the watcher lands are
     /// shared with it rather than stored, because the watcher cannot borrow
     /// the world it runs beside.
-    pub fn mount(self, world: &mut World, host: PanelHost) {
+    pub fn mount(self, world: &mut World) {
         let watcher_audio = self.audio.clone();
         let counts: TrackEndCounts = Rc::new(RefCell::new(TrackEnds::START));
         let panel_counts = Rc::clone(&counts);
@@ -312,7 +312,6 @@ impl Controls {
             (
                 self,
                 TrackRows::START,
-                host,
                 UiPanel::new(move |world, entity, ui| {
                     // The panel reads its own handle: the object on this entity
                     // owns it, so the callback carries nothing but the counts.

@@ -427,8 +427,8 @@ world 把这些帧发布进 `ui::ExternalFrames`，绘制侧就绘制其中的�
 context 保持独立：共用会让两个 world 同时写同一份 memory 与字体图集，而 egui 把一次
 `run_ui` 当作一个完整帧。纹理 id 则完全不改写：帧保留它那个 context 分配的 id，GPU 集成按
 （来源, id）建键，于是两侧都从零分配也不会撞车；一帧在其槽位被更新之前一直由同一份三角化
-结果绘制。`unlit3dx` 就在这两块之上搭建跨 world 的管线——面板所在 world 里的 host，以及在
-该 world 自己的 tick 上发布的 `PanelHost`。
+结果绘制。`unlit3dx` 就在这两块之上搭建跨 world 的管线——面板所在 world 里的
+`UiPanelHost`，它在该 world 自己的 tick 上发布。
 
 <details>
 <summary>为什么面板是组件，以及最容易出错的单位约定</summary>

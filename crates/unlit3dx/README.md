@@ -251,15 +251,15 @@ The bridges:
   mailbox would only hold the newest value and drop an end that came and
   went between two frames, and an event that must not be missed belongs in
   a queue the collector fills.
-- **ui** (on with `render`): [`ui::UiHost`] lays a world's
+- **ui** (on with `render`): [`ui::UiPanelHost`] lays a world's
   `unlit3d::ui::UiPanel`s out for a `unlit3d::ui::UiSource` in another
   world. A panel can only be built where its egui context runs — its callback
   is handed a `&mut egui::Ui` from the pass building it — so the panel's
   world lays the frame out and tessellates it, and the drawing world uploads
-  and records what comes back. Spawn the host beside the panels, wrap it in a
-  [`ui::PanelHost`] that owns the slots and the screen the drawing side draws
-  at, and hand those to the drawing side's source with
-  [`unlit3d::ui::UiSource::draw_published`]. The handover is one way: the
+  and records what comes back. Spawn a [`ui::UiPanelHost`] beside the panels;
+  it holds the slots and the screen the drawing side draws at, and those go to
+  the drawing side's source with [`unlit3d::ui::UiSource::draw_published`].
+  The handover is one way: the
   panel world publishes on its own tick and the drawing side draws whatever a
   slot holds. A tick that could not change the picture — a settled panel, no
   input, the same target, no repaint due — publishes nothing, so a still UI

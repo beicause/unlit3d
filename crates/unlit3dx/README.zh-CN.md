@@ -194,12 +194,12 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   循环播放永不计入，而记住上次计数的读者不会漏掉任何一次结束，即使中间一次都没查过。这个计数
   只是播放器的一个普通事实，需要它的人自己向音频 world 查询——快照只保留最新值，会丢掉两次
   帧之间来了又走的结束。
-- **ui**（随 `render` 开启）：`ui::UiHost` 把一个 world 的 `UiPanel` 布局给另一个
-  world 里的 `UiSource` 绘制。面板只能在它自己的 egui context 所运行的地方构建——回调拿到
-  的是正在构建它的那一趟 pass 的 `&mut egui::Ui`——所以面板所在的 world 负责布局并三角化，
-  绘制它的 world 负责上传与记录回来的结果。把 host 生成在面板旁边，用一个
-  `ui::PanelHost` 包起它——它持有槽位与绘制侧当前的屏幕尺寸——再用
-  `unlit3d::ui::UiSource::draw_published` 把这些交给绘制侧的 source。交接是单向的：面板
+- **ui**（随 `render` 开启）：把 `ui::UiPanelHost` 生成在面板旁边，它把一个 world 的
+  `UiPanel` 布局给另一个 world 里的 `UiSource` 绘制。面板只能在它自己的 egui context
+  所运行的地方构建——回调拿到的是正在构建它的那一趟 pass 的 `&mut egui::Ui`——所以面板
+  所在的 world 负责布局并三角化，绘制它的 world 负责上传与记录回来的结果。它持有槽位与
+  绘制侧当前的屏幕尺寸，再用 `unlit3d::ui::UiSource::draw_published` 把这些交给绘制侧的
+  source。交接是单向的：面板
   所在的 world 在自己的 tick 上发布，绘制侧直接绘制槽位里的内容。无事可画的一 tick——面板
   静止且没有输入——不发布任何东西，所以静止的 UI 零开销；已有的那一帧会一直被绘制，直到
   更新的一帧取代它。两侧保持独立的 context：共用会让两个 world 同时写同一份 memory 与字体
