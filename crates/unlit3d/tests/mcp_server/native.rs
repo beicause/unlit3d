@@ -583,9 +583,13 @@ pub fn run() {
             .as_array()
             .and_then(|entities| {
                 entities.iter().find(|entity| {
-                    entity["components"]
-                        .as_array()
-                        .is_some_and(|names| names.iter().any(|name| name == "InputEvents"))
+                    // A component is listed under the name the compiler gave it,
+                    // so match the type the way the lookups above do.
+                    entity["components"].as_array().is_some_and(|names| {
+                        names
+                            .iter()
+                            .any(|name| name.as_str().unwrap_or_default().ends_with("InputEvents"))
+                    })
                 })
             })
             .expect("the world carries a subscription");
