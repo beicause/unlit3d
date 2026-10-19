@@ -252,6 +252,35 @@ fn a_query_skips_an_empty_archetype() {
     assert_eq!(world.query::<&Position>().count(), 1);
 }
 
+/// An optional component is optional about the component's absence, not about
+/// the borrow: a conflict panics instead of yielding `None`, which would hide
+/// a real conflict as a missing component.
+#[test]
+#[should_panic(expected = "already borrowed")]
+fn an_optional_component_that_cannot_be_borrowed_panics() {
+    let mut world = World::new();
+    world.spawn((Position { x: 0.0, y: 0.0 },));
+
+    // Both items stay alive, so the optional fetch of `Position` conflicts
+    // with the exclusive one instead of yielding `None`.
+    let items: Vec<_> = world
+        .query::<(&mut Position, Option<&Position>)>()
+        .collect();
+    drop(items);
+}
+
+#[test]
+#[should_panic(expected = "already borrowed")]
+fn an_optional_mutable_component_that_cannot_be_borrowed_panics() {
+    let mut world = World::new();
+    world.spawn((Position { x: 0.0, y: 0.0 },));
+
+    let items: Vec<_> = world
+        .query::<(&Position, Option<&mut Position>)>()
+        .collect();
+    drop(items);
+}
+
 #[test]
 #[should_panic(expected = "already borrowed")]
 fn asking_for_the_same_component_twice_panics() {

@@ -4,8 +4,10 @@
 //! *which entities to fetch it from*.
 //!
 //! The data half is a [`Query`]: a shared reference `&T`, an exclusive
-//! reference `&mut T`, an optional reference `Option<&T>`, the [`Entity`]
-//! itself, or a tuple of those.
+//! reference `&mut T`, an optional reference `Option<&T>` or `Option<&mut T>`,
+//! the [`Entity`] itself, or a tuple of those. "Optional" is about the component
+//! being absent, which yields `None`; a cell that cannot be borrowed is a
+//! conflict and panics, optional or not.
 //!
 //! The filter half is a [`QueryFilter`]: it narrows the archetypes a query
 //! visits without fetching anything. [`With<T>`] requires `T`, [`Without<T>`]
@@ -138,11 +140,12 @@ impl<T: 'static> Query for Option<&T> {
         archetype.column::<T>()
     }
 
+    /// `None` when the archetype has no `T`; a conflicting borrow panics, as it
+    /// does for `&T`.
     fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
         let column: Option<&'a Column<T>> = *state;
-        column
-            .and_then(|column| column.cell(row))
-            .and_then(|cell| cell.try_borrow().ok())
+        let cell = column.and_then(|column| column.cell(row))?;
+        Some(cell.try_borrow().unwrap_or_else(|_| borrowed::<T>("read")))
     }
 }
 
@@ -158,11 +161,15 @@ impl<T: 'static> Query for Option<&mut T> {
         archetype.column::<T>()
     }
 
+    /// `None` when the archetype has no `T`; a conflicting borrow panics, as it
+    /// does for `&mut T`.
     fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
         let column: Option<&'a Column<T>> = *state;
-        column
-            .and_then(|column| column.cell(row))
-            .and_then(|cell| cell.try_borrow_mut().ok())
+        let cell = column.and_then(|column| column.cell(row))?;
+        Some(
+            cell.try_borrow_mut()
+                .unwrap_or_else(|_| borrowed::<T>("write")),
+        )
     }
 }
 
@@ -580,6 +587,29 @@ mod tests {
         let mut world = crate::World::new();
         let entity = world.spawn((Marker(1),));
         assert_eq!(world.query::<Entity>().next(), Some((entity, entity)));
+    }
+
+    /// An optional component is optional only about being absent: a cell that
+    /// is already borrowed is a conflict, not a `None`.
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn an_optional_component_that_cannot_be_borrowed_panics() {
+        let mut world = crate::World::new();
+        world.spawn((Marker(1), 5u32));
+        // The item is still alive, so the optional fetch must fail rather than
+        // report the component as missing.
+        let items: Vec<_> = world.query::<(&mut u32, Option<&u32>)>().collect();
+        drop(items);
+    }
+
+    /// The exclusive form fails the same way, in either direction.
+    #[test]
+    #[should_panic(expected = "already borrowed")]
+    fn an_optional_mutable_component_that_cannot_be_borrowed_panics() {
+        let mut world = crate::World::new();
+        world.spawn((Marker(1), 5u32));
+        let items: Vec<_> = world.query::<(&u32, Option<&mut u32>)>().collect();
+        drop(items);
     }
 
     #[test]

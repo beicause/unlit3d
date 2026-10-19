@@ -53,7 +53,9 @@ It is at an **early stage of development** and its API changes freely.
 - **A borrow conflict is a panic, not a compile error.** Asking for a component
   that is already borrowed, or fetching the same component as `&mut` twice in
   one query, reports the component's name and stops. That is the trade for not
-  doing access analysis.
+  doing access analysis. An optional component is optional only about the
+  component being absent: a cell that cannot be borrowed panics the same way
+  instead of reading as `None`.
 
 ## What is in the box
 

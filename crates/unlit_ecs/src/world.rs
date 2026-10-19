@@ -18,7 +18,8 @@
 //! A borrow conflict is a panic, not a compile error: asking for a component
 //! that is already borrowed, or fetching the same component as `&mut` twice
 //! in one query, reports the component's name and stops. This is the trade for
-//! not doing access analysis.
+//! not doing access analysis. An optional component is optional only about the
+//! component being absent; a cell that cannot be borrowed panics as well.
 
 use core::any::TypeId;
 use core::cell::{Ref, RefCell, RefMut};
