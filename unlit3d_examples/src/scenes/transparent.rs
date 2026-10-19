@@ -75,9 +75,9 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(world, context);
-    source.register_unlit_family(world);
-    let device = source.device(world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
+    let device = source.device(&world.root_view());
 
     // Two variants of the same unlit pipeline: the opaque one every other
     // scene draws with, and a translucent one that blends straight-alpha

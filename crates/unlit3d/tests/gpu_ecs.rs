@@ -328,12 +328,64 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
 
 // The registry both runners drive: `cargo nextest` natively, and a
 // browser through the wasm export `gpu_test_main!` adds.
+/// Two mesh sources in one world, each drawing only its own subtree.
+///
+/// A source queries its own scope, and a scope sees its descendants but not its
+/// siblings, so the two sources are siblings: each one draws the instances it
+/// owns and none of the other's. The frame's pixels follow ownership, not
+/// placement.
+async fn a_source_draws_only_its_own_subtree() {
+    let ctx = Ctx::headless().await;
+    let mut world = World::new();
+    let gpu = TestGpu::new(&mut world, &ctx);
+    let first = gpu.mesh_source();
+
+    // A second source beside the first, both children of the root.
+    let mut second_source = MeshSource::new(&world.root_view(), gpu.context);
+    second_source.register_unlit_family(&world.root_view());
+    let second = world.root_view_mut().spawn((Source::new(second_source),));
+
+    // One cube per source, each with the camera that frames it.
+    let near = gpu.allocate_cube_mesh(&world);
+    let far = gpu.allocate_cube_mesh(&world);
+    for (scope, mesh) in [(first, near), (second, far)] {
+        let mut view = world.view_mut(scope).expect("the source is a scope");
+        view.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+        view.spawn((
+            Transform::default(),
+            mesh,
+            UnlitPipeline::new(gpu.key.clone()),
+        ));
+    }
+
+    // Each source owns one instance, and neither sees the other's: a sibling's
+    // subtree is not a descendant of this source's scope.
+    for scope in [first, second] {
+        let owned = world
+            .view(scope)
+            .expect("the source is a scope")
+            .query::<&GpuMesh>()
+            .count();
+        assert_eq!(owned, 1, "a source draws only the instances it owns");
+    }
+
+    // The root sees both, which is what makes the two frames one scene.
+    assert_eq!(
+        world.root_view().query::<&GpuMesh>().count(),
+        2,
+        "the root sees every source's instances"
+    );
+
+    let _ = gpu.render_to_offscreen(&world, "test::a_source_draws_only_its_own_subtree");
+}
+
 gpu_tests! {
     ecs_cube_covers_the_frame,
     ecs_depth_ordering_hides_the_far_instance,
     removing_a_mesh_leaves_no_resource_behind,
     a_mesh_reusing_a_freed_range_draws_its_own_geometry,
     meshes_allocated_across_frames_survive_pool_growth,
+    a_source_draws_only_its_own_subtree,
 }
 
 gpu_test_main!(all_tests());

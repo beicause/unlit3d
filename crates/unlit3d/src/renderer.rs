@@ -180,7 +180,7 @@ impl Renderer {
 
         // Sources read the frame's target from the world, so binding one here
         // is also what states it for the frame; see [`FrameTarget`].
-        set_frame_target(world, self.frame_target());
+        set_frame_target(&world.root_view(), self.frame_target());
     }
 
     /// Unbind the render target, leaving the renderer with none.
@@ -277,9 +277,17 @@ impl Renderer {
         // world, which is what `for_each` gives alongside the `&mut Source`.
         {
             profiling::scope!("renderer.frame.build_sources");
-            world.root_view().for_each::<&mut Source, _>(|mut source| {
-                source.build_scene(world, self.context, &mut encoder);
-            });
+            // Each source builds against its own subtree: what it draws is
+            // what it owns, so two sources in one world draw different sets
+            // without either one seeing the other's. The resources a source
+            // needs — the device, the graph, the frame's target — live in the
+            // shared subtree, which every view sees.
+            let root = world.root_view();
+            for (entity, mut source) in root.query::<&mut Source>() {
+                let scope = root.scope_of(entity).unwrap_or_else(|| world.root());
+                let view = world.view(scope).unwrap_or(root);
+                source.build_scene(&view, self.context, &mut encoder);
+            }
         }
 
         // Record phase: the scenes, in declared order. The order is resolved

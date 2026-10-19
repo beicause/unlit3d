@@ -668,7 +668,6 @@ impl InstanceData for ParticleInstances {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let particle = context
             .world
-            .root_view()
             .get::<Particle>(context.entity)
             .expect("every visible particle carries a Particle component");
         let record = ParticleRecord {
@@ -1024,9 +1023,9 @@ fn build(
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(world, context);
-    let device = source.device(world);
-    let queue = source.queue(world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    let device = source.device(&world.root_view());
+    let queue = source.queue(&world.root_view());
 
     // -- the sky family ------------------------------------------------------
     let sky_layout = sky_bind_group_layout(&device);
@@ -1049,7 +1048,7 @@ fn build(
         },
     );
     let (sky_view, sky_uniforms) = {
-        let mut graph = MeshSource::graph(world, context);
+        let mut graph = MeshSource::graph(&world.root_view(), context);
         let sky_texture = graph.insert(sky_texture, None);
         let sky_view = graph.insert(sky_view, None);
         // The view keeps the texture alive, so the graph needs no other handle
@@ -1059,7 +1058,7 @@ fn build(
         (sky_view, sky_uniforms)
     };
     let sky_sampler = source.register_sampler(
-        world,
+        &world.root_view(),
         Some(wgpu::SamplerDescriptor {
             label: Some("unlit3d_examples::custom_pipeline::sky"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1071,7 +1070,7 @@ fn build(
         }),
     );
     source.register_family::<SkyKey, _, _>(
-        world,
+        &world.root_view(),
         SkyFactory {
             device: device.clone(),
             layout: sky_layout.clone(),
@@ -1085,7 +1084,7 @@ fn build(
         descriptor: Arc::new(sky_pipeline(&device, &sky_layout)),
     });
     let sky_mesh = source.allocate_mesh(
-        world,
+        &world.root_view(),
         MeshDesc {
             count: SKY_VERTICES,
             aabb: Aabb::new(glam::Vec3::ZERO, glam::Vec3::splat(SKY_EXTENT)),
@@ -1101,14 +1100,18 @@ fn build(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let particle_uniforms =
-        MeshSource::graph(world, context).insert(particle_uniforms_buffer.clone(), None);
-    source.register_family::<ParticleKey, _, _>(world, ParticleFactory, ParticleInstances);
+    let particle_uniforms = MeshSource::graph(&world.root_view(), context)
+        .insert(particle_uniforms_buffer.clone(), None);
+    source.register_family::<ParticleKey, _, _>(
+        &world.root_view(),
+        ParticleFactory,
+        ParticleInstances,
+    );
     let particle_pipeline = GpuRenderPipeline::new(ParticleKey {
         descriptor: Arc::new(particle_pipeline(&device, &particle_layout)),
     });
     let particle_mesh = source.allocate_mesh(
-        world,
+        &world.root_view(),
         MeshDesc {
             count: PARTICLE_VERTICES,
             aabb: Aabb::new(
@@ -1123,7 +1126,7 @@ fn build(
         let layout = particle_layout.clone();
         let uniforms = particle_uniforms.clone();
         source.allocate_material(
-            world,
+            &world.root_view(),
             move |graph| {
                 let uniforms = graph
                     .get(&uniforms)

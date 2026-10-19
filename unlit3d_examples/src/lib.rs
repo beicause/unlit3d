@@ -2059,9 +2059,7 @@ fn mount_selector(
                 for scene in scenes::SCENES.iter().copied() {
                     let selected = scene.id == current.id;
                     if ui.selectable_label(selected, scene.title).clicked() {
-                        let _ = world
-                            .root_view()
-                            .with_mut::<SceneSwitch, _>(switch, |s| s.0 = Some(scene));
+                        let _ = world.with_mut::<SceneSwitch, _>(switch, |s| s.0 = Some(scene));
                     }
                 }
             });
@@ -2222,7 +2220,6 @@ fn mount_frame_rate(world: &mut World, rate: Entity) {
         .root_view_mut()
         .spawn((UiPanel::new(move |world, _entity, ui| {
             let text = world
-                .root_view()
                 .with_mut::<FrameRate, _>(rate, |rate| rate.text())
                 .expect("the frame-rate component exists");
             frame_rate_readout(ui, &text);
@@ -2613,13 +2610,10 @@ fn mount_fullscreen(world: &mut World, request: Entity, state: Entity) {
         .root_view_mut()
         .spawn((UiPanel::new(move |world, _entity, ui| {
             let active = world
-                .root_view()
                 .get::<FullscreenActive>(state)
                 .is_some_and(|state| state.0);
             if fullscreen_button(ui, active) {
-                let _ = world
-                    .root_view()
-                    .with_mut::<FullscreenRequest, _>(request, |request| request.0 = true);
+                let _ = world.with_mut::<FullscreenRequest, _>(request, |request| request.0 = true);
             }
         }),));
 }

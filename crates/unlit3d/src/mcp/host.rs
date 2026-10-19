@@ -16,7 +16,7 @@ use unlit_ecs::mcp::host::{
 };
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{CreateMesh, EncodedImage, Output};
-use unlit_ecs::{ArchetypeBuilder, Entity, World};
+use unlit_ecs::{ArchetypeBuilder, Entity, ScopedWorld, World};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit_wgpu::readback::{readback_buffer, readback_texture};
 use unlit_wgpu::resources::{
@@ -99,17 +99,24 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
 fn with_mesh_source<R>(
     world: &World,
     handle: Option<Entity>,
-    f: impl FnOnce(&mut MeshSource) -> R,
+    f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
 ) -> Result<R, String> {
     let entity = mesh_source_entity(world, handle)?;
-    let mut source = world
-        .root_view()
+    // The view is the source's own, which is the scope it was spawned in: a
+    // source only ever sees the subtree it draws.
+    let scope = world
+        .scope_of(entity)
+        .ok_or_else(|| "the mesh source entity is gone".to_string())?;
+    let view = world
+        .view(scope)
+        .ok_or_else(|| "the mesh source's scope is gone".to_string())?;
+    let mut source = view
         .get_mut::<Source>(entity)
         .ok_or_else(|| "the mesh source entity is gone".to_string())?;
     let mesh_source = source
         .as_mut::<MeshSource>()
         .ok_or_else(|| "the source entity is not a mesh source".to_string())?;
-    Ok(f(mesh_source))
+    Ok(f(mesh_source, &view))
 }
 
 /// The device the context names, cloned out of the world.
@@ -518,9 +525,9 @@ pub fn create_mesh(
         weights: None,
         morph_deltas: None,
     };
-    let (key, mesh) = with_mesh_source(world, source, |source| {
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(world)));
-        let mesh = source.allocate_unlit_mesh(world, &key, desc);
+    let (key, mesh) = with_mesh_source(world, source, |source, view| {
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(view)));
+        let mesh = source.allocate_unlit_mesh(view, &key, desc);
         (key, mesh)
     })?;
     let transform = match args.transform {
@@ -545,11 +552,23 @@ pub fn create_mesh(
     if let Some(cutoff) = args.cutoff {
         builder.push(InstanceCutoff::new(cutoff));
     }
-    let entity = world.root_view_mut().spawn(builder);
-    to_value(&SpawnedEntity {
-        entity,
-        scope: world.root_view().scope(),
-    })
+    // The mesh lands in the requested scope, which defaults to the root: what
+    // a caller spawns is what the scope it named draws.
+    let scope = match args.scope {
+        Some(bits) => {
+            let scope = Entity::from_bits(bits);
+            if world.view(scope).is_none() {
+                return Err(format!("no scope at bits {bits}"));
+            }
+            scope
+        }
+        None => world.root(),
+    };
+    let entity = world
+        .view_mut(scope)
+        .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?
+        .spawn(builder);
+    to_value(&SpawnedEntity { entity, scope })
 }
 
 /// Release a mesh and despawn the entity that drew it.
@@ -563,7 +582,7 @@ pub fn remove_mesh(
         .get::<GpuMesh>(entity)
         .map(|mesh| mesh.clone())
         .ok_or_else(|| format!("entity {} has no GpuMesh", entity.to_bits()))?;
-    with_mesh_source(world, source, |source| source.remove_mesh(mesh))?;
+    with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
     let despawned = world.root_view_mut().despawn(entity);
     to_value(&Despawned { despawned })
 }
@@ -660,10 +679,21 @@ pub fn save_screenshot(
 }
 
 /// Load a glTF file and spawn its default scene.
-pub fn load_gltf(world: &mut World, source: Option<Entity>, path: &str) -> Result<Value, String> {
+pub fn load_gltf(
+    world: &mut World,
+    source: Option<Entity>,
+    scope: Option<Entity>,
+    path: &str,
+) -> Result<Value, String> {
     let gltf = UnlitGltf::load(Path::new(path)).map_err(|error| error.to_string())?;
-    let resources = with_mesh_source(world, source, |source| gltf.insert_resources(source, world))?;
-    let nodes = gltf.spawn_default_scene(world, &resources);
+    let resources = with_mesh_source(world, source, |source, view| {
+        gltf.insert_resources(source, view)
+    })?;
+    let scope = scope.unwrap_or_else(|| world.root());
+    let mut view = world
+        .view_mut(scope)
+        .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?;
+    let nodes = gltf.spawn_default_scene(&mut view, &resources);
     let entities: Vec<Entity> = nodes
         .iter()
         .flat_map(|node| node.entities.iter())

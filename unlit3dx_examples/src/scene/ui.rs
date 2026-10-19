@@ -316,11 +316,7 @@ impl Controls {
                 UiPanel::new(move |world, entity, ui| {
                     // The panel reads its own handle: the object on this entity
                     // owns it, so the callback carries nothing but the counts.
-                    let Some(audio) = world
-                        .root_view()
-                        .get::<Controls>(entity)
-                        .map(|c| c.audio.clone())
-                    else {
+                    let Some(audio) = world.get::<Controls>(entity).map(|c| c.audio.clone()) else {
                         return;
                     };
                     egui::Window::new("Controls").show(ui.ctx(), |ui| {
@@ -329,7 +325,6 @@ impl Controls {
                             // the end the watcher has already picked up.
                             let counts = *panel_counts.borrow();
                             let shown = world
-                                .root_view()
                                 .get::<TrackRows>(entity)
                                 .map_or(TrackRows::START, |rows| *rows);
                             let now = TrackRows {
@@ -351,18 +346,16 @@ impl Controls {
                                 ),
                             };
                             if now != shown {
-                                let _ = world
-                                    .root_view()
-                                    .with_mut::<TrackRows, _>(entity, |rows| *rows = now);
+                                let _ = world.with_mut::<TrackRows, _>(entity, |rows| *rows = now);
                             }
                             ui.separator();
                         }
                         ui.horizontal(|ui| {
                             if ui.button("Drop the next shape").clicked() {
-                                request_drop_in(world);
+                                request_drop_in(&world);
                             }
                             if ui.button("Clear the shapes").clicked() {
-                                request_clear_in(world);
+                                request_clear_in(&world);
                             }
                         });
                     });

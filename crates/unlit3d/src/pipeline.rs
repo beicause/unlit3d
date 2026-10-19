@@ -44,7 +44,7 @@
 
 use arrayvec::ArrayVec;
 use glam::Affine3A;
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, ScopedWorld};
 use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::pipeline::{
     CAMERA_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING, MESH_METADATA_BINDING,
@@ -297,9 +297,9 @@ pub struct DrawContext<'a> {
     pub surface: SurfaceKey,
     /// The device the pipeline is compiled on.
     pub device: &'a wgpu::Device,
-    /// The world the entity is drawn from, for per-entity components a variant
-    /// depends on -- an alpha cutoff, say.
-    pub world: &'a World,
+    /// The view the entity is drawn through, for per-entity components a
+    /// variant depends on -- an alpha cutoff, say.
+    pub world: ScopedWorld<'a>,
     /// The entity being drawn.
     pub entity: Entity,
     /// The mesh the entity is drawn with.
@@ -330,8 +330,11 @@ pub use unlit_wgpu::instance_stream::InstanceStreamDesc;
 /// frame array and its own pack method. A family that reads neither calls
 /// neither; a family that needs one packs only that one.
 pub struct InstanceContext<'a> {
-    /// The world the entity is drawn from, for per-entity components.
-    pub world: &'a World,
+    /// The view the entity is drawn through, for per-entity components.
+    ///
+    /// It is the drawing source's own view, so a family reads the components
+    /// of the subtree that source owns rather than of the whole world.
+    pub world: ScopedWorld<'a>,
     /// The entity the record is for.
     pub entity: Entity,
     /// The entity's world transform, resolved by culling.
@@ -345,7 +348,7 @@ pub struct InstanceContext<'a> {
 impl<'a> InstanceContext<'a> {
     /// Build a context for one entity from the frame's two growing arrays.
     pub(crate) fn new(
-        world: &'a World,
+        world: ScopedWorld<'a>,
         entity: Entity,
         world_from_local: Affine3A,
         joints: &'a mut Vec<JointMatrix>,
@@ -374,7 +377,6 @@ impl<'a> InstanceContext<'a> {
     pub fn pack_joints(&mut self) -> u32 {
         let binding = self
             .world
-            .root_view()
             .get::<SkinBinding>(self.entity)
             .unwrap_or_else(|| {
                 panic!(
@@ -384,7 +386,6 @@ impl<'a> InstanceContext<'a> {
             });
         let pose = self
             .world
-            .root_view()
             .get::<SkinPose>(binding.pose)
             .unwrap_or_else(|| panic!("the entity a skinned mesh binds to carries no `SkinPose`"));
         assert!(
@@ -411,7 +412,6 @@ impl<'a> InstanceContext<'a> {
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32 {
         let binding = self
             .world
-            .root_view()
             .get::<MorphBinding>(self.entity)
             .unwrap_or_else(|| {
                 panic!(
@@ -421,7 +421,6 @@ impl<'a> InstanceContext<'a> {
             });
         let weights = self
             .world
-            .root_view()
             .get::<MorphWeights>(binding.weights)
             .unwrap_or_else(|| {
                 panic!("the entity a morphed mesh binds to carries no `MorphWeights`")

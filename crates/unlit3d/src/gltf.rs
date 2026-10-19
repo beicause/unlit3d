@@ -5,8 +5,9 @@
 //!
 //! [`UnlitGltf`] owns only the slim, replayable state of a loaded document —
 //! the parsed [`gltf::Document`], its decoded buffers and images, and each
-//! node's world-space transform — plus nothing else. It holds no [`World`],
-//! no [`MeshSource`] and no GPU resources of its own. Everything GPU lives in
+//! node's world-space transform — plus nothing else. It holds no
+//! [`World`](unlit_ecs::World), no [`MeshSource`] and no GPU resources of its
+//! own. Everything GPU lives in
 //! the graph of the `MeshSource` the caller patches, so a document can be
 //! inserted into any number of worlds, and each insertion keeps the handles
 //! that unload it again.
@@ -127,10 +128,7 @@ use crate::unlit::{
 };
 use gltf::animation::util::ReadOutputs;
 use gltf::animation::{Interpolation, Property};
-use unlit_ecs::{
-    ArchetypeBuilder,
-    prelude::{Entity, World},
-};
+use unlit_ecs::{ArchetypeBuilder, ScopedWorld, ScopedWorldMut, prelude::Entity};
 use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
@@ -387,7 +385,12 @@ impl UnlitGltf {
     /// to them — see the [module docs](self#texture-formats); its sampler is
     /// not uploaded here, because that belongs to the material that samples
     /// it.
-    pub fn insert_image(&self, source: &mut MeshSource, world: &World, image: usize) -> GltfImage {
+    pub fn insert_image(
+        &self,
+        source: &mut MeshSource,
+        world: &ScopedWorld<'_>,
+        image: usize,
+    ) -> GltfImage {
         let data = &self.images[image];
         let device = source.device(world);
         let format = image_format(data, &device);
@@ -447,7 +450,11 @@ impl UnlitGltf {
     ///
     /// The returned vector is aligned with the document's image indices: the
     /// handle for image `i` sits at index `i`.
-    pub fn insert_images(&self, source: &mut MeshSource, world: &World) -> Vec<GltfImage> {
+    pub fn insert_images(
+        &self,
+        source: &mut MeshSource,
+        world: &ScopedWorld<'_>,
+    ) -> Vec<GltfImage> {
         (0..self.document.images().len())
             .map(|image| self.insert_image(source, world, image))
             .collect()
@@ -467,7 +474,7 @@ impl UnlitGltf {
     pub fn insert_material(
         &self,
         source: &mut MeshSource,
-        world: &World,
+        world: &ScopedWorld<'_>,
         material: usize,
         images: &[GltfImage],
     ) -> Option<GltfMaterial> {
@@ -532,7 +539,7 @@ impl UnlitGltf {
     pub fn insert_materials(
         &self,
         source: &mut MeshSource,
-        world: &World,
+        world: &ScopedWorld<'_>,
         images: &[GltfImage],
     ) -> Vec<Option<GltfMaterial>> {
         (0..self.document.materials().len())
@@ -559,7 +566,7 @@ impl UnlitGltf {
     pub fn insert_mesh(
         &self,
         source: &mut MeshSource,
-        world: &World,
+        world: &ScopedWorld<'_>,
         mesh: usize,
         primitive: usize,
     ) -> GltfMesh {
@@ -658,7 +665,7 @@ impl UnlitGltf {
     ///
     /// The vector is ordered document-mesh-major, then primitive-minor: first
     /// all of mesh 0's primitives, then mesh 1's, and so on.
-    pub fn insert_meshes(&self, source: &mut MeshSource, world: &World) -> Vec<GltfMesh> {
+    pub fn insert_meshes(&self, source: &mut MeshSource, world: &ScopedWorld<'_>) -> Vec<GltfMesh> {
         let count: usize = self
             .document
             .meshes()
@@ -685,7 +692,11 @@ impl UnlitGltf {
     /// documents, say — can call [`Self::insert_images`],
     /// [`Self::insert_materials`] and [`Self::insert_meshes`] instead and
     /// build a [`GltfResources`] of its own.
-    pub fn insert_resources(&self, source: &mut MeshSource, world: &World) -> GltfResources {
+    pub fn insert_resources(
+        &self,
+        source: &mut MeshSource,
+        world: &ScopedWorld<'_>,
+    ) -> GltfResources {
         let images = self.insert_images(source, world);
         let materials = self.insert_materials(source, world, &images);
         let meshes = self.insert_meshes(source, world);
@@ -859,7 +870,13 @@ impl UnlitGltf {
     /// # Panics
     ///
     /// If `animation` is out of bounds.
-    pub fn apply_animation(&self, world: &World, animation: usize, time: f32, nodes: &[GltfNode]) {
+    pub fn apply_animation(
+        &self,
+        world: &ScopedWorld<'_>,
+        animation: usize,
+        time: f32,
+        nodes: &[GltfNode],
+    ) {
         let animation = self.animation(animation);
         let count = self.parents.len();
         let mut locals = self.locals.clone();
@@ -969,25 +986,19 @@ impl UnlitGltf {
             if dirty[node] {
                 let transform = decompose(matrices[node]);
                 for &entity in &handle.entities {
-                    let _ = world
-                        .root_view()
-                        .with_mut::<Transform, _>(entity, |current| {
-                            *current = transform.clone();
-                        });
+                    let _ = world.with_mut::<Transform, _>(entity, |current| {
+                        *current = transform.clone();
+                    });
                 }
             }
             if let Some(entity) = handle.pose {
                 let pose = self.skin_pose_with_matrices(node, &matrices);
-                let _ = world
-                    .root_view()
-                    .with_mut::<SkinPose, _>(entity, |current| *current = pose.clone());
+                let _ = world.with_mut::<SkinPose, _>(entity, |current| *current = pose.clone());
             }
             if let (Some(entity), Some(sampled)) = (handle.weights, weights[node].as_ref()) {
-                let _ = world
-                    .root_view()
-                    .with_mut::<MorphWeights, _>(entity, |current| {
-                        current.weights = sampled.clone();
-                    });
+                let _ = world.with_mut::<MorphWeights, _>(entity, |current| {
+                    current.weights = sampled.clone();
+                });
             }
         }
     }
@@ -1024,7 +1035,7 @@ impl UnlitGltf {
     /// while it samples a base-color texture.
     pub fn spawn_node(
         &self,
-        world: &mut World,
+        world: &mut ScopedWorldMut<'_>,
         node: usize,
         resources: &GltfResources,
     ) -> GltfNode {
@@ -1065,17 +1076,14 @@ impl UnlitGltf {
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
                 let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
-                    let pose = *pose.get_or_insert_with(|| {
-                        world.root_view_mut().spawn((self.skin_pose(node.index()),))
-                    });
+                    let pose =
+                        *pose.get_or_insert_with(|| world.spawn((self.skin_pose(node.index()),)));
                     SkinBinding::new(pose)
                 });
                 let morphed = mesh_handle.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
                     let weights = *morphs.get_or_insert_with(|| {
-                        world
-                            .root_view_mut()
-                            .spawn((MorphWeights::new(self.morph_weights(node.index())),))
+                        world.spawn((MorphWeights::new(self.morph_weights(node.index())),))
                     });
                     MorphBinding::new(weights)
                 });
@@ -1105,7 +1113,7 @@ impl UnlitGltf {
                 if z_sorted {
                     bundle.push(ZSortedDrawing);
                 }
-                entities.push(world.root_view_mut().spawn(bundle));
+                entities.push(world.spawn(bundle));
             }
         }
         GltfNode {
@@ -1131,7 +1139,7 @@ impl UnlitGltf {
     /// [`Self::spawn_node`]).
     pub fn spawn_default_scene(
         &self,
-        world: &mut World,
+        world: &mut ScopedWorldMut<'_>,
         resources: &GltfResources,
     ) -> Vec<GltfNode> {
         let scene = self
@@ -1842,6 +1850,7 @@ fn quat(value: [f32; 4]) -> glam::Quat {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unlit_ecs::World;
 
     /// A one-by-one image of `pixels` in the given format.
     fn image(format: gltf::image::Format, pixels: Vec<u8>) -> gltf::image::Data {
@@ -2892,7 +2901,7 @@ mod tests {
                 weights: None,
             },
         ];
-        gltf.apply_animation(&world, 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_view(), 0, 1.0, &nodes);
         // The parent's own channel moves it...
         assert_eq!(
             world
@@ -2930,7 +2939,7 @@ mod tests {
             pose: None,
             weights: None,
         }];
-        gltf.apply_animation(&world, 0, 1.999, &nodes);
+        gltf.apply_animation(&world.root_view(), 0, 1.999, &nodes);
         assert_eq!(
             world
                 .root_view()
@@ -2957,7 +2966,7 @@ mod tests {
             pose: Some(pose),
             weights: None,
         }];
-        gltf.apply_animation(&world, 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_view(), 0, 1.0, &nodes);
         let pose = world
             .root_view()
             .get::<SkinPose>(pose)
@@ -2985,7 +2994,7 @@ mod tests {
             pose: None,
             weights: Some(weights),
         }];
-        gltf.apply_animation(&world, 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_view(), 0, 1.0, &nodes);
         let weights = world
             .root_view()
             .get::<MorphWeights>(weights)

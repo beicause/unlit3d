@@ -36,8 +36,8 @@ fn offscreen_world(ctx: &Ctx) -> World {
     );
     let renderer = world.root_view_mut().spawn((Renderer::new(context),));
     world.root_view_mut().spawn((RenderLoadOps::default(),));
-    let mut source = MeshSource::new(&world, context);
-    source.register_unlit_family(&world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
     world.root_view_mut().spawn((Source::new(source),));
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.

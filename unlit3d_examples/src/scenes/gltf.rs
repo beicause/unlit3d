@@ -99,8 +99,8 @@ fn build(
     let fox = UnlitGltf::from_bytes(FOX).expect("the fox asset is a valid glTF document");
     let morph = UnlitGltf::from_bytes(MORPH).expect("the morph asset is a valid glTF document");
 
-    let mut source = MeshSource::new(world, context);
-    source.register_unlit_family(world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
     let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     // Both documents' resources go into the one source the scene draws
@@ -118,8 +118,8 @@ fn build(
     // The spawned handles are what `apply_animation` writes through: the fox's
     // handle carries the pose entity its skin reads, and the cube's carries
     // the weights entity its morph targets read.
-    let fox_nodes = fox.spawn_default_scene(world, &fox_resources);
-    let morph_nodes = morph.spawn_default_scene(world, &morph_resources);
+    let fox_nodes = fox.spawn_default_scene(&mut world.root_view_mut(), &fox_resources);
+    let morph_nodes = morph.spawn_default_scene(&mut world.root_view_mut(), &morph_resources);
 
     // Neither document animates the node its mesh hangs from — the fox's mesh
     // sits on a root beside the skeleton, and the cube's node is animated only
@@ -168,8 +168,13 @@ fn build(
                 clock += delta;
                 (clock % fox_duration, clock % morph_duration)
             };
-            fox.apply_animation(world, fox_animation, fox_time, &fox_nodes);
-            morph.apply_animation(world, morph_animation, morph_time, &morph_nodes);
+            fox.apply_animation(&world.root_view(), fox_animation, fox_time, &fox_nodes);
+            morph.apply_animation(
+                &world.root_view(),
+                morph_animation,
+                morph_time,
+                &morph_nodes,
+            );
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the assets.
             super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);

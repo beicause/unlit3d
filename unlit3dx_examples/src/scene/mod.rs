@@ -188,8 +188,8 @@ pub fn setup_render_world(
         capabilities,
     );
     let renderer = nested.root_view_mut().spawn((Renderer::new(context),));
-    let mut source = MeshSource::new(&nested, context);
-    source.register_unlit_family(&nested);
+    let mut source = MeshSource::new(&nested.root_view(), context);
+    source.register_unlit_family(&nested.root_view());
     nested.root_view_mut().spawn((Source::new(source),));
     renderer
 }
@@ -649,13 +649,15 @@ impl SceneStepper {
 /// [`request_drop_in`] instead.
 pub fn request_drop(sender: &JobSender) {
     sender
-        .send(Box::new(|world: &mut World| request_drop_in(world)))
+        .send(Box::new(|world: &mut World| {
+            request_drop_in(&world.root_view());
+        }))
         .ok();
 }
 
 /// Ask the shapes to drop the next one, from inside the gameplay world.
-pub fn request_drop_in(world: &World) {
-    if let Some((_, mut balls)) = world.root_view().query::<&mut Balls>().next() {
+pub fn request_drop_in(world: &ScopedWorld<'_>) {
+    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
         balls.request_drop();
     }
 }
@@ -663,8 +665,8 @@ pub fn request_drop_in(world: &World) {
 /// Ask the shapes to go back in the pool, from inside the gameplay world.
 ///
 /// The music keeps playing; the panel drives it.
-pub fn request_clear_in(world: &World) {
-    if let Some((_, mut balls)) = world.root_view().query::<&mut Balls>().next() {
+pub fn request_clear_in(world: &ScopedWorld<'_>) {
+    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
         balls.request_clear();
     }
 }
@@ -760,8 +762,7 @@ mod tests {
                 world
                     .root_view_mut()
                     .spawn((UiPanel::new(move |world, _, _ui: &mut egui::Ui| {
-                        if let Some((_, events)) = world.root_view().query::<&InputEvents>().next()
-                        {
+                        if let Some((_, events)) = world.query::<&InputEvents>().next() {
                             events.with_batch(|batch| {
                                 counted.fetch_add(batch.len(), Ordering::Relaxed);
                             });

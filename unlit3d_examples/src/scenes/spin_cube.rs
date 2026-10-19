@@ -52,22 +52,22 @@ fn build(
     let SceneOptions { ui, .. } = options;
 
     // The built-in mesh source and the frame driver, as resource entities.
-    let mut source = MeshSource::new(world, context);
-    source.register_unlit_family(world);
-    let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(world)));
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
+    let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_view())));
     let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.
-    let (mesh, material) = world
-        .root_view()
+    let root = world.root_view();
+    let (mesh, material) = root
         .with_mut::<Source, _>(source_entity, |source| {
             let source = source
                 .as_mut::<MeshSource>()
                 .expect("the source entity carries a MeshSource");
             let (positions, uvs, colors, indices) = super::cube();
             let mesh = source.allocate_unlit_mesh(
-                world,
+                &root,
                 &key,
                 UnlitMeshDesc {
                     positions: &positions,
@@ -77,13 +77,13 @@ fn build(
                     ..Default::default()
                 },
             );
-            let texture = checkerboard(&source.device(world), &source.queue(world), 64);
-            let view = source.register_texture_and_default_view(world, texture).1;
+            let texture = checkerboard(&source.device(&root), &source.queue(&root), 64);
+            let view = source.register_texture_and_default_view(&root, texture).1;
             // Linear filtering: the checkerboard is a high-frequency pattern,
             // and point sampling it under minification aliases into moire on
             // the faces the camera sees at a glancing angle.
             let sampler = source.register_sampler(
-                world,
+                &root,
                 Some(wgpu::SamplerDescriptor {
                     mag_filter: wgpu::FilterMode::Linear,
                     min_filter: wgpu::FilterMode::Linear,
@@ -92,7 +92,7 @@ fn build(
                     ..Default::default()
                 }),
             );
-            let material = source.allocate_unlit_material(world, &key, view, sampler);
+            let material = source.allocate_unlit_material(&root, &key, view, sampler);
             (mesh, material)
         })
         .expect("the source entity exists");
@@ -134,26 +134,18 @@ fn build(
                 egui::Window::new("unlit3d")
                     .id(egui::Id::new("unlit3d"))
                     .show(ui.ctx(), |ui| {
-                        let frames = world
-                            .root_view()
-                            .get::<FrameCount>(cube)
-                            .map_or(0, |frames| frames.0);
+                        let frames = world.get::<FrameCount>(cube).map_or(0, |frames| frames.0);
                         ui.label(format!("frame {frames}"));
                         ui.label("The cube spins behind this panel.");
 
-                        let spinning = world
-                            .root_view()
-                            .get::<Spin>(cube)
-                            .is_some_and(|spin| spin.spinning);
+                        let spinning = world.get::<Spin>(cube).is_some_and(|spin| spin.spinning);
                         let mut spinning_now = spinning;
                         if ui.checkbox(&mut spinning_now, "Spin").changed() {
                             let _ = world
-                                .root_view()
                                 .with_mut::<Spin, _>(cube, |spin| spin.spinning = spinning_now);
                         }
 
                         let mut speed = world
-                            .root_view()
                             .get::<Spin>(cube)
                             .map_or(SPIN, |spin| spin.radians_per_second);
                         if ui
@@ -161,14 +153,11 @@ fn build(
                             .changed()
                         {
                             let _ = world
-                                .root_view()
                                 .with_mut::<Spin, _>(cube, |spin| spin.radians_per_second = speed);
                         }
 
                         if ui.button("Reset the spin").clicked() {
-                            let _ = world
-                                .root_view()
-                                .with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
+                            let _ = world.with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
                         }
 
                         // The world's input state, read out under the panel's own
@@ -177,15 +166,15 @@ fn build(
                         // ever sit on top of this one and be painted as the window
                         // the user is working in.
                         ui.separator();
-                        let held = world
-                            .root_view()
-                            .query::<&InputEvents>()
-                            .next()
-                            .is_some_and(|(_, events)| {
-                                events.with_state(|state| state.pointer_down)
-                            });
+                        let held =
+                            world
+                                .query::<&InputEvents>()
+                                .next()
+                                .is_some_and(|(_, events)| {
+                                    events.with_state(|state| state.pointer_down)
+                                });
                         ui.label(if held { "pointer: down" } else { "pointer: up" });
-                        match world.root_view().get::<CameraOrbit>(camera) {
+                        match world.get::<CameraOrbit>(camera) {
                             Some(orbit) => ui.label(format!(
                                 "azimuth {:.2}, elevation {:.2}",
                                 orbit.azimuth, orbit.elevation

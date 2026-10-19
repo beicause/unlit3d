@@ -51,7 +51,10 @@ It is at an **early stage of development** and its API changes freely.
   the caller decides when to poll it; no executor is built in.
 - **The one relation is the scope.** Every entity carries a [`ScopeOf`]
   pointing at its parent, which is what makes a scene a subtree: a view of that
-  entity sees it and its descendants, and nobody else does. It is the only
+  entity sees it and its descendants, and nobody else does — a sibling's subtree
+  is out of reach in both directions, so two scenes side by side share nothing.
+  A view also reaches the [`World::shared`] subtree, which is how a resource
+  every scene draws through stays put while the scenes are replaced. It is the only
   relation the world maintains, because visibility has to be decided on every
   access and a caller-maintained relation could not be. Any other reference
   between entities is still an [`Entity`] in a component, kept up to date by

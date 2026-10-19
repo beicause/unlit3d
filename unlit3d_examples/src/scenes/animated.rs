@@ -102,10 +102,10 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(world, context);
-    source.register_unlit_family(world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
     // Every cell is tinted through its instance colour.
-    let key = UnlitPipelineKey::new(super::unlit_options(&source.device(world)));
+    let key = UnlitPipelineKey::new(super::unlit_options(&source.device(&world.root_view())));
     let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     let camera_entity = world.root_view_mut().spawn((orbit_camera(0, size),));

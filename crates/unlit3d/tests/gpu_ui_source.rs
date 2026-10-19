@@ -671,10 +671,7 @@ struct Burst(usize);
 /// held many of them leaves the buffer with room to spare for every later one.
 fn burst_panel(extra: Entity) -> UiPanel {
     UiPanel::new(move |world, _entity, ui| {
-        let burst = world
-            .root_view()
-            .get::<Burst>(extra)
-            .map_or(0, |burst| burst.0);
+        let burst = world.get::<Burst>(extra).map_or(0, |burst| burst.0);
         let painter = ui.painter();
         for index in 0..burst {
             let column = (index % 8) as f32;

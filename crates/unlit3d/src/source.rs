@@ -18,7 +18,7 @@
 
 use core::any::Any;
 
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, ScopedWorld, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::{Scene, ViewportRect};
@@ -85,8 +85,8 @@ impl RenderContext {
     /// and this context's graph address, and fetches the graph when it ends, so
     /// the code between taking the scope and dropping it is free to borrow the
     /// graph itself, as a build does.
-    pub fn maintain_scope<'w>(self, world: &'w World) -> MaintainScope<'w> {
-        MaintainScope { world, ctx: self }
+    pub fn maintain_scope<'w>(self, view: ScopedWorld<'w>) -> MaintainScope<'w> {
+        MaintainScope { view, ctx: self }
     }
 }
 
@@ -115,7 +115,7 @@ impl RenderContext {
 /// the bind groups the pass just rebuilt — drops it explicitly at that point.
 #[must_use = "the graph is maintained when the scope is dropped"]
 pub struct MaintainScope<'w> {
-    world: &'w World,
+    view: ScopedWorld<'w>,
     ctx: RenderContext,
 }
 
@@ -123,11 +123,7 @@ impl Drop for MaintainScope<'_> {
     fn drop(&mut self) {
         // A missing graph is a caller error, and panicking here would be a
         // second panic on the way out of one, so the scope does nothing.
-        if let Some(mut graph) = self
-            .world
-            .root_view()
-            .get_mut::<ResourceGraph>(self.ctx.graph)
-        {
+        if let Some(mut graph) = self.view.get_mut::<ResourceGraph>(self.ctx.graph) {
             graph.maintain();
         }
     }
@@ -255,10 +251,8 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
 /// stated what the frame draws into, which is a programming error on its part —
 /// a source cannot invent a target — so a source that needs it should refuse to
 /// draw rather than fall back.
-pub fn frame_target(world: &World) -> Option<FrameTarget> {
-    world
-        .root_view()
-        .query::<&FrameTargetSlot>()
+pub fn frame_target(view: &ScopedWorld<'_>) -> Option<FrameTarget> {
+    view.query::<&FrameTargetSlot>()
         .next()
         .and_then(|(_, slot)| slot.0)
 }
@@ -268,18 +262,11 @@ pub fn frame_target(world: &World) -> Option<FrameTarget> {
 /// The frame loop calls this before it renders — [`Renderer::set_render_target`](crate::renderer::Renderer::set_render_target)
 /// does it for the built-in path. Returns whether a slot existed to write; a
 /// world only gets one from [`spawn_context`].
-pub fn set_frame_target(world: &World, target: FrameTarget) -> bool {
-    let Some(entity) = world
-        .root_view()
-        .query::<&FrameTargetSlot>()
-        .next()
-        .map(|(e, _)| e)
-    else {
+pub fn set_frame_target(view: &ScopedWorld<'_>, target: FrameTarget) -> bool {
+    let Some(entity) = view.query::<&FrameTargetSlot>().next().map(|(e, _)| e) else {
         return false;
     };
-    world
-        .root_view()
-        .with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = Some(target))
+    view.with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = Some(target))
         .is_some()
 }
 
@@ -316,10 +303,8 @@ pub(crate) fn unset_frame_target(world: &World) -> bool {
 /// `None` means the frame loop stated no letterbox, so the whole target is the
 /// region — the ordinary case, and the one every caller that never letterboxes
 /// leaves the world in.
-pub fn frame_viewport(world: &World) -> Option<FrameViewport> {
-    world
-        .root_view()
-        .query::<&FrameViewportSlot>()
+pub fn frame_viewport(view: &ScopedWorld<'_>) -> Option<FrameViewport> {
+    view.query::<&FrameViewportSlot>()
         .next()
         .and_then(|(_, slot)| slot.0)
 }
@@ -367,7 +352,7 @@ pub trait FrameSource: 'static {
     /// frame still records, and still applies its load ops.
     fn build_scene(
         &mut self,
-        world: &World,
+        view: &ScopedWorld<'_>,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     );
@@ -452,11 +437,11 @@ impl Source {
     /// Assemble this source's scene for the frame.
     pub fn build_scene(
         &mut self,
-        world: &World,
+        view: &ScopedWorld<'_>,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        self.source.build_scene(world, ctx, encoder);
+        self.source.build_scene(view, ctx, encoder);
     }
 
     /// The scene this source built for the frame.
@@ -496,27 +481,26 @@ pub fn spawn_context(
         graph,
         capabilities: world.reserve_entity(),
     };
-    world
-        .root_view_mut()
-        .spawn_at(context.device, (device, context));
-    world
-        .root_view_mut()
-        .spawn_at(context.queue, (queue, context));
-    world
-        .root_view_mut()
-        .spawn_at(context.capabilities, (capabilities, context));
-    world
-        .root_view_mut()
-        .spawn_at(graph, (graph_component, context));
+    // Every one of these belongs to the shared subtree: a source reads the GPU
+    // state from its own view, and no view may remove what every other view
+    // depends on.
+    let shared = world.shared();
+    let mut shared_view = world
+        .view_mut(shared)
+        .expect("the shared scope exists from the moment the world is built");
+    shared_view.spawn_at(context.device, (device, context));
+    shared_view.spawn_at(context.queue, (queue, context));
+    shared_view.spawn_at(context.capabilities, (capabilities, context));
+    shared_view.spawn_at(graph, (graph_component, context));
     // The frame loop writes the target here every frame; until it does, no
     // source may draw.
-    world.root_view_mut().spawn((FrameTargetSlot::default(),));
+    shared_view.spawn((FrameTargetSlot::default(),));
     // Where in that target the frame's 3D content belongs; the whole of it
     // until a frame loop states a letterbox.
-    world.root_view_mut().spawn((FrameViewportSlot::default(),));
+    shared_view.spawn((FrameViewportSlot::default(),));
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
-    world.root_view_mut().spawn((OpenUrls::default(),));
+    shared_view.spawn((OpenUrls::default(),));
     context
 }
 
@@ -672,7 +656,7 @@ mod tests {
     impl FrameSource for RecordingSource {
         fn build_scene(
             &mut self,
-            _world: &World,
+            _view: &ScopedWorld<'_>,
             _ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
@@ -792,7 +776,7 @@ mod tests {
         impl FrameSource for OtherSource {
             fn build_scene(
                 &mut self,
-                _world: &World,
+                _view: &ScopedWorld<'_>,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -850,7 +834,7 @@ mod tests {
         impl FrameSource for CountingSource {
             fn build_scene(
                 &mut self,
-                _world: &World,
+                _view: &ScopedWorld<'_>,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -886,7 +870,8 @@ mod tests {
             world
                 .root_view()
                 .with_mut::<Source, _>(entity, |source| {
-                    source.build_scene(&world, ctx, &mut encoder)
+                    let scope = world.scope_of(entity).unwrap_or_else(|| world.root());
+                    source.build_scene(&world.view(scope).unwrap(), ctx, &mut encoder)
                 })
                 .unwrap();
         }
@@ -908,7 +893,7 @@ mod tests {
         impl FrameSource for PhasedSource {
             fn build_scene(
                 &mut self,
-                _world: &World,
+                _view: &ScopedWorld<'_>,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -942,7 +927,8 @@ mod tests {
             world
                 .root_view()
                 .with_mut::<Source, _>(*entity, |source| {
-                    source.build_scene(&world, ctx, &mut encoder)
+                    let scope = world.scope_of(*entity).unwrap_or_else(|| world.root());
+                    source.build_scene(&world.view(scope).unwrap(), ctx, &mut encoder)
                 })
                 .unwrap();
         }
@@ -1295,7 +1281,7 @@ mod release_tests {
     impl FrameSource for OwningSource {
         fn build_scene(
             &mut self,
-            world: &World,
+            view: &ScopedWorld<'_>,
             ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
@@ -1304,9 +1290,7 @@ mod release_tests {
             self.context = ctx;
             if self.node.is_none() {
                 self.node = Some(
-                    world
-                        .root_view()
-                        .get_mut::<ResourceGraph>(ctx.graph)
+                    view.get_mut::<ResourceGraph>(ctx.graph)
                         .expect("the context's graph exists")
                         .insert(GraphResource::Virtual, None),
                 );
@@ -1333,19 +1317,17 @@ mod release_tests {
     impl FrameSource for EarlyReturnSource {
         fn build_scene(
             &mut self,
-            world: &World,
+            view: &ScopedWorld<'_>,
             ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             // The scope is the whole of the build's graph handling: this source
             // never calls `maintain`, and the return is what settles the graph.
-            let _maintain = ctx.maintain_scope(world);
+            let _maintain = ctx.maintain_scope(*view);
             self.context = ctx;
             if self.node.is_none() {
                 self.node = Some(
-                    world
-                        .root_view()
-                        .get_mut::<ResourceGraph>(ctx.graph)
+                    view.get_mut::<ResourceGraph>(ctx.graph)
                         .expect("the context's graph exists")
                         .insert(GraphResource::Virtual, None),
                 );
@@ -1387,7 +1369,8 @@ mod release_tests {
         world
             .root_view()
             .with_mut::<Source, _>(entity, |source| {
-                source.build_scene(world, ctx, &mut encoder)
+                let scope = world.scope_of(entity).unwrap_or_else(|| world.root());
+                source.build_scene(&world.view(scope).unwrap(), ctx, &mut encoder)
             })
             .expect("the source entity exists");
     }

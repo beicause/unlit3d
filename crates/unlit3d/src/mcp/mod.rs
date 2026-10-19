@@ -181,8 +181,9 @@ async fn save_screenshot(commands: CommandSender, args: SaveScreenshot) -> ToolR
 /// Load a glTF file and spawn its default scene.
 async fn load_gltf(commands: CommandSender, args: LoadGltf) -> ToolResult {
     let path = args.path;
+    let scope = args.scope.map(entity);
     command(&commands, args.world, move |world| {
-        host::load_gltf(world, args.source.map(entity), &path)
+        host::load_gltf(world, args.source.map(entity), scope, &path)
     })
     .await
 }

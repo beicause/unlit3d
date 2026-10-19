@@ -11,7 +11,7 @@ use core::cmp::Ordering;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
-use unlit_ecs::{Query, World};
+use unlit_ecs::{Query, ScopedWorld};
 use unlit_wgpu::instance_stream::InstanceBuffer;
 use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
@@ -138,8 +138,9 @@ pub(crate) struct VisibleEntry {
 /// Holding the device and resources here lets a family build the
 /// [FamilyContext] its factory sees without borrowing the source again.
 pub(crate) struct FamilyFrame<'a> {
-    /// The world the entities live in.
-    pub(crate) world: &'a World,
+    /// The view the entities are drawn through: the drawing source's own
+    /// subtree, so a family resolves what that source owns.
+    pub(crate) world: ScopedWorld<'a>,
     /// The visible meshes culled this frame, with placement resolved.
     pub(crate) meshes: &'a [VisibleMesh],
     /// The frame's camera, for the z-sorted sort.
@@ -203,19 +204,22 @@ where
         profiling::scope!("scene.resolve.family");
         // Copied out of `self.frame` so the resolved state borrows the world
         // rather than `self`, which `push` needs mutably.
-        let world = self.frame.world;
+        let world = &self.frame.world;
         let mut cached: Option<u32> = None;
         let mut state = None;
         for &candidate in self.frame.meshes {
-            let Some(location) = world.root_view().location(candidate.entity) else {
+            let Some(location) = world.location(candidate.entity) else {
                 continue;
             };
             if cached != Some(location.archetype()) {
                 cached = Some(location.archetype());
-                let archetype = world
-                    .root_view()
-                    .archetype(location.archetype())
-                    .expect("a live entity's archetype exists");
+                // A view only hands out the archetypes it sees in full: one
+                // shared with a sibling scope is not among them, and none of
+                // its rows are this source's to draw.
+                let Some(archetype) = world.archetype(location.archetype()) else {
+                    state = None;
+                    continue;
+                };
                 // An entity from another family carries a different key type,
                 // so its archetype does not match and the whole group is
                 // skipped.
@@ -445,7 +449,7 @@ pub(crate) struct SceneFrame<'a> {
 /// by view-axis depth so blending is order-independent.
 pub(crate) fn collect_and_sort_visible(
     frame: SceneFrame<'_>,
-    world: &World,
+    view: ScopedWorld<'_>,
     camera: &Camera,
     surface: SurfaceKey,
     device: &wgpu::Device,
@@ -461,11 +465,11 @@ pub(crate) fn collect_and_sort_visible(
 
     {
         profiling::scope!("scene.cull");
-        collect_visible(world, &frustum, meshes);
+        collect_visible(&view, &frustum, meshes);
     }
     visible.clear();
     let frame = FamilyFrame {
-        world,
+        world: view,
         meshes,
         camera,
         surface,

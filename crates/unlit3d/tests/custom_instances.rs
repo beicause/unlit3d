@@ -315,7 +315,6 @@ impl InstanceData for CustomInstances {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let instance = context
             .world
-            .root_view()
             .get::<CustomInstance>(context.entity)
             .expect("every visible custom entity carries `CustomInstance`");
         let record = InstanceRecord {

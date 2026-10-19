@@ -237,8 +237,8 @@ pub fn build_world(
         stencil: stencil_clear(),
     },));
 
-    let mut source = MeshSource::new(&world, context);
-    source.register_unlit_family(&world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
     let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     for document in &config.documents {
@@ -246,7 +246,7 @@ pub fn build_world(
         let resources = with_mesh_source(&world, source_entity, |source, world| {
             gltf.insert_resources(source, world)
         });
-        let nodes = gltf.spawn_default_scene(&mut world, &resources);
+        let nodes = gltf.spawn_default_scene(&mut world.root_view_mut(), &resources);
         if let Some(placement) = &document.placement {
             let transform = placement.transform();
             for node in &nodes {
@@ -259,7 +259,7 @@ pub fn build_world(
         }
         if let Some(animation) = &document.animation {
             let index = animation_index(&gltf, animation)?;
-            gltf.apply_animation(&world, index, document.time, &nodes);
+            gltf.apply_animation(&world.root_view(), index, document.time, &nodes);
         }
     }
 
@@ -306,8 +306,8 @@ pub fn offscreen_world(
     );
     let renderer = world.root_view_mut().spawn((Renderer::new(context),));
     world.root_view_mut().spawn((RenderLoadOps::default(),));
-    let mut source = MeshSource::new(&world, context);
-    source.register_unlit_family(&world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
     world.root_view_mut().spawn((Source::new(source),));
     let input = InputWriter::new();
     world
@@ -505,16 +505,21 @@ fn bind_target(
 fn with_mesh_source<R>(
     world: &World,
     source_entity: Entity,
-    f: impl FnOnce(&mut MeshSource, &World) -> R,
+    f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
 ) -> R {
-    let mut source = world
-        .root_view()
+    // The view is the source's own, so what its closure reads is the subtree
+    // the source draws.
+    let scope = world
+        .scope_of(source_entity)
+        .expect("the source entity is alive");
+    let view = world.view(scope).expect("the source's scope exists");
+    let mut source = view
         .get_mut::<Source>(source_entity)
         .expect("the mesh source entity exists");
     let mesh = source
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");
-    f(mesh, world)
+    f(mesh, &view)
 }
 
 /// Build the camera from the configuration and the render size's aspect ratio.

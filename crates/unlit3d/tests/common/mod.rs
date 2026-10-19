@@ -6,7 +6,7 @@
 pub use unlit_wgpu_test_util::{Ctx, Frame, assert_image_snapshot, count_pixels_off_background};
 
 use core::ops::DerefMut;
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, ScopedWorld, World};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
@@ -43,8 +43,8 @@ impl TestGpu {
     /// registered, and the frame driver into `world`.
     pub fn new(world: &mut World, ctx: &Ctx) -> Self {
         let mut test = Self::frame_only(world, ctx);
-        let mut source = MeshSource::new(world, test.context);
-        source.register_unlit_family(world);
+        let mut source = MeshSource::new(&world.root_view(), test.context);
+        source.register_unlit_family(&world.root_view());
         test.source = Some(world.root_view_mut().spawn((Source::new(source),)));
         test
     }
@@ -88,7 +88,7 @@ impl TestGpu {
     pub fn with_mesh_source<R>(
         &self,
         world: &World,
-        f: impl FnOnce(&mut MeshSource, &World) -> R,
+        f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
     ) -> R {
         let entity = self.mesh_source();
         let mut source = world
@@ -98,7 +98,11 @@ impl TestGpu {
         let mesh = source
             .as_mut::<MeshSource>()
             .expect("the source is a MeshSource");
-        f(mesh, world)
+        // The closure works through the source's own view, which is the scope
+        // the source was spawned in: that is what a frame hands it too.
+        let scope = world.scope_of(entity).expect("the source entity is alive");
+        let view = world.view(scope).expect("the source's scope exists");
+        f(mesh, &view)
     }
 
     /// Run `f` on the frame driver.

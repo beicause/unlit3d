@@ -18,7 +18,7 @@ use core::ops::DerefMut;
 use hashbrown::HashMap;
 use std::rc::Rc;
 
-use unlit_ecs::{TypeIdHashMap, World};
+use unlit_ecs::{ScopedWorld, TypeIdHashMap};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
@@ -254,19 +254,16 @@ impl MeshSource {
     /// # Panics
     ///
     /// If `ctx` does not name the world's device, queue and resource graph.
-    pub fn new(world: &World, ctx: RenderContext) -> Self {
+    pub fn new(world: &ScopedWorld<'_>, ctx: RenderContext) -> Self {
         let device = world
-            .root_view()
             .get::<wgpu::Device>(ctx.device)
             .expect("the context names the world's device")
             .clone();
         let queue = world
-            .root_view()
             .get::<wgpu::Queue>(ctx.queue)
             .expect("the context names the world's queue")
             .clone();
         let mut graph = world
-            .root_view()
             .get_mut::<ResourceGraph>(ctx.graph)
             .expect("the context names the world's resource graph");
 
@@ -407,7 +404,7 @@ impl MeshSource {
     /// The world addresses this source draws through.
     ///
     /// Setup-time code that needs the resource graph reaches it with
-    /// `world.root_view().get_mut::<ResourceGraph>(source.context().graph)`, which is an
+    /// `world.get_mut::<ResourceGraph>(source.context().graph)`, which is an
     /// ordinary ECS access: the graph and the source live in different cells.
     pub fn context(&self) -> RenderContext {
         self.context
@@ -418,9 +415,8 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's device resource is gone.
-    pub fn device(&self, world: &World) -> wgpu::Device {
+    pub fn device(&self, world: &ScopedWorld<'_>) -> wgpu::Device {
         world
-            .root_view()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
             .clone()
@@ -431,9 +427,8 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's queue resource is gone.
-    pub fn queue(&self, world: &World) -> wgpu::Queue {
+    pub fn queue(&self, world: &ScopedWorld<'_>) -> wgpu::Queue {
         world
-            .root_view()
             .get::<wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
             .clone()
@@ -448,9 +443,8 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's capabilities resource is gone.
-    pub fn capabilities(&self, world: &World) -> DeviceCapabilities {
+    pub fn capabilities(&self, world: &ScopedWorld<'_>) -> DeviceCapabilities {
         *world
-            .root_view()
             .get::<DeviceCapabilities>(self.context.capabilities)
             .expect("the context's capabilities resource exists")
     }
@@ -458,7 +452,7 @@ impl MeshSource {
     /// Whether the device supports a non-zero `base_vertex` on an indexed draw.
     ///
     /// Shorthand for the one capability the mesh upload asks about.
-    pub(crate) fn base_vertex(&self, world: &World) -> bool {
+    pub(crate) fn base_vertex(&self, world: &ScopedWorld<'_>) -> bool {
         self.capabilities(world).base_vertex()
     }
 
@@ -472,12 +466,10 @@ impl MeshSource {
     ///
     /// If the context's graph resource is gone.
     pub fn graph<'w>(
-        world: &'w World,
+        view: &ScopedWorld<'w>,
         ctx: RenderContext,
     ) -> impl DerefMut<Target = ResourceGraph> + 'w {
-        world
-            .root_view()
-            .get_mut::<ResourceGraph>(ctx.graph)
+        view.get_mut::<ResourceGraph>(ctx.graph)
             .expect("the context's resource graph exists")
     }
 
@@ -505,7 +497,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If a family is already registered for `K`.
-    pub fn register_family<K, F, I>(&mut self, world: &World, factory: F, instances: I)
+    pub fn register_family<K, F, I>(&mut self, world: &ScopedWorld<'_>, factory: F, instances: I)
     where
         K: RenderPipelineKey + 'static,
         F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>
@@ -545,7 +537,7 @@ impl MeshSource {
     ///
     /// If `count` is zero for a non-empty draw, or if the index format does
     /// not match the packed data.
-    pub fn allocate_mesh(&mut self, world: &World, desc: MeshDesc) -> GpuMesh {
+    pub fn allocate_mesh(&mut self, world: &ScopedWorld<'_>, desc: MeshDesc) -> GpuMesh {
         let metadata = MeshMetadata {
             aabb_center: desc.aabb.center,
             aabb_half_extents: desc.aabb.half_extents,
@@ -569,7 +561,7 @@ impl MeshSource {
     /// a skinned draw can be required to name the pose entity it deforms by.
     pub(crate) fn allocate_mesh_with_metadata(
         &mut self,
-        world: &World,
+        world: &ScopedWorld<'_>,
         desc: MeshDesc,
         mut metadata: MeshMetadata,
         skinned: bool,
@@ -727,7 +719,7 @@ impl MeshSource {
     /// graph holds it.
     pub fn register_texture_and_default_view(
         &mut self,
-        world: &World,
+        world: &ScopedWorld<'_>,
         texture: wgpu::Texture,
     ) -> (ResHandle<wgpu::Texture>, ResHandle<TextureView>) {
         let mut graph = Self::graph(world, self.context);
@@ -745,7 +737,7 @@ impl MeshSource {
     /// insert it into the resource graph and return its id.
     pub fn register_sampler(
         &mut self,
-        world: &World,
+        world: &ScopedWorld<'_>,
         descriptor: Option<wgpu::SamplerDescriptor<'_>>,
     ) -> ResHandle<wgpu::Sampler> {
         let sampler = self
@@ -772,7 +764,7 @@ impl MeshSource {
     /// If a resource `build` reads is not in the graph.
     pub fn allocate_material(
         &mut self,
-        world: &World,
+        world: &ScopedWorld<'_>,
         build: impl Fn(&ResourceGraph) -> wgpu::BindGroup + 'static,
         dependencies: impl IntoIterator<Item = ResHandle>,
     ) -> GpuMaterial {
@@ -842,7 +834,7 @@ impl MeshSource {
     ///
     /// Like the metadata array the resource is replaced only when it is too
     /// small, so a steady frame rewrites in place and rebuilds no bind group.
-    fn upload_joints(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_joints(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
         let device = self.device(world);
         let needed = self.packed_joints.len().max(1) as u64;
         Self::grow_array_to_fit(
@@ -866,7 +858,7 @@ impl MeshSource {
     /// resource is
     /// replaced only when it is too small, so a steady scene rewrites in place
     /// and rebuilds no bind group.
-    fn upload_morph_deltas(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_morph_deltas(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
         if !self.morph_deltas_dirty {
             return;
         }
@@ -883,7 +875,11 @@ impl MeshSource {
 
     /// Grow the frame's morph-weight array if the packed data outgrew it, and
     /// upload it through the frame's encoder.
-    fn upload_morph_weights(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_morph_weights(
+        &mut self,
+        world: &ScopedWorld<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         let device = self.device(world);
         let needed = self.packed_morph_weights.len().max(1) as u64;
         Self::grow_array_to_fit(
@@ -922,7 +918,7 @@ impl MeshSource {
     /// [`Self::maintain`] rebuilds them. A no-op when the array already has the
     /// room, so a steady frame replaces nothing and marks nothing.
     fn grow_array_to_fit(
-        world: &World,
+        world: &ScopedWorld<'_>,
         ctx: RenderContext,
         label: &str,
         array: &mut Array,
@@ -951,13 +947,18 @@ impl MeshSource {
     /// them. A built scene runs it once, at the point before the frame reads
     /// any of those groups; [`RenderContext::maintain_scope`] is how a build
     /// states that point without a call at each of its returns.
-    pub fn maintain(&mut self, world: &World) {
+    pub fn maintain(&mut self, world: &ScopedWorld<'_>) {
         Self::graph(world, self.context).maintain();
     }
 
     /// Upload the camera uniform, staging the bytes through the frame's
     /// encoder.
-    fn upload_camera(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder, view: &View) {
+    fn upload_camera(
+        &mut self,
+        world: &ScopedWorld<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &View,
+    ) {
         let buffer = Self::graph(world, self.context)
             .get(&self.camera_buf)
             .expect("camera buffer exists")
@@ -968,7 +969,7 @@ impl MeshSource {
 
     /// Upload the frame-globals uniform, staging the bytes through the frame's
     /// encoder.
-    fn upload_globals(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_globals(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
         let buffer = Self::graph(world, self.context)
             .get(&self.globals_buf)
             .expect("globals buffer exists")
@@ -987,7 +988,11 @@ impl MeshSource {
     /// Each family owns one instance stream. The records are written in
     /// visible order, so the entry an instance index names is the entry whose
     /// draw range covers that index.
-    fn pack_family_instances(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+    fn pack_family_instances(
+        &mut self,
+        world: &ScopedWorld<'_>,
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
         let device = self.device(world);
         // Split the borrows: each entry is written while its family's stream
         // grows, and while the two frame arrays a family may append to grow.
@@ -1006,7 +1011,7 @@ impl MeshSource {
         for entry in visible_cache.iter_mut() {
             let mesh = &entry.mesh;
             let mut context = InstanceContext::new(
-                world,
+                *world,
                 mesh.entity,
                 mesh.world_from_local,
                 packed_joints,
@@ -1026,7 +1031,7 @@ impl MeshSource {
     /// in the next frame together with the draws that read it. The storage
     /// buffer is recreated only when the array outgrows it, so a steady scene
     /// rewrites in place and rebuilds no bind group.
-    fn upload_metadata(&mut self, world: &World, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_metadata(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
         if !self.metadata_dirty {
             return;
         }
@@ -1056,7 +1061,7 @@ impl MeshSource {
     /// [`MeshSource::sync_pool_node`] for why nothing may depend on it.
     pub(crate) fn vertex_node(
         &mut self,
-        world: &World,
+        world: &ScopedWorld<'_>,
         layout: &VertexBufferLayoutDesc,
     ) -> ResHandle<wgpu::Buffer> {
         if let Some(id) = self.vertex_pool_ids.get(layout) {
@@ -1078,7 +1083,7 @@ impl MeshSource {
     /// follow it.
     pub(crate) fn sync_vertex_node(
         &mut self,
-        world: &World,
+        world: &ScopedWorld<'_>,
         id: &ResHandle<wgpu::Buffer>,
         layout: &VertexBufferLayoutDesc,
     ) {
@@ -1126,7 +1131,12 @@ impl MeshSource {
     /// `surface` is the render target this frame draws into; it is threaded
     /// into every entity's pipeline resolution, so each entry's `pipeline_id`
     /// is a concrete pipeline valid for that target.
-    fn collect_and_sort_visible(&mut self, world: &World, camera: &Camera, surface: SurfaceKey) {
+    fn collect_and_sort_visible(
+        &mut self,
+        world: &ScopedWorld<'_>,
+        camera: &Camera,
+        surface: SurfaceKey,
+    ) {
         let resources = self.global_resources();
         let device = self.device(world);
 
@@ -1150,7 +1160,7 @@ impl MeshSource {
                 visible,
                 register: &mut register,
             },
-            world,
+            *world,
             camera,
             surface,
             &device,
@@ -1170,7 +1180,7 @@ impl MeshSource {
     /// [`DrawHandlesKey`] by value rather than the handles themselves, and the
     /// expensive part — reading the mesh component and cloning its buffers out
     /// of the graph — happens once per distinct key instead of once per entity.
-    fn assemble_frame(&mut self, world: &World) {
+    fn assemble_frame(&mut self, world: &ScopedWorld<'_>) {
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
         {
@@ -1183,7 +1193,6 @@ impl MeshSource {
                 }
 
                 let mesh = world
-                    .root_view()
                     .get::<GpuMesh>(entry.mesh.entity)
                     .expect("visible entity has GpuMesh");
 
@@ -1279,10 +1288,8 @@ impl MeshSource {
 /// Several cameras may live in one world — a caller switches between them by
 /// toggling [`Camera::active`] rather than by respawning. `None` means no
 /// camera is active, and the frame draws nothing.
-fn frame_camera(world: &World) -> Option<Camera> {
-    world
-        .root_view()
-        .query::<&Camera>()
+fn frame_camera(view: &ScopedWorld<'_>) -> Option<Camera> {
+    view.query::<&Camera>()
         .find(|(_, camera)| camera.active)
         .map(|(_, camera)| Camera {
             view_from_world: camera.view_from_world,
@@ -1294,7 +1301,7 @@ fn frame_camera(world: &World) -> Option<Camera> {
 impl FrameSource for MeshSource {
     fn build_scene(
         &mut self,
-        world: &World,
+        world: &ScopedWorld<'_>,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -1302,7 +1309,7 @@ impl FrameSource for MeshSource {
         // below included, rather than only on the path that draws. The pass
         // runs where this scope ends — see the explicit drop before the frame
         // is assembled — and on any return in between.
-        let maintain = ctx.maintain_scope(world);
+        let maintain = ctx.maintain_scope(*world);
         profiling::scope!("mesh_source.build");
         // The scene is cleared on every path: a frame that records it must
         // never replay the previous frame's draws, and a source with nothing
@@ -1429,7 +1436,7 @@ mod tests {
     use crate::scene::DrawShape;
     use crate::source::{FrameTarget, set_frame_target, spawn_context};
     use crate::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
-    use unlit_ecs::Entity;
+    use unlit_ecs::{Entity, World};
     use unlit_wgpu::mesh::{MeshInstance, UvColorFlags};
     use unlit_wgpu::pipeline::{UnlitOptions, UnlitVertexChannels};
     use unlit_wgpu::render_attachments::{RenderAttachments, create_render_target};
@@ -1469,7 +1476,7 @@ mod tests {
         /// depth that reads the bounds apart from one that reads the origin.
         fn tri_mesh_at(&mut self, z: f32) -> GpuMesh {
             self.source.allocate_unlit_mesh(
-                &self.world,
+                &self.world.root_view(),
                 &self.key,
                 UnlitMeshDesc {
                     positions: &[[0.0, 0.0, z], [1.0, 0.0, z], [0.0, 1.0, z]],
@@ -1483,23 +1490,24 @@ mod tests {
 
         /// A command encoder to record a test's uploads into.
         fn encoder(&self) -> wgpu::CommandEncoder {
-            self.source.device(&self.world).create_command_encoder(
-                &wgpu::CommandEncoderDescriptor {
+            self.source
+                .device(&self.world.root_view())
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test::encoder"),
-                },
-            )
+                })
         }
 
         /// An empty bind group, for a mesh that carries a group of its own.
         fn empty_bind_group(&self) -> wgpu::BindGroup {
-            let layout = self.source.device(&self.world).create_bind_group_layout(
-                &wgpu::BindGroupLayoutDescriptor {
+            let layout = self
+                .source
+                .device(&self.world.root_view())
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("test::mesh::empty"),
                     entries: &[],
-                },
-            );
+                });
             self.source
-                .device(&self.world)
+                .device(&self.world.root_view())
                 .create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("test::mesh::empty"),
                     layout: &layout,
@@ -1512,7 +1520,7 @@ mod tests {
     /// pipeline the last one was drawn with.
     fn resolve_draw(
         source: &mut MeshSource,
-        world: &World,
+        world: &ScopedWorld<'_>,
         surface: SurfaceKey,
     ) -> RenderPipelineId {
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
@@ -1534,10 +1542,10 @@ mod tests {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let mut source = MeshSource::new(&world, ctx);
-        source.register_unlit_family(&world);
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world)));
-        let target = bind_test_target(&mut world, ctx);
+        let mut source = MeshSource::new(&world.root_view(), ctx);
+        source.register_unlit_family(&world.root_view());
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_view())));
+        let target = bind_test_target(&world.root_view(), ctx);
         Harness {
             world,
             source,
@@ -1548,9 +1556,8 @@ mod tests {
 
     /// Register a color texture and a matching depth texture in the context's
     /// graph and state them as the frame's target.
-    fn bind_test_target(world: &mut World, ctx: RenderContext) -> FrameTarget {
-        let device = world
-            .root_view()
+    fn bind_test_target(view: &ScopedWorld<'_>, ctx: RenderContext) -> FrameTarget {
+        let device = view
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device")
             .clone();
@@ -1562,8 +1569,7 @@ mod tests {
             1,
         );
         let target = {
-            let mut graph = world
-                .root_view()
+            let mut graph = view
                 .get_mut::<ResourceGraph>(ctx.graph)
                 .expect("the context's graph");
             let color = graph.insert(
@@ -1585,10 +1591,7 @@ mod tests {
                 height: TEST_SIZE,
             }
         };
-        assert!(
-            set_frame_target(world, target),
-            "the context spawned a slot"
-        );
+        assert!(set_frame_target(view, target), "the context spawned a slot");
         target
     }
 
@@ -1627,13 +1630,13 @@ mod tests {
     /// mesh group a morphing variant binds.
     fn morph_mesh(harness: &mut Harness) -> GpuMesh {
         let key = UnlitPipelineKey::new(UnlitOptions::standard(
-            &harness.source.device(&harness.world),
+            &harness.source.device(&harness.world.root_view()),
         ));
         // One target displacing all three vertices by the same amount, packed
         // vertex-major: three components per vertex.
         let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         harness.source.allocate_unlit_mesh(
-            &harness.world,
+            &harness.world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -1652,29 +1655,30 @@ mod tests {
     fn test_material_resources(
         harness: &mut Harness,
     ) -> (ResHandle<TextureView>, ResHandle<wgpu::Sampler>) {
-        let texture =
-            harness
-                .source
-                .device(&harness.world)
-                .create_texture(&wgpu::TextureDescriptor {
-                    label: Some("test::texture"),
-                    size: wgpu::Extent3d {
-                        width: 4,
-                        height: 4,
-                        depth_or_array_layers: 1,
-                    },
-                    mip_level_count: 1,
-                    sample_count: 1,
-                    dimension: wgpu::TextureDimension::D2,
-                    format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                    view_formats: &[],
-                });
+        let texture = harness
+            .source
+            .device(&harness.world.root_view())
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("test::texture"),
+                size: wgpu::Extent3d {
+                    width: 4,
+                    height: 4,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
         let view = harness
             .source
-            .register_texture_and_default_view(&harness.world, texture)
+            .register_texture_and_default_view(&harness.world.root_view(), texture)
             .1;
-        let sampler = harness.source.register_sampler(&harness.world, None);
+        let sampler = harness
+            .source
+            .register_sampler(&harness.world.root_view(), None);
         (view, sampler)
     }
 
@@ -1698,7 +1702,7 @@ mod tests {
             active: true,
         },));
 
-        let camera = frame_camera(&world).expect("a camera is active");
+        let camera = frame_camera(&world.root_view()).expect("a camera is active");
         assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
         assert!(camera.active);
 
@@ -1707,7 +1711,7 @@ mod tests {
             .root_view()
             .with_mut::<Camera, _>(active, |camera| camera.active = false)
             .expect("the entity carries a camera");
-        assert!(frame_camera(&world).is_none());
+        assert!(frame_camera(&world.root_view()).is_none());
     }
 
     #[test]
@@ -1736,9 +1740,9 @@ mod tests {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let mut source = MeshSource::new(&world, ctx);
+        let mut source = MeshSource::new(&world.root_view(), ctx);
 
-        source.register_unlit_family(&world);
+        source.register_unlit_family(&world.root_view());
 
         // Registration records the family; its first concrete pipeline is
         // built only when a draw resolves a variant.
@@ -1757,7 +1761,7 @@ mod tests {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let source = MeshSource::new(&world, ctx);
+        let source = MeshSource::new(&world.root_view(), ctx);
 
         // Nothing is privileged: pipelines arrive only through registration.
         assert!(source.pipelines.is_empty());
@@ -1766,12 +1770,14 @@ mod tests {
     #[test]
     fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
         let mut h = harness();
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&h.source.device(&h.world)));
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(
+            &h.source.device(&h.world.root_view()),
+        ));
 
         // The mesh packs the channels the caller passed, not the ones the key
         // used to declare: the options are pure policy now.
         let textured = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -1782,7 +1788,7 @@ mod tests {
             },
         );
         let bare = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -1802,10 +1808,10 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         let material = h
             .source
-            .allocate_unlit_material(&h.world, &key, view, sampler);
+            .allocate_unlit_material(&h.world.root_view(), &key, view, sampler);
         let ctx = h.source.context();
         assert!(
-            MeshSource::graph(&h.world, ctx)
+            MeshSource::graph(&h.world.root_view(), ctx)
                 .get(&material.bind_group_id)
                 .is_some()
         );
@@ -1826,8 +1832,8 @@ mod tests {
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        resolve_draw(&mut h.source, &h.world, a);
-        resolve_draw(&mut h.source, &h.world, b);
+        resolve_draw(&mut h.source, &h.world.root_view(), a);
+        resolve_draw(&mut h.source, &h.world.root_view(), b);
         assert_eq!(h.source.pipelines.len(), 2);
 
         let ctx = h.source.context();
@@ -1846,7 +1852,9 @@ mod tests {
             .collect();
         for (index, id) in ids.iter().enumerate() {
             assert!(
-                MeshSource::graph(&h.world, ctx).get(id).is_some(),
+                MeshSource::graph(&h.world.root_view(), ctx)
+                    .get(id)
+                    .is_some(),
                 "pipeline {index}'s global group is in the graph"
             );
             // No two pipelines share one: each binds its own layout.
@@ -1866,7 +1874,7 @@ mod tests {
             mesh,
             UnlitPipeline::new(h.key.clone()),
         ));
-        resolve_draw(&mut h.source, &h.world, surface);
+        resolve_draw(&mut h.source, &h.world.root_view(), surface);
 
         assert_eq!(h.source.pipelines.len(), 1);
     }
@@ -1876,12 +1884,15 @@ mod tests {
         let mut h = harness();
         let (view, sampler) = test_material_resources(&mut h);
 
-        let material =
-            h.source
-                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
+        let material = h.source.allocate_unlit_material(
+            &h.world.root_view(),
+            &h.key,
+            view.clone(),
+            sampler.clone(),
+        );
         let ctx = h.source.context();
         assert!(
-            MeshSource::graph(&h.world, ctx)
+            MeshSource::graph(&h.world.root_view(), ctx)
                 .get(&material.bind_group_id)
                 .is_some()
         );
@@ -1901,10 +1912,10 @@ mod tests {
         // indices and displacements live in pools, so those are nodes the
         // source owns and survive the mesh — what the mesh loses is its share
         // of them, which `remove_mesh` hands back.
-        let before = MeshSource::graph(&h.world, ctx).len();
+        let before = MeshSource::graph(&h.world.root_view(), ctx).len();
         let index_pool_free = h.source.index_pool.free_space();
         assert!(matches!(
-            MeshSource::graph(&h.world, ctx).get(&mesh.parts.root),
+            MeshSource::graph(&h.world.root_view(), ctx).get(&mesh.parts.root),
             Some(Virtual)
         ));
         assert!(
@@ -1917,10 +1928,10 @@ mod tests {
         // to the root is kept: an id is a strong reference, so holding one
         // would keep the very node this test watches the graph collect.
         h.source.remove_mesh(mesh);
-        h.source.maintain(&h.world);
+        h.source.maintain(&h.world.root_view());
 
         assert!(
-            MeshSource::graph(&h.world, ctx).len() < before,
+            MeshSource::graph(&h.world.root_view(), ctx).len() < before,
             "the graph shrank"
         );
         assert!(
@@ -1937,7 +1948,7 @@ mod tests {
         // meshes carry none.
         let bind_group = h.empty_bind_group();
         let mesh = h.source.allocate_mesh(
-            &h.world,
+            &h.world.root_view(),
             MeshDesc {
                 vertex_buffers: ArrayVec::new(),
                 count: 3,
@@ -1950,7 +1961,7 @@ mod tests {
         // The pools are the source's, not the mesh's: a mesh that goes away
         // must not take the shared buffers with it, so they sit outside the
         // root and the root holds only what is the mesh's own.
-        let dependencies: Vec<_> = MeshSource::graph(&h.world, ctx)
+        let dependencies: Vec<_> = MeshSource::graph(&h.world.root_view(), ctx)
             .dependencies(&mesh.parts.root)
             .collect();
         let bind_group = mesh
@@ -1968,7 +1979,9 @@ mod tests {
             "the index pool is not under the root"
         );
         assert!(
-            MeshSource::graph(&h.world, ctx).get(&pool).is_some(),
+            MeshSource::graph(&h.world.root_view(), ctx)
+                .get(&pool)
+                .is_some(),
             "the index pool survives"
         );
     }
@@ -1996,29 +2009,36 @@ mod tests {
         let mut h = harness();
         let ctx = h.source.context();
         let (view, sampler) = test_material_resources(&mut h);
-        let material =
-            h.source
-                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
+        let material = h.source.allocate_unlit_material(
+            &h.world.root_view(),
+            &h.key,
+            view.clone(),
+            sampler.clone(),
+        );
 
         // Giving the handle up is the whole of it: an id is a strong
         // reference, so a clone kept here would keep the bind group alive and
         // the assertion below would have nothing to observe.
-        let before = MeshSource::graph(&h.world, ctx).len();
+        let before = MeshSource::graph(&h.world.root_view(), ctx).len();
         drop(material);
-        h.source.maintain(&h.world);
+        h.source.maintain(&h.world.root_view());
 
         assert!(
-            MeshSource::graph(&h.world, ctx).len() < before,
+            MeshSource::graph(&h.world.root_view(), ctx).len() < before,
             "the bind group is gone"
         );
         // The view and sampler are the caller's, so giving up the material
         // that reads them leaves them alone.
         assert!(
-            MeshSource::graph(&h.world, ctx).get(&view).is_some(),
+            MeshSource::graph(&h.world.root_view(), ctx)
+                .get(&view)
+                .is_some(),
             "the view stays"
         );
         assert!(
-            MeshSource::graph(&h.world, ctx).get(&sampler).is_some(),
+            MeshSource::graph(&h.world.root_view(), ctx)
+                .get(&sampler)
+                .is_some(),
             "the sampler stays"
         );
     }
@@ -2098,7 +2118,7 @@ mod tests {
             Some(first_node.clone())
         );
         assert_eq!(
-            MeshSource::graph(&h.world, ctx).get(&first_node),
+            MeshSource::graph(&h.world.root_view(), ctx).get(&first_node),
             Some(h.source.index_pool.buffer()),
             "the node follows the pool's buffer"
         );
@@ -2115,9 +2135,11 @@ mod tests {
     #[test]
     fn a_non_indexed_mesh_holds_no_index_allocation() {
         let mut h = harness();
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&h.source.device(&h.world)));
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(
+            &h.source.device(&h.world.root_view()),
+        ));
         let mesh = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2151,7 +2173,9 @@ mod tests {
         {
             assert_eq!(first_id, second_id, "the streams share a buffer");
             assert!(
-                MeshSource::graph(&h.world, ctx).get(first_id).is_some(),
+                MeshSource::graph(&h.world.root_view(), ctx)
+                    .get(first_id)
+                    .is_some(),
                 "the stream's node holds a buffer"
             );
         }
@@ -2206,7 +2230,7 @@ mod tests {
                 .buffer(layout)
                 .expect("the layout has a buffer");
             assert_eq!(
-                MeshSource::graph(&h.world, ctx).get(node),
+                MeshSource::graph(&h.world.root_view(), ctx).get(node),
                 Some(pool_buffer),
                 "the node follows the pool's buffer"
             );
@@ -2245,7 +2269,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
         assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
@@ -2286,7 +2310,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![far, middle, near]);
     }
@@ -2324,7 +2348,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         // The far mesh is drawn first even though its entity origin is not
         // deeper than the other's.
@@ -2353,7 +2377,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         let entry = &h.source.visible_cache[0];
         assert_eq!(entry.mesh.entity, entity);
@@ -2428,7 +2452,7 @@ mod tests {
 
         let camera = test_orthographic_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![far_entity, near_entity]);
         assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
@@ -2440,13 +2464,13 @@ mod tests {
         // A second key whose specialized options differ, so it resolves to its
         // own concrete pipeline.
         let alternative_key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
 
         // Warm both variants, first key first, so their pipeline ids follow
         // the order they were resolved in.
         let standard_mesh = h.tri_mesh();
         let alternative_mesh = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &alternative_key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2469,7 +2493,7 @@ mod tests {
             UnlitPipeline::new(alternative_key.clone()),
         ));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, surface);
         let first_id = h
             .source
             .visible_cache
@@ -2502,7 +2526,7 @@ mod tests {
         ));
 
         h.source
-            .collect_and_sort_visible(&h.world, &camera, surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, surface);
 
         assert_eq!(drawn(&h.source), vec![first, second]);
     }
@@ -2512,13 +2536,19 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         let (view, sampler) = test_material_resources(&mut h);
-        let shared =
-            h.source
-                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
+        let shared = h.source.allocate_unlit_material(
+            &h.world.root_view(),
+            &h.key,
+            view.clone(),
+            sampler.clone(),
+        );
         let (view, sampler) = test_material_resources(&mut h);
-        let other =
-            h.source
-                .allocate_unlit_material(&h.world, &h.key, view.clone(), sampler.clone());
+        let other = h.source.allocate_unlit_material(
+            &h.world.root_view(),
+            &h.key,
+            view.clone(),
+            sampler.clone(),
+        );
         assert_ne!(shared.sort_key(), other.sort_key());
 
         let a = h.world.root_view_mut().spawn((
@@ -2544,7 +2574,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         // The two draws sharing a material are neighbours, so the source
         // binds its bind group once for the pair.
@@ -2575,13 +2605,13 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
         assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
 
         // The cache is cleared and refilled, not reallocated.
         let capacity = h.source.visible_cache.capacity();
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
         assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
         assert_eq!(h.source.visible_cache.capacity(), capacity);
     }
@@ -2599,9 +2629,12 @@ mod tests {
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let first = resolve_draw(&mut h.source, &h.world, internal);
+        let first = resolve_draw(&mut h.source, &h.world.root_view(), internal);
         // The same key twice reuses one compiled pipeline.
-        assert_eq!(resolve_draw(&mut h.source, &h.world, internal), first);
+        assert_eq!(
+            resolve_draw(&mut h.source, &h.world.root_view(), internal),
+            first
+        );
 
         // A different color format is a different surface, so the family
         // compiles a second variant for it.
@@ -2609,7 +2642,7 @@ mod tests {
             color_format: wgpu::TextureFormat::Bgra8Unorm,
             ..internal
         };
-        let second = resolve_draw(&mut h.source, &h.world, other);
+        let second = resolve_draw(&mut h.source, &h.world.root_view(), other);
         assert_ne!(second, first);
         assert_eq!(h.source.pipelines.len(), 2);
     }
@@ -2624,7 +2657,7 @@ mod tests {
             standard.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let first = resolve_draw(&mut h.source, &h.world, surface);
+        let first = resolve_draw(&mut h.source, &h.world.root_view(), surface);
 
         // A second mesh whose layout declares fewer channels implies a
         // different variant. Dropping only the color attribute keeps the UV
@@ -2651,7 +2684,7 @@ mod tests {
             other.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let second = resolve_draw(&mut h.source, &h.world, surface);
+        let second = resolve_draw(&mut h.source, &h.world.root_view(), surface);
 
         assert_ne!(second, first);
         assert_eq!(h.source.pipelines.len(), 2);
@@ -2667,7 +2700,7 @@ mod tests {
             base.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let first = resolve_draw(&mut h.source, &h.world, surface);
+        let first = resolve_draw(&mut h.source, &h.world.root_view(), surface);
 
         // A layout the flags cannot tell from `base`: the attribute is at the
         // same location, so the derived flags are identical even though the
@@ -2694,7 +2727,7 @@ mod tests {
             twin.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let second = resolve_draw(&mut h.source, &h.world, surface);
+        let second = resolve_draw(&mut h.source, &h.world.root_view(), surface);
         assert_eq!(second, first);
         assert_eq!(h.source.pipelines.len(), 1);
     }
@@ -2716,7 +2749,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![drawn_entity]);
     }
@@ -2732,7 +2765,8 @@ mod tests {
 
         h.tri_mesh();
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert_eq!(
             h.source.metadata_array.capacity(),
             1,
@@ -2741,7 +2775,8 @@ mod tests {
 
         h.tri_mesh();
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert_eq!(
             h.source.metadata_array.capacity(),
             2,
@@ -2751,42 +2786,46 @@ mod tests {
         // A third and fourth entry outgrow the 1.5x capacity in turn.
         h.tri_mesh();
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 3);
 
         h.tri_mesh();
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 4);
 
         // A fifth entry outgrows four, so the buffer grows again.
-        let before = MeshSource::graph(&h.world, ctx)
+        let before = MeshSource::graph(&h.world.root_view(), ctx)
             .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert_eq!(
             h.source.metadata_array.capacity(),
             6,
             "growing past four reaches six (4 * 1.5)"
         );
         assert_ne!(
-            MeshSource::graph(&h.world, ctx).get(&h.source.metadata_buf),
+            MeshSource::graph(&h.world.root_view(), ctx).get(&h.source.metadata_buf),
             before.as_ref(),
             "growth replaced the buffer"
         );
 
         // A sixth entry fits in six, so the buffer is left alone.
-        let before = MeshSource::graph(&h.world, ctx)
+        let before = MeshSource::graph(&h.world.root_view(), ctx)
             .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 6, "six entries fit");
         assert_eq!(
-            MeshSource::graph(&h.world, ctx).get(&h.source.metadata_buf),
+            MeshSource::graph(&h.world.root_view(), ctx).get(&h.source.metadata_buf),
             before.as_ref(),
             "no growth means the same buffer, so no global group is rebuilt"
         );
@@ -2797,7 +2836,8 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert!(!h.source.metadata_dirty, "the mesh's own upload cleared it");
 
         // Removing the mesh clears its entry in the array, so the array
@@ -2805,7 +2845,8 @@ mod tests {
         h.source.remove_mesh(mesh);
         assert!(h.source.metadata_dirty, "removing a mesh marks the array");
         let encoder = h.encoder();
-        h.source.upload_metadata(&h.world, &mut { encoder });
+        h.source
+            .upload_metadata(&h.world.root_view(), &mut { encoder });
         assert!(!h.source.metadata_dirty, "the upload cleared the mark");
     }
 
@@ -2826,7 +2867,8 @@ mod tests {
         // still applying the frame's clears.
         let mut encoder = h.encoder();
         let ctx = h.source.context();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
         assert!(h.source.visible_cache.is_empty(), "nothing was drawn");
         assert!(h.source.scene().draws.is_empty(), "the scene is empty");
     }
@@ -2836,9 +2878,10 @@ mod tests {
         let mut h = harness();
         // A variant that binds no material group, so the frame needs no
         // material to be a complete draw.
-        let key = UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
+        let key =
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
         let mesh = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2860,7 +2903,8 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
         let drawn_first = drawn(&h.source);
         assert_eq!(drawn_first.len(), 1, "the entity was drawn");
         let capacities = (
@@ -2871,7 +2915,8 @@ mod tests {
         );
 
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
         assert_eq!(drawn(&h.source), drawn_first, "the same draws, in order");
         assert_eq!(
             (
@@ -2891,11 +2936,12 @@ mod tests {
     #[test]
     fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         let mut h = harness();
-        let key = UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
+        let key =
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
         // Both meshes are indexed and share the pool's index buffer, so what
         // tells their draws apart is the slice each one names.
         let first = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2906,7 +2952,7 @@ mod tests {
             },
         );
         let second = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2933,7 +2979,8 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
         let shapes: Vec<DrawShape> = h
             .source
             .visible_cache
@@ -2976,7 +3023,8 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
 
         assert_eq!(h.source.scene().draws.len(), 1, "one draw for all three");
         let range = &h.source.scene().draws[0].range;
@@ -3016,7 +3064,8 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
 
         assert_eq!(h.source.visible_cache.len(), 3, "all three are visible");
         assert_eq!(
@@ -3055,7 +3104,8 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
 
         assert_eq!(
             h.source.scene().draws.len(),
@@ -3097,7 +3147,8 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
 
         assert_eq!(
             h.source.scene().draws.len(),
@@ -3124,9 +3175,10 @@ mod tests {
             UnlitPipeline::new(h.key.clone()),
         ));
         let mut encoder = h.encoder();
-        h.source.build_scene(&h.world, ctx, &mut encoder);
+        h.source
+            .build_scene(&h.world.root_view(), ctx, &mut encoder);
 
-        let before = MeshSource::graph(&h.world, ctx).len();
+        let before = MeshSource::graph(&h.world.root_view(), ctx).len();
         // Read the ids out before the source goes: once it is dropped there is
         // no `h.source` left to name them.
         let camera_buf = h.source.camera_buf.clone();
@@ -3140,8 +3192,8 @@ mod tests {
         h.world.root_view_mut().despawn(drawn);
         drop(mesh);
         drop(h.source);
-        MeshSource::graph(&h.world, ctx).maintain();
-        let after = MeshSource::graph(&h.world, ctx).len();
+        MeshSource::graph(&h.world.root_view(), ctx).maintain();
+        let after = MeshSource::graph(&h.world.root_view(), ctx).len();
 
         assert!(
             after < before,
@@ -3152,11 +3204,13 @@ mod tests {
         // is the point of a counted handle: the resource goes when the last id
         // does, not when its creator does.
         assert!(
-            MeshSource::graph(&h.world, ctx).get(&camera_buf).is_some(),
+            MeshSource::graph(&h.world.root_view(), ctx)
+                .get(&camera_buf)
+                .is_some(),
             "a held id keeps the source's camera buffer alive"
         );
         assert!(
-            MeshSource::graph(&h.world, ctx)
+            MeshSource::graph(&h.world.root_view(), ctx)
                 .get(&index_pool_id)
                 .is_some(),
             "a held id keeps the index pool alive"
@@ -3165,9 +3219,9 @@ mod tests {
         // Giving those ids up is what lets the graph collect them.
         drop(camera_buf);
         drop(index_pool_id);
-        MeshSource::graph(&h.world, ctx).maintain();
+        MeshSource::graph(&h.world.root_view(), ctx).maintain();
         assert!(
-            MeshSource::graph(&h.world, ctx).len() < after,
+            MeshSource::graph(&h.world.root_view(), ctx).len() < after,
             "the last ids going is what frees the source's resources"
         );
     }
@@ -3196,9 +3250,10 @@ mod tests {
         let plain = h.tri_mesh();
         // A different policy specializes to a different variant, hence a
         // different RenderPipelineId.
-        let other_key = UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world)));
+        let other_key =
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
         let other = h.source.allocate_unlit_mesh(
-            &h.world,
+            &h.world.root_view(),
             &other_key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -3228,7 +3283,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 40.0));
         h.source
-            .collect_and_sort_visible(&h.world, &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
 
         let order: Vec<Entity> = h
             .source

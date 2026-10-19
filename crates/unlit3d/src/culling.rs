@@ -6,7 +6,9 @@
 //! needs to be drawn.
 
 use glam::Affine3A;
-use unlit_ecs::{Entity, World};
+#[cfg(test)]
+use unlit_ecs::World;
+use unlit_ecs::{Entity, ScopedWorld};
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
 use crate::components::{GpuMesh, Transform};
@@ -47,9 +49,13 @@ pub(crate) struct VisibleMesh {
 /// identity. The placement resolved here is the one the frame sorts by, and it
 /// is handed to the drawing family, so culling and drawing cannot disagree
 /// about where the mesh is.
-pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut Vec<VisibleMesh>) {
+pub(crate) fn collect_visible(
+    view: &ScopedWorld<'_>,
+    frustum: &FrustumPlanes,
+    out: &mut Vec<VisibleMesh>,
+) {
     out.clear();
-    for (entity, (mesh, transform)) in world.root_view().query::<(&GpuMesh, Option<&Transform>)>() {
+    for (entity, (mesh, transform)) in view.query::<(&GpuMesh, Option<&Transform>)>() {
         let model = match transform {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
@@ -146,7 +152,7 @@ mod tests {
         ));
         let frustum = frustum_at(Vec3::new(0.0, 0.0, 5.0));
         let mut out = Vec::new();
-        collect_visible(&world, &frustum, &mut out);
+        collect_visible(&world.root_view(), &frustum, &mut out);
         let found: Vec<_> = out.iter().map(|mesh| mesh.entity).collect();
         assert_eq!(found, [near]);
         assert_ne!(found, [far]);

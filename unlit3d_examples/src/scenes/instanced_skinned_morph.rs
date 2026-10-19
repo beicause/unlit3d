@@ -47,10 +47,10 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(world, context);
-    source.register_unlit_family(world);
+    let mut source = MeshSource::new(&world.root_view(), context);
+    source.register_unlit_family(&world.root_view());
     // The variant that reads both the joint stream and the morph bindings.
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_view())));
     let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();

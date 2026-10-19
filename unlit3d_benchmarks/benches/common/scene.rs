@@ -53,7 +53,7 @@ impl Frame {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let mut source = MeshSource::new(&world, context);
+        let mut source = MeshSource::new(&world.root_view(), context);
 
         // The smallest variant the built-in shader has: no material group, no
         // depth. The options are pure policy; the geometry a draw reads follows
@@ -83,9 +83,9 @@ impl Frame {
                 ..Default::default()
             },
         });
-        source.register_unlit_family(&world);
+        source.register_unlit_family(&world.root_view());
         let mesh = source.allocate_unlit_mesh(
-            &world,
+            &world.root_view(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -123,7 +123,7 @@ impl Frame {
         },));
 
         set_frame_target(
-            &world,
+            &world.root_view(),
             FrameTarget {
                 surface: SURFACE,
                 width: 256,
@@ -149,7 +149,7 @@ impl Frame {
             .clone();
         let mut encoder = device.create_command_encoder(&Default::default());
         self.source
-            .build_scene(&self.world, self.context, &mut encoder);
+            .build_scene(&self.world.root_view(), self.context, &mut encoder);
         self.source.scene().draws.len()
     }
 }

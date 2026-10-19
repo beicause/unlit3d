@@ -17,7 +17,7 @@
 //! assets.
 
 use glam::Vec3;
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, ScopedWorld, World};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::components::{Camera, GpuMaterial, GpuMesh, Transform};
 use unlit3d::mesh_source::MeshSource;
@@ -77,7 +77,9 @@ fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
         .next()
         .map(|(_, key)| key.clone())
         .unwrap_or_else(|| {
-            UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(world)))
+            UnlitPipelineKey::new(UnlitOptions::standard(
+                &mesh_source.device(&world.root_view()),
+            ))
         });
     Some((entity, key))
 }
@@ -91,13 +93,13 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
         let Some((source_entity, key)) = mesh_source(world) else {
             panic!("the render world carries no MeshSource");
         };
-        let mesh = world
-            .root_view()
+        let root = world.root_view();
+        let mesh = root
             .with_mut::<Source, _>(source_entity, |source| {
                 source
                     .as_mut::<MeshSource>()
                     .expect("the source carries a MeshSource")
-                    .allocate_unlit_mesh(world, &key, desc.borrowed())
+                    .allocate_unlit_mesh(&root, &key, desc.borrowed())
             })
             .expect("the mesh source entity exists");
         world.root_view_mut().spawn((mesh,))
@@ -140,21 +142,21 @@ pub fn create_material_from_texture(
 fn allocate_material(
     world: &mut World,
     descriptor: wgpu::SamplerDescriptor<'static>,
-    build_texture: impl FnOnce(&MeshSource, &World) -> wgpu::Texture,
+    build_texture: impl FnOnce(&MeshSource, &ScopedWorld<'_>) -> wgpu::Texture,
 ) -> Entity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
-    let material = world
-        .root_view()
+    let root = world.root_view();
+    let material = root
         .with_mut::<Source, _>(source_entity, |source| {
             let source = source
                 .as_mut::<MeshSource>()
                 .expect("the source carries a MeshSource");
-            let texture = build_texture(source, world);
-            let view = source.register_texture_and_default_view(world, texture).1;
-            let sampler = source.register_sampler(world, Some(descriptor));
-            source.allocate_unlit_material(world, &key, view, sampler)
+            let texture = build_texture(source, &root);
+            let view = source.register_texture_and_default_view(&root, texture).1;
+            let sampler = source.register_sampler(&root, Some(descriptor));
+            source.allocate_unlit_material(&root, &key, view, sampler)
         })
         .expect("the mesh source entity exists");
     world.root_view_mut().spawn((material,))

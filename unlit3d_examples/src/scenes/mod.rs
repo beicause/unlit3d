@@ -482,16 +482,21 @@ pub fn morph_deltas(positions: &[[f32; 3]]) -> MorphDeltas {
 pub fn with_mesh_source<R>(
     world: &World,
     source_entity: Entity,
-    f: impl FnOnce(&mut MeshSource, &World) -> R,
+    f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
 ) -> R {
-    let mut source = world
-        .root_view()
+    // The view is the source's own, so what its closure reads is the subtree
+    // the source draws.
+    let scope = world
+        .scope_of(source_entity)
+        .expect("the source entity is alive");
+    let view = world.view(scope).expect("the source's scope exists");
+    let mut source = view
         .get_mut::<Source>(source_entity)
         .expect("the source entity exists");
     let mesh = source
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");
-    f(mesh, world)
+    f(mesh, &view)
 }
 
 /// Allocate the unit cube through the source, its vertices offset by `offset`

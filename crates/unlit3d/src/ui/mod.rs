@@ -39,7 +39,7 @@ use core::ops::DerefMut;
 use core::time::Duration;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, ScopedWorld, World};
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph};
@@ -70,7 +70,7 @@ pub mod convert;
 
 /// A callback that may read and write the world, and receives the entity it
 /// runs for together with the UI surface its interface is built in.
-type PanelCallback = Box<dyn FnMut(&World, Entity, &mut egui::Ui)>;
+type PanelCallback = Box<dyn FnMut(ScopedWorld<'_>, Entity, &mut egui::Ui)>;
 
 /// A UI panel: one interface, held as a behaviour component.
 ///
@@ -91,19 +91,21 @@ type PanelCallback = Box<dyn FnMut(&World, Entity, &mut egui::Ui)>;
 /// [`UiPanel`] — that is a borrow panic, not a compile error.
 ///
 /// A panel may otherwise read and write the world freely through the
-/// `&World` it is handed: `get`, `query` and structural changes queued for
-/// the frame loop to apply are all available while it runs.
+/// [`ScopedWorld`] it is handed: `get`, `query` and structural changes queued
+/// for the frame loop to apply are all available while it runs. The view is the
+/// one of the source that draws the panel, so a panel sees the subtree that
+/// source owns and the shared resources, not every entity in the world.
 pub struct UiPanel(pub PanelCallback);
 
 impl UiPanel {
     /// Wrap `f` as a [`UiPanel`].
-    pub fn new(f: impl FnMut(&World, Entity, &mut egui::Ui) + 'static) -> Self {
+    pub fn new(f: impl FnMut(ScopedWorld<'_>, Entity, &mut egui::Ui) + 'static) -> Self {
         Self(Box::new(f))
     }
 
     /// Run this panel for `entity`, building its interface in `ui`.
-    pub fn run(&mut self, world: &World, entity: Entity, ui: &mut egui::Ui) {
-        (self.0)(world, entity, ui)
+    pub fn run(&mut self, view: ScopedWorld<'_>, entity: Entity, ui: &mut egui::Ui) {
+        (self.0)(view, entity, ui)
     }
 }
 
@@ -234,12 +236,10 @@ impl UiSource {
     ///
     /// If the context's graph resource is gone.
     fn graph<'w>(
-        world: &'w World,
+        view: &'w ScopedWorld<'w>,
         ctx: RenderContext,
     ) -> impl DerefMut<Target = ResourceGraph> + 'w {
-        world
-            .root_view()
-            .get_mut::<ResourceGraph>(ctx.graph)
+        view.get_mut::<ResourceGraph>(ctx.graph)
             .expect("the context's resource graph exists")
     }
 
@@ -247,10 +247,11 @@ impl UiSource {
     ///
     /// The query is rebuilt from scratch on every pass egui runs, which is what
     /// a multi-pass layout needs.
-    fn run_panels(&self, world: &World, input: egui::RawInput) -> egui::FullOutput {
+    fn run_panels(&self, view: &ScopedWorld<'_>, input: egui::RawInput) -> egui::FullOutput {
+        let root = *view;
         self.ctx.run_ui(input, |ui| {
-            for (entity, mut panel) in world.root_view().query::<&mut UiPanel>() {
-                panel.run(world, entity, ui);
+            for (entity, mut panel) in root.query::<&mut UiPanel>() {
+                panel.run(root, entity, ui);
             }
         })
     }
@@ -320,14 +321,14 @@ impl Default for UiSource {
 impl FrameSource for UiSource {
     fn build_scene(
         &mut self,
-        world: &World,
+        view: &ScopedWorld<'_>,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         // Settle the graph on every way out of this build, the early return
         // below included. The pass runs where this scope ends, once the
         // integration has uploaded and before the scene reads a group.
-        let maintain = ctx.maintain_scope(world);
+        let maintain = ctx.maintain_scope(*view);
         // Cleared on every path: a frame that records this source must never
         // replay the previous frame's UI.
         self.scene.clear();
@@ -335,7 +336,7 @@ impl FrameSource for UiSource {
         // The target the frame is specialized for, written by the frame loop
         // before it renders. Without it the pipeline cannot be specialized, and
         // a stale one is worse than none.
-        let Some(target) = frame_target(world) else {
+        let Some(target) = frame_target(view) else {
             log::warn!(
                 "UiSource::build_scene: no FrameTarget in the world, so the \
                  frame's render target is unknown and no UI is drawn; write \
@@ -344,13 +345,11 @@ impl FrameSource for UiSource {
             return;
         };
 
-        let device = world
-            .root_view()
+        let device = view
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device resource exists")
             .clone();
-        let queue = world
-            .root_view()
+        let queue = view
             .get::<wgpu::Queue>(ctx.queue)
             .expect("the context's queue resource exists")
             .clone();
@@ -360,13 +359,9 @@ impl FrameSource for UiSource {
         // everything else in the world — the UI reads this tick's batch, it
         // does not take it. A world without one is not an error: the UI still
         // lays out at the target's own size, unfeed.
-        let state = world
-            .root_view()
-            .query::<&InputEvents>()
-            .next()
-            .map(|(_, events)| {
-                events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
-            });
+        let state = view.query::<&InputEvents>().next().map(|(_, events)| {
+            events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
+        });
         let (scale_factor, size_px, focused) = match state {
             Some(state) => state,
             None => (1.0, (target.width, target.height), true),
@@ -391,7 +386,7 @@ impl FrameSource for UiSource {
         // once the pass is over rather than allocated again.
         let mut event_scratch = core::mem::take(&mut self.event_scratch);
         event_scratch.clear();
-        if let Some((_, events)) = world.root_view().query::<&InputEvents>().next() {
+        if let Some((_, events)) = view.query::<&InputEvents>().next() {
             events.with_batch(|batch| {
                 convert::to_egui_events_into(batch, pixels_per_point, &mut event_scratch);
             });
@@ -409,7 +404,7 @@ impl FrameSource for UiSource {
         // so its layout is built against the same target this one draws at.
         self.screen.publish(target_screen);
 
-        let mut graph = Self::graph(world, ctx);
+        let mut graph = Self::graph(view, ctx);
         if self.gpu.is_none() || self.surface != Some(target.surface) {
             self.build_gpu(&device, &mut graph, target.surface);
         }
@@ -435,7 +430,7 @@ impl FrameSource for UiSource {
             }
         });
 
-        let mut output = self.run_panels(world, input);
+        let mut output = self.run_panels(view, input);
         // The pass is over, so egui no longer needs the list it was handed:
         // taking it back is what turns the next frame's fill into a reuse.
         self.event_scratch = self
@@ -448,7 +443,7 @@ impl FrameSource for UiSource {
         // owns the page to serve. Read before the integration takes the
         // output, because it consumes it.
         url_scratch.extend(open_urls(&output.platform_output));
-        publish_open_urls(world, &mut url_scratch);
+        publish_open_urls(view, &mut url_scratch);
         self.url_scratch = url_scratch;
 
         // Every source and this world's own go into one upload: the
@@ -522,7 +517,7 @@ impl FrameSource for UiSource {
         // up first, because the scope takes it again to run the pass.
         drop(graph);
         drop(maintain);
-        let graph = Self::graph(world, ctx);
+        let graph = Self::graph(view, ctx);
 
         let mut ui_scene = gpu.integration.scene(&graph);
         self.scene.extend(&mut ui_scene);
@@ -563,19 +558,12 @@ fn open_urls(output: &egui::PlatformOutput) -> impl Iterator<Item = OpenUrl> + '
 /// dropped. The queue is replaced rather than appended to, so a request that
 /// a previous frame left behind cannot be served twice; `urls` is emptied
 /// either way, so its allocation is reused by the next frame.
-fn publish_open_urls(world: &World, urls: &mut Vec<OpenUrl>) {
-    let Some(entity) = world
-        .root_view()
-        .query::<&OpenUrls>()
-        .next()
-        .map(|(e, _)| e)
-    else {
+fn publish_open_urls(view: &ScopedWorld<'_>, urls: &mut Vec<OpenUrl>) {
+    let Some(entity) = view.query::<&OpenUrls>().next().map(|(e, _)| e) else {
         urls.clear();
         return;
     };
-    let _ = world
-        .root_view()
-        .with_mut::<OpenUrls, _>(entity, |slot| slot.replace(urls.drain(..)));
+    let _ = view.with_mut::<OpenUrls, _>(entity, |slot| slot.replace(urls.drain(..)));
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.
@@ -818,9 +806,10 @@ pub fn lay_out(
     input: egui::RawInput,
     screen: ScreenDescriptor,
 ) -> ExternalFrame {
+    let view = world.root_view();
     let mut output = ctx.run_ui(input, |ui| {
-        for (entity, mut panel) in world.root_view().query::<&mut UiPanel>() {
-            panel.run(world, entity, ui);
+        for (entity, mut panel) in view.query::<&mut UiPanel>() {
+            panel.run(view, entity, ui);
         }
     });
     // Read before the pass's other output is taken apart: the request only
@@ -921,14 +910,8 @@ mod tests {
                 UiPanel::new(move |world, entity, ui| {
                     runs.set(runs.get() + 1);
                     // Read the sibling, then write it back advanced by one.
-                    let seen = world
-                        .root_view()
-                        .get::<Runs>(entity)
-                        .expect("the sibling exists")
-                        .0;
-                    let _ = world
-                        .root_view()
-                        .with_mut::<Runs, _>(entity, |runs| runs.0 = seen + 1);
+                    let seen = world.get::<Runs>(entity).expect("the sibling exists").0;
+                    let _ = world.with_mut::<Runs, _>(entity, |runs| runs.0 = seen + 1);
                     ui.label("panel");
                 }),
             ));
@@ -944,7 +927,7 @@ mod tests {
         };
         // egui panics if a texture delta is dropped unapplied; a real frame
         // hands it to the integration, and this test discards it explicitly.
-        let mut output = source.run_panels(&world, input);
+        let mut output = source.run_panels(&world.root_view(), input);
         output.textures_delta.clear();
 
         let panels: Vec<Entity> = world
@@ -972,7 +955,7 @@ mod tests {
     #[test]
     fn a_panel_is_driven_by_the_source() {
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world, test_target()));
+        assert!(set_frame_target(&world.root_view(), test_target()));
         world
             .root_view_mut()
             .spawn((UiPanel::new(|_world, _entity, ui| {
@@ -990,7 +973,7 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
 
         assert!(
             !source.scene().is_empty(),
@@ -1011,7 +994,7 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
 
         assert!(source.scene().is_empty());
         assert!(source.gpu.is_none(), "no target was specialized for");
@@ -1042,8 +1025,8 @@ mod tests {
                 .borrow_mut()
                 .root_view_mut()
                 .spawn((UiPanel::new(move |world, _entity, ui| {
-                    if world.root_view().query::<&Spawned>().next().is_none() {
-                        world.root_view().queue().spawn((Spawned,));
+                    if world.query::<&Spawned>().next().is_none() {
+                        world.queue().spawn((Spawned,));
                     }
                     ui.label("once");
                 }),));
@@ -1059,7 +1042,7 @@ mod tests {
         // The panel only queues; nothing exists until the caller applies.
         let mut output = {
             let world = world.borrow();
-            source.run_panels(&world, input.clone())
+            source.run_panels(&world.root_view(), input.clone())
         };
         output.textures_delta.clear();
         assert_eq!(
@@ -1076,7 +1059,7 @@ mod tests {
         );
 
         // A second frame sees the entity and does not queue another.
-        let mut output = source.run_panels(&world.borrow(), input);
+        let mut output = source.run_panels(&world.borrow().root_view(), input);
         output.textures_delta.clear();
         world.borrow_mut().apply();
         assert_eq!(
@@ -1116,7 +1099,7 @@ mod tests {
         // what each pass saw.
         let mut seen = Vec::new();
         for _ in 0..2 {
-            let mut output = source.run_panels(&world, input.clone());
+            let mut output = source.run_panels(&world.root_view(), input.clone());
             output.textures_delta.clear();
             seen.push(runs.get());
         }
@@ -1175,7 +1158,7 @@ mod tests {
     #[test]
     fn the_frame_events_reach_the_panels() {
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world, test_target()));
+        assert!(set_frame_target(&world.root_view(), test_target()));
 
         let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
@@ -1210,10 +1193,10 @@ mod tests {
         let mut encoder = encoder(&world, ctx);
         // egui only lays a text field out once it knows its fonts, so the
         // first frame establishes them; the text is then this tick's batch.
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
         input.push(InputEvent::Text(TextEvent("hi".to_string())));
         events.refresh();
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
 
         assert_eq!(
             &*seen.borrow(),
@@ -1235,7 +1218,7 @@ mod tests {
         let clicked = Rc::new(Cell::new(false));
 
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world, test_target()));
+        assert!(set_frame_target(&world.root_view(), test_target()));
         let flag = Rc::clone(&clicked);
         world
             .root_view_mut()
@@ -1258,7 +1241,7 @@ mod tests {
         let mut encoder = encoder(&world, ctx);
         // The first frame lays the widget out and knows its fonts; nothing is
         // clicked yet because no input has arrived.
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
         assert!(!clicked.get(), "nothing is clicked before any input");
 
         // The pointer arrives over the button and presses and releases there,
@@ -1285,7 +1268,7 @@ mod tests {
         }
         // The tick's batch: what the pointer did since the last frame.
         events.refresh();
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
 
         assert!(
             clicked.get(),
@@ -1299,7 +1282,7 @@ mod tests {
     #[test]
     fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
         let (world, ctx) = test_world();
-        assert!(set_frame_target(&world, test_target()));
+        assert!(set_frame_target(&world.root_view(), test_target()));
         // Laid out in a context of its own, the way a publishing world would:
         // its texture ids start where every context's do.
         let mut other = World::new();
@@ -1325,7 +1308,7 @@ mod tests {
         source.external.publish(0, frame);
         let mut encoder = encoder(&world, ctx);
 
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
         assert!(
             !source.scene().is_empty(),
             "the published frame is drawn when it arrives"
@@ -1333,7 +1316,7 @@ mod tests {
 
         // The publisher has nothing new, and the frame it published must not
         // have been emptied by drawing it.
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
         assert!(
             !source.scene().is_empty(),
             "the same frame is drawn again while no newer one arrives"
@@ -1345,7 +1328,7 @@ mod tests {
     #[test]
     fn two_contexts_keep_their_textures_apart() {
         let (world, _ctx) = test_world();
-        assert!(set_frame_target(&world, test_target()));
+        assert!(set_frame_target(&world.root_view(), test_target()));
         let target = test_ui_target();
 
         // A separate world, with a context whose ids start at zero like any
@@ -1399,7 +1382,7 @@ mod tests {
     #[test]
     fn a_world_without_input_state_draws_an_idle_frame() {
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world, test_target()));
+        assert!(set_frame_target(&world.root_view(), test_target()));
         world
             .root_view_mut()
             .spawn((UiPanel::new(|_world, _entity, ui| {
@@ -1412,7 +1395,7 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world, ctx, &mut encoder);
+        source.build_scene(&world.root_view(), ctx, &mut encoder);
         assert!(
             !source.scene().is_empty(),
             "a panel draws with no input in the world"
