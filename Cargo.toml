@@ -119,7 +119,7 @@ print_stdout = "warn"
 missing_docs = "deny"
 
 [profile.dev]
-opt-level = 1
+opt-level = "s"
 
 [profile.wasm-dev]
 inherits = "release"
