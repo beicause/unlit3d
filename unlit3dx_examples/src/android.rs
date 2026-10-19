@@ -5,6 +5,12 @@
 //! the activity; there is no command line to parse and no `main`, so this is
 //! the one entry point that is not [`crate::run`]. Once the event loop is
 //! built, the windowed loop it is handed to is the same one the binary drives.
+//!
+//! The shared library itself is `unlit3dx_examples_android`: it exports the
+//! symbol the activity looks up and calls the function here. An unmangled
+//! export only survives into a `cdylib`, and this crate builds as a plain
+//! library so that a desktop or a browser build does not link a shared library
+//! nothing loads.
 
 use winit::event_loop::EventLoop;
 use winit::platform::android::EventLoopBuilderExtAndroid;
@@ -18,18 +24,12 @@ use winit::platform::android::activity::AndroidApp;
 /// rather than reusing one. Suspending and resuming the activity is *not* a
 /// second call: the loop stays alive and the app keeps its state across it.
 ///
-/// The symbol is exported unmangled — through the `"Rust"` ABI the glue's
-/// `extern` block declares — because that is the name the activity's glue looks
-/// the function up by; a panic here is caught and logged by the glue instead of
-/// reaching the activity. The export itself is the one piece of unsafe code in
-/// the crate: `#[unsafe(no_mangle)]` asserts that no other library exports the
-/// name.
-#[expect(
-    unsafe_code,
-    reason = "exporting the entry point to the Android activity requires `#[unsafe(no_mangle)]`"
-)]
-#[unsafe(no_mangle)]
-pub extern "Rust" fn android_main(app: AndroidApp) {
+/// The activity does not call this directly: `unlit3dx_examples_android`
+/// exports the symbol of the same name, unmangled and through the `"Rust"` ABI
+/// the glue's `extern` block declares, and hands it straight to this function.
+/// A panic here is caught and logged by the glue instead of reaching the
+/// activity.
+pub fn android_main(app: AndroidApp) {
     crate::init_logging();
 
     // The example's own defaults: an activity is started without arguments,

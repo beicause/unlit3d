@@ -130,6 +130,11 @@ cargo xtask run-wasm --app unlit3d
 调用它的 `android_main`，而命令行入口是那个二进制。两者最终进入同一个窗口化循环，
 因此示例只需要维护一个帧循环。
 
+那个动态库是 `unlit3d_examples_android`，一个只放导出的独立 crate：`crate-type`
+对一个包所构建的每个 target 都生效，在这里写 `cdylib` 会让桌面和浏览器也链接一个
+没人加载的动态库。该库沿用本 crate 的名字，所以 activity 的 `android.app.lib_name`
+清单项无需改动。
+
 ## Model Context Protocol
 
 `--mcp` 会把示例原本要渲染的那个场景经 stdio 服务出去，作为

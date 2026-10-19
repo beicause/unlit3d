@@ -167,9 +167,11 @@ Commands follow the `cargo xtask` convention:
   the workspace's `wasm-dev` cargo profile: release's settings at an
   `opt-level` aimed at size, since a browser downloads the binary.
 - **`cargo xtask build-android`** — cross-compile both examples' shared
-  libraries with `cargo ndk` into `android/app/src/main/jniLibs`, then run
-  Gradle to build the APK. Debug by default; `--release` builds an unsigned release APK. Needs
-  JDK 17+ and `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
+  libraries (`unlit3d_examples_android` and `unlit3dx_examples_android`, which
+  hold the Android entry points and nothing else) with `cargo ndk` into
+  `android/app/src/main/jniLibs`, then run Gradle to build the APK. Debug by
+  default; `--release` builds an unsigned release APK. Needs JDK 17+ and
+  `ANDROID_HOME` (cargo-ndk finds the NDK by itself).
 - **`cargo xtask publish`** — upload the publishable crates (`unlit_ecs`,
   `unlit_wgpu`, `unlit3d`) to crates.io in dependency order,
   waiting for each to reach the index before packaging the next. Arguments
@@ -325,8 +327,10 @@ crates/unlit_wgpu_test_util/ the shared GPU test harness
 crates/unlit3dx/             the multi-world runtime: jobs, snapshots, threaded
                              and stepped worlds
 unlit3d_examples/            the windowed example, its scenes and their snapshot tests
+unlit3d_examples_android/    the shared library an Android activity loads
 unlit3dx_examples/           the multi-world demo: five worlds, one window, a web
                              page and an Android activity
+unlit3dx_examples_android/   that demo's shared library for its own activity
 unlit3d_cli/                 the glTF-to-image command-line tool and its end-to-end test
 unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs
 android/                     the Gradle project that packages the examples as an APK

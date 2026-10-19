@@ -172,9 +172,15 @@ picture, though: each 3D scene is drawn into the baseline-aspect region of it,
 so the same picture fills whatever shape the page gives the canvas.
 
 It is a library as well as a binary, because Android starts neither a process
-nor a command line: the activity loads the shared library and calls its
+nor a command line: the activity loads a shared library and calls its
 `android_main`, and the command-line path is the binary. Both end in the same
 windowed loop, so the example only has one frame loop to maintain.
+
+The shared library is `unlit3d_examples_android`, a crate of its own holding
+nothing but the export: `crate-type` applies to every target a package is built
+for, so a `cdylib` here would link a shared library on the desktop and in the
+browser too, where nothing loads one. The library keeps this crate's name, so
+the activity's `android.app.lib_name` entry is unchanged.
 
 ## Model Context Protocol
 

@@ -112,16 +112,21 @@ WebGPU 只在*安全上下文*中可用，`localhost` 是安全上下文而 `fil
 以体积为目标——所以没有 profile 开关可传：产物总是落在
 `target/generated/wasm-dev`，浏览器也永远不会拿到 debug 二进制。
 
-这里显式指定了每个二进制 target，而不是交给默认的 target 选择：每个示例 crate 同时是
-`cdylib` 和二进制，而在 `wasm32-unknown-unknown` 上浏览器运行的是二进制，不是
-cdylib。
+这里显式指定了每个二进制 target，而不是交给默认的 target 选择——否则两个 `*_android`
+crate 的 `cdylib` 也会一并构建，而那是只有 Android 才加载的库。浏览器运行的是二进制，
+交给 `wasm-bindgen` 的正是它的 `.wasm`。
 
 ### `cargo xtask build-android`
 
-两个工具，沿语言边界分工。`cargo ndk` 为 Android 交叉编译两个示例并把各自的 `.so` 放进
-app 的 `jniLibs` 目录——Gradle 正是在那里寻找原生库并打包它找到的一切；随后 Gradle
-编译 activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK 就是一个无法启动的
-activity。
+两个工具，沿语言边界分工。`cargo ndk` 为 Android 交叉编译
+`unlit3d_examples_android` 与 `unlit3dx_examples_android` 两个 crate，并把各自的
+`.so` 放进 app 的 `jniLibs` 目录——Gradle 正是在那里寻找原生库并打包它找到的一切；
+随后 Gradle 编译 activity 并把 APK 组装起来。先构建动态库，因为缺少它的 APK 就是一个
+无法启动的 activity。
+
+这两个 crate 里只有导出的 `android_main`。示例本身按普通库构建，因为 `crate-type`
+对每个 target 都相同：示例里写 `cdylib` 会让桌面和浏览器也链接一个没人加载的动态库。
+两个 `*_android` crate 各自沿用所属示例的库名，那正是各条 activity 所请求的名字。
 
 APK 里每个示例各有一条 activity，各自通过自己的 `android.app.lib_name` 清单项加载自己
 的动态库——`GameActivity` 对每条 activity 只读取一次该名字，所以切换示例是启动另一条

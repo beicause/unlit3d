@@ -1,0 +1,28 @@
+[package]
+name = "unlit3d_examples_android"
+version = "0.1.0-dev.2"
+edition.workspace = true
+description = "The Android shared library that exports unlit3d_examples' activity entry point."
+repository.workspace = true
+license.workspace = true
+publish = false
+
+# The activity names `libunlit3d_examples.so` in its `android.app.lib_name`
+# manifest entry, so this crate keeps the example's library name even though it
+# is a package of its own. Two packages cannot document a library of the same
+# name to the same path, and the entry point is documented where it lives, so
+# this library is not documented.
+[lib]
+crate-type = ["cdylib"]
+doc = false
+name = "unlit3d_examples"
+
+# Only an Android build has anything to compile here: the entry point this
+# wraps is behind the same `cfg` in the example, and so is the activity type it
+# takes. Every other target sees an empty crate rather than a dependency graph.
+[target.'cfg(target_os = "android")'.dependencies]
+unlit3d_examples = { path = "../unlit3d_examples", version = "0.1.0-dev.2" }
+winit = { workspace = true, features = ["android-game-activity"] }
+
+[lints]
+workspace = true

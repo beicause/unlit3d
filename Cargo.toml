@@ -1,6 +1,15 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "unlit3d_benchmarks", "unlit3d_cli", "unlit3d_examples", "unlit3dx_examples", "xtask"]
+members = [
+  "crates/*",
+  "unlit3d_benchmarks",
+  "unlit3d_cli",
+  "unlit3d_examples",
+  "unlit3d_examples_android",
+  "unlit3dx_examples",
+  "unlit3dx_examples_android",
+  "xtask",
+]
 
 [workspace.package]
 edition = "2024"

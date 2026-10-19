@@ -38,8 +38,10 @@ cargo run -p unlit3dx_examples
 
 在 web 上它是 `cargo xtask run-wasm` 构建、并由 Pages 工作流发布的两个页面之一。
 浏览器没有可放置 world 的线程，于是改由库的步进 runner 从帧循环驱动它们全部。
-Android APK 加载的也是同一个库：`cargo xtask build-android` 把它构建成 `.so`，
-悬浮的 tab 条则在 `unlit3d` 与 `unlit3dx` 两条 activity 之间切换。
+Android APK 加载的 `.so` 则由 `unlit3dx_examples_android` 构建——该 crate 只放导出，
+因为在这里写 `cdylib` 会让桌面和浏览器也一并链接动态库——
+`cargo xtask build-android` 负责构建它，悬浮的 tab 条则在 `unlit3d` 与
+`unlit3dx` 两条 activity 之间切换。
 
 ## 离屏模式
 

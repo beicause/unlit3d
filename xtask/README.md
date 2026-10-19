@@ -137,17 +137,24 @@ the output lands under `target/generated/wasm-dev` either way, and a browser is
 never handed the debug binary.
 
 The binaries are named explicitly rather than left to the default target
-selection: each example crate is a `cdylib` as well as a binary, and on
-`wasm32-unknown-unknown` the cdylib is not what a browser runs. The binary is.
+selection, which would also build the `*_android` crates' `cdylib`s — a library
+kind only Android loads. The binary is what a browser runs, and `wasm-bindgen`
+is handed its `.wasm`.
 
 ### `cargo xtask build-android`
 
-Two tools, split along the language boundary. `cargo ndk` cross-compiles both
-examples for Android and drops each `.so` into the app's `jniLibs` directory,
-which is where Gradle looks for native libraries and packages whatever it finds;
-Gradle then compiles the activities and assembles the APK around them. The
-libraries are built first because an APK without them is an activity that cannot
-start.
+Two tools, split along the language boundary. `cargo ndk` cross-compiles the
+`unlit3d_examples_android` and `unlit3dx_examples_android` crates for Android
+and drops each `.so` into the app's `jniLibs` directory, which is where Gradle
+looks for native libraries and packages whatever it finds; Gradle then compiles
+the activities and assembles the APK around them. The libraries are built first
+because an APK without them is an activity that cannot start.
+
+Those two crates hold the exported `android_main` and nothing else. The examples
+themselves build as plain libraries, because `crate-type` is the same for every
+target: a `cdylib` in an example would link a shared library on the desktop and
+in the browser too, where nothing loads one. Each `*_android` crate keeps the
+example's library name, which is what the activities ask for.
 
 The APK carries one activity per example, each loading its own library through
 its own `android.app.lib_name` manifest entry — `GameActivity` reads that name

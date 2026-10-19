@@ -49,9 +49,11 @@ world, and record the audio world's mix to a WAV file.
 On the web it is one of the two pages `cargo xtask run-wasm` builds and the
 Pages workflow publishes. A browser has no thread to put a world on, so the
 library's stepped runner drives them all from the frame loop instead. The
-same library is what the Android APK loads: `cargo xtask build-android`
-builds it into a `.so`, and the floating tab bar switches between the
-`unlit3d` and `unlit3dx` activities.
+Android APK loads a `.so` built from the `unlit3dx_examples_android` crate —
+that crate holds the export alone, because a `cdylib` crate type here would
+link a shared library on the desktop and in the browser as well —
+`cargo xtask build-android` builds it, and the floating tab bar switches
+between the `unlit3d` and `unlit3dx` activities.
 
 ## The headless mode
 

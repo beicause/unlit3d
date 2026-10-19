@@ -8,12 +8,14 @@ license.workspace = true
 keywords = ["example", "gamedev", "webgpu", "wgpu"]
 publish = false
 
-# The windowed example is a library as well as a binary: the binary is the
-# command line every desktop and web build runs, and the library is what the
-# Android build packages — the activity loads the shared library and calls into
-# it. `rlib` is what the binary links against, `cdylib` is what Android loads.
+# The binary is the command line every desktop and web build runs; the library
+# is what that binary links against, and what the Android shared library links
+# against in turn. That shared library is a crate of its own
+# (`unlit3d_examples_android`): `crate-type` is the same for every target, so a
+# `cdylib` here would link a shared library on the desktop and in the browser
+# too, where nothing loads one.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 name = "unlit3d_examples"
 
 [[bin]]

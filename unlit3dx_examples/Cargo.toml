@@ -8,11 +8,13 @@ license.workspace = true
 keywords = ["audio", "example", "gamedev", "physics", "webgpu"]
 publish = false
 
-# The library is what the browser and the Android build run: the binary is a
-# thin command line over it, the wasm-bindgen output is built from the library
-# the page loads, and `cdylib` is what the Android activity loads.
+# The library is what the binary and the Android shared library both link
+# against. That shared library is a crate of its own
+# (`unlit3dx_examples_android`): `crate-type` is the same for every target, so a
+# `cdylib` here would link a shared library on the desktop and in the browser
+# too, where nothing loads one.
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 name = "unlit3dx_examples"
 
 [[bin]]

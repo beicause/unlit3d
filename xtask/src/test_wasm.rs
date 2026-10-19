@@ -225,10 +225,9 @@ fn resolved_wasm_bindgen() -> Result<String, String> {
 /// Android library actually ship — and is what proves a change has not broken
 /// them for wasm at all.
 fn build_workspace() -> Result<(), String> {
-    // Not `--all-targets`: the example crate is a `cdylib` as well as a binary,
-    // and on `wasm32-unknown-unknown` the cdylib is not what a browser runs.
-    // The binary is; the library exists for Android, so only the targets that
-    // never produce it are built here.
+    // Not `--lib`: the `*_android` crates are `cdylib`s built for one platform
+    // alone, and a browser loads the binary. Naming the kinds that never
+    // produce a shared library leaves them out.
     //
     // `xtask` is excluded because it is a host-only task runner: its HTTP server
     // reaches `async-io` and so `errno`, which does not build for this target.

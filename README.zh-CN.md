@@ -124,9 +124,11 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   `test-wasm` 的每一次 wasm
   构建都用工作区的 `wasm-dev` cargo profile：沿用 release 的设定，但 `opt-level`
   以体积为目标，因为二进制是要被浏览器下载的。
-- **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译两个示例的动态库放进
-  `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，`--release` 构建
-  未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`（NDK 由 cargo-ndk 自动探测）。
+- **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译两个示例的动态库
+  （`unlit3d_examples_android` 与 `unlit3dx_examples_android`，两者只放 Android
+  入口）放进 `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，
+  `--release` 构建未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`
+  （NDK 由 cargo-ndk 自动探测）。
 - **`cargo xtask publish`** — 按依赖顺序把可发布的 crate（`unlit_ecs`、`unlit_wgpu`、
   `unlit3d`）上传到 crates.io，每个都等到它出现在索引里再打包下一个。
   `--` 之后的参数会透传给每次 `cargo publish`，因此 `-- --dry-run` 只做全部检查、
@@ -255,7 +257,9 @@ crates/unlit_ecs/            archetype ECS
 crates/unlit_wgpu_test_util/ 共享的 GPU 测试骨架
 crates/unlit3dx/             多 world 运行时：job、快照、线程化与步进的 world
 unlit3d_examples/            窗口化示例、它的场景与场景的快照测试
+unlit3d_examples_android/    Android activity 所加载的动态库
 unlit3dx_examples/           多 world 示例：五个 world、一个窗口、一个 web 页面与一条 Android activity
+unlit3dx_examples_android/   该示例供自己的 activity 加载的动态库
 unlit3d_cli/                 glTF 转图片的命令行工具与端到端测试
 unlit3d_benchmarks/          帧路径基准测试与剖析运行
 android/                     把两个示例打包成 APK 的 Gradle 工程
