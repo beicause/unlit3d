@@ -62,10 +62,12 @@ impl<'w> ScopedWorld<'w> {
     /// The root and the shared scope are entities so that they can carry
     /// components and be named as scopes, but they are not what a view is
     /// looking at: counting them would put a constant two on every report and
-    /// make an empty world non-empty.
+    /// make an empty world non-empty. Their subtrees are content, though: a
+    /// resource spawned under the shared scope is visible to every view and
+    /// belongs in what a view counts.
     #[must_use]
     pub fn is_content(&self, entity: Entity) -> bool {
-        !self.world.is_root(entity) && !self.world.is_shared(entity)
+        !self.world.is_scaffolding(entity)
     }
 
     /// Whether `entity` is visible and carries component `C`.
@@ -381,34 +383,54 @@ impl<'w> ScopedWorld<'w> {
             crate::archetype::ScopeSummary::Uniform(scope) => {
                 self.world.visible(self.scope, scope) || archetype.entities()[row] == self.scope
             }
-            crate::archetype::ScopeSummary::Mixed => archetype
-                .cell::<ScopeOf>(row)
-                .and_then(|cell| cell.try_borrow().ok().map(|scope| scope.0))
-                .is_some_and(|scope| self.world.visible(self.scope, scope)),
+            crate::archetype::ScopeSummary::Mixed => {
+                // The view's own entity lives in its parent's scope, so its
+                // row is visible even though that scope is above the view.
+                archetype.entities()[row] == self.scope
+                    || archetype
+                        .cell::<ScopeOf>(row)
+                        .and_then(|cell| cell.try_borrow().ok().map(|scope| scope.0))
+                        .is_some_and(|scope| self.world.visible(self.scope, scope))
+            }
         }
     }
 
     /// The number of rows of `archetype` this view can see, its own content
     /// only: the scaffolding is never counted.
     fn visible_len(&self, index: u32, archetype: &Archetype) -> usize {
-        if self.world.is_scaffolding_archetype(index) {
-            // The two roots are never content, so they are not counted here
-            // either; the row loop below would otherwise see one of them.
-            return 0;
-        }
+        // The scaffolding shares an archetype with every ScopeOf-only entity,
+        // so its rows are removed by identity rather than by skipping the
+        // whole archetype: a caller's own bare entity may sit in it too.
+        let scaffold = if self.world.is_scaffolding_archetype(index) {
+            archetype
+                .entities()
+                .iter()
+                .filter(|entity| self.world.is_scaffolding(**entity))
+                .count()
+        } else {
+            0
+        };
         match archetype.scope_summary() {
             crate::archetype::ScopeSummary::Empty => 0,
             crate::archetype::ScopeSummary::Uniform(scope) => {
                 if self.world.visible(self.scope, scope) {
-                    archetype.len()
-                } else if self.world.scope_of(self.scope) == Some(scope) {
-                    1
+                    // The whole archetype is this one scope, so its rows are
+                    // the view's — except a shared row, which reaches the view
+                    // from outside it and so belongs to no other archetype.
+                    archetype.len() - scaffold
                 } else {
-                    0
+                    // A scope lives in its parent, which is above it, so the
+                    // only row of that archetype it can see is its own.
+                    archetype
+                        .entities()
+                        .iter()
+                        .filter(|entity| **entity == self.scope)
+                        .count()
                 }
             }
             crate::archetype::ScopeSummary::Mixed => (0..archetype.len())
                 .filter(|&row| self.row_visible(archetype, row))
+                .filter(|&row| self.is_content(archetype.entities()[row]))
                 .count(),
         }
     }

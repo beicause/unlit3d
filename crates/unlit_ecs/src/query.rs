@@ -425,10 +425,15 @@ impl<'w, Q: Query, F: QueryFilter> QueryIter<'w, Q, F> {
             ScopeSummary::Uniform(scope) => {
                 self.world.visible(self.scope, scope) || archetype.entities()[row] == self.scope
             }
-            ScopeSummary::Mixed => archetype
-                .cell::<ScopeOf>(row)
-                .and_then(|cell| cell.try_borrow().ok().map(|scope| scope.0))
-                .is_some_and(|scope| self.world.visible(self.scope, scope)),
+            ScopeSummary::Mixed => {
+                // The query's own entity lives in its parent's scope, so its
+                // row is visible even though that scope is above it.
+                archetype.entities()[row] == self.scope
+                    || archetype
+                        .cell::<ScopeOf>(row)
+                        .and_then(|cell| cell.try_borrow().ok().map(|scope| scope.0))
+                        .is_some_and(|scope| self.world.visible(self.scope, scope))
+            }
         }
     }
 }
@@ -462,8 +467,9 @@ impl<'w, Q: Query, F: QueryFilter> Iterator for QueryIter<'w, Q, F> {
                 continue;
             }
             let entity = archetype.entities()[row];
-            if self.world.is_root(entity) || self.world.is_shared(entity) {
-                // The tree's scaffolding is addressable but not content.
+            if self.world.is_scaffolding(entity) {
+                // The tree's two roots are addressable but not content; what
+                // a caller spawns under the shared one is content.
                 continue;
             }
             let state = self.state.as_ref().expect("the state was just resolved");

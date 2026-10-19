@@ -309,3 +309,56 @@ fn a_view_is_copy_and_reports_its_scope() {
     assert_eq!(copy.scope(), scene);
     assert_eq!(view.scope(), scene);
 }
+
+#[test]
+fn the_shared_subtree_is_content_that_every_view_sees() {
+    let mut world = World::new();
+    let shared = world.shared();
+    // A resource spawned in the shared subtree reaches every view, and a
+    // view counts it: only the two scaffolding entities themselves are
+    // excluded, not what a caller puts under them.
+    let resource = world.view_mut(shared).unwrap().spawn((Marker(1),));
+    let scene = world.root_view_mut().spawn((Name("scene"),));
+    world.view_mut(scene).unwrap().spawn((Marker(2),));
+
+    let view = world.view(scene).unwrap();
+    assert!(
+        view.contains(resource),
+        "visible through the shared subtree"
+    );
+    assert_eq!(view.get::<Marker>(resource).map(|marker| marker.0), Some(1));
+    let mut found: Vec<u32> = view
+        .query::<&Marker>()
+        .map(|(_, marker)| marker.0)
+        .collect();
+    found.sort_unstable();
+    assert_eq!(
+        found,
+        [1, 2],
+        "the resource and the child, and nothing else"
+    );
+}
+
+#[test]
+fn a_shared_resource_is_counted_but_the_scaffolding_is_not() {
+    let mut world = World::new();
+    let shared = world.shared();
+    world.view_mut(shared).unwrap().spawn((Marker(1),));
+    let scene = world.root_view_mut().spawn((Name("scene"),));
+    world.view_mut(scene).unwrap().spawn((Marker(2),));
+
+    assert_eq!(
+        world.root_view().len(),
+        3,
+        "the scene, its child, the resource"
+    );
+    let view = world.view(scene).unwrap();
+    // The resource reaches the view through the shared subtree, so it is
+    // counted here too: what the scaffolding excludes is only the two root
+    // entities themselves.
+    assert_eq!(view.len(), 3, "the scene, its child, the shared resource");
+    // The archetype lengths are what the count is summed from, so they have to
+    // agree with it.
+    let sum: usize = view.archetype_infos().iter().map(|info| info.len).sum();
+    assert_eq!(sum, view.len());
+}

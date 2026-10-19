@@ -144,6 +144,16 @@ impl World {
         entity == self.shared || self.is_descendant(self.shared, entity)
     }
 
+    /// Whether `entity` is one of the tree's two scaffolding entities.
+    ///
+    /// This is narrower than [`World::is_shared`], which covers the whole
+    /// shared subtree: the entities a caller spawns there are content, and a
+    /// view counts and queries them like any other.
+    #[must_use]
+    pub fn is_scaffolding(&self, entity: Entity) -> bool {
+        entity == self.root || entity == self.shared
+    }
+
     /// Whether `entity` is strictly below `ancestor` in the tree.
     #[must_use]
     pub fn is_descendant(&self, ancestor: Entity, entity: Entity) -> bool {
