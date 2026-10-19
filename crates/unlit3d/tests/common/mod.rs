@@ -84,6 +84,43 @@ impl TestGpu {
         self.source.expect("this test world has a mesh source")
     }
 
+    /// Spawn `bundle` into a source's subtree, which is what a frame draws.
+    ///
+    /// A source queries its own scope, so an entity spawned beside the source
+    /// rather than under it is invisible to the frame. The view is taken and
+    /// dropped here rather than held, so a test can allocate through the
+    /// harness between spawns.
+    pub fn spawn_in<B: unlit_ecs::Bundle>(
+        &self,
+        world: &mut World,
+        source: Entity,
+        bundle: B,
+    ) -> Entity {
+        world
+            .view_mut(source)
+            .expect("a source entity is its own scope")
+            .spawn(bundle)
+    }
+
+    /// Spawn `bundle` into the mesh source's subtree.
+    ///
+    /// # Panics
+    ///
+    /// In a world built with [`Self::frame_only`], which has no mesh source.
+    pub fn spawn<B: unlit_ecs::Bundle>(&self, world: &mut World, bundle: B) -> Entity {
+        let entity = self.mesh_source();
+        self.spawn_in(world, entity, bundle)
+    }
+
+    /// Despawn `entity` through the mesh source's subtree.
+    pub fn despawn(&self, world: &mut World, entity: Entity) -> bool {
+        let source = self.mesh_source();
+        world
+            .view_mut(source)
+            .expect("the source entity is its own scope")
+            .despawn(entity)
+    }
+
     /// Run `f` on the mesh source.
     pub fn with_mesh_source<R>(
         &self,
@@ -98,10 +135,9 @@ impl TestGpu {
         let mesh = source
             .as_mut::<MeshSource>()
             .expect("the source is a MeshSource");
-        // The closure works through the source's own view, which is the scope
-        // the source was spawned in: that is what a frame hands it too.
-        let scope = world.scope_of(entity).expect("the source entity is alive");
-        let view = world.view(scope).expect("the source's scope exists");
+        // The closure works through the source's own view: a source entity is
+        // its own scope, which is what a frame hands it too.
+        let view = world.view(entity).expect("the source entity is alive");
         f(mesh, &view)
     }
 

@@ -104,18 +104,22 @@ fn cube_world(ctx: &Ctx, size: (u32, u32), viewport: Option<ViewportRect>) -> (W
     let key = gpu.key.clone();
 
     let mesh = gpu.allocate_cube_mesh(&world);
-    world
-        .root_view_mut()
-        .spawn((camera_view(size.0 as f32 / size.1.max(1) as f32),));
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.2, 0.0),
-            rotation: glam::Quat::from_rotation_y(0.6),
-            scale: glam::Vec3::splat(0.7),
-        },
-        mesh,
-        UnlitPipeline::new(key),
-    ));
+    gpu.spawn(
+        &mut world,
+        (camera_view(size.0 as f32 / size.1.max(1) as f32),),
+    );
+    gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            mesh,
+            UnlitPipeline::new(key),
+        ),
+    );
 
     set_frame_viewport(&world, viewport.map(FrameViewport));
     (world, gpu)

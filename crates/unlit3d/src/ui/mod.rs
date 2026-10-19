@@ -3,7 +3,7 @@
 //! [`UiSource`] is a [`FrameSource`] that renders the world's egui interfaces
 //! over whatever the frame already holds. The interfaces themselves are
 //! [`UiPanel`] behaviour components: the source is only their driver, and it
-//! runs whatever panels the world carries, in query order.
+//! runs whatever panels its own scope carries, in query order.
 //!
 //! ```rust
 //! use unlit3d::prelude::*;
@@ -21,9 +21,10 @@
 //! );
 //!
 //! // The source, and one interface held as a behaviour component. More
-//! // panels are more entities, each with its own sibling state.
-//! world.root_view_mut().spawn((Source::new(UiSource::new()),));
-//! world.root_view_mut().spawn((
+//! // panels are more entities under the same source, each with its own
+//! // sibling state.
+//! let ui = world.root_view_mut().spawn((Source::new(UiSource::new()),));
+//! world.view_mut(ui).unwrap().spawn((
 //!     UiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
 //!     }),

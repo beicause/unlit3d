@@ -73,25 +73,28 @@ fn centre_pixel(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Textu
 ///
 /// The blit declares no depth state, so the target it draws into carries no
 /// depth attachment: wgpu requires the two to match.
-fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture) {
+fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture, Entity) {
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, ctx);
     let texture = solid_texture(&ctx.device, &ctx.queue, rgba);
     let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
     let blit = BlitTexture::new(&world, gpu.context, view);
-    world.root_view_mut().spawn((blit,));
-    world
+    let source = world
         .root_view_mut()
         .spawn((Source::new(BlitSource::new()),));
+    world
+        .view_mut(source)
+        .expect("a source entity is its own scope")
+        .spawn((blit,));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
-    (world, gpu, target)
+    (world, gpu, target, source)
 }
 
 /// The blit copies the texture the graph holds onto the whole target.
 async fn blit_copies_the_source_texture() {
     let ctx = Ctx::headless().await;
     const COLOR: [u8; 4] = [200, 100, 50, 255];
-    let (world, gpu, target) = blit_world(&ctx, COLOR);
+    let (world, gpu, target, _source) = blit_world(&ctx, COLOR);
 
     gpu.render(&world);
 
@@ -111,7 +114,7 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
     let ctx = Ctx::headless().await;
     const FIRST: [u8; 4] = [220, 40, 40, 255];
     const SECOND: [u8; 4] = [40, 220, 40, 255];
-    let (mut world, gpu, target) = blit_world(&ctx, FIRST);
+    let (mut world, gpu, target, source) = blit_world(&ctx, FIRST);
 
     gpu.render(&world);
     assert_eq!(
@@ -132,7 +135,10 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
         .map(|(entity, _)| entity)
         .expect("the world has a blit texture");
     world.root_view_mut().despawn(entity);
-    world.root_view_mut().spawn((blit,));
+    world
+        .view_mut(source)
+        .expect("a source entity is its own scope")
+        .spawn((blit,));
     gpu.render(&world);
 
     assert_eq!(

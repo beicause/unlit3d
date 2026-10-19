@@ -102,14 +102,11 @@ fn with_mesh_source<R>(
     f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
 ) -> Result<R, String> {
     let entity = mesh_source_entity(world, handle)?;
-    // The view is the source's own, which is the scope it was spawned in: a
+    // The view is the source's own: a source entity is its own scope, and a
     // source only ever sees the subtree it draws.
-    let scope = world
-        .scope_of(entity)
-        .ok_or_else(|| "the mesh source entity is gone".to_string())?;
     let view = world
-        .view(scope)
-        .ok_or_else(|| "the mesh source's scope is gone".to_string())?;
+        .view(entity)
+        .ok_or_else(|| "the mesh source entity is gone".to_string())?;
     let mut source = view
         .get_mut::<Source>(entity)
         .ok_or_else(|| "the mesh source entity is gone".to_string())?;
@@ -552,8 +549,9 @@ pub fn create_mesh(
     if let Some(cutoff) = args.cutoff {
         builder.push(InstanceCutoff::new(cutoff));
     }
-    // The mesh lands in the requested scope, which defaults to the root: what
-    // a caller spawns is what the scope it named draws.
+    // The mesh lands in the requested scope, which defaults to the source
+    // entity itself: a frame draws a source's own subtree, so a mesh spawned
+    // beside the source would never be drawn.
     let scope = match args.scope {
         Some(bits) => {
             let scope = Entity::from_bits(bits);
@@ -562,7 +560,7 @@ pub fn create_mesh(
             }
             scope
         }
-        None => world.root(),
+        None => mesh_source_entity(world, source)?,
     };
     let entity = world
         .view_mut(scope)
@@ -689,7 +687,12 @@ pub fn load_gltf(
     let resources = with_mesh_source(world, source, |source, view| {
         gltf.insert_resources(source, view)
     })?;
-    let scope = scope.unwrap_or_else(|| world.root());
+    // Content goes into the requested scope, which defaults to the source
+    // entity itself, so the frame that draws the source also draws the scene.
+    let scope = match scope {
+        Some(scope) => scope,
+        None => mesh_source_entity(world, source)?,
+    };
     let mut view = world
         .view_mut(scope)
         .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?;

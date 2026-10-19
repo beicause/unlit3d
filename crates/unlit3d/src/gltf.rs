@@ -26,10 +26,11 @@
 //!
 //! ```rust,no_run
 //! # use unlit3d::gltf::UnlitGltf;
-//! # use unlit3d::prelude::{MeshSource, World};
-//! # fn run(source: &mut MeshSource, world: &mut World) -> Result<(), gltf::Error> {
+//! # use unlit3d::prelude::MeshSource;
+//! # use unlit_ecs::ScopedWorldMut;
+//! # fn run(source: &mut MeshSource, world: &mut ScopedWorldMut<'_>) -> Result<(), gltf::Error> {
 //! let gltf = UnlitGltf::load("model.glb")?;
-//! let resources = gltf.insert_resources(source, world);
+//! let resources = gltf.insert_resources(source, &world.as_view());
 //! let entities = gltf.spawn_default_scene(world, &resources);
 //! // ... render ...
 //! // Giving the handles up makes their resources collectable.

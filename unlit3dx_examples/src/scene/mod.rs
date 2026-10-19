@@ -39,7 +39,7 @@ use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
 use unlit3dx::ui::UiPanelHost;
 
-use crate::render::camera_looking_at;
+use crate::render::{camera_looking_at, mesh_source};
 
 pub use audio::{
     AudioSetup, BGM_TRACK, SEQUENCE_TRACK, SYNTH_GAIN, SceneAudio, install_audio_job_with,
@@ -114,12 +114,18 @@ pub struct ScenePoses(pub Vec<(Entity, Transform)>);
 /// nothing.
 pub fn pose_job(poses: ScenePoses) -> Job<()> {
     Box::new(move |world: &mut World| {
+        // A render instance lives under the source that draws it, so the
+        // view that owns it is the one that reaches it.
+        let Some((source, _)) = mesh_source(world) else {
+            return;
+        };
+        let Some(view) = world.view(source) else {
+            return;
+        };
         for (entity, pose) in poses.0.iter() {
-            let _ = world
-                .root_view()
-                .with_mut::<Transform, _>(*entity, |transform| {
-                    transform.clone_from(pose);
-                });
+            let _ = view.with_mut::<Transform, _>(*entity, |transform| {
+                transform.clone_from(pose);
+            });
         }
     })
 }
@@ -206,13 +212,21 @@ pub fn setup_render_world(
 pub fn camera_job() -> Job<()> {
     let mut azimuth = ORBIT_START;
     Box::new(move |world: &mut World| {
-        let camera_entity = world.root_view_mut().spawn((camera_looking_at(
-            WINDOW_SIZE,
-            orbit_eye(azimuth),
-            ORBIT_TARGET,
-            60f32.to_radians(),
-            0.1,
-        ),));
+        // The camera belongs to the mesh source: a source frames what its own
+        // subtree holds, so a camera beside it would never be found.
+        let Some((source, _)) = mesh_source(world) else {
+            panic!("the render world carries no MeshSource");
+        };
+        let camera_entity = world
+            .view_mut(source)
+            .expect("the mesh source entity exists")
+            .spawn((camera_looking_at(
+                WINDOW_SIZE,
+                orbit_eye(azimuth),
+                ORBIT_TARGET,
+                60f32.to_radians(),
+                0.1,
+            ),));
         world.root_view_mut().spawn((OnFrame::new(
             FrameBehaviourOrder(RENDER_CAMERA),
             move |world, _entity, frame| {

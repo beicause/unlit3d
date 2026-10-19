@@ -70,6 +70,93 @@ It is at an **early stage of development** and its API changes freely.
   subtree every view sees. Both can carry components and be named as scopes;
   neither is counted, queried, despawned or relinked.
 
+## Scopes
+
+A scope is an entity. Every entity carries a [`ScopeOf`] naming its parent, and
+that one relation is the whole tree: a scene is a subtree, and what a caller
+holds is a view of one scope.
+
+```rust
+use unlit_ecs::World;
+
+let mut world = World::new();
+let scene = world.root_view_mut().spawn((),);
+let cube = world.view_mut(scene).unwrap().spawn((0u32,));
+let camera = world.view_mut(scene).unwrap().spawn((0f32,));
+
+// The scene's view sees the scene and everything below it, and nothing beside.
+let view = world.view(scene).unwrap();
+assert_eq!(view.scope(), scene);
+assert_eq!(view.len(), 3);
+assert!(view.contains(cube) && view.contains(camera));
+assert_eq!(view.children(scene).len(), 2);
+assert!(view.query::<&u32>().any(|(entity, _)| entity == cube));
+
+// Root is a view too, and it sees every scope.
+assert_eq!(world.root_view().len(), 3);
+```
+
+Two entities are scaffolding rather than content. [`World::root`] is the scope
+the root view looks through, and its `ScopeOf` is itself; [`World::shared`] is
+its child, and every view reaches that subtree. Both can carry components and be
+named as a scope, so a resource belongs on either one — but neither is counted,
+queried, despawned or relinked, which is why an empty world counts zero rather
+than two.
+
+**What a view sees.** A view of `caller` sees `candidate` when `candidate` is
+alive and one of these holds:
+
+| The candidate is | Seen by |
+| --- | --- |
+| the shared subtree | every view |
+| anything | the root view |
+| the view's own scope | that view |
+| below the view's scope | that view |
+
+Everything else is out of reach: a view does not see its ancestors, and it does
+not see its siblings or their subtrees. The relation is deliberately asymmetric
+— a scene's view sees the shared resources, and a shared resource's view does
+not reach back into the scene — so "A sees B" never implies "B sees A". A handle
+that is not alive is visible from nowhere, the root included: seeing a place is
+not the same as there being something in it.
+
+**What a view may change.** Ownership is stricter than visibility, and it covers
+only structural changes: a view may despawn or relink an entity when the entity
+is its own scope or below it, or when the view is the root. The shared subtree is
+readable from everywhere but only the root may move or remove it. Opening a
+sub-view is a visibility test again, so a scene view can open the shared scope
+and spawn a resource there; despawning that resource afterwards is the root's
+call, not the scene's.
+
+**There is no way up.** [`World::view`] answers `None` for a scope that does
+not exist, and [`ScopedWorld::view`] only descends — into a visible child or
+into the shared subtree. A view cannot name the world it came from, so holding
+one is not a way to reach the rest of it.
+
+**Changing the tree.** [`ScopedWorldMut::spawn`] puts the new entity in the
+view's own scope, and `spawn_at` puts it on a handle reserved by
+[`World::reserve_entity`]. [`ScopedWorldMut::despawn`] removes the entity and
+its whole subtree, children first, so a child's [`OnDespawn`] still sees its
+living ancestors. [`ScopedWorldMut::link`] and `unlink` re-parent an entity
+inside the same view, refusing to move a scope into its own descendant or to
+touch the scaffolding; they are pure structure changes and run no lifecycle
+callback. A read-only view queues the same changes through
+[`ScopedWorld::queue`], and the driver applies them with [`World::apply`].
+
+**Where callbacks land.** A lifecycle callback receives the view of the entity's
+parent scope, so an `OnSpawn` on a scene's child sees the scene. It cannot
+change the tree either — it queues that, the same way a read-only view does.
+
+**Cost.** Visibility is decided on every access by walking the parent chain, and
+the walk is bounded by the number of nodes, so a malformed tree cannot hang it.
+The index behind [`World::children`] and [`World::is_descendant`] is derived
+from the `ScopeOf` components and can be rebuilt from them with
+[`World::rebuild_children`], which is why there is nothing to invalidate when a
+component is written through the reflection registry. Queries and counts skip the
+rows a view cannot see, and [`ScopedWorld::archetype`] answers `None` for an
+archetype the view only partly sees — [`ScopedWorld::archetype_infos`] reports
+the visible length instead.
+
 ## What is in the box
 
 [`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`] (and the

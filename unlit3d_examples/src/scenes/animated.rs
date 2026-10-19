@@ -98,7 +98,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
@@ -108,7 +108,7 @@ fn build(
     let key = UnlitPipelineKey::new(super::unlit_options(&source.device(&world.root_view())));
     let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
-    let camera_entity = world.root_view_mut().spawn((orbit_camera(0, size),));
+    let camera_entity = super::spawn_in(world, source_entity, (orbit_camera(0, size),));
 
     // One entry per cell, holding the entity and the mesh while it is
     // occupied. Counts allocations, not cells: a cell that is filled twice
@@ -129,7 +129,7 @@ fn build(
             if step_index == 0 {
                 for entry in cells.iter_mut() {
                     if let Some((entity, mesh)) = entry.take() {
-                        assert!(world.root_view_mut().despawn(entity));
+                        assert!(super::despawn_in(world, source_entity, entity));
                         super::remove_mesh(world, source_entity, mesh);
                     }
                 }
@@ -141,7 +141,7 @@ fn build(
             // the world still names a mesh the renderer is about to free.
             for &cell in step.free {
                 let (entity, mesh) = cells[cell].take().expect("a freed cell holds a mesh");
-                assert!(world.root_view_mut().despawn(entity));
+                assert!(super::despawn_in(world, source_entity, entity));
                 super::remove_mesh(world, source_entity, mesh);
             }
 
@@ -150,19 +150,23 @@ fn build(
                 // the looped sequence — is retired first, so a mesh never
                 // outlives the entity that names it.
                 if let Some((entity, mesh)) = cells[cell].take() {
-                    assert!(world.root_view_mut().despawn(entity));
+                    assert!(super::despawn_in(world, source_entity, entity));
                     super::remove_mesh(world, source_entity, mesh);
                 }
                 // The allocation's offset is baked into the vertices, so every
                 // mesh draws different geometry even at the same transform.
                 let offset = glam::Vec3::splat(0.06 * allocated as f32);
                 let mesh = super::allocate_offset_cube_mesh(world, source_entity, &key, offset);
-                let entity = world.root_view_mut().spawn((
-                    cell_transform(cell, step_index),
-                    InstanceColor::new(TINTS[allocated % TINTS.len()]),
-                    mesh.clone(),
-                    UnlitPipeline::new(key.clone()),
-                ));
+                let entity = super::spawn_in(
+                    world,
+                    source_entity,
+                    (
+                        cell_transform(cell, step_index),
+                        InstanceColor::new(TINTS[allocated % TINTS.len()]),
+                        mesh.clone(),
+                        UnlitPipeline::new(key.clone()),
+                    ),
+                );
                 cells[cell] = Some((entity, mesh));
                 allocated += 1;
             }
@@ -173,7 +177,8 @@ fn build(
                 if let Some((entity, _)) = entry {
                     let transform = cell_transform(cell, step_index);
                     world
-                        .root_view()
+                        .view(source_entity)
+                        .expect("the source is alive")
                         .with_mut::<Transform, _>(*entity, |current| *current = transform)
                         .expect("a live mesh carries a transform");
                 }
@@ -182,6 +187,7 @@ fn build(
             // shape re-aims the orbit instead of stretching the grid.
             super::aim_camera(
                 world,
+                source_entity,
                 camera_entity,
                 orbit_eye(step_index),
                 GRID_TARGET,

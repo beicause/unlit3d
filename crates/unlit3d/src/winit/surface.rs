@@ -32,6 +32,7 @@
 //! # ) -> (WindowSurface, FrameAttachments) {
 //! // The renderer the surface draws through, spawned once as a resource.
 //! let window_surface = world
+//!     .root_view()
 //!     .with_mut::<Renderer, _>(renderer, |r| {
 //!         WindowSurface::new(world, r, instance, adapter, window, surface)
 //!     })
@@ -64,18 +65,19 @@
 //! #     window_surface: &mut WindowSurface,
 //! #     attachments: &FrameAttachments,
 //! # ) {
-//! let Some(frame) = world
+//! let root = world.root_view();
+//! let Some(frame) = root
 //!     .with_mut::<Renderer, _>(renderer_entity, |r| window_surface.acquire(world, r))
 //!     .unwrap()
 //! else {
 //!     return;
 //! };
-//! world
+//! root
 //!     .with_mut::<Renderer, _>(renderer_entity, |r| {
 //!         attachments.bind(world, r, frame.color_view().clone());
 //!     })
 //!     .unwrap();
-//! world
+//! root
 //!     .with_mut::<Renderer, _>(renderer_entity, |r| r.render(world))
 //!     .unwrap();
 //! frame.present(queue);

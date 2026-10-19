@@ -1019,7 +1019,7 @@ fn hash3(x: i32, y: i32, z: i32) -> f32 {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    _ui: Option<Entity>,
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
@@ -1146,24 +1146,32 @@ fn build(
 
     // No family of the built-in unlit pipeline is registered: every draw in this
     // scene goes through a pipeline the example compiled itself.
-    let _source_entity = world.root_view_mut().spawn((Source::new(source),));
-    let camera_entity = world.root_view_mut().spawn((camera_looking_at(
-        orbit_eye(ORBIT_START),
-        CAMERA_TARGET,
-        size,
-    ),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let camera_entity = super::spawn_in(
+        world,
+        source_entity,
+        (camera_looking_at(
+            orbit_eye(ORBIT_START),
+            CAMERA_TARGET,
+            size,
+        ),),
+    );
 
-    world.root_view_mut().spawn((sky_mesh, sky_pipeline));
+    super::spawn_in(world, source_entity, (sky_mesh, sky_pipeline));
     // One mesh, one pipeline and one material for the whole cloud, so the
     // renderer folds the particles into a single instanced draw and every
     // sprite's placement comes from its own record.
     for particle in particle_cloud() {
-        world.root_view_mut().spawn((
-            particle_mesh.clone(),
-            particle_pipeline.clone(),
-            particle_material.clone(),
-            particle,
-        ));
+        super::spawn_in(
+            world,
+            source_entity,
+            (
+                particle_mesh.clone(),
+                particle_pipeline.clone(),
+                particle_material.clone(),
+                particle,
+            ),
+        );
     }
 
     // A capture replays the frozen sequence so a stored frame stays
@@ -1190,6 +1198,7 @@ fn build(
             };
             super::aim_camera(
                 world,
+                source_entity,
                 camera_entity,
                 orbit_eye(angle),
                 CAMERA_TARGET,
@@ -1197,7 +1206,8 @@ fn build(
             );
 
             let camera = world
-                .root_view()
+                .view(source_entity)
+                .expect("the source is alive")
                 .get::<Camera>(camera_entity)
                 .expect("the scene's camera exists");
             let sky = SkyUniforms {

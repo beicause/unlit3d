@@ -71,7 +71,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
@@ -153,44 +153,60 @@ fn build(
         )
     });
 
-    let camera_entity =
-        world
-            .root_view_mut()
-            .spawn((camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),));
+    let camera_entity = super::spawn_in(
+        world,
+        source_entity,
+        (camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
+    );
 
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.0, -1.6),
-            scale: glam::Vec3::splat(1.1),
-            ..Default::default()
-        },
-        InstanceColor::new(BACKDROP_TINT),
-        backdrop,
-        UnlitPipeline::new(opaque_key),
-    ));
+    super::spawn_in(
+        world,
+        source_entity,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.0, -1.6),
+                scale: glam::Vec3::splat(1.1),
+                ..Default::default()
+            },
+            InstanceColor::new(BACKDROP_TINT),
+            backdrop,
+            UnlitPipeline::new(opaque_key),
+        ),
+    );
 
     // Spawned nearest-first on purpose: registration order is not draw order
     // for a z-sorted entity, so only a correct sort composites them red,
     // green, blue from back to front.
     for (tint, x, z) in PANES.iter().rev() {
-        world.root_view_mut().spawn((
-            Transform {
-                translation: glam::Vec3::new(*x, 0.0, *z),
-                rotation: glam::Quat::from_rotation_y(0.35),
-                scale: glam::Vec3::new(1.05, 1.05, 0.05),
-            },
-            InstanceColor::new(*tint),
-            pane_mesh.clone(),
-            UnlitPipeline::new(translucent_key.clone()),
-            ZSortedDrawing,
-        ));
+        super::spawn_in(
+            world,
+            source_entity,
+            (
+                Transform {
+                    translation: glam::Vec3::new(*x, 0.0, *z),
+                    rotation: glam::Quat::from_rotation_y(0.35),
+                    scale: glam::Vec3::new(1.05, 1.05, 0.05),
+                },
+                InstanceColor::new(*tint),
+                pane_mesh.clone(),
+                UnlitPipeline::new(translucent_key.clone()),
+                ZSortedDrawing,
+            ),
+        );
     }
 
     SceneControl {
         // A single frame: the composite is static, so only the camera's aspect
         // is advanced, keeping a resized window from stretching the panes.
         advance: Box::new(move |world, _frame, _delta, frame_size| {
-            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
+            super::aim_camera(
+                world,
+                source_entity,
+                camera_entity,
+                CAMERA_EYE,
+                CAMERA_TARGET,
+                frame_size,
+            );
         }),
         // The first frame is the snapshot; whichever frame is drawn, the
         // picture is the same.

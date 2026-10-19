@@ -27,6 +27,7 @@
 //! assert_eq!(sum, 3);
 //! // Only the entity without a `bool`.
 //! let sum: u32 = world
+//!     .root_view()
 //!     .query_filtered::<&u32, Without<bool>>()
 //!     .map(|(_, value)| *value)
 //!     .sum();
@@ -263,6 +264,7 @@ impl<T: 'static> QueryFilter for Without<T> {
 /// world.root_view_mut().spawn((2u32, 1i64));
 /// world.root_view_mut().spawn((3u32,));
 /// let found: Vec<_> = world
+///     .root_view()
 ///     .query_filtered::<&u32, Or<(With<bool>, With<i64>)>>()
 ///     .collect();
 /// assert_eq!(found.len(), 2);

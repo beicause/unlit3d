@@ -65,7 +65,7 @@ impl OwnedUnlitMeshDesc {
 /// For a pipeline of the caller's own, register a family and allocate
 /// through `unlit3d`'s [`MeshSource`] directly; the world is the same
 /// registry either way.
-fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
+pub(crate) fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
     let (entity, source) = world
         .root_view()
         .query::<&Source>()
@@ -102,7 +102,12 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
                     .allocate_unlit_mesh(&root, &key, desc.borrowed())
             })
             .expect("the mesh source entity exists");
-        world.root_view_mut().spawn((mesh,))
+        // The asset hangs under the source that draws it, so the world holds
+        // one subtree per source rather than asset entities at its root.
+        world
+            .view_mut(source_entity)
+            .expect("the mesh source entity exists")
+            .spawn((mesh,))
     })
 }
 
@@ -159,7 +164,10 @@ fn allocate_material(
             source.allocate_unlit_material(&root, &key, view, sampler)
         })
         .expect("the mesh source entity exists");
-    world.root_view_mut().spawn((material,))
+    world
+        .view_mut(source_entity)
+        .expect("the mesh source entity exists")
+        .spawn((material,))
 }
 
 /// A job that spawns one render entity from asset entities: a [`GpuMesh`]
@@ -171,7 +179,7 @@ fn allocate_material(
 /// `MeshSource`, or when an asset entity is gone.
 pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> Job<Entity> {
     Box::new(move |world: &mut World| {
-        let Some((_, key)) = mesh_source(world) else {
+        let Some((source_entity, key)) = mesh_source(world) else {
             panic!("the render world carries no MeshSource");
         };
         let mesh = world
@@ -184,8 +192,11 @@ pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> J
             .get::<GpuMaterial>(material)
             .expect("the material asset entity exists")
             .clone();
+        // The instance hangs under the source that draws it: a source draws
+        // the subtree it owns, so an instance spawned beside it is never seen.
         world
-            .root_view_mut()
+            .view_mut(source_entity)
+            .expect("the mesh source entity exists")
             .spawn((transform, mesh, material, UnlitPipeline::new(key)))
     })
 }

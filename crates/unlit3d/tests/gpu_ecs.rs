@@ -66,37 +66,42 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
 
-    // Dedicated camera entity.
-    world
-        .root_view_mut()
-        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-
     let mesh_far = gpu.allocate_cube_mesh(&world);
     let mesh_near = gpu.allocate_cube_mesh(&world);
 
+    // The camera and the instances live in the source's own subtree, which is
+    // the scope the frame draws from.
+    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
+
     // Far cube, red.
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.2, -0.6),
-            rotation: glam::Quat::from_rotation_y(0.6),
-            scale: glam::Vec3::splat(0.7),
-        },
-        InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
-        mesh_far,
-        UnlitPipeline::new(key.clone()),
-    ));
+    gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, -0.6),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
+            mesh_far,
+            UnlitPipeline::new(key.clone()),
+        ),
+    );
 
     // Near cube, green.
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.2, 0.6),
-            rotation: glam::Quat::from_rotation_y(0.6),
-            scale: glam::Vec3::splat(0.7),
-        },
-        InstanceColor::new(glam::Vec4::new(0.0, 1.0, 0.0, 1.0)),
-        mesh_near,
-        UnlitPipeline::new(key.clone()),
-    ));
+    gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, 0.6),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            InstanceColor::new(glam::Vec4::new(0.0, 1.0, 0.0, 1.0)),
+            mesh_near,
+            UnlitPipeline::new(key.clone()),
+        ),
+    );
 
     let target = gpu.render_to_offscreen(&world, "test::depth");
 
@@ -172,9 +177,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
-    world
-        .root_view_mut()
-        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     // A cube fills a roughly square block of the frame, and the replacement
     // draws at the same spot through the ranges it vacated.
@@ -186,15 +189,18 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     // different shape at the probes below rather than the same one twice.
     gpu.allocate_offset_cube_mesh(&world, glam::Vec3::splat(10.0));
     let cube = gpu.allocate_cube_mesh(&world);
-    let cube_entity = world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.2, 0.0),
-            rotation: glam::Quat::from_rotation_y(0.6),
-            scale: glam::Vec3::splat(0.7),
-        },
-        cube,
-        UnlitPipeline::new(key.clone()),
-    ));
+    let cube_entity = gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            cube,
+            UnlitPipeline::new(key.clone()),
+        ),
+    );
 
     let target = gpu.render_to_offscreen(&world, "test::reused_range::before");
     let frame = Frame {
@@ -211,7 +217,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         .get::<GpuMesh>(cube_entity)
         .expect("the cube carries a mesh")
         .clone();
-    assert!(world.root_view_mut().despawn(cube_entity));
+    assert!(gpu.despawn(&mut world, cube_entity));
     gpu.remove_mesh(&world, cube);
 
     // The replacement takes the ranges the cube vacated — one allocation per
@@ -219,16 +225,19 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     // its per-instance colour so the pixel the cube used to own can only come
     // from the replacement's own data.
     let replacement = gpu.allocate_cube_mesh(&world);
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.2, 0.0),
-            rotation: glam::Quat::from_rotation_y(0.6),
-            scale: glam::Vec3::splat(0.7),
-        },
-        InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
-        replacement,
-        UnlitPipeline::new(key),
-    ));
+    gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
+            replacement,
+            UnlitPipeline::new(key),
+        ),
+    );
 
     let target = gpu.render_to_offscreen(&world, "test::reused_range::after");
     let frame = Frame {
@@ -276,36 +285,40 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
-    world
-        .root_view_mut()
-        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     // The first mesh draws at the centre of the frame and never moves, so the
     // pixel there is its own as long as its data survives every grow.
     let first = gpu.allocate_cube_mesh(&world);
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.2, 0.0),
-            rotation: glam::Quat::from_rotation_y(0.6),
-            scale: glam::Vec3::splat(0.7),
-        },
-        first,
-        UnlitPipeline::new(key.clone()),
-    ));
+    gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            first,
+            UnlitPipeline::new(key.clone()),
+        ),
+    );
 
     // A grid cube apiece: the first is small enough for the pools as created,
     // and every later one is large enough to force a grow.
     let grids: [GpuMesh; 3] = std::array::from_fn(|_| gpu.allocate_grid_cube_mesh(&world, 4));
     for (frame_index, mesh) in grids.into_iter().enumerate() {
-        world.root_view_mut().spawn((
-            Transform {
-                translation: glam::Vec3::new(-3.0 + 2.4 * frame_index as f32, -1.4, -2.0),
-                rotation: glam::Quat::from_rotation_y(0.3),
-                scale: glam::Vec3::splat(0.05),
-            },
-            mesh,
-            UnlitPipeline::new(key.clone()),
-        ));
+        gpu.spawn(
+            &mut world,
+            (
+                Transform {
+                    translation: glam::Vec3::new(-3.0 + 2.4 * frame_index as f32, -1.4, -2.0),
+                    rotation: glam::Quat::from_rotation_y(0.3),
+                    scale: glam::Vec3::splat(0.05),
+                },
+                mesh,
+                UnlitPipeline::new(key.clone()),
+            ),
+        );
 
         let target = gpu.render_to_offscreen(&world, "test::pool_growth");
         let frame = Frame {
@@ -376,6 +389,27 @@ async fn a_source_draws_only_its_own_subtree() {
         "the root sees every source's instances"
     );
 
+    // Draw each source alone: the frame it records holds only its own instance,
+    // which is what isolation means — a source that saw everything would draw
+    // both cubes into either frame.
+    for (scope, label) in [
+        (first, "test::a_source_draws_only_its_own_subtree::first"),
+        (second, "test::a_source_draws_only_its_own_subtree::second"),
+    ] {
+        let drawn = {
+            let root = world.root_view();
+            let view = world.view(scope).expect("the source is a scope");
+            let mut source = root
+                .get_mut::<Source>(scope)
+                .expect("the source entity exists");
+            source
+                .as_mut::<MeshSource>()
+                .expect("the source is a mesh source");
+            // The count the renderer would hand this source.
+            view.query::<&GpuMesh>().count()
+        };
+        assert_eq!(drawn, 1, "{label} draws exactly its own instance");
+    }
     let _ = gpu.render_to_offscreen(&world, "test::a_source_draws_only_its_own_subtree");
 }
 

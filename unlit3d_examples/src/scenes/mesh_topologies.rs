@@ -188,7 +188,7 @@ fn index_buffer() -> Vec<u32> {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
@@ -207,11 +207,15 @@ fn build(
         .collect();
     let indices = index_buffer();
 
-    let camera_entity = world.root_view_mut().spawn((camera_looking_at(
-        glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
-        glam::Vec3::ZERO,
-        size,
-    ),));
+    let camera_entity = super::spawn_in(
+        world,
+        source_entity,
+        (camera_looking_at(
+            glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
+            glam::Vec3::ZERO,
+            size,
+        ),),
+    );
 
     let mut entities = Vec::new();
     for (column, key) in keys.iter().enumerate() {
@@ -245,9 +249,11 @@ fn build(
     }
 
     for (column, mesh) in entities {
-        world
-            .root_view_mut()
-            .spawn((mesh, UnlitPipeline::new(keys[column].clone())));
+        super::spawn_in(
+            world,
+            source_entity,
+            (mesh, UnlitPipeline::new(keys[column].clone())),
+        );
     }
 
     SceneControl {
@@ -256,6 +262,7 @@ fn build(
         advance: Box::new(move |world, _frame, _delta, frame_size| {
             super::aim_camera(
                 world,
+                source_entity,
                 camera_entity,
                 glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
                 glam::Vec3::ZERO,

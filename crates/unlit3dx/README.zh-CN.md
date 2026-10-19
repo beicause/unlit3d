@@ -30,15 +30,15 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 });
 
 // job 在远程线程的 tick 之间运行；request 会在答案就绪时把它带回来。
-simulation.send(Box::new(|world: &mut World| world.spawn((0u8,)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.spawn((0u8,))));
+simulation.send(Box::new(|world: &mut World| world.root_view_mut().spawn((0u8,)))).expect("room in the queue");
+let spawned = simulation.request(Box::new(|world: &mut World| world.root_view_mut().spawn((0u8,))));
 // job 一旦运行过，`spawned.poll()` 就是 `Some(entity)`。
 
 // 快照是唯一回传的数据，而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
 let reader = simulation.sender().subscribe(|world: &World| {
-    let bodies: Vec<u64> = world.query::<&u64>().map(|(_, id)| *id).collect();
+    let bodies: Vec<u64> = world.root_view().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
 if let Some(latest) = reader.latest() {
@@ -52,7 +52,7 @@ if let Some(latest) = reader.latest() {
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 个排队 job
-let mut nested = host.get_mut::<World>(render.entity()).expect("the nested world");
+let mut nested = host.root_view_mut().get_mut::<World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 
@@ -245,7 +245,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 驱动，答案落地后把 `ready` 作为排队的 command 运行——什么都不阻塞，wasm 安全：
 
 ```rust,ignore
-world.spawn((request_gpu(app, |world, gpu| {
+world.root_view_mut().spawn((request_gpu(app, |world, gpu| {
     // ... 在请求发起处搭建场景 ...
 }),));
 ```

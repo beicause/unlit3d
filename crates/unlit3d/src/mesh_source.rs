@@ -404,7 +404,7 @@ impl MeshSource {
     /// The world addresses this source draws through.
     ///
     /// Setup-time code that needs the resource graph reaches it with
-    /// `world.get_mut::<ResourceGraph>(source.context().graph)`, which is an
+    /// `view.get_mut::<ResourceGraph>(source.context().graph)`, which is an
     /// ordinary ECS access: the graph and the source live in different cells.
     pub fn context(&self) -> RenderContext {
         self.context
@@ -1281,13 +1281,16 @@ impl MeshSource {
     }
 }
 
-/// The camera a frame draws through: the first **active** [`Camera`] in
-/// `world`, copied out of its cell so the caller's borrow of the world does
-/// not block the accesses that follow.
+/// The camera a frame draws through: the first **active** [`Camera`] in the
+/// view, copied out of its cell so the caller's borrow of the world does not
+/// block the accesses that follow.
 ///
-/// Several cameras may live in one world — a caller switches between them by
-/// toggling [`Camera::active`] rather than by respawning. `None` means no
-/// camera is active, and the frame draws nothing.
+/// The view is the source's own scope, so a world may hold several sources and
+/// each one frames what it owns: a camera beside a source's instances is that
+/// source's camera, and a sibling's is not in reach. Within one scope several
+/// cameras may live — a caller switches between them by toggling
+/// [`Camera::active`] rather than by respawning. `None` means the scope has no
+/// active camera, and the source draws nothing.
 fn frame_camera(view: &ScopedWorld<'_>) -> Option<Camera> {
     view.query::<&Camera>()
         .find(|(_, camera)| camera.active)
@@ -1712,6 +1715,33 @@ mod tests {
             .with_mut::<Camera, _>(active, |camera| camera.active = false)
             .expect("the entity carries a camera");
         assert!(frame_camera(&world.root_view()).is_none());
+    }
+
+    #[test]
+    fn each_scope_frames_through_its_own_camera() {
+        let mut world = World::new();
+        let scene = world.root_view_mut().spawn((Transform::default(),));
+        world.view_mut(scene).unwrap().spawn((Camera {
+            view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
+            clip_from_view: glam::Mat4::IDENTITY,
+            active: true,
+        },));
+        // A second scene, with no camera of its own.
+        let sibling = world.root_view_mut().spawn((Transform::default(),));
+
+        let camera = frame_camera(&world.view(scene).unwrap()).expect("the scene has a camera");
+        assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
+
+        // A sibling's camera is out of reach in both directions, which is what
+        // lets two sources frame different parts of one world.
+        assert!(
+            frame_camera(&world.view(sibling).unwrap()).is_none(),
+            "a scope does not borrow its sibling's camera"
+        );
+        assert!(
+            frame_camera(&world.root_view()).is_some(),
+            "the root sees the scene's camera"
+        );
     }
 
     #[test]

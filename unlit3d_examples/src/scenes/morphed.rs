@@ -35,7 +35,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
@@ -63,23 +63,25 @@ fn build(
         )
     });
 
-    let camera_entity = world.root_view_mut().spawn((camera(size),));
+    let camera_entity = super::spawn_in(world, source_entity, (camera(size),));
     // The weights are an entity of their own: the mesh names it rather than
     // owning it, so blending a pose is one component write and nothing on the
     // mesh changes.
-    let weights_entity = world
-        .root_view_mut()
-        .spawn((MorphWeights::new(weights(0)),));
-    world.root_view_mut().spawn((
-        Transform {
-            scale: glam::Vec3::splat(0.9),
-            ..Default::default()
-        },
-        InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
-        mesh,
-        UnlitPipeline::new(key),
-        MorphBinding::new(weights_entity),
-    ));
+    let weights_entity = super::spawn_in(world, source_entity, (MorphWeights::new(weights(0)),));
+    super::spawn_in(
+        world,
+        source_entity,
+        (
+            Transform {
+                scale: glam::Vec3::splat(0.9),
+                ..Default::default()
+            },
+            InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
+            mesh,
+            UnlitPipeline::new(key),
+            MorphBinding::new(weights_entity),
+        ),
+    );
 
     SceneControl {
         advance: Box::new(move |world, frame, _delta, frame_size| {
@@ -87,13 +89,21 @@ fn build(
             // The weights are a component write, not a mesh re-upload and not
             // a GPU call: the source packs and uploads them once per frame.
             world
-                .root_view()
+                .view(source_entity)
+                .expect("the source is alive")
                 .get_mut::<MorphWeights>(weights_entity)
                 .expect("the weight entity carries a `MorphWeights`")
                 .weights = weights(frame).to_vec();
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the cube.
-            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
+            super::aim_camera(
+                world,
+                source_entity,
+                camera_entity,
+                CAMERA_EYE,
+                CAMERA_TARGET,
+                frame_size,
+            );
         }),
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32).then(|| format!("ecs_morphed/frame_{frame:02}.webp"))

@@ -164,9 +164,10 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 深度」由远及近排序——见 `Camera::view_depth`——因此枢轴点偏离几何体的网格仍按它实际
 绘制的几何体排序，而不是按实体原点。
 
-一帧通过世界中第一个 **active** 的 `Camera` 绘制——`Camera::active` 为 `false` 的实体会被
-渲染器跳过。因此一个世界可以持有多个相机，逐帧切换该标志即可在它们之间切换；没有
-active 相机时，帧会被清空，什么都不绘制。
+每个 source 通过**它自己 scope 内**第一个 **active** 的 `Camera` 绘制——`Camera::active` 为
+`false` 的实体会被跳过。因为 scope 就是该 source 自己的子树，一个世界可以持有多个
+source，各自取景自己拥有的内容；同一个 scope 内也可以有多个相机，逐帧切换该标志即可
+在它们之间切换。scope 内没有 active 相机时，该 source 被清空，什么都不绘制。
 
 相机采用引擎自己的约定：**右手系**、**Y 轴向上**的视图空间，投影到 WebGPU 的
 **`[0, 1]`** 裁剪空间深度范围，并以 **reverse-Z** 绘制。相机把视图与投影分开保存：
@@ -484,14 +485,20 @@ let ctx = spawn_context(
     ResourceGraph::new(),
     DeviceCapabilities::default(),
 );
-let mut mesh_source = MeshSource::new(&world, ctx);
-mesh_source.register_unlit_family(&world);
-let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world)));
-let source = world.spawn((Source::new(mesh_source),));
-let renderer = world.spawn((Renderer::new(ctx),));
+let mut mesh_source = MeshSource::new(&world.root_view(), ctx);
+mesh_source.register_unlit_family(&world.root_view());
+let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_view())));
+let renderer = world.root_view_mut().spawn((Renderer::new(ctx),));
 
-// 2. Allocate geometry and a material through the mesh source.
-let (mesh, material) = world
+// 2. Mount the mesh source as a source. A source is its own scope: a frame
+//    hands it a view of its own subtree, so everything it draws lives under
+//    this entity.
+let source = world.root_view_mut().spawn((Source::new(mesh_source),));
+let view = world.view(source).unwrap();
+
+// 3. Allocate geometry and a material through the mesh source, and spawn the
+//    renderable entity under it, carrying the unlit key.
+let (mesh, material) = view
     .with_mut::<Source, _>(source, |source| {
         let source = source.as_mut::<MeshSource>().unwrap();
         let positions = [[0.0; 3]; 3];
@@ -499,7 +506,7 @@ let (mesh, material) = world
         let colors = [[255u8; 4]; 3];
         let indices = [0u32, 1, 2];
         let mesh = source.allocate_unlit_mesh(
-            &world,
+            &view,
             &key,
             UnlitMeshDesc {
                 positions: &positions,
@@ -509,7 +516,7 @@ let (mesh, material) = world
                 ..Default::default()
             },
         );
-        let device = source.device(&world);
+        let device = source.device(&view);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("example::texture"),
             size: wgpu::Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
@@ -522,27 +529,23 @@ let (mesh, material) = world
         });
         // The material reads a view of the texture and a sampler, both of
         // which the graph keeps for it: only ids cross the boundary.
-        let view = source.register_texture_and_default_view(&world, texture).1;
-        let sampler = source.register_sampler(&world, None);
-        let material = source.allocate_unlit_material(&world, &key, view, sampler);
+        let texture_view = source.register_texture_and_default_view(&view, texture).1;
+        let sampler = source.register_sampler(&view, None);
+        let material = source.allocate_unlit_material(&view, &key, texture_view, sampler);
         (mesh, material)
     })
     .unwrap();
-
-// 3. Spawn a renderable entity, carrying the unlit key.
-world.spawn((
-    Transform::default(),
-    mesh,
-    material,
-    UnlitPipeline::new(key),
-));
+world
+    .view_mut(source)
+    .unwrap()
+    .spawn((Transform::default(), mesh, material, UnlitPipeline::new(key)));
 
 // 4. Bind a render target and render one frame (uses the noop device, so it
 //    produces a valid command buffer without touching a GPU). The frame's
 //    depth and multisample attachments are allocated and kept by
 //    `FrameAttachments`; the color attachment is this example's own.
 let color = create_color_target(
-    &world.get::<wgpu::Device>(ctx.device).unwrap(),
+    &world.root_view().get::<wgpu::Device>(ctx.device).unwrap(),
     wgpu::TextureFormat::Rgba8UnormSrgb,
     1280, 720,
 );
@@ -554,16 +557,18 @@ let attachments = FrameAttachments::new(
     1,
     true,
 );
-let color_view = world
+let view = world.view(source).unwrap();
+let color_view = view
     .with_mut::<Source, _>(source, |source| {
         source
             .as_mut::<MeshSource>()
             .unwrap()
-            .register_texture_and_default_view(&world, color)
+            .register_texture_and_default_view(&view, color)
             .1
     })
     .unwrap();
 world
+    .root_view()
     .with_mut::<Renderer, _>(renderer, |r| {
         attachments.bind(&world, r, color_view);
         r.render(&world);
@@ -579,7 +584,10 @@ UI 面板是行为组件，所以装配一个界面就是一次普通的 spawn�
 use unlit3d::prelude::*;
 
 let mut world = World::new();
-world.spawn((UiPanel::new(|_world, _entity, ui| {
+// The panels of a UI source live under it: a frame hands the source a view
+// of its own subtree and drives whatever panels it finds there.
+let ui = world.root_view_mut().spawn((Source::new(UiSource::new()),));
+world.view_mut(ui).unwrap().spawn((UiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),));
 # }
@@ -678,12 +686,12 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 # fn main() -> Result<(), winit::error::EventLoopError> {
 let event_loop = EventLoop::new()?;
 let mut host = WinitHost::new();
-host.world_mut().spawn((
+host.world_mut().root_view_mut().spawn((
     WindowSpec(Window::default_attributes().with_title("unlit3d")),
     CreateWindowRequest(None),
     create_window_on_resume(),
 ));
-host.world_mut().spawn((ExitRequest(false), exit_on_close_requested()));
+host.world_mut().root_view_mut().spawn((ExitRequest(false), exit_on_close_requested()));
 host.run(event_loop)
 # }
 ```

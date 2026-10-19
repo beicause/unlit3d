@@ -32,8 +32,8 @@ async fn skinning_without_a_pose_binding_panics() {
     let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
     let (mesh, _skin) = gpu.allocate_bent_cube_mesh(&world, &key, 0.0);
 
-    world.root_view_mut().spawn((camera(),));
-    world.root_view_mut().spawn((mesh, UnlitPipeline::new(key)));
+    gpu.spawn(&mut world, (camera(),));
+    gpu.spawn(&mut world, (mesh, UnlitPipeline::new(key)));
     gpu.bind_offscreen_target(&world, "test::ecs_skinned_unbound");
     gpu.render(&world);
 }
@@ -49,26 +49,32 @@ async fn meshes_can_share_one_skin_pose() {
 
     // One pose entity, named by both meshes: a crowd of copies of one mesh
     // shares one skeleton instead of uploading a pose each.
-    let pose_entity = world.root_view_mut().spawn((skin.pose(),));
-    world.root_view_mut().spawn((camera(),));
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(-0.7, 0.0, 0.0),
-            ..Default::default()
-        },
-        first,
-        UnlitPipeline::new(key.clone()),
-        SkinBinding::new(pose_entity),
-    ));
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.7, 0.0, 0.0),
-            ..Default::default()
-        },
-        second,
-        UnlitPipeline::new(key),
-        SkinBinding::new(pose_entity),
-    ));
+    let pose_entity = gpu.spawn(&mut world, (skin.pose(),));
+    gpu.spawn(&mut world, (camera(),));
+    gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(-0.7, 0.0, 0.0),
+                ..Default::default()
+            },
+            first,
+            UnlitPipeline::new(key.clone()),
+            SkinBinding::new(pose_entity),
+        ),
+    );
+    gpu.spawn(
+        &mut world,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.7, 0.0, 0.0),
+                ..Default::default()
+            },
+            second,
+            UnlitPipeline::new(key),
+            SkinBinding::new(pose_entity),
+        ),
+    );
     let target = gpu.bind_offscreen_target(&world, "test::ecs_skinned_shared");
 
     // The rest pose and a bent one must render differently: if the source

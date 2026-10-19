@@ -36,7 +36,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    ui: Option<Entity>,
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
@@ -60,25 +60,36 @@ fn build(
         )
     });
 
-    let camera_entity = world.root_view_mut().spawn((camera_view(size),));
-    world.root_view_mut().spawn((
-        Transform {
-            translation: glam::Vec3::new(0.0, 0.2, 0.0),
-            rotation: glam::Quat::from_rotation_y(0.6),
-            scale: glam::Vec3::splat(0.7),
-        },
-        mesh,
-        UnlitPipeline::new(key),
-    ));
+    let camera_entity = super::spawn_in(world, source_entity, (camera_view(size),));
+    super::spawn_in(
+        world,
+        source_entity,
+        (
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.2, 0.0),
+                rotation: glam::Quat::from_rotation_y(0.6),
+                scale: glam::Vec3::splat(0.7),
+            },
+            mesh,
+            UnlitPipeline::new(key),
+        ),
+    );
 
     // The pass opens with this world's load ops.
-    world.root_view_mut().spawn((RenderLoadOps {
-        color: wgpu::LoadOp::Clear(CLEAR_COLOR),
-        ..RenderLoadOps::default()
-    },));
+    super::spawn_shared(
+        world,
+        (RenderLoadOps {
+            color: wgpu::LoadOp::Clear(CLEAR_COLOR),
+            ..RenderLoadOps::default()
+        },),
+    );
 
     if options.ui {
-        world.root_view_mut().spawn((super::ui_only::rich_panel(),));
+        super::spawn_in(
+            world,
+            ui.expect("the UI source was mounted"),
+            (super::ui_only::rich_panel(),),
+        );
     }
 
     SceneControl {
@@ -87,6 +98,7 @@ fn build(
         advance: Box::new(move |world, _frame, _delta, frame_size| {
             super::aim_camera(
                 world,
+                source_entity,
                 camera_entity,
                 super::DEFAULT_EYE,
                 super::DEFAULT_TARGET,

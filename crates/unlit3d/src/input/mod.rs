@@ -727,6 +727,7 @@ pub enum InputEvent {
 ///     CtrlPresses(0),
 ///     OnInput::new(|world, entity, _event| {
 ///         let ctrl = world
+///             .root_view()
 ///             .query::<&InputEvents>()
 ///             .next()
 ///             .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
@@ -1134,7 +1135,13 @@ pub fn subscribe_input(world: &mut World) -> bool {
     else {
         return false;
     };
-    world.root_view_mut().spawn((events,));
+    // The buffer belongs to the shared subtree: a source reads the world's
+    // input from its own scope, and a sibling's component is out of reach.
+    let shared = world.shared();
+    world
+        .view_mut(shared)
+        .expect("the shared scope exists")
+        .spawn((events,));
     true
 }
 

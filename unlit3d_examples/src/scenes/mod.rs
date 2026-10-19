@@ -47,6 +47,10 @@ pub type Advance = Box<dyn FnMut(&mut World, u32, f32, (u32, u32))>;
 /// Names the snapshot a frame verifies against, if it has one.
 pub type Snapshot = Box<dyn Fn(u32) -> Option<String>>;
 
+/// Builds a scene's world content and returns its per-frame behaviour.
+pub type Build =
+    fn(&mut World, RenderContext, Option<Entity>, (u32, u32), SceneOptions) -> SceneControl;
+
 /// How the example's runner drives one scene.
 ///
 /// The two closures are what remains of the scene once its world is built: the
@@ -122,7 +126,12 @@ pub struct SceneDef {
     ///
     /// The world already holds the frame's context and the renderer resource
     /// entity; the scene spawns its sources, meshes, camera and entities.
-    pub build: fn(&mut World, RenderContext, Entity, (u32, u32), SceneOptions) -> SceneControl,
+    ///
+    /// The entity is the UI source the shell mounted for the scene, when the
+    /// run has one: a panel the scene draws hangs in that source's scope, so
+    /// the scene spawns it there rather than at the root — a source draws the
+    /// subtree it owns and nothing beside it.
+    pub build: Build,
 }
 
 /// Every selectable scene, in the order the GUI lists and `--scene all` runs
@@ -328,12 +337,14 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, size: (u32, u32)) 
 
 /// Re-aim `entity`'s camera at `target` from `eye` for a frame of `size`.
 ///
-/// The scenes whose camera never moves still call this every frame, so their
-/// projection keeps the frame's own aspect. It is what a scene does in
+/// The camera hangs in `scope`, the source that draws it, so the view is that
+/// source's. The scenes whose camera never moves still call this every frame,
+/// so their projection keeps the frame's own aspect. It is what a scene does in
 /// [`SceneControl::advance`](SceneControl) instead of capturing the size it was
 /// built at.
 pub fn aim_camera(
     world: &mut World,
+    scope: Entity,
     entity: Entity,
     eye: glam::Vec3,
     target: glam::Vec3,
@@ -341,7 +352,8 @@ pub fn aim_camera(
 ) {
     let mut camera = camera_looking_at(eye, target, size);
     world
-        .root_view()
+        .view(scope)
+        .expect("the scope is alive")
         .with_mut::<Camera, _>(entity, |current| {
             camera.active = current.active;
             *current = camera;
@@ -475,6 +487,38 @@ pub fn morph_deltas(positions: &[[f32; 3]]) -> MorphDeltas {
     }
 }
 
+/// Spawn `bundle` into `scope`'s subtree.
+///
+/// A scene's content hangs under the source that draws it: a source renders
+/// the subtree it owns, so an entity spawned beside the source is one no frame
+/// of it shows.
+pub fn spawn_in<B: unlit_ecs::Bundle>(world: &mut World, scope: Entity, bundle: B) -> Entity {
+    world
+        .view_mut(scope)
+        .expect("the scope is alive")
+        .spawn(bundle)
+}
+
+/// Spawn `bundle` into the world's shared subtree.
+///
+/// State every source of a scene reads — the pass's load ops, the input
+/// batches — belongs here: a source's own scope holds what it draws, and one
+/// beside it would hold what the other cannot see.
+pub fn spawn_shared<B: unlit_ecs::Bundle>(world: &mut World, bundle: B) -> Entity {
+    let shared = world.shared();
+    world
+        .view_mut(shared)
+        .expect("the shared scope exists")
+        .spawn(bundle)
+}
+
+/// Despawn `entity` and its subtree, through the scope that owns it.
+pub fn despawn_in(world: &mut World, scope: Entity, entity: Entity) -> bool {
+    world
+        .view_mut(scope)
+        .is_some_and(|mut view| view.despawn(entity))
+}
+
 /// Run `f` on the world's `MeshSource`, which lives on the source entity.
 ///
 /// A shared-world entry point, so the scene's own `&mut World` can
@@ -486,10 +530,9 @@ pub fn with_mesh_source<R>(
 ) -> R {
     // The view is the source's own, so what its closure reads is the subtree
     // the source draws.
-    let scope = world
-        .scope_of(source_entity)
+    let view = world
+        .view(source_entity)
         .expect("the source entity is alive");
-    let view = world.view(scope).expect("the source's scope exists");
     let mut source = view
         .get_mut::<Source>(source_entity)
         .expect("the source entity exists");

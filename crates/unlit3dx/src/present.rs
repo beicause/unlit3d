@@ -322,13 +322,18 @@ pub fn setup_presenter(
             .root_view_mut()
             .spawn((Renderer::new(blit_frame),));
         let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-        let blit_texture = {
-            let texture = BlitTexture::new(&blit_world, blit_frame, view);
-            blit_world.root_view_mut().spawn((texture,))
-        };
-        blit_world
+        // The texture hangs under the source that samples it: a source draws
+        // the subtree it owns, so a texture spawned beside it is never found.
+        let blit_source = blit_world
             .root_view_mut()
             .spawn((Source::new(BlitSource::new()),));
+        let blit_texture = {
+            let texture = BlitTexture::new(&blit_world, blit_frame, view);
+            blit_world
+                .view_mut(blit_source)
+                .expect("the blit source is alive")
+                .spawn((texture,))
+        };
         let blit_entity = world.root_view_mut().spawn((blit_world, WorldName("blit")));
         let (surface, attachments) = {
             let nested = world

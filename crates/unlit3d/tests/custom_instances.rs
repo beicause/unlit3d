@@ -377,25 +377,29 @@ async fn a_custom_family_owns_its_instance_stream() {
 
     // The renderer wants a camera to derive its uniforms from, but the custom
     // shader reads none of them.
-    world
-        .root_view_mut()
-        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.root_view_mut().spawn((
-        mesh.clone(),
-        pipeline.clone(),
-        CustomInstance {
-            offset: [-0.35, 0.0, 0.0],
-            tint: [1.0, 0.0, 0.0, 1.0],
-        },
-    ));
-    world.root_view_mut().spawn((
-        mesh,
-        pipeline,
-        CustomInstance {
-            offset: [0.35, 0.0, 0.0],
-            tint: [0.0, 1.0, 0.0, 1.0],
-        },
-    ));
+    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
+    gpu.spawn(
+        &mut world,
+        (
+            mesh.clone(),
+            pipeline.clone(),
+            CustomInstance {
+                offset: [-0.35, 0.0, 0.0],
+                tint: [1.0, 0.0, 0.0, 1.0],
+            },
+        ),
+    );
+    gpu.spawn(
+        &mut world,
+        (
+            mesh,
+            pipeline,
+            CustomInstance {
+                offset: [0.35, 0.0, 0.0],
+                tint: [0.0, 1.0, 0.0, 1.0],
+            },
+        ),
+    );
 
     let target = gpu.render_to_offscreen(&world, "test::custom_instances");
     let frame = Frame {

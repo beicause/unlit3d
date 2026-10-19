@@ -29,7 +29,7 @@
 //! # fn main() -> Result<(), winit::error::EventLoopError> {
 //! let event_loop = EventLoop::new()?;
 //! let mut host = WinitHost::new();
-//! host.world_mut().spawn((
+//! host.world_mut().root_view_mut().spawn((
 //!     WindowSpec(Window::default_attributes().with_title("unlit3d")),
 //!     create_window_on_resume(),
 //!     exit_on_close_requested(),

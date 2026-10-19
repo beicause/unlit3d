@@ -226,10 +226,15 @@ fn build_blit_world(context: &Gpu, offscreen: &wgpu::Texture) -> (World, BlitVie
     // binds.
     let view = TextureExt::create_view(offscreen, &wgpu::TextureViewDescriptor::default());
     let texture = BlitTexture::new(&world, frame, view);
-    let texture = world.root_view_mut().spawn((texture,));
-    world
+    // The texture hangs under the source that draws it: a source renders its
+    // own subtree, and a texture spawned beside it would never be sampled.
+    let source = world
         .root_view_mut()
         .spawn((Source::new(BlitSource::new()),));
+    let texture = world
+        .view_mut(source)
+        .expect("the blit source is alive")
+        .spawn((texture,));
     (world, BlitView { renderer, texture })
 }
 
@@ -337,7 +342,12 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     // feeds it, and every nested world the host reaches gets a clone of it.
     // Each world then builds its own buffer from the same stream.
     let input = InputWriter::new();
-    world.root_view_mut().spawn((input.clone(),));
+    // The writer is read by every source, so it lives in the shared subtree.
+    let shared = world.shared();
+    world
+        .view_mut(shared)
+        .expect("the shared scope exists")
+        .spawn((input.clone(),));
     world
         .root_view_mut()
         .spawn((winit_input_behaviour(WinitInput::new(input)),));
@@ -1741,17 +1751,41 @@ impl Scene {
         // letterbox — every capture — draws into the whole target, so its
         // content size is the target's own and nothing about it changes.
         let (viewport, content) = letterbox(def.baseline, size, options.letterbox);
-        let control = (def.build)(&mut world, context, renderer, content, options);
+
+        // The UI source is mounted before the scene is built, so a scene's own
+        // panels hang in the scope it draws: a source renders its own subtree,
+        // and a panel spawned beside it would never be shown.
+        let ui = (options.ui || options.selector).then(|| {
+            let mut source_ui = UiSource::new();
+            if options.reproducible && def.reproducible_ui {
+                // egui fades a window in over the first frames and animates
+                // widget transitions, all measured against the clock it is
+                // handed. With no animation time every one of them is already
+                // over, so the first frame is fully drawn and does not depend
+                // on when it was taken.
+                source_ui
+                    .context_mut()
+                    .all_styles_mut(|style| style.animation_time = 0.0);
+            }
+            world.root_view_mut().spawn((Source::new(source_ui),))
+        });
+        let control = (def.build)(&mut world, context, ui, content, options);
         let SceneControl { advance, snapshot } = control;
-        // The selector's switch component lives in every world; only a windowed
-        // run mounts the panel that writes it.
-        let switch = world.root_view_mut().spawn((SceneSwitch(None),));
-        // The fullscreen button's request and state components likewise.
-        let fullscreen = world.root_view_mut().spawn((FullscreenRequest(false),));
-        let fullscreen_active = world.root_view_mut().spawn((FullscreenActive(false),));
-        // The frame-rate component likewise, so both paths build the same
-        // world shape and only the windowed run mounts the panel reading it.
-        let frame_rate = world.root_view_mut().spawn((FrameRate::default(),));
+
+        // The shell's own state — the selector's switch, the fullscreen
+        // request and its state, the frame-rate reading — lives in the shared
+        // subtree. A panel reads and writes it from the UI source's scope,
+        // which reaches the shared subtree and nothing beside it.
+        let shared = world.shared();
+        let (switch, fullscreen, fullscreen_active, frame_rate) = {
+            let mut shared_view = world.view_mut(shared).expect("the shared scope exists");
+            (
+                shared_view.spawn((SceneSwitch(None),)),
+                shared_view.spawn((FullscreenRequest(false),)),
+                shared_view.spawn((FullscreenActive(false),)),
+                shared_view.spawn((FrameRate::default(),)),
+            )
+        };
         // The scene's per-frame state and its own behaviour, as components: the
         // frame's behaviours advance them without `&mut Scene`. One entity
         // carries them so the behaviour that advances the scene and the state
@@ -1774,36 +1808,21 @@ impl Scene {
         // circuits it. Spawning the flag lets a scene behaviour do so.
         world.root_view_mut().spawn((FrameSkip::default(),));
 
-        // The UI source drives the scene's own panels — and, in a windowed
-        // run, the selector panel. A scene captured without UI mounts none.
-        if options.ui || options.selector {
-            let mut source_ui = UiSource::new();
-            if options.reproducible && def.reproducible_ui {
-                // egui fades a window in over the first frames and animates
-                // widget transitions, all measured against the clock it is
-                // handed. With no animation time every one of them is already
-                // over, so the first frame is fully drawn and does not depend
-                // on when it was taken.
-                source_ui
-                    .context_mut()
-                    .all_styles_mut(|style| style.animation_time = 0.0);
-            }
-            world.root_view_mut().spawn((Source::new(source_ui),));
-        }
-
-        if options.selector {
-            mount_selector(&mut world, switch, def, panels.selector);
-            mount_frame_rate(&mut world, frame_rate);
-            mount_gpu_info(&mut world, context.device, panels.gpu_info);
+        if let Some(ui) = ui
+            && options.selector
+        {
+            mount_selector(&mut world, ui, switch, def, panels.selector);
+            mount_frame_rate(&mut world, ui, frame_rate);
+            mount_gpu_info(&mut world, ui, context.device, panels.gpu_info);
             // Every platform has a window the button can take fullscreen, so
             // it is drawn everywhere. A platform whose backend cannot — Android
             // already takes the whole screen for its activity — draws the
             // button and ignores the press.
-            mount_fullscreen(&mut world, fullscreen, fullscreen_active);
+            mount_fullscreen(&mut world, ui, fullscreen, fullscreen_active);
             // The API docs are a page every platform can open, so the link is
             // drawn everywhere. Mounted after the fullscreen button, which it
             // is placed under.
-            mount_api_docs(&mut world);
+            mount_api_docs(&mut world, ui);
         }
 
         (
@@ -2017,12 +2036,14 @@ fn selector_default_pos(ctx: &egui::Context) -> egui::Pos2 {
 /// component, which the frame loop reads once after the frame's advance.
 fn mount_selector(
     world: &mut World,
+    ui: Entity,
     switch: Entity,
     current: &'static scenes::SceneDef,
     initial: Option<egui::Rect>,
 ) {
     world
-        .root_view_mut()
+        .view_mut(ui)
+        .expect("the UI source is alive")
         .spawn((UiPanel::new(move |world, _entity, ui| {
             // The id is set explicitly: `Window::new` derives it from the title's
             // `Atoms` text, whose hash differs from a plain string id, so the
@@ -2215,9 +2236,10 @@ const GPU_INFO_HEIGHT_FRACTION: f32 = 0.6;
 /// An [`egui::Area`] rather than a window: it is pinned, not something the user
 /// can drag away or accidentally resize, and `interactable(false)` keeps it
 /// from swallowing a click meant for the scene underneath it.
-fn mount_frame_rate(world: &mut World, rate: Entity) {
+fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
     world
-        .root_view_mut()
+        .view_mut(ui)
+        .expect("the UI source is alive")
         .spawn((UiPanel::new(move |world, _entity, ui| {
             let text = world
                 .with_mut::<FrameRate, _>(rate, |rate| rate.text())
@@ -2386,16 +2408,17 @@ fn gpu_info_default_pos(ctx: &egui::Context) -> egui::Pos2 {
 ///
 /// The device is read here, once, where it is in hand; the panel then draws
 /// from the strings that read produced.
-fn mount_gpu_info(world: &mut World, device: Entity, initial: Option<egui::Rect>) {
+fn mount_gpu_info(world: &mut World, ui: Entity, device: Entity, initial: Option<egui::Rect>) {
     let info = {
-        let device = world
-            .root_view()
+        let view = world.view(ui).expect("the UI source is alive");
+        let device = view
             .get::<wgpu::Device>(device)
             .expect("the device component exists");
         GpuInfo::read(&device)
     };
     world
-        .root_view_mut()
+        .view_mut(ui)
+        .expect("the UI source is alive")
         .spawn((UiPanel::new(move |_world, _entity, ui| {
             gpu_info_panel(ui, &info, initial);
         }),));
@@ -2605,9 +2628,10 @@ fn gpu_info_panel(ui: &mut egui::Ui, info: &GpuInfo, initial: Option<egui::Rect>
 /// The click is recorded rather than served here: a panel runs while the world
 /// is borrowed, and it has no window to ask; the frame loop reads the request
 /// and calls [`fullscreen::toggle`], which is where a browser accepts it from.
-fn mount_fullscreen(world: &mut World, request: Entity, state: Entity) {
+fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entity) {
     world
-        .root_view_mut()
+        .view_mut(ui)
+        .expect("the UI source is alive")
         .spawn((UiPanel::new(move |world, _entity, ui| {
             let active = world
                 .get::<FullscreenActive>(state)
@@ -2630,9 +2654,10 @@ fn mount_fullscreen(world: &mut World, request: Entity, state: Entity) {
 /// is borrowed and has no page to reach; the frame loop reads the request and
 /// opens it with [`webbrowser`], which covers every platform the example runs
 /// on.
-fn mount_api_docs(world: &mut World) {
+fn mount_api_docs(world: &mut World, ui: Entity) {
     world
-        .root_view_mut()
+        .view_mut(ui)
+        .expect("the UI source is alive")
         .spawn((UiPanel::new(|_world, _entity, ui| {
             api_docs_button(ui);
         }),));

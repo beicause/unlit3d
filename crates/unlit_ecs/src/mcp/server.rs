@@ -544,7 +544,8 @@ pub struct CreateMesh {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The scope to spawn into, as its `u64` bits. Omit for the world's root.
+    /// The scope to spawn into, as its `u64` bits. Omit for the entity
+    /// carrying the mesh source.
     #[serde(default)]
     pub scope: Option<u64>,
     /// The entity carrying the world's mesh source, as its `u64` bits. Omit
@@ -606,7 +607,8 @@ pub struct LoadGltf {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The scope to load into, as its `u64` bits. Omit for the world's root.
+    /// The scope to load into, as its `u64` bits. Omit for the entity
+    /// carrying the mesh source.
     #[serde(default)]
     pub scope: Option<u64>,
     /// The entity carrying the world's mesh source, as its `u64` bits. Omit

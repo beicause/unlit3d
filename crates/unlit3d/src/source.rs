@@ -870,8 +870,10 @@ mod tests {
             world
                 .root_view()
                 .with_mut::<Source, _>(entity, |source| {
-                    let scope = world.scope_of(entity).unwrap_or_else(|| world.root());
-                    source.build_scene(&world.view(scope).unwrap(), ctx, &mut encoder)
+                    let view = world
+                        .view(entity)
+                        .expect("a source entity is its own scope");
+                    source.build_scene(&view, ctx, &mut encoder)
                 })
                 .unwrap();
         }
@@ -927,8 +929,10 @@ mod tests {
             world
                 .root_view()
                 .with_mut::<Source, _>(*entity, |source| {
-                    let scope = world.scope_of(*entity).unwrap_or_else(|| world.root());
-                    source.build_scene(&world.view(scope).unwrap(), ctx, &mut encoder)
+                    let view = world
+                        .view(*entity)
+                        .expect("a source entity is its own scope");
+                    source.build_scene(&view, ctx, &mut encoder)
                 })
                 .unwrap();
         }
@@ -1369,8 +1373,10 @@ mod release_tests {
         world
             .root_view()
             .with_mut::<Source, _>(entity, |source| {
-                let scope = world.scope_of(entity).unwrap_or_else(|| world.root());
-                source.build_scene(&world.view(scope).unwrap(), ctx, &mut encoder)
+                let view = world
+                    .view(entity)
+                    .expect("a source entity is its own scope");
+                source.build_scene(&view, ctx, &mut encoder)
             })
             .expect("the source entity exists");
     }

@@ -38,19 +38,26 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     _context: RenderContext,
-    _renderer: Entity,
+    ui: Option<Entity>,
     _size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
     // The pass opens with this world's load ops: a dark clear the panels paint
-    // over.
-    world.root_view_mut().spawn((RenderLoadOps {
-        color: wgpu::LoadOp::Clear(CLEAR_COLOR),
-        ..RenderLoadOps::default()
-    },));
+    // over. The UI source reads them from the shared subtree.
+    super::spawn_shared(
+        world,
+        (RenderLoadOps {
+            color: wgpu::LoadOp::Clear(CLEAR_COLOR),
+            ..RenderLoadOps::default()
+        },),
+    );
 
     if options.ui {
-        world.root_view_mut().spawn((rich_panel(),));
+        super::spawn_in(
+            world,
+            ui.expect("the UI source was mounted"),
+            (rich_panel(),),
+        );
     }
 
     SceneControl {

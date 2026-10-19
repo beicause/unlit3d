@@ -47,6 +47,76 @@
   `ScopeOf` 指向自己——和 `World::shared`，后者的子树每个视图都看得见。两者都能
   携带组件、都能被当作 scope 指名；但它们都不被计数、不被查询、不可 despawn、不可重挂。
 
+## scope
+
+scope 就是一个实体。每个实体都带一个指向父实体的 `ScopeOf`，这一条关系就是整棵树：
+一个场景是一棵子树，而调用者手里拿到的是某个 scope 的视图。
+
+```rust
+use unlit_ecs::World;
+
+let mut world = World::new();
+let scene = world.root_view_mut().spawn((),);
+let cube = world.view_mut(scene).unwrap().spawn((0u32,));
+let camera = world.view_mut(scene).unwrap().spawn((0f32,));
+
+// 场景的视图看得见场景及其下的一切，看不见旁边的东西。
+let view = world.view(scene).unwrap();
+assert_eq!(view.scope(), scene);
+assert_eq!(view.len(), 3);
+assert!(view.contains(cube) && view.contains(camera));
+assert_eq!(view.children(scene).len(), 2);
+assert!(view.query::<&u32>().any(|(entity, _)| entity == cube));
+
+// 根也是一个视图，它看得见所有 scope。
+assert_eq!(world.root_view().len(), 3);
+```
+
+有两个实体是脚手架而不是内容。`World::root` 是根视图所看的 scope，它的 `ScopeOf`
+指向自己；`World::shared` 是它的子实体，每个视图都看得见那棵子树。两者都能携带组件、
+都能被当作 scope 指名，所以资源挂在哪一个上都行——但它们都不被计数、不被查询、不可
+despawn、不可重挂，正因如此空 world 计数是零而不是二。
+
+**视图看得见什么。** 当 `candidate` 存活，且满足下列之一时，`caller` 的视图看得见它：
+
+| candidate 位于 | 谁能看见 |
+| --- | --- |
+| shared 子树 | 每个视图 |
+| 任意位置 | 根视图 |
+| 视图自身的 scope | 该视图 |
+| 视图 scope 之下 | 该视图 |
+
+其余一切都够不着：视图看不见自己的祖先，也看不见兄弟及其子树。这一关系刻意不对称
+——场景的视图看得见共享资源，共享资源的视图却回不到场景里——所以「A 看得见 B」从
+不意味着「B 看得见 A」。不存活的句柄哪里都看不见，根也一样：看得见某个位置，不等于
+那里真有东西。
+
+**视图能改动什么。** 所有权比可见性更严，且只覆盖结构变更：当实体是视图自身的 scope
+或在其下，或者视图是根时，视图才能 despawn 或重挂它。shared 子树处处可读，但只有
+根能搬动或删除它。打开子视图又是一次可见性判定，所以场景视图能打开 shared 的 scope
+并在那里 spawn 资源；之后 despawn 那份资源是根的事，不是场景的事。
+
+**没有向上的路。** 对不存在的 scope，`World::view` 回答 `None`；`ScopedWorld::view`
+只能向下——进入看得见的子实体，或进入 shared 子树。视图说不出自己来自哪个 world，
+所以拿着一个视图并不是通往 world 其余部分的途径。
+
+**改变树。** `ScopedWorldMut::spawn` 把新实体放进视图自身的 scope，`spawn_at` 则把
+它放到 `World::reserve_entity` 预留的句柄上。`ScopedWorldMut::despawn` 删除该实体及
+其整棵子树，子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先。
+`ScopedWorldMut::link` 与 `unlink` 在同一个视图内重挂实体，拒绝把 scope 搬进自己的
+后代，也拒绝碰脚手架；它们是纯结构变更，不跑任何生命周期回调。只读视图通过
+`ScopedWorld::queue` 排队做同样的变更，再由驱动器调用 `World::apply` 落盘。
+
+**回调落在哪里。** 生命周期回调拿到的是该实体父 scope 的视图，所以场景子实体上的
+`OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读视图一样。
+
+**开销。** 每次访问都要沿父链走一遍来判定可见性，走查以节点数为上界，所以畸形的树也
+不会把它拖死。`World::children` 与 `World::is_descendant` 背后的索引由 `ScopeOf`
+组件派生，可以随时用 `World::rebuild_children` 从组件重建，因此通过反射注册表写入
+组件时没有任何东西需要失效。查询与计数会跳过视图看不见的行，而
+`ScopedWorld::archetype` 对只看得见一部分的 archetype 回答 `None`——那种情况下
+`ScopedWorld::archetype_infos` 报告的是可见长度。
+
 ## 内容概览
 
 `World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及用于展平嵌套元组的

@@ -36,7 +36,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
@@ -65,21 +65,25 @@ fn build(
         )
     });
 
-    let camera_entity = world.root_view_mut().spawn((camera(size),));
+    let camera_entity = super::spawn_in(world, source_entity, (camera(size),));
     // The pose is an entity of its own: the mesh names it rather than owning
     // it, so animating the skeleton is one component write and nothing on the
     // mesh changes.
-    let pose_entity = world.root_view_mut().spawn((skin.pose(),));
-    world.root_view_mut().spawn((
-        Transform {
-            scale: glam::Vec3::splat(0.9),
-            ..Default::default()
-        },
-        InstanceColor::new(glam::Vec4::new(1.0, 0.85, 0.6, 1.0)),
-        mesh,
-        UnlitPipeline::new(key),
-        SkinBinding::new(pose_entity),
-    ));
+    let pose_entity = super::spawn_in(world, source_entity, (skin.pose(),));
+    super::spawn_in(
+        world,
+        source_entity,
+        (
+            Transform {
+                scale: glam::Vec3::splat(0.9),
+                ..Default::default()
+            },
+            InstanceColor::new(glam::Vec4::new(1.0, 0.85, 0.6, 1.0)),
+            mesh,
+            UnlitPipeline::new(key),
+            SkinBinding::new(pose_entity),
+        ),
+    );
 
     let mut skin = skin;
     SceneControl {
@@ -89,12 +93,20 @@ fn build(
             // GPU call: the source packs and uploads it once per frame.
             skin.set_angle(bend_angle(frame));
             *world
-                .root_view()
+                .view(source_entity)
+                .expect("the source is alive")
                 .get_mut::<SkinPose>(pose_entity)
                 .expect("the pose entity carries a `SkinPose`") = skin.pose();
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the cube.
-            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
+            super::aim_camera(
+                world,
+                source_entity,
+                camera_entity,
+                CAMERA_EYE,
+                CAMERA_TARGET,
+                frame_size,
+            );
         }),
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32).then(|| format!("ecs_skinned/frame_{frame:02}.webp"))

@@ -92,7 +92,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
-    _renderer: Entity,
+    _ui: Option<Entity>,
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
@@ -118,32 +118,41 @@ fn build(
     // The spawned handles are what `apply_animation` writes through: the fox's
     // handle carries the pose entity its skin reads, and the cube's carries
     // the weights entity its morph targets read.
-    let fox_nodes = fox.spawn_default_scene(&mut world.root_view_mut(), &fox_resources);
-    let morph_nodes = morph.spawn_default_scene(&mut world.root_view_mut(), &morph_resources);
+    let (fox_nodes, morph_nodes) = {
+        let mut view = world
+            .view_mut(source_entity)
+            .expect("the source entity is alive");
+        (
+            fox.spawn_default_scene(&mut view, &fox_resources),
+            morph.spawn_default_scene(&mut view, &morph_resources),
+        )
+    };
 
     // Neither document animates the node its mesh hangs from — the fox's mesh
     // sits on a root beside the skeleton, and the cube's node is animated only
     // in its morph weights — so the placement written here survives every
     // frame instead of being recomposed away.
-    for node in &fox_nodes {
-        for &entity in &node.entities {
-            let _ = world
-                .root_view()
-                .with_mut::<Transform, _>(entity, |current| *current = FOX_PLACEMENT);
+    {
+        let view = world
+            .view(source_entity)
+            .expect("the source entity is alive");
+        for node in &fox_nodes {
+            for &entity in &node.entities {
+                let _ = view.with_mut::<Transform, _>(entity, |current| *current = FOX_PLACEMENT);
+            }
         }
-    }
-    for node in &morph_nodes {
-        for &entity in &node.entities {
-            let _ = world
-                .root_view()
-                .with_mut::<Transform, _>(entity, |current| *current = MORPH_PLACEMENT);
+        for node in &morph_nodes {
+            for &entity in &node.entities {
+                let _ = view.with_mut::<Transform, _>(entity, |current| *current = MORPH_PLACEMENT);
+            }
         }
     }
 
-    let camera_entity =
-        world
-            .root_view_mut()
-            .spawn((super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),));
+    let camera_entity = super::spawn_in(
+        world,
+        source_entity,
+        (super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
+    );
 
     let fox_animation = animation_index(&fox, FOX_ANIMATION);
     let morph_animation = animation_index(&morph, MORPH_ANIMATION);
@@ -168,16 +177,21 @@ fn build(
                 clock += delta;
                 (clock % fox_duration, clock % morph_duration)
             };
-            fox.apply_animation(&world.root_view(), fox_animation, fox_time, &fox_nodes);
-            morph.apply_animation(
-                &world.root_view(),
-                morph_animation,
-                morph_time,
-                &morph_nodes,
-            );
+            let view = world
+                .view(source_entity)
+                .expect("the source entity is alive");
+            fox.apply_animation(&view, fox_animation, fox_time, &fox_nodes);
+            morph.apply_animation(&view, morph_animation, morph_time, &morph_nodes);
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the assets.
-            super::aim_camera(world, camera_entity, CAMERA_EYE, CAMERA_TARGET, frame_size);
+            super::aim_camera(
+                world,
+                source_entity,
+                camera_entity,
+                CAMERA_EYE,
+                CAMERA_TARGET,
+                frame_size,
+            );
         }),
         snapshot: Box::new(|frame| {
             (frame < FRAMES as u32).then(|| format!("gltf/frame_{frame:02}.webp"))
