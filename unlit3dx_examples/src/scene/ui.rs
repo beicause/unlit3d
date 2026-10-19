@@ -43,6 +43,7 @@ fn track_ends_job(track: &str) -> Job<u64> {
     let track = track.to_owned();
     Box::new(move |world: &mut World| {
         world
+            .root_view()
             .query::<&MidiPlayer>()
             .find(|(_, player)| player.name() == track.as_str())
             .map_or(0, |(_, player)| player.ends())
@@ -307,7 +308,7 @@ impl Controls {
         // known before the panel is built: reserve it, then spawn the whole
         // object onto the reservation.
         let entity = world.reserve_entity();
-        world.spawn_at(
+        world.root_view_mut().spawn_at(
             entity,
             (
                 self,
@@ -315,7 +316,11 @@ impl Controls {
                 UiPanel::new(move |world, entity, ui| {
                     // The panel reads its own handle: the object on this entity
                     // owns it, so the callback carries nothing but the counts.
-                    let Some(audio) = world.get::<Controls>(entity).map(|c| c.audio.clone()) else {
+                    let Some(audio) = world
+                        .root_view()
+                        .get::<Controls>(entity)
+                        .map(|c| c.audio.clone())
+                    else {
                         return;
                     };
                     egui::Window::new("Controls").show(ui.ctx(), |ui| {
@@ -324,6 +329,7 @@ impl Controls {
                             // the end the watcher has already picked up.
                             let counts = *panel_counts.borrow();
                             let shown = world
+                                .root_view()
                                 .get::<TrackRows>(entity)
                                 .map_or(TrackRows::START, |rows| *rows);
                             let now = TrackRows {
@@ -345,7 +351,9 @@ impl Controls {
                                 ),
                             };
                             if now != shown {
-                                let _ = world.with_mut::<TrackRows, _>(entity, |rows| *rows = now);
+                                let _ = world
+                                    .root_view()
+                                    .with_mut::<TrackRows, _>(entity, |rows| *rows = now);
                             }
                             ui.separator();
                         }
@@ -381,7 +389,7 @@ pub fn control_panel_job(panels: PanelSlots) -> Job<()> {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
         source.draw_published(panels.frames, panels.screen);
-        world.spawn((Source::new(source),));
+        world.root_view_mut().spawn((Source::new(source),));
     })
 }
 

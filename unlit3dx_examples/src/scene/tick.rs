@@ -11,7 +11,7 @@ use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 /// A scene object that advances once per gameplay tick.
 ///
 /// `tick` runs with the world its entity lives in, so an object reaches its
-/// neighbours through [`World::get`] and [`World::with_mut`]. It must not
+/// neighbours through [`unlit_ecs::ScopedWorld::get`] and [`unlit_ecs::ScopedWorld::with_mut`]. It must not
 /// touch a component of its own type: the driver already holds that one.
 pub trait Tick {
     /// Advance the object by one tick.
@@ -39,6 +39,8 @@ pub const TICK_AUDIO: i32 = 300;
 /// scene never sorts its objects itself.
 pub fn tick_behaviour<T: Tick + 'static>(order: i32) -> OnFrame {
     OnFrame::new(FrameBehaviourOrder(order), |world, entity, _frame| {
-        let _ = world.with_mut::<T, _>(entity, |state| state.tick(world));
+        let _ = world
+            .root_view()
+            .with_mut::<T, _>(entity, |state| state.tick(world));
     })
 }

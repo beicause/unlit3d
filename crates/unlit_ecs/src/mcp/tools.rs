@@ -13,11 +13,11 @@ use crate::mcp::server::{
     SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, entity, tool,
 };
 use crate::reflect;
-use crate::{ArchetypeBuilder, Entity, World};
+use crate::{ArchetypeBuilder, Entity, ScopedWorld, ScopedWorldMut, World};
 
-/// A high-level description of the world.
-pub fn summarize_world(world: &World) -> Result<Value, String> {
-    to_value(&world.info())
+/// A high-level description of a view.
+pub fn summarize_world(view: &ScopedWorld<'_>) -> Result<Value, String> {
+    to_value(&view.info())
 }
 
 /// The component names the reflection table holds.
@@ -26,43 +26,52 @@ pub fn component_names(_world: &World) -> Result<Value, String> {
 }
 
 /// Every archetype with the component names it stores.
-pub fn summarize_archetypes(world: &World) -> Result<Value, String> {
-    to_value(&world.archetype_infos())
+pub fn summarize_archetypes(view: &ScopedWorld<'_>) -> Result<Value, String> {
+    to_value(&view.archetype_infos())
 }
 
 /// Every spawned entity with its component names.
-pub fn summarize_entities(world: &World, limit: usize) -> Result<Value, String> {
-    to_value(&world.entity_infos(limit))
+pub fn summarize_entities(view: &ScopedWorld<'_>, limit: usize) -> Result<Value, String> {
+    to_value(&view.entity_infos(limit))
 }
 
 /// One entity's component names and location.
-pub fn summarize_entity(world: &World, entity: Entity) -> Result<Value, String> {
-    let info = world
+pub fn summarize_entity(view: &ScopedWorld<'_>, entity: Entity) -> Result<Value, String> {
+    let info = view
         .entity_info(entity)
         .ok_or_else(|| format!("no entity with bits {}", entity.to_bits()))?;
     to_value(&info)
 }
 
 /// One component of one entity, encoded.
-pub fn read_component(world: &World, entity: Entity, name: &str) -> Result<Value, String> {
-    let text = reflect::encode(world, entity, name)?;
+pub fn read_component(view: &ScopedWorld<'_>, entity: Entity, name: &str) -> Result<Value, String> {
+    if !view.contains(entity) {
+        return Err(format!("no entity with bits {}", entity.to_bits()));
+    }
+    let text = reflect::encode(view, entity, name)?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
 /// Overwrite one component of one entity.
 pub fn write_component(
-    world: &World,
+    view: &ScopedWorld<'_>,
     entity: Entity,
     name: &str,
     value: &Value,
 ) -> Result<Value, String> {
+    if !view.contains(entity) {
+        return Err(format!("no entity with bits {}", entity.to_bits()));
+    }
     let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    reflect::set(world, entity, name, &patch)?;
+    reflect::set(view, entity, name, &patch)?;
     Ok(Value::Null)
 }
 
 /// Spawn an entity from a map of component name to value.
-pub fn spawn_from_value(world: &mut World, components: &Value) -> Result<Value, String> {
+pub fn spawn_from_value(
+    view: &mut ScopedWorldMut<'_>,
+    components: &Value,
+) -> Result<Value, String> {
     let object = components
         .as_object()
         .ok_or_else(|| "components must be an object".to_string())?;
@@ -71,13 +80,14 @@ pub fn spawn_from_value(world: &mut World, components: &Value) -> Result<Value, 
         let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
         reflect::push(&mut builder, name, &patch)?;
     }
-    let entity = world.spawn(builder);
-    to_value(&SpawnedEntity { entity })
+    let scope = view.scope();
+    let entity = view.spawn(builder);
+    to_value(&SpawnedEntity { entity, scope })
 }
 
-/// Despawn one entity.
-pub fn despawn_one(world: &mut World, entity: Entity) -> Result<Value, String> {
-    let despawned = world.despawn(entity);
+/// Despawn one entity and its subtree.
+pub fn despawn_one(view: &mut ScopedWorldMut<'_>, entity: Entity) -> Result<Value, String> {
+    let despawned = view.despawn(entity);
     to_value(&Despawned { despawned })
 }
 
@@ -104,7 +114,10 @@ async fn list_worlds(commands: CommandSender, _args: NoArgs) -> ToolResult {
 
 /// A high-level description of the world.
 async fn world_summary(commands: CommandSender, args: WorldArg) -> ToolResult {
-    command(&commands, args.world, move |world| summarize_world(world)).await
+    command(&commands, args.world, move |world| {
+        summarize_world(&scoped(world, args.scope)?)
+    })
+    .await
 }
 
 /// The component names the server can read and write.
@@ -115,7 +128,7 @@ async fn list_components(commands: CommandSender, args: WorldArg) -> ToolResult 
 /// Every archetype with its component names and length.
 async fn list_archetypes(commands: CommandSender, args: WorldArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        summarize_archetypes(world)
+        summarize_archetypes(&scoped(world, args.scope)?)
     })
     .await
 }
@@ -123,7 +136,7 @@ async fn list_archetypes(commands: CommandSender, args: WorldArg) -> ToolResult 
 /// Every spawned entity with its component names.
 async fn list_entities(commands: CommandSender, args: ListEntities) -> ToolResult {
     command(&commands, args.world, move |world| {
-        summarize_entities(world, args.limit)
+        summarize_entities(&scoped(world, args.scope)?, args.limit)
     })
     .await
 }
@@ -131,7 +144,7 @@ async fn list_entities(commands: CommandSender, args: ListEntities) -> ToolResul
 /// One entity's component names and location.
 async fn get_entity(commands: CommandSender, args: EntityArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        summarize_entity(world, entity(args.entity))
+        summarize_entity(&scoped(world, args.scope)?, entity(args.entity))
     })
     .await
 }
@@ -139,7 +152,11 @@ async fn get_entity(commands: CommandSender, args: EntityArg) -> ToolResult {
 /// One component of one entity.
 async fn get_component(commands: CommandSender, args: GetComponent) -> ToolResult {
     command(&commands, args.world, move |world| {
-        read_component(world, entity(args.entity), &args.component)
+        read_component(
+            &scoped(world, args.scope)?,
+            entity(args.entity),
+            &args.component,
+        )
     })
     .await
 }
@@ -147,7 +164,12 @@ async fn get_component(commands: CommandSender, args: GetComponent) -> ToolResul
 /// Overwrite one component of one entity.
 async fn set_component(commands: CommandSender, args: SetComponent) -> ToolResult {
     command(&commands, args.world, move |world| {
-        write_component(world, entity(args.entity), &args.component, &args.value)
+        write_component(
+            &scoped(world, args.scope)?,
+            entity(args.entity),
+            &args.component,
+            &args.value,
+        )
     })
     .await
 }
@@ -155,7 +177,8 @@ async fn set_component(commands: CommandSender, args: SetComponent) -> ToolResul
 /// Spawn an entity from a map of component name to value.
 async fn spawn_entity(commands: CommandSender, args: SpawnEntity) -> ToolResult {
     command(&commands, args.world, move |world| {
-        spawn_from_value(world, &args.components)
+        let mut view = scoped_mut(world, args.scope)?;
+        spawn_from_value(&mut view, &args.components)
     })
     .await
 }
@@ -163,9 +186,36 @@ async fn spawn_entity(commands: CommandSender, args: SpawnEntity) -> ToolResult 
 /// Despawn one entity.
 async fn despawn_entity(commands: CommandSender, args: EntityArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        despawn_one(world, entity(args.entity))
+        let mut view = scoped_mut(world, args.scope)?;
+        despawn_one(&mut view, entity(args.entity))
     })
     .await
+}
+
+/// The view an ECS tool runs in: the scope the arguments name, or the root.
+fn scoped(world: &World, scope: Option<u64>) -> Result<ScopedWorld<'_>, String> {
+    match scope {
+        None => Ok(world.root_view()),
+        Some(bits) => {
+            let scope = Entity::from_bits(bits);
+            world
+                .view(scope)
+                .ok_or_else(|| format!("no scope at bits {bits}"))
+        }
+    }
+}
+
+/// The mutable view an ECS tool runs in.
+fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopedWorldMut<'_>, String> {
+    match scope {
+        None => Ok(world.root_view_mut()),
+        Some(bits) => {
+            let scope = Entity::from_bits(bits);
+            world
+                .view_mut(scope)
+                .ok_or_else(|| format!("no scope at bits {bits}"))
+        }
+    }
 }
 
 inventory::submit! {

@@ -117,7 +117,7 @@ fn build(
     // tint is its own instance colour, so one mesh serves all of them.
     let translucent_key = UnlitPipelineKey::new(translucent);
 
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
 
@@ -153,9 +153,12 @@ fn build(
         )
     });
 
-    let camera_entity = world.spawn((camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),));
+    let camera_entity =
+        world
+            .root_view_mut()
+            .spawn((camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),));
 
-    world.spawn((
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.0, -1.6),
             scale: glam::Vec3::splat(1.1),
@@ -170,7 +173,7 @@ fn build(
     // for a z-sorted entity, so only a correct sort composites them red,
     // green, blue from back to front.
     for (tint, x, z) in PANES.iter().rev() {
-        world.spawn((
+        world.root_view_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(*x, 0.0, *z),
                 rotation: glam::Quat::from_rotation_y(0.35),

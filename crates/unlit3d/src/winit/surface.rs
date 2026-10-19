@@ -38,7 +38,7 @@
 //!     .unwrap();
 //! // The depth and multisample attachments the frame draws with; `true` asks
 //! // for a depth-stencil one, which a frame of depth-tested geometry needs.
-//! let context = world.get::<Renderer>(renderer).unwrap().context();
+//! let context = world.root_view().get::<Renderer>(renderer).unwrap().context();
 //! let attachments = FrameAttachments::new(
 //!     world,
 //!     context,
@@ -96,6 +96,7 @@ use crate::renderer::Renderer;
 /// If the context's device resource is gone.
 fn context_device(world: &World, renderer: &Renderer) -> wgpu::Device {
     world
+        .root_view()
         .get::<wgpu::Device>(renderer.context().device)
         .expect("the context's device resource exists")
         .clone()
@@ -111,6 +112,7 @@ fn context_graph<'w>(
     renderer: &Renderer,
 ) -> impl core::ops::DerefMut<Target = unlit_wgpu::resources::ResourceGraph> + 'w {
     world
+        .root_view()
         .get_mut::<unlit_wgpu::resources::ResourceGraph>(renderer.context().graph)
         .expect("the context's resource graph exists")
 }

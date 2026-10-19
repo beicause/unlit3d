@@ -26,8 +26,10 @@ async fn ecs_cube_covers_the_frame() {
 
     // Dedicated camera entity, then the renderable entity. The mesh carries
     // its own AABB now, so no bounding component is needed.
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.spawn((
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -65,13 +67,15 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
     let key = gpu.key.clone();
 
     // Dedicated camera entity.
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     let mesh_far = gpu.allocate_cube_mesh(&world);
     let mesh_near = gpu.allocate_cube_mesh(&world);
 
     // Far cube, red.
-    world.spawn((
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, -0.6),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -83,7 +87,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
     ));
 
     // Near cube, green.
-    world.spawn((
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.6),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -168,7 +172,9 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     // A cube fills a roughly square block of the frame, and the replacement
     // draws at the same spot through the ranges it vacated.
@@ -180,7 +186,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     // different shape at the probes below rather than the same one twice.
     gpu.allocate_offset_cube_mesh(&world, glam::Vec3::splat(10.0));
     let cube = gpu.allocate_cube_mesh(&world);
-    let cube_entity = world.spawn((
+    let cube_entity = world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -201,10 +207,11 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 
     // Retire the cube, then hand its pools' ranges to a replacement mesh.
     let cube = world
+        .root_view()
         .get::<GpuMesh>(cube_entity)
         .expect("the cube carries a mesh")
         .clone();
-    assert!(world.despawn(cube_entity));
+    assert!(world.root_view_mut().despawn(cube_entity));
     gpu.remove_mesh(&world, cube);
 
     // The replacement takes the ranges the cube vacated — one allocation per
@@ -212,7 +219,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     // its per-instance colour so the pixel the cube used to own can only come
     // from the replacement's own data.
     let replacement = gpu.allocate_cube_mesh(&world);
-    world.spawn((
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -269,12 +276,14 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
 
     // The first mesh draws at the centre of the frame and never moves, so the
     // pixel there is its own as long as its data survives every grow.
     let first = gpu.allocate_cube_mesh(&world);
-    world.spawn((
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -288,7 +297,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     // and every later one is large enough to force a grow.
     let grids: [GpuMesh; 3] = std::array::from_fn(|_| gpu.allocate_grid_cube_mesh(&world, 4));
     for (frame_index, mesh) in grids.into_iter().enumerate() {
-        world.spawn((
+        world.root_view_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(-3.0 + 2.4 * frame_index as f32, -1.4, -2.0),
                 rotation: glam::Quat::from_rotation_y(0.3),

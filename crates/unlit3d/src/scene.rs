@@ -207,12 +207,13 @@ where
         let mut cached: Option<u32> = None;
         let mut state = None;
         for &candidate in self.frame.meshes {
-            let Some(location) = world.location(candidate.entity) else {
+            let Some(location) = world.root_view().location(candidate.entity) else {
                 continue;
             };
             if cached != Some(location.archetype()) {
                 cached = Some(location.archetype());
                 let archetype = world
+                    .root_view()
                     .archetype(location.archetype())
                     .expect("a live entity's archetype exists");
                 // An entity from another family carries a different key type,

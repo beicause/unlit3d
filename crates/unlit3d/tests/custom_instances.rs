@@ -315,6 +315,7 @@ impl InstanceData for CustomInstances {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let instance = context
             .world
+            .root_view()
             .get::<CustomInstance>(context.entity)
             .expect("every visible custom entity carries `CustomInstance`");
         let record = InstanceRecord {
@@ -377,8 +378,10 @@ async fn a_custom_family_owns_its_instance_stream() {
 
     // The renderer wants a camera to derive its uniforms from, but the custom
     // shader reads none of them.
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.spawn((
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world.root_view_mut().spawn((
         mesh.clone(),
         pipeline.clone(),
         CustomInstance {
@@ -386,7 +389,7 @@ async fn a_custom_family_owns_its_instance_stream() {
             tint: [1.0, 0.0, 0.0, 1.0],
         },
     ));
-    world.spawn((
+    world.root_view_mut().spawn((
         mesh,
         pipeline,
         CustomInstance {

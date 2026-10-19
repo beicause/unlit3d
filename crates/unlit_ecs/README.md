@@ -6,8 +6,8 @@ A compact archetype ECS. Components live in archetypes, one column per type, and
 every component value lives in its own cell — which is what lets a shared
 `&World` read *and* write components without any `unsafe`.
 
-The design is deliberately small: no change detection, no component hooks, no
-events or observers, no relations, and no scheduler. Everything that would need
+The design is deliberately small: no change detection, no events or observers,
+and no scheduler. Everything that would need
 one of those is done by the caller on the entities themselves. The crate has no
 dependencies beyond a hasher and depends on nothing else in the workspace, so it
 can be used on its own; it knows nothing about rendering. The one exception is
@@ -27,8 +27,10 @@ It is at an **early stage of development** and its API changes freely.
   entity and spawn a new one. Immutable archetypes are what make the storage
   predictable and remove the leak-prone "component removed" bookkeeping other
   ECS designs need.
-- **Reading and writing need only `&World`.** Structural changes — spawning and
-  despawning — need `&mut World`, or a [`Commands`] queue applied by the driver.
+- **Reading and writing need only a view.** `&World` is the root view, which
+  sees everything; a [`ScopedWorld`] of a scene sees that scene's subtree and
+  nothing beside it. Structural changes — spawning and despawning — need a
+  `&mut` view, or a [`Commands`] queue applied by the driver.
 - **The world is `!Send`.** Components live in `RefCell`s, so the world stays on
   the thread that created it — this is where a renderer and other thread-bound
   state belong. Parallelism is the caller's to arrange, by splitting work over
@@ -47,20 +49,30 @@ It is at an **early stage of development** and its API changes freely.
   component*, a component that holds a closure and is invoked by whatever
   driver the caller writes. A behaviour that needs to wait returns a future and
   the caller decides when to poll it; no executor is built in.
-- **No entity relations.** When one entity points at another, the [`Entity`]
-  handle goes in a component and the caller keeps it up to date; the world does
-  not track or clean up the reference.
+- **The one relation is the scope.** Every entity carries a [`ScopeOf`]
+  pointing at its parent, which is what makes a scene a subtree: a view of that
+  entity sees it and its descendants, and nobody else does. It is the only
+  relation the world maintains, because visibility has to be decided on every
+  access and a caller-maintained relation could not be. Any other reference
+  between entities is still an [`Entity`] in a component, kept up to date by
+  the caller.
 - **A borrow conflict is a panic, not a compile error.** Asking for a component
   that is already borrowed, or fetching the same component as `&mut` twice in
   one query, reports the component's name and stops. That is the trade for not
   doing access analysis. An optional component is optional only about the
   component being absent: a cell that cannot be borrowed panics the same way
   instead of reading as `None`.
+- **Two entities are scaffolding.** `World::new` creates [`World::root`] — the
+  root view's scope, whose `ScopeOf` is itself — and [`World::shared`], whose
+  subtree every view sees. Both can carry components and be named as scopes;
+  neither is counted, queried, despawned or relinked.
 
 ## What is in the box
 
 [`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`] (and the
-[`bundle!`] macro for flattening nested tuples),
+[`bundle!`] macro for flattening nested tuples), [`ScopeOf`] and the views
+[`ScopedWorld`] / [`ScopedWorldMut`] that narrow the world to one scope,
+[`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
 [`Query`] and [`QueryFilter`] ([`With`], [`Without`], [`Or`], tuples),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
 [`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
@@ -73,8 +85,8 @@ hash containers
 
 A query resolves the columns it needs once per archetype and then fetches rows
 through that state, so its cost is proportional to the number of *component
-sets* rather than to the number of entities. [`World::location`] and
-[`World::archetype`] expose the same shape to a caller that holds many entities
+sets* rather than to the number of entities. [`ScopedWorld::location`] and
+[`ScopedWorld::archetype`] expose the same shape to a caller that holds many entities
 — for instance one that culled a scene into a list — so it can group them by
 archetype and resolve each archetype's columns once for all of them instead of
 re-looking up every entity.
@@ -99,38 +111,39 @@ struct Spin {
 }
 
 let mut world = World::new();
-let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-let clock = world.spawn((0.016f32,));
+let cube = world.root_view_mut().spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
+let clock = world.root_view_mut().spawn((0.016f32,));
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.
-let delta = world.get::<f32>(clock).unwrap().to_owned();
-for (_, mut spin) in world.query::<&mut Spin>() {
+let delta = world.root_view().get::<f32>(clock).unwrap().to_owned();
+for (_, mut spin) in world.root_view().query::<&mut Spin>() {
     spin.angle += spin.radians_per_second * delta;
 }
-assert_ne!(world.get::<Spin>(cube).unwrap().angle, 0.0);
+assert_ne!(world.root_view().get::<Spin>(cube).unwrap().angle, 0.0);
 
 // Filters narrow the archetypes a query visits, without fetching anything.
 let _ = world
+    .root_view()
     .query_filtered::<&Spin, Without<f32>>()
     .map(|(_, spin)| spin.angle)
     .count();
 ```
 
-Spawning and despawning need `&mut World`, or a queued command:
+Spawning and despawning need a `&mut` view, or a queued command:
 
 ```rust
 use unlit_ecs::World;
 
 let mut world = World::new();
 let entity = {
-    let commands = world.queue();
+    let commands = world.root_view().queue();
     commands.spawn(("entity",))
 };
 // Nothing has happened yet.
-assert!(!world.contains(entity));
+assert!(!world.root_view().contains(entity));
 world.apply();
-assert!(world.contains(entity));
+assert!(world.root_view().contains(entity));
 ```
 
 A tuple bundle does not flatten, because a tuple is itself a component. Reach for
@@ -143,13 +156,13 @@ hundred components at the default — and a wider one is built by raising
 use unlit_ecs::{bundle, World};
 
 let mut world = World::new();
-let entity = world.spawn(bundle!((1u32, 2.0f32), (true, ())));
+let entity = world.root_view_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
 // The macro flattened the nesting: three components, not a nested tuple.
-assert!(world.has::<u32>(entity));
-assert!(world.has::<f32>(entity));
-assert!(world.has::<bool>(entity));
-assert!(!world.has::<(u32, f32)>(entity));
+assert!(world.root_view().has::<u32>(entity));
+assert!(world.root_view().has::<f32>(entity));
+assert!(world.root_view().has::<bool>(entity));
+assert!(!world.root_view().has::<(u32, f32)>(entity));
 ```
 
 ## The MCP server
@@ -187,6 +200,12 @@ fn register(router: &mut ToolRouter<McpServer>) {
 rendering ones and `unlit3dx` the audio ones. None of those crates is a
 dependency of this one, and the server a host builds carries all of them.
 
+Every entity tool takes an optional `scope` argument naming the scope to act in,
+defaulting to the root. A client that names a scene sees only that scene's subtree, so
+one MCP session can inspect a world's private parts without the host exposing them.
+An operation the scope does not own — a spawn outside its subtree, a despawn of an
+ancestor — is refused rather than silently redirected.
+
 Components are addressed by name through the [`reflect`] registry: a
 component's crate submits a [`ComponentEntry`](crate::reflect::ComponentEntry)
 to the same kind of link-time table, so `get_component` and `set_component`
@@ -212,10 +231,16 @@ entity carries. A host that wants its other worlds addressable answers
 <details>
 <summary>The omissions are deliberate, and each has a substitute</summary>
 
-- **No change detection, no component hooks.** In OOP an object maintains its
-  own state internally; tracking what changed is the caller's business.
-- **No entity relations** such as `Children` or `ChildOf`: users manage
-  references between entities as they need.
+- **No change detection.** In OOP an object maintains its own state internally;
+  tracking what changed is the caller's business.
+- **One relation, the scope, and no other.** A `Children` or `ChildOf` component would be a
+  reference the caller keeps up to date; the scope is the one that cannot be,
+  because visibility is decided on every access. Anything else stays a plain
+  entity in a component.
+- **Lifecycle callbacks run on the entity, not on the world.** `OnSpawn` and
+  `OnDespawn` are ordinary components holding callbacks, so a world with no
+  lifecycle components pays nothing for the feature and a caller can write its own
+  runner instead.
 - **No events or observers.** As a substitute, call a component's method
   directly or use a behaviour component. A *behaviour component* holds a
   function pointer or closure that can run accesses to the world inside it, just

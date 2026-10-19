@@ -107,21 +107,24 @@ impl Presenter {
     /// the swap chain.
     fn present(&mut self, host: &World) {
         let (world, renderer) = self.presented();
-        let Some(nested) = host.get::<World>(world) else {
+        let Some(nested) = host.root_view().get::<World>(world) else {
             return;
         };
-        let _ = nested.with_mut::<Renderer, _>(renderer, |renderer| {
-            let Some(swap_frame) = self.surface.acquire(&nested, renderer) else {
-                return;
-            };
-            self.attachments
-                .bind(&nested, renderer, swap_frame.color_view().clone());
-            renderer.render(&nested);
-            let queue = nested
-                .get::<wgpu::Queue>(renderer.context().queue)
-                .expect("the presented world carries its queue resource");
-            swap_frame.present(&queue);
-        });
+        let _ = nested
+            .root_view()
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                let Some(swap_frame) = self.surface.acquire(&nested, renderer) else {
+                    return;
+                };
+                self.attachments
+                    .bind(&nested, renderer, swap_frame.color_view().clone());
+                renderer.render(&nested);
+                let queue = nested
+                    .root_view()
+                    .get::<wgpu::Queue>(renderer.context().queue)
+                    .expect("the presented world carries its queue resource");
+                swap_frame.present(&queue);
+            });
     }
 
     /// Match the surface, the attachments and the offscreen target to a
@@ -133,10 +136,11 @@ impl Presenter {
     /// size.
     fn resize(&mut self, host: &World, size: (u32, u32)) {
         let (world, renderer) = self.presented();
-        let Some(nested) = host.get::<World>(world) else {
+        let Some(nested) = host.root_view().get::<World>(world) else {
             return;
         };
         let Some(size) = nested
+            .root_view()
             .with_mut::<Renderer, _>(renderer, |renderer| {
                 self.surface.resize(&nested, renderer, size.0, size.1);
                 self.surface.size()
@@ -149,10 +153,11 @@ impl Presenter {
         let Some(blit) = self.blit.as_mut() else {
             return;
         };
-        let Some(render_nested) = host.get::<World>(self.render) else {
+        let Some(render_nested) = host.root_view().get::<World>(self.render) else {
             return;
         };
-        let Some(offscreen) = render_nested
+        let render_view = render_nested.root_view();
+        let Some(offscreen) = render_view
             .with_mut::<Renderer, _>(self.renderer, |renderer| {
                 bind_offscreen(&render_nested, renderer, &self.gpu.device, size)
             })
@@ -165,11 +170,14 @@ impl Presenter {
         // frame.
         let view = TextureExt::create_view(&offscreen, &wgpu::TextureViewDescriptor::default());
         let context = nested
+            .root_view()
             .get::<Renderer>(renderer)
             .expect("the presenting renderer is a resource entity")
             .context();
         let texture = BlitTexture::new(&nested, context, view);
-        let _ = nested.with_mut::<BlitTexture, _>(blit.texture, |slot| *slot = texture);
+        let _ = nested
+            .root_view()
+            .with_mut::<BlitTexture, _>(blit.texture, |slot| *slot = texture);
     }
 }
 
@@ -192,7 +200,9 @@ pub fn bind_offscreen(
     // texture alive — and a screenshot can resolve the texture by handle
     // and read it back.
     let color_view = {
-        let mut graph = world.get_mut::<ResourceGraph>(renderer.context().graph)?;
+        let mut graph = world
+            .root_view()
+            .get_mut::<ResourceGraph>(renderer.context().graph)?;
         let texture = graph.insert(color.clone(), None);
         let view = graph.insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
@@ -228,6 +238,7 @@ fn open_surface(
     with_depth: bool,
 ) -> Option<(WindowSurface, FrameAttachments)> {
     world
+        .root_view()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             let surface = WindowSurface::new(
                 world,
@@ -288,9 +299,11 @@ pub fn setup_presenter(
     if offscreen {
         let texture = {
             let nested = world
+                .root_view()
                 .get::<World>(render)
                 .ok_or("the scene setup found no render world")?;
             nested
+                .root_view()
                 .with_mut::<Renderer, _>(renderer, |renderer| {
                     bind_offscreen(&nested, renderer, &gpu.device, size)
                 })
@@ -305,19 +318,27 @@ pub fn setup_presenter(
             ResourceGraph::new(),
             gpu.capabilities,
         );
-        let blit_renderer = blit_world.spawn((Renderer::new(blit_frame),));
+        let blit_renderer = blit_world
+            .root_view_mut()
+            .spawn((Renderer::new(blit_frame),));
         let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-        let blit_texture = blit_world.spawn((BlitTexture::new(&blit_world, blit_frame, view),));
-        blit_world.spawn((Source::new(BlitSource::new()),));
-        let blit_entity = world.spawn((blit_world, WorldName("blit")));
+        let blit_texture = {
+            let texture = BlitTexture::new(&blit_world, blit_frame, view);
+            blit_world.root_view_mut().spawn((texture,))
+        };
+        blit_world
+            .root_view_mut()
+            .spawn((Source::new(BlitSource::new()),));
+        let blit_entity = world.root_view_mut().spawn((blit_world, WorldName("blit")));
         let (surface, attachments) = {
             let nested = world
+                .root_view()
                 .get::<World>(blit_entity)
                 .ok_or("the blit world did not land in the host")?;
             open_surface(&nested, blit_renderer, gpu, window, surface, 1, false)
                 .ok_or("failed to open the window surface: the blit renderer was gone")?
         };
-        world.spawn((Presenter {
+        world.root_view_mut().spawn((Presenter {
             render,
             renderer,
             gpu: gpu.clone(),
@@ -335,12 +356,13 @@ pub fn setup_presenter(
 
     let (surface, attachments) = {
         let nested = world
+            .root_view()
             .get::<World>(render)
             .ok_or("the scene setup found no render world")?;
         open_surface(&nested, renderer, gpu, window, surface, FRAME_SAMPLES, true)
             .ok_or("failed to open the window surface: the renderer was gone")?
     };
-    world.spawn((Presenter {
+    world.root_view_mut().spawn((Presenter {
         render,
         renderer,
         gpu: gpu.clone(),
@@ -385,6 +407,7 @@ impl Command for DrawFrame {
             })
             .or_else(|| {
                 world
+                    .root_view()
                     .query::<&Presenter>()
                     .next()
                     .map(|(_, presenter)| presenter.fallback_size)
@@ -419,11 +442,16 @@ pub fn draw_presented() -> OnFrame {
     OnFrame::new(
         FrameBehaviourOrder(DRAW_ORDER),
         move |world, _entity, frame| {
-            let Some(mut presenter) = world.query::<&mut Presenter>().next().map(|(_, p)| p) else {
+            let Some(mut presenter) = world
+                .root_view()
+                .query::<&mut Presenter>()
+                .next()
+                .map(|(_, p)| p)
+            else {
                 return;
             };
             let (render, renderer) = (presenter.render, presenter.renderer);
-            let Some(mut nested) = world.get_mut::<World>(render) else {
+            let Some(mut nested) = world.root_view().get_mut::<World>(render) else {
                 return;
             };
             drain_sub_world(&mut nested);
@@ -432,9 +460,11 @@ pub fn draw_presented() -> OnFrame {
             LocalTasks::pump(&mut nested);
             dispatch_frame(&mut nested, frame);
             if presenter.blit.is_some() {
-                let _ = nested.with_mut::<Renderer, _>(renderer, |renderer| {
-                    renderer.render(&nested);
-                });
+                let _ = nested
+                    .root_view()
+                    .with_mut::<Renderer, _>(renderer, |renderer| {
+                        renderer.render(&nested);
+                    });
             }
             drop(nested);
             presenter.present(world);
@@ -483,7 +513,7 @@ fn queue_draw(
     if pending.swap(true, Ordering::AcqRel) {
         return;
     }
-    world.queue().push(DrawFrame {
+    world.root_view().queue().push(DrawFrame {
         last: Arc::clone(last),
         index: Arc::clone(index),
         pending: Arc::clone(pending),
@@ -500,7 +530,12 @@ pub fn resize_presented() -> OnWindowEvent {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        if let Some(mut presenter) = world.query::<&mut Presenter>().next().map(|(_, p)| p) {
+        if let Some(mut presenter) = world
+            .root_view()
+            .query::<&mut Presenter>()
+            .next()
+            .map(|(_, p)| p)
+        {
             presenter.resize(world, (size.width, size.height));
         }
     })

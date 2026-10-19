@@ -6,8 +6,7 @@
 自己的 cell 里——正因如此，一个共享的 `&World` 就能在不使用任何 `unsafe` 的前提下
 读取*并*写入组件。
 
-设计刻意保持精简：没有变化检测、没有组件钩子、没有事件与观察者、没有实体关系、
-也没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。除一个哈希器
+设计刻意保持精简：没有变化检测、没有事件与观察者、没有调度器。凡是需要其中之一的场景，都由调用者在实体本身上自行完成。除一个哈希器
 外本 crate 没有其他依赖，也不依赖工作区中的任何其他 crate，因此可以单独使用；它对
 渲染一无所知。唯一的例外是可选的 `reflect` feature，它为[世界信息](crate::WorldInfo)
 结构体派生 [facet](https://docs.rs/facet)，好让桥接层直接序列化它们，并导出实体字段所经由的
@@ -21,8 +20,9 @@
 - **实体的组件集合在 spawn 时就固定了。** 组件只能读写，不能增删；要改变集合，
   必须 despawn 该实体再重新 spawn。不可变的原型正是让存储可预测、并消除其他 ECS
   设计中容易泄漏的「组件被移除」记账工作的原因。
-- **读写只需要 `&World`。** 结构变更——spawn 与 despawn——需要 `&mut World`，或者
-  由驱动器应用的 `Commands` 队列。
+- **读写只需要一个视图。** `&World` 就是根视图，看得见一切；一个场景的 `ScopedWorld` 只看
+  得见该场景的子树，看不见旁边的东西。结构变更——spawn 与 despawn——需要可变的
+  视图，或者由驱动器应用的 `Commands` 队列。
 - **world 是 `!Send` 的。** 组件存在 `RefCell` 里，因此 world 留在创建它的线程——
   渲染器和其他与线程绑定的状态属于这里。并行是调用者的事，办法是把工作切分到纯数据上，
   而不是共享 world。
@@ -34,16 +34,22 @@
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
-- **没有实体关系。** 当一个实体指向另一个实体时，`Entity` 句柄存放在组件里，由
-  调用者自行维护；world 不追踪也不清理该引用。
+- **唯一的关系是 scope。** 每个实体都带一个指向父实体的 `ScopeOf`，正是它让一个场景
+  成为一棵子树：该实体的视图看得见它和它的后代，别人看不见。这是 world 唯一维护的
+  关系，因为每次访问都要判定可见性，而由调用者维护的关系做不到这一点。实体之间的其他
+  引用仍然是组件里的 `Entity`，由调用者自行维护。
 - **借用冲突是 panic，而不是编译错误。** 请求一个已被借用的组件，或在同一个查询里两次
   以 `&mut` 取同一组件，都会报出组件名并终止。这是不做访问冲突分析的代价。可选组件只在
   「组件不存在」这件事上可选：借不到时同样 panic，而不会表现为 `None`。
+- **有两个实体是脚手架。** `World::new` 创建 `World::root`——根视图的 scope，它的
+  `ScopeOf` 指向自己——和 `World::shared`，后者的子树每个视图都看得见。两者都能
+  携带组件、都能被当作 scope 指名；但它们都不被计数、不被查询、不可 despawn、不可重挂。
 
 ## 内容概览
 
 `World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及用于展平嵌套元组的
-`bundle!` 宏）、
+`bundle!` 宏）、把 world 收窄到一个 scope 的 `ScopeOf` 与视图
+`ScopedWorld` / `ScopedWorldMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
 `Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`、用于给
 只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`、用于把 world
@@ -52,8 +58,8 @@
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
 
 查询会按 archetype 解析一次它需要的列，再通过该状态逐行取值，因此其开销与
-*组件集合*的数量成正比，而不是与实体数量成正比。`World::location` 与
-`World::archetype` 把同样的形态开放给持有大量实体的调用者——比如把场景剔除成
+*组件集合*的数量成正比，而不是与实体数量成正比。`ScopedWorld::location` 与
+`ScopedWorld::archetype` 把同样的形态开放给持有大量实体的调用者——比如把场景剔除成
 一个列表的调用者——让它能按 archetype 分组，一次性解析每个 archetype 的列，
 而不必逐实体重新查找。
 
@@ -76,16 +82,16 @@ struct Spin {
 }
 
 let mut world = World::new();
-let cube = world.spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-let clock = world.spawn((0.016f32,));
+let cube = world.root_view_mut().spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
+let clock = world.root_view_mut().spawn((0.016f32,));
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.
-let delta = world.get::<f32>(clock).unwrap().to_owned();
-for (_, mut spin) in world.query::<&mut Spin>() {
+let delta = world.root_view().get::<f32>(clock).unwrap().to_owned();
+for (_, mut spin) in world.root_view().query::<&mut Spin>() {
     spin.angle += spin.radians_per_second * delta;
 }
-assert_ne!(world.get::<Spin>(cube).unwrap().angle, 0.0);
+assert_ne!(world.root_view().get::<Spin>(cube).unwrap().angle, 0.0);
 
 // Filters narrow the archetypes a query visits, without fetching anything.
 let _ = world
@@ -101,13 +107,13 @@ use unlit_ecs::World;
 
 let mut world = World::new();
 let entity = {
-    let commands = world.queue();
+    let commands = world.root_view().queue();
     commands.spawn(("entity",))
 };
 // Nothing has happened yet.
-assert!(!world.contains(entity));
+assert!(!world.root_view().contains(entity));
 world.apply();
-assert!(world.contains(entity));
+assert!(world.root_view().contains(entity));
 ```
 
 元组 bundle 不会展平，因为元组本身就是一个组件。当组件是嵌套写下的，或者超过
@@ -118,13 +124,13 @@ assert!(world.contains(entity));
 use unlit_ecs::{bundle, World};
 
 let mut world = World::new();
-let entity = world.spawn(bundle!((1u32, 2.0f32), (true, ())));
+let entity = world.root_view_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
 // 宏展平了嵌套：得到三个组件，而不是一个嵌套元组。
-assert!(world.has::<u32>(entity));
-assert!(world.has::<f32>(entity));
-assert!(world.has::<bool>(entity));
-assert!(!world.has::<(u32, f32)>(entity));
+assert!(world.root_view().has::<u32>(entity));
+assert!(world.root_view().has::<f32>(entity));
+assert!(world.root_view().has::<bool>(entity));
+assert!(!world.root_view().has::<(u32, f32)>(entity));
 ```
 
 ## MCP 服务器
@@ -158,6 +164,11 @@ fn register(router: &mut ToolRouter<McpServer>) {
 `unlit3d` 注册渲染类工具，`unlit3dx` 注册音频类工具。这些 crate 都不是本 crate 的
 依赖，而宿主建起的服务器会带上它们全部。
 
+每个实体工具都接受一个可选的 `scope` 参数，指名要操作哪个 scope，默认为根。
+指名了某个场景的客户端只看得到该场景的子树，于是一个 MCP 会话就能检视 world 的私有
+部分，而不必由宿主把它们暴露出来。scope 不拥有的操作——在它子树之外 spawn、despawn
+它的祖先——会被拒绝，而不是被悄悄改道。
+
 组件经由 `reflect` 注册表按名字寻址：组件的 crate 把一个 `ComponentEntry` 提交到
 同一种链接期表，于是 `get_component` 与 `set_component` 能编解码一个 ECS 自己
 从未听说过的值。
@@ -177,10 +188,13 @@ world，为 `{"Handle": bits}` 时指某个宿主实体所携带的 world。想�
 <details>
 <summary>这些省略是有意为之的，每一条都有替代方案</summary>
 
-- **没有变化检测、组件钩子。** 在 OOP 中对象自身状态在内部维护；追踪什么变了是调用者
-  的事。
-- **没有实体关系**，如 `Children`、`ChildOf`：让用户根据需要自行管理实体之间的引用
-  关系。
+- **没有变化检测。** 在 OOP 中对象自身状态在内部维护；追踪什么变了是调用者的事。
+- **只有一个关系，即 scope，别无其他。** `Children`、`ChildOf` 这类组件是调用者
+  自己维护的引用；scope 是唯一不能那样维护的关系，因为每次访问都要判定可见性。
+  其他引用仍然是组件里的普通实体。
+- **生命周期回调挂在实体上，而不是 world 上。** `OnSpawn` 与 `OnDespawn` 就是
+  持有回调的普通组件，因此没有生命周期组件的 world 不为该特性付出任何代价，调用者
+  也可以自己写一个驱动。
 - **没有事件和观察者。** 作为替代，可以直接调用组件的方法或使用行为组件。*行为组件*
   指包含函数指针或闭包的组件，并且该函数中能运行对 world 的访问，就像系统或观察者
   一样，其中的函数也可以是 async 的。于是类似 Godot 节点的帧更新、固定间隔更新、

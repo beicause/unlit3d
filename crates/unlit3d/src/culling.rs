@@ -49,7 +49,7 @@ pub(crate) struct VisibleMesh {
 /// about where the mesh is.
 pub(crate) fn collect_visible(world: &World, frustum: &FrustumPlanes, out: &mut Vec<VisibleMesh>) {
     out.clear();
-    for (entity, (mesh, transform)) in world.query::<(&GpuMesh, Option<&Transform>)>() {
+    for (entity, (mesh, transform)) in world.root_view().query::<(&GpuMesh, Option<&Transform>)>() {
         let model = match transform {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
@@ -133,8 +133,10 @@ mod tests {
             morph_targets: 0,
             skinned: false,
         };
-        let near = world.spawn((mesh.clone(), Transform::default()));
-        let far = world.spawn((
+        let near = world
+            .root_view_mut()
+            .spawn((mesh.clone(), Transform::default()));
+        let far = world.root_view_mut().spawn((
             mesh,
             Transform {
                 translation: Vec3::new(0.0, 0.0, 20.0),

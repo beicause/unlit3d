@@ -18,7 +18,7 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
         "subscribed",
         capacity,
         |world: &mut World| {
-            world.spawn((Marker(0),));
+            world.root_view_mut().spawn((Marker(0),));
         },
         |world: &mut World, _control: &ThreadControl, ()| {
             publish_subscribed(world);
@@ -68,7 +68,13 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
 
     let reader = world
         .sender()
-        .subscribe(|world: &World| world.query::<&Marker>().next().map(|(_, marker)| marker.0))
+        .subscribe(|world: &World| {
+            world
+                .root_view()
+                .query::<&Marker>()
+                .next()
+                .map(|(_, marker)| marker.0)
+        })
         .expect("the world accepts a subscription");
     assert_eq!(
         reader.latest(),

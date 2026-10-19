@@ -177,11 +177,14 @@ fn gpu_info_rect(world: &World) -> Option<egui::Rect> {
 
 /// The rectangle egui remembers for the window with `id`.
 fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
-    world.query::<&Source>().find_map(|(_, source)| {
-        let ui = source.as_ref::<UiSource>()?;
-        ui.context()
-            .memory(|memory| memory.area_rect(egui::Id::new(id)))
-    })
+    world
+        .root_view()
+        .query::<&Source>()
+        .find_map(|(_, source)| {
+            let ui = source.as_ref::<UiSource>()?;
+            ui.context()
+                .memory(|memory| memory.area_rect(egui::Id::new(id)))
+        })
 }
 
 fn scene_at(
@@ -253,6 +256,7 @@ fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Sc
 fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
     let renderer = scene.renderer;
     world
+        .root_view()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             unlit3d_examples::bind_offscreen_target(world, renderer, &ctx.device, size, 1, false)
         })

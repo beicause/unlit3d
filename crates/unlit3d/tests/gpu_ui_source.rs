@@ -284,7 +284,7 @@ fn count_in(frame: &Frame, x0: u32, x1: u32, color: egui::Color32, tolerance: u8
 /// `MeshSource` and no camera.
 fn ui_only_world(world: &mut World, ctx: &Ctx) -> TestGpu {
     let gpu = TestGpu::frame_only(world, ctx);
-    world.spawn((Source::new(UiSource::new()),));
+    world.root_view_mut().spawn((Source::new(UiSource::new()),));
     gpu
 }
 
@@ -294,7 +294,7 @@ fn ui_only_world(world: &mut World, ctx: &Ctx) -> TestGpu {
 fn spawn_input(world: &mut World, scale_factor: f32) {
     let input = InputWriter::new();
     let events = input.subscribe();
-    world.spawn((events.clone(),));
+    world.root_view_mut().spawn((events.clone(),));
     input.push(InputEvent::Resized {
         size_px: (WIDTH, HEIGHT),
     });
@@ -304,7 +304,7 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
 
 /// Spawn the load ops every UI test opens its pass with.
 fn spawn_load_ops(world: &mut World) {
-    world.spawn((RenderLoadOps {
+    world.root_view_mut().spawn((RenderLoadOps {
         color: wgpu::LoadOp::Clear(CLEAR_COLOR),
         ..RenderLoadOps::default()
     },));
@@ -326,8 +326,8 @@ async fn ui_only_with_two_panels() {
 
     let left = Rect::new(16.0, 40.0, 72.0, 72.0);
     let right = Rect::new(160.0, 40.0, 72.0, 72.0);
-    world.spawn((paint(left, RED),));
-    world.spawn((paint(right, GREEN),));
+    world.root_view_mut().spawn((paint(left, RED),));
+    world.root_view_mut().spawn((paint(right, GREEN),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
@@ -372,7 +372,7 @@ async fn ui_only_clears_to_load_ops() {
     spawn_load_ops(&mut world);
 
     let rect = Rect::new(40.0, 40.0, 80.0, 60.0);
-    world.spawn((paint(rect, RED),));
+    world.root_view_mut().spawn((paint(rect, RED),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
@@ -405,7 +405,7 @@ async fn ui_only_multisampled_and_srgb() {
     spawn_load_ops(&mut world);
 
     let rect = Rect::new(40.0, 40.0, 80.0, 60.0);
-    world.spawn((paint(rect, RED),));
+    world.root_view_mut().spawn((paint(rect, RED),));
 
     let target = gpu.bind_offscreen_target_with(&world, SAMPLES, false);
     gpu.render_frames(&world, 2);
@@ -442,7 +442,7 @@ async fn ui_only_at_high_pixel_density() {
 
     // Comfortably inside the target at 2x: 60 x 40 points is 120 x 80 pixels.
     let rect = Rect::new(24.0, 20.0, 60.0, 40.0);
-    world.spawn((paint(rect, RED),));
+    world.root_view_mut().spawn((paint(rect, RED),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);
@@ -488,8 +488,10 @@ fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
     let gpu = TestGpu::new(world, ctx);
     let key = gpu.key.clone();
     let mesh = gpu.allocate_cube_mesh(world);
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.spawn((
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -509,10 +511,10 @@ fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPane
     let gpu = mesh_world(ctx, world);
     spawn_load_ops(world);
 
-    world.spawn((panel,));
-    let ui = world.spawn((Source::new(UiSource::new()),));
+    world.root_view_mut().spawn((panel,));
+    let ui = world.root_view_mut().spawn((Source::new(UiSource::new()),));
     if ui_first {
-        let _ = world.with_mut::<Source, _>(ui, |source| {
+        let _ = world.root_view().with_mut::<Source, _>(ui, |source| {
             source.set_order(Some(FrameSourceOrder(FrameSourceOrder::MESH.0 - 1)))
         });
     }
@@ -590,15 +592,17 @@ async fn ui_does_not_clip_the_mesh() {
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
 
-    world.spawn((UiPanel::new(|_world, _entity, ui| {
-        let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP));
-        ui.painter().with_clip_rect(clip).rect_filled(
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP)),
-            0.0,
-            RED,
-        );
-    }),));
-    world.spawn((Source::new(UiSource::new()),));
+    world
+        .root_view_mut()
+        .spawn((UiPanel::new(|_world, _entity, ui| {
+            let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP));
+            ui.painter().with_clip_rect(clip).rect_filled(
+                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP)),
+                0.0,
+                RED,
+            );
+        }),));
+    world.root_view_mut().spawn((Source::new(UiSource::new()),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
@@ -636,8 +640,8 @@ async fn mesh_and_ui_survive_a_second_frame() {
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
 
-    world.spawn((rich_panel(),));
-    world.spawn((Source::new(UiSource::new()),));
+    world.root_view_mut().spawn((rich_panel(),));
+    world.root_view_mut().spawn((Source::new(UiSource::new()),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     // One frame warms egui up, then two are compared.
@@ -667,7 +671,10 @@ struct Burst(usize);
 /// held many of them leaves the buffer with room to spare for every later one.
 fn burst_panel(extra: Entity) -> UiPanel {
     UiPanel::new(move |world, _entity, ui| {
-        let burst = world.get::<Burst>(extra).map_or(0, |burst| burst.0);
+        let burst = world
+            .root_view()
+            .get::<Burst>(extra)
+            .map_or(0, |burst| burst.0);
         let painter = ui.painter();
         for index in 0..burst {
             let column = (index % 8) as f32;
@@ -696,13 +703,15 @@ fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
     let gpu = ui_only_world(&mut world, ctx);
     spawn_load_ops(&mut world);
 
-    let extra = world.spawn((Burst(burst),));
-    world.spawn((burst_panel(extra),));
+    let extra = world.root_view_mut().spawn((Burst(burst),));
+    world.root_view_mut().spawn((burst_panel(extra),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     // The first frame is drawn with the extra geometry, the second without.
     gpu.render(&world);
-    let _ = world.with_mut::<Burst, _>(extra, |burst| burst.0 = 0);
+    let _ = world
+        .root_view()
+        .with_mut::<Burst, _>(extra, |burst| burst.0 = 0);
     gpu.render(&world);
     read(ctx, &target)
 }
@@ -809,7 +818,7 @@ async fn a_patched_texture_shows_the_patch() {
     let gpu = ui_only_world(&mut world, &ctx);
     spawn_load_ops(&mut world);
 
-    world.spawn((patched_texture(),));
+    world.root_view_mut().spawn((patched_texture(),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     gpu.render_frames(&world, 2);

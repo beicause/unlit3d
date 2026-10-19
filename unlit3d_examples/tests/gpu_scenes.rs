@@ -167,6 +167,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
 
     let renderer = scene.renderer;
     let target = world
+        .root_view()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             unlit3d_examples::bind_offscreen_target(
                 &world,
@@ -245,6 +246,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
 
     let renderer = scene.renderer;
     let target = world
+        .root_view()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             unlit3d_examples::bind_offscreen_target(
                 &world,
@@ -465,6 +467,7 @@ async fn custom_pipeline_animates_between_frames() {
 /// The eye position of the scene's camera.
 fn camera_eye(world: &World) -> glam::Vec3 {
     let (_, camera) = world
+        .root_view()
         .query::<&Camera>()
         .next()
         .expect("the scene has a camera");

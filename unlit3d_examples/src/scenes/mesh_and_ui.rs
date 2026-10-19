@@ -43,7 +43,7 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();
@@ -60,8 +60,8 @@ fn build(
         )
     });
 
-    let camera_entity = world.spawn((camera_view(size),));
-    world.spawn((
+    let camera_entity = world.root_view_mut().spawn((camera_view(size),));
+    world.root_view_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -72,13 +72,13 @@ fn build(
     ));
 
     // The pass opens with this world's load ops.
-    world.spawn((RenderLoadOps {
+    world.root_view_mut().spawn((RenderLoadOps {
         color: wgpu::LoadOp::Clear(CLEAR_COLOR),
         ..RenderLoadOps::default()
     },));
 
     if options.ui {
-        world.spawn((super::ui_only::rich_panel(),));
+        world.root_view_mut().spawn((super::ui_only::rich_panel(),));
     }
 
     SceneControl {

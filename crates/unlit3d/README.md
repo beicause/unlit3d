@@ -935,7 +935,7 @@ the frame context in place of an event. Ordering is by
 orders, and the library declares no order values of its own: what runs before
 what is the application's to define. A windowed application's host world and each
 world it drives dispatch the same family, so the scene side is componentised the
-same way. Spawn a behaviour with [`World::spawn`](unlit_ecs::World::spawn).
+same way. Spawn a behaviour with [`ScopedWorldMut::spawn`](unlit_ecs::ScopedWorldMut::spawn).
 A behaviour that needs the rest of the frame
 skipped sets a flag its siblings read; a behaviour that needs structural change
 queues it, because a callback only holds `&World`.

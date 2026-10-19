@@ -254,6 +254,10 @@ pub struct WorldArg {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
+    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
+    /// world's root view, which sees everything.
+    #[serde(default)]
+    pub scope: Option<u64>,
 }
 
 /// Which world and render context a GPU tool runs against.
@@ -296,6 +300,10 @@ pub struct EntityArg {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
+    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
+    /// world's root view, which sees everything.
+    #[serde(default)]
+    pub scope: Option<u64>,
     /// The entity's bits.
     pub entity: u64,
     /// The entity carrying the world's mesh source, as its `u64` bits, for the tools
@@ -311,6 +319,10 @@ pub struct ListEntities {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
+    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
+    /// world's root view, which sees everything.
+    #[serde(default)]
+    pub scope: Option<u64>,
     /// How many entities to report.
     #[serde(default = "default_limit")]
     pub limit: usize,
@@ -327,6 +339,10 @@ pub struct GetComponent {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
+    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
+    /// world's root view, which sees everything.
+    #[serde(default)]
+    pub scope: Option<u64>,
     /// The entity's bits.
     pub entity: u64,
     /// The component's name.
@@ -340,6 +356,10 @@ pub struct SetComponent {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
+    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
+    /// world's root view, which sees everything.
+    #[serde(default)]
+    pub scope: Option<u64>,
     /// The entity's bits.
     pub entity: u64,
     /// The component's name.
@@ -355,6 +375,10 @@ pub struct SpawnEntity {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
+    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
+    /// world's root view, which sees everything.
+    #[serde(default)]
+    pub scope: Option<u64>,
     /// The components, as an object of name to value.
     pub components: Value,
 }

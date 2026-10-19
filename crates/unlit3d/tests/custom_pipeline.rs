@@ -401,8 +401,12 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
     // The renderer still wants a camera to derive its uniforms from; nothing
     // in the custom pipeline reads them, but the frame is only drawn when one
     // exists.
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.spawn((Transform::default(), mesh, pipeline));
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world
+        .root_view_mut()
+        .spawn((Transform::default(), mesh, pipeline));
 
     // A draw the pipeline is built for must be valid, so the draw is left to
     // wgpu's default error handling: anything it reports panics the test.
@@ -514,12 +518,18 @@ async fn one_pipeline_draws_many_meshes() {
     });
 
     // The same handle is spawned twice: it is cloned, not owned by a mesh.
-    world.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world
+        .root_view_mut()
+        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
     // The mesh is uploaded in clip space and the vertex stage ignores the
     // instance matrix, so the two draws land on top of each other; only the
     // tint they were bound with distinguishes them.
-    world.spawn((Transform::default(), red, pipeline.clone()));
-    world.spawn((Transform::default(), green, pipeline));
+    world
+        .root_view_mut()
+        .spawn((Transform::default(), red, pipeline.clone()));
+    world
+        .root_view_mut()
+        .spawn((Transform::default(), green, pipeline));
 
     let target = gpu.render_to_offscreen(&world, "test::custom::shared");
 

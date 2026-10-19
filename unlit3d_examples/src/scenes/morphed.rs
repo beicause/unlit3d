@@ -44,7 +44,7 @@ fn build(
     // The variant that reads the morph bindings: its mesh group carries the
     // displacement buffer a plain cube's does not.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let deltas = morph_deltas(&positions);
@@ -63,12 +63,14 @@ fn build(
         )
     });
 
-    let camera_entity = world.spawn((camera(size),));
+    let camera_entity = world.root_view_mut().spawn((camera(size),));
     // The weights are an entity of their own: the mesh names it rather than
     // owning it, so blending a pose is one component write and nothing on the
     // mesh changes.
-    let weights_entity = world.spawn((MorphWeights::new(weights(0)),));
-    world.spawn((
+    let weights_entity = world
+        .root_view_mut()
+        .spawn((MorphWeights::new(weights(0)),));
+    world.root_view_mut().spawn((
         Transform {
             scale: glam::Vec3::splat(0.9),
             ..Default::default()
@@ -85,6 +87,7 @@ fn build(
             // The weights are a component write, not a mesh re-upload and not
             // a GPU call: the source packs and uploads them once per frame.
             world
+                .root_view()
                 .get_mut::<MorphWeights>(weights_entity)
                 .expect("the weight entity carries a `MorphWeights`")
                 .weights = weights(frame).to_vec();

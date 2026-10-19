@@ -103,7 +103,7 @@ struct AudioFillSlot {
 /// A source of audio samples: a component the audio thread runs once per
 /// filled chunk.
 ///
-/// Spawn it on its own entity with [`World::spawn`](unlit_ecs::World::spawn), or
+/// Spawn it on its own entity with [`ScopedWorldMut::spawn`](unlit_ecs::ScopedWorldMut::spawn), or
 /// bundle it with the state it renders from — a synthesizer, say — and
 /// spawn that entity directly. [`dispatch_audio_fill`] runs a world's sources and
 /// mixes them.
@@ -159,10 +159,11 @@ pub struct AudioGain(pub f32);
 ///
 /// A source must not change the world's set of sources while it runs: it
 /// has a shared `&World`, so structural work goes through
-/// [`World::queue`] and is applied by the world's own driver between fills.
+/// [`unlit_ecs::ScopedWorld::queue`] and is applied by the world's own driver between fills.
 pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
     out.fill(0.0);
     let mut sources: Vec<(AudioFillOrder, Entity)> = world
+        .root_view()
         .query::<&OnAudioFill>()
         .map(|(entity, fill)| (fill.order(), entity))
         .collect();
@@ -174,10 +175,12 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
     };
     for (_, entity) in sources {
         world
+            .root_view()
             .with_mut::<OnAudioFill, _>(entity, |fill| fill.run(world, entity, &mut chunk))
             .expect("the source entity exists");
     }
     let gain = world
+        .root_view()
         .query::<&AudioGain>()
         .next()
         .map(|(_, gain)| gain.0)
@@ -304,7 +307,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                         // Spawned once, before the first fill: whoever
                         // waits on it builds their sources at the rate the
                         // device really uses.
-                        world.spawn((AudioFormat {
+                        world.root_view_mut().spawn((AudioFormat {
                             sample_rate: opened.sample_rate,
                             channels: opened.channels,
                         },));
@@ -329,10 +332,16 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             let open = output.is_some() || (!control.self_driven() && !config.stepped_device);
             // The marker goes on the first tick the output is open, and the
             // world keeps it: an entity's components are fixed once spawned.
-            if open && world.query::<&AudioOutputOpen>().next().is_none() {
-                world.spawn((AudioOutputOpen,));
+            if open
+                && world
+                    .root_view()
+                    .query::<&AudioOutputOpen>()
+                    .next()
+                    .is_none()
+            {
+                world.root_view_mut().spawn((AudioOutputOpen,));
             }
-            let sounding = open && world.query::<&OnAudioFill>().next().is_some();
+            let sounding = open && world.root_view().query::<&OnAudioFill>().next().is_some();
             if sounding != ready {
                 ready = sounding;
                 if sounding {

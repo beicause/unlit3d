@@ -226,6 +226,9 @@ pub struct SpawnedEntity {
     /// The spawned entity.
     #[facet(opaque, proxy = crate::EntityProxy)]
     pub entity: Entity,
+    /// The scope it was spawned in, so a caller can use it as one.
+    #[facet(opaque, proxy = crate::EntityProxy)]
+    pub scope: Entity,
 }
 
 /// Whether a despawn removed anything.
@@ -354,10 +357,10 @@ mod tests {
     #[test]
     fn a_job_command_dispatches_against_a_world() {
         let (command, receiver) =
-            McpCommand::new(|world| Ok(Output::Json(serde_json::json!(world.len()))));
+            McpCommand::new(|world| Ok(Output::Json(serde_json::json!(world.root_view().len()))));
         assert!(!command.wants_worlds());
         let mut world = World::new();
-        world.spawn((1u32,));
+        world.root_view_mut().spawn((1u32,));
         command.dispatch(&mut world);
         let answer = receiver.recv_blocking().unwrap().unwrap();
         let Output::Json(value) = answer else {

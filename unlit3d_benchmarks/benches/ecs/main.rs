@@ -84,9 +84,13 @@ impl Fixture {
         let with_material = count - count / 8;
         for index in 0..count {
             if index < with_material {
-                world.spawn((Pipeline(index), Mesh(index), Material(u64::from(index))));
+                world.root_view_mut().spawn((
+                    Pipeline(index),
+                    Mesh(index),
+                    Material(u64::from(index)),
+                ));
             } else {
-                world.spawn((Pipeline(index), Mesh(index)));
+                world.root_view_mut().spawn((Pipeline(index), Mesh(index)));
             }
         }
 
@@ -94,6 +98,7 @@ impl Fixture {
         // which is the order culling produces; the empty archetype contributes
         // nothing.
         let visible: Vec<Entity> = world
+            .root_view()
             .archetypes()
             .flat_map(|archetype| archetype.entities().iter().copied())
             .collect();
@@ -115,6 +120,7 @@ fn interleave(world: &World, entities: &[Entity]) -> Vec<Entity> {
     let mut runs: Vec<(u32, Vec<Entity>)> = Vec::new();
     for &entity in entities {
         let archetype = world
+            .root_view()
             .location(entity)
             .expect("a candidate is alive")
             .archetype();
@@ -140,7 +146,10 @@ fn interleave(world: &World, entities: &[Entity]) -> Vec<Entity> {
 fn get_one(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let mesh = world.get::<Mesh>(entity).expect("a candidate has a mesh");
+        let mesh = world
+            .root_view()
+            .get::<Mesh>(entity)
+            .expect("a candidate has a mesh");
         sum += u64::from(mesh.0);
     }
     sum
@@ -150,9 +159,15 @@ fn get_one(world: &World, candidates: &[Entity]) -> u64 {
 fn get_three(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let pipeline = world.get::<Pipeline>(entity).expect("a candidate has one");
-        let mesh = world.get::<Mesh>(entity).expect("a candidate has a mesh");
-        let material = world.get::<Material>(entity);
+        let pipeline = world
+            .root_view()
+            .get::<Pipeline>(entity)
+            .expect("a candidate has one");
+        let mesh = world
+            .root_view()
+            .get::<Mesh>(entity)
+            .expect("a candidate has a mesh");
+        let material = world.root_view().get::<Material>(entity);
         sum += u64::from(pipeline.0) + u64::from(mesh.0) + material.map_or(0, |m| m.0);
     }
     sum
@@ -163,7 +178,10 @@ fn get_three(world: &World, candidates: &[Entity]) -> u64 {
 fn location(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let location = world.location(entity).expect("a candidate is alive");
+        let location = world
+            .root_view()
+            .location(entity)
+            .expect("a candidate is alive");
         sum += u64::from(location.archetype()) + location.row() as u64;
     }
     sum
@@ -174,8 +192,12 @@ fn location(world: &World, candidates: &[Entity]) -> u64 {
 fn states_per_entity(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let location = world.location(entity).expect("a candidate is alive");
+        let location = world
+            .root_view()
+            .location(entity)
+            .expect("a candidate is alive");
         let archetype = world
+            .root_view()
             .archetype(location.archetype())
             .expect("a live entity's archetype exists");
         let state = <Resolve<'_> as Query>::fetch_state(archetype);
@@ -189,8 +211,12 @@ fn states_per_entity(world: &World, candidates: &[Entity]) -> u64 {
 fn rows_per_entity(world: &World, candidates: &[Entity]) -> u64 {
     let mut sum = 0u64;
     for &entity in candidates {
-        let location = world.location(entity).expect("a candidate is alive");
+        let location = world
+            .root_view()
+            .location(entity)
+            .expect("a candidate is alive");
         let archetype = world
+            .root_view()
             .archetype(location.archetype())
             .expect("a live entity's archetype exists");
         let state = <Resolve<'_> as Query>::fetch_state(archetype);
@@ -207,10 +233,14 @@ fn rows_per_archetype(world: &World, candidates: &[Entity]) -> u64 {
     let mut cached = None;
     let mut state = None;
     for &entity in candidates {
-        let location = world.location(entity).expect("a candidate is alive");
+        let location = world
+            .root_view()
+            .location(entity)
+            .expect("a candidate is alive");
         if cached != Some(location.archetype()) {
             cached = Some(location.archetype());
             let archetype = world
+                .root_view()
                 .archetype(location.archetype())
                 .expect("a live entity's archetype exists");
             state = <Resolve<'_> as Query>::matches(archetype)
@@ -234,7 +264,7 @@ fn fetch(state: &<Resolve<'_> as Query>::Fetch<'_>, row: usize) -> u64 {
 /// archetype, with the entity list coming from the world rather than a cull.
 fn query(world: &World) -> u64 {
     let mut sum = 0u64;
-    for (_, (pipeline, mesh, material)) in world.query::<Resolve<'_>>() {
+    for (_, (pipeline, mesh, material)) in world.root_view().query::<Resolve<'_>>() {
         sum += u64::from(pipeline.0) + u64::from(mesh.0) + material.map_or(0, |m| m.0);
     }
     sum

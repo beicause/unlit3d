@@ -32,7 +32,7 @@ use crate::source::{
 /// [`Renderer::render`] every frame. It owns the render target binding and the
 /// order bookkeeping; everything else a frame draws comes from its
 /// [`FrameSource`](crate::source::FrameSource) components, which are spawned
-/// with [`World::spawn`](unlit_ecs::World::spawn) and are ordinary ECS entities.
+/// with [`ScopedWorldMut::spawn`](unlit_ecs::ScopedWorldMut::spawn) and are ordinary ECS entities.
 ///
 /// ```rust
 /// # use unlit3d::prelude::*;
@@ -48,8 +48,8 @@ use crate::source::{
 ///     DeviceCapabilities::default(),
 /// );
 /// let source = MeshSource::new(&world, ctx);
-/// let mesh = world.spawn((Source::new(source),));
-/// let renderer = world.spawn((Renderer::new(ctx),));
+/// let mesh = world.root_view_mut().spawn((Source::new(source),));
+/// let renderer = world.root_view_mut().spawn((Renderer::new(ctx),));
 /// ```
 pub struct Renderer {
     /// The world addresses of the frame's GPU state.
@@ -144,6 +144,7 @@ impl Renderer {
         // touched. The handles are cloned out only to derive the surface key;
         // the ids are what the frame path keeps.
         let graph = world
+            .root_view()
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
         // The views are cloned out together with the formats they were
@@ -246,10 +247,12 @@ impl Renderer {
         let load_ops = frame_load_ops(world);
 
         let device = world
+            .root_view()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
             .clone();
         let queue = world
+            .root_view()
             .get::<wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
             .clone();
@@ -274,7 +277,7 @@ impl Renderer {
         // world, which is what `for_each` gives alongside the `&mut Source`.
         {
             profiling::scope!("renderer.frame.build_sources");
-            world.for_each::<&mut Source, _>(|mut source| {
+            world.root_view().for_each::<&mut Source, _>(|mut source| {
                 source.build_scene(world, self.context, &mut encoder);
             });
         }
@@ -306,6 +309,7 @@ impl Renderer {
             let whole = full_viewport(width, height);
             for &entity in self.order.entities() {
                 world
+                    .root_view()
                     .with_mut::<Source, _>(entity, |source| {
                         source.scene().record_with_viewport(&mut pass, whole)
                     })
@@ -327,6 +331,7 @@ impl Renderer {
     /// every attachment through the graph.
     fn attachments(&self, world: &World) -> RenderAttachments {
         let graph = world
+            .root_view()
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
         let color = self
@@ -352,6 +357,7 @@ impl Renderer {
 /// one may carry them, and the renderer reads only the first.
 fn frame_load_ops(world: &World) -> RenderLoadOps {
     world
+        .root_view()
         .query::<&RenderLoadOps>()
         .next()
         .map_or_else(RenderLoadOps::default, |(_, ops)| *ops)
@@ -373,7 +379,7 @@ mod tests {
         let mut world = World::new();
         // The entity carries load ops and nothing else: the component needs
         // no camera, no transform and no mesh to take effect.
-        world.spawn((RenderLoadOps {
+        world.root_view_mut().spawn((RenderLoadOps {
             color: wgpu::LoadOp::Load,
             ..Default::default()
         },));
@@ -384,16 +390,16 @@ mod tests {
     #[test]
     fn the_first_load_ops_entity_wins() {
         let mut world = World::new();
-        let first = world.spawn((RenderLoadOps {
+        let first = world.root_view_mut().spawn((RenderLoadOps {
             depth: wgpu::LoadOp::Load,
             ..Default::default()
         },));
-        world.spawn((RenderLoadOps {
+        world.root_view_mut().spawn((RenderLoadOps {
             depth: wgpu::LoadOp::Clear(1.0),
             ..Default::default()
         },));
 
         assert_eq!(frame_load_ops(&world).depth, wgpu::LoadOp::Load);
-        assert!(world.get::<RenderLoadOps>(first).is_some());
+        assert!(world.root_view().get::<RenderLoadOps>(first).is_some());
     }
 }

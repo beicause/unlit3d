@@ -374,6 +374,7 @@ impl<'a> InstanceContext<'a> {
     pub fn pack_joints(&mut self) -> u32 {
         let binding = self
             .world
+            .root_view()
             .get::<SkinBinding>(self.entity)
             .unwrap_or_else(|| {
                 panic!(
@@ -383,6 +384,7 @@ impl<'a> InstanceContext<'a> {
             });
         let pose = self
             .world
+            .root_view()
             .get::<SkinPose>(binding.pose)
             .unwrap_or_else(|| panic!("the entity a skinned mesh binds to carries no `SkinPose`"));
         assert!(
@@ -409,6 +411,7 @@ impl<'a> InstanceContext<'a> {
     pub fn pack_morph_weights(&mut self, targets: u32) -> u32 {
         let binding = self
             .world
+            .root_view()
             .get::<MorphBinding>(self.entity)
             .unwrap_or_else(|| {
                 panic!(
@@ -418,6 +421,7 @@ impl<'a> InstanceContext<'a> {
             });
         let weights = self
             .world
+            .root_view()
             .get::<MorphWeights>(binding.weights)
             .unwrap_or_else(|| {
                 panic!("the entity a morphed mesh binds to carries no `MorphWeights`")

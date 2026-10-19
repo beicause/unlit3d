@@ -8,4 +8,5 @@ pub struct Marker(pub u32);
 
 /// A component holding a string, for identity checks.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(dead_code, reason = "only the unit tests that need it construct one")]
 pub struct Name(pub &'static str);

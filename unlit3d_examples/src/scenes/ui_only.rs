@@ -44,13 +44,13 @@ fn build(
 ) -> SceneControl {
     // The pass opens with this world's load ops: a dark clear the panels paint
     // over.
-    world.spawn((RenderLoadOps {
+    world.root_view_mut().spawn((RenderLoadOps {
         color: wgpu::LoadOp::Clear(CLEAR_COLOR),
         ..RenderLoadOps::default()
     },));
 
     if options.ui {
-        world.spawn((rich_panel(),));
+        world.root_view_mut().spawn((rich_panel(),));
     }
 
     SceneControl {

@@ -55,11 +55,12 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(world)));
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.
     let (mesh, material) = world
+        .root_view()
         .with_mut::<Source, _>(source_entity, |source| {
             let source = source
                 .as_mut::<MeshSource>()
@@ -103,10 +104,12 @@ fn build(
         azimuth: 0.6,
         elevation: ORBIT_ELEVATION,
     };
-    let camera = world.spawn((orbit_camera(size, orbit.azimuth, orbit.elevation), orbit));
+    let camera = world
+        .root_view_mut()
+        .spawn((orbit_camera(size, orbit.azimuth, orbit.elevation), orbit));
     // The cube carries its spin and the orbit the panels drive, so one entity
     // owns everything the frame loop and the panels share.
-    let cube = world.spawn((
+    let cube = world.root_view_mut().spawn((
         Transform::default(),
         Spin {
             radians_per_second: SPIN,
@@ -122,143 +125,174 @@ fn build(
     ));
 
     if ui {
-        world.spawn((UiPanel::new(move |world, _entity, ui| {
-            // The id is set explicitly: `Window::new` derives it from the
-            // title's `Atoms` text, whose hash differs from a plain string
-            // id, so other panels could not find this window's rect.
-            egui::Window::new("unlit3d")
-                .id(egui::Id::new("unlit3d"))
-                .show(ui.ctx(), |ui| {
-                    let frames = world.get::<FrameCount>(cube).map_or(0, |frames| frames.0);
-                    ui.label(format!("frame {frames}"));
-                    ui.label("The cube spins behind this panel.");
+        world
+            .root_view_mut()
+            .spawn((UiPanel::new(move |world, _entity, ui| {
+                // The id is set explicitly: `Window::new` derives it from the
+                // title's `Atoms` text, whose hash differs from a plain string
+                // id, so other panels could not find this window's rect.
+                egui::Window::new("unlit3d")
+                    .id(egui::Id::new("unlit3d"))
+                    .show(ui.ctx(), |ui| {
+                        let frames = world
+                            .root_view()
+                            .get::<FrameCount>(cube)
+                            .map_or(0, |frames| frames.0);
+                        ui.label(format!("frame {frames}"));
+                        ui.label("The cube spins behind this panel.");
 
-                    let spinning = world.get::<Spin>(cube).is_some_and(|spin| spin.spinning);
-                    let mut spinning_now = spinning;
-                    if ui.checkbox(&mut spinning_now, "Spin").changed() {
-                        let _ =
-                            world.with_mut::<Spin, _>(cube, |spin| spin.spinning = spinning_now);
-                    }
+                        let spinning = world
+                            .root_view()
+                            .get::<Spin>(cube)
+                            .is_some_and(|spin| spin.spinning);
+                        let mut spinning_now = spinning;
+                        if ui.checkbox(&mut spinning_now, "Spin").changed() {
+                            let _ = world
+                                .root_view()
+                                .with_mut::<Spin, _>(cube, |spin| spin.spinning = spinning_now);
+                        }
 
-                    let mut speed = world
-                        .get::<Spin>(cube)
-                        .map_or(SPIN, |spin| spin.radians_per_second);
-                    if ui
-                        .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
-                        .changed()
-                    {
-                        let _ =
-                            world.with_mut::<Spin, _>(cube, |spin| spin.radians_per_second = speed);
-                    }
+                        let mut speed = world
+                            .root_view()
+                            .get::<Spin>(cube)
+                            .map_or(SPIN, |spin| spin.radians_per_second);
+                        if ui
+                            .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
+                            .changed()
+                        {
+                            let _ = world
+                                .root_view()
+                                .with_mut::<Spin, _>(cube, |spin| spin.radians_per_second = speed);
+                        }
 
-                    if ui.button("Reset the spin").clicked() {
-                        let _ = world.with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
-                    }
+                        if ui.button("Reset the spin").clicked() {
+                            let _ = world
+                                .root_view()
+                                .with_mut::<SpinReset, _>(cube, |reset| reset.0 = true);
+                        }
 
-                    // The world's input state, read out under the panel's own
-                    // controls: what makes the events visible next to the UI
-                    // they also drive. One window, so no second title bar can
-                    // ever sit on top of this one and be painted as the window
-                    // the user is working in.
-                    ui.separator();
-                    let held = world
-                        .query::<&InputEvents>()
-                        .next()
-                        .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
-                    ui.label(if held { "pointer: down" } else { "pointer: up" });
-                    match world.get::<CameraOrbit>(camera) {
-                        Some(orbit) => ui.label(format!(
-                            "azimuth {:.2}, elevation {:.2}",
-                            orbit.azimuth, orbit.elevation
-                        )),
-                        None => ui.label("no camera state"),
-                    };
-                });
-        }),));
+                        // The world's input state, read out under the panel's own
+                        // controls: what makes the events visible next to the UI
+                        // they also drive. One window, so no second title bar can
+                        // ever sit on top of this one and be painted as the window
+                        // the user is working in.
+                        ui.separator();
+                        let held = world
+                            .root_view()
+                            .query::<&InputEvents>()
+                            .next()
+                            .is_some_and(|(_, events)| {
+                                events.with_state(|state| state.pointer_down)
+                            });
+                        ui.label(if held { "pointer: down" } else { "pointer: up" });
+                        match world.root_view().get::<CameraOrbit>(camera) {
+                            Some(orbit) => ui.label(format!(
+                                "azimuth {:.2}, elevation {:.2}",
+                                orbit.azimuth, orbit.elevation
+                            )),
+                            None => ui.label("no camera state"),
+                        };
+                    });
+            }),));
     }
     // The second panel shows the world's input state, which is what makes the
     // events visible next to the UI they also drive.
     // A key behaviour: space toggles the spin, and it reads the state the
     // panel's checkbox also writes.
-    world.spawn((OnKey::new(move |world, _entity, key| {
-        if key.pressed && !key.repeat && key.key == Key::Space {
-            let _ = world.with_mut::<Spin, _>(cube, |spin| spin.spinning = !spin.spinning);
-        }
-    }),));
+    world
+        .root_view_mut()
+        .spawn((OnKey::new(move |world, _entity, key| {
+            if key.pressed && !key.repeat && key.key == Key::Space {
+                let _ = world
+                    .root_view()
+                    .with_mut::<Spin, _>(cube, |spin| spin.spinning = !spin.spinning);
+            }
+        }),));
 
     // A pointer behaviour: dragging orbits the camera. It is mounted on
     // `OnPointer` rather than `OnMouse`, so the same drag works with a mouse
     // and with a finger on a touch screen.
-    world.spawn((OnPointer::new(move |world, _entity, event| {
-        let Some(position) = event.position else {
-            if matches!(
-                event.action,
-                PointerAction::Released { .. } | PointerAction::Left
-            ) {
-                let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
+    world
+        .root_view_mut()
+        .spawn((OnPointer::new(move |world, _entity, event| {
+            let Some(position) = event.position else {
+                if matches!(
+                    event.action,
+                    PointerAction::Released { .. } | PointerAction::Left
+                ) {
+                    let _ = world
+                        .root_view()
+                        .with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
+                }
+                return;
+            };
+
+            // A press or drag over one of the panels drives the panel, not the
+            // camera: the UI's context knows what it claimed of the frame it laid
+            // out, and a pointer behaviour yields to it. The claim is broad — it
+            // is `true` whenever the pointer hangs over a panel, let alone drags
+            // one — so a gesture that started on the scene keeps working even when
+            // it sweeps over a panel. The contact is dropped here too, so a press
+            // that ends over a UI never leaves a drag behind for the scene.
+            let over_ui = world.root_view().query::<&Source>().any(|(_, source)| {
+                source
+                    .as_ref::<UiSource>()
+                    .is_some_and(|ui| ui.context().egui_wants_pointer_input())
+            });
+            if over_ui {
+                let _ = world
+                    .root_view()
+                    .with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
+                return;
             }
-            return;
-        };
 
-        // A press or drag over one of the panels drives the panel, not the
-        // camera: the UI's context knows what it claimed of the frame it laid
-        // out, and a pointer behaviour yields to it. The claim is broad — it
-        // is `true` whenever the pointer hangs over a panel, let alone drags
-        // one — so a gesture that started on the scene keeps working even when
-        // it sweeps over a panel. The contact is dropped here too, so a press
-        // that ends over a UI never leaves a drag behind for the scene.
-        let over_ui = world.query::<&Source>().any(|(_, source)| {
-            source
-                .as_ref::<UiSource>()
-                .is_some_and(|ui| ui.context().egui_wants_pointer_input())
-        });
-        if over_ui {
-            let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
-            return;
-        }
-
-        match event.action {
-            PointerAction::Pressed => {
-                let _ = world.with_mut::<DragFrom, _>(cube, |drag| {
-                    drag.0 = Some(PointerContact {
-                        kind: event.kind,
-                        id: event.id,
-                        position,
+            match event.action {
+                PointerAction::Pressed => {
+                    let _ = world.root_view().with_mut::<DragFrom, _>(cube, |drag| {
+                        drag.0 = Some(PointerContact {
+                            kind: event.kind,
+                            id: event.id,
+                            position,
+                        });
                     });
-                });
+                }
+                PointerAction::Moved => {
+                    let previous = world.root_view().with_mut::<DragFrom, _>(cube, |drag| {
+                        let tracked = drag.0.as_mut()?;
+                        if (tracked.kind, tracked.id) != (event.kind, event.id) {
+                            return None;
+                        }
+                        Some(std::mem::replace(&mut tracked.position, position))
+                    });
+                    let Some(Some(previous)) = previous else {
+                        return;
+                    };
+                    const RADIANS_PER_PIXEL: f32 = 0.01;
+                    let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
+                    let _ = world
+                        .root_view()
+                        .with_mut::<CameraOrbit, _>(camera, |orbit| {
+                            orbit.azimuth -= dx * RADIANS_PER_PIXEL;
+                            orbit.elevation =
+                                (orbit.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+                        });
+                }
+                PointerAction::Released { .. } | PointerAction::Left => {
+                    let _ = world
+                        .root_view()
+                        .with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
+                }
+                PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
             }
-            PointerAction::Moved => {
-                let previous = world.with_mut::<DragFrom, _>(cube, |drag| {
-                    let tracked = drag.0.as_mut()?;
-                    if (tracked.kind, tracked.id) != (event.kind, event.id) {
-                        return None;
-                    }
-                    Some(std::mem::replace(&mut tracked.position, position))
-                });
-                let Some(Some(previous)) = previous else {
-                    return;
-                };
-                const RADIANS_PER_PIXEL: f32 = 0.01;
-                let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
-                let _ = world.with_mut::<CameraOrbit, _>(camera, |orbit| {
-                    orbit.azimuth -= dx * RADIANS_PER_PIXEL;
-                    orbit.elevation = (orbit.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
-                });
-            }
-            PointerAction::Released { .. } | PointerAction::Left => {
-                let _ = world.with_mut::<DragFrom, _>(cube, |drag| drag.0 = None);
-            }
-            PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
-        }
-    }),));
+        }),));
 
     SceneControl {
         advance: Box::new(move |world, _frame, delta_time, frame_size| {
             // The panel's button leaves its press as state; consume it here,
             // once.
-            for (_, mut reset) in world.query::<&mut SpinReset>() {
+            for (_, mut reset) in world.root_view().query::<&mut SpinReset>() {
                 if core::mem::take(&mut reset.0) {
-                    for (_, mut spin) in world.query::<&mut Spin>() {
+                    for (_, mut spin) in world.root_view().query::<&mut Spin>() {
                         spin.angle = 0.0;
                     }
                 }
@@ -266,10 +300,12 @@ fn build(
 
             // The behaviour components run first: the world the renderer reads
             // is this frame's.
-            for (_, mut frames) in world.query::<&mut FrameCount>() {
+            for (_, mut frames) in world.root_view().query::<&mut FrameCount>() {
                 frames.0 += 1;
             }
-            for (_, (mut spin, mut transform)) in world.query::<(&mut Spin, &mut Transform)>() {
+            for (_, (mut spin, mut transform)) in
+                world.root_view().query::<(&mut Spin, &mut Transform)>()
+            {
                 if spin.spinning {
                     spin.angle += spin.radians_per_second * delta_time;
                 }
@@ -279,7 +315,8 @@ fn build(
             // The camera follows the orbit a slider or a drag set — and the
             // frame's own size, so a window that changes shape re-aims it
             // instead of stretching the cube.
-            for (_, (orbit, mut camera)) in world.query::<(&CameraOrbit, &mut Camera)>() {
+            for (_, (orbit, mut camera)) in world.root_view().query::<(&CameraOrbit, &mut Camera)>()
+            {
                 *camera = orbit_camera(frame_size, orbit.azimuth, orbit.elevation);
             }
         }),

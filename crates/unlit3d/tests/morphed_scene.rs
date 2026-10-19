@@ -56,10 +56,10 @@ async fn mismatched_morph_weight_count_panics() {
     let deltas = morph_deltas(&positions);
     // Two targets, one weight: the shader would loop past the end of the pose.
     let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
-    let weights_entity = world.spawn((MorphWeights::new(vec![0.5]),));
+    let weights_entity = world.root_view_mut().spawn((MorphWeights::new(vec![0.5]),));
 
-    world.spawn((camera(),));
-    world.spawn((
+    world.root_view_mut().spawn((camera(),));
+    world.root_view_mut().spawn((
         mesh,
         UnlitPipeline::new(key),
         MorphBinding::new(weights_entity),
@@ -79,8 +79,8 @@ async fn morphing_without_a_weight_binding_panics() {
     let deltas = morph_deltas(&positions);
     let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
 
-    world.spawn((camera(),));
-    world.spawn((mesh, UnlitPipeline::new(key)));
+    world.root_view_mut().spawn((camera(),));
+    world.root_view_mut().spawn((mesh, UnlitPipeline::new(key)));
     gpu.bind_offscreen_target(&world, "test::ecs_morphed_unbound");
     gpu.render(&world);
 }
@@ -98,10 +98,12 @@ async fn meshes_can_share_one_morph_weights() {
 
     // One weight entity, named by both meshes: a crowd of copies of one mesh
     // shares one blended pose instead of holding a copy each.
-    let weights_entity = world.spawn((MorphWeights::new(vec![0.0, 0.0]),));
-    world.spawn((camera(),));
+    let weights_entity = world
+        .root_view_mut()
+        .spawn((MorphWeights::new(vec![0.0, 0.0]),));
+    world.root_view_mut().spawn((camera(),));
     for (mesh, x) in [(first, -0.7), (second, 0.7)] {
-        world.spawn((
+        world.root_view_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(x, 0.0, 0.0),
                 ..Default::default()
@@ -122,6 +124,7 @@ async fn meshes_can_share_one_morph_weights() {
     };
     let unweighted = read(&gpu);
     world
+        .root_view()
         .get_mut::<MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
         .weights = vec![1.0, 0.0];

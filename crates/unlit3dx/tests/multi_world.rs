@@ -46,6 +46,7 @@ fn sub_world_jobs_drain_in_order() {
     let third = proxy.request(Box::new(|_: &mut World| "third"));
 
     let mut nested = host
+        .root_view()
         .get_mut::<World>(proxy.entity())
         .expect("the nested world");
     drain_sub_world(&mut nested);
@@ -67,6 +68,7 @@ fn a_panicking_job_fails_only_its_own_request() {
     let survivor = proxy.request(Box::new(|_: &mut World| 7u64));
 
     let mut nested = host
+        .root_view()
         .get_mut::<World>(proxy.entity())
         .expect("the nested world");
     drain_sub_world(&mut nested);
@@ -87,15 +89,27 @@ fn remote_world_state_persists_between_jobs() {
     let (_host, remote) = idle_host();
 
     let _ = remote.send(Box::new(|world: &mut World| {
-        world.spawn((Count(0),));
+        world.root_view_mut().spawn((Count(0),));
     }));
     for _ in 0..5 {
         let _ = remote.send(Box::new(|world: &mut World| {
-            world.query::<&mut Count>().next().expect("the counter").1.0 += 1;
+            world
+                .root_view()
+                .query::<&mut Count>()
+                .next()
+                .expect("the counter")
+                .1
+                .0 += 1;
         }));
     }
     let count = remote.request(Box::new(|world: &mut World| {
-        world.query::<&Count>().next().expect("the counter").1.0
+        world
+            .root_view()
+            .query::<&Count>()
+            .next()
+            .expect("the counter")
+            .1
+            .0
     }));
 
     // Polling consumes the answer, so keep the first one around.
@@ -140,7 +154,10 @@ fn despawning_the_proxy_stops_the_world() {
         true
     });
     let sender = world.sender();
-    assert!(host.despawn(world.entity()), "the proxy entity despawns");
+    assert!(
+        host.root_view_mut().despawn(world.entity()),
+        "the proxy entity despawns"
+    );
 
     // The receiver lives inside the thread closure, so it drops only when
     // the thread does; until then the channel has room and accepts jobs.
@@ -180,7 +197,7 @@ fn subscriptions_flow_from_thread_to_host() {
         "the reader never saw the collected values"
     );
     assert!(
-        host.contains(world.entity()),
+        host.root_view().contains(world.entity()),
         "the proxy lives on a host entity"
     );
 }

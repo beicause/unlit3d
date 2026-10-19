@@ -969,19 +969,25 @@ impl UnlitGltf {
             if dirty[node] {
                 let transform = decompose(matrices[node]);
                 for &entity in &handle.entities {
-                    let _ = world.with_mut::<Transform, _>(entity, |current| {
-                        *current = transform.clone();
-                    });
+                    let _ = world
+                        .root_view()
+                        .with_mut::<Transform, _>(entity, |current| {
+                            *current = transform.clone();
+                        });
                 }
             }
             if let Some(entity) = handle.pose {
                 let pose = self.skin_pose_with_matrices(node, &matrices);
-                let _ = world.with_mut::<SkinPose, _>(entity, |current| *current = pose.clone());
+                let _ = world
+                    .root_view()
+                    .with_mut::<SkinPose, _>(entity, |current| *current = pose.clone());
             }
             if let (Some(entity), Some(sampled)) = (handle.weights, weights[node].as_ref()) {
-                let _ = world.with_mut::<MorphWeights, _>(entity, |current| {
-                    current.weights = sampled.clone();
-                });
+                let _ = world
+                    .root_view()
+                    .with_mut::<MorphWeights, _>(entity, |current| {
+                        current.weights = sampled.clone();
+                    });
             }
         }
     }
@@ -1059,14 +1065,17 @@ impl UnlitGltf {
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
                 let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
-                    let pose =
-                        *pose.get_or_insert_with(|| world.spawn((self.skin_pose(node.index()),)));
+                    let pose = *pose.get_or_insert_with(|| {
+                        world.root_view_mut().spawn((self.skin_pose(node.index()),))
+                    });
                     SkinBinding::new(pose)
                 });
                 let morphed = mesh_handle.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
                     let weights = *morphs.get_or_insert_with(|| {
-                        world.spawn((MorphWeights::new(self.morph_weights(node.index())),))
+                        world
+                            .root_view_mut()
+                            .spawn((MorphWeights::new(self.morph_weights(node.index())),))
                     });
                     MorphBinding::new(weights)
                 });
@@ -1096,7 +1105,7 @@ impl UnlitGltf {
                 if z_sorted {
                     bundle.push(ZSortedDrawing);
                 }
-                entities.push(world.spawn(bundle));
+                entities.push(world.root_view_mut().spawn(bundle));
             }
         }
         GltfNode {
@@ -2867,8 +2876,8 @@ mod tests {
         ))
         .expect("the animated document parses");
         let mut world = World::new();
-        let parent = world.spawn((Transform::default(),));
-        let child = world.spawn((Transform::default(),));
+        let parent = world.root_view_mut().spawn((Transform::default(),));
+        let child = world.root_view_mut().spawn((Transform::default(),));
         let nodes = [
             GltfNode {
                 node: 0,
@@ -2887,6 +2896,7 @@ mod tests {
         // The parent's own channel moves it...
         assert_eq!(
             world
+                .root_view()
                 .get::<Transform>(parent)
                 .expect("the parent carries a transform")
                 .translation,
@@ -2895,6 +2905,7 @@ mod tests {
         // ...and the child, which no translation channel names, inherits it
         // along with the quarter turn its own channel reaches at the midpoint.
         let child = world
+            .root_view()
             .get::<Transform>(child)
             .expect("the child carries a transform");
         assert_eq!(child.translation, glam::Vec3::new(2.0, 0.0, 0.0));
@@ -2912,7 +2923,7 @@ mod tests {
         ))
         .expect("the animated document parses");
         let mut world = World::new();
-        let parent = world.spawn((Transform::default(),));
+        let parent = world.root_view_mut().spawn((Transform::default(),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![parent],
@@ -2922,6 +2933,7 @@ mod tests {
         gltf.apply_animation(&world, 0, 1.999, &nodes);
         assert_eq!(
             world
+                .root_view()
                 .get::<Transform>(parent)
                 .expect("the parent carries a transform")
                 .translation,
@@ -2937,8 +2949,8 @@ mod tests {
         ))
         .expect("the animated skinned document parses");
         let mut world = World::new();
-        let mesh = world.spawn((Transform::default(),));
-        let pose = world.spawn((SkinPose::default(),));
+        let mesh = world.root_view_mut().spawn((Transform::default(),));
+        let pose = world.root_view_mut().spawn((SkinPose::default(),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![mesh],
@@ -2947,6 +2959,7 @@ mod tests {
         }];
         gltf.apply_animation(&world, 0, 1.0, &nodes);
         let pose = world
+            .root_view()
             .get::<SkinPose>(pose)
             .expect("the pose entity carries a pose");
         assert!(
@@ -2964,8 +2977,8 @@ mod tests {
         let gltf = UnlitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.0, 2.0]))
             .expect("the animated morphed document parses");
         let mut world = World::new();
-        let mesh = world.spawn((Transform::default(),));
-        let weights = world.spawn((MorphWeights::new(vec![0.0]),));
+        let mesh = world.root_view_mut().spawn((Transform::default(),));
+        let weights = world.root_view_mut().spawn((MorphWeights::new(vec![0.0]),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![mesh],
@@ -2974,6 +2987,7 @@ mod tests {
         }];
         gltf.apply_animation(&world, 0, 1.0, &nodes);
         let weights = world
+            .root_view()
             .get::<MorphWeights>(weights)
             .expect("the weights entity carries weights");
         assert_eq!(weights.weights, vec![1.0]);

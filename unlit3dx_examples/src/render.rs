@@ -67,10 +67,12 @@ impl OwnedUnlitMeshDesc {
 /// registry either way.
 fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
     let (entity, source) = world
+        .root_view()
         .query::<&Source>()
         .find(|(_, source)| source.as_ref::<MeshSource>().is_some())?;
     let mesh_source = source.as_ref::<MeshSource>()?;
     let key = world
+        .root_view()
         .query::<&UnlitPipelineKey>()
         .next()
         .map(|(_, key)| key.clone())
@@ -90,6 +92,7 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
             panic!("the render world carries no MeshSource");
         };
         let mesh = world
+            .root_view()
             .with_mut::<Source, _>(source_entity, |source| {
                 source
                     .as_mut::<MeshSource>()
@@ -97,7 +100,7 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
                     .allocate_unlit_mesh(world, &key, desc.borrowed())
             })
             .expect("the mesh source entity exists");
-        world.spawn((mesh,))
+        world.root_view_mut().spawn((mesh,))
     })
 }
 
@@ -143,6 +146,7 @@ fn allocate_material(
         panic!("the render world carries no MeshSource");
     };
     let material = world
+        .root_view()
         .with_mut::<Source, _>(source_entity, |source| {
             let source = source
                 .as_mut::<MeshSource>()
@@ -153,7 +157,7 @@ fn allocate_material(
             source.allocate_unlit_material(world, &key, view, sampler)
         })
         .expect("the mesh source entity exists");
-    world.spawn((material,))
+    world.root_view_mut().spawn((material,))
 }
 
 /// A job that spawns one render entity from asset entities: a [`GpuMesh`]
@@ -169,14 +173,18 @@ pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> J
             panic!("the render world carries no MeshSource");
         };
         let mesh = world
+            .root_view()
             .get::<GpuMesh>(mesh)
             .expect("the mesh asset entity exists")
             .clone();
         let material = world
+            .root_view()
             .get::<GpuMaterial>(material)
             .expect("the material asset entity exists")
             .clone();
-        world.spawn((transform, mesh, material, UnlitPipeline::new(key)))
+        world
+            .root_view_mut()
+            .spawn((transform, mesh, material, UnlitPipeline::new(key)))
     })
 }
 

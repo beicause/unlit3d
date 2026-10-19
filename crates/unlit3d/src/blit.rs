@@ -43,6 +43,7 @@ fn resource_graph<'w>(
     ctx: RenderContext,
 ) -> impl DerefMut<Target = ResourceGraph> + 'w {
     world
+        .root_view()
         .get_mut::<ResourceGraph>(ctx.graph)
         .expect("the context's resource graph exists")
 }
@@ -71,6 +72,7 @@ impl BlitTexture {
     pub fn new(world: &World, ctx: RenderContext, view: TextureView) -> Self {
         let sampler = {
             let device = world
+                .root_view()
                 .get::<wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
             device.create_sampler(&wgpu::SamplerDescriptor {
@@ -154,6 +156,7 @@ impl BlitSource {
     ) {
         let device = wgpu::Device::clone(
             &world
+                .root_view()
                 .get::<wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists"),
         );
@@ -220,7 +223,7 @@ impl FrameSource for BlitSource {
             );
             return;
         };
-        let Some((_, texture)) = world.query::<&BlitTexture>().next() else {
+        let Some((_, texture)) = world.root_view().query::<&BlitTexture>().next() else {
             log::warn!(
                 "BlitSource::build_scene: no BlitTexture component, so there is no texture to blit"
             );
@@ -239,6 +242,7 @@ impl FrameSource for BlitSource {
             // pipeline stay, and the texture's new ids get their own group.
             let layout = gpu.layout.clone();
             let device = world
+                .root_view()
                 .get::<wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
             gpu.bind_group = allocate_bind_group(world, ctx, &device, &layout, &texture);

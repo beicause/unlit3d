@@ -110,6 +110,7 @@ mod tests {
         let handle = crate::host::spawn_sub_world(&mut host, "nested", 8);
         let request = handle.request(Box::new(|_: &mut World| 5));
         let mut nested = host
+            .root_view()
             .get_mut::<World>(handle.entity())
             .expect("the nested world");
         crate::host::drain_sub_world(&mut nested);

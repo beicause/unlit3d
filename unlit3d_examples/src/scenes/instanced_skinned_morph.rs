@@ -51,7 +51,7 @@ fn build(
     source.register_unlit_family(world);
     // The variant that reads both the joint stream and the morph bindings.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, 0.0);
@@ -72,7 +72,7 @@ fn build(
         )
     });
 
-    let camera_entity = world.spawn((camera(size),));
+    let camera_entity = world.root_view_mut().spawn((camera(size),));
 
     // One pose entity and one weights entity per instance, all naming the
     // same shared mesh: the instances merge into a single draw whose instance
@@ -80,14 +80,16 @@ fn build(
     let mut pose_entities = Vec::new();
     let mut weight_entities = Vec::new();
     for instance in 0..INSTANCES {
-        let pose_entity = world.spawn((SkinPose::new(rest_pose(2)),));
-        let weight_entity = world.spawn((MorphWeights::new(instance_weights(0, instance)),));
+        let pose_entity = world.root_view_mut().spawn((SkinPose::new(rest_pose(2)),));
+        let weight_entity = world
+            .root_view_mut()
+            .spawn((MorphWeights::new(instance_weights(0, instance)),));
         let color = match instance {
             0 => glam::Vec4::new(1.0, 0.75, 0.55, 1.0),
             1 => glam::Vec4::new(0.55, 0.85, 1.0, 1.0),
             _ => glam::Vec4::new(0.7, 1.0, 0.6, 1.0),
         };
-        world.spawn((
+        world.root_view_mut().spawn((
             Transform {
                 translation: glam::Vec3::new((instance as f32 - 1.0) * 1.3, 0.0, 0.0),
                 scale: glam::Vec3::splat(0.8),
@@ -117,9 +119,11 @@ fn build(
             for instance in 0..INSTANCES {
                 skins[instance].set_angle(instance_angle(frame, instance));
                 *world
+                    .root_view()
                     .get_mut::<SkinPose>(pose_entities[instance])
                     .expect("the pose entity carries a `SkinPose`") = skins[instance].pose();
                 world
+                    .root_view()
                     .get_mut::<MorphWeights>(weight_entities[instance])
                     .expect("the weight entity carries a `MorphWeights`")
                     .weights = instance_weights(frame, instance).to_vec();

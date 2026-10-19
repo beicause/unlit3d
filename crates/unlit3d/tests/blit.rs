@@ -79,8 +79,10 @@ fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture) {
     let texture = solid_texture(&ctx.device, &ctx.queue, rgba);
     let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
     let blit = BlitTexture::new(&world, gpu.context, view);
-    world.spawn((blit,));
-    world.spawn((Source::new(BlitSource::new()),));
+    world.root_view_mut().spawn((blit,));
+    world
+        .root_view_mut()
+        .spawn((Source::new(BlitSource::new()),));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     (world, gpu, target)
 }
@@ -124,12 +126,13 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
     let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
     let blit = BlitTexture::new(&world, gpu.context, view);
     let entity = world
+        .root_view()
         .query::<&BlitTexture>()
         .next()
         .map(|(entity, _)| entity)
         .expect("the world has a blit texture");
-    world.despawn(entity);
-    world.spawn((blit,));
+    world.root_view_mut().despawn(entity);
+    world.root_view_mut().spawn((blit,));
     gpu.render(&world);
 
     assert_eq!(

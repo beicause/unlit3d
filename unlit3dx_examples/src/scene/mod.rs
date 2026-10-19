@@ -115,9 +115,11 @@ pub struct ScenePoses(pub Vec<(Entity, Transform)>);
 pub fn pose_job(poses: ScenePoses) -> Job<()> {
     Box::new(move |world: &mut World| {
         for (entity, pose) in poses.0.iter() {
-            let _ = world.with_mut::<Transform, _>(*entity, |transform| {
-                transform.clone_from(pose);
-            });
+            let _ = world
+                .root_view()
+                .with_mut::<Transform, _>(*entity, |transform| {
+                    transform.clone_from(pose);
+                });
         }
     })
 }
@@ -175,7 +177,7 @@ pub fn setup_render_world(
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
 ) -> Entity {
-    let Some(mut nested) = host.get_mut::<World>(render_world) else {
+    let Some(mut nested) = host.root_view().get_mut::<World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
     let context = spawn_context(
@@ -185,10 +187,10 @@ pub fn setup_render_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = nested.spawn((Renderer::new(context),));
+    let renderer = nested.root_view_mut().spawn((Renderer::new(context),));
     let mut source = MeshSource::new(&nested, context);
     source.register_unlit_family(&nested);
-    nested.spawn((Source::new(source),));
+    nested.root_view_mut().spawn((Source::new(source),));
     renderer
 }
 
@@ -204,14 +206,14 @@ pub fn setup_render_world(
 pub fn camera_job() -> Job<()> {
     let mut azimuth = ORBIT_START;
     Box::new(move |world: &mut World| {
-        let camera_entity = world.spawn((camera_looking_at(
+        let camera_entity = world.root_view_mut().spawn((camera_looking_at(
             WINDOW_SIZE,
             orbit_eye(azimuth),
             ORBIT_TARGET,
             60f32.to_radians(),
             0.1,
         ),));
-        world.spawn((OnFrame::new(
+        world.root_view_mut().spawn((OnFrame::new(
             FrameBehaviourOrder(RENDER_CAMERA),
             move |world, _entity, frame| {
                 azimuth += ORBIT_SPEED * frame.delta_time;
@@ -222,9 +224,11 @@ pub fn camera_job() -> Job<()> {
                     60f32.to_radians(),
                     0.1,
                 );
-                let _ = world.with_mut::<Camera, _>(camera_entity, |current| {
-                    *current = camera;
-                });
+                let _ = world
+                    .root_view()
+                    .with_mut::<Camera, _>(camera_entity, |current| {
+                        *current = camera;
+                    });
             },
         ),));
     })
@@ -306,7 +310,7 @@ fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
     sender
         .subscribe(move |world: &World| {
             let mut transforms = Vec::new();
-            if let Some(physics) = world.query::<&PhysicsWorld>().next() {
+            if let Some(physics) = world.root_view().query::<&PhysicsWorld>().next() {
                 for (handle, body) in physics.1.bodies.iter() {
                     if body.is_dynamic() || body.is_kinematic() {
                         transforms.push((handle, body.translation(), *body.rotation()));
@@ -435,6 +439,7 @@ pub fn spawn_scene<R: WorldRunner>(
             let format = audio_sender
                 .subscribe(|world: &World| {
                     world
+                        .root_view()
                         .query::<&AudioFormat>()
                         .next()
                         .map(|(_, format)| *format)
@@ -471,22 +476,30 @@ pub fn spawn_scene<R: WorldRunner>(
                 // This world is a sibling of the host, not a world nested in
                 // it, so the host's fan-out never reaches it: it takes its own
                 // buffer, once, before the first tick reads one.
-                world.spawn((input.subscribe(),));
-                world.spawn((OnFrame::new(
+                world.root_view_mut().spawn((input.subscribe(),));
+                world.root_view_mut().spawn((OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
                     |world, _entity, _frame| {
                         dispatch_input(world);
                     },
                 ),));
                 let state = SceneState::new(world, render.clone());
-                world.spawn((state, tick_behaviour::<SceneState>(TICK_SCENE)));
+                world
+                    .root_view_mut()
+                    .spawn((state, tick_behaviour::<SceneState>(TICK_SCENE)));
                 let floor = Floor::new(&wiring, render.clone());
-                world.spawn((floor, tick_behaviour::<Floor>(TICK_FLOOR)));
+                world
+                    .root_view_mut()
+                    .spawn((floor, tick_behaviour::<Floor>(TICK_FLOOR)));
                 let balls = Balls::new(&wiring);
-                world.spawn((balls, tick_behaviour::<Balls>(TICK_BALLS)));
+                world
+                    .root_view_mut()
+                    .spawn((balls, tick_behaviour::<Balls>(TICK_BALLS)));
                 if audio_sources {
                     let audio = SceneAudio::new(&wiring, audio_format);
-                    world.spawn((audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
+                    world
+                        .root_view_mut()
+                        .spawn((audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
                 }
                 // The panel is the fifth object, and lives here with the rest.
                 // The host that lays it out is an entity of its own, so the
@@ -495,13 +508,13 @@ pub fn spawn_scene<R: WorldRunner>(
                 // frame, after everything that could change what the panel
                 // shows has ticked, and the render world draws whatever is
                 // there.
-                world.spawn((UiPanelHost::new(
+                world.root_view_mut().spawn((UiPanelHost::new(
                     panels.frames.clone(),
                     panels.screen.clone(),
                     PANEL_SLOT,
                 ),));
                 Controls::new(panel_audio).mount(world);
-                world.spawn((OnFrame::new(
+                world.root_view_mut().spawn((OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
                     |world, _entity, _frame| publish_panels(world),
                 ),));
@@ -547,7 +560,7 @@ pub fn spawn_scene<R: WorldRunner>(
 /// The events the panel reads are this world's own, from the buffer its tick
 /// filled, so what the user clicked on is what this tick dispatched.
 fn publish_panels(world: &World) {
-    if let Some((_, mut host)) = world.query::<&mut UiPanelHost>().next() {
+    if let Some((_, mut host)) = world.root_view().query::<&mut UiPanelHost>().next() {
         host.publish(world);
     }
 }
@@ -642,7 +655,7 @@ pub fn request_drop(sender: &JobSender) {
 
 /// Ask the shapes to drop the next one, from inside the gameplay world.
 pub fn request_drop_in(world: &World) {
-    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
+    if let Some((_, mut balls)) = world.root_view().query::<&mut Balls>().next() {
         balls.request_drop();
     }
 }
@@ -651,7 +664,7 @@ pub fn request_drop_in(world: &World) {
 ///
 /// The music keeps playing; the panel drives it.
 pub fn request_clear_in(world: &World) {
-    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
+    if let Some((_, mut balls)) = world.root_view().query::<&mut Balls>().next() {
         balls.request_clear();
     }
 }
@@ -685,9 +698,11 @@ mod tests {
             .gameplay
             .sender()
             .send(Box::new(move |world: &mut World| {
-                world.spawn((UiPanel::new(move |_, _, _ui: &mut egui::Ui| {
-                    counted.fetch_add(1, Ordering::Relaxed);
-                }),));
+                world
+                    .root_view_mut()
+                    .spawn((UiPanel::new(move |_, _, _ui: &mut egui::Ui| {
+                        counted.fetch_add(1, Ordering::Relaxed);
+                    }),));
             }))
             .expect("the gameplay world accepts a job");
 
@@ -742,13 +757,16 @@ mod tests {
             .gameplay
             .sender()
             .send(Box::new(move |world: &mut World| {
-                world.spawn((UiPanel::new(move |world, _, _ui: &mut egui::Ui| {
-                    if let Some((_, events)) = world.query::<&InputEvents>().next() {
-                        events.with_batch(|batch| {
-                            counted.fetch_add(batch.len(), Ordering::Relaxed);
-                        });
-                    }
-                }),));
+                world
+                    .root_view_mut()
+                    .spawn((UiPanel::new(move |world, _, _ui: &mut egui::Ui| {
+                        if let Some((_, events)) = world.root_view().query::<&InputEvents>().next()
+                        {
+                            events.with_batch(|batch| {
+                                counted.fetch_add(batch.len(), Ordering::Relaxed);
+                            });
+                        }
+                    }),));
             }))
             .expect("the gameplay world accepts a job");
 

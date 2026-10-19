@@ -14,12 +14,31 @@ use hashbrown::HashMap;
 
 use crate::column::{AnyColumn, Column};
 use crate::entity::Entity;
+use crate::scope::ScopeOf;
+
+/// Which scopes an archetype's rows live in, as far as a whole-archetype gate
+/// can tell.
+///
+/// A derived summary, not part of the archetype's identity: it is recomputed
+/// from the [`ScopeOf`] column whenever a row moves between scopes, and
+/// dropping it only costs a per-row visibility check.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum ScopeSummary {
+    /// No rows.
+    #[default]
+    Empty,
+    /// Every row lives in this scope.
+    Uniform(Entity),
+    /// Rows live in more than one scope.
+    Mixed,
+}
 
 /// One archetype: the entities that share a component set.
 pub struct Archetype {
     types: Box<[TypeId]>,
     columns: Box<[Box<dyn AnyColumn>]>,
     entities: Vec<Entity>,
+    scope: ScopeSummary,
 }
 
 impl Archetype {
@@ -36,6 +55,7 @@ impl Archetype {
             types,
             columns,
             entities: Vec::new(),
+            scope: ScopeSummary::Empty,
         }
     }
 
@@ -105,9 +125,48 @@ impl Archetype {
         self.columns[index].push_boxed(value);
     }
 
-    /// Append one entity row.
-    pub(crate) fn push_entity(&mut self, entity: Entity) {
+    /// Append one entity row that lives in `scope`.
+    pub(crate) fn push_entity(&mut self, entity: Entity, scope: Entity) {
         self.entities.push(entity);
+        self.scope = match self.scope {
+            ScopeSummary::Empty => ScopeSummary::Uniform(scope),
+            ScopeSummary::Uniform(current) if current == scope => ScopeSummary::Uniform(scope),
+            _ => ScopeSummary::Mixed,
+        };
+    }
+
+    /// Which scopes the rows live in.
+    pub(crate) fn scope_summary(&self) -> ScopeSummary {
+        self.scope
+    }
+
+    /// Recompute [`Archetype::scope_summary`] from the [`ScopeOf`] column.
+    ///
+    /// Called when a row moves to another scope: the component set is
+    /// unchanged, so the archetype is the same one and only the summary is
+    /// stale.
+    pub(crate) fn recompute_scope_summary(&mut self) {
+        let Some(column) = self.column::<ScopeOf>() else {
+            self.scope = ScopeSummary::Empty;
+            return;
+        };
+        let mut summary = ScopeSummary::Empty;
+        for row in 0..self.entities.len() {
+            let Some(cell) = column.cell(row) else {
+                continue;
+            };
+            let Ok(scope) = cell.try_borrow() else {
+                // A row is being written right now; the summary stays as it
+                // was and the next move recomputes it.
+                return;
+            };
+            summary = match summary {
+                ScopeSummary::Empty => ScopeSummary::Uniform(scope.0),
+                ScopeSummary::Uniform(current) if current == scope.0 => summary,
+                _ => ScopeSummary::Mixed,
+            };
+        }
+        self.scope = summary;
     }
 
     /// Drop the row at `row`, moving the last row into the hole.
@@ -120,6 +179,9 @@ impl Archetype {
             drop(column.swap_remove(row));
         }
         self.entities.swap_remove(row);
+        if self.entities.is_empty() {
+            self.scope = ScopeSummary::Empty;
+        }
         (row != last).then(|| self.entities[row])
     }
 }
@@ -170,11 +232,6 @@ impl Archetypes {
         self.archetypes.len()
     }
 
-    /// Every archetype.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Archetype> {
-        self.archetypes.iter()
-    }
-
     /// Every archetype, as a slice.
     pub(crate) fn as_slice(&self) -> &[Archetype] {
         &self.archetypes
@@ -221,7 +278,7 @@ mod tests {
         let b = Entity::from_raw(1, 0);
         let c = Entity::from_raw(2, 0);
         for entity in [a, b, c] {
-            archetype.push_entity(entity);
+            archetype.push_entity(entity, Entity::from_raw(9, 0));
         }
         assert_eq!(archetype.swap_remove(0), Some(c), "the last row moved in");
         assert_eq!(archetype.entities(), [c, b]);
@@ -236,7 +293,7 @@ mod tests {
         let columns: Vec<Box<dyn AnyColumn>> = vec![Column::<u32>::new().erase()];
         let mut archetype: Archetype = Archetype::new(types.into(), columns.into_boxed_slice());
         archetype.push_erased(TypeId::of::<u32>(), Box::new(7u32));
-        archetype.push_entity(Entity::from_raw(0, 0));
+        archetype.push_entity(Entity::from_raw(0, 0), Entity::from_raw(9, 0));
         let value = archetype.cell::<u32>(0).unwrap().try_borrow().unwrap();
         assert_eq!(*value, 7);
     }

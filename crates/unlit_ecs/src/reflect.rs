@@ -21,7 +21,9 @@
 use facet::Facet;
 use facet::Partial;
 
-use crate::{ArchetypeBuilder, Entity, World};
+#[cfg(test)]
+use crate::World;
+use crate::{ArchetypeBuilder, Entity, ScopedWorld};
 
 /// One component the JSON bridge can address.
 ///
@@ -36,11 +38,14 @@ pub struct ComponentEntry {
     /// component too and tells two same-named types apart.
     module_path: Option<&'static str>,
     /// The component's JSON text, or a message saying why it could not be read.
-    encode: fn(&World, Entity) -> Result<String, String>,
+    encode: fn(&ScopedWorld<'_>, Entity) -> Result<String, String>,
     /// Overwrite the component from JSON text, or a message saying why not.
-    set: fn(&World, Entity, &str) -> Result<(), String>,
+    set: fn(&ScopedWorld<'_>, Entity, &str) -> Result<(), String>,
     /// Push a component decoded from JSON text into a builder.
     push: fn(&mut ArchetypeBuilder, &str) -> Result<(), String>,
+    /// Whether a spawn may carry the component, as opposed to one the world
+    /// itself writes.
+    spawnable: bool,
 }
 
 impl ComponentEntry {
@@ -55,6 +60,7 @@ impl ComponentEntry {
             encode: encode_component::<C>,
             set: set_component::<C>,
             push: push_component::<C>,
+            spawnable: true,
         }
     }
 
@@ -69,12 +75,38 @@ impl ComponentEntry {
             encode: encode_component::<C>,
             set: set_component::<C>,
             push: push_default_component::<C>,
+            spawnable: true,
+        }
+    }
+
+    /// The entry for a component the world writes itself, which a spawn may
+    /// not carry.
+    ///
+    /// [`ScopeOf`](crate::ScopeOf) is the one such component: an entity's scope
+    /// comes from the view it is spawned in, so a bundle naming it would be a
+    /// second source for the same fact. The entry is still submitted, because a
+    /// client reads it like any other component.
+    pub const fn scope() -> Self {
+        Self {
+            name: <crate::ScopeOf as Facet<'static>>::SHAPE.type_identifier,
+            module_path: <crate::ScopeOf as Facet<'static>>::SHAPE.module_path,
+            encode: encode_component::<crate::ScopeOf>,
+            set: set_component::<crate::ScopeOf>,
+            push: push_world_written::<crate::ScopeOf>,
+            spawnable: false,
         }
     }
 
     /// The bare type name a client addresses the component by.
     pub const fn name(&self) -> &'static str {
         self.name
+    }
+
+    /// Whether a spawn may carry the component.
+    ///
+    /// `false` for a component the world writes itself; the push reports why.
+    pub const fn spawnable(&self) -> bool {
+        self.spawnable
     }
 }
 
@@ -118,13 +150,13 @@ fn find(name: &str) -> Option<&'static ComponentEntry> {
 }
 
 /// Encode entity's name component, or a message if either is missing.
-pub fn encode(world: &World, entity: Entity, name: &str) -> Result<String, String> {
-    (entry(name)?.encode)(world, entity)
+pub fn encode(view: &ScopedWorld<'_>, entity: Entity, name: &str) -> Result<String, String> {
+    (entry(name)?.encode)(view, entity)
 }
 
 /// Overwrite entity's name component from JSON text.
-pub fn set(world: &World, entity: Entity, name: &str, patch: &str) -> Result<(), String> {
-    (entry(name)?.set)(world, entity, patch)
+pub fn set(view: &ScopedWorld<'_>, entity: Entity, name: &str, patch: &str) -> Result<(), String> {
+    (entry(name)?.set)(view, entity, patch)
 }
 
 /// Push a name component decoded from JSON text into builder.
@@ -137,26 +169,28 @@ fn to_json<C: Facet<'static>>(value: &C) -> Result<String, String> {
     facet_json::to_string(value).map_err(|error| error.to_string())
 }
 
-fn encode_component<C: Facet<'static>>(world: &World, entity: Entity) -> Result<String, String> {
-    let component = world.get::<C>(entity).ok_or_else(|| missing::<C>(entity))?;
+fn encode_component<C: Facet<'static>>(
+    view: &ScopedWorld<'_>,
+    entity: Entity,
+) -> Result<String, String> {
+    let component = view.get::<C>(entity).ok_or_else(|| missing::<C>(entity))?;
     to_json(&*component)
 }
 
 fn set_component<C: Facet<'static> + Clone>(
-    world: &World,
+    view: &ScopedWorld<'_>,
     entity: Entity,
     patch: &str,
 ) -> Result<(), String> {
     // Seed the new value with the one the entity holds, then let the patch
     // overwrite the fields it names: a patch that names some fields keeps the
     // rest, which is what setting one property at a time means.
-    let current = world
+    let current = view
         .get::<C>(entity)
         .map(|component| (*component).clone())
         .ok_or_else(|| missing::<C>(entity))?;
     let value: C = apply(current, patch)?;
-    world
-        .with_mut::<C, _>(entity, |component| *component = value)
+    view.with_mut::<C, _>(entity, |component| *component = value)
         .ok_or_else(|| missing::<C>(entity))
 }
 
@@ -184,6 +218,16 @@ fn push_default_component<C: Facet<'static> + Default + Clone>(
 ) -> Result<(), String> {
     builder.push(apply(C::default(), patch)?);
     Ok(())
+}
+
+fn push_world_written<C: Facet<'static>>(
+    _builder: &mut ArchetypeBuilder,
+    _patch: &str,
+) -> Result<(), String> {
+    Err(format!(
+        "{} is written by the world, not by a spawn: pass the scope to the spawn instead",
+        C::SHAPE.type_identifier,
+    ))
 }
 
 fn materialize<C: Facet<'static>>(partial: Partial<'static, false>) -> Result<C, String> {
@@ -218,13 +262,15 @@ mod tests {
     #[test]
     fn a_reflected_component_round_trips_through_its_own_fields() {
         let mut world = World::new();
-        let entity = world.spawn((Position::default(),));
+        let entity = world.root_view_mut().spawn((Position::default(),));
 
-        set(&world, entity, "Position", r#"{"x":1.0}"#).expect("a partial value is accepted");
+        set(&world.root_view(), entity, "Position", r#"{"x":1.0}"#)
+            .expect("a partial value is accepted");
 
         // The fields the patch did not name keep their current value, which is
         // the whole point of setting one property at a time.
-        let encoded = encode(&world, entity, "Position").expect("the component encodes");
+        let encoded =
+            encode(&world.root_view(), entity, "Position").expect("the component encodes");
         let value: Position = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.x, 1.0);
         assert_eq!(value.y, 0.0);
@@ -251,8 +297,9 @@ mod tests {
         let mut builder = ArchetypeBuilder::new();
         push(&mut builder, "Position", r#"{"x":4.0}"#).expect("a partial value is accepted");
         let mut world = World::new();
-        let entity = world.spawn(builder);
-        let encoded = encode(&world, entity, "Position").expect("the spawned component encodes");
+        let entity = world.root_view_mut().spawn(builder);
+        let encoded =
+            encode(&world.root_view(), entity, "Position").expect("the spawned component encodes");
         let value: Position = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.x, 4.0);
         assert_eq!(value.y, 0.0);
@@ -273,7 +320,8 @@ mod tests {
     fn a_component_the_entity_lacks_is_reported() {
         let world = World::new();
         let entity = Entity::from_raw(0, 0);
-        let error = encode(&world, entity, "Position").expect_err("the entity has nothing");
+        let error =
+            encode(&world.root_view(), entity, "Position").expect_err("the entity has nothing");
         assert!(error.contains("has no Position"), "{error}");
     }
 

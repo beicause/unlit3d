@@ -341,6 +341,7 @@ pub fn aim_camera(
 ) {
     let mut camera = camera_looking_at(eye, target, size);
     world
+        .root_view()
         .with_mut::<Camera, _>(entity, |current| {
             camera.active = current.active;
             *current = camera;
@@ -484,6 +485,7 @@ pub fn with_mesh_source<R>(
     f: impl FnOnce(&mut MeshSource, &World) -> R,
 ) -> R {
     let mut source = world
+        .root_view()
         .get_mut::<Source>(source_entity)
         .expect("the source entity exists");
     let mesh = source

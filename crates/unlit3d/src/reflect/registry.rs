@@ -42,10 +42,10 @@ mod tests {
     #[test]
     fn a_reflected_component_round_trips_through_its_own_fields() {
         let mut world = World::new();
-        let entity = world.spawn((Transform::default(),));
+        let entity = world.root_view_mut().spawn((Transform::default(),));
 
         set(
-            &world,
+            &world.root_view(),
             entity,
             "Transform",
             r#"{"translation":[1.0,2.0,3.0]}"#,
@@ -54,7 +54,8 @@ mod tests {
 
         // The fields the patch did not name keep their current value, which is
         // the whole point of setting one property at a time.
-        let encoded = encode(&world, entity, "Transform").expect("the transform encodes");
+        let encoded =
+            encode(&world.root_view(), entity, "Transform").expect("the transform encodes");
         let value: Transform = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.translation, glam::Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(value.scale, glam::Vec3::ONE);
@@ -69,9 +70,9 @@ mod tests {
         assert!(contains("unlit3d::components::Transform"));
         assert!(!contains("unlit3d::other::Transform"));
         let mut world = World::new();
-        let entity = world.spawn((Transform::default(),));
+        let entity = world.root_view_mut().spawn((Transform::default(),));
         assert!(
-            encode(&world, entity, "unlit3d::components::Transform").is_ok(),
+            encode(&world.root_view(), entity, "unlit3d::components::Transform").is_ok(),
             "the qualified name reaches the entry"
         );
     }
@@ -88,8 +89,9 @@ mod tests {
         )
         .expect("a partial transform is accepted");
         let mut world = World::new();
-        let entity = world.spawn(builder);
-        let encoded = encode(&world, entity, "Transform").expect("the spawned transform encodes");
+        let entity = world.root_view_mut().spawn(builder);
+        let encoded =
+            encode(&world.root_view(), entity, "Transform").expect("the spawned transform encodes");
         let value: Transform = facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(value.translation, glam::Vec3::new(4.0, 5.0, 6.0));
         assert_eq!(value.scale, glam::Vec3::ONE);
@@ -139,11 +141,12 @@ mod tests {
             morph_targets: 0,
             skinned: false,
         };
-        let entity = world.spawn((mesh,));
-        let error = set(&world, entity, "GpuMesh", "{}").expect_err("GpuMesh is read-only");
+        let entity = world.root_view_mut().spawn((mesh,));
+        let error =
+            set(&world.root_view(), entity, "GpuMesh", "{}").expect_err("GpuMesh is read-only");
         assert!(error.contains("read-only"), "{error}");
 
-        let encoded = encode(&world, entity, "GpuMesh").expect("GpuMesh still encodes");
+        let encoded = encode(&world.root_view(), entity, "GpuMesh").expect("GpuMesh still encodes");
         assert!(encoded.contains("count"), "{encoded}");
     }
 
@@ -153,7 +156,8 @@ mod tests {
     fn a_component_the_entity_lacks_is_reported() {
         let world = World::new();
         let entity = Entity::from_raw(0, 0);
-        let error = encode(&world, entity, "Transform").expect_err("the entity has nothing");
+        let error =
+            encode(&world.root_view(), entity, "Transform").expect_err("the entity has nothing");
         assert!(error.contains("has no Transform"), "{error}");
     }
 
@@ -162,15 +166,16 @@ mod tests {
     #[test]
     fn a_proxied_field_is_set_without_disturbing_the_others() {
         let mut world = World::new();
-        let entity = world.spawn((RenderLoadOps::default(),));
+        let entity = world.root_view_mut().spawn((RenderLoadOps::default(),));
         set(
-            &world,
+            &world.root_view(),
             entity,
             "RenderLoadOps",
             r#"{"depth":{"clear":0.5}}"#,
         )
         .expect("a partial load op is accepted");
         let ops = world
+            .root_view()
             .get::<RenderLoadOps>(entity)
             .expect("the load ops are there");
         assert_eq!(ops.depth, wgpu::LoadOp::Clear(0.5));

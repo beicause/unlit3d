@@ -148,13 +148,17 @@ where
                 let Some(ready) = ready.take() else {
                     return;
                 };
-                world.queue().push(RunGpuReady { app, result, ready });
+                world
+                    .root_view()
+                    .queue()
+                    .push(RunGpuReady { app, result, ready });
                 return;
             }
             let Some(window) = window(world) else {
                 return;
             };
             let resumed = world
+                .root_view()
                 .query::<&Resumed>()
                 .next()
                 .is_some_and(|(_, resumed)| resumed.0);
@@ -162,6 +166,7 @@ where
                 return;
             }
             let Some(display) = world
+                .root_view()
                 .query::<&DisplayHandle>()
                 .next()
                 .map(|(_, handle)| handle.0.clone())
@@ -207,7 +212,9 @@ impl<F: FnOnce(&mut World, &Gpu) + 'static> Command for RunGpuReady<F> {
             Ok(gpu) => (self.ready)(world, &gpu),
             Err(error) => {
                 log::error!("failed to start the renderer: {error}");
-                let _ = world.with_mut::<ExitRequest, _>(self.app, |request| request.0 = true);
+                let _ = world
+                    .root_view()
+                    .with_mut::<ExitRequest, _>(self.app, |request| request.0 = true);
             }
         }
     }

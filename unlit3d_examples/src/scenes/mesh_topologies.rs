@@ -195,7 +195,7 @@ fn build(
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
     let device = source.device(world);
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot
@@ -207,7 +207,7 @@ fn build(
         .collect();
     let indices = index_buffer();
 
-    let camera_entity = world.spawn((camera_looking_at(
+    let camera_entity = world.root_view_mut().spawn((camera_looking_at(
         glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
         glam::Vec3::ZERO,
         size,
@@ -245,7 +245,9 @@ fn build(
     }
 
     for (column, mesh) in entities {
-        world.spawn((mesh, UnlitPipeline::new(keys[column].clone())));
+        world
+            .root_view_mut()
+            .spawn((mesh, UnlitPipeline::new(keys[column].clone())));
     }
 
     SceneControl {

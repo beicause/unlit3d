@@ -101,7 +101,7 @@ fn build(
 
     let mut source = MeshSource::new(world, context);
     source.register_unlit_family(world);
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so
@@ -127,16 +127,23 @@ fn build(
     // frame instead of being recomposed away.
     for node in &fox_nodes {
         for &entity in &node.entities {
-            let _ = world.with_mut::<Transform, _>(entity, |current| *current = FOX_PLACEMENT);
+            let _ = world
+                .root_view()
+                .with_mut::<Transform, _>(entity, |current| *current = FOX_PLACEMENT);
         }
     }
     for node in &morph_nodes {
         for &entity in &node.entities {
-            let _ = world.with_mut::<Transform, _>(entity, |current| *current = MORPH_PLACEMENT);
+            let _ = world
+                .root_view()
+                .with_mut::<Transform, _>(entity, |current| *current = MORPH_PLACEMENT);
         }
     }
 
-    let camera_entity = world.spawn((super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),));
+    let camera_entity =
+        world
+            .root_view_mut()
+            .spawn((super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),));
 
     let fox_animation = animation_index(&fox, FOX_ANIMATION);
     let morph_animation = animation_index(&morph, MORPH_ANIMATION);

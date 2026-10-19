@@ -101,7 +101,7 @@ impl Frame {
             let y = (index / side) % side;
             let z = index / (side * side);
             let cell = Vec3::new(x as f32, y as f32, z as f32) - Vec3::splat(side as f32 * 0.5);
-            world.spawn((
+            world.root_view_mut().spawn((
                 Transform {
                     translation: cell * spread,
                     rotation: Quat::IDENTITY,
@@ -116,7 +116,7 @@ impl Frame {
         // the benchmarks use.
         let eye = Vec3::new(0.0, 0.0, side as f32 * 1.5 + 20.0);
         let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
-        world.spawn((Camera {
+        world.root_view_mut().spawn((Camera {
             view_from_world: view,
             clip_from_view: glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0),
             active: true,
@@ -143,6 +143,7 @@ impl Frame {
         profiling::scope!("frame");
         let device = self
             .world
+            .root_view()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();

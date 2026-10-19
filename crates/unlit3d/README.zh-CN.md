@@ -663,7 +663,7 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 只是把「事件」换成了「这一帧的上下文」。排序先按
 [`FrameBehaviourOrder`](frame::FrameBehaviourOrder)，同序时再按实体；库自身不声明任何
 顺序值，谁先谁后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
-所以场景侧也用同样的方式组件化。用 [`World::spawn`](unlit_ecs::World::spawn)
+所以场景侧也用同样的方式组件化。用 [`ScopedWorldMut::spawn`](unlit_ecs::ScopedWorldMut::spawn)
 生成行为。需要跳过本帧其余工作的行为写一个兄弟行为会读的标志；需要结构
 变更的行为把变更排队，因为回调只持有 `&World`。
 

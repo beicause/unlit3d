@@ -24,7 +24,7 @@
 //! - A callback must not reach for its own component family: that is a borrow
 //!   panic, not a compile error. State that outlives one event belongs in a
 //!   sibling component.
-//! - Structural changes go through [`World::queue`] and land when the host
+//! - Structural changes go through [`unlit_ecs::ScopedWorld::queue`] and land when the host
 //!   applies the queue after the dispatch. Use the entity [`Commands::spawn`]
 //!   returns to refer to an entity that does not exist yet.
 //! - Different families on one entity are different cells and never conflict;
@@ -210,13 +210,16 @@ impl<U: 'static> WinitHost<U> {
     /// Write the state every callback may read before the loop starts.
     fn prepare(&mut self, event_loop: &EventLoop<U>) {
         let display = event_loop.owned_display_handle();
-        self.world.spawn((Resumed(false), DisplayHandle(display)));
+        self.world
+            .root_view_mut()
+            .spawn((Resumed(false), DisplayHandle(display)));
     }
 
     /// Set the host's [`Resumed`] state.
     fn set_resumed(&mut self, resumed: bool) {
         let Some(entity) = self
             .world
+            .root_view()
             .query::<&Resumed>()
             .next()
             .map(|(entity, _)| entity)
@@ -225,6 +228,7 @@ impl<U: 'static> WinitHost<U> {
         };
         let _ = self
             .world
+            .root_view()
             .with_mut::<Resumed, _>(entity, |state| state.0 = resumed);
     }
 
@@ -253,6 +257,7 @@ impl<U: 'static> WinitHost<U> {
     fn create_windows(&mut self, event_loop: &ActiveEventLoop) {
         let requests: Vec<WindowAttributes> = self
             .world
+            .root_view()
             .query::<&mut CreateWindowRequest>()
             .filter_map(|(_, mut request)| request.0.take())
             .collect();
@@ -263,12 +268,15 @@ impl<U: 'static> WinitHost<U> {
                     // and a window is already laid out by then: feed the one it
                     // starts with, or nothing that needs logical points ever
                     // learns it.
-                    if let Some((_, writer)) = self.world.query::<&InputWriter>().next() {
+                    if let Some((_, writer)) = self.world.root_view().query::<&InputWriter>().next()
+                    {
                         writer.push(InputEvent::ScaleFactorChanged {
                             scale_factor: window.scale_factor() as f32,
                         });
                     }
-                    self.world.spawn((WinitWindow(Arc::new(window)),));
+                    self.world
+                        .root_view_mut()
+                        .spawn((WinitWindow(Arc::new(window)),));
                 }
                 Err(error) => {
                     log::error!("could not create the window: {error}");
@@ -281,7 +289,7 @@ impl<U: 'static> WinitHost<U> {
     /// Exit the event loop when any [`ExitRequest`] is set.
     fn exit_requested(&mut self, event_loop: &ActiveEventLoop) {
         let mut exit = false;
-        for (_entity, mut request) in self.world.query::<&mut ExitRequest>() {
+        for (_entity, mut request) in self.world.root_view().query::<&mut ExitRequest>() {
             if request.0 {
                 request.0 = false;
                 exit = true;
@@ -301,7 +309,7 @@ impl<U: 'static> Default for WinitHost<U> {
 
 impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        for (entity, mut behaviour) in self.world.query::<&mut OnNewEvents>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnNewEvents>() {
             behaviour.run(&self.world, entity, &cause);
         }
         self.settle(event_loop);
@@ -309,14 +317,14 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.set_resumed(true);
-        for (entity, mut behaviour) in self.world.query::<&mut OnResumed>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnResumed>() {
             behaviour.run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.query::<&mut OnSuspended>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnSuspended>() {
             behaviour.run(&self.world, entity, &());
         }
         self.settle(event_loop);
@@ -324,7 +332,7 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, mut event: U) {
-        for (entity, mut behaviour) in self.world.query::<&mut OnUserEvent<U>>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnUserEvent<U>>() {
             behaviour.run(&self.world, entity, &mut event);
         }
         self.settle(event_loop);
@@ -337,7 +345,7 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: WindowEvent,
     ) {
         let event = WinitWindowEvent { window_id, event };
-        for (entity, mut behaviour) in self.world.query::<&mut OnWindowEvent>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnWindowEvent>() {
             behaviour.run(&self.world, entity, &event);
         }
         self.settle(event_loop);
@@ -350,28 +358,28 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: DeviceEvent,
     ) {
         let event = WinitDeviceEvent { device_id, event };
-        for (entity, mut behaviour) in self.world.query::<&mut OnDeviceEvent>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnDeviceEvent>() {
             behaviour.run(&self.world, entity, &event);
         }
         self.settle(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.query::<&mut OnAboutToWait>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnAboutToWait>() {
             behaviour.run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.query::<&mut OnExiting>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnExiting>() {
             behaviour.run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.query::<&mut OnMemoryWarning>() {
+        for (entity, mut behaviour) in self.world.root_view().query::<&mut OnMemoryWarning>() {
             behaviour.run(&self.world, entity, &());
         }
         self.settle(event_loop);
@@ -389,10 +397,11 @@ mod tests {
     #[test]
     fn set_resumed_writes_the_host_state() {
         let mut host = WinitHost::<()>::new();
-        host.world_mut().spawn((Resumed(false),));
+        host.world_mut().root_view_mut().spawn((Resumed(false),));
         host.set_resumed(true);
         assert_eq!(
             host.world()
+                .root_view()
                 .query::<&Resumed>()
                 .next()
                 .map(|(_, state)| state.0),

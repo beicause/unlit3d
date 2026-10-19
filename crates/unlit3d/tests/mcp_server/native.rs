@@ -34,20 +34,21 @@ fn offscreen_world(ctx: &Ctx) -> World {
         ResourceGraph::new(),
         ctx.capabilities,
     );
-    let renderer = world.spawn((Renderer::new(context),));
-    world.spawn((RenderLoadOps::default(),));
+    let renderer = world.root_view_mut().spawn((Renderer::new(context),));
+    world.root_view_mut().spawn((RenderLoadOps::default(),));
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
-    world.spawn((Source::new(source),));
+    world.root_view_mut().spawn((Source::new(source),));
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.
     let input = InputWriter::new();
-    world.spawn((input.subscribe(),));
-    world.spawn((input,));
+    world.root_view_mut().spawn((input.subscribe(),));
+    world.root_view_mut().spawn((input,));
 
     let color = create_color_target(&ctx.device, COLOR_FORMAT, SIZE.0, SIZE.1);
     let color_view = {
         let mut graph = world
+            .root_view()
             .get_mut::<ResourceGraph>(context.graph)
             .expect("spawn_context spawned the graph");
         // The texture is registered in its own right so a screenshot can name
@@ -61,12 +62,14 @@ fn offscreen_world(ctx: &Ctx) -> World {
         view
     };
     let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, SIZE, SAMPLES, true);
-    let _ = world.with_mut::<Renderer, _>(renderer, |renderer| {
-        attachments.bind(&world, renderer, color_view);
-    });
+    let _ = world
+        .root_view()
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            attachments.bind(&world, renderer, color_view);
+        });
 
     let aspect = SIZE.0.max(1) as f32 / SIZE.1.max(1) as f32;
-    world.spawn((Camera {
+    world.root_view_mut().spawn((Camera {
         view_from_world: glam::camera::rh::view::look_at_mat4(
             glam::Vec3::new(0.0, 1.0, 3.0),
             glam::Vec3::ZERO,

@@ -668,6 +668,7 @@ impl InstanceData for ParticleInstances {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let particle = context
             .world
+            .root_view()
             .get::<Particle>(context.entity)
             .expect("every visible particle carries a Particle component");
         let record = ParticleRecord {
@@ -1142,19 +1143,19 @@ fn build(
 
     // No family of the built-in unlit pipeline is registered: every draw in this
     // scene goes through a pipeline the example compiled itself.
-    let _source_entity = world.spawn((Source::new(source),));
-    let camera_entity = world.spawn((camera_looking_at(
+    let _source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let camera_entity = world.root_view_mut().spawn((camera_looking_at(
         orbit_eye(ORBIT_START),
         CAMERA_TARGET,
         size,
     ),));
 
-    world.spawn((sky_mesh, sky_pipeline));
+    world.root_view_mut().spawn((sky_mesh, sky_pipeline));
     // One mesh, one pipeline and one material for the whole cloud, so the
     // renderer folds the particles into a single instanced draw and every
     // sprite's placement comes from its own record.
     for particle in particle_cloud() {
-        world.spawn((
+        world.root_view_mut().spawn((
             particle_mesh.clone(),
             particle_pipeline.clone(),
             particle_material.clone(),
@@ -1193,6 +1194,7 @@ fn build(
             );
 
             let camera = world
+                .root_view()
                 .get::<Camera>(camera_entity)
                 .expect("the scene's camera exists");
             let sky = SkyUniforms {

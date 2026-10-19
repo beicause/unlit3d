@@ -141,6 +141,7 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
     )?;
 
     world
+        .root_view()
         .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(&world))
         .expect("the renderer entity exists");
 
@@ -208,9 +209,10 @@ pub fn build_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = world.spawn((Renderer::new(context),));
+    let renderer = world.root_view_mut().spawn((Renderer::new(context),));
 
     let target = world
+        .root_view()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             bind_target(
                 &world,
@@ -224,7 +226,7 @@ pub fn build_world(
         .expect("the renderer entity exists");
 
     let clear = config.output.clear;
-    world.spawn((RenderLoadOps {
+    world.root_view_mut().spawn((RenderLoadOps {
         color: wgpu::LoadOp::Clear(wgpu::Color {
             r: clear[0],
             g: clear[1],
@@ -237,7 +239,7 @@ pub fn build_world(
 
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     for document in &config.documents {
         let gltf = UnlitGltf::load(&document.path)?;
@@ -250,6 +252,7 @@ pub fn build_world(
             for node in &nodes {
                 for &entity in &node.entities {
                     let _ = world
+                        .root_view()
                         .with_mut::<Transform, _>(entity, |current| *current = transform.clone());
                 }
             }
@@ -260,7 +263,9 @@ pub fn build_world(
         }
     }
 
-    world.spawn((camera(&config.camera, render_size),));
+    world
+        .root_view_mut()
+        .spawn((camera(&config.camera, render_size),));
 
     let viewport_width = render_size.0 as f32 * config.output.scale.0;
     let viewport_height = render_size.1 as f32 * config.output.scale.1;
@@ -299,17 +304,20 @@ pub fn offscreen_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = world.spawn((Renderer::new(context),));
-    world.spawn((RenderLoadOps::default(),));
+    let renderer = world.root_view_mut().spawn((Renderer::new(context),));
+    world.root_view_mut().spawn((RenderLoadOps::default(),));
     let mut source = MeshSource::new(&world, context);
     source.register_unlit_family(&world);
-    world.spawn((Source::new(source),));
+    world.root_view_mut().spawn((Source::new(source),));
     let input = InputWriter::new();
-    world.spawn((input.clone(), input.subscribe()));
+    world
+        .root_view_mut()
+        .spawn((input.clone(), input.subscribe()));
 
     let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
     let color_view = {
         let mut graph = world
+            .root_view()
             .get_mut::<ResourceGraph>(context.graph)
             .expect("spawn_context spawned the graph");
         // The texture is registered in its own right so a screenshot can name
@@ -323,10 +331,12 @@ pub fn offscreen_world(
         view
     };
     let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
-    let _ = world.with_mut::<Renderer, _>(renderer, |renderer| {
-        attachments.bind(&world, renderer, color_view);
-    });
-    world.spawn((default_camera(size),));
+    let _ = world
+        .root_view()
+        .with_mut::<Renderer, _>(renderer, |renderer| {
+            attachments.bind(&world, renderer, color_view);
+        });
+    world.root_view_mut().spawn((default_camera(size),));
     (world, renderer)
 }
 
@@ -472,6 +482,7 @@ fn bind_target(
 ) -> wgpu::Texture {
     let color = create_color_target(device, COLOR_FORMAT, size.0, size.1);
     let color_view = world
+        .root_view()
         .get_mut::<ResourceGraph>(renderer.context().graph)
         .expect("the context's resource graph exists")
         .insert(
@@ -497,6 +508,7 @@ fn with_mesh_source<R>(
     f: impl FnOnce(&mut MeshSource, &World) -> R,
 ) -> R {
     let mut source = world
+        .root_view()
         .get_mut::<Source>(source_entity)
         .expect("the mesh source entity exists");
     let mesh = source

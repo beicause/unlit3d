@@ -45,7 +45,7 @@ impl TestGpu {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(world, test.context);
         source.register_unlit_family(world);
-        test.source = Some(world.spawn((Source::new(source),)));
+        test.source = Some(world.root_view_mut().spawn((Source::new(source),)));
         test
     }
 
@@ -66,7 +66,7 @@ impl TestGpu {
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
-        let renderer = world.spawn((Renderer::new(context),));
+        let renderer = world.root_view_mut().spawn((Renderer::new(context),));
         Self {
             context,
             renderer,
@@ -92,6 +92,7 @@ impl TestGpu {
     ) -> R {
         let entity = self.mesh_source();
         let mut source = world
+            .root_view()
             .get_mut::<Source>(entity)
             .expect("the source entity exists");
         let mesh = source
@@ -103,6 +104,7 @@ impl TestGpu {
     /// Run `f` on the frame driver.
     pub fn with_renderer<R>(&self, world: &World, f: impl FnOnce(&mut Renderer, &World) -> R) -> R {
         world
+            .root_view()
             .with_mut::<Renderer, _>(self.renderer, |renderer| f(renderer, world))
             .expect("the renderer entity exists")
     }
@@ -110,6 +112,7 @@ impl TestGpu {
     /// The frame's resource graph.
     pub fn graph<'w>(&self, world: &'w World) -> impl DerefMut<Target = ResourceGraph> + 'w {
         world
+            .root_view()
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's graph exists")
     }
@@ -313,6 +316,7 @@ impl TestGpu {
     ) -> wgpu::Texture {
         use unlit_wgpu::render_attachments::create_color_target;
         let device = world
+            .root_view()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
@@ -345,6 +349,7 @@ impl TestGpu {
     ) -> wgpu::Texture {
         use unlit_wgpu::render_attachments::create_color_target;
         let device = world
+            .root_view()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();

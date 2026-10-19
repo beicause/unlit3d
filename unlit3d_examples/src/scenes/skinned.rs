@@ -45,7 +45,7 @@ fn build(
     // The variant that reads the joint stream: its position buffer is wider by
     // the joint pair, so a stream packed for the plain cube would misread.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(world)));
-    let source_entity = world.spawn((Source::new(source),));
+    let source_entity = world.root_view_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));
@@ -65,12 +65,12 @@ fn build(
         )
     });
 
-    let camera_entity = world.spawn((camera(size),));
+    let camera_entity = world.root_view_mut().spawn((camera(size),));
     // The pose is an entity of its own: the mesh names it rather than owning
     // it, so animating the skeleton is one component write and nothing on the
     // mesh changes.
-    let pose_entity = world.spawn((skin.pose(),));
-    world.spawn((
+    let pose_entity = world.root_view_mut().spawn((skin.pose(),));
+    world.root_view_mut().spawn((
         Transform {
             scale: glam::Vec3::splat(0.9),
             ..Default::default()
@@ -89,6 +89,7 @@ fn build(
             // GPU call: the source packs and uploads it once per frame.
             skin.set_angle(bend_angle(frame));
             *world
+                .root_view()
                 .get_mut::<SkinPose>(pose_entity)
                 .expect("the pose entity carries a `SkinPose`") = skin.pose();
             // The camera the whole sequence shares, re-aimed at the frame's

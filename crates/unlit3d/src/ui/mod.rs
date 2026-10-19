@@ -22,8 +22,8 @@
 //!
 //! // The source, and one interface held as a behaviour component. More
 //! // panels are more entities, each with its own sibling state.
-//! world.spawn((Source::new(UiSource::new()),));
-//! world.spawn((
+//! world.root_view_mut().spawn((Source::new(UiSource::new()),));
+//! world.root_view_mut().spawn((
 //!     UiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
 //!     }),
@@ -238,6 +238,7 @@ impl UiSource {
         ctx: RenderContext,
     ) -> impl DerefMut<Target = ResourceGraph> + 'w {
         world
+            .root_view()
             .get_mut::<ResourceGraph>(ctx.graph)
             .expect("the context's resource graph exists")
     }
@@ -248,7 +249,7 @@ impl UiSource {
     /// a multi-pass layout needs.
     fn run_panels(&self, world: &World, input: egui::RawInput) -> egui::FullOutput {
         self.ctx.run_ui(input, |ui| {
-            for (entity, mut panel) in world.query::<&mut UiPanel>() {
+            for (entity, mut panel) in world.root_view().query::<&mut UiPanel>() {
                 panel.run(world, entity, ui);
             }
         })
@@ -344,10 +345,12 @@ impl FrameSource for UiSource {
         };
 
         let device = world
+            .root_view()
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device resource exists")
             .clone();
         let queue = world
+            .root_view()
             .get::<wgpu::Queue>(ctx.queue)
             .expect("the context's queue resource exists")
             .clone();
@@ -357,9 +360,13 @@ impl FrameSource for UiSource {
         // everything else in the world — the UI reads this tick's batch, it
         // does not take it. A world without one is not an error: the UI still
         // lays out at the target's own size, unfeed.
-        let state = world.query::<&InputEvents>().next().map(|(_, events)| {
-            events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
-        });
+        let state = world
+            .root_view()
+            .query::<&InputEvents>()
+            .next()
+            .map(|(_, events)| {
+                events.with_state(|state| (state.scale_factor, state.size_px, state.focused))
+            });
         let (scale_factor, size_px, focused) = match state {
             Some(state) => state,
             None => (1.0, (target.width, target.height), true),
@@ -384,7 +391,7 @@ impl FrameSource for UiSource {
         // once the pass is over rather than allocated again.
         let mut event_scratch = core::mem::take(&mut self.event_scratch);
         event_scratch.clear();
-        if let Some((_, events)) = world.query::<&InputEvents>().next() {
+        if let Some((_, events)) = world.root_view().query::<&InputEvents>().next() {
             events.with_batch(|batch| {
                 convert::to_egui_events_into(batch, pixels_per_point, &mut event_scratch);
             });
@@ -557,11 +564,18 @@ fn open_urls(output: &egui::PlatformOutput) -> impl Iterator<Item = OpenUrl> + '
 /// a previous frame left behind cannot be served twice; `urls` is emptied
 /// either way, so its allocation is reused by the next frame.
 fn publish_open_urls(world: &World, urls: &mut Vec<OpenUrl>) {
-    let Some(entity) = world.query::<&OpenUrls>().next().map(|(e, _)| e) else {
+    let Some(entity) = world
+        .root_view()
+        .query::<&OpenUrls>()
+        .next()
+        .map(|(e, _)| e)
+    else {
         urls.clear();
         return;
     };
-    let _ = world.with_mut::<OpenUrls, _>(entity, |slot| slot.replace(urls.drain(..)));
+    let _ = world
+        .root_view()
+        .with_mut::<OpenUrls, _>(entity, |slot| slot.replace(urls.drain(..)));
 }
 
 /// A uniform buffer of `size` bytes, written through the queue.
@@ -805,7 +819,7 @@ pub fn lay_out(
     screen: ScreenDescriptor,
 ) -> ExternalFrame {
     let mut output = ctx.run_ui(input, |ui| {
-        for (entity, mut panel) in world.query::<&mut UiPanel>() {
+        for (entity, mut panel) in world.root_view().query::<&mut UiPanel>() {
             panel.run(world, entity, ui);
         }
     });
@@ -886,6 +900,7 @@ mod tests {
     /// An encoder to record the frame's uploads into.
     fn encoder(world: &World, ctx: RenderContext) -> wgpu::CommandEncoder {
         world
+            .root_view()
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device")
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -901,13 +916,19 @@ mod tests {
         let runs = Rc::new(Cell::new(0u32));
         for _ in 0..2 {
             let runs = Rc::clone(&runs);
-            world.spawn((
+            world.root_view_mut().spawn((
                 Runs(0),
                 UiPanel::new(move |world, entity, ui| {
                     runs.set(runs.get() + 1);
                     // Read the sibling, then write it back advanced by one.
-                    let seen = world.get::<Runs>(entity).expect("the sibling exists").0;
-                    let _ = world.with_mut::<Runs, _>(entity, |runs| runs.0 = seen + 1);
+                    let seen = world
+                        .root_view()
+                        .get::<Runs>(entity)
+                        .expect("the sibling exists")
+                        .0;
+                    let _ = world
+                        .root_view()
+                        .with_mut::<Runs, _>(entity, |runs| runs.0 = seen + 1);
                     ui.label("panel");
                 }),
             ));
@@ -927,13 +948,18 @@ mod tests {
         output.textures_delta.clear();
 
         let panels: Vec<Entity> = world
+            .root_view()
             .query::<&UiPanel>()
             .map(|(entity, _)| entity)
             .collect();
         assert_eq!(panels.len(), 2, "both panels are driven by one query");
         for entity in panels {
             assert_eq!(
-                world.get::<Runs>(entity).expect("the sibling").0,
+                world
+                    .root_view()
+                    .get::<Runs>(entity)
+                    .expect("the sibling")
+                    .0,
                 1,
                 "the panel ran once and wrote its sibling"
             );
@@ -947,15 +973,20 @@ mod tests {
     fn a_panel_is_driven_by_the_source() {
         let (mut world, ctx) = test_world();
         assert!(set_frame_target(&world, test_target()));
-        world.spawn((UiPanel::new(|_world, _entity, ui| {
-            // A plain rectangle, so the frame's contents do not depend on the
-            // font atlas being ready on the first pass.
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(egui::Pos2::new(8.0, 8.0), egui::Vec2::new(64.0, 32.0)),
-                0.0,
-                egui::Color32::from_rgb(0, 255, 0),
-            );
-        }),));
+        world
+            .root_view_mut()
+            .spawn((UiPanel::new(|_world, _entity, ui| {
+                // A plain rectangle, so the frame's contents do not depend on the
+                // font atlas being ready on the first pass.
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::Pos2::new(8.0, 8.0),
+                        egui::Vec2::new(64.0, 32.0),
+                    ),
+                    0.0,
+                    egui::Color32::from_rgb(0, 255, 0),
+                );
+            }),));
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -972,9 +1003,11 @@ mod tests {
     #[test]
     fn a_missing_frame_target_draws_nothing() {
         let (mut world, ctx) = test_world();
-        world.spawn((UiPanel::new(|_world, _entity, ui| {
-            ui.label("not drawn");
-        }),));
+        world
+            .root_view_mut()
+            .spawn((UiPanel::new(|_world, _entity, ui| {
+                ui.label("not drawn");
+            }),));
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -1007,9 +1040,10 @@ mod tests {
             let world = Rc::clone(&world);
             world
                 .borrow_mut()
+                .root_view_mut()
                 .spawn((UiPanel::new(move |world, _entity, ui| {
-                    if world.query::<&Spawned>().next().is_none() {
-                        world.queue().spawn((Spawned,));
+                    if world.root_view().query::<&Spawned>().next().is_none() {
+                        world.root_view().queue().spawn((Spawned,));
                     }
                     ui.label("once");
                 }),));
@@ -1029,14 +1063,14 @@ mod tests {
         };
         output.textures_delta.clear();
         assert_eq!(
-            world.borrow().query::<&Spawned>().count(),
+            world.borrow().root_view().query::<&Spawned>().count(),
             0,
             "a queued spawn has not happened yet"
         );
 
         world.borrow_mut().apply();
         assert_eq!(
-            world.borrow().query::<&Spawned>().count(),
+            world.borrow().root_view().query::<&Spawned>().count(),
             1,
             "the queue landed on apply"
         );
@@ -1046,7 +1080,7 @@ mod tests {
         output.textures_delta.clear();
         world.borrow_mut().apply();
         assert_eq!(
-            world.borrow().query::<&Spawned>().count(),
+            world.borrow().root_view().query::<&Spawned>().count(),
             1,
             "the panel re-ran and found what it asked for"
         );
@@ -1063,9 +1097,11 @@ mod tests {
         let runs = Rc::new(Cell::new(0u32));
         for _ in 0..2 {
             let runs = Rc::clone(&runs);
-            world.spawn((UiPanel::new(move |_world, _entity, _ui| {
-                runs.set(runs.get() + 1);
-            }),));
+            world
+                .root_view_mut()
+                .spawn((UiPanel::new(move |_world, _entity, _ui| {
+                    runs.set(runs.get() + 1);
+                }),));
         }
 
         let source = UiSource::new();
@@ -1106,16 +1142,25 @@ mod tests {
         struct Foreground;
 
         let mut world = World::new();
-        world.spawn((Foreground, UiPanel::new(|_world, _entity, _ui| {})));
-        world.spawn((UiPanel::new(|_world, _entity, _ui| {}),));
+        world
+            .root_view_mut()
+            .spawn((Foreground, UiPanel::new(|_world, _entity, _ui| {})));
+        world
+            .root_view_mut()
+            .spawn((UiPanel::new(|_world, _entity, _ui| {}),));
 
         let foreground: Vec<Entity> = world
+            .root_view()
             .query_filtered::<Entity, With<Foreground>>()
             .map(|(entity, _)| entity)
             .collect();
         assert_eq!(foreground.len(), 1, "the filter picked one of two panels");
 
-        let all: Vec<Entity> = world.query::<&UiPanel>().map(|(e, _)| e).collect();
+        let all: Vec<Entity> = world
+            .root_view()
+            .query::<&UiPanel>()
+            .map(|(e, _)| e)
+            .collect();
         assert_eq!(all.len(), 2, "the unfiltered query sees both");
         assert!(
             all.contains(&foreground[0]),
@@ -1134,28 +1179,30 @@ mod tests {
 
         let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
-        world.spawn((UiPanel::new(move |_world, _entity, ui| {
-            // egui's own input state is what a widget reads; the raw events are
-            // not exposed to a panel, so this asserts on the effect instead: a
-            // typed character must land in the text a focused field sees.
-            ui.text_edit_singleline(&mut String::new());
-            let pressed = ui.input(|input| {
-                input
-                    .events
-                    .iter()
-                    .filter_map(|event| match event {
-                        egui::Event::Text(text) => Some(text.clone()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-            });
-            recorded.borrow_mut().extend(pressed);
-        }),));
+        world
+            .root_view_mut()
+            .spawn((UiPanel::new(move |_world, _entity, ui| {
+                // egui's own input state is what a widget reads; the raw events are
+                // not exposed to a panel, so this asserts on the effect instead: a
+                // typed character must land in the text a focused field sees.
+                ui.text_edit_singleline(&mut String::new());
+                let pressed = ui.input(|input| {
+                    input
+                        .events
+                        .iter()
+                        .filter_map(|event| match event {
+                            egui::Event::Text(text) => Some(text.clone()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                });
+                recorded.borrow_mut().extend(pressed);
+            }),));
 
         // The pointer and a typed key arrive in the world's own event types.
         let input = InputWriter::new();
         let events = input.subscribe();
-        world.spawn((input.clone(), events.clone()));
+        world.root_view_mut().spawn((input.clone(), events.clone()));
         input.push(InputEvent::Resized { size_px: (128, 96) });
         events.refresh();
 
@@ -1190,18 +1237,20 @@ mod tests {
         let (mut world, ctx) = test_world();
         assert!(set_frame_target(&world, test_target()));
         let flag = Rc::clone(&clicked);
-        world.spawn((UiPanel::new(move |_world, _entity, ui| {
-            // A real widget, so the click has to come through egui's own hit
-            // testing rather than a hand-rolled rectangle test.
-            let response = ui.allocate_rect(button(), egui::Sense::click());
-            if response.clicked() {
-                flag.set(true);
-            }
-        }),));
+        world
+            .root_view_mut()
+            .spawn((UiPanel::new(move |_world, _entity, ui| {
+                // A real widget, so the click has to come through egui's own hit
+                // testing rather than a hand-rolled rectangle test.
+                let response = ui.allocate_rect(button(), egui::Sense::click());
+                if response.clicked() {
+                    flag.set(true);
+                }
+            }),));
 
         let input = InputWriter::new();
         let events = input.subscribe();
-        world.spawn((input.clone(), events.clone()));
+        world.root_view_mut().spawn((input.clone(), events.clone()));
         input.push(InputEvent::Resized { size_px: (128, 96) });
         events.refresh();
 
@@ -1254,13 +1303,15 @@ mod tests {
         // Laid out in a context of its own, the way a publishing world would:
         // its texture ids start where every context's do.
         let mut other = World::new();
-        other.spawn((UiPanel::new(|_world, _entity, ui| {
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
-                0.0,
-                egui::Color32::RED,
-            );
-        }),));
+        other
+            .root_view_mut()
+            .spawn((UiPanel::new(|_world, _entity, ui| {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
+                    0.0,
+                    egui::Color32::RED,
+                );
+            }),));
         let target = test_ui_target();
         let frame = lay_out(
             &other,
@@ -1300,13 +1351,15 @@ mod tests {
         // A separate world, with a context whose ids start at zero like any
         // other, paints the frame that gets published.
         let mut other = World::new();
-        other.spawn((UiPanel::new(|_world, _entity, ui| {
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
-                0.0,
-                egui::Color32::RED,
-            );
-        }),));
+        other
+            .root_view_mut()
+            .spawn((UiPanel::new(|_world, _entity, ui| {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
+                    0.0,
+                    egui::Color32::RED,
+                );
+            }),));
         let frame = lay_out(
             &other,
             &egui::Context::default(),
@@ -1347,13 +1400,15 @@ mod tests {
     fn a_world_without_input_state_draws_an_idle_frame() {
         let (mut world, ctx) = test_world();
         assert!(set_frame_target(&world, test_target()));
-        world.spawn((UiPanel::new(|_world, _entity, ui| {
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
-                0.0,
-                egui::Color32::RED,
-            );
-        }),));
+        world
+            .root_view_mut()
+            .spawn((UiPanel::new(|_world, _entity, ui| {
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
+                    0.0,
+                    egui::Color32::RED,
+                );
+            }),));
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
