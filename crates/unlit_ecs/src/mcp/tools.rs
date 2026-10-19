@@ -275,3 +275,192 @@ fn register(router: &mut ToolRouter<McpServer>) {
         despawn_entity,
     ));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A component the tests read and write through the tools.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, facet::Facet)]
+    struct Marker(u32);
+
+    inventory::submit! { crate::reflect::ComponentEntry::default::<Marker>() }
+
+    /// A world with a scene holding one child, and a sibling scene of its own.
+    fn fixture() -> (World, Entity, Entity, Entity) {
+        let mut world = World::new();
+        let scene = world.root_view_mut().spawn((0u32,));
+        let child = world.view_mut(scene).unwrap().spawn((Marker(1),));
+        let sibling = world.root_view_mut().spawn((Marker(2),));
+        (world, scene, child, sibling)
+    }
+
+    #[test]
+    fn an_absent_scope_means_the_root() {
+        let (world, _, child, sibling) = fixture();
+        let Ok(view) = scoped(&world, None) else {
+            panic!("the root needs no handle");
+        };
+        assert_eq!(view.scope(), world.root());
+        assert!(view.contains(child));
+        assert!(view.contains(sibling));
+    }
+
+    #[test]
+    fn a_scope_handle_narrows_the_view() {
+        let (world, scene, child, sibling) = fixture();
+        let Ok(view) = scoped(&world, Some(scene.to_bits())) else {
+            panic!("a live scope");
+        };
+        assert_eq!(view.scope(), scene);
+        assert!(view.contains(child));
+        assert!(!view.contains(sibling), "the sibling is beside it");
+    }
+
+    #[test]
+    fn a_dead_scope_handle_is_reported_by_its_bits() {
+        let (mut world, scene, _, _) = fixture();
+        let bits = scene.to_bits();
+        world.root_view_mut().despawn(scene);
+        let error = scoped(&world, Some(bits)).expect_err("the scope is gone");
+        assert_eq!(error, format!("no scope at bits {bits}"));
+    }
+
+    #[test]
+    fn an_unknown_scope_reads_the_same_as_a_dead_one() {
+        // A handle that never named anything must not be told apart from one
+        // that used to: the difference is a probing oracle.
+        let world = World::new();
+        let bits = 0x1234_5678_9abc_def0u64;
+        let error = scoped(&world, Some(bits)).expect_err("no such scope");
+        assert_eq!(error, format!("no scope at bits {bits}"));
+    }
+
+    #[test]
+    fn a_scoped_write_refuses_an_entity_the_scope_cannot_see() {
+        let (world, scene, _, sibling) = fixture();
+        let view = scoped(&world, Some(scene.to_bits())).unwrap();
+        let error = write_component(&view, sibling, "Marker", &serde_json::json!({ "0": 9 }))
+            .expect_err("the sibling is out of reach");
+        assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
+        assert_eq!(world.root_view().get::<Marker>(sibling).unwrap().0, 2);
+    }
+
+    #[test]
+    fn a_scoped_read_refuses_an_entity_the_scope_cannot_see() {
+        let (world, scene, _, sibling) = fixture();
+        let view = scoped(&world, Some(scene.to_bits())).unwrap();
+        let error = read_component(&view, sibling, "Marker").expect_err("out of reach");
+        assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
+    }
+
+    #[test]
+    fn a_scoped_spawn_lands_in_that_scope_and_reports_it() {
+        let (mut world, scene, _, _) = fixture();
+        let mut view = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
+        let spawned = spawn_from_value(&mut view, &serde_json::json!({ "Marker": { "0": 7 } }))
+            .expect("a marker is spawnable");
+        let entity = spawned["entity"].clone();
+        let reported = spawned["scope"].clone();
+        let entity = Entity::from_bits(entity.as_u64().expect("bits"));
+        assert_eq!(world.scope_of(entity), Some(scene));
+        assert_eq!(
+            Entity::from_bits(reported.as_u64().expect("bits")),
+            scene,
+            "the reply says which scope it went in"
+        );
+    }
+
+    #[test]
+    fn a_scoped_despawn_refuses_what_the_scope_does_not_own() {
+        let (mut world, scene, _, sibling) = fixture();
+        let mut view = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
+        let answer = despawn_one(&mut view, sibling).expect("refusing is not an error");
+        assert_eq!(answer, serde_json::json!({ "despawned": false }));
+        assert!(world.root_view().contains(sibling));
+    }
+
+    #[test]
+    fn a_scoped_despawn_takes_the_subtree() {
+        let (mut world, scene, child, _) = fixture();
+        let mut view = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
+        let answer = despawn_one(&mut view, child).expect("its own descendant");
+        assert_eq!(answer, serde_json::json!({ "despawned": true }));
+        assert!(!world.root_view().contains(child));
+    }
+
+    #[test]
+    fn the_summaries_report_the_scope_not_the_whole_world() {
+        let (world, scene, child, sibling) = fixture();
+        let view = scoped(&world, Some(scene.to_bits())).unwrap();
+        let world_info = summarize_world(&view).unwrap();
+        assert_eq!(
+            world_info["entities"],
+            serde_json::json!(2),
+            "the scene and its child"
+        );
+        assert_eq!(
+            world_info["root"],
+            serde_json::json!(world.root().to_bits())
+        );
+        let entities = summarize_entities(&view, usize::MAX).unwrap();
+        let listed: Vec<u64> = entities
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|info| info["entity"].as_u64().unwrap())
+            .collect();
+        assert!(listed.contains(&child.to_bits()));
+        assert!(!listed.contains(&sibling.to_bits()));
+        let archetypes = summarize_archetypes(&view).unwrap();
+        let sum: u64 = archetypes
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|info| info["len"].as_u64().unwrap())
+            .sum();
+        assert_eq!(sum, 2, "the archetype lengths add up to the count");
+    }
+
+    #[test]
+    fn a_scope_is_listed_like_any_other_component() {
+        let (world, _, child, _) = fixture();
+        let view = scoped(&world, None).unwrap();
+        let component = summarize_entity(&view, child).unwrap();
+        let names: Vec<&str> = component["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap())
+            .collect();
+        assert!(
+            names.iter().any(|name| name.ends_with("ScopeOf")),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn a_scope_component_cannot_be_written_through_the_tools() {
+        // The world writes the scope; a client that changed it would move the
+        // entity without moving its index.
+        let (world, scene, child, _) = fixture();
+        let view = scoped(&world, None).unwrap();
+        let error = write_component(
+            &view,
+            child,
+            "ScopeOf",
+            &serde_json::json!({ "0": scene.to_bits() }),
+        )
+        .expect_err("the scope is not writable");
+        assert!(error.contains("written by the world"), "{error}");
+    }
+
+    #[test]
+    fn a_lifecycle_component_is_not_spawnable_through_the_tools() {
+        let (mut world, _, _, _) = fixture();
+        let mut view = scoped_mut(&mut world, None).unwrap();
+        let error = spawn_from_value(&mut view, &serde_json::json!({ "OnDespawn": {} }))
+            .expect_err("a callback has no wire form");
+        assert!(!error.is_empty());
+    }
+}

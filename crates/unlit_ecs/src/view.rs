@@ -26,6 +26,16 @@ pub struct ScopedWorld<'w> {
     pub(crate) scope: Entity,
 }
 
+impl core::fmt::Debug for ScopedWorld<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Only the scope is printed: dumping every visible entity would make
+        // one assertion message page through the whole subtree.
+        f.debug_struct("ScopedWorld")
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'w> ScopedWorld<'w> {
     pub(crate) fn new(world: &'w World, scope: Entity) -> Self {
         Self { world, scope }

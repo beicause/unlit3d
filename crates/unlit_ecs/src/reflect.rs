@@ -91,7 +91,7 @@ impl ComponentEntry {
             name: <crate::ScopeOf as Facet<'static>>::SHAPE.type_identifier,
             module_path: <crate::ScopeOf as Facet<'static>>::SHAPE.module_path,
             encode: encode_component::<crate::ScopeOf>,
-            set: set_component::<crate::ScopeOf>,
+            set: set_world_written::<crate::ScopeOf>,
             push: push_world_written::<crate::ScopeOf>,
             spawnable: false,
         }
@@ -218,6 +218,20 @@ fn push_default_component<C: Facet<'static> + Default + Clone>(
 ) -> Result<(), String> {
     builder.push(apply(C::default(), patch)?);
     Ok(())
+}
+
+fn set_world_written<C: Facet<'static>>(
+    _view: &ScopedWorld<'_>,
+    _entity: Entity,
+    _patch: &str,
+) -> Result<(), String> {
+    // Writing the component alone would leave the scope index pointing at the
+    // old parent, so the two sources of truth would disagree. The world moves
+    // an entity with `link` instead.
+    Err(format!(
+        "{} is written by the world, not set directly: link the entity to move it",
+        C::SHAPE.type_identifier,
+    ))
 }
 
 fn push_world_written<C: Facet<'static>>(
