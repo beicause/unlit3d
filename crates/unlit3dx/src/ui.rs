@@ -111,7 +111,7 @@ impl UiPanelHost {
         // twice.
         let mut events = core::mem::take(&mut self.input_scratch);
         events.clear();
-        if let Some((_, input)) = world.root_view().query::<&InputEvents>().next() {
+        if let Some((_, input)) = world.root_scope().query::<&InputEvents>().next() {
             input.copy_events_into(&mut events);
         }
         let due = self
@@ -178,7 +178,7 @@ const FALLBACK_TEXTURE_SIDE: u32 = 2048;
 /// from then on the published descriptor is what both sides use.
 fn fallback_target(world: &World) -> UiTarget {
     let state = world
-        .root_view()
+        .root_scope()
         .query::<&InputEvents>()
         .next()
         .map(|(_, events)| events.with_state(|state| (state.scale_factor, state.size_px)));
@@ -236,7 +236,7 @@ mod tests {
         let runs = Rc::new(Cell::new(0));
         let counted = Rc::clone(&runs);
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((UiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.label("hello");
@@ -297,7 +297,7 @@ mod tests {
         let (mut world, runs) = counting_world();
         let (_, mut host) = test_host();
         let writer = InputWriter::new();
-        world.root_view_mut().spawn((writer.subscribe(),));
+        world.root_scope_mut().spawn((writer.subscribe(),));
         settle(&mut host, &world);
 
         let settled = runs.get();
@@ -366,7 +366,7 @@ mod tests {
         let runs = Rc::new(Cell::new(0));
         let counted = Rc::clone(&runs);
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((UiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.ctx()

@@ -16,7 +16,7 @@ use unlit_ecs::mcp::host::{
 };
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{CreateMesh, EncodedImage, Output};
-use unlit_ecs::{ArchetypeBuilder, Entity, ScopedWorld, World};
+use unlit_ecs::{ArchetypeBuilder, Entity, Scope, World};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit_wgpu::readback::{readback_buffer, readback_texture};
 use unlit_wgpu::resources::{
@@ -39,7 +39,7 @@ fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext
             .ok_or_else(|| format!("entity {} carries no render context", entity.to_bits()));
     }
     let mut found: Option<RenderContext> = None;
-    for (_, context) in world.root_view().query::<&RenderContext>() {
+    for (_, context) in world.root_scope().query::<&RenderContext>() {
         match found {
             None => found = Some(*context),
             Some(existing) if existing == *context => {}
@@ -57,13 +57,13 @@ fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext
 fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
     if let Some(entity) = handle {
         return world
-            .root_view()
+            .root_scope()
             .has::<Renderer>(entity)
             .then_some(entity)
             .ok_or_else(|| format!("entity {} carries no renderer", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.root_view().query::<&Renderer>() {
+    for (entity, _) in world.root_scope().query::<&Renderer>() {
         if found.is_some() {
             return Err("the world has more than one renderer; pass `renderer`".to_string());
         }
@@ -76,7 +76,7 @@ fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, Stri
 fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, String> {
     if let Some(entity) = handle {
         let is_mesh_source = world
-            .root_view()
+            .root_scope()
             .get::<Source>(entity)
             .is_some_and(|source| source.as_ref::<MeshSource>().is_some());
         return is_mesh_source
@@ -84,7 +84,7 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
             .ok_or_else(|| format!("entity {} carries no mesh source", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, source) in world.root_view().query::<&Source>() {
+    for (entity, source) in world.root_scope().query::<&Source>() {
         if source.as_ref::<MeshSource>().is_some() {
             if found.is_some() {
                 return Err("the world has more than one mesh source; pass `source`".to_string());
@@ -99,27 +99,27 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
 fn with_mesh_source<R>(
     world: &World,
     handle: Option<Entity>,
-    f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
+    f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
 ) -> Result<R, String> {
     let entity = mesh_source_entity(world, handle)?;
-    // The view is the source's own: a source entity is its own scope, and a
+    // The scope is the source's own: a source entity is its own scope, and a
     // source only ever sees the subtree it draws.
-    let view = world
-        .view(entity)
+    let scope = world
+        .scope(entity)
         .ok_or_else(|| "the mesh source entity is gone".to_string())?;
-    let mut source = view
+    let mut source = scope
         .get_mut::<Source>(entity)
         .ok_or_else(|| "the mesh source entity is gone".to_string())?;
     let mesh_source = source
         .as_mut::<MeshSource>()
         .ok_or_else(|| "the source entity is not a mesh source".to_string())?;
-    Ok(f(mesh_source, &view))
+    Ok(f(mesh_source, &scope))
 }
 
 /// The device the context names, cloned out of the world.
 fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, String> {
     world
-        .root_view()
+        .root_scope()
         .get::<wgpu::Device>(context.device)
         .map(|device| device.clone())
         .ok_or_else(|| "the render context has no device".to_string())
@@ -128,7 +128,7 @@ fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, Stri
 /// The queue the context names, cloned out of the world.
 fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String> {
     world
-        .root_view()
+        .root_scope()
         .get::<wgpu::Queue>(context.queue)
         .map(|queue| queue.clone())
         .ok_or_else(|| "the render context has no queue".to_string())
@@ -140,7 +140,7 @@ fn graph_of<'w>(
     context: RenderContext,
 ) -> Result<unlit_ecs::CellRef<'w, ResourceGraph>, String> {
     world
-        .root_view()
+        .root_scope()
         .get::<ResourceGraph>(context.graph)
         .ok_or_else(|| "the render context has no resource graph".to_string())
 }
@@ -151,7 +151,7 @@ fn graph_of_mut<'w>(
     context: RenderContext,
 ) -> Result<unlit_ecs::CellRefMut<'w, ResourceGraph>, String> {
     world
-        .root_view()
+        .root_scope()
         .get_mut::<ResourceGraph>(context.graph)
         .ok_or_else(|| "the render context has no resource graph".to_string())
 }
@@ -466,13 +466,13 @@ fn single_entity<T: 'static>(
 ) -> Result<Entity, String> {
     if let Some(entity) = handle {
         return world
-            .root_view()
+            .root_scope()
             .has::<T>(entity)
             .then_some(entity)
             .ok_or_else(|| format!("entity {} carries no {what}", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.root_view().query::<&T>() {
+    for (entity, _) in world.root_scope().query::<&T>() {
         if found.is_some() {
             return Err(format!("the world has more than one {what}; pass `entity`"));
         }
@@ -485,7 +485,7 @@ fn single_entity<T: 'static>(
 /// it.
 pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, String> {
     let entity = single_entity::<InputEvents>(world, entity, "input buffer")?;
-    let text = reflect::encode(&world.root_view(), entity, "InputEvents")?;
+    let text = reflect::encode(&world.root_scope(), entity, "InputEvents")?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
@@ -498,7 +498,7 @@ pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Resu
     let decoded = reflect::decode_events(&text)?;
     let entity = single_entity::<InputWriter>(world, entity, "input writer")?;
     let _ = world
-        .root_view()
+        .root_scope()
         .with_mut::<InputWriter, _>(entity, |writer| writer.push_all(decoded));
     let delivered = dispatch_input(world);
     to_value(&Delivered { delivered })
@@ -522,9 +522,9 @@ pub fn create_mesh(
         weights: None,
         morph_deltas: None,
     };
-    let (key, mesh) = with_mesh_source(world, source, |source, view| {
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(view)));
-        let mesh = source.allocate_unlit_mesh(view, &key, desc);
+    let (key, mesh) = with_mesh_source(world, source, |source, scope| {
+        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(scope)));
+        let mesh = source.allocate_unlit_mesh(scope, &key, desc);
         (key, mesh)
     })?;
     let transform = match args.transform {
@@ -555,7 +555,7 @@ pub fn create_mesh(
     let scope = match args.scope {
         Some(bits) => {
             let scope = Entity::from_bits(bits);
-            if world.view(scope).is_none() {
+            if world.scope(scope).is_none() {
                 return Err(format!("no scope at bits {bits}"));
             }
             scope
@@ -563,7 +563,7 @@ pub fn create_mesh(
         None => mesh_source_entity(world, source)?,
     };
     let entity = world
-        .view_mut(scope)
+        .scope_mut(scope)
         .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?
         .spawn(builder);
     to_value(&SpawnedEntity { entity, scope })
@@ -576,12 +576,12 @@ pub fn remove_mesh(
     entity: Entity,
 ) -> Result<Value, String> {
     let mesh = world
-        .root_view()
+        .root_scope()
         .get::<GpuMesh>(entity)
         .map(|mesh| mesh.clone())
         .ok_or_else(|| format!("entity {} has no GpuMesh", entity.to_bits()))?;
     with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
-    let despawned = world.root_view_mut().despawn(entity);
+    let despawned = world.root_scope_mut().despawn(entity);
     to_value(&Despawned { despawned })
 }
 
@@ -589,8 +589,8 @@ pub fn remove_mesh(
 pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value, String> {
     let entity = renderer_entity(world, renderer)?;
     let world_ref: &World = &*world;
-    let view = world_ref.root_view();
-    let _ = view.with_mut::<Renderer, _>(entity, |renderer| renderer.render(world_ref));
+    let scope = world_ref.root_scope();
+    let _ = scope.with_mut::<Renderer, _>(entity, |renderer| renderer.render(world_ref));
     Ok(Value::Null)
 }
 
@@ -684,8 +684,8 @@ pub fn load_gltf(
     path: &str,
 ) -> Result<Value, String> {
     let gltf = UnlitGltf::load(Path::new(path)).map_err(|error| error.to_string())?;
-    let resources = with_mesh_source(world, source, |source, view| {
-        gltf.insert_resources(source, view)
+    let resources = with_mesh_source(world, source, |source, scope| {
+        gltf.insert_resources(source, scope)
     })?;
     // Content goes into the requested scope, which defaults to the source
     // entity itself, so the frame that draws the source also draws the scene.
@@ -693,10 +693,10 @@ pub fn load_gltf(
         Some(scope) => scope,
         None => mesh_source_entity(world, source)?,
     };
-    let mut view = world
-        .view_mut(scope)
+    let mut scope = world
+        .scope_mut(scope)
         .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?;
-    let nodes = gltf.spawn_default_scene(&mut view, &resources);
+    let nodes = gltf.spawn_default_scene(&mut scope, &resources);
     let entities: Vec<Entity> = nodes
         .iter()
         .flat_map(|node| node.entities.iter())

@@ -142,7 +142,7 @@ impl Balls {
     /// because a snapshot already in flight may still name it.
     fn drop_ball(&mut self, world: &World, state: Entity) {
         let (slot, kind) = match world
-            .root_view()
+            .root_scope()
             .with_mut::<SceneState, _>(state, SceneState::take_slot)
             .flatten()
         {
@@ -201,7 +201,7 @@ impl Balls {
         // has not spent yet: they would repopulate the scene immediately.
         self.requests = 0;
         let free = world
-            .root_view()
+            .root_scope()
             .with_mut::<SceneState, _>(state, |state| {
                 state.restore_free(available_slots(state.slots(), &self.pending));
             })
@@ -212,7 +212,7 @@ impl Balls {
         log::info!(
             "the shapes were cleared: {live} bodies despawned, {} slots free",
             world
-                .root_view()
+                .root_scope()
                 .get::<SceneState>(state)
                 .map_or(0, |state| state.free_count())
         );
@@ -230,7 +230,7 @@ impl Balls {
             .retain_mut(|(request, (slot, kind), age, born)| {
                 if ticks - *age > PENDING_TIMEOUT_TICKS {
                     let _ = world
-                        .root_view()
+                        .root_scope()
                         .with_mut::<SceneState, _>(state, |state| state.give((*slot, *kind)));
                     return false;
                 }
@@ -245,9 +245,11 @@ impl Balls {
                                     let _ = despawn_body(world, handle);
                                 }))
                                 .ok();
-                            let _ = world.root_view().with_mut::<SceneState, _>(state, |state| {
-                                state.give((*slot, *kind))
-                            });
+                            let _ = world
+                                .root_scope()
+                                .with_mut::<SceneState, _>(state, |state| {
+                                    state.give((*slot, *kind))
+                                });
                         }
                         false
                     }
@@ -302,7 +304,7 @@ impl Balls {
         }
         self.poses_sent = poses.len();
         let frame = world
-            .root_view()
+            .root_scope()
             .with_mut::<SceneState, _>(state, |state| scene_frame(state.slots(), &poses))
             .unwrap_or_default();
         // The poses travel as a job: what the render world shows is its
@@ -318,7 +320,7 @@ impl Tick for Balls {
     fn tick(&mut self, world: &World) {
         self.ticks += 1;
         let Some((state, ready)) = world
-            .root_view()
+            .root_scope()
             .query::<&SceneState>()
             .next()
             .map(|(entity, state)| (entity, state.is_ready()))

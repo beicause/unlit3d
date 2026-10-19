@@ -89,7 +89,7 @@ async fn meshes_can_share_one_skin_pose() {
     bent.set_angle(0.6);
     let pose = bent.pose();
     *world
-        .root_view()
+        .root_scope()
         .get_mut::<SkinPose>(pose_entity)
         .expect("the pose entity carries a `SkinPose`") = pose;
     let deformed = read(&gpu);

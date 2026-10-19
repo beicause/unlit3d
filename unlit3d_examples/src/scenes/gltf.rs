@@ -99,9 +99,9 @@ fn build(
     let fox = UnlitGltf::from_bytes(FOX).expect("the fox asset is a valid glTF document");
     let morph = UnlitGltf::from_bytes(MORPH).expect("the morph asset is a valid glTF document");
 
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so
@@ -119,12 +119,12 @@ fn build(
     // handle carries the pose entity its skin reads, and the cube's carries
     // the weights entity its morph targets read.
     let (fox_nodes, morph_nodes) = {
-        let mut view = world
-            .view_mut(source_entity)
+        let mut scope = world
+            .scope_mut(source_entity)
             .expect("the source entity is alive");
         (
-            fox.spawn_default_scene(&mut view, &fox_resources),
-            morph.spawn_default_scene(&mut view, &morph_resources),
+            fox.spawn_default_scene(&mut scope, &fox_resources),
+            morph.spawn_default_scene(&mut scope, &morph_resources),
         )
     };
 
@@ -133,17 +133,18 @@ fn build(
     // in its morph weights — so the placement written here survives every
     // frame instead of being recomposed away.
     {
-        let view = world
-            .view(source_entity)
+        let scope = world
+            .scope(source_entity)
             .expect("the source entity is alive");
         for node in &fox_nodes {
             for &entity in &node.entities {
-                let _ = view.with_mut::<Transform, _>(entity, |current| *current = FOX_PLACEMENT);
+                let _ = scope.with_mut::<Transform, _>(entity, |current| *current = FOX_PLACEMENT);
             }
         }
         for node in &morph_nodes {
             for &entity in &node.entities {
-                let _ = view.with_mut::<Transform, _>(entity, |current| *current = MORPH_PLACEMENT);
+                let _ =
+                    scope.with_mut::<Transform, _>(entity, |current| *current = MORPH_PLACEMENT);
             }
         }
     }
@@ -177,11 +178,11 @@ fn build(
                 clock += delta;
                 (clock % fox_duration, clock % morph_duration)
             };
-            let view = world
-                .view(source_entity)
+            let scope = world
+                .scope(source_entity)
                 .expect("the source entity is alive");
-            fox.apply_animation(&view, fox_animation, fox_time, &fox_nodes);
-            morph.apply_animation(&view, morph_animation, morph_time, &morph_nodes);
+            fox.apply_animation(&scope, fox_animation, fox_time, &fox_nodes);
+            morph.apply_animation(&scope, morph_animation, morph_time, &morph_nodes);
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the assets.
             super::aim_camera(

@@ -94,12 +94,12 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     let world = host.world_mut();
 
     let input = InputWriter::new();
-    world.root_view_mut().spawn((input.clone(),));
+    world.root_scope_mut().spawn((input.clone(),));
     // The host world dispatches its own key behaviours, so it subscribes for
     // the events it has not read yet rather than reading a shared list.
-    world.root_view_mut().spawn((input.subscribe(),));
+    world.root_scope_mut().spawn((input.subscribe(),));
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((winit_input_behaviour(WinitInput::new(input.clone())),));
 
     let attributes = Window::default_attributes()
@@ -112,16 +112,16 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
         use winit::platform::web::WindowAttributesExtWebSys;
         attributes.with_append(true)
     };
-    world.root_view_mut().spawn((
+    world.root_scope_mut().spawn((
         WindowSpec(attributes),
         CreateWindowRequest(None),
         create_window_on_resume(),
     ));
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((ExitRequest(false), exit_on_close_requested()));
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((ExitRequest(false), exit_on_escape()));
     request_redraw_while_foreground();
 
@@ -161,7 +161,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     if stepped {
         let stepper = SceneStepper::new(GAME_HZ, PHYSICS_HZ, None);
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((stepped_frame(worlds, stepper),));
     }
 
@@ -169,8 +169,8 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // resolves into the scene setup, which fills the render sub-world and
     // builds the presentation path; from then on the pump and the redraw
     // requests dispatch frames into it.
-    let app = world.root_view_mut().spawn((ExitRequest(false),));
-    world.root_view_mut().spawn((request_gpu(app, {
+    let app = world.root_scope_mut().spawn((ExitRequest(false),));
+    world.root_scope_mut().spawn((request_gpu(app, {
         // Only an MCP-driven scene needs the offscreen target: it is what
         // a screenshot reads back. A plain window draws into the swap chain.
         let offscreen = mcp;
@@ -207,16 +207,16 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             }
         }
     }),));
-    world.root_view_mut().spawn((draw_presented(),));
+    world.root_scope_mut().spawn((draw_presented(),));
     let (pump, redraw) = pump_presented();
-    world.root_view_mut().spawn((pump,));
-    world.root_view_mut().spawn((redraw,));
-    world.root_view_mut().spawn((resize_presented(),));
+    world.root_scope_mut().spawn((pump,));
+    world.root_scope_mut().spawn((redraw,));
+    world.root_scope_mut().spawn((resize_presented(),));
 
     // Space drops a body; the music and the shapes are driven from the
     // render world's control panel.
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((OnKey::new(move |_world, _entity, key| {
             if !key.pressed || key.repeat {
                 return;
@@ -228,7 +228,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // The frame's input: the host dispatches its own key behaviours before
     // the draw. Nothing clears anything afterwards — each world and the
     // render world's UI source read their own copy of the stream.
-    world.root_view_mut().spawn((OnFrame::new(
+    world.root_scope_mut().spawn((OnFrame::new(
         FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
         |world, _entity, _frame| {
             dispatch_input(world);

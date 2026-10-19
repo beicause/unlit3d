@@ -24,79 +24,79 @@ struct Name(&'static str);
 fn a_spawned_entity_reads_back_its_components() {
     let mut world = World::new();
     let entity = world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((Position { x: 1.0, y: 2.0 }, Name("cube")));
 
-    assert!(world.root_view().contains(entity));
-    assert_eq!(world.root_view().len(), 1);
-    assert!(!world.root_view().is_empty());
-    assert!(world.root_view().has::<Position>(entity));
-    assert!(world.root_view().has::<Name>(entity));
-    assert!(!world.root_view().has::<Velocity>(entity));
+    assert!(world.root_scope().contains(entity));
+    assert_eq!(world.root_scope().len(), 1);
+    assert!(!world.root_scope().is_empty());
+    assert!(world.root_scope().has::<Position>(entity));
+    assert!(world.root_scope().has::<Name>(entity));
+    assert!(!world.root_scope().has::<Velocity>(entity));
 
-    assert_eq!(world.root_view().get::<Position>(entity).unwrap().x, 1.0);
-    assert_eq!(world.root_view().get::<Name>(entity).unwrap().0, "cube");
+    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().x, 1.0);
+    assert_eq!(world.root_scope().get::<Name>(entity).unwrap().0, "cube");
 }
 
 #[test]
 fn a_fresh_world_is_empty() {
     let world = World::new();
-    assert!(world.root_view().is_empty());
-    assert_eq!(world.root_view().len(), 0);
+    assert!(world.root_scope().is_empty());
+    assert_eq!(world.root_scope().len(), 0);
 }
 
 #[test]
 fn an_empty_entity_has_no_components() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn_empty();
+    let entity = world.root_scope_mut().spawn_empty();
 
-    assert!(world.root_view().contains(entity));
-    assert!(!world.root_view().has::<Position>(entity));
-    assert!(world.root_view().get::<Position>(entity).is_none());
+    assert!(world.root_scope().contains(entity));
+    assert!(!world.root_scope().has::<Position>(entity));
+    assert!(world.root_scope().get::<Position>(entity).is_none());
 }
 
 #[test]
 fn components_are_written_through_a_scoped_borrow() {
     let mut world = World::new();
     let entity = world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 2.0 }));
 
     // A behaviour reads the entity's own velocity while writing its position.
     // The two live in different cells, so the borrows do not conflict.
     let moved_x = world
-        .root_view()
+        .root_scope()
         .with_mut::<Position, _>(entity, |position| {
-            let velocity = world.root_view().get::<Velocity>(entity).unwrap();
+            let velocity = world.root_scope().get::<Velocity>(entity).unwrap();
             position.x += velocity.dx;
             position.y += velocity.dy;
             position.x
         });
 
     assert_eq!(moved_x, Some(1.0));
-    assert_eq!(world.root_view().get::<Position>(entity).unwrap().y, 2.0);
+    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().y, 2.0);
 }
 
 #[test]
 fn get_mut_holds_an_exclusive_borrow() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn((Position { x: 0.0, y: 0.0 },));
+    let entity = world.root_scope_mut().spawn((Position { x: 0.0, y: 0.0 },));
 
     {
-        let mut position = world.root_view().get_mut::<Position>(entity).unwrap();
+        let mut position = world.root_scope().get_mut::<Position>(entity).unwrap();
         position.x = 5.0;
     }
 
-    assert_eq!(world.root_view().get::<Position>(entity).unwrap().x, 5.0);
+    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().x, 5.0);
 }
 
 #[test]
 fn with_mut_is_none_without_the_component() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn((Position { x: 0.0, y: 0.0 },));
+    let entity = world.root_scope_mut().spawn((Position { x: 0.0, y: 0.0 },));
     assert!(
         world
-            .root_view()
+            .root_scope()
             .with_mut::<Velocity, _>(entity, |_| ())
             .is_none()
     );
@@ -105,24 +105,24 @@ fn with_mut_is_none_without_the_component() {
 #[test]
 fn a_despawned_handle_never_resolves_to_the_next_entity() {
     let mut world = World::new();
-    let first = world.root_view_mut().spawn((Name("first"),));
+    let first = world.root_scope_mut().spawn((Name("first"),));
 
-    assert!(world.root_view_mut().despawn(first));
-    assert!(!world.root_view().contains(first));
-    assert!(world.root_view().get::<Name>(first).is_none());
+    assert!(world.root_scope_mut().despawn(first));
+    assert!(!world.root_scope().contains(first));
+    assert!(world.root_scope().get::<Name>(first).is_none());
     assert!(
-        !world.root_view_mut().despawn(first),
+        !world.root_scope_mut().despawn(first),
         "the second despawn is a no-op"
     );
-    assert_eq!(world.root_view().len(), 0);
+    assert_eq!(world.root_scope().len(), 0);
 
     // The index is handed out again, but the handle is not: the generation
     // changed, so the old handle stays dead.
-    let second = world.root_view_mut().spawn((Name("second"),));
+    let second = world.root_scope_mut().spawn((Name("second"),));
     assert_eq!(second.index(), first.index(), "the index is reused");
     assert_ne!(second, first, "but the handle is not");
-    assert!(world.root_view().contains(second));
-    assert!(!world.root_view().contains(first));
+    assert!(world.root_scope().contains(second));
+    assert!(!world.root_scope().contains(first));
 }
 
 #[test]
@@ -136,10 +136,10 @@ fn despawning_drops_the_component_values() {
 
     let drops = Rc::new(Cell::new(0));
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn((Tracked(drops.clone()),));
+    let entity = world.root_scope_mut().spawn((Tracked(drops.clone()),));
     assert_eq!(drops.get(), 0);
 
-    world.root_view_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity);
     assert_eq!(drops.get(), 1, "the component left with the entity");
 }
 
@@ -148,13 +148,15 @@ fn a_reserved_handle_becomes_live_only_when_spawned() {
     let mut world = World::new();
     let entity = world.reserve_entity();
 
-    assert!(!world.root_view().contains(entity));
-    assert_eq!(world.root_view().len(), 0);
+    assert!(!world.root_scope().contains(entity));
+    assert_eq!(world.root_scope().len(), 0);
 
-    world.root_view_mut().spawn_at(entity, (Name("late"), 7u32));
-    assert!(world.root_view().contains(entity));
-    assert_eq!(world.root_view().get::<u32>(entity).unwrap().to_owned(), 7);
-    assert_eq!(world.root_view().get::<Name>(entity).unwrap().0, "late");
+    world
+        .root_scope_mut()
+        .spawn_at(entity, (Name("late"), 7u32));
+    assert!(world.root_scope().contains(entity));
+    assert_eq!(world.root_scope().get::<u32>(entity).unwrap().to_owned(), 7);
+    assert_eq!(world.root_scope().get::<Name>(entity).unwrap().0, "late");
 }
 
 #[test]
@@ -166,7 +168,7 @@ fn a_reserved_handle_can_be_released_without_spawning() {
     assert!(!world.release_entity(reserved), "already released");
 
     // Releasing returns the index to the pool.
-    let entity = world.root_view_mut().spawn_empty();
+    let entity = world.root_scope_mut().spawn_empty();
     assert_eq!(entity.index(), reserved.index());
 }
 
@@ -174,25 +176,30 @@ fn a_reserved_handle_can_be_released_without_spawning() {
 #[should_panic(expected = "already spawned")]
 fn spawning_twice_on_one_handle_panics() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn_empty();
-    world.root_view_mut().spawn_at(entity, (Name("again"),));
+    let entity = world.root_scope_mut().spawn_empty();
+    world.root_scope_mut().spawn_at(entity, (Name("again"),));
 }
 
 #[test]
 #[should_panic(expected = "same component twice")]
 fn a_bundle_cannot_repeat_a_component() {
     let mut world = World::new();
-    world.root_view_mut().spawn((1u32, 2u32));
+    world.root_scope_mut().spawn((1u32, 2u32));
 }
 
 #[test]
 fn the_placeholder_handle_refers_to_nothing() {
     let mut world = World::new();
-    world.root_view_mut().spawn((Name("real"),));
+    world.root_scope_mut().spawn((Name("real"),));
 
-    assert!(!world.root_view().contains(Entity::PLACEHOLDER));
-    assert!(world.root_view().get::<Name>(Entity::PLACEHOLDER).is_none());
-    assert!(!world.root_view_mut().despawn(Entity::PLACEHOLDER));
+    assert!(!world.root_scope().contains(Entity::PLACEHOLDER));
+    assert!(
+        world
+            .root_scope()
+            .get::<Name>(Entity::PLACEHOLDER)
+            .is_none()
+    );
+    assert!(!world.root_scope_mut().despawn(Entity::PLACEHOLDER));
 }
 
 #[test]
@@ -206,7 +213,7 @@ fn a_handle_round_trips_through_its_bits() {
 #[test]
 fn a_wide_bundle_spawns_every_component() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn((
+    let entity = world.root_scope_mut().spawn((
         1u8,
         2u16,
         3u32,
@@ -222,32 +229,32 @@ fn a_wide_bundle_spawns_every_component() {
         Name("wide"),
     ));
 
-    assert_eq!(*world.root_view().get::<u8>(entity).unwrap(), 1);
-    assert_eq!(*world.root_view().get::<u64>(entity).unwrap(), 4);
-    assert_eq!(*world.root_view().get::<i64>(entity).unwrap(), 8);
-    assert!(*world.root_view().get::<bool>(entity).unwrap());
-    assert_eq!(*world.root_view().get::<char>(entity).unwrap(), 'x');
+    assert_eq!(*world.root_scope().get::<u8>(entity).unwrap(), 1);
+    assert_eq!(*world.root_scope().get::<u64>(entity).unwrap(), 4);
+    assert_eq!(*world.root_scope().get::<i64>(entity).unwrap(), 8);
+    assert!(*world.root_scope().get::<bool>(entity).unwrap());
+    assert_eq!(*world.root_scope().get::<char>(entity).unwrap(), 'x');
     assert_eq!(
-        world.root_view().get::<f64>(entity).unwrap().to_owned(),
+        world.root_scope().get::<f64>(entity).unwrap().to_owned(),
         2.5
     );
-    assert_eq!(world.root_view().get::<Name>(entity).unwrap().0, "wide");
+    assert_eq!(world.root_scope().get::<Name>(entity).unwrap().0, "wide");
 }
 
 #[test]
 fn entities_sharing_a_component_set_share_an_archetype() {
     let mut world = World::new();
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((Position { x: 0.0, y: 0.0 }, Name("a")));
     let before = world.archetype_count();
 
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((Position { x: 1.0, y: 1.0 }, Name("b")));
     assert_eq!(world.archetype_count(), before, "same set, same archetype");
 
-    world.root_view_mut().spawn((Position { x: 2.0, y: 2.0 },));
+    world.root_scope_mut().spawn((Position { x: 2.0, y: 2.0 },));
     assert_eq!(
         world.archetype_count(),
         before + 1,
@@ -258,27 +265,27 @@ fn entities_sharing_a_component_set_share_an_archetype() {
 #[test]
 fn a_location_names_the_archetype_and_row_of_a_live_entity() {
     let mut world = World::new();
-    let first = world.root_view_mut().spawn((Position { x: 1.0, y: 0.0 },));
-    let second = world.root_view_mut().spawn((Position { x: 2.0, y: 0.0 },));
+    let first = world.root_scope_mut().spawn((Position { x: 1.0, y: 0.0 },));
+    let second = world.root_scope_mut().spawn((Position { x: 2.0, y: 0.0 },));
     let other = world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((Velocity { dx: 0.0, dy: 0.0 },));
 
-    let location = world.root_view().location(first).expect("spawned");
+    let location = world.root_scope().location(first).expect("spawned");
     let archetype = world
-        .root_view()
+        .root_scope()
         .archetype(location.archetype())
         .expect("the location names an existing archetype");
     assert_eq!(archetype.entities()[location.row()], first);
 
     // Entities of one component set share an archetype but not a row.
-    let second_location = world.root_view().location(second).expect("spawned");
+    let second_location = world.root_scope().location(second).expect("spawned");
     assert_eq!(second_location.archetype(), location.archetype());
     assert_ne!(second_location.row(), location.row());
     // A different component set is a different archetype.
     assert_ne!(
         world
-            .root_view()
+            .root_scope()
             .location(other)
             .expect("spawned")
             .archetype(),
@@ -286,7 +293,7 @@ fn a_location_names_the_archetype_and_row_of_a_live_entity() {
     );
 
     assert!(
-        world.root_view().archetype(u32::MAX).is_none(),
+        world.root_scope().archetype(u32::MAX).is_none(),
         "no such archetype"
     );
 }
@@ -294,10 +301,10 @@ fn a_location_names_the_archetype_and_row_of_a_live_entity() {
 #[test]
 fn a_despawned_entity_has_no_location() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn((Position { x: 0.0, y: 0.0 },));
-    assert!(world.root_view().location(entity).is_some());
-    world.root_view_mut().despawn(entity);
-    assert!(world.root_view().location(entity).is_none());
+    let entity = world.root_scope_mut().spawn((Position { x: 0.0, y: 0.0 },));
+    assert!(world.root_scope().location(entity).is_some());
+    world.root_scope_mut().despawn(entity);
+    assert!(world.root_scope().location(entity).is_none());
 }
 
 #[test]
@@ -312,12 +319,12 @@ fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
     let entities: Vec<Entity> = (0..8)
         .map(|i| {
             if i % 2 == 0 {
-                world.root_view_mut().spawn((Position {
+                world.root_scope_mut().spawn((Position {
                     x: i as f32,
                     y: 0.0,
                 },))
             } else {
-                world.root_view_mut().spawn((
+                world.root_scope_mut().spawn((
                     Position {
                         x: i as f32,
                         y: 0.0,
@@ -329,25 +336,25 @@ fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
         .collect();
 
     for &entity in &entities {
-        let location = world.root_view().location(entity).expect("live");
+        let location = world.root_scope().location(entity).expect("live");
         let archetype = world
-            .root_view()
+            .root_scope()
             .archetype(location.archetype())
             .expect("exists");
         let state = <Resolve<'_> as Query>::fetch_state(archetype);
         let (position, velocity) = <Resolve<'_> as Query>::fetch(&state, location.row());
         assert_eq!(
             position.x,
-            world.root_view().get::<Position>(entity).unwrap().x
+            world.root_scope().get::<Position>(entity).unwrap().x
         );
         assert_eq!(
             velocity.is_some(),
-            world.root_view().has::<Velocity>(entity)
+            world.root_scope().has::<Velocity>(entity)
         );
         if let Some(velocity) = velocity {
             assert_eq!(
                 velocity.dx,
-                world.root_view().get::<Velocity>(entity).unwrap().dx
+                world.root_scope().get::<Velocity>(entity).unwrap().dx
             );
         }
     }

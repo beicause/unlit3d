@@ -88,7 +88,7 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
         max_seconds: max_seconds.max(0.0),
     }));
     let recorder = Arc::clone(&state);
-    let entity = world.root_view_mut().spawn((OnAudioFill::new(
+    let entity = world.root_scope_mut().spawn((OnAudioFill::new(
         AudioFillOrder(i32::MAX),
         move |world: &World, _entity: Entity, chunk: &mut AudioChunk| {
             let mut state = lock(&recorder);
@@ -103,7 +103,7 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
                 state.format = Some(format);
             }
             let gain = world
-                .root_view()
+                .root_scope()
                 .query::<&AudioGain>()
                 .next()
                 .map(|(_, gain)| gain.0)
@@ -195,7 +195,7 @@ impl RecordingHandle {
     /// nothing to hand back.
     #[must_use]
     pub(crate) fn stop(self, world: &mut World) -> Option<RecordedAudio> {
-        world.root_view_mut().despawn(self.entity);
+        world.root_scope_mut().despawn(self.entity);
         let mut state = lock(&self.state);
         let format = state.format?;
         Some(RecordedAudio {
@@ -206,7 +206,7 @@ impl RecordingHandle {
 
     /// Stop recording, despawn the source and discard the captured samples.
     pub(crate) fn cancel(self, world: &mut World) {
-        world.root_view_mut().despawn(self.entity);
+        world.root_scope_mut().despawn(self.entity);
     }
 }
 
@@ -216,7 +216,7 @@ mod tests {
     use crate::audio::dispatch_audio_fill;
 
     fn constant_source(world: &mut World, level: f32) -> Entity {
-        world.root_view_mut().spawn((OnAudioFill::new(
+        world.root_scope_mut().spawn((OnAudioFill::new(
             AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| {
                 chunk.out.fill(level);
@@ -228,7 +228,7 @@ mod tests {
     fn a_recording_captures_the_mixed_samples() {
         let mut world = World::new();
         constant_source(&mut world, 0.75);
-        world.root_view_mut().spawn((AudioGain(2.0),));
+        world.root_scope_mut().spawn((AudioGain(2.0),));
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,

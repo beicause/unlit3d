@@ -254,8 +254,8 @@ pub struct WorldArg {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
-    /// world's root view, which sees everything.
+    /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
+    /// world's root scope, which sees everything.
     #[serde(default)]
     pub scope: Option<u64>,
 }
@@ -300,8 +300,8 @@ pub struct EntityArg {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
-    /// world's root view, which sees everything.
+    /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
+    /// world's root scope, which sees everything.
     #[serde(default)]
     pub scope: Option<u64>,
     /// The entity's bits.
@@ -319,8 +319,8 @@ pub struct ListEntities {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
-    /// world's root view, which sees everything.
+    /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
+    /// world's root scope, which sees everything.
     #[serde(default)]
     pub scope: Option<u64>,
     /// How many entities to report.
@@ -339,8 +339,8 @@ pub struct GetComponent {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
-    /// world's root view, which sees everything.
+    /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
+    /// world's root scope, which sees everything.
     #[serde(default)]
     pub scope: Option<u64>,
     /// The entity's bits.
@@ -356,8 +356,8 @@ pub struct SetComponent {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
-    /// world's root view, which sees everything.
+    /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
+    /// world's root scope, which sees everything.
     #[serde(default)]
     pub scope: Option<u64>,
     /// The entity's bits.
@@ -375,8 +375,8 @@ pub struct SpawnEntity {
     /// holds, or `{"Handle": bits}` for a world a host entity carries.
     #[serde(default)]
     pub world: WorldId,
-    /// The entity whose view the tool runs in, as its `u64` bits. Omit for the
-    /// world's root view, which sees everything.
+    /// The entity whose scope the tool runs in, as its `u64` bits. Omit for the
+    /// world's root scope, which sees everything.
     #[serde(default)]
     pub scope: Option<u64>,
     /// The components, as an object of name to value.

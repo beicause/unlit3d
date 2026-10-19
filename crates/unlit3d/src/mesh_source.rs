@@ -18,7 +18,7 @@ use core::ops::DerefMut;
 use hashbrown::HashMap;
 use std::rc::Rc;
 
-use unlit_ecs::{ScopedWorld, TypeIdHashMap};
+use unlit_ecs::{Scope, TypeIdHashMap};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
@@ -254,7 +254,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If `ctx` does not name the world's device, queue and resource graph.
-    pub fn new(world: &ScopedWorld<'_>, ctx: RenderContext) -> Self {
+    pub fn new(world: &Scope<'_>, ctx: RenderContext) -> Self {
         let device = world
             .get::<wgpu::Device>(ctx.device)
             .expect("the context names the world's device")
@@ -415,7 +415,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's device resource is gone.
-    pub fn device(&self, world: &ScopedWorld<'_>) -> wgpu::Device {
+    pub fn device(&self, world: &Scope<'_>) -> wgpu::Device {
         world
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
@@ -427,7 +427,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's queue resource is gone.
-    pub fn queue(&self, world: &ScopedWorld<'_>) -> wgpu::Queue {
+    pub fn queue(&self, world: &Scope<'_>) -> wgpu::Queue {
         world
             .get::<wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
@@ -443,7 +443,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If the context's capabilities resource is gone.
-    pub fn capabilities(&self, world: &ScopedWorld<'_>) -> DeviceCapabilities {
+    pub fn capabilities(&self, world: &Scope<'_>) -> DeviceCapabilities {
         *world
             .get::<DeviceCapabilities>(self.context.capabilities)
             .expect("the context's capabilities resource exists")
@@ -452,7 +452,7 @@ impl MeshSource {
     /// Whether the device supports a non-zero `base_vertex` on an indexed draw.
     ///
     /// Shorthand for the one capability the mesh upload asks about.
-    pub(crate) fn base_vertex(&self, world: &ScopedWorld<'_>) -> bool {
+    pub(crate) fn base_vertex(&self, world: &Scope<'_>) -> bool {
         self.capabilities(world).base_vertex()
     }
 
@@ -466,10 +466,11 @@ impl MeshSource {
     ///
     /// If the context's graph resource is gone.
     pub fn graph<'w>(
-        view: &ScopedWorld<'w>,
+        scope: &Scope<'w>,
         ctx: RenderContext,
     ) -> impl DerefMut<Target = ResourceGraph> + 'w {
-        view.get_mut::<ResourceGraph>(ctx.graph)
+        scope
+            .get_mut::<ResourceGraph>(ctx.graph)
             .expect("the context's resource graph exists")
     }
 
@@ -497,7 +498,7 @@ impl MeshSource {
     /// # Panics
     ///
     /// If a family is already registered for `K`.
-    pub fn register_family<K, F, I>(&mut self, world: &ScopedWorld<'_>, factory: F, instances: I)
+    pub fn register_family<K, F, I>(&mut self, world: &Scope<'_>, factory: F, instances: I)
     where
         K: RenderPipelineKey + 'static,
         F: RenderPipelineFactory<<K::Variant as PipelineVariant<wgpu::RenderPipeline>>::Descriptor>
@@ -537,7 +538,7 @@ impl MeshSource {
     ///
     /// If `count` is zero for a non-empty draw, or if the index format does
     /// not match the packed data.
-    pub fn allocate_mesh(&mut self, world: &ScopedWorld<'_>, desc: MeshDesc) -> GpuMesh {
+    pub fn allocate_mesh(&mut self, world: &Scope<'_>, desc: MeshDesc) -> GpuMesh {
         let metadata = MeshMetadata {
             aabb_center: desc.aabb.center,
             aabb_half_extents: desc.aabb.half_extents,
@@ -561,7 +562,7 @@ impl MeshSource {
     /// a skinned draw can be required to name the pose entity it deforms by.
     pub(crate) fn allocate_mesh_with_metadata(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         desc: MeshDesc,
         mut metadata: MeshMetadata,
         skinned: bool,
@@ -719,7 +720,7 @@ impl MeshSource {
     /// graph holds it.
     pub fn register_texture_and_default_view(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         texture: wgpu::Texture,
     ) -> (ResHandle<wgpu::Texture>, ResHandle<TextureView>) {
         let mut graph = Self::graph(world, self.context);
@@ -737,7 +738,7 @@ impl MeshSource {
     /// insert it into the resource graph and return its id.
     pub fn register_sampler(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         descriptor: Option<wgpu::SamplerDescriptor<'_>>,
     ) -> ResHandle<wgpu::Sampler> {
         let sampler = self
@@ -764,7 +765,7 @@ impl MeshSource {
     /// If a resource `build` reads is not in the graph.
     pub fn allocate_material(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         build: impl Fn(&ResourceGraph) -> wgpu::BindGroup + 'static,
         dependencies: impl IntoIterator<Item = ResHandle>,
     ) -> GpuMaterial {
@@ -834,7 +835,7 @@ impl MeshSource {
     ///
     /// Like the metadata array the resource is replaced only when it is too
     /// small, so a steady frame rewrites in place and rebuilds no bind group.
-    fn upload_joints(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_joints(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder) {
         let device = self.device(world);
         let needed = self.packed_joints.len().max(1) as u64;
         Self::grow_array_to_fit(
@@ -858,7 +859,7 @@ impl MeshSource {
     /// resource is
     /// replaced only when it is too small, so a steady scene rewrites in place
     /// and rebuilds no bind group.
-    fn upload_morph_deltas(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_morph_deltas(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder) {
         if !self.morph_deltas_dirty {
             return;
         }
@@ -875,11 +876,7 @@ impl MeshSource {
 
     /// Grow the frame's morph-weight array if the packed data outgrew it, and
     /// upload it through the frame's encoder.
-    fn upload_morph_weights(
-        &mut self,
-        world: &ScopedWorld<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+    fn upload_morph_weights(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder) {
         let device = self.device(world);
         let needed = self.packed_morph_weights.len().max(1) as u64;
         Self::grow_array_to_fit(
@@ -918,7 +915,7 @@ impl MeshSource {
     /// [`Self::maintain`] rebuilds them. A no-op when the array already has the
     /// room, so a steady frame replaces nothing and marks nothing.
     fn grow_array_to_fit(
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         ctx: RenderContext,
         label: &str,
         array: &mut Array,
@@ -947,7 +944,7 @@ impl MeshSource {
     /// them. A built scene runs it once, at the point before the frame reads
     /// any of those groups; [`RenderContext::maintain_scope`] is how a build
     /// states that point without a call at each of its returns.
-    pub fn maintain(&mut self, world: &ScopedWorld<'_>) {
+    pub fn maintain(&mut self, world: &Scope<'_>) {
         Self::graph(world, self.context).maintain();
     }
 
@@ -955,7 +952,7 @@ impl MeshSource {
     /// encoder.
     fn upload_camera(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         encoder: &mut wgpu::CommandEncoder,
         view: &View,
     ) {
@@ -969,7 +966,7 @@ impl MeshSource {
 
     /// Upload the frame-globals uniform, staging the bytes through the frame's
     /// encoder.
-    fn upload_globals(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_globals(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder) {
         let buffer = Self::graph(world, self.context)
             .get(&self.globals_buf)
             .expect("globals buffer exists")
@@ -988,11 +985,7 @@ impl MeshSource {
     /// Each family owns one instance stream. The records are written in
     /// visible order, so the entry an instance index names is the entry whose
     /// draw range covers that index.
-    fn pack_family_instances(
-        &mut self,
-        world: &ScopedWorld<'_>,
-        encoder: &mut wgpu::CommandEncoder,
-    ) {
+    fn pack_family_instances(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder) {
         let device = self.device(world);
         // Split the borrows: each entry is written while its family's stream
         // grows, and while the two frame arrays a family may append to grow.
@@ -1031,7 +1024,7 @@ impl MeshSource {
     /// in the next frame together with the draws that read it. The storage
     /// buffer is recreated only when the array outgrows it, so a steady scene
     /// rewrites in place and rebuilds no bind group.
-    fn upload_metadata(&mut self, world: &ScopedWorld<'_>, encoder: &mut wgpu::CommandEncoder) {
+    fn upload_metadata(&mut self, world: &Scope<'_>, encoder: &mut wgpu::CommandEncoder) {
         if !self.metadata_dirty {
             return;
         }
@@ -1061,7 +1054,7 @@ impl MeshSource {
     /// [`MeshSource::sync_pool_node`] for why nothing may depend on it.
     pub(crate) fn vertex_node(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         layout: &VertexBufferLayoutDesc,
     ) -> ResHandle<wgpu::Buffer> {
         if let Some(id) = self.vertex_pool_ids.get(layout) {
@@ -1083,7 +1076,7 @@ impl MeshSource {
     /// follow it.
     pub(crate) fn sync_vertex_node(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         id: &ResHandle<wgpu::Buffer>,
         layout: &VertexBufferLayoutDesc,
     ) {
@@ -1133,7 +1126,7 @@ impl MeshSource {
     /// is a concrete pipeline valid for that target.
     fn collect_and_sort_visible(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         camera: &Camera,
         surface: SurfaceKey,
     ) {
@@ -1180,7 +1173,7 @@ impl MeshSource {
     /// [`DrawHandlesKey`] by value rather than the handles themselves, and the
     /// expensive part — reading the mesh component and cloning its buffers out
     /// of the graph — happens once per distinct key instead of once per entity.
-    fn assemble_frame(&mut self, world: &ScopedWorld<'_>) {
+    fn assemble_frame(&mut self, world: &Scope<'_>) {
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
         {
@@ -1291,8 +1284,9 @@ impl MeshSource {
 /// cameras may live — a caller switches between them by toggling
 /// [`Camera::active`] rather than by respawning. `None` means the scope has no
 /// active camera, and the source draws nothing.
-fn frame_camera(view: &ScopedWorld<'_>) -> Option<Camera> {
-    view.query::<&Camera>()
+fn frame_camera(scope: &Scope<'_>) -> Option<Camera> {
+    scope
+        .query::<&Camera>()
         .find(|(_, camera)| camera.active)
         .map(|(_, camera)| Camera {
             view_from_world: camera.view_from_world,
@@ -1304,7 +1298,7 @@ fn frame_camera(view: &ScopedWorld<'_>) -> Option<Camera> {
 impl FrameSource for MeshSource {
     fn build_scene(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
@@ -1479,7 +1473,7 @@ mod tests {
         /// depth that reads the bounds apart from one that reads the origin.
         fn tri_mesh_at(&mut self, z: f32) -> GpuMesh {
             self.source.allocate_unlit_mesh(
-                &self.world.root_view(),
+                &self.world.root_scope(),
                 &self.key,
                 UnlitMeshDesc {
                     positions: &[[0.0, 0.0, z], [1.0, 0.0, z], [0.0, 1.0, z]],
@@ -1494,7 +1488,7 @@ mod tests {
         /// A command encoder to record a test's uploads into.
         fn encoder(&self) -> wgpu::CommandEncoder {
             self.source
-                .device(&self.world.root_view())
+                .device(&self.world.root_scope())
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("test::encoder"),
                 })
@@ -1504,13 +1498,13 @@ mod tests {
         fn empty_bind_group(&self) -> wgpu::BindGroup {
             let layout = self
                 .source
-                .device(&self.world.root_view())
+                .device(&self.world.root_scope())
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("test::mesh::empty"),
                     entries: &[],
                 });
             self.source
-                .device(&self.world.root_view())
+                .device(&self.world.root_scope())
                 .create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("test::mesh::empty"),
                     layout: &layout,
@@ -1523,7 +1517,7 @@ mod tests {
     /// pipeline the last one was drawn with.
     fn resolve_draw(
         source: &mut MeshSource,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         surface: SurfaceKey,
     ) -> RenderPipelineId {
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
@@ -1545,10 +1539,11 @@ mod tests {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let mut source = MeshSource::new(&world.root_view(), ctx);
-        source.register_unlit_family(&world.root_view());
-        let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_view())));
-        let target = bind_test_target(&world.root_view(), ctx);
+        let mut source = MeshSource::new(&world.root_scope(), ctx);
+        source.register_unlit_family(&world.root_scope());
+        let key =
+            UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_scope())));
+        let target = bind_test_target(&world.root_scope(), ctx);
         Harness {
             world,
             source,
@@ -1559,7 +1554,7 @@ mod tests {
 
     /// Register a color texture and a matching depth texture in the context's
     /// graph and state them as the frame's target.
-    fn bind_test_target(view: &ScopedWorld<'_>, ctx: RenderContext) -> FrameTarget {
+    fn bind_test_target(view: &Scope<'_>, ctx: RenderContext) -> FrameTarget {
         let device = view
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device")
@@ -1633,13 +1628,13 @@ mod tests {
     /// mesh group a morphing variant binds.
     fn morph_mesh(harness: &mut Harness) -> GpuMesh {
         let key = UnlitPipelineKey::new(UnlitOptions::standard(
-            &harness.source.device(&harness.world.root_view()),
+            &harness.source.device(&harness.world.root_scope()),
         ));
         // One target displacing all three vertices by the same amount, packed
         // vertex-major: three components per vertex.
         let deltas = vec![0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0];
         harness.source.allocate_unlit_mesh(
-            &harness.world.root_view(),
+            &harness.world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -1660,7 +1655,7 @@ mod tests {
     ) -> (ResHandle<TextureView>, ResHandle<wgpu::Sampler>) {
         let texture = harness
             .source
-            .device(&harness.world.root_view())
+            .device(&harness.world.root_scope())
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("test::texture"),
                 size: wgpu::Extent3d {
@@ -1677,11 +1672,11 @@ mod tests {
             });
         let view = harness
             .source
-            .register_texture_and_default_view(&harness.world.root_view(), texture)
+            .register_texture_and_default_view(&harness.world.root_scope(), texture)
             .1;
         let sampler = harness
             .source
-            .register_sampler(&harness.world.root_view(), None);
+            .register_sampler(&harness.world.root_scope(), None);
         (view, sampler)
     }
 
@@ -1690,56 +1685,56 @@ mod tests {
         let mut world = World::new();
         // Spawned first, so a selection that ignored `active` would pick this
         // one instead of the active camera below.
-        let inactive = world.root_view_mut().spawn((Camera {
+        let inactive = world.root_scope_mut().spawn((Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-1.0, 0.0, 0.0)),
             clip_from_view: glam::Mat4::IDENTITY,
             active: true,
         },));
         world
-            .root_view()
+            .root_scope()
             .with_mut::<Camera, _>(inactive, |camera| camera.active = false)
             .expect("the entity carries a camera");
-        let active = world.root_view_mut().spawn((Camera {
+        let active = world.root_scope_mut().spawn((Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
             clip_from_view: glam::Mat4::IDENTITY,
             active: true,
         },));
 
-        let camera = frame_camera(&world.root_view()).expect("a camera is active");
+        let camera = frame_camera(&world.root_scope()).expect("a camera is active");
         assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
         assert!(camera.active);
 
         // With every camera inactive, the frame has nothing to draw through.
         world
-            .root_view()
+            .root_scope()
             .with_mut::<Camera, _>(active, |camera| camera.active = false)
             .expect("the entity carries a camera");
-        assert!(frame_camera(&world.root_view()).is_none());
+        assert!(frame_camera(&world.root_scope()).is_none());
     }
 
     #[test]
     fn each_scope_frames_through_its_own_camera() {
         let mut world = World::new();
-        let scene = world.root_view_mut().spawn((Transform::default(),));
-        world.view_mut(scene).unwrap().spawn((Camera {
+        let scene = world.root_scope_mut().spawn((Transform::default(),));
+        world.scope_mut(scene).unwrap().spawn((Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
             clip_from_view: glam::Mat4::IDENTITY,
             active: true,
         },));
         // A second scene, with no camera of its own.
-        let sibling = world.root_view_mut().spawn((Transform::default(),));
+        let sibling = world.root_scope_mut().spawn((Transform::default(),));
 
-        let camera = frame_camera(&world.view(scene).unwrap()).expect("the scene has a camera");
+        let camera = frame_camera(&world.scope(scene).unwrap()).expect("the scene has a camera");
         assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
 
         // A sibling's camera is out of reach in both directions, which is what
         // lets two sources frame different parts of one world.
         assert!(
-            frame_camera(&world.view(sibling).unwrap()).is_none(),
+            frame_camera(&world.scope(sibling).unwrap()).is_none(),
             "a scope does not borrow its sibling's camera"
         );
         assert!(
-            frame_camera(&world.root_view()).is_some(),
+            frame_camera(&world.root_scope()).is_some(),
             "the root sees the scene's camera"
         );
     }
@@ -1770,9 +1765,9 @@ mod tests {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let mut source = MeshSource::new(&world.root_view(), ctx);
+        let mut source = MeshSource::new(&world.root_scope(), ctx);
 
-        source.register_unlit_family(&world.root_view());
+        source.register_unlit_family(&world.root_scope());
 
         // Registration records the family; its first concrete pipeline is
         // built only when a draw resolves a variant.
@@ -1791,7 +1786,7 @@ mod tests {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let source = MeshSource::new(&world.root_view(), ctx);
+        let source = MeshSource::new(&world.root_scope(), ctx);
 
         // Nothing is privileged: pipelines arrive only through registration.
         assert!(source.pipelines.is_empty());
@@ -1801,13 +1796,13 @@ mod tests {
     fn a_unlit_mesh_packs_the_channels_its_desc_carries() {
         let mut h = harness();
         let key = UnlitPipelineKey::new(UnlitOptions::standard(
-            &h.source.device(&h.world.root_view()),
+            &h.source.device(&h.world.root_scope()),
         ));
 
         // The mesh packs the channels the caller passed, not the ones the key
         // used to declare: the options are pure policy now.
         let textured = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -1818,7 +1813,7 @@ mod tests {
             },
         );
         let bare = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -1838,10 +1833,10 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
         let material = h
             .source
-            .allocate_unlit_material(&h.world.root_view(), &key, view, sampler);
+            .allocate_unlit_material(&h.world.root_scope(), &key, view, sampler);
         let ctx = h.source.context();
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx)
+            MeshSource::graph(&h.world.root_scope(), ctx)
                 .get(&material.bind_group_id)
                 .is_some()
         );
@@ -1857,13 +1852,13 @@ mod tests {
             color_format: wgpu::TextureFormat::Bgra8Unorm,
             ..a
         };
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        resolve_draw(&mut h.source, &h.world.root_view(), a);
-        resolve_draw(&mut h.source, &h.world.root_view(), b);
+        resolve_draw(&mut h.source, &h.world.root_scope(), a);
+        resolve_draw(&mut h.source, &h.world.root_scope(), b);
         assert_eq!(h.source.pipelines.len(), 2);
 
         let ctx = h.source.context();
@@ -1882,7 +1877,7 @@ mod tests {
             .collect();
         for (index, id) in ids.iter().enumerate() {
             assert!(
-                MeshSource::graph(&h.world.root_view(), ctx)
+                MeshSource::graph(&h.world.root_scope(), ctx)
                     .get(id)
                     .is_some(),
                 "pipeline {index}'s global group is in the graph"
@@ -1899,12 +1894,12 @@ mod tests {
         // A family has no concrete pipeline until a draw asks for a variant.
         let mesh = h.tri_mesh();
         let surface = h.target.surface;
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
         ));
-        resolve_draw(&mut h.source, &h.world.root_view(), surface);
+        resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         assert_eq!(h.source.pipelines.len(), 1);
     }
@@ -1915,14 +1910,14 @@ mod tests {
         let (view, sampler) = test_material_resources(&mut h);
 
         let material = h.source.allocate_unlit_material(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &h.key,
             view.clone(),
             sampler.clone(),
         );
         let ctx = h.source.context();
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx)
+            MeshSource::graph(&h.world.root_scope(), ctx)
                 .get(&material.bind_group_id)
                 .is_some()
         );
@@ -1942,10 +1937,10 @@ mod tests {
         // indices and displacements live in pools, so those are nodes the
         // source owns and survive the mesh — what the mesh loses is its share
         // of them, which `remove_mesh` hands back.
-        let before = MeshSource::graph(&h.world.root_view(), ctx).len();
+        let before = MeshSource::graph(&h.world.root_scope(), ctx).len();
         let index_pool_free = h.source.index_pool.free_space();
         assert!(matches!(
-            MeshSource::graph(&h.world.root_view(), ctx).get(&mesh.parts.root),
+            MeshSource::graph(&h.world.root_scope(), ctx).get(&mesh.parts.root),
             Some(Virtual)
         ));
         assert!(
@@ -1958,10 +1953,10 @@ mod tests {
         // to the root is kept: an id is a strong reference, so holding one
         // would keep the very node this test watches the graph collect.
         h.source.remove_mesh(mesh);
-        h.source.maintain(&h.world.root_view());
+        h.source.maintain(&h.world.root_scope());
 
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx).len() < before,
+            MeshSource::graph(&h.world.root_scope(), ctx).len() < before,
             "the graph shrank"
         );
         assert!(
@@ -1978,7 +1973,7 @@ mod tests {
         // meshes carry none.
         let bind_group = h.empty_bind_group();
         let mesh = h.source.allocate_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             MeshDesc {
                 vertex_buffers: ArrayVec::new(),
                 count: 3,
@@ -1991,7 +1986,7 @@ mod tests {
         // The pools are the source's, not the mesh's: a mesh that goes away
         // must not take the shared buffers with it, so they sit outside the
         // root and the root holds only what is the mesh's own.
-        let dependencies: Vec<_> = MeshSource::graph(&h.world.root_view(), ctx)
+        let dependencies: Vec<_> = MeshSource::graph(&h.world.root_scope(), ctx)
             .dependencies(&mesh.parts.root)
             .collect();
         let bind_group = mesh
@@ -2009,7 +2004,7 @@ mod tests {
             "the index pool is not under the root"
         );
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx)
+            MeshSource::graph(&h.world.root_scope(), ctx)
                 .get(&pool)
                 .is_some(),
             "the index pool survives"
@@ -2040,7 +2035,7 @@ mod tests {
         let ctx = h.source.context();
         let (view, sampler) = test_material_resources(&mut h);
         let material = h.source.allocate_unlit_material(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &h.key,
             view.clone(),
             sampler.clone(),
@@ -2049,24 +2044,24 @@ mod tests {
         // Giving the handle up is the whole of it: an id is a strong
         // reference, so a clone kept here would keep the bind group alive and
         // the assertion below would have nothing to observe.
-        let before = MeshSource::graph(&h.world.root_view(), ctx).len();
+        let before = MeshSource::graph(&h.world.root_scope(), ctx).len();
         drop(material);
-        h.source.maintain(&h.world.root_view());
+        h.source.maintain(&h.world.root_scope());
 
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx).len() < before,
+            MeshSource::graph(&h.world.root_scope(), ctx).len() < before,
             "the bind group is gone"
         );
         // The view and sampler are the caller's, so giving up the material
         // that reads them leaves them alone.
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx)
+            MeshSource::graph(&h.world.root_scope(), ctx)
                 .get(&view)
                 .is_some(),
             "the view stays"
         );
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx)
+            MeshSource::graph(&h.world.root_scope(), ctx)
                 .get(&sampler)
                 .is_some(),
             "the sampler stays"
@@ -2148,7 +2143,7 @@ mod tests {
             Some(first_node.clone())
         );
         assert_eq!(
-            MeshSource::graph(&h.world.root_view(), ctx).get(&first_node),
+            MeshSource::graph(&h.world.root_scope(), ctx).get(&first_node),
             Some(h.source.index_pool.buffer()),
             "the node follows the pool's buffer"
         );
@@ -2166,10 +2161,10 @@ mod tests {
     fn a_non_indexed_mesh_holds_no_index_allocation() {
         let mut h = harness();
         let key = UnlitPipelineKey::new(UnlitOptions::standard(
-            &h.source.device(&h.world.root_view()),
+            &h.source.device(&h.world.root_scope()),
         ));
         let mesh = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2203,7 +2198,7 @@ mod tests {
         {
             assert_eq!(first_id, second_id, "the streams share a buffer");
             assert!(
-                MeshSource::graph(&h.world.root_view(), ctx)
+                MeshSource::graph(&h.world.root_scope(), ctx)
                     .get(first_id)
                     .is_some(),
                 "the stream's node holds a buffer"
@@ -2260,7 +2255,7 @@ mod tests {
                 .buffer(layout)
                 .expect("the layout has a buffer");
             assert_eq!(
-                MeshSource::graph(&h.world.root_view(), ctx).get(node),
+                MeshSource::graph(&h.world.root_scope(), ctx).get(node),
                 Some(pool_buffer),
                 "the node follows the pool's buffer"
             );
@@ -2282,7 +2277,7 @@ mod tests {
 
         // The z-sorted entity is the nearer of the two, so depth alone would
         // put it first: it is drawn second because it carries the marker.
-        let z_sorted = h.world.root_view_mut().spawn((
+        let z_sorted = h.world.root_scope_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 4.0),
                 ..Default::default()
@@ -2291,7 +2286,7 @@ mod tests {
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
         ));
-        let opaque = h.world.root_view_mut().spawn((
+        let opaque = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
@@ -2299,7 +2294,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
         assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
@@ -2310,7 +2305,7 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
 
-        let near = h.world.root_view_mut().spawn((
+        let near = h.world.root_scope_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 4.0),
                 ..Default::default()
@@ -2319,13 +2314,13 @@ mod tests {
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
         ));
-        let middle = h.world.root_view_mut().spawn((
+        let middle = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
         ));
-        let far = h.world.root_view_mut().spawn((
+        let far = h.world.root_scope_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, -4.0),
                 ..Default::default()
@@ -2340,7 +2335,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![far, middle, near]);
     }
@@ -2357,7 +2352,7 @@ mod tests {
 
         // Both entity origins are at the same depth; only the geometry differs.
         let translation = glam::Vec3::new(0.0, 0.0, 2.0);
-        let near_entity = h.world.root_view_mut().spawn((
+        let near_entity = h.world.root_scope_mut().spawn((
             Transform {
                 translation,
                 ..Default::default()
@@ -2366,7 +2361,7 @@ mod tests {
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
         ));
-        let far_entity = h.world.root_view_mut().spawn((
+        let far_entity = h.world.root_scope_mut().spawn((
             Transform {
                 translation,
                 ..Default::default()
@@ -2378,7 +2373,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         // The far mesh is drawn first even though its entity origin is not
         // deeper than the other's.
@@ -2395,7 +2390,7 @@ mod tests {
         let mesh = h.tri_mesh();
         let aabb = mesh.aabb;
         let translation = glam::Vec3::ZERO;
-        let entity = h.world.root_view_mut().spawn((
+        let entity = h.world.root_scope_mut().spawn((
             Transform {
                 translation,
                 ..Default::default()
@@ -2407,7 +2402,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         let entry = &h.source.visible_cache[0];
         assert_eq!(entry.mesh.entity, entity);
@@ -2461,7 +2456,7 @@ mod tests {
 
         // Both entity origins are at the same depth; only the geometry differs.
         let translation = glam::Vec3::new(0.0, 0.0, 2.0);
-        let near_entity = h.world.root_view_mut().spawn((
+        let near_entity = h.world.root_scope_mut().spawn((
             Transform {
                 translation,
                 ..Default::default()
@@ -2470,7 +2465,7 @@ mod tests {
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
         ));
-        let far_entity = h.world.root_view_mut().spawn((
+        let far_entity = h.world.root_scope_mut().spawn((
             Transform {
                 translation,
                 ..Default::default()
@@ -2482,7 +2477,7 @@ mod tests {
 
         let camera = test_orthographic_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![far_entity, near_entity]);
         assert!(h.source.visible_cache[0].depth > h.source.visible_cache[1].depth);
@@ -2494,13 +2489,13 @@ mod tests {
         // A second key whose specialized options differ, so it resolves to its
         // own concrete pipeline.
         let alternative_key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
 
         // Warm both variants, first key first, so their pipeline ids follow
         // the order they were resolved in.
         let standard_mesh = h.tri_mesh();
         let alternative_mesh = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &alternative_key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2512,18 +2507,18 @@ mod tests {
         );
         let surface = h.target.surface;
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        let warm_standard = h.world.root_view_mut().spawn((
+        let warm_standard = h.world.root_scope_mut().spawn((
             Transform::default(),
             standard_mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let warm_alternative = h.world.root_view_mut().spawn((
+        let warm_alternative = h.world.root_scope_mut().spawn((
             Transform::default(),
             alternative_mesh.clone(),
             UnlitPipeline::new(alternative_key.clone()),
         ));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, surface);
         let first_id = h
             .source
             .visible_cache
@@ -2539,24 +2534,24 @@ mod tests {
             .expect("the uv-less entity is visible")
             .pipeline_id;
         assert!(first_id < second_id);
-        assert!(h.world.root_view_mut().despawn(warm_standard));
-        assert!(h.world.root_view_mut().despawn(warm_alternative));
+        assert!(h.world.root_scope_mut().despawn(warm_standard));
+        assert!(h.world.root_scope_mut().despawn(warm_alternative));
 
         // Spawn the later-drawn entity first: draw order is the pipeline id,
         // not the spawn order.
-        let second = h.world.root_view_mut().spawn((
+        let second = h.world.root_scope_mut().spawn((
             Transform::default(),
             alternative_mesh,
             UnlitPipeline::new(alternative_key),
         ));
-        let first = h.world.root_view_mut().spawn((
+        let first = h.world.root_scope_mut().spawn((
             Transform::default(),
             standard_mesh,
             UnlitPipeline::new(h.key.clone()),
         ));
 
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, surface);
 
         assert_eq!(drawn(&h.source), vec![first, second]);
     }
@@ -2567,21 +2562,21 @@ mod tests {
         let mesh = h.tri_mesh();
         let (view, sampler) = test_material_resources(&mut h);
         let shared = h.source.allocate_unlit_material(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &h.key,
             view.clone(),
             sampler.clone(),
         );
         let (view, sampler) = test_material_resources(&mut h);
         let other = h.source.allocate_unlit_material(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &h.key,
             view.clone(),
             sampler.clone(),
         );
         assert_ne!(shared.sort_key(), other.sort_key());
 
-        let a = h.world.root_view_mut().spawn((
+        let a = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
@@ -2589,13 +2584,13 @@ mod tests {
         ));
         // The odd one out: sharing no material with the other two, so it is
         // the draw that has to sit on the other side of the pair.
-        let _other_material = h.world.root_view_mut().spawn((
+        let _other_material = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             other.clone(),
         ));
-        let c = h.world.root_view_mut().spawn((
+        let c = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
@@ -2604,7 +2599,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         // The two draws sharing a material are neighbours, so the source
         // binds its bind group once for the pair.
@@ -2621,12 +2616,12 @@ mod tests {
     fn sorting_survives_a_second_frame_on_the_reused_cache() {
         let mut h = harness();
         let mesh = h.tri_mesh();
-        let opaque = h.world.root_view_mut().spawn((
+        let opaque = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let z_sorted = h.world.root_view_mut().spawn((
+        let z_sorted = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
@@ -2635,13 +2630,13 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
         assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
 
         // The cache is cleared and refilled, not reallocated.
         let capacity = h.source.visible_cache.capacity();
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
         assert_eq!(drawn(&h.source), vec![opaque, z_sorted]);
         assert_eq!(h.source.visible_cache.capacity(), capacity);
     }
@@ -2654,15 +2649,15 @@ mod tests {
         let mesh = h.tri_mesh();
 
         let internal = h.target.surface;
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let first = resolve_draw(&mut h.source, &h.world.root_view(), internal);
+        let first = resolve_draw(&mut h.source, &h.world.root_scope(), internal);
         // The same key twice reuses one compiled pipeline.
         assert_eq!(
-            resolve_draw(&mut h.source, &h.world.root_view(), internal),
+            resolve_draw(&mut h.source, &h.world.root_scope(), internal),
             first
         );
 
@@ -2672,7 +2667,7 @@ mod tests {
             color_format: wgpu::TextureFormat::Bgra8Unorm,
             ..internal
         };
-        let second = resolve_draw(&mut h.source, &h.world.root_view(), other);
+        let second = resolve_draw(&mut h.source, &h.world.root_scope(), other);
         assert_ne!(second, first);
         assert_eq!(h.source.pipelines.len(), 2);
     }
@@ -2682,12 +2677,12 @@ mod tests {
         let mut h = harness();
         let surface = h.target.surface;
         let standard = h.tri_mesh();
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             standard.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let first = resolve_draw(&mut h.source, &h.world.root_view(), surface);
+        let first = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         // A second mesh whose layout declares fewer channels implies a
         // different variant. Dropping only the color attribute keeps the UV
@@ -2709,12 +2704,12 @@ mod tests {
         other.vertex_layout = VertexLayout::new(layout);
         assert_ne!(other.vertex_layout, standard.vertex_layout);
 
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             other.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let second = resolve_draw(&mut h.source, &h.world.root_view(), surface);
+        let second = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         assert_ne!(second, first);
         assert_eq!(h.source.pipelines.len(), 2);
@@ -2725,12 +2720,12 @@ mod tests {
         let mut h = harness();
         let surface = h.target.surface;
         let base = h.tri_mesh();
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             base.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let first = resolve_draw(&mut h.source, &h.world.root_view(), surface);
+        let first = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         // A layout the flags cannot tell from `base`: the attribute is at the
         // same location, so the derived flags are identical even though the
@@ -2752,12 +2747,12 @@ mod tests {
         twin.vertex_layout = VertexLayout::new(layout);
         assert_ne!(twin.vertex_layout, base.vertex_layout);
 
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             twin.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
-        let second = resolve_draw(&mut h.source, &h.world.root_view(), surface);
+        let second = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
         assert_eq!(second, first);
         assert_eq!(h.source.pipelines.len(), 1);
     }
@@ -2769,9 +2764,9 @@ mod tests {
         // No GpuRenderPipeline: the query filters it out.
         let _unpipelined = h
             .world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Transform::default(), mesh.clone()));
-        let drawn_entity = h.world.root_view_mut().spawn((
+        let drawn_entity = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
@@ -2779,7 +2774,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         assert_eq!(drawn(&h.source), vec![drawn_entity]);
     }
@@ -2796,7 +2791,7 @@ mod tests {
         h.tri_mesh();
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert_eq!(
             h.source.metadata_array.capacity(),
             1,
@@ -2806,7 +2801,7 @@ mod tests {
         h.tri_mesh();
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert_eq!(
             h.source.metadata_array.capacity(),
             2,
@@ -2817,45 +2812,45 @@ mod tests {
         h.tri_mesh();
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 3);
 
         h.tri_mesh();
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 4);
 
         // A fifth entry outgrows four, so the buffer grows again.
-        let before = MeshSource::graph(&h.world.root_view(), ctx)
+        let before = MeshSource::graph(&h.world.root_scope(), ctx)
             .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert_eq!(
             h.source.metadata_array.capacity(),
             6,
             "growing past four reaches six (4 * 1.5)"
         );
         assert_ne!(
-            MeshSource::graph(&h.world.root_view(), ctx).get(&h.source.metadata_buf),
+            MeshSource::graph(&h.world.root_scope(), ctx).get(&h.source.metadata_buf),
             before.as_ref(),
             "growth replaced the buffer"
         );
 
         // A sixth entry fits in six, so the buffer is left alone.
-        let before = MeshSource::graph(&h.world.root_view(), ctx)
+        let before = MeshSource::graph(&h.world.root_scope(), ctx)
             .get(&h.source.metadata_buf)
             .cloned();
         h.tri_mesh();
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert_eq!(h.source.metadata_array.capacity(), 6, "six entries fit");
         assert_eq!(
-            MeshSource::graph(&h.world.root_view(), ctx).get(&h.source.metadata_buf),
+            MeshSource::graph(&h.world.root_scope(), ctx).get(&h.source.metadata_buf),
             before.as_ref(),
             "no growth means the same buffer, so no global group is rebuilt"
         );
@@ -2867,7 +2862,7 @@ mod tests {
         let mesh = h.tri_mesh();
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert!(!h.source.metadata_dirty, "the mesh's own upload cleared it");
 
         // Removing the mesh clears its entry in the array, so the array
@@ -2876,7 +2871,7 @@ mod tests {
         assert!(h.source.metadata_dirty, "removing a mesh marks the array");
         let encoder = h.encoder();
         h.source
-            .upload_metadata(&h.world.root_view(), &mut { encoder });
+            .upload_metadata(&h.world.root_scope(), &mut { encoder });
         assert!(!h.source.metadata_dirty, "the upload cleared the mark");
     }
 
@@ -2887,7 +2882,7 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         // A drawable entity, but nothing the source can view it from.
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
@@ -2898,7 +2893,7 @@ mod tests {
         let mut encoder = h.encoder();
         let ctx = h.source.context();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
         assert!(h.source.visible_cache.is_empty(), "nothing was drawn");
         assert!(h.source.scene().draws.is_empty(), "the scene is empty");
     }
@@ -2909,9 +2904,9 @@ mod tests {
         // A variant that binds no material group, so the frame needs no
         // material to be a complete draw.
         let key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         let mesh = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2922,9 +2917,9 @@ mod tests {
             },
         );
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(key),
@@ -2934,7 +2929,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
         let drawn_first = drawn(&h.source);
         assert_eq!(drawn_first.len(), 1, "the entity was drawn");
         let capacities = (
@@ -2946,7 +2941,7 @@ mod tests {
 
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
         assert_eq!(drawn(&h.source), drawn_first, "the same draws, in order");
         assert_eq!(
             (
@@ -2967,11 +2962,11 @@ mod tests {
     fn an_indexed_mesh_followed_by_another_keeps_its_own_slice() {
         let mut h = harness();
         let key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         // Both meshes are indexed and share the pool's index buffer, so what
         // tells their draws apart is the slice each one names.
         let first = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2982,7 +2977,7 @@ mod tests {
             },
         );
         let second = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -2996,21 +2991,21 @@ mod tests {
         assert_ne!(first.first, second.first, "the slices do not overlap");
 
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             first,
             UnlitPipeline::new(key.clone()),
         ));
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Transform::default(), second, UnlitPipeline::new(key)));
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
         let shapes: Vec<DrawShape> = h
             .source
             .visible_cache
@@ -3038,10 +3033,10 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
         for i in 0..3 {
-            h.world.root_view_mut().spawn((
+            h.world.root_scope_mut().spawn((
                 Transform {
                     translation: glam::Vec3::new(i as f32, 0.0, 0.0),
                     ..Default::default()
@@ -3054,7 +3049,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
 
         assert_eq!(h.source.scene().draws.len(), 1, "one draw for all three");
         let range = &h.source.scene().draws[0].range;
@@ -3079,10 +3074,10 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
         for i in 0..3 {
-            h.world.root_view_mut().spawn((
+            h.world.root_scope_mut().spawn((
                 Transform {
                     translation: glam::Vec3::new(i as f32, 0.0, 0.0),
                     ..Default::default()
@@ -3095,7 +3090,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
 
         assert_eq!(h.source.visible_cache.len(), 3, "all three are visible");
         assert_eq!(
@@ -3120,22 +3115,22 @@ mod tests {
         let second = h.tri_mesh();
         assert_ne!(first.first, second.first, "the meshes own different slices");
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
         let key = h.key.clone();
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform::default(),
             first,
             UnlitPipeline::new(key.clone()),
         ));
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Transform::default(), second, UnlitPipeline::new(key)));
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
 
         assert_eq!(
             h.source.scene().draws.len(),
@@ -3152,11 +3147,11 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
         // Two translucent copies of the same mesh, drawn back to front.
         let key = h.key.clone();
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 1.0),
                 ..Default::default()
@@ -3165,7 +3160,7 @@ mod tests {
             UnlitPipeline::new(key.clone()),
             ZSortedDrawing,
         ));
-        h.world.root_view_mut().spawn((
+        h.world.root_scope_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 2.0),
                 ..Default::default()
@@ -3178,7 +3173,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
 
         assert_eq!(
             h.source.scene().draws.len(),
@@ -3197,18 +3192,18 @@ mod tests {
         // groups all exist.
         let mesh = h.tri_mesh();
         h.world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
-        let drawn = h.world.root_view_mut().spawn((
+        let drawn = h.world.root_scope_mut().spawn((
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
         ));
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_view(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
 
-        let before = MeshSource::graph(&h.world.root_view(), ctx).len();
+        let before = MeshSource::graph(&h.world.root_scope(), ctx).len();
         // Read the ids out before the source goes: once it is dropped there is
         // no `h.source` left to name them.
         let camera_buf = h.source.camera_buf.clone();
@@ -3219,11 +3214,11 @@ mod tests {
         // Despawning the drawn entity and giving the local handle up leaves the
         // mesh root unheld, and dropping the source gives up everything it
         // registered itself.
-        h.world.root_view_mut().despawn(drawn);
+        h.world.root_scope_mut().despawn(drawn);
         drop(mesh);
         drop(h.source);
-        MeshSource::graph(&h.world.root_view(), ctx).maintain();
-        let after = MeshSource::graph(&h.world.root_view(), ctx).len();
+        MeshSource::graph(&h.world.root_scope(), ctx).maintain();
+        let after = MeshSource::graph(&h.world.root_scope(), ctx).len();
 
         assert!(
             after < before,
@@ -3234,13 +3229,13 @@ mod tests {
         // is the point of a counted handle: the resource goes when the last id
         // does, not when its creator does.
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx)
+            MeshSource::graph(&h.world.root_scope(), ctx)
                 .get(&camera_buf)
                 .is_some(),
             "a held id keeps the source's camera buffer alive"
         );
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx)
+            MeshSource::graph(&h.world.root_scope(), ctx)
                 .get(&index_pool_id)
                 .is_some(),
             "a held id keeps the index pool alive"
@@ -3249,9 +3244,9 @@ mod tests {
         // Giving those ids up is what lets the graph collect them.
         drop(camera_buf);
         drop(index_pool_id);
-        MeshSource::graph(&h.world.root_view(), ctx).maintain();
+        MeshSource::graph(&h.world.root_scope(), ctx).maintain();
         assert!(
-            MeshSource::graph(&h.world.root_view(), ctx).len() < after,
+            MeshSource::graph(&h.world.root_scope(), ctx).len() < after,
             "the last ids going is what frees the source's resources"
         );
     }
@@ -3281,9 +3276,9 @@ mod tests {
         // A different policy specializes to a different variant, hence a
         // different RenderPipelineId.
         let other_key =
-            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_view())));
+            UnlitPipelineKey::new(alternative_options(&h.source.device(&h.world.root_scope())));
         let other = h.source.allocate_unlit_mesh(
-            &h.world.root_view(),
+            &h.world.root_scope(),
             &other_key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -3292,7 +3287,7 @@ mod tests {
             },
         );
 
-        let near = h.world.root_view_mut().spawn((
+        let near = h.world.root_scope_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 4.0),
                 ..Default::default()
@@ -3301,7 +3296,7 @@ mod tests {
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
         ));
-        let far = h.world.root_view_mut().spawn((
+        let far = h.world.root_scope_mut().spawn((
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, -4.0),
                 ..Default::default()
@@ -3313,7 +3308,7 @@ mod tests {
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 40.0));
         h.source
-            .collect_and_sort_visible(&h.world.root_view(), &camera, h.target.surface);
+            .collect_and_sort_visible(&h.world.root_scope(), &camera, h.target.surface);
 
         let order: Vec<Entity> = h
             .source

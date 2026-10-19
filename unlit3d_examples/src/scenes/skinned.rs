@@ -40,12 +40,12 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
     // The variant that reads the joint stream: its position buffer is wider by
     // the joint pair, so a stream packed for the plain cube would misread.
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_view())));
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));
@@ -93,7 +93,7 @@ fn build(
             // GPU call: the source packs and uploads it once per frame.
             skin.set_angle(bend_angle(frame));
             *world
-                .view(source_entity)
+                .scope(source_entity)
                 .expect("the source is alive")
                 .get_mut::<SkinPose>(pose_entity)
                 .expect("the pose entity carries a `SkinPose`") = skin.pose();

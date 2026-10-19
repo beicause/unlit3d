@@ -58,8 +58,8 @@ impl LocalTasks {
     /// Every world the framework builds is given one this way at creation,
     /// before its setup runs, so the setup can spawn a task of its own.
     pub fn install(world: &mut World) {
-        if world.root_view().query::<&LocalTasks>().next().is_none() {
-            world.root_view_mut().spawn((Self::new(),));
+        if world.root_scope().query::<&LocalTasks>().next().is_none() {
+            world.root_scope_mut().spawn((Self::new(),));
         }
     }
 
@@ -74,7 +74,7 @@ impl LocalTasks {
     /// turn with it, exactly as a panicking job or tick would.
     pub fn pump(world: &mut World) {
         Self::install(world);
-        let Some((_, mut tasks)) = world.root_view().query::<&mut LocalTasks>().next() else {
+        let Some((_, mut tasks)) = world.root_scope().query::<&mut LocalTasks>().next() else {
             return;
         };
         tasks.0.run_until_stalled();
@@ -89,7 +89,7 @@ impl LocalTasks {
     where
         F: Future<Output = ()> + 'static,
     {
-        let Some((_, tasks)) = world.root_view().query::<&LocalTasks>().next() else {
+        let Some((_, tasks)) = world.root_scope().query::<&LocalTasks>().next() else {
             return false;
         };
         tasks.0.spawner().spawn_local(future).is_ok()

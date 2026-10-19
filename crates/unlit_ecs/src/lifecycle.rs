@@ -10,14 +10,14 @@
 //! Both components hold a list: an entity may carry several callbacks, and they
 //! run in the order they were registered.
 //!
-//! A callback gets the view of the entity's own scope, which is its parent, and
+//! A callback gets the scope of the entity's own scope, which is its parent, and
 //! cannot change the world's structure: it queues those changes instead.
 
 use crate::entity::Entity;
-use crate::view::ScopedWorld;
+use crate::view::Scope;
 
 /// One callback of a lifecycle component.
-pub type LifecycleCallback = Box<dyn for<'a, 'b> FnMut(&'a ScopedWorld<'b>, Entity)>;
+pub type LifecycleCallback = Box<dyn for<'a, 'b> FnMut(&'a Scope<'b>, Entity)>;
 
 /// The callbacks that run, in order, right after the entity is spawned.
 #[derive(Default)]
@@ -44,17 +44,14 @@ impl OnSpawn {
     #[must_use]
     pub fn with(
         mut self,
-        callback: impl for<'a, 'b> FnMut(&'a ScopedWorld<'b>, Entity) + 'static,
+        callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static,
     ) -> Self {
         self.0.push(Box::new(callback));
         self
     }
 
     /// Append a callback at run time.
-    pub fn push(
-        &mut self,
-        callback: impl for<'a, 'b> FnMut(&'a ScopedWorld<'b>, Entity) + 'static,
-    ) {
+    pub fn push(&mut self, callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static) {
         self.0.push(Box::new(callback));
     }
 }
@@ -70,17 +67,14 @@ impl OnDespawn {
     #[must_use]
     pub fn with(
         mut self,
-        callback: impl for<'a, 'b> FnMut(&'a ScopedWorld<'b>, Entity) + 'static,
+        callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static,
     ) -> Self {
         self.0.push(Box::new(callback));
         self
     }
 
     /// Append a callback at run time.
-    pub fn push(
-        &mut self,
-        callback: impl for<'a, 'b> FnMut(&'a ScopedWorld<'b>, Entity) + 'static,
-    ) {
+    pub fn push(&mut self, callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static) {
         self.0.push(Box::new(callback));
     }
 }

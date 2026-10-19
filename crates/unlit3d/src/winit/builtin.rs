@@ -3,7 +3,7 @@
 //! Everything here is an ordinary component. The behaviours are constructor
 //! functions that return the matching callback family, so a built-in has no
 //! dispatch path an application cannot take: it is driven by the same
-//! [`query`](unlit_ecs::ScopedWorld::query) the host runs over any other behaviour.
+//! [`query`](unlit_ecs::Scope::query) the host runs over any other behaviour.
 //!
 //! State the host owns lives in plain components ([`Resumed`],
 //! [`DisplayHandle`]); a behaviour that wants the host to act writes a request
@@ -41,7 +41,7 @@ pub struct WinitWindow(pub Arc<Window>);
 /// first, in query order.
 pub fn window(world: &World) -> Option<Arc<Window>> {
     world
-        .root_view()
+        .root_scope()
         .query::<&WinitWindow>()
         .next()
         .map(|(_, window)| window.0.clone())
@@ -91,7 +91,7 @@ pub fn create_window_on_resume() -> OnResumed {
             return;
         }
         let Some(attributes) = world
-            .root_view()
+            .root_scope()
             .get::<WindowSpec>(entity)
             .map(|spec| spec.0.clone())
         else {
@@ -101,7 +101,7 @@ pub fn create_window_on_resume() -> OnResumed {
             return;
         };
         let _ = world
-            .root_view()
+            .root_scope()
             .with_mut::<CreateWindowRequest, _>(entity, |request| request.0 = Some(attributes));
     })
 }
@@ -111,7 +111,7 @@ pub fn exit_on_close_requested() -> OnWindowEvent {
     OnWindowEvent::new(|world, entity, payload| {
         if matches!(payload.event, WindowEvent::CloseRequested) {
             let _ = world
-                .root_view()
+                .root_scope()
                 .with_mut::<ExitRequest, _>(entity, |request| request.0 = true);
         }
     })
@@ -128,7 +128,7 @@ pub fn exit_on_escape() -> OnWindowEvent {
             && event.physical_key == PhysicalKey::Code(KeyCode::Escape)
         {
             let _ = world
-                .root_view()
+                .root_scope()
                 .with_mut::<ExitRequest, _>(entity, |request| request.0 = true);
         }
     })
@@ -141,7 +141,7 @@ pub fn exit_on_escape() -> OnWindowEvent {
 pub fn request_redraw_while_foreground() -> OnAboutToWait {
     OnAboutToWait::new(|world, _entity, ()| {
         let resumed = world
-            .root_view()
+            .root_scope()
             .query::<&Resumed>()
             .next()
             .is_some_and(|(_, state)| state.0);
@@ -178,13 +178,13 @@ mod tests {
     #[test]
     fn exit_on_close_requested_asks_the_host_to_exit() {
         let mut world = World::new();
-        let entity = world.root_view_mut().spawn((ExitRequest(false),));
+        let entity = world.root_scope_mut().spawn((ExitRequest(false),));
         world.apply();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::CloseRequested));
         assert_eq!(
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<ExitRequest, _>(entity, |request| request.0),
             Some(true)
         );
@@ -193,13 +193,13 @@ mod tests {
     #[test]
     fn exit_on_close_requested_ignores_other_events() {
         let mut world = World::new();
-        let entity = world.root_view_mut().spawn((ExitRequest(false),));
+        let entity = world.root_scope_mut().spawn((ExitRequest(false),));
         world.apply();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::Focused(true)));
         assert_eq!(
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<ExitRequest, _>(entity, |request| request.0),
             Some(false)
         );
@@ -209,19 +209,19 @@ mod tests {
     fn create_window_on_resume_copies_the_spec_into_the_request() {
         let mut world = World::new();
         let spec = WindowSpec(Window::default_attributes().with_title("unlit3d"));
-        let entity = world.root_view_mut().spawn((
+        let entity = world.root_scope_mut().spawn((
             spec,
             CreateWindowRequest(None),
             create_window_on_resume(),
         ));
         world.apply();
         let mut behaviour = world
-            .root_view()
+            .root_scope()
             .get_mut::<OnResumed>(entity)
             .expect("the behaviour is there");
         behaviour.run(&world, entity, &());
         let attributes = world
-            .root_view()
+            .root_scope()
             .with_mut::<CreateWindowRequest, _>(entity, |request| request.0.take())
             .flatten()
             .expect("the request is filled");
@@ -232,11 +232,11 @@ mod tests {
     fn request_redraw_while_foreground_needs_the_resumed_state() {
         let mut world = World::new();
         let entity = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Resumed(false), request_redraw_while_foreground()));
         world.apply();
         let mut behaviour = world
-            .root_view()
+            .root_scope()
             .get_mut::<OnAboutToWait>(entity)
             .expect("the behaviour is there");
         behaviour.run(&world, entity, &());

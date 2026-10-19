@@ -1023,9 +1023,9 @@ fn build(
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    let device = source.device(&world.root_view());
-    let queue = source.queue(&world.root_view());
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    let device = source.device(&world.root_scope());
+    let queue = source.queue(&world.root_scope());
 
     // -- the sky family ------------------------------------------------------
     let sky_layout = sky_bind_group_layout(&device);
@@ -1048,7 +1048,7 @@ fn build(
         },
     );
     let (sky_view, sky_uniforms) = {
-        let mut graph = MeshSource::graph(&world.root_view(), context);
+        let mut graph = MeshSource::graph(&world.root_scope(), context);
         let sky_texture = graph.insert(sky_texture, None);
         let sky_view = graph.insert(sky_view, None);
         // The view keeps the texture alive, so the graph needs no other handle
@@ -1058,7 +1058,7 @@ fn build(
         (sky_view, sky_uniforms)
     };
     let sky_sampler = source.register_sampler(
-        &world.root_view(),
+        &world.root_scope(),
         Some(wgpu::SamplerDescriptor {
             label: Some("unlit3d_examples::custom_pipeline::sky"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -1070,7 +1070,7 @@ fn build(
         }),
     );
     source.register_family::<SkyKey, _, _>(
-        &world.root_view(),
+        &world.root_scope(),
         SkyFactory {
             device: device.clone(),
             layout: sky_layout.clone(),
@@ -1084,7 +1084,7 @@ fn build(
         descriptor: Arc::new(sky_pipeline(&device, &sky_layout)),
     });
     let sky_mesh = source.allocate_mesh(
-        &world.root_view(),
+        &world.root_scope(),
         MeshDesc {
             count: SKY_VERTICES,
             aabb: Aabb::new(glam::Vec3::ZERO, glam::Vec3::splat(SKY_EXTENT)),
@@ -1100,10 +1100,10 @@ fn build(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let particle_uniforms = MeshSource::graph(&world.root_view(), context)
+    let particle_uniforms = MeshSource::graph(&world.root_scope(), context)
         .insert(particle_uniforms_buffer.clone(), None);
     source.register_family::<ParticleKey, _, _>(
-        &world.root_view(),
+        &world.root_scope(),
         ParticleFactory,
         ParticleInstances,
     );
@@ -1111,7 +1111,7 @@ fn build(
         descriptor: Arc::new(particle_pipeline(&device, &particle_layout)),
     });
     let particle_mesh = source.allocate_mesh(
-        &world.root_view(),
+        &world.root_scope(),
         MeshDesc {
             count: PARTICLE_VERTICES,
             aabb: Aabb::new(
@@ -1126,7 +1126,7 @@ fn build(
         let layout = particle_layout.clone();
         let uniforms = particle_uniforms.clone();
         source.allocate_material(
-            &world.root_view(),
+            &world.root_scope(),
             move |graph| {
                 let uniforms = graph
                     .get(&uniforms)
@@ -1146,7 +1146,7 @@ fn build(
 
     // No family of the built-in unlit pipeline is registered: every draw in this
     // scene goes through a pipeline the example compiled itself.
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
     let camera_entity = super::spawn_in(
         world,
         source_entity,
@@ -1206,7 +1206,7 @@ fn build(
             );
 
             let camera = world
-                .view(source_entity)
+                .scope(source_entity)
                 .expect("the source is alive")
                 .get::<Camera>(camera_entity)
                 .expect("the scene's camera exists");

@@ -337,8 +337,8 @@ pub fn camera_looking_at(eye: glam::Vec3, target: glam::Vec3, size: (u32, u32)) 
 
 /// Re-aim `entity`'s camera at `target` from `eye` for a frame of `size`.
 ///
-/// The camera hangs in `scope`, the source that draws it, so the view is that
-/// source's. The scenes whose camera never moves still call this every frame,
+/// The camera hangs in `scope`, the source that draws it, so the view is its
+/// own. The scenes whose camera never moves still call this every frame,
 /// so their projection keeps the frame's own aspect. It is what a scene does in
 /// [`SceneControl::advance`](SceneControl) instead of capturing the size it was
 /// built at.
@@ -352,7 +352,7 @@ pub fn aim_camera(
 ) {
     let mut camera = camera_looking_at(eye, target, size);
     world
-        .view(scope)
+        .scope(scope)
         .expect("the scope is alive")
         .with_mut::<Camera, _>(entity, |current| {
             camera.active = current.active;
@@ -494,7 +494,7 @@ pub fn morph_deltas(positions: &[[f32; 3]]) -> MorphDeltas {
 /// of it shows.
 pub fn spawn_in<B: unlit_ecs::Bundle>(world: &mut World, scope: Entity, bundle: B) -> Entity {
     world
-        .view_mut(scope)
+        .scope_mut(scope)
         .expect("the scope is alive")
         .spawn(bundle)
 }
@@ -507,7 +507,7 @@ pub fn spawn_in<B: unlit_ecs::Bundle>(world: &mut World, scope: Entity, bundle: 
 pub fn spawn_shared<B: unlit_ecs::Bundle>(world: &mut World, bundle: B) -> Entity {
     let shared = world.shared();
     world
-        .view_mut(shared)
+        .scope_mut(shared)
         .expect("the shared scope exists")
         .spawn(bundle)
 }
@@ -515,8 +515,8 @@ pub fn spawn_shared<B: unlit_ecs::Bundle>(world: &mut World, bundle: B) -> Entit
 /// Despawn `entity` and its subtree, through the scope that owns it.
 pub fn despawn_in(world: &mut World, scope: Entity, entity: Entity) -> bool {
     world
-        .view_mut(scope)
-        .is_some_and(|mut view| view.despawn(entity))
+        .scope_mut(scope)
+        .is_some_and(|mut scope| scope.despawn(entity))
 }
 
 /// Run `f` on the world's `MeshSource`, which lives on the source entity.
@@ -526,20 +526,20 @@ pub fn despawn_in(world: &mut World, scope: Entity, entity: Entity) -> bool {
 pub fn with_mesh_source<R>(
     world: &World,
     source_entity: Entity,
-    f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
+    f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
 ) -> R {
-    // The view is the source's own, so what its closure reads is the subtree
+    // The scope is the source's own, so what its closure reads is the subtree
     // the source draws.
-    let view = world
-        .view(source_entity)
+    let scope = world
+        .scope(source_entity)
         .expect("the source entity is alive");
-    let mut source = view
+    let mut source = scope
         .get_mut::<Source>(source_entity)
         .expect("the source entity exists");
     let mesh = source
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");
-    f(mesh, &view)
+    f(mesh, &scope)
 }
 
 /// Allocate the unit cube through the source, its vertices offset by `offset`

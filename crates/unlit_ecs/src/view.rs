@@ -1,12 +1,12 @@
-//! Views of a scope: the read and write entry points of a world.
+//! The scope accessors: the read and write entry points of a world.
 //!
-//! A view carries the scope it looks through. It sees that scope, everything
+//! A scope names the entity it is rooted at. It sees that entity, everything
 //! below it, and the shared subtree; it does not see its ancestors or its
-//! siblings. There is no way up: a view cannot name the world it came from, so
+//! siblings. There is no way up: a scope cannot name the world it came from, so
 //! holding one is not a way to reach the rest.
 //!
-//! Reading and writing components needs only [`ScopedWorld`]. Structural
-//! changes -- spawning, despawning, relinking -- need [`ScopedWorldMut`], whose
+//! Reading and writing components needs only [`Scope`]. Structural
+//! changes -- spawning, despawning, relinking -- need [`ScopeMut`], whose
 //! operations are confined to the scope's own subtree.
 
 use crate::archetype::Archetype;
@@ -19,39 +19,39 @@ use crate::query::{Query, QueryFilter, QueryIter};
 use crate::scope::ScopeOf;
 use crate::world::World;
 
-/// A read-only view of one scope and everything below it.
+/// A read-only scope: one entity and everything below it.
 #[derive(Clone, Copy)]
-pub struct ScopedWorld<'w> {
+pub struct Scope<'w> {
     pub(crate) world: &'w World,
     pub(crate) scope: Entity,
 }
 
-impl core::fmt::Debug for ScopedWorld<'_> {
+impl core::fmt::Debug for Scope<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Only the scope is printed: dumping every visible entity would make
         // one assertion message page through the whole subtree.
-        f.debug_struct("ScopedWorld")
+        f.debug_struct("Scope")
             .field("scope", &self.scope)
             .finish_non_exhaustive()
     }
 }
 
-impl<'w> ScopedWorld<'w> {
+impl<'w> Scope<'w> {
     pub(crate) fn new(world: &'w World, scope: Entity) -> Self {
         Self { world, scope }
     }
 
-    /// The scope this view looks through.
+    /// The entity this scope is rooted at.
     #[must_use]
-    pub fn scope(&self) -> Entity {
+    pub fn entity(&self) -> Entity {
         self.scope
     }
 
-    /// Whether `entity` is visible from this view.
+    /// Whether `entity` is visible from this scope.
     ///
     /// This is the addressability test: the two roots answer `true` so that
     /// their components can be read and written like any other entity's, even
-    /// though counting and querying omit them (see [`ScopedWorld::len`]).
+    /// though counting and querying omit them (see [`Scope::len`]).
     #[must_use]
     pub fn contains(&self, entity: Entity) -> bool {
         self.world.visible(self.scope, entity)
@@ -60,11 +60,11 @@ impl<'w> ScopedWorld<'w> {
     /// Whether `entity` is content rather than the tree's own scaffolding.
     ///
     /// The root and the shared scope are entities so that they can carry
-    /// components and be named as scopes, but they are not what a view is
+    /// components and be named as scopes, but they are not what a scope is
     /// looking at: counting them would put a constant two on every report and
     /// make an empty world non-empty. Their subtrees are content, though: a
-    /// resource spawned under the shared scope is visible to every view and
-    /// belongs in what a view counts.
+    /// resource spawned under the shared scope is visible to every scope and
+    /// belongs in what a scope counts.
     #[must_use]
     pub fn is_content(&self, entity: Entity) -> bool {
         !self.world.is_scaffolding(entity)
@@ -97,7 +97,7 @@ impl<'w> ScopedWorld<'w> {
 
     /// Run `f` on the component of `entity`.
     ///
-    /// This is the scoped form of [`ScopedWorld::get_mut`]: the borrow ends
+    /// This is the scoped form of [`Scope::get_mut`]: the borrow ends
     /// with the closure, so nothing else can trip over it. It is also how a
     /// behaviour component is driven: the closure is the behaviour, and the
     /// caller decides which entities to run it on.
@@ -165,11 +165,11 @@ impl<'w> ScopedWorld<'w> {
         }
     }
 
-    /// The archetype with this id, when this view sees every row of it.
+    /// The archetype with this id, when this scope sees every row of it.
     ///
     /// A partially visible archetype answers `None`: handing out its entity
-    /// list would report rows the view cannot otherwise reach. A caller that
-    /// only wants the shape of an archetype uses [`ScopedWorld::archetype_infos`],
+    /// list would report rows the scope cannot otherwise reach. A caller that
+    /// only wants the shape of an archetype uses [`Scope::archetype_infos`],
     /// whose length is the visible one.
     #[must_use]
     pub fn archetype(&self, id: u32) -> Option<&'w Archetype> {
@@ -177,7 +177,7 @@ impl<'w> ScopedWorld<'w> {
         self.fully_visible(archetype).then_some(archetype)
     }
 
-    /// Every archetype this view sees in full, in id order.
+    /// Every archetype this scope sees in full, in id order.
     pub fn archetypes(&self) -> impl Iterator<Item = &'w Archetype> {
         self.world
             .archetypes_slice()
@@ -185,7 +185,7 @@ impl<'w> ScopedWorld<'w> {
             .filter(|archetype| self.fully_visible(archetype))
     }
 
-    /// The number of archetypes this view sees in full.
+    /// The number of archetypes this scope sees in full.
     #[must_use]
     pub fn archetype_count(&self) -> usize {
         self.archetypes().count()
@@ -193,17 +193,17 @@ impl<'w> ScopedWorld<'w> {
 
     // -- the tree ----------------------------------------------------------
 
-    /// The view of a visible scope, or `None` when it is out of reach.
+    /// The scope of a visible scope, or `None` when it is out of reach.
     #[must_use]
-    pub fn view(&self, scope: Entity) -> Option<ScopedWorld<'w>> {
-        self.contains(scope)
-            .then(|| ScopedWorld::new(self.world, scope))
+    pub fn scope(&self, scope: Entity) -> Option<Scope<'w>> {
+        self.contains(scope).then(|| Scope::new(self.world, scope))
     }
 
     /// The parent of a visible entity.
     #[must_use]
-    pub fn scope_of(&self, entity: Entity) -> Option<Entity> {
-        self.contains(entity).then(|| self.world.scope_of(entity))?
+    pub fn parent_scope(&self, entity: Entity) -> Option<Entity> {
+        self.contains(entity)
+            .then(|| self.world.parent_scope(entity))?
     }
 
     /// The direct children of a visible entity.
@@ -239,7 +239,7 @@ impl<'w> ScopedWorld<'w> {
         self.len() == 0
     }
 
-    /// The view's shape: visible counts, the component inventory, and the two
+    /// The scope's shape: visible counts, the component inventory, and the two
     /// roots.
     #[must_use]
     pub fn info(&self) -> WorldInfo {
@@ -340,7 +340,7 @@ impl<'w> ScopedWorld<'w> {
 
     /// A queue of structural changes, all of them in this scope.
     ///
-    /// Takes the view by value, so the queue outlives it: the view is a copy of
+    /// Takes the scope by value, so the queue outlives it: the scope is a copy of
     /// a reference, and a queue that borrowed the temporary would be unusable
     /// in the position it is most wanted.
     #[must_use]
@@ -350,10 +350,10 @@ impl<'w> ScopedWorld<'w> {
 
     // -- visibility --------------------------------------------------------
 
-    /// Whether an archetype has any row this view can see.
+    /// Whether an archetype has any row this scope can see.
     ///
     /// A `Uniform(scope)` archetype is either entirely visible or has exactly
-    /// one visible row: the view's own entity, which lives in `scope` because
+    /// one visible row: the scope's own entity, which lives in `scope` because
     /// a scope is an entity and its parent is where it lives. Both cases are
     /// decided here so that the row loop stays free of tree walks.
     fn archetype_visible(&self, archetype: &Archetype) -> bool {
@@ -361,13 +361,13 @@ impl<'w> ScopedWorld<'w> {
             crate::archetype::ScopeSummary::Empty => false,
             crate::archetype::ScopeSummary::Uniform(scope) => {
                 self.world.visible(self.scope, scope)
-                    || self.world.scope_of(self.scope) == Some(scope)
+                    || self.world.parent_scope(self.scope) == Some(scope)
             }
             crate::archetype::ScopeSummary::Mixed => true,
         }
     }
 
-    /// Whether every row of `archetype` is visible from this view.
+    /// Whether every row of `archetype` is visible from this scope.
     fn fully_visible(&self, archetype: &Archetype) -> bool {
         match archetype.scope_summary() {
             crate::archetype::ScopeSummary::Empty => true,
@@ -384,8 +384,8 @@ impl<'w> ScopedWorld<'w> {
                 self.world.visible(self.scope, scope) || archetype.entities()[row] == self.scope
             }
             crate::archetype::ScopeSummary::Mixed => {
-                // The view's own entity lives in its parent's scope, so its
-                // row is visible even though that scope is above the view.
+                // The scope's own entity lives in its parent's scope, so its
+                // row is visible even though that scope is above the scope.
                 archetype.entities()[row] == self.scope
                     || archetype
                         .cell::<ScopeOf>(row)
@@ -395,7 +395,7 @@ impl<'w> ScopedWorld<'w> {
         }
     }
 
-    /// The number of rows of `archetype` this view can see, its own content
+    /// The number of rows of `archetype` this scope can see, its own content
     /// only: the scaffolding is never counted.
     fn visible_len(&self, index: u32, archetype: &Archetype) -> usize {
         // The scaffolding shares an archetype with every ScopeOf-only entity,
@@ -415,7 +415,7 @@ impl<'w> ScopedWorld<'w> {
             crate::archetype::ScopeSummary::Uniform(scope) => {
                 if self.world.visible(self.scope, scope) {
                     // The whole archetype is this one scope, so its rows are
-                    // the view's — except a shared row, which reaches the view
+                    // the scope's — except a shared row, which reaches the scope
                     // from outside it and so belongs to no other archetype.
                     archetype.len() - scaffold
                 } else {
@@ -436,27 +436,27 @@ impl<'w> ScopedWorld<'w> {
     }
 }
 
-/// A mutable view of one scope and everything below it.
-pub struct ScopedWorldMut<'w> {
+/// A mutable scope: one entity and everything below it.
+pub struct ScopeMut<'w> {
     world: &'w mut World,
     scope: Entity,
 }
 
-impl<'w> ScopedWorldMut<'w> {
+impl<'w> ScopeMut<'w> {
     pub(crate) fn new(world: &'w mut World, scope: Entity) -> Self {
         Self { world, scope }
     }
 
-    /// The scope this view looks through.
+    /// The entity this scope is rooted at.
     #[must_use]
-    pub fn scope(&self) -> Entity {
+    pub fn entity(&self) -> Entity {
         self.scope
     }
 
-    /// The read-only form of this view.
+    /// The read-only form of this scope.
     #[must_use]
-    pub fn as_view(&self) -> ScopedWorld<'_> {
-        ScopedWorld::new(self.world, self.scope)
+    pub fn as_scope(&self) -> Scope<'_> {
+        Scope::new(self.world, self.scope)
     }
 
     /// Spawn `bundle` in this scope.
@@ -478,7 +478,7 @@ impl<'w> ScopedWorldMut<'w> {
 
     /// Despawn `entity` and its whole subtree.
     ///
-    /// Returns `false` when the entity is not alive or not owned by this view.
+    /// Returns `false` when the entity is not alive or not owned by this scope.
     pub fn despawn(&mut self, entity: Entity) -> bool {
         if self.world.is_root(entity) || self.world.is_shared(entity) {
             return false;
@@ -491,7 +491,7 @@ impl<'w> ScopedWorldMut<'w> {
 
     /// Make `child` a child of `parent`.
     ///
-    /// Both must be owned by this view, neither may be a root, and `parent`
+    /// Both must be owned by this scope, neither may be a root, and `parent`
     /// may not be inside `child`'s subtree.
     pub fn link(&mut self, child: Entity, parent: Entity) -> bool {
         if !self.world.owns(self.scope, child) || !self.world.owns(self.scope, parent) {
@@ -508,13 +508,13 @@ impl<'w> ScopedWorldMut<'w> {
         self.world.unlink_in(child, self.scope)
     }
 
-    /// The mutable view of a visible scope.
+    /// The mutable scope of a visible scope.
     #[must_use]
-    pub fn view_mut(&mut self, scope: Entity) -> Option<ScopedWorldMut<'_>> {
+    pub fn scope_mut(&mut self, scope: Entity) -> Option<ScopeMut<'_>> {
         if !self.world.visible(self.scope, scope) {
             return None;
         }
-        Some(ScopedWorldMut::new(self.world, scope))
+        Some(ScopeMut::new(self.world, scope))
     }
 
     /// Apply every queued command.

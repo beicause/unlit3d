@@ -52,14 +52,14 @@ fn build(
     let SceneOptions { ui: panels, .. } = options;
 
     // The built-in mesh source and the frame driver, as resource entities.
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_view())));
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_scope())));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.
-    let root = world.root_view();
+    let root = world.root_scope();
     let (mesh, material) = root
         .with_mut::<Source, _>(source_entity, |source| {
             let source = source
@@ -107,12 +107,12 @@ fn build(
     );
     // The panel is drawn by the UI source and the cube by the mesh source, and
     // one source's scope reaches nothing of the other's. The state both of them
-    // touch therefore lives in the shared subtree, which every view reaches: the
+    // touch therefore lives in the shared subtree, which every scope reaches: the
     // spin the panel drives, the frame count it reads, the drag the pointer
     // behaviour follows and the orbit it writes.
     let (spin, orbit) = {
         let mut shared = world
-            .view_mut(world.shared())
+            .scope_mut(world.shared())
             .expect("the shared scope exists");
         (
             shared.spawn((
@@ -206,11 +206,11 @@ fn build(
     // A key behaviour: space toggles the spin, and it reads the state the
     // panel's checkbox also writes.
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((OnKey::new(move |world, _entity, key| {
             if key.pressed && !key.repeat && key.key == Key::Space {
                 let _ = world
-                    .root_view()
+                    .root_scope()
                     .with_mut::<Spin, _>(spin, |state| state.spinning = !state.spinning);
             }
         }),));
@@ -219,7 +219,7 @@ fn build(
     // `OnPointer` rather than `OnMouse`, so the same drag works with a mouse
     // and with a finger on a touch screen.
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((OnPointer::new(move |world, _entity, event| {
             let Some(position) = event.position else {
                 if matches!(
@@ -227,7 +227,7 @@ fn build(
                     PointerAction::Released { .. } | PointerAction::Left
                 ) {
                     let _ = world
-                        .root_view()
+                        .root_scope()
                         .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
                 }
                 return;
@@ -240,21 +240,21 @@ fn build(
             // one — so a gesture that started on the scene keeps working even when
             // it sweeps over a panel. The contact is dropped here too, so a press
             // that ends over a UI never leaves a drag behind for the scene.
-            let over_ui = world.root_view().query::<&Source>().any(|(_, source)| {
+            let over_ui = world.root_scope().query::<&Source>().any(|(_, source)| {
                 source
                     .as_ref::<UiSource>()
                     .is_some_and(|ui| ui.context().egui_wants_pointer_input())
             });
             if over_ui {
                 let _ = world
-                    .root_view()
+                    .root_scope()
                     .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
                 return;
             }
 
             match event.action {
                 PointerAction::Pressed => {
-                    let _ = world.root_view().with_mut::<DragFrom, _>(spin, |drag| {
+                    let _ = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
                         drag.0 = Some(PointerContact {
                             kind: event.kind,
                             id: event.id,
@@ -263,7 +263,7 @@ fn build(
                     });
                 }
                 PointerAction::Moved => {
-                    let previous = world.root_view().with_mut::<DragFrom, _>(spin, |drag| {
+                    let previous = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
                         let tracked = drag.0.as_mut()?;
                         if (tracked.kind, tracked.id) != (event.kind, event.id) {
                             return None;
@@ -275,14 +275,17 @@ fn build(
                     };
                     const RADIANS_PER_PIXEL: f32 = 0.01;
                     let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
-                    let _ = world.root_view().with_mut::<CameraOrbit, _>(orbit, |drag| {
-                        drag.azimuth -= dx * RADIANS_PER_PIXEL;
-                        drag.elevation = (drag.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
-                    });
+                    let _ = world
+                        .root_scope()
+                        .with_mut::<CameraOrbit, _>(orbit, |drag| {
+                            drag.azimuth -= dx * RADIANS_PER_PIXEL;
+                            drag.elevation =
+                                (drag.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+                        });
                 }
                 PointerAction::Released { .. } | PointerAction::Left => {
                     let _ = world
-                        .root_view()
+                        .root_scope()
                         .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
                 }
                 PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
@@ -293,7 +296,7 @@ fn build(
         advance: Box::new(move |world, _frame, delta_time, frame_size| {
             // The spin and the orbit live in the shared subtree, which the root
             // view reaches along with everything else.
-            let root = world.root_view();
+            let root = world.root_scope();
 
             // The panel's button leaves its press as state; consume it here,
             // once.
@@ -319,7 +322,7 @@ fn build(
             // The cube and the camera are what the mesh source draws, so they
             // are read and written through its own scope.
             let view = world
-                .view(source_entity)
+                .scope(source_entity)
                 .expect("the source entity is alive");
             let angle = root
                 .query::<&Spin>()

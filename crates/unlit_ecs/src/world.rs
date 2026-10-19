@@ -13,8 +13,8 @@
 //!
 //! Every entity lives in a scope, and a scope is another entity: the one its
 //! [`ScopeOf`] component names. The world therefore holds a tree, and the
-//! entry points that read or write it are views of a scope rather than
-//! methods on the world -- [`ScopedWorld`] and [`ScopedWorldMut`]. A view sees
+//! entry points that read or write it are scopes of a scope rather than
+//! methods on the world -- [`Scope`] and [`ScopeMut`]. A scope sees
 //! its own subtree and nothing beside it; only `&World` reaches the root.
 //!
 //! An entity's components are fixed when it is spawned; there is no way to add
@@ -39,7 +39,7 @@ use crate::entity::{Entities, Entity, Location};
 use crate::hash::TypeIdHashMap;
 use crate::lifecycle::Lifecycle;
 use crate::scope::{ScopeOf, ScopeTree};
-use crate::view::{ScopedWorld, ScopedWorldMut};
+use crate::view::{Scope, ScopeMut};
 
 /// Entities and their components.
 pub struct World {
@@ -52,13 +52,13 @@ pub struct World {
     commands: RefCell<VecDeque<Box<dyn Command>>>,
     /// The scope tree, derived from the [`ScopeOf`] components.
     tree: RefCell<ScopeTree>,
-    /// The entity that owns the world, whose view sees everything.
+    /// The entity that owns the world, whose scope sees everything.
     root: Entity,
-    /// The entity whose subtree every view sees.
+    /// The entity whose subtree every scope sees.
     shared: Entity,
     /// The archetype holding the two scaffolding entities.
     ///
-    /// They are the only entities that exist without being content, so a view
+    /// They are the only entities that exist without being content, so a scope
     /// that counts rows has to know where they are.
     scaffolding: u32,
 }
@@ -75,7 +75,7 @@ impl Default for World {
 impl World {
     /// A world holding its root and shared scope, and nothing else.
     ///
-    /// Both are ordinary entities: they appear in the root view's count and
+    /// Both are ordinary entities: they appear in the root scope's count and
     /// can carry components. Neither can be despawned or linked.
     pub fn new() -> Self {
         let mut world = Self {
@@ -120,13 +120,13 @@ impl World {
 
     // -- the tree ----------------------------------------------------------
 
-    /// The entity that owns the world, whose view sees everything.
+    /// The entity that owns the world, whose scope sees everything.
     #[must_use]
     pub fn root(&self) -> Entity {
         self.root
     }
 
-    /// The entity whose subtree every view sees.
+    /// The entity whose subtree every scope sees.
     #[must_use]
     pub fn shared(&self) -> Entity {
         self.shared
@@ -148,7 +148,7 @@ impl World {
     ///
     /// This is narrower than [`World::is_shared`], which covers the whole
     /// shared subtree: the entities a caller spawns there are content, and a
-    /// view counts and queries them like any other.
+    /// scope counts and queries them like any other.
     #[must_use]
     pub fn is_scaffolding(&self, entity: Entity) -> bool {
         entity == self.root || entity == self.shared
@@ -160,10 +160,10 @@ impl World {
         self.tree_read().is_descendant(ancestor, entity)
     }
 
-    /// Whether a view of `caller` sees `candidate`.
+    /// Whether a scope of `caller` sees `candidate`.
     ///
-    /// The shared subtree reaches every view, the root sees everything, and a
-    /// view sees itself and everything below it. A handle that is not alive is
+    /// The shared subtree reaches every scope, the root sees everything, and a
+    /// scope sees itself and everything below it. A handle that is not alive is
     /// visible from nowhere, the root included: seeing a place is not the same
     /// as there being something in it.
     #[must_use]
@@ -177,7 +177,7 @@ impl World {
             || self.is_descendant(caller, candidate)
     }
 
-    /// Whether a view of `caller` may despawn or relink `entity`.
+    /// Whether a scope of `caller` may despawn or relink `entity`.
     ///
     /// Ownership is stricter than visibility: the shared subtree is readable
     /// from everywhere but only the root may move or remove it.
@@ -188,7 +188,7 @@ impl World {
 
     /// The parent of a live entity, or `None`.
     #[must_use]
-    pub fn scope_of(&self, entity: Entity) -> Option<Entity> {
+    pub fn parent_scope(&self, entity: Entity) -> Option<Entity> {
         self.tree_read().parent(entity)
     }
 
@@ -204,7 +204,7 @@ impl World {
     /// repair a caller runs if it ever suspects the two have drifted.
     pub fn rebuild_children(&mut self) {
         let pairs: Vec<(Entity, Entity)> = self
-            .root_view()
+            .root_scope()
             .query::<(Entity, &ScopeOf)>()
             .map(|(entity, (_, scope))| (entity, scope.0))
             .collect();
@@ -223,32 +223,32 @@ impl World {
         archetype == self.scaffolding
     }
 
-    // -- views -------------------------------------------------------------
+    // -- scopes -------------------------------------------------------------
 
-    /// The view of the root: everything in the world.
+    /// The scope of the root: everything in the world.
     #[must_use]
-    pub fn root_view(&self) -> ScopedWorld<'_> {
-        ScopedWorld::new(self, self.root)
+    pub fn root_scope(&self) -> Scope<'_> {
+        Scope::new(self, self.root)
     }
 
-    /// The view of `scope`, or `None` when there is no such scope.
+    /// The scope of `scope`, or `None` when there is no such scope.
     #[must_use]
-    pub fn view(&self, scope: Entity) -> Option<ScopedWorld<'_>> {
+    pub fn scope(&self, scope: Entity) -> Option<Scope<'_>> {
         self.tree_read().parent(scope)?;
-        Some(ScopedWorld::new(self, scope))
+        Some(Scope::new(self, scope))
     }
 
-    /// The mutable view of the root: everything in the world.
+    /// The mutable scope of the root: everything in the world.
     #[must_use]
-    pub fn root_view_mut(&mut self) -> ScopedWorldMut<'_> {
-        ScopedWorldMut::new(self, self.root)
+    pub fn root_scope_mut(&mut self) -> ScopeMut<'_> {
+        ScopeMut::new(self, self.root)
     }
 
-    /// The mutable view of `scope`, or `None` when there is no such scope.
+    /// The mutable scope of `scope`, or `None` when there is no such scope.
     #[must_use]
-    pub fn view_mut(&mut self, scope: Entity) -> Option<ScopedWorldMut<'_>> {
+    pub fn scope_mut(&mut self, scope: Entity) -> Option<ScopeMut<'_>> {
         self.tree_read().parent(scope)?;
-        Some(ScopedWorldMut::new(self, scope))
+        Some(ScopeMut::new(self, scope))
     }
 
     // -- handles -----------------------------------------------------------
@@ -256,7 +256,7 @@ impl World {
     /// A handle to an entity that does not exist yet.
     ///
     /// The handle becomes live when a bundle is put on it, either with a
-    /// view's spawn or by applying a queued [`crate::Commands::spawn`].
+    /// scope's spawn or by applying a queued [`crate::Commands::spawn`].
     pub fn reserve_entity(&self) -> Entity {
         self.entities_write().reserve()
     }
@@ -346,7 +346,7 @@ impl World {
         if !self.entities_read().contains(child) || !self.entities_read().contains(scope) {
             return false;
         }
-        if self.scope_of(child) == Some(scope) {
+        if self.parent_scope(child) == Some(scope) {
             return false;
         }
         self.write_scope(child, scope);
@@ -425,11 +425,11 @@ impl World {
 
     /// Run every callback of the lifecycle component `C` the entity carries.
     ///
-    /// The callbacks run in the order they were registered. The view is the
+    /// The callbacks run in the order they were registered. The scope is the
     /// one of the entity's own scope, which is its parent: a callback that
     /// wants the entity's own subtree descends into the entity itself.
     fn run_lifecycle<C: 'static + Lifecycle>(&mut self, entity: Entity) {
-        let Some(scope) = self.scope_of(entity) else {
+        let Some(scope) = self.parent_scope(entity) else {
             return;
         };
         let Some(location) = self.location(entity) else {
@@ -443,12 +443,12 @@ impl World {
         {
             return;
         }
-        let view = ScopedWorld::new(self, scope);
+        let scope = Scope::new(self, scope);
         let mut hooks = self
             .get_mut::<C>(entity)
             .expect("the column was just found");
         for callback in hooks.callbacks() {
-            callback(&view, entity);
+            callback(&scope, entity);
         }
     }
 

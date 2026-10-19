@@ -26,7 +26,7 @@ type Poses = Vec<(RigidBodyHandle, Vec3, Quat)>;
 /// The library defines no payload of its own, so the demo and the tests each
 /// name the state they want: this is the whole of the subscription's work.
 fn collect_poses(world: &World) -> Option<Poses> {
-    let physics = world.root_view().query::<&PhysicsWorld>().next()?.1;
+    let physics = world.root_scope().query::<&PhysicsWorld>().next()?.1;
     Some(
         physics
             .bodies
@@ -167,7 +167,7 @@ fn a_collector_sees_contacts_from_every_step() {
     // reader is only the subscription's liveness token here.
     let _events: SnapshotReader<()> = sender
         .subscribe(move |world: &World| {
-            if let Some(contacts) = world.root_view().query::<&PhysicsContacts>().next() {
+            if let Some(contacts) = world.root_scope().query::<&PhysicsContacts>().next() {
                 for &contact in &contacts.1.started {
                     let _ = queue.send(contact);
                 }
@@ -255,7 +255,7 @@ fn a_landing_reports_the_closing_speed() {
         // them, so read them before stepping again.
         {
             let contacts = world
-                .root_view()
+                .root_scope()
                 .query::<&PhysicsContacts>()
                 .next()
                 .expect("the setup creates the contact buffer")
@@ -263,7 +263,7 @@ fn a_landing_reports_the_closing_speed() {
             landings.extend(contacts.started.iter().copied());
         }
         let physics = world
-            .root_view()
+            .root_scope()
             .query::<&PhysicsWorld>()
             .next()
             .expect("the setup created the world")
@@ -279,7 +279,7 @@ fn a_landing_reports_the_closing_speed() {
     let partner = if one == ball { two } else { one };
     assert_ne!(partner, ball, "a landing names two different bodies");
     let physics = world
-        .root_view()
+        .root_scope()
         .query::<&PhysicsWorld>()
         .next()
         .expect("the setup created the world")
@@ -322,7 +322,7 @@ fn an_empty_world_publishes_empty_contacts() {
     let reader = world
         .sender()
         .subscribe(|world: &World| {
-            let contacts = world.root_view().query::<&PhysicsContacts>().next()?;
+            let contacts = world.root_scope().query::<&PhysicsContacts>().next()?;
             Some((contacts.1.started.len(), contacts.1.stopped.len()))
         })
         .expect("the physics world accepts a subscription");
@@ -352,7 +352,7 @@ fn the_configured_gravity_reaches_the_world() {
     // already have created the world, so this answers without waiting.
     let probed = world.request(Box::new(|world: &mut World| {
         world
-            .root_view()
+            .root_scope()
             .query::<&PhysicsWorld>()
             .next()
             .expect("the setup creates the world before any job")

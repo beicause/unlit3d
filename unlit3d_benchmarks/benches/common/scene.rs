@@ -53,7 +53,7 @@ impl Frame {
             ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let mut source = MeshSource::new(&world.root_view(), context);
+        let mut source = MeshSource::new(&world.root_scope(), context);
 
         // The smallest variant the built-in shader has: no material group, no
         // depth. The options are pure policy; the geometry a draw reads follows
@@ -83,9 +83,9 @@ impl Frame {
                 ..Default::default()
             },
         });
-        source.register_unlit_family(&world.root_view());
+        source.register_unlit_family(&world.root_scope());
         let mesh = source.allocate_unlit_mesh(
-            &world.root_view(),
+            &world.root_scope(),
             &key,
             UnlitMeshDesc {
                 positions: &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
@@ -101,7 +101,7 @@ impl Frame {
             let y = (index / side) % side;
             let z = index / (side * side);
             let cell = Vec3::new(x as f32, y as f32, z as f32) - Vec3::splat(side as f32 * 0.5);
-            world.root_view_mut().spawn((
+            world.root_scope_mut().spawn((
                 Transform {
                     translation: cell * spread,
                     rotation: Quat::IDENTITY,
@@ -116,14 +116,14 @@ impl Frame {
         // the benchmarks use.
         let eye = Vec3::new(0.0, 0.0, side as f32 * 1.5 + 20.0);
         let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
-        world.root_view_mut().spawn((Camera {
+        world.root_scope_mut().spawn((Camera {
             view_from_world: view,
             clip_from_view: glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0),
             active: true,
         },));
 
         set_frame_target(
-            &world.root_view(),
+            &world.root_scope(),
             FrameTarget {
                 surface: SURFACE,
                 width: 256,
@@ -143,13 +143,13 @@ impl Frame {
         profiling::scope!("frame");
         let device = self
             .world
-            .root_view()
+            .root_scope()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
         let mut encoder = device.create_command_encoder(&Default::default());
         self.source
-            .build_scene(&self.world.root_view(), self.context, &mut encoder);
+            .build_scene(&self.world.root_scope(), self.context, &mut encoder);
         self.source.scene().draws.len()
     }
 }

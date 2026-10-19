@@ -43,7 +43,7 @@ fn track_ends_job(track: &str) -> Job<u64> {
     let track = track.to_owned();
     Box::new(move |world: &mut World| {
         world
-            .root_view()
+            .root_scope()
             .query::<&MidiPlayer>()
             .find(|(_, player)| player.name() == track.as_str())
             .map_or(0, |(_, player)| player.ends())
@@ -308,7 +308,7 @@ impl Controls {
         // known before the panel is built: reserve it, then spawn the whole
         // object onto the reservation.
         let entity = world.reserve_entity();
-        world.root_view_mut().spawn_at(
+        world.root_scope_mut().spawn_at(
             entity,
             (
                 self,
@@ -382,7 +382,7 @@ pub fn control_panel_job(panels: PanelSlots) -> Job<()> {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
         source.draw_published(panels.frames, panels.screen);
-        world.root_view_mut().spawn((Source::new(source),));
+        world.root_scope_mut().spawn((Source::new(source),));
     })
 }
 

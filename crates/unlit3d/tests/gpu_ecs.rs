@@ -27,9 +27,9 @@ async fn ecs_cube_covers_the_frame() {
     // Dedicated camera entity, then the renderable entity. The mesh carries
     // its own AABB now, so no bounding component is needed.
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.root_view_mut().spawn((
+    world.root_scope_mut().spawn((
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -213,7 +213,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
 
     // Retire the cube, then hand its pools' ranges to a replacement mesh.
     let cube = world
-        .root_view()
+        .root_scope()
         .get::<GpuMesh>(cube_entity)
         .expect("the cube carries a mesh")
         .clone();
@@ -354,17 +354,17 @@ async fn a_source_draws_only_its_own_subtree() {
     let first = gpu.mesh_source();
 
     // A second source beside the first, both children of the root.
-    let mut second_source = MeshSource::new(&world.root_view(), gpu.context);
-    second_source.register_unlit_family(&world.root_view());
-    let second = world.root_view_mut().spawn((Source::new(second_source),));
+    let mut second_source = MeshSource::new(&world.root_scope(), gpu.context);
+    second_source.register_unlit_family(&world.root_scope());
+    let second = world.root_scope_mut().spawn((Source::new(second_source),));
 
     // One cube per source, each with the camera that frames it.
     let near = gpu.allocate_cube_mesh(&world);
     let far = gpu.allocate_cube_mesh(&world);
     for (scope, mesh) in [(first, near), (second, far)] {
-        let mut view = world.view_mut(scope).expect("the source is a scope");
-        view.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-        view.spawn((
+        let mut scope = world.scope_mut(scope).expect("the source is a scope");
+        scope.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
+        scope.spawn((
             Transform::default(),
             mesh,
             UnlitPipeline::new(gpu.key.clone()),
@@ -375,7 +375,7 @@ async fn a_source_draws_only_its_own_subtree() {
     // subtree is not a descendant of this source's scope.
     for scope in [first, second] {
         let owned = world
-            .view(scope)
+            .scope(scope)
             .expect("the source is a scope")
             .query::<&GpuMesh>()
             .count();
@@ -384,7 +384,7 @@ async fn a_source_draws_only_its_own_subtree() {
 
     // The root sees both, which is what makes the two frames one scene.
     assert_eq!(
-        world.root_view().query::<&GpuMesh>().count(),
+        world.root_scope().query::<&GpuMesh>().count(),
         2,
         "the root sees every source's instances"
     );
@@ -397,8 +397,8 @@ async fn a_source_draws_only_its_own_subtree() {
         (second, "test::a_source_draws_only_its_own_subtree::second"),
     ] {
         let drawn = {
-            let root = world.root_view();
-            let view = world.view(scope).expect("the source is a scope");
+            let root = world.root_scope();
+            let source_scope = world.scope(scope).expect("the source is a scope");
             let mut source = root
                 .get_mut::<Source>(scope)
                 .expect("the source entity exists");
@@ -406,7 +406,7 @@ async fn a_source_draws_only_its_own_subtree() {
                 .as_mut::<MeshSource>()
                 .expect("the source is a mesh source");
             // The count the renderer would hand this source.
-            view.query::<&GpuMesh>().count()
+            source_scope.query::<&GpuMesh>().count()
         };
         assert_eq!(drawn, 1, "{label} draws exactly its own instance");
     }

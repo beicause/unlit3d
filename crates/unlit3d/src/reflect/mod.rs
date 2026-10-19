@@ -108,17 +108,17 @@ mod tests {
         });
         let writer = InputWriter::new();
         let mut world = unlit_ecs::World::new();
-        let entity = world.root_view_mut().spawn((writer.subscribe(),));
+        let entity = world.root_scope_mut().spawn((writer.subscribe(),));
         writer.push(key.clone());
         writer.push(InputEvent::FocusChanged(false));
         world
-            .root_view()
+            .root_scope()
             .get::<InputEvents>(entity)
             .expect("the buffer spawned")
             .refresh();
 
         let encoded =
-            encode(&world.root_view(), entity, "InputEvents").expect("the buffer encodes");
+            encode(&world.root_scope(), entity, "InputEvents").expect("the buffer encodes");
         let decoded: InputEventsProxy =
             facet_json::from_str(&encoded).expect("the encoding is JSON");
         assert_eq!(decoded.events, vec![key, InputEvent::FocusChanged(false)]);

@@ -8,7 +8,7 @@
 use glam::Affine3A;
 #[cfg(test)]
 use unlit_ecs::World;
-use unlit_ecs::{Entity, ScopedWorld};
+use unlit_ecs::{Entity, Scope};
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
 use crate::components::{GpuMesh, Transform};
@@ -50,12 +50,12 @@ pub(crate) struct VisibleMesh {
 /// is handed to the drawing family, so culling and drawing cannot disagree
 /// about where the mesh is.
 pub(crate) fn collect_visible(
-    view: &ScopedWorld<'_>,
+    scope: &Scope<'_>,
     frustum: &FrustumPlanes,
     out: &mut Vec<VisibleMesh>,
 ) {
     out.clear();
-    for (entity, (mesh, transform)) in view.query::<(&GpuMesh, Option<&Transform>)>() {
+    for (entity, (mesh, transform)) in scope.query::<(&GpuMesh, Option<&Transform>)>() {
         let model = match transform {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
@@ -140,9 +140,9 @@ mod tests {
             skinned: false,
         };
         let near = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((mesh.clone(), Transform::default()));
-        let far = world.root_view_mut().spawn((
+        let far = world.root_scope_mut().spawn((
             mesh,
             Transform {
                 translation: Vec3::new(0.0, 0.0, 20.0),
@@ -152,7 +152,7 @@ mod tests {
         ));
         let frustum = frustum_at(Vec3::new(0.0, 0.0, 5.0));
         let mut out = Vec::new();
-        collect_visible(&world.root_view(), &frustum, &mut out);
+        collect_visible(&world.root_scope(), &frustum, &mut out);
         let found: Vec<_> = out.iter().map(|mesh| mesh.entity).collect();
         assert_eq!(found, [near]);
         assert_ne!(found, [far]);

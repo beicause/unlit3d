@@ -10,7 +10,7 @@ use core::mem::size_of;
 use std::rc::Rc;
 
 use arrayvec::ArrayVec;
-use unlit_ecs::ScopedWorld;
+use unlit_ecs::Scope;
 use unlit_wgpu::mesh::{
     ChannelEncoding, MeshInstance, MeshMetadata, PositionStreamChannels, UvColorFlags,
     compress_weights, index_fits_u16,
@@ -451,7 +451,7 @@ pub trait MeshSourceUnlitExt {
     /// # Panics
     ///
     /// If the unlit family is already registered.
-    fn register_unlit_family(&mut self, world: &ScopedWorld<'_>);
+    fn register_unlit_family(&mut self, world: &Scope<'_>);
     /// Upload raw mesh channels in the layout the built-in unlit shader
     /// expects, and return a [GpuMesh] handle.
     ///
@@ -491,7 +491,7 @@ pub trait MeshSourceUnlitExt {
     /// components per vertex and target.
     fn allocate_unlit_mesh(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         key: &UnlitPipelineKey,
         desc: UnlitMeshDesc<'_>,
     ) -> GpuMesh;
@@ -511,7 +511,7 @@ pub trait MeshSourceUnlitExt {
     /// graph.
     fn allocate_unlit_material(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         key: &UnlitPipelineKey,
         view_id: ResHandle<TextureView>,
         sampler_id: ResHandle<wgpu::Sampler>,
@@ -519,13 +519,13 @@ pub trait MeshSourceUnlitExt {
 }
 
 impl MeshSourceUnlitExt for MeshSource {
-    fn register_unlit_family(&mut self, world: &ScopedWorld<'_>) {
+    fn register_unlit_family(&mut self, world: &Scope<'_>) {
         self.register_family::<UnlitPipelineKey, _, _>(world, UnlitFactory, UnlitInstance);
     }
 
     fn allocate_unlit_mesh(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         key: &UnlitPipelineKey,
         desc: UnlitMeshDesc<'_>,
     ) -> GpuMesh {
@@ -862,7 +862,7 @@ impl MeshSourceUnlitExt for MeshSource {
 
     fn allocate_unlit_material(
         &mut self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         key: &UnlitPipelineKey,
         view_id: ResHandle<TextureView>,
         sampler_id: ResHandle<wgpu::Sampler>,

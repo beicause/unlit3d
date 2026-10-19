@@ -81,7 +81,7 @@ async fn audio_recording_status(commands: CommandSender, args: WorldArg) -> Tool
 /// Start a recording, unless one is already running.
 fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, String> {
     if world
-        .root_view()
+        .root_scope()
         .query::<&ActiveRecording>()
         .next()
         .is_some()
@@ -93,7 +93,7 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Stri
     let report = Started {
         duration_seconds: seconds,
     };
-    world.root_view_mut().spawn((ActiveRecording(handle),));
+    world.root_scope_mut().spawn((ActiveRecording(handle),));
     serde_json::to_value(report).map_err(|error| error.to_string())
 }
 
@@ -128,7 +128,7 @@ fn cancel(world: &mut World) -> Result<Value, String> {
 /// Report how far the recording in progress has come.
 fn status(world: &mut World) -> Result<Value, String> {
     let Some(recording) = world
-        .root_view()
+        .root_scope()
         .query::<&ActiveRecording>()
         .next()
         .map(|(_, recording)| recording.0.clone())
@@ -150,18 +150,18 @@ fn status(world: &mut World) -> Result<Value, String> {
 /// Take the recording in progress out of the world.
 fn take(world: &mut World) -> Result<RecordingHandle, String> {
     let entity = world
-        .root_view()
+        .root_scope()
         .query::<(unlit_ecs::Entity, &ActiveRecording)>()
         .next()
         .map(|(entity, _)| entity)
         .ok_or_else(|| "no recording is in progress on this world".to_owned())?;
     let handle = world
-        .root_view()
+        .root_scope()
         .get::<ActiveRecording>(entity)
         .expect("the recording entity exists")
         .0
         .clone();
-    world.root_view_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity);
     Ok(handle)
 }
 
@@ -245,8 +245,8 @@ mod tests {
     /// its fills carry.
     fn audio_world(level: f32) -> (World, AudioFormat) {
         let mut world = World::new();
-        world.root_view_mut().spawn((AudioGain(1.0),));
-        world.root_view_mut().spawn((OnAudioFill::new(
+        world.root_scope_mut().spawn((AudioGain(1.0),));
+        world.root_scope_mut().spawn((OnAudioFill::new(
             AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),
         ),));

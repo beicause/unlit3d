@@ -34,7 +34,7 @@ use crate::source::RenderContext;
 /// If the context's device resource is gone.
 fn context_device(world: &World, ctx: RenderContext) -> wgpu::Device {
     world
-        .root_view()
+        .root_scope()
         .get::<wgpu::Device>(ctx.device)
         .expect("the context's device resource exists")
         .clone()
@@ -50,7 +50,7 @@ fn context_graph<'w>(
     ctx: RenderContext,
 ) -> impl DerefMut<Target = ResourceGraph> + 'w {
     world
-        .root_view()
+        .root_scope()
         .get_mut::<ResourceGraph>(ctx.graph)
         .expect("the context's resource graph exists")
 }

@@ -123,7 +123,7 @@ impl PhysicsEvents {
 /// The event plumbing a physics world carries, if it has any.
 fn physics_events(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsEvents>> {
     world
-        .root_view()
+        .root_scope()
         .query::<&mut PhysicsEvents>()
         .next()
         .map(|(_, events)| events)
@@ -132,7 +132,7 @@ fn physics_events(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsEven
 /// The contact buffer a physics world carries, if it has one.
 fn physics_contacts(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsContacts>> {
     world
-        .root_view()
+        .root_scope()
         .query::<&mut PhysicsContacts>()
         .next()
         .map(|(_, contacts)| contacts)
@@ -243,7 +243,7 @@ pub fn spawn_fixed_cuboid(world: &mut World, position: Vec3, half_extents: Vec3,
 /// The physics world as a mutable guard, for jobs that build bodies.
 fn physics_world(world: &World) -> unlit_ecs::CellRefMut<'_, PhysicsWorld> {
     world
-        .root_view()
+        .root_scope()
         .query::<&mut PhysicsWorld>()
         .next()
         .expect("the physics world exists")
@@ -300,7 +300,7 @@ pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = PhysicsWorld::new();
     physics.gravity = config.gravity;
     world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((physics, PhysicsEvents::new(), PhysicsContacts::default()));
 }
 
@@ -312,7 +312,7 @@ pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
 /// offline rendering — drive the same simulation on a cadence of their own.
 pub fn step_once(world: &World) -> bool {
     let Some(mut physics) = world
-        .root_view()
+        .root_scope()
         .query::<&mut PhysicsWorld>()
         .next()
         .map(|(_, physics)| physics)

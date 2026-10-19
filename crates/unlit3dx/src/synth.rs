@@ -131,7 +131,7 @@ impl SynthVoice {
             right: Vec::new(),
         };
         let fill = OnAudioFill::new(AudioFillOrder::default(), fill_voice);
-        Ok(world.root_view_mut().spawn((voice, fill)))
+        Ok(world.root_scope_mut().spawn((voice, fill)))
     }
 
     /// Parses `bytes` as a soundfont and spawns a voice playing it.
@@ -236,7 +236,7 @@ impl MidiPlayer {
             right: Vec::new(),
         };
         let fill = OnAudioFill::new(AudioFillOrder::default(), fill_track);
-        Ok(world.root_view_mut().spawn((player, fill)))
+        Ok(world.root_scope_mut().spawn((player, fill)))
     }
 
     /// Puts the track back at its start: the clock, the event cursor and
@@ -401,7 +401,7 @@ impl From<SynthesizerError> for VoiceError {
 
 /// Adds one voice's block to the chunk it was asked to fill.
 fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
-    let Some(mut guard) = world.root_view().get_mut::<SynthVoice>(entity) else {
+    let Some(mut guard) = world.root_scope().get_mut::<SynthVoice>(entity) else {
         return;
     };
     // Borrowed through the guard the fields are not disjoint; reborrowed as a
@@ -416,7 +416,7 @@ fn fill_voice(world: &World, entity: Entity, chunk: &mut AudioChunk) {
 
 /// Adds one track's block to the chunk, unless the track is paused.
 fn fill_track(world: &World, entity: Entity, chunk: &mut AudioChunk) {
-    let Some(mut guard) = world.root_view().get_mut::<MidiPlayer>(entity) else {
+    let Some(mut guard) = world.root_scope().get_mut::<MidiPlayer>(entity) else {
         return;
     };
     // Reborrowed, as in [`fill_voice`], so the block and the clock are
@@ -454,7 +454,7 @@ fn add_stereo(left: &[f32], right: &[f32], chunk: &mut AudioChunk) {
 /// box is 10, a vibraphone 12.
 pub fn program_change_job(channel: i32, program: i32) -> Job<()> {
     Box::new(move |world| {
-        for (_, mut voice) in world.root_view().query::<&mut SynthVoice>() {
+        for (_, mut voice) in world.root_scope().query::<&mut SynthVoice>() {
             voice
                 .synthesizer
                 .process_midi_message(channel, 0xC0, program, 0);
@@ -465,7 +465,7 @@ pub fn program_change_job(channel: i32, program: i32) -> Job<()> {
 /// A job that presses a key down on every synthesizer in the world.
 pub fn note_on_job(channel: i32, key: i32, velocity: i32) -> Job<()> {
     Box::new(move |world| {
-        for (_, mut voice) in world.root_view().query::<&mut SynthVoice>() {
+        for (_, mut voice) in world.root_scope().query::<&mut SynthVoice>() {
             voice.synthesizer.note_on(channel, key, velocity);
         }
     })
@@ -474,7 +474,7 @@ pub fn note_on_job(channel: i32, key: i32, velocity: i32) -> Job<()> {
 /// A job that releases a key on every synthesizer in the world.
 pub fn note_off_job(channel: i32, key: i32) -> Job<()> {
     Box::new(move |world| {
-        for (_, mut voice) in world.root_view().query::<&mut SynthVoice>() {
+        for (_, mut voice) in world.root_scope().query::<&mut SynthVoice>() {
             voice.synthesizer.note_off(channel, key);
         }
     })
@@ -486,7 +486,7 @@ pub fn note_off_job(channel: i32, key: i32) -> Job<()> {
 pub fn play_track_job(name: &str, file: Arc<MidiFile>, loop_play: bool) -> Job<()> {
     let name = name.to_owned();
     Box::new(move |world| {
-        for (_, mut player) in world.root_view().query::<&mut MidiPlayer>() {
+        for (_, mut player) in world.root_scope().query::<&mut MidiPlayer>() {
             if player.name != name {
                 continue;
             }
@@ -502,7 +502,7 @@ pub fn play_track_job(name: &str, file: Arc<MidiFile>, loop_play: bool) -> Job<(
 pub fn pause_track_job(name: &str, paused: bool) -> Job<()> {
     let name = name.to_owned();
     Box::new(move |world| {
-        for (_, mut player) in world.root_view().query::<&mut MidiPlayer>() {
+        for (_, mut player) in world.root_scope().query::<&mut MidiPlayer>() {
             if player.name == name {
                 player.paused = paused;
             }
@@ -515,7 +515,7 @@ pub fn pause_track_job(name: &str, paused: bool) -> Job<()> {
 pub fn rewind_track_job(name: &str) -> Job<()> {
     let name = name.to_owned();
     Box::new(move |world| {
-        for (_, mut player) in world.root_view().query::<&mut MidiPlayer>() {
+        for (_, mut player) in world.root_scope().query::<&mut MidiPlayer>() {
             if player.name != name {
                 continue;
             }
@@ -532,7 +532,7 @@ pub fn rewind_track_job(name: &str) -> Job<()> {
 pub fn stop_track_job(name: &str) -> Job<()> {
     let name = name.to_owned();
     Box::new(move |world| {
-        for (_, mut player) in world.root_view().query::<&mut MidiPlayer>() {
+        for (_, mut player) in world.root_scope().query::<&mut MidiPlayer>() {
             if player.name == name {
                 player.stop();
             }

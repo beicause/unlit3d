@@ -107,7 +107,7 @@ impl JobSender {
 /// been updated.
 pub fn publish_subscribed(world: &World) -> usize {
     let Some(mut outlet) = world
-        .root_view()
+        .root_scope()
         .query::<&mut SnapshotOutlet>()
         .next()
         .map(|(_, outlet)| outlet)
@@ -157,19 +157,19 @@ struct SnapshotOutlet {
 /// Add one subscription to `world`, creating the outlet on first use.
 fn install(world: &mut World, entry: Box<dyn Entry>) {
     let existing = world
-        .root_view()
+        .root_scope()
         .query::<&SnapshotOutlet>()
         .next()
         .map(|(entity, _)| entity);
     match existing {
         Some(entity) => world
-            .root_view()
+            .root_scope()
             .get_mut::<SnapshotOutlet>(entity)
             .expect("the subscription outlet exists")
             .entries
             .push(entry),
         None => {
-            world.root_view_mut().spawn((SnapshotOutlet {
+            world.root_scope_mut().spawn((SnapshotOutlet {
                 entries: vec![entry],
             },));
         }

@@ -32,14 +32,14 @@
 //! # ) -> (WindowSurface, FrameAttachments) {
 //! // The renderer the surface draws through, spawned once as a resource.
 //! let window_surface = world
-//!     .root_view()
+//!     .root_scope()
 //!     .with_mut::<Renderer, _>(renderer, |r| {
 //!         WindowSurface::new(world, r, instance, adapter, window, surface)
 //!     })
 //!     .unwrap();
 //! // The depth and multisample attachments the frame draws with; `true` asks
 //! // for a depth-stencil one, which a frame of depth-tested geometry needs.
-//! let context = world.root_view().get::<Renderer>(renderer).unwrap().context();
+//! let context = world.root_scope().get::<Renderer>(renderer).unwrap().context();
 //! let attachments = FrameAttachments::new(
 //!     world,
 //!     context,
@@ -65,7 +65,7 @@
 //! #     window_surface: &mut WindowSurface,
 //! #     attachments: &FrameAttachments,
 //! # ) {
-//! let root = world.root_view();
+//! let root = world.root_scope();
 //! let Some(frame) = root
 //!     .with_mut::<Renderer, _>(renderer_entity, |r| window_surface.acquire(world, r))
 //!     .unwrap()
@@ -98,7 +98,7 @@ use crate::renderer::Renderer;
 /// If the context's device resource is gone.
 fn context_device(world: &World, renderer: &Renderer) -> wgpu::Device {
     world
-        .root_view()
+        .root_scope()
         .get::<wgpu::Device>(renderer.context().device)
         .expect("the context's device resource exists")
         .clone()
@@ -114,7 +114,7 @@ fn context_graph<'w>(
     renderer: &Renderer,
 ) -> impl core::ops::DerefMut<Target = unlit_wgpu::resources::ResourceGraph> + 'w {
     world
-        .root_view()
+        .root_scope()
         .get_mut::<unlit_wgpu::resources::ResourceGraph>(renderer.context().graph)
         .expect("the context's resource graph exists")
 }

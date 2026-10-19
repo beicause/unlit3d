@@ -13,11 +13,11 @@ use crate::mcp::server::{
     SpawnEntity, ToolResult, ToolRouter, ToolSource, WorldArg, command, entity, tool,
 };
 use crate::reflect;
-use crate::{ArchetypeBuilder, Entity, ScopedWorld, ScopedWorldMut, World};
+use crate::{ArchetypeBuilder, Entity, Scope, ScopeMut, World};
 
-/// A high-level description of a view.
-pub fn summarize_world(view: &ScopedWorld<'_>) -> Result<Value, String> {
-    to_value(&view.info())
+/// A high-level description of a scope.
+pub fn summarize_world(scope: &Scope<'_>) -> Result<Value, String> {
+    to_value(&scope.info())
 }
 
 /// The component names the reflection table holds.
@@ -26,52 +26,49 @@ pub fn component_names(_world: &World) -> Result<Value, String> {
 }
 
 /// Every archetype with the component names it stores.
-pub fn summarize_archetypes(view: &ScopedWorld<'_>) -> Result<Value, String> {
-    to_value(&view.archetype_infos())
+pub fn summarize_archetypes(scope: &Scope<'_>) -> Result<Value, String> {
+    to_value(&scope.archetype_infos())
 }
 
 /// Every spawned entity with its component names.
-pub fn summarize_entities(view: &ScopedWorld<'_>, limit: usize) -> Result<Value, String> {
-    to_value(&view.entity_infos(limit))
+pub fn summarize_entities(scope: &Scope<'_>, limit: usize) -> Result<Value, String> {
+    to_value(&scope.entity_infos(limit))
 }
 
 /// One entity's component names and location.
-pub fn summarize_entity(view: &ScopedWorld<'_>, entity: Entity) -> Result<Value, String> {
-    let info = view
+pub fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, String> {
+    let info = scope
         .entity_info(entity)
         .ok_or_else(|| format!("no entity with bits {}", entity.to_bits()))?;
     to_value(&info)
 }
 
 /// One component of one entity, encoded.
-pub fn read_component(view: &ScopedWorld<'_>, entity: Entity, name: &str) -> Result<Value, String> {
-    if !view.contains(entity) {
+pub fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<Value, String> {
+    if !scope.contains(entity) {
         return Err(format!("no entity with bits {}", entity.to_bits()));
     }
-    let text = reflect::encode(view, entity, name)?;
+    let text = reflect::encode(scope, entity, name)?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
 }
 
 /// Overwrite one component of one entity.
 pub fn write_component(
-    view: &ScopedWorld<'_>,
+    scope: &Scope<'_>,
     entity: Entity,
     name: &str,
     value: &Value,
 ) -> Result<Value, String> {
-    if !view.contains(entity) {
+    if !scope.contains(entity) {
         return Err(format!("no entity with bits {}", entity.to_bits()));
     }
     let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    reflect::set(view, entity, name, &patch)?;
+    reflect::set(scope, entity, name, &patch)?;
     Ok(Value::Null)
 }
 
 /// Spawn an entity from a map of component name to value.
-pub fn spawn_from_value(
-    view: &mut ScopedWorldMut<'_>,
-    components: &Value,
-) -> Result<Value, String> {
+pub fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Value, String> {
     let object = components
         .as_object()
         .ok_or_else(|| "components must be an object".to_string())?;
@@ -80,14 +77,17 @@ pub fn spawn_from_value(
         let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
         reflect::push(&mut builder, name, &patch)?;
     }
-    let scope = view.scope();
-    let entity = view.spawn(builder);
-    to_value(&SpawnedEntity { entity, scope })
+    let spawned = scope.entity();
+    let entity = scope.spawn(builder);
+    to_value(&SpawnedEntity {
+        entity,
+        scope: spawned,
+    })
 }
 
 /// Despawn one entity and its subtree.
-pub fn despawn_one(view: &mut ScopedWorldMut<'_>, entity: Entity) -> Result<Value, String> {
-    let despawned = view.despawn(entity);
+pub fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
+    let despawned = scope.despawn(entity);
     to_value(&Despawned { despawned })
 }
 
@@ -177,8 +177,8 @@ async fn set_component(commands: CommandSender, args: SetComponent) -> ToolResul
 /// Spawn an entity from a map of component name to value.
 async fn spawn_entity(commands: CommandSender, args: SpawnEntity) -> ToolResult {
     command(&commands, args.world, move |world| {
-        let mut view = scoped_mut(world, args.scope)?;
-        spawn_from_value(&mut view, &args.components)
+        let mut scope = scoped_mut(world, args.scope)?;
+        spawn_from_value(&mut scope, &args.components)
     })
     .await
 }
@@ -186,33 +186,33 @@ async fn spawn_entity(commands: CommandSender, args: SpawnEntity) -> ToolResult 
 /// Despawn one entity.
 async fn despawn_entity(commands: CommandSender, args: EntityArg) -> ToolResult {
     command(&commands, args.world, move |world| {
-        let mut view = scoped_mut(world, args.scope)?;
-        despawn_one(&mut view, entity(args.entity))
+        let mut scope = scoped_mut(world, args.scope)?;
+        despawn_one(&mut scope, entity(args.entity))
     })
     .await
 }
 
-/// The view an ECS tool runs in: the scope the arguments name, or the root.
-fn scoped(world: &World, scope: Option<u64>) -> Result<ScopedWorld<'_>, String> {
+/// The scope an ECS tool runs in: the scope the arguments name, or the root.
+fn scoped(world: &World, scope: Option<u64>) -> Result<Scope<'_>, String> {
     match scope {
-        None => Ok(world.root_view()),
+        None => Ok(world.root_scope()),
         Some(bits) => {
             let scope = Entity::from_bits(bits);
             world
-                .view(scope)
+                .scope(scope)
                 .ok_or_else(|| format!("no scope at bits {bits}"))
         }
     }
 }
 
-/// The mutable view an ECS tool runs in.
-fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopedWorldMut<'_>, String> {
+/// The mutable scope an ECS tool runs in.
+fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopeMut<'_>, String> {
     match scope {
-        None => Ok(world.root_view_mut()),
+        None => Ok(world.root_scope_mut()),
         Some(bits) => {
             let scope = Entity::from_bits(bits);
             world
-                .view_mut(scope)
+                .scope_mut(scope)
                 .ok_or_else(|| format!("no scope at bits {bits}"))
         }
     }
@@ -289,39 +289,39 @@ mod tests {
     /// A world with a scene holding one child, and a sibling scene of its own.
     fn fixture() -> (World, Entity, Entity, Entity) {
         let mut world = World::new();
-        let scene = world.root_view_mut().spawn((0u32,));
-        let child = world.view_mut(scene).unwrap().spawn((Marker(1),));
-        let sibling = world.root_view_mut().spawn((Marker(2),));
+        let scene = world.root_scope_mut().spawn((0u32,));
+        let child = world.scope_mut(scene).unwrap().spawn((Marker(1),));
+        let sibling = world.root_scope_mut().spawn((Marker(2),));
         (world, scene, child, sibling)
     }
 
     #[test]
     fn an_absent_scope_means_the_root() {
         let (world, _, child, sibling) = fixture();
-        let Ok(view) = scoped(&world, None) else {
+        let Ok(scope) = scoped(&world, None) else {
             panic!("the root needs no handle");
         };
-        assert_eq!(view.scope(), world.root());
-        assert!(view.contains(child));
-        assert!(view.contains(sibling));
+        assert_eq!(scope.entity(), world.root());
+        assert!(scope.contains(child));
+        assert!(scope.contains(sibling));
     }
 
     #[test]
     fn a_scope_handle_narrows_the_view() {
         let (world, scene, child, sibling) = fixture();
-        let Ok(view) = scoped(&world, Some(scene.to_bits())) else {
+        let Ok(scope) = scoped(&world, Some(scene.to_bits())) else {
             panic!("a live scope");
         };
-        assert_eq!(view.scope(), scene);
-        assert!(view.contains(child));
-        assert!(!view.contains(sibling), "the sibling is beside it");
+        assert_eq!(scope.entity(), scene);
+        assert!(scope.contains(child));
+        assert!(!scope.contains(sibling), "the sibling is beside it");
     }
 
     #[test]
     fn a_dead_scope_handle_is_reported_by_its_bits() {
         let (mut world, scene, _, _) = fixture();
         let bits = scene.to_bits();
-        world.root_view_mut().despawn(scene);
+        world.root_scope_mut().despawn(scene);
         let error = scoped(&world, Some(bits)).expect_err("the scope is gone");
         assert_eq!(error, format!("no scope at bits {bits}"));
     }
@@ -339,31 +339,31 @@ mod tests {
     #[test]
     fn a_scoped_write_refuses_an_entity_the_scope_cannot_see() {
         let (world, scene, _, sibling) = fixture();
-        let view = scoped(&world, Some(scene.to_bits())).unwrap();
-        let error = write_component(&view, sibling, "Marker", &serde_json::json!({ "0": 9 }))
+        let scope = scoped(&world, Some(scene.to_bits())).unwrap();
+        let error = write_component(&scope, sibling, "Marker", &serde_json::json!({ "0": 9 }))
             .expect_err("the sibling is out of reach");
         assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
-        assert_eq!(world.root_view().get::<Marker>(sibling).unwrap().0, 2);
+        assert_eq!(world.root_scope().get::<Marker>(sibling).unwrap().0, 2);
     }
 
     #[test]
     fn a_scoped_read_refuses_an_entity_the_scope_cannot_see() {
         let (world, scene, _, sibling) = fixture();
-        let view = scoped(&world, Some(scene.to_bits())).unwrap();
-        let error = read_component(&view, sibling, "Marker").expect_err("out of reach");
+        let scope = scoped(&world, Some(scene.to_bits())).unwrap();
+        let error = read_component(&scope, sibling, "Marker").expect_err("out of reach");
         assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
     }
 
     #[test]
     fn a_scoped_spawn_lands_in_that_scope_and_reports_it() {
         let (mut world, scene, _, _) = fixture();
-        let mut view = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
-        let spawned = spawn_from_value(&mut view, &serde_json::json!({ "Marker": { "0": 7 } }))
+        let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
+        let spawned = spawn_from_value(&mut scope, &serde_json::json!({ "Marker": { "0": 7 } }))
             .expect("a marker is spawnable");
         let entity = spawned["entity"].clone();
         let reported = spawned["scope"].clone();
         let entity = Entity::from_bits(entity.as_u64().expect("bits"));
-        assert_eq!(world.scope_of(entity), Some(scene));
+        assert_eq!(world.parent_scope(entity), Some(scene));
         assert_eq!(
             Entity::from_bits(reported.as_u64().expect("bits")),
             scene,
@@ -374,26 +374,26 @@ mod tests {
     #[test]
     fn a_scoped_despawn_refuses_what_the_scope_does_not_own() {
         let (mut world, scene, _, sibling) = fixture();
-        let mut view = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
-        let answer = despawn_one(&mut view, sibling).expect("refusing is not an error");
+        let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
+        let answer = despawn_one(&mut scope, sibling).expect("refusing is not an error");
         assert_eq!(answer, serde_json::json!({ "despawned": false }));
-        assert!(world.root_view().contains(sibling));
+        assert!(world.root_scope().contains(sibling));
     }
 
     #[test]
     fn a_scoped_despawn_takes_the_subtree() {
         let (mut world, scene, child, _) = fixture();
-        let mut view = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
-        let answer = despawn_one(&mut view, child).expect("its own descendant");
+        let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
+        let answer = despawn_one(&mut scope, child).expect("its own descendant");
         assert_eq!(answer, serde_json::json!({ "despawned": true }));
-        assert!(!world.root_view().contains(child));
+        assert!(!world.root_scope().contains(child));
     }
 
     #[test]
     fn the_summaries_report_the_scope_not_the_whole_world() {
         let (world, scene, child, sibling) = fixture();
-        let view = scoped(&world, Some(scene.to_bits())).unwrap();
-        let world_info = summarize_world(&view).unwrap();
+        let scope = scoped(&world, Some(scene.to_bits())).unwrap();
+        let world_info = summarize_world(&scope).unwrap();
         assert_eq!(
             world_info["entities"],
             serde_json::json!(2),
@@ -403,7 +403,7 @@ mod tests {
             world_info["root"],
             serde_json::json!(world.root().to_bits())
         );
-        let entities = summarize_entities(&view, usize::MAX).unwrap();
+        let entities = summarize_entities(&scope, usize::MAX).unwrap();
         let listed: Vec<u64> = entities
             .as_array()
             .unwrap()
@@ -412,7 +412,7 @@ mod tests {
             .collect();
         assert!(listed.contains(&child.to_bits()));
         assert!(!listed.contains(&sibling.to_bits()));
-        let archetypes = summarize_archetypes(&view).unwrap();
+        let archetypes = summarize_archetypes(&scope).unwrap();
         let sum: u64 = archetypes
             .as_array()
             .unwrap()
@@ -425,8 +425,8 @@ mod tests {
     #[test]
     fn a_scope_is_listed_like_any_other_component() {
         let (world, _, child, _) = fixture();
-        let view = scoped(&world, None).unwrap();
-        let component = summarize_entity(&view, child).unwrap();
+        let scope = scoped(&world, None).unwrap();
+        let component = summarize_entity(&scope, child).unwrap();
         let names: Vec<&str> = component["components"]
             .as_array()
             .unwrap()
@@ -444,9 +444,9 @@ mod tests {
         // The world writes the scope; a client that changed it would move the
         // entity without moving its index.
         let (world, scene, child, _) = fixture();
-        let view = scoped(&world, None).unwrap();
+        let scope = scoped(&world, None).unwrap();
         let error = write_component(
-            &view,
+            &scope,
             child,
             "ScopeOf",
             &serde_json::json!({ "0": scene.to_bits() }),
@@ -458,8 +458,8 @@ mod tests {
     #[test]
     fn a_lifecycle_component_is_not_spawnable_through_the_tools() {
         let (mut world, _, _, _) = fixture();
-        let mut view = scoped_mut(&mut world, None).unwrap();
-        let error = spawn_from_value(&mut view, &serde_json::json!({ "OnDespawn": {} }))
+        let mut scope = scoped_mut(&mut world, None).unwrap();
+        let error = spawn_from_value(&mut scope, &serde_json::json!({ "OnDespawn": {} }))
             .expect_err("a callback has no wire form");
         assert!(!error.is_empty());
     }

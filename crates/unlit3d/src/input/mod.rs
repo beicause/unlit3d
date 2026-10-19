@@ -37,13 +37,13 @@
 //! // The handle feeds the events in; the buffer is the world's own, holding
 //! // what arrived since its last tick.
 //! let input = InputWriter::new();
-//! world.root_view_mut().spawn((input.clone(), input.subscribe()));
+//! world.root_scope_mut().spawn((input.clone(), input.subscribe()));
 //! // A behaviour that reacts to the keyboard.
-//! world.root_view_mut().spawn((
+//! world.root_scope_mut().spawn((
 //!     Presses(0),
 //!     OnKey::new(|world, entity, key| {
 //!         if key.pressed {
-//!             let _ = world.root_view().with_mut::<Presses, _>(entity, |presses| presses.0 += 1);
+//!             let _ = world.root_scope().with_mut::<Presses, _>(entity, |presses| presses.0 += 1);
 //!         }
 //!     }),
 //! ));
@@ -453,7 +453,7 @@ pub struct KeyEvent {
 
 /// Which kind of device a [`PointerEvent`] came from.
 ///
-/// A pointer is the device-agnostic view of "something pointing at a spot on
+/// A pointer is the device-agnostic reading of "something pointing at a spot on
 /// the window": a mouse, a finger, a trackpad or a stylus. What the device *is*
 /// decides how a game should read the event — a mouse has buttons and a wheel,
 /// a stylus has pressure and tilt, a finger has neither — so the kind travels
@@ -722,17 +722,17 @@ pub enum InputEvent {
 ///
 /// let mut world = World::new();
 /// let input = InputWriter::new();
-/// world.root_view_mut().spawn((input.clone(), input.subscribe()));
-/// let observer = world.root_view_mut().spawn((
+/// world.root_scope_mut().spawn((input.clone(), input.subscribe()));
+/// let observer = world.root_scope_mut().spawn((
 ///     CtrlPresses(0),
 ///     OnInput::new(|world, entity, _event| {
 ///         let ctrl = world
-///             .root_view()
+///             .root_scope()
 ///             .query::<&InputEvents>()
 ///             .next()
 ///             .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
 ///         if ctrl {
-///             let _ = world.root_view().with_mut::<CtrlPresses, _>(entity, |presses| presses.0 += 1);
+///             let _ = world.root_scope().with_mut::<CtrlPresses, _>(entity, |presses| presses.0 += 1);
 ///         }
 ///     }),
 /// ));
@@ -740,7 +740,7 @@ pub enum InputEvent {
 /// input.push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
 /// dispatch_input(&world);
 ///
-/// assert_eq!(world.root_view().get::<CtrlPresses>(observer).unwrap().0, 1);
+/// assert_eq!(world.root_scope().get::<CtrlPresses>(observer).unwrap().0, 1);
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputState {
@@ -1099,13 +1099,13 @@ impl InputWriter {
 /// Returns whether the world has an input buffer at all.
 pub fn refresh_input(world: &World) -> bool {
     let entities: Vec<_> = world
-        .root_view()
+        .root_scope()
         .query::<&InputEvents>()
         .map(|(entity, _)| entity)
         .collect();
     let present = !entities.is_empty();
     for entity in entities {
-        if let Some(buffer) = world.root_view().get::<InputEvents>(entity) {
+        if let Some(buffer) = world.root_scope().get::<InputEvents>(entity) {
             buffer.refresh();
         }
     }
@@ -1124,11 +1124,11 @@ pub fn refresh_input(world: &World) -> bool {
 /// spawned outside that hierarchy — one a runner started as a sibling —
 /// subscribes itself from its own setup.
 pub fn subscribe_input(world: &mut World) -> bool {
-    if world.root_view().query::<&InputEvents>().next().is_some() {
+    if world.root_scope().query::<&InputEvents>().next().is_some() {
         return false;
     }
     let Some(events) = world
-        .root_view()
+        .root_scope()
         .query::<&InputWriter>()
         .next()
         .map(|(_, writer)| writer.subscribe())
@@ -1139,7 +1139,7 @@ pub fn subscribe_input(world: &mut World) -> bool {
     // input from its own scope, and a sibling's component is out of reach.
     let shared = world.shared();
     world
-        .view_mut(shared)
+        .scope_mut(shared)
         .expect("the shared scope exists")
         .spawn((events,));
     true
@@ -1159,7 +1159,7 @@ pub fn subscribe_input(world: &mut World) -> bool {
 /// one level deep is reached too.
 pub fn distribute_input(world: &World) -> bool {
     let Some(writer) = world
-        .root_view()
+        .root_scope()
         .query::<&InputWriter>()
         .next()
         .map(|(_, writer)| InputWriter::clone(&writer))
@@ -1172,14 +1172,14 @@ pub fn distribute_input(world: &World) -> bool {
 /// The recursion behind [`distribute_input`].
 fn distribute_into(world: &World, writer: &InputWriter) -> bool {
     let mut changed = false;
-    for (entity, child) in world.root_view().query::<&World>() {
-        let has = child.root_view().query::<&InputWriter>().next().is_some();
+    for (entity, child) in world.root_scope().query::<&World>() {
+        let has = child.root_scope().query::<&InputWriter>().next().is_some();
         // The child is borrowed to ask the question; release it before
         // writing, or the write finds the cell already borrowed.
         drop(child);
-        let nested = world.root_view().with_mut::<World, _>(entity, |child| {
+        let nested = world.root_scope().with_mut::<World, _>(entity, |child| {
             if !has {
-                child.root_view_mut().spawn((writer.clone(),));
+                child.root_scope_mut().spawn((writer.clone(),));
             }
             // A buffer subscribed here is what the child's own tick reads.
             let subscribed = subscribe_input(child);
@@ -1256,7 +1256,7 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 ///   different cells.
 /// - A callback must not re-enter this function for the same component type.
 ///
-/// Structural changes queue through [`unlit_ecs::ScopedWorld::queue`] and land when the
+/// Structural changes queue through [`unlit_ecs::Scope::queue`] and land when the
 /// caller applies them. The caller applies **once**, after the whole dispatch,
 /// not between callbacks: the behaviour components are iterated directly, so
 /// the world is borrowed for the duration and cannot be applied to. Typically
@@ -1280,7 +1280,7 @@ pub fn dispatch_input(world: &World) -> bool {
     // The batch is copied out while the component is borrowed, so a callback
     // may read the world — including this component — freely.
     let Some(events) = world
-        .root_view()
+        .root_scope()
         .query::<&InputEvents>()
         .next()
         .map(|(_, events)| events.to_vec())
@@ -1293,32 +1293,32 @@ pub fn dispatch_input(world: &World) -> bool {
     for event in &events {
         match event {
             InputEvent::Key(event) => {
-                for (entity, mut behaviour) in world.root_view().query::<&mut OnKey>() {
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnKey>() {
                     behaviour.run(world, entity, event);
                 }
             }
             InputEvent::Mouse(event) => {
-                for (entity, mut behaviour) in world.root_view().query::<&mut OnMouse>() {
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnMouse>() {
                     behaviour.run(world, entity, event);
                 }
             }
             InputEvent::Pointer(event) => {
-                for (entity, mut behaviour) in world.root_view().query::<&mut OnPointer>() {
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnPointer>() {
                     behaviour.run(world, entity, event);
                 }
             }
             InputEvent::Touch(event) => {
-                for (entity, mut behaviour) in world.root_view().query::<&mut OnTouch>() {
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnTouch>() {
                     behaviour.run(world, entity, event);
                 }
             }
             InputEvent::Text(event) => {
-                for (entity, mut behaviour) in world.root_view().query::<&mut OnText>() {
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnText>() {
                     behaviour.run(world, entity, event);
                 }
             }
             InputEvent::Ime(event) => {
-                for (entity, mut behaviour) in world.root_view().query::<&mut OnIme>() {
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnIme>() {
                     behaviour.run(world, entity, event);
                 }
             }
@@ -1330,7 +1330,7 @@ pub fn dispatch_input(world: &World) -> bool {
             | InputEvent::ScaleFactorChanged { .. } => {}
         }
 
-        for (entity, mut behaviour) in world.root_view().query::<&mut OnInput>() {
+        for (entity, mut behaviour) in world.root_scope().query::<&mut OnInput>() {
             behaviour.run(world, entity, event);
         }
     }
@@ -1411,31 +1411,33 @@ mod tests {
         let (seen_text, text) = counter();
         let (seen_ime, ime) = counter();
 
-        world.root_view_mut().spawn((OnInput::new(move |_, _, _| {
+        world.root_scope_mut().spawn((OnInput::new(move |_, _, _| {
             seen_input.set(seen_input.get() + 1);
         }),));
-        world.root_view_mut().spawn((OnKey::new(move |_, _, _| {
+        world.root_scope_mut().spawn((OnKey::new(move |_, _, _| {
             seen_key.set(seen_key.get() + 1);
         }),));
-        world.root_view_mut().spawn((OnMouse::new(move |_, _, _| {
+        world.root_scope_mut().spawn((OnMouse::new(move |_, _, _| {
             seen_mouse.set(seen_mouse.get() + 1);
         }),));
-        world.root_view_mut().spawn((OnPointer::new(move |_, _, _| {
-            seen_pointer.set(seen_pointer.get() + 1);
-        }),));
-        world.root_view_mut().spawn((OnTouch::new(move |_, _, _| {
+        world
+            .root_scope_mut()
+            .spawn((OnPointer::new(move |_, _, _| {
+                seen_pointer.set(seen_pointer.get() + 1);
+            }),));
+        world.root_scope_mut().spawn((OnTouch::new(move |_, _, _| {
             seen_touch.set(seen_touch.get() + 1);
         }),));
-        world.root_view_mut().spawn((OnText::new(move |_, _, _| {
+        world.root_scope_mut().spawn((OnText::new(move |_, _, _| {
             seen_text.set(seen_text.get() + 1);
         }),));
-        world.root_view_mut().spawn((OnIme::new(move |_, _, _| {
+        world.root_scope_mut().spawn((OnIme::new(move |_, _, _| {
             seen_ime.set(seen_ime.get() + 1);
         }),));
 
         let input_handle = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input_handle.clone(), input_handle.subscribe()));
         let events = [
             key_event(Key::W),
@@ -1474,13 +1476,13 @@ mod tests {
         let (keys, key_count) = counter();
         let (all, all_count) = counter();
 
-        world.root_view_mut().spawn((
+        world.root_scope_mut().spawn((
             OnKey::new(move |_, _, _| keys.set(keys.get() + 1)),
             OnInput::new(move |_, _, _| all.set(all.get() + 1)),
         ));
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
         input.push(mouse_event());
@@ -1498,13 +1500,13 @@ mod tests {
         for _ in 0..3 {
             let count = count.clone();
             world
-                .root_view_mut()
+                .root_scope_mut()
                 .spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
         }
 
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
@@ -1519,21 +1521,21 @@ mod tests {
         // a callback can reach its own sibling components.
         let mut world = World::new();
         let (matches, seen) = counter();
-        world.root_view_mut().spawn((
+        world.root_scope_mut().spawn((
             7u32,
             OnKey::new(move |world, entity, _| {
-                let marker = *world.root_view().get::<u32>(entity).unwrap();
+                let marker = *world.root_scope().get::<u32>(entity).unwrap();
                 matches.set(marker as usize);
             }),
         ));
         // Another entity of the same kind must not be substituted.
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((9u32, OnKey::new(|_, _, _| {})));
 
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
@@ -1549,19 +1551,21 @@ mod tests {
         let mut world = World::new();
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         let (held, seen) = counter();
-        world.root_view_mut().spawn((OnKey::new(move |world, _, _| {
-            let ctrl = world
-                .root_view()
-                .query::<&InputEvents>()
-                .next()
-                .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
-            if ctrl {
-                held.set(held.get() + 1);
-            }
-        }),));
+        world
+            .root_scope_mut()
+            .spawn((OnKey::new(move |world, _, _| {
+                let ctrl = world
+                    .root_scope()
+                    .query::<&InputEvents>()
+                    .next()
+                    .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
+                if ctrl {
+                    held.set(held.get() + 1);
+                }
+            }),));
         input.push(InputEvent::Key(KeyEvent {
             key: Key::C,
             pressed: true,
@@ -1583,18 +1587,20 @@ mod tests {
         // its own component type even though one of them is borrowed.
         let mut world = World::new();
         let (count, seen) = counter();
-        world.root_view_mut().spawn((OnKey::new(move |world, _, _| {
-            let siblings = world
-                .root_view()
-                .query_filtered::<Entity, With<OnKey>>()
-                .count();
-            count.set(siblings);
-        }),));
-        world.root_view_mut().spawn((OnKey::new(|_, _, _| {}),));
+        world
+            .root_scope_mut()
+            .spawn((OnKey::new(move |world, _, _| {
+                let siblings = world
+                    .root_scope()
+                    .query_filtered::<Entity, With<OnKey>>()
+                    .count();
+                count.set(siblings);
+            }),));
+        world.root_scope_mut().spawn((OnKey::new(|_, _, _| {}),));
 
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
@@ -1606,31 +1612,33 @@ mod tests {
     #[test]
     fn a_queued_spawn_lands_after_apply() {
         let mut world = World::new();
-        world.root_view_mut().spawn((OnKey::new(|world, _, _| {
-            world.root_view().queue().spawn((42u32,));
+        world.root_scope_mut().spawn((OnKey::new(|world, _, _| {
+            world.root_scope().queue().spawn((42u32,));
         }),));
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
         assert!(dispatch_input(&world));
-        assert_eq!(world.root_view().len(), 2, "queued, not applied");
+        assert_eq!(world.root_scope().len(), 2, "queued, not applied");
 
         world.apply();
-        assert_eq!(world.root_view().len(), 3);
+        assert_eq!(world.root_scope().len(), 3);
     }
 
     #[test]
     fn a_callback_may_queue_its_own_despawn() {
         let mut world = World::new();
-        let doomed = world.root_view_mut().spawn((OnKey::new(|world, entity, _| {
-            world.root_view().queue().despawn(entity);
-        }),));
+        let doomed = world
+            .root_scope_mut()
+            .spawn((OnKey::new(|world, entity, _| {
+                world.root_scope().queue().despawn(entity);
+            }),));
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
         input.push(key_event(Key::B));
@@ -1638,7 +1646,7 @@ mod tests {
         dispatch_input(&world);
         world.apply();
 
-        assert!(!world.root_view().has::<OnKey>(doomed));
+        assert!(!world.root_scope().has::<OnKey>(doomed));
     }
 
     #[test]
@@ -1646,9 +1654,9 @@ mod tests {
         let mut world = World::new();
         let (count, seen) = counter();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
-        world.root_view_mut().spawn((InputWriter::new(),));
+        world.root_scope_mut().spawn((InputWriter::new(),));
 
         assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
@@ -1659,7 +1667,7 @@ mod tests {
         let mut world = World::new();
         let (count, seen) = counter();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
 
         assert!(!dispatch_input(&world));
@@ -1671,7 +1679,7 @@ mod tests {
         let mut world = World::new();
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
@@ -1960,7 +1968,7 @@ mod tests {
         let mut world = World::new();
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(InputEvent::Resized {
             size_px: (800, 600),
@@ -1973,7 +1981,7 @@ mod tests {
         world.apply();
 
         let (_, events) = world
-            .root_view()
+            .root_scope()
             .query::<&InputEvents>()
             .next()
             .expect("the world has a buffer");
@@ -1991,11 +1999,11 @@ mod tests {
         let mut world = World::new();
         let (count, seen) = counter();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
 
         // Three frames of input arrive before the world dispatches once.
@@ -2086,12 +2094,14 @@ mod tests {
         // The boundary a callback has to stay inside, pinned here so it cannot
         // regress into a silently different failure.
         let mut world = World::new();
-        world.root_view_mut().spawn((OnKey::new(|world, entity, _| {
-            let _ = world.root_view().get::<OnKey>(entity);
-        }),));
+        world
+            .root_scope_mut()
+            .spawn((OnKey::new(|world, entity, _| {
+                let _ = world.root_scope().get::<OnKey>(entity);
+            }),));
         let input = InputWriter::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 

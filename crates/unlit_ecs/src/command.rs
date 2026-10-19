@@ -7,7 +7,7 @@
 //!
 //! A queue belongs to a scope: everything queued through it lands in that
 //! scope, and every command carries the scope it was queued from so that
-//! applying it later cannot be redirected by a queue that outlived its view.
+//! applying it later cannot be redirected by a queue that outlived its scope.
 //!
 //! A queued spawn still needs a handle right away, so [`Commands::spawn`]
 //! reserves one with [`World::reserve_entity`] and returns it. The handle is
@@ -26,14 +26,14 @@
 //! let mut world = World::new();
 //!
 //! let entity = {
-//!     let view = world.root_view();
-//!     let commands = view.queue();
+//!     let scope = world.root_scope();
+//!     let commands = scope.queue();
 //!     commands.spawn(("entity",))
 //! };
 //! // Nothing has happened yet.
-//! assert!(!world.root_view().contains(entity));
+//! assert!(!world.root_scope().contains(entity));
 //! world.apply();
-//! assert!(world.root_view().contains(entity));
+//! assert!(world.root_scope().contains(entity));
 //! `````
 
 use crate::bundle::Bundle;
@@ -74,7 +74,7 @@ impl<'w> Commands<'w> {
 
     /// The scope every command of this queue lands in.
     #[must_use]
-    pub fn scope(&self) -> Entity {
+    pub fn entity(&self) -> Entity {
         self.scope
     }
 
@@ -98,7 +98,7 @@ impl<'w> Commands<'w> {
     /// the command later cannot despawn something the queue's scope does not
     /// own.
     pub fn despawn(&self, entity: Entity) {
-        let Some(scope) = self.world.scope_of(entity) else {
+        let Some(scope) = self.world.parent_scope(entity) else {
             return;
         };
         self.push(Despawn { entity, scope });
@@ -155,7 +155,7 @@ impl Command for Despawn {
     fn apply(self: Box<Self>, world: &mut World) {
         // The scope is what the queue saw at queue time; an entity that has
         // moved out of it since is not this command's to remove.
-        if world.scope_of(self.entity) == Some(self.scope) {
+        if world.parent_scope(self.entity) == Some(self.scope) {
             world.despawn_in(self.entity);
         }
     }

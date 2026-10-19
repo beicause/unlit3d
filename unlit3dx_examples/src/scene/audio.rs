@@ -60,11 +60,11 @@ pub fn subscribe_audio(sender: &JobSender) -> SnapshotReader<()> {
         .subscribe(move |world: &World| {
             if published
                 || world
-                    .root_view()
+                    .root_scope()
                     .query::<&AudioOutputOpen>()
                     .next()
                     .is_none()
-                || world.root_view().query::<&OnAudioFill>().next().is_none()
+                || world.root_scope().query::<&OnAudioFill>().next().is_none()
             {
                 return None;
             }
@@ -101,7 +101,7 @@ pub fn install_synth(
             "the track name `{one}` is given twice"
         );
     }
-    world.root_view_mut().spawn((AudioGain(gain),));
+    world.root_scope_mut().spawn((AudioGain(gain),));
     // Decoding an sf3's vorbis samples is the load's whole cost: a few
     // seconds in release, tens of them in an unoptimized debug build.
     log::info!("loading the embedded soundfont");

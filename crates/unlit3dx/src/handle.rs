@@ -14,8 +14,8 @@ use crate::thread::ThreadStatus;
 /// A cloneable handle to a spawned world.
 ///
 /// It carries the host entity the world's proxy component lives on, a
-/// cloneable command sender, and — for a world on its own thread — a view of
-/// that thread's liveness. It can be handed to the world that queues work
+/// cloneable command sender, and — for a world on its own thread — a reading
+/// of that thread's liveness. It can be handed to the world that queues work
 /// without the host's `World` in hand. Cloning it does not spawn anything:
 /// the world lives on until the host drops the proxy entity.
 #[derive(Clone)]
@@ -110,7 +110,7 @@ mod tests {
         let handle = crate::host::spawn_sub_world(&mut host, "nested", 8);
         let request = handle.request(Box::new(|_: &mut World| 5));
         let mut nested = host
-            .root_view()
+            .root_scope()
             .get_mut::<World>(handle.entity())
             .expect("the nested world");
         crate::host::drain_sub_world(&mut nested);

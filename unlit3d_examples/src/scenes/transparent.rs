@@ -75,9 +75,9 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let device = source.device(&world.root_view());
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let device = source.device(&world.root_scope());
 
     // Two variants of the same unlit pipeline: the opaque one every other
     // scene draws with, and a translucent one that blends straight-alpha
@@ -117,7 +117,7 @@ fn build(
     // tint is its own instance colour, so one mesh serves all of them.
     let translucent_key = UnlitPipelineKey::new(translucent);
 
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
 

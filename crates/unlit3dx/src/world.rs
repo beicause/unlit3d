@@ -296,7 +296,7 @@ fn spawn_proxy(
     bundle.push(WorldProxy { kind });
     bundle.push(WorldName(name));
     bundle.push(sender);
-    host.root_view_mut().spawn(bundle)
+    host.root_scope_mut().spawn(bundle)
 }
 
 /// Drain a stepped world's jobs and run its tick once.
@@ -306,7 +306,7 @@ fn spawn_proxy(
 /// world; a panic is caught, logged and recorded the way a remote world's
 /// thread panic is, and ends the world too.
 pub fn step_stepped_world(host: &World, entity: Entity) {
-    let Some(mut proxy) = host.root_view().get_mut::<WorldProxy>(entity) else {
+    let Some(mut proxy) = host.root_scope().get_mut::<WorldProxy>(entity) else {
         return;
     };
     let WorldKind::Stepped(stepped) = &mut proxy.kind else {
@@ -365,7 +365,7 @@ pub fn with_stepped_world<R>(
     entity: Entity,
     f: impl FnOnce(&World) -> R,
 ) -> Option<R> {
-    let proxy = host.root_view().get::<WorldProxy>(entity)?;
+    let proxy = host.root_scope().get::<WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &proxy.kind else {
         return None;
     };
@@ -388,19 +388,19 @@ mod tests {
         });
         handle
             .send(Box::new(|world: &mut World| {
-                world.root_view_mut().spawn((Count(0),));
+                world.root_scope_mut().spawn((Count(0),));
             }))
             .expect("the world accepts jobs");
         let request = handle.request(Box::new(|world: &mut World| {
             world
-                .root_view()
+                .root_scope()
                 .query::<&mut Count>()
                 .next()
                 .expect("the counter")
                 .1
                 .0 += 1;
             world
-                .root_view()
+                .root_scope()
                 .query::<&Count>()
                 .next()
                 .expect("the counter")
@@ -427,7 +427,7 @@ mod tests {
             "test",
             8,
             |world: &mut World| {
-                world.root_view_mut().spawn((Count(0),));
+                world.root_scope_mut().spawn((Count(0),));
             },
             |_, control, ()| {
                 control.wait_timeout(Duration::from_millis(1));
@@ -435,7 +435,7 @@ mod tests {
             },
         );
         let request = handle.request(Box::new(|world: &mut World| {
-            world.root_view().query::<&Count>().next().is_some()
+            world.root_scope().query::<&Count>().next().is_some()
         }));
         let mut answered = None;
         for _ in 0..2_000 {
@@ -472,11 +472,11 @@ mod tests {
             "stepped",
             8,
             |world: &mut World| {
-                world.root_view_mut().spawn((Count(0),));
+                world.root_scope_mut().spawn((Count(0),));
             },
             |world: &mut World, _control: &ThreadControl, ()| {
                 world
-                    .root_view()
+                    .root_scope()
                     .query::<&mut Count>()
                     .next()
                     .expect("the counter")
@@ -490,7 +490,7 @@ mod tests {
             handle
                 .request(Box::new(|world: &mut World| {
                     world
-                        .root_view()
+                        .root_scope()
                         .query::<&Count>()
                         .next()
                         .expect("the counter")
@@ -505,7 +505,7 @@ mod tests {
             handle
                 .request(Box::new(|world: &mut World| {
                     world
-                        .root_view()
+                        .root_scope()
                         .query::<&Count>()
                         .next()
                         .expect("the counter")
@@ -518,7 +518,7 @@ mod tests {
         step_stepped_world(&host, handle.entity());
         let request = handle.request(Box::new(|world: &mut World| {
             world
-                .root_view()
+                .root_scope()
                 .query::<&Count>()
                 .next()
                 .expect("the counter")
@@ -551,7 +551,7 @@ mod tests {
     #[test]
     fn stepping_a_foreign_entity_does_nothing() {
         let mut host = World::new();
-        let plain = host.root_view_mut().spawn((Count(0),));
+        let plain = host.root_scope_mut().spawn((Count(0),));
         step_stepped_world(&host, plain);
     }
 

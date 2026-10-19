@@ -141,7 +141,7 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
     )?;
 
     world
-        .root_view()
+        .root_scope()
         .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(&world))
         .expect("the renderer entity exists");
 
@@ -209,10 +209,10 @@ pub fn build_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = world.root_view_mut().spawn((Renderer::new(context),));
+    let renderer = world.root_scope_mut().spawn((Renderer::new(context),));
 
     let target = world
-        .root_view()
+        .root_scope()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             bind_target(
                 &world,
@@ -227,10 +227,10 @@ pub fn build_world(
 
     let clear = config.output.clear;
     // The frame's load ops are shared by every source, so they live in the
-    // subtree every view sees.
+    // subtree every scope sees.
     {
         let shared = world.shared();
-        let mut shared_view = world.view_mut(shared).expect("the shared scope exists");
+        let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
         shared_view.spawn((RenderLoadOps {
             color: wgpu::LoadOp::Clear(wgpu::Color {
                 r: clear[0],
@@ -243,9 +243,9 @@ pub fn build_world(
         },));
     }
 
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     for document in &config.documents {
         let gltf = UnlitGltf::load(&document.path)?;
@@ -253,30 +253,30 @@ pub fn build_world(
             gltf.insert_resources(source, world)
         });
         let nodes = {
-            let mut view = world
-                .view_mut(source_entity)
+            let mut scope = world
+                .scope_mut(source_entity)
                 .expect("the source entity is its own scope");
-            gltf.spawn_default_scene(&mut view, &resources)
+            gltf.spawn_default_scene(&mut scope, &resources)
         };
         if let Some(placement) = &document.placement {
             let transform = placement.transform();
             for node in &nodes {
                 for &entity in &node.entities {
                     let _ = world
-                        .root_view()
+                        .root_scope()
                         .with_mut::<Transform, _>(entity, |current| *current = transform.clone());
                 }
             }
         }
         if let Some(animation) = &document.animation {
             let index = animation_index(&gltf, animation)?;
-            gltf.apply_animation(&world.root_view(), index, document.time, &nodes);
+            gltf.apply_animation(&world.root_scope(), index, document.time, &nodes);
         }
     }
 
     // The camera sits in the source's own subtree, which is what it frames.
     world
-        .view_mut(source_entity)
+        .scope_mut(source_entity)
         .expect("the source entity is its own scope")
         .spawn((camera(&config.camera, render_size),));
 
@@ -317,16 +317,16 @@ pub fn offscreen_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = world.root_view_mut().spawn((Renderer::new(context),));
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let renderer = world.root_scope_mut().spawn((Renderer::new(context),));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
     // The frame's load ops and input are shared by every source, so they live
-    // in the subtree every view sees.
+    // in the subtree every scope sees.
     let input = InputWriter::new();
     {
         let shared = world.shared();
-        let mut shared_view = world.view_mut(shared).expect("the shared scope exists");
+        let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
         shared_view.spawn((RenderLoadOps::default(),));
         shared_view.spawn((input.clone(), input.subscribe()));
     }
@@ -334,7 +334,7 @@ pub fn offscreen_world(
     let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
     let color_view = {
         let mut graph = world
-            .root_view()
+            .root_scope()
             .get_mut::<ResourceGraph>(context.graph)
             .expect("spawn_context spawned the graph");
         // The texture is registered in its own right so a screenshot can name
@@ -349,13 +349,13 @@ pub fn offscreen_world(
     };
     let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
     let _ = world
-        .root_view()
+        .root_scope()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             attachments.bind(&world, renderer, color_view);
         });
     // The camera sits in the source's own subtree, which is what it frames.
     world
-        .view_mut(source_entity)
+        .scope_mut(source_entity)
         .expect("the source entity is its own scope")
         .spawn((default_camera(size),));
     (world, renderer)
@@ -503,7 +503,7 @@ fn bind_target(
 ) -> wgpu::Texture {
     let color = create_color_target(device, COLOR_FORMAT, size.0, size.1);
     let color_view = world
-        .root_view()
+        .root_scope()
         .get_mut::<ResourceGraph>(renderer.context().graph)
         .expect("the context's resource graph exists")
         .insert(
@@ -526,20 +526,20 @@ fn bind_target(
 fn with_mesh_source<R>(
     world: &World,
     source_entity: Entity,
-    f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
+    f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
 ) -> R {
-    // The view is the source's own, so what its closure reads is the subtree
+    // The scope is the source's own, so what its closure reads is the subtree
     // the source draws.
-    let view = world
-        .view(source_entity)
+    let scope = world
+        .scope(source_entity)
         .expect("the source entity is alive");
-    let mut source = view
+    let mut source = scope
         .get_mut::<Source>(source_entity)
         .expect("the mesh source entity exists");
     let mesh = source
         .as_mut::<MeshSource>()
         .expect("the source is a MeshSource");
-    f(mesh, &view)
+    f(mesh, &scope)
 }
 
 /// Build the camera from the configuration and the render size's aspect ratio.

@@ -46,7 +46,7 @@ fn sub_world_jobs_drain_in_order() {
     let third = proxy.request(Box::new(|_: &mut World| "third"));
 
     let mut nested = host
-        .root_view()
+        .root_scope()
         .get_mut::<World>(proxy.entity())
         .expect("the nested world");
     drain_sub_world(&mut nested);
@@ -68,7 +68,7 @@ fn a_panicking_job_fails_only_its_own_request() {
     let survivor = proxy.request(Box::new(|_: &mut World| 7u64));
 
     let mut nested = host
-        .root_view()
+        .root_scope()
         .get_mut::<World>(proxy.entity())
         .expect("the nested world");
     drain_sub_world(&mut nested);
@@ -89,12 +89,12 @@ fn remote_world_state_persists_between_jobs() {
     let (_host, remote) = idle_host();
 
     let _ = remote.send(Box::new(|world: &mut World| {
-        world.root_view_mut().spawn((Count(0),));
+        world.root_scope_mut().spawn((Count(0),));
     }));
     for _ in 0..5 {
         let _ = remote.send(Box::new(|world: &mut World| {
             world
-                .root_view()
+                .root_scope()
                 .query::<&mut Count>()
                 .next()
                 .expect("the counter")
@@ -104,7 +104,7 @@ fn remote_world_state_persists_between_jobs() {
     }
     let count = remote.request(Box::new(|world: &mut World| {
         world
-            .root_view()
+            .root_scope()
             .query::<&Count>()
             .next()
             .expect("the counter")
@@ -155,7 +155,7 @@ fn despawning_the_proxy_stops_the_world() {
     });
     let sender = world.sender();
     assert!(
-        host.root_view_mut().despawn(world.entity()),
+        host.root_scope_mut().despawn(world.entity()),
         "the proxy entity despawns"
     );
 
@@ -197,7 +197,7 @@ fn subscriptions_flow_from_thread_to_host() {
         "the reader never saw the collected values"
     );
     assert!(
-        host.root_view().contains(world.entity()),
+        host.root_scope().contains(world.entity()),
         "the proxy lives on a host entity"
     );
 }

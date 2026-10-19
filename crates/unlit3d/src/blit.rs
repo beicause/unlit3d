@@ -14,7 +14,7 @@
 
 use core::ops::DerefMut;
 
-use unlit_ecs::{ScopedWorld, World};
+use unlit_ecs::{Scope, World};
 use unlit_wgpu::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
@@ -39,10 +39,11 @@ const FRAGMENT_ENTRY: &str = "fs_main";
 ///
 /// If the context's graph resource is gone.
 fn resource_graph<'w>(
-    view: &ScopedWorld<'w>,
+    scope: &Scope<'w>,
     ctx: RenderContext,
 ) -> impl DerefMut<Target = ResourceGraph> + 'w {
-    view.get_mut::<ResourceGraph>(ctx.graph)
+    scope
+        .get_mut::<ResourceGraph>(ctx.graph)
         .expect("the context's resource graph exists")
 }
 
@@ -68,7 +69,7 @@ impl BlitTexture {
     /// the source lands on one fragment of the target, and the clamp keeps a
     /// fractional edge sample inside the texture.
     pub fn new(world: &World, ctx: RenderContext, view: TextureView) -> Self {
-        let root = world.root_view();
+        let root = world.root_scope();
         let sampler = {
             let device = root
                 .get::<wgpu::Device>(ctx.device)
@@ -95,7 +96,7 @@ impl BlitTexture {
         view: TextureView,
         sampler: wgpu::Sampler,
     ) -> Self {
-        let mut graph = resource_graph(&world.root_view(), ctx);
+        let mut graph = resource_graph(&world.root_scope(), ctx);
         let view = graph.insert(view, None);
         let sampler = graph.insert(sampler, None);
         Self { view, sampler }
@@ -147,19 +148,19 @@ impl BlitSource {
     /// ones.
     fn build_gpu(
         &mut self,
-        view: &ScopedWorld<'_>,
+        scope: &Scope<'_>,
         ctx: RenderContext,
         texture: &BlitTexture,
         surface: SurfaceKey,
     ) {
         let device = wgpu::Device::clone(
-            &view
+            &scope
                 .get::<wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists"),
         );
         let layout = bind_group_layout(&device);
         let pipeline = pipeline(&device, &layout, surface);
-        let bind_group = allocate_bind_group(view, ctx, &device, &layout, texture);
+        let bind_group = allocate_bind_group(scope, ctx, &device, &layout, texture);
         self.gpu = Some(Gpu {
             pipeline,
             layout,
@@ -177,7 +178,7 @@ impl BlitSource {
 /// stay registered for as long as the group reads them; `add_dependency`
 /// records that on the group's behalf.
 fn allocate_bind_group(
-    view: &ScopedWorld<'_>,
+    scope: &Scope<'_>,
     ctx: RenderContext,
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -189,7 +190,7 @@ fn allocate_bind_group(
         texture.view.clone(),
         texture.sampler.clone(),
     );
-    let mut graph = resource_graph(view, ctx);
+    let mut graph = resource_graph(scope, ctx);
     let bind_group = recipe(&graph);
     let rebuild = Rebuild::new(move |graph| Resource::BindGroup(recipe(graph)));
     let bind_group = graph.insert(bind_group, Some(rebuild));
@@ -201,26 +202,26 @@ fn allocate_bind_group(
 impl FrameSource for BlitSource {
     fn build_scene(
         &mut self,
-        view: &ScopedWorld<'_>,
+        scope: &Scope<'_>,
         ctx: RenderContext,
         _encoder: &mut wgpu::CommandEncoder,
     ) {
         // The graph settles on every path out of this function, so a texture
         // registered by `BlitTexture::new` this frame is realised when the
         // scope drops, whatever this frame does.
-        let maintain = ctx.maintain_scope(*view);
+        let maintain = ctx.maintain_scope(*scope);
 
         // Cleared on every path: a frame that records this source must never
         // replay the previous frame's blit.
         self.scene.clear();
 
-        let Some(target) = frame_target(view) else {
+        let Some(target) = frame_target(scope) else {
             log::warn!(
                 "BlitSource::build_scene: no FrameTarget in the world, so nothing is blitted"
             );
             return;
         };
-        let Some((_, texture)) = view.query::<&BlitTexture>().next() else {
+        let Some((_, texture)) = scope.query::<&BlitTexture>().next() else {
             log::warn!(
                 "BlitSource::build_scene: no BlitTexture component, so there is no texture to blit"
             );
@@ -231,24 +232,24 @@ impl FrameSource for BlitSource {
             // The first frame, or a new target: the bind-group layout
             // changes with the pipeline, so the bind group is rebuilt with
             // it.
-            self.build_gpu(view, ctx, &texture, target.surface);
+            self.build_gpu(scope, ctx, &texture, target.surface);
         } else if let Some(gpu) = &mut self.gpu
             && gpu.texture != *texture
         {
             // The same target, a different texture: the layout and the
             // pipeline stay, and the texture's new ids get their own group.
             let layout = gpu.layout.clone();
-            let device = view
+            let device = scope
                 .get::<wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
-            gpu.bind_group = allocate_bind_group(view, ctx, &device, &layout, &texture);
+            gpu.bind_group = allocate_bind_group(scope, ctx, &device, &layout, &texture);
             gpu.texture = texture.clone();
         }
 
         // Drop the scope so the graph maintains before the group is read back
         // out: a replace this build made must be visible to the draw.
         drop(maintain);
-        let graph = resource_graph(view, ctx);
+        let graph = resource_graph(scope, ctx);
         let gpu = self.gpu.as_ref().expect("the pipeline was just built");
         let bind_group = graph
             .get(&gpu.bind_group)

@@ -17,61 +17,61 @@ struct Velocity {
 #[test]
 fn a_flat_list_spawns_every_component() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn(bundle!(
+    let entity = world.root_scope_mut().spawn(bundle!(
         Position { x: 1.0, y: 2.0 },
         Velocity { dx: 3.0, dy: 4.0 }
     ));
 
-    assert_eq!(world.root_view().get::<Position>(entity).unwrap().x, 1.0);
-    assert_eq!(world.root_view().get::<Velocity>(entity).unwrap().dy, 4.0);
+    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().x, 1.0);
+    assert_eq!(world.root_scope().get::<Velocity>(entity).unwrap().dy, 4.0);
 }
 
 #[test]
 fn nesting_is_flattened_at_any_depth() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn(bundle!(
+    let entity = world.root_scope_mut().spawn(bundle!(
         Position { x: 1.0, y: 2.0 },
         (Velocity { dx: 3.0, dy: 4.0 }, (7u32, (true, ()))),
     ));
 
     assert_eq!(
-        *world.root_view().get::<u32>(entity).unwrap(),
+        *world.root_scope().get::<u32>(entity).unwrap(),
         7,
         "deep leaf"
     );
-    assert!(world.root_view().has::<bool>(entity));
+    assert!(world.root_scope().has::<bool>(entity));
     assert!(
-        !world.root_view().has::<(u32, bool)>(entity),
+        !world.root_scope().has::<(u32, bool)>(entity),
         "the nested tuple is not stored as a component"
     );
-    assert_eq!(world.root_view().get::<Position>(entity).unwrap().y, 2.0);
+    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().y, 2.0);
 }
 
 #[test]
 fn a_nested_tuple_spawned_plainly_is_one_component() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn(((1u32, 2.0f32), true));
+    let entity = world.root_scope_mut().spawn(((1u32, 2.0f32), true));
 
     assert!(
-        world.root_view().has::<(u32, f32)>(entity),
+        world.root_scope().has::<(u32, f32)>(entity),
         "the tuple itself is a component"
     );
     assert!(
-        !world.root_view().has::<u32>(entity),
+        !world.root_scope().has::<u32>(entity),
         "not flattened without the macro"
     );
-    assert!(world.root_view().has::<bool>(entity));
+    assert!(world.root_scope().has::<bool>(entity));
 }
 
 #[test]
 fn empty_groups_contribute_nothing() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn(bundle!((), (), (1u32, ())));
+    let entity = world.root_scope_mut().spawn(bundle!((), (), (1u32, ())));
 
-    assert_eq!(world.root_view().len(), 1);
-    assert_eq!(*world.root_view().get::<u32>(entity).unwrap(), 1);
+    assert_eq!(world.root_scope().len(), 1);
+    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
     assert!(
-        !world.root_view().has::<()>(entity),
+        !world.root_scope().has::<()>(entity),
         "the empty tuple is not a component here"
     );
 }
@@ -79,10 +79,10 @@ fn empty_groups_contribute_nothing() {
 #[test]
 fn the_macro_returns_a_bundle_that_spawns_nothing() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn(bundle!());
+    let entity = world.root_scope_mut().spawn(bundle!());
 
-    assert!(world.root_view().contains(entity));
-    assert!(!world.root_view().has::<u32>(entity));
+    assert!(world.root_scope().contains(entity));
+    assert!(!world.root_scope().has::<u32>(entity));
 }
 
 #[test]
@@ -92,11 +92,11 @@ fn a_group_holding_one_expression_is_one_leaf() {
     // Each group holds a single expression, so it is pushed as itself rather
     // than recursed into; the two are different types, so neither duplicates.
     let entity = world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn(bundle!((value,), (value as u64,)));
 
-    assert_eq!(*world.root_view().get::<u32>(entity).unwrap(), 4);
-    assert_eq!(*world.root_view().get::<u64>(entity).unwrap(), 4);
+    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 4);
+    assert_eq!(*world.root_scope().get::<u64>(entity).unwrap(), 4);
 }
 
 /// Distinct components for the width test: a plain tuple runs out at sixteen.
@@ -110,7 +110,7 @@ fn more_than_sixteen_components_flatten() {
     let mut world = World::new();
     // Twenty-two distinct components, wider than any tuple `Bundle` impl, which
     // the macro is not bound by.
-    let entity = world.root_view_mut().spawn(bundle!(
+    let entity = world.root_scope_mut().spawn(bundle!(
         1u8,
         2u16,
         3u32,
@@ -136,14 +136,14 @@ fn more_than_sixteen_components_flatten() {
         M08,
     ));
 
-    let location = world.root_view().location(entity).unwrap();
-    let archetype = world.root_view().archetype(location.archetype()).unwrap();
+    let location = world.root_scope().location(entity).unwrap();
+    let archetype = world.root_scope().archetype(location.archetype()).unwrap();
     assert_eq!(archetype.types().len(), 24, "23 components plus ScopeOf");
     assert!(
-        world.root_view().has::<M08>(entity),
+        world.root_scope().has::<M08>(entity),
         "a leaf past the tuple limit landed"
     );
-    assert!(world.root_view().has::<Position>(entity));
+    assert!(world.root_scope().has::<Position>(entity));
 }
 
 #[test]
@@ -151,19 +151,21 @@ fn a_flattened_bundle_matches_the_equivalent_tuple() {
     let mut flat = World::new();
     let mut nested = World::new();
 
-    let flattened = flat.root_view_mut().spawn(bundle!((1u32, 2.0f32), (true,)));
-    let tupled = nested.root_view_mut().spawn((1u32, 2.0f32, true));
+    let flattened = flat
+        .root_scope_mut()
+        .spawn(bundle!((1u32, 2.0f32), (true,)));
+    let tupled = nested.root_scope_mut().spawn((1u32, 2.0f32, true));
 
-    let flat_location = flat.root_view().location(flattened).unwrap();
+    let flat_location = flat.root_scope().location(flattened).unwrap();
     let flat_types = flat
-        .root_view()
+        .root_scope()
         .archetype(flat_location.archetype())
         .unwrap()
         .types()
         .to_vec();
-    let nested_location = nested.root_view().location(tupled).unwrap();
+    let nested_location = nested.root_scope().location(tupled).unwrap();
     let nested_types = nested
-        .root_view()
+        .root_scope()
         .archetype(nested_location.archetype())
         .unwrap()
         .types()
@@ -177,23 +179,23 @@ fn a_duplicate_across_levels_panics() {
     let mut world = World::new();
     // The top-level tuple impl only compares siblings; flattening first is what
     // catches a duplicate buried in a nested group.
-    world.root_view_mut().spawn(bundle!(1u32, (1u32, true)));
+    world.root_scope_mut().spawn(bundle!(1u32, (1u32, true)));
 }
 
 #[test]
 fn a_queued_flattened_spawn_applies() {
     let mut world = World::new();
     let entity = {
-        let commands: Commands<'_> = world.root_view().queue();
+        let commands: Commands<'_> = world.root_scope().queue();
         commands.spawn(bundle!((1u32, (2.0f32,)), true))
     };
 
-    assert!(!world.root_view().contains(entity), "queued, not spawned");
+    assert!(!world.root_scope().contains(entity), "queued, not spawned");
     world.apply();
 
-    assert!(world.root_view().has::<u32>(entity));
-    assert!(world.root_view().has::<f32>(entity));
-    assert!(world.root_view().has::<bool>(entity));
+    assert!(world.root_scope().has::<u32>(entity));
+    assert!(world.root_scope().has::<f32>(entity));
+    assert!(world.root_scope().has::<bool>(entity));
 }
 
 #[test]
@@ -205,10 +207,10 @@ fn a_built_bundle_is_a_bundle() {
     builder.push(2.0f32);
 
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn(builder);
+    let entity = world.root_scope_mut().spawn(builder);
 
-    assert!(world.root_view().has::<u32>(entity));
-    assert!(world.root_view().has::<f32>(entity));
+    assert!(world.root_scope().has::<u32>(entity));
+    assert!(world.root_scope().has::<f32>(entity));
 }
 
 #[test]
@@ -218,21 +220,21 @@ fn into_builder_returns_exactly_the_bundles_components() {
     let builder = bundle!((1u32, (2.0f32,)), true).into_builder();
 
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn(builder);
+    let entity = world.root_scope_mut().spawn(builder);
 
-    let location = world.root_view().location(entity).unwrap();
-    let archetype = world.root_view().archetype(location.archetype()).unwrap();
+    let location = world.root_scope().location(entity).unwrap();
+    let archetype = world.root_scope().archetype(location.archetype()).unwrap();
     assert_eq!(archetype.types().len(), 4, "3 components plus ScopeOf");
-    assert_eq!(*world.root_view().get::<u32>(entity).unwrap(), 1);
-    assert!(world.root_view().has::<f32>(entity));
-    assert!(world.root_view().has::<bool>(entity));
+    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
+    assert!(world.root_scope().has::<f32>(entity));
+    assert!(world.root_scope().has::<bool>(entity));
 }
 
 #[test]
 fn a_tuple_bundle_becomes_its_components() {
     let mut world = World::new();
-    let entity = world.root_view_mut().spawn((1u32, 2.0f32).into_builder());
+    let entity = world.root_scope_mut().spawn((1u32, 2.0f32).into_builder());
 
-    assert_eq!(*world.root_view().get::<u32>(entity).unwrap(), 1);
-    assert_eq!(*world.root_view().get::<f32>(entity).unwrap(), 2.0);
+    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
+    assert_eq!(*world.root_scope().get::<f32>(entity).unwrap(), 2.0);
 }

@@ -40,10 +40,10 @@ fn build(
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_view())));
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();

@@ -39,12 +39,12 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
     // The variant that reads the morph bindings: its mesh group carries the
     // displacement buffer a plain cube's does not.
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_view())));
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let deltas = morph_deltas(&positions);
@@ -89,7 +89,7 @@ fn build(
             // The weights are a component write, not a mesh re-upload and not
             // a GPU call: the source packs and uploads them once per frame.
             world
-                .view(source_entity)
+                .scope(source_entity)
                 .expect("the source is alive")
                 .get_mut::<MorphWeights>(weights_entity)
                 .expect("the weight entity carries a `MorphWeights`")

@@ -17,7 +17,7 @@
 //! assets.
 
 use glam::Vec3;
-use unlit_ecs::{Entity, ScopedWorld, World};
+use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::components::{Camera, GpuMaterial, GpuMesh, Transform};
 use unlit3d::mesh_source::MeshSource;
@@ -67,18 +67,18 @@ impl OwnedUnlitMeshDesc {
 /// registry either way.
 pub(crate) fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
     let (entity, source) = world
-        .root_view()
+        .root_scope()
         .query::<&Source>()
         .find(|(_, source)| source.as_ref::<MeshSource>().is_some())?;
     let mesh_source = source.as_ref::<MeshSource>()?;
     let key = world
-        .root_view()
+        .root_scope()
         .query::<&UnlitPipelineKey>()
         .next()
         .map(|(_, key)| key.clone())
         .unwrap_or_else(|| {
             UnlitPipelineKey::new(UnlitOptions::standard(
-                &mesh_source.device(&world.root_view()),
+                &mesh_source.device(&world.root_scope()),
             ))
         });
     Some((entity, key))
@@ -93,7 +93,7 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
         let Some((source_entity, key)) = mesh_source(world) else {
             panic!("the render world carries no MeshSource");
         };
-        let root = world.root_view();
+        let root = world.root_scope();
         let mesh = root
             .with_mut::<Source, _>(source_entity, |source| {
                 source
@@ -105,7 +105,7 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
         // The asset hangs under the source that draws it, so the world holds
         // one subtree per source rather than asset entities at its root.
         world
-            .view_mut(source_entity)
+            .scope_mut(source_entity)
             .expect("the mesh source entity exists")
             .spawn((mesh,))
     })
@@ -147,12 +147,12 @@ pub fn create_material_from_texture(
 fn allocate_material(
     world: &mut World,
     descriptor: wgpu::SamplerDescriptor<'static>,
-    build_texture: impl FnOnce(&MeshSource, &ScopedWorld<'_>) -> wgpu::Texture,
+    build_texture: impl FnOnce(&MeshSource, &Scope<'_>) -> wgpu::Texture,
 ) -> Entity {
     let Some((source_entity, key)) = mesh_source(world) else {
         panic!("the render world carries no MeshSource");
     };
-    let root = world.root_view();
+    let root = world.root_scope();
     let material = root
         .with_mut::<Source, _>(source_entity, |source| {
             let source = source
@@ -165,7 +165,7 @@ fn allocate_material(
         })
         .expect("the mesh source entity exists");
     world
-        .view_mut(source_entity)
+        .scope_mut(source_entity)
         .expect("the mesh source entity exists")
         .spawn((material,))
 }
@@ -183,19 +183,19 @@ pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> J
             panic!("the render world carries no MeshSource");
         };
         let mesh = world
-            .root_view()
+            .root_scope()
             .get::<GpuMesh>(mesh)
             .expect("the mesh asset entity exists")
             .clone();
         let material = world
-            .root_view()
+            .root_scope()
             .get::<GpuMaterial>(material)
             .expect("the material asset entity exists")
             .clone();
         // The instance hangs under the source that draws it: a source draws
         // the subtree it owns, so an instance spawned beside it is never seen.
         world
-            .view_mut(source_entity)
+            .scope_mut(source_entity)
             .expect("the mesh source entity exists")
             .spawn((transform, mesh, material, UnlitPipeline::new(key)))
     })

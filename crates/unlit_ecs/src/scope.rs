@@ -2,8 +2,8 @@
 //!
 //! Every entity carries a [`ScopeOf`] component naming its parent entity, so an
 //! entity's scope is another entity rather than a separate identifier space.
-//! The tree that results is what a [`ScopedWorld`](crate::ScopedWorld) sees
-//! through: a view of a scope sees that scope's whole subtree.
+//! The tree that results is what a [`Scope`](crate::Scope) sees
+//! through: a scope of a scope sees that scope's whole subtree.
 //!
 //! The component is the truth. [`ScopeTree`] is a derived index of the same
 //! relation — parents and children as plain handles — kept up to date so that
@@ -12,7 +12,7 @@
 //! panic, and reading the index instead is what guarantees that.
 //!
 //! Two entities are special: the root owns the world, and the shared scope's
-//! subtree is visible to every view.
+//! subtree is visible to every scope.
 
 use crate::entity::Entity;
 use crate::hash::EntityHashMap;

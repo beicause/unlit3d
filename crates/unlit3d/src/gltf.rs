@@ -27,10 +27,10 @@
 //! ```rust,no_run
 //! # use unlit3d::gltf::UnlitGltf;
 //! # use unlit3d::prelude::MeshSource;
-//! # use unlit_ecs::ScopedWorldMut;
-//! # fn run(source: &mut MeshSource, world: &mut ScopedWorldMut<'_>) -> Result<(), gltf::Error> {
+//! # use unlit_ecs::ScopeMut;
+//! # fn run(source: &mut MeshSource, world: &mut ScopeMut<'_>) -> Result<(), gltf::Error> {
 //! let gltf = UnlitGltf::load("model.glb")?;
-//! let resources = gltf.insert_resources(source, &world.as_view());
+//! let resources = gltf.insert_resources(source, &world.as_scope());
 //! let entities = gltf.spawn_default_scene(world, &resources);
 //! // ... render ...
 //! // Giving the handles up makes their resources collectable.
@@ -129,7 +129,7 @@ use crate::unlit::{
 };
 use gltf::animation::util::ReadOutputs;
 use gltf::animation::{Interpolation, Property};
-use unlit_ecs::{ArchetypeBuilder, ScopedWorld, ScopedWorldMut, prelude::Entity};
+use unlit_ecs::{ArchetypeBuilder, Scope, ScopeMut, prelude::Entity};
 use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
@@ -389,7 +389,7 @@ impl UnlitGltf {
     pub fn insert_image(
         &self,
         source: &mut MeshSource,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         image: usize,
     ) -> GltfImage {
         let data = &self.images[image];
@@ -451,11 +451,7 @@ impl UnlitGltf {
     ///
     /// The returned vector is aligned with the document's image indices: the
     /// handle for image `i` sits at index `i`.
-    pub fn insert_images(
-        &self,
-        source: &mut MeshSource,
-        world: &ScopedWorld<'_>,
-    ) -> Vec<GltfImage> {
+    pub fn insert_images(&self, source: &mut MeshSource, world: &Scope<'_>) -> Vec<GltfImage> {
         (0..self.document.images().len())
             .map(|image| self.insert_image(source, world, image))
             .collect()
@@ -475,7 +471,7 @@ impl UnlitGltf {
     pub fn insert_material(
         &self,
         source: &mut MeshSource,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         material: usize,
         images: &[GltfImage],
     ) -> Option<GltfMaterial> {
@@ -540,7 +536,7 @@ impl UnlitGltf {
     pub fn insert_materials(
         &self,
         source: &mut MeshSource,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         images: &[GltfImage],
     ) -> Vec<Option<GltfMaterial>> {
         (0..self.document.materials().len())
@@ -567,7 +563,7 @@ impl UnlitGltf {
     pub fn insert_mesh(
         &self,
         source: &mut MeshSource,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         mesh: usize,
         primitive: usize,
     ) -> GltfMesh {
@@ -666,7 +662,7 @@ impl UnlitGltf {
     ///
     /// The vector is ordered document-mesh-major, then primitive-minor: first
     /// all of mesh 0's primitives, then mesh 1's, and so on.
-    pub fn insert_meshes(&self, source: &mut MeshSource, world: &ScopedWorld<'_>) -> Vec<GltfMesh> {
+    pub fn insert_meshes(&self, source: &mut MeshSource, world: &Scope<'_>) -> Vec<GltfMesh> {
         let count: usize = self
             .document
             .meshes()
@@ -693,11 +689,7 @@ impl UnlitGltf {
     /// documents, say — can call [`Self::insert_images`],
     /// [`Self::insert_materials`] and [`Self::insert_meshes`] instead and
     /// build a [`GltfResources`] of its own.
-    pub fn insert_resources(
-        &self,
-        source: &mut MeshSource,
-        world: &ScopedWorld<'_>,
-    ) -> GltfResources {
+    pub fn insert_resources(&self, source: &mut MeshSource, world: &Scope<'_>) -> GltfResources {
         let images = self.insert_images(source, world);
         let materials = self.insert_materials(source, world, &images);
         let meshes = self.insert_meshes(source, world);
@@ -873,7 +865,7 @@ impl UnlitGltf {
     /// If `animation` is out of bounds.
     pub fn apply_animation(
         &self,
-        world: &ScopedWorld<'_>,
+        world: &Scope<'_>,
         animation: usize,
         time: f32,
         nodes: &[GltfNode],
@@ -1036,7 +1028,7 @@ impl UnlitGltf {
     /// while it samples a base-color texture.
     pub fn spawn_node(
         &self,
-        world: &mut ScopedWorldMut<'_>,
+        world: &mut ScopeMut<'_>,
         node: usize,
         resources: &GltfResources,
     ) -> GltfNode {
@@ -1140,7 +1132,7 @@ impl UnlitGltf {
     /// [`Self::spawn_node`]).
     pub fn spawn_default_scene(
         &self,
-        world: &mut ScopedWorldMut<'_>,
+        world: &mut ScopeMut<'_>,
         resources: &GltfResources,
     ) -> Vec<GltfNode> {
         let scene = self
@@ -2886,8 +2878,8 @@ mod tests {
         ))
         .expect("the animated document parses");
         let mut world = World::new();
-        let parent = world.root_view_mut().spawn((Transform::default(),));
-        let child = world.root_view_mut().spawn((Transform::default(),));
+        let parent = world.root_scope_mut().spawn((Transform::default(),));
+        let child = world.root_scope_mut().spawn((Transform::default(),));
         let nodes = [
             GltfNode {
                 node: 0,
@@ -2902,11 +2894,11 @@ mod tests {
                 weights: None,
             },
         ];
-        gltf.apply_animation(&world.root_view(), 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
         // The parent's own channel moves it...
         assert_eq!(
             world
-                .root_view()
+                .root_scope()
                 .get::<Transform>(parent)
                 .expect("the parent carries a transform")
                 .translation,
@@ -2915,7 +2907,7 @@ mod tests {
         // ...and the child, which no translation channel names, inherits it
         // along with the quarter turn its own channel reaches at the midpoint.
         let child = world
-            .root_view()
+            .root_scope()
             .get::<Transform>(child)
             .expect("the child carries a transform");
         assert_eq!(child.translation, glam::Vec3::new(2.0, 0.0, 0.0));
@@ -2933,17 +2925,17 @@ mod tests {
         ))
         .expect("the animated document parses");
         let mut world = World::new();
-        let parent = world.root_view_mut().spawn((Transform::default(),));
+        let parent = world.root_scope_mut().spawn((Transform::default(),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![parent],
             pose: None,
             weights: None,
         }];
-        gltf.apply_animation(&world.root_view(), 0, 1.999, &nodes);
+        gltf.apply_animation(&world.root_scope(), 0, 1.999, &nodes);
         assert_eq!(
             world
-                .root_view()
+                .root_scope()
                 .get::<Transform>(parent)
                 .expect("the parent carries a transform")
                 .translation,
@@ -2959,17 +2951,17 @@ mod tests {
         ))
         .expect("the animated skinned document parses");
         let mut world = World::new();
-        let mesh = world.root_view_mut().spawn((Transform::default(),));
-        let pose = world.root_view_mut().spawn((SkinPose::default(),));
+        let mesh = world.root_scope_mut().spawn((Transform::default(),));
+        let pose = world.root_scope_mut().spawn((SkinPose::default(),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![mesh],
             pose: Some(pose),
             weights: None,
         }];
-        gltf.apply_animation(&world.root_view(), 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
         let pose = world
-            .root_view()
+            .root_scope()
             .get::<SkinPose>(pose)
             .expect("the pose entity carries a pose");
         assert!(
@@ -2987,17 +2979,19 @@ mod tests {
         let gltf = UnlitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.0, 2.0]))
             .expect("the animated morphed document parses");
         let mut world = World::new();
-        let mesh = world.root_view_mut().spawn((Transform::default(),));
-        let weights = world.root_view_mut().spawn((MorphWeights::new(vec![0.0]),));
+        let mesh = world.root_scope_mut().spawn((Transform::default(),));
+        let weights = world
+            .root_scope_mut()
+            .spawn((MorphWeights::new(vec![0.0]),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![mesh],
             pose: None,
             weights: Some(weights),
         }];
-        gltf.apply_animation(&world.root_view(), 0, 1.0, &nodes);
+        gltf.apply_animation(&world.root_scope(), 0, 1.0, &nodes);
         let weights = world
-            .root_view()
+            .root_scope()
             .get::<MorphWeights>(weights)
             .expect("the weights entity carries weights");
         assert_eq!(weights.weights, vec![1.0]);

@@ -47,11 +47,11 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
     // The variant that reads both the joint stream and the morph bindings.
-    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_view())));
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, 0.0);
@@ -123,13 +123,14 @@ fn build(
             // Update every instance's own pose: one component write per
             // instance, and the source packs and uploads them once per frame.
             {
-                let view = world.view(source_entity).expect("the source is alive");
+                let scope = world.scope(source_entity).expect("the source is alive");
                 for instance in 0..INSTANCES {
                     skins[instance].set_angle(instance_angle(frame, instance));
-                    *view
+                    *scope
                         .get_mut::<SkinPose>(pose_entities[instance])
                         .expect("the pose entity carries a `SkinPose`") = skins[instance].pose();
-                    view.get_mut::<MorphWeights>(weight_entities[instance])
+                    scope
+                        .get_mut::<MorphWeights>(weight_entities[instance])
                         .expect("the weight entity carries a `MorphWeights`")
                         .weights = instance_weights(frame, instance).to_vec();
                 }

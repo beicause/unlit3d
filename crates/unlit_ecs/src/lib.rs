@@ -36,10 +36,10 @@ pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
 pub use query::{Or, Query, QueryFilter, QueryIter, With, Without};
 pub use scope::ScopeOf;
-pub use view::{ScopedWorld, ScopedWorldMut};
+pub use view::{Scope, ScopeMut};
 pub use world::World;
 
 /// The types most callers need.
 pub mod prelude {
-    pub use crate::{Entity, Query, ScopeOf, ScopedWorld, Without, World};
+    pub use crate::{Entity, Query, Scope, ScopeOf, Without, World};
 }

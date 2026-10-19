@@ -80,10 +80,10 @@ fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture, Entit
     let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
     let blit = BlitTexture::new(&world, gpu.context, view);
     let source = world
-        .root_view_mut()
+        .root_scope_mut()
         .spawn((Source::new(BlitSource::new()),));
     world
-        .view_mut(source)
+        .scope_mut(source)
         .expect("a source entity is its own scope")
         .spawn((blit,));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
@@ -129,14 +129,14 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
     let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
     let blit = BlitTexture::new(&world, gpu.context, view);
     let entity = world
-        .root_view()
+        .root_scope()
         .query::<&BlitTexture>()
         .next()
         .map(|(entity, _)| entity)
         .expect("the world has a blit texture");
-    world.root_view_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity);
     world
-        .view_mut(source)
+        .scope_mut(source)
         .expect("a source entity is its own scope")
         .spawn((blit,));
     gpu.render(&world);

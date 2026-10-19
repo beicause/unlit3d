@@ -18,7 +18,7 @@
 
 use core::any::Any;
 
-use unlit_ecs::{Entity, ScopedWorld, World};
+use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::{Scene, ViewportRect};
@@ -44,7 +44,7 @@ impl FrameSourceOrder {
 /// It holds [`Entity`] handles rather than borrows, so it is `Copy` and never
 /// conflicts with a source's own borrow of the world. A source fetches what it
 /// needs from the components those entities carry:
-/// `world.root_view().get_mut::<ResourceGraph>(ctx.graph)`.
+/// `world.root_scope().get_mut::<ResourceGraph>(ctx.graph)`.
 ///
 /// The handles are spawned once by [`spawn_context`] and stay valid for the
 /// world's life; a resource entity is never despawned while frames are drawn.
@@ -85,8 +85,8 @@ impl RenderContext {
     /// and this context's graph address, and fetches the graph when it ends, so
     /// the code between taking the scope and dropping it is free to borrow the
     /// graph itself, as a build does.
-    pub fn maintain_scope<'w>(self, view: ScopedWorld<'w>) -> MaintainScope<'w> {
-        MaintainScope { view, ctx: self }
+    pub fn maintain_scope<'w>(self, scope: Scope<'w>) -> MaintainScope<'w> {
+        MaintainScope { scope, ctx: self }
     }
 }
 
@@ -100,7 +100,7 @@ impl RenderContext {
     #[must_use]
     pub fn of(world: &World, anchor: Entity) -> Option<Self> {
         world
-            .root_view()
+            .root_scope()
             .get::<RenderContext>(anchor)
             .map(|context| *context)
     }
@@ -115,7 +115,7 @@ impl RenderContext {
 /// the bind groups the pass just rebuilt — drops it explicitly at that point.
 #[must_use = "the graph is maintained when the scope is dropped"]
 pub struct MaintainScope<'w> {
-    view: ScopedWorld<'w>,
+    scope: Scope<'w>,
     ctx: RenderContext,
 }
 
@@ -123,7 +123,7 @@ impl Drop for MaintainScope<'_> {
     fn drop(&mut self) {
         // A missing graph is a caller error, and panicking here would be a
         // second panic on the way out of one, so the scope does nothing.
-        if let Some(mut graph) = self.view.get_mut::<ResourceGraph>(self.ctx.graph) {
+        if let Some(mut graph) = self.scope.get_mut::<ResourceGraph>(self.ctx.graph) {
             graph.maintain();
         }
     }
@@ -231,7 +231,7 @@ impl OpenUrls {
 /// queue — one built without [`spawn_context`] — yields none.
 pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
     let Some(entity) = world
-        .root_view()
+        .root_scope()
         .query::<&OpenUrls>()
         .next()
         .map(|(e, _)| e)
@@ -239,7 +239,7 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
         return Vec::new();
     };
     world
-        .root_view()
+        .root_scope()
         .with_mut::<OpenUrls, _>(entity, |urls| std::mem::take(&mut urls.0))
         .unwrap_or_default()
 }
@@ -251,8 +251,9 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
 /// stated what the frame draws into, which is a programming error on its part —
 /// a source cannot invent a target — so a source that needs it should refuse to
 /// draw rather than fall back.
-pub fn frame_target(view: &ScopedWorld<'_>) -> Option<FrameTarget> {
-    view.query::<&FrameTargetSlot>()
+pub fn frame_target(scope: &Scope<'_>) -> Option<FrameTarget> {
+    scope
+        .query::<&FrameTargetSlot>()
         .next()
         .and_then(|(_, slot)| slot.0)
 }
@@ -262,11 +263,12 @@ pub fn frame_target(view: &ScopedWorld<'_>) -> Option<FrameTarget> {
 /// The frame loop calls this before it renders — [`Renderer::set_render_target`](crate::renderer::Renderer::set_render_target)
 /// does it for the built-in path. Returns whether a slot existed to write; a
 /// world only gets one from [`spawn_context`].
-pub fn set_frame_target(view: &ScopedWorld<'_>, target: FrameTarget) -> bool {
-    let Some(entity) = view.query::<&FrameTargetSlot>().next().map(|(e, _)| e) else {
+pub fn set_frame_target(scope: &Scope<'_>, target: FrameTarget) -> bool {
+    let Some(entity) = scope.query::<&FrameTargetSlot>().next().map(|(e, _)| e) else {
         return false;
     };
-    view.with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = Some(target))
+    scope
+        .with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = Some(target))
         .is_some()
 }
 
@@ -281,7 +283,7 @@ pub fn set_frame_target(view: &ScopedWorld<'_>, target: FrameTarget) -> bool {
 /// caller states a target again by setting one rather than by unsetting one.
 pub(crate) fn unset_frame_target(world: &World) -> bool {
     let Some(entity) = world
-        .root_view()
+        .root_scope()
         .query::<&FrameTargetSlot>()
         .next()
         .map(|(e, _)| e)
@@ -289,7 +291,7 @@ pub(crate) fn unset_frame_target(world: &World) -> bool {
         return false;
     };
     world
-        .root_view()
+        .root_scope()
         .with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = None)
         .is_some()
 }
@@ -303,8 +305,9 @@ pub(crate) fn unset_frame_target(world: &World) -> bool {
 /// `None` means the frame loop stated no letterbox, so the whole target is the
 /// region — the ordinary case, and the one every caller that never letterboxes
 /// leaves the world in.
-pub fn frame_viewport(view: &ScopedWorld<'_>) -> Option<FrameViewport> {
-    view.query::<&FrameViewportSlot>()
+pub fn frame_viewport(scope: &Scope<'_>) -> Option<FrameViewport> {
+    scope
+        .query::<&FrameViewportSlot>()
         .next()
         .and_then(|(_, slot)| slot.0)
 }
@@ -321,7 +324,7 @@ pub fn frame_viewport(view: &ScopedWorld<'_>) -> Option<FrameViewport> {
 /// slot existed to write; a world only gets one from [`spawn_context`].
 pub fn set_frame_viewport(world: &World, viewport: Option<FrameViewport>) -> bool {
     let Some(entity) = world
-        .root_view()
+        .root_scope()
         .query::<&FrameViewportSlot>()
         .next()
         .map(|(e, _)| e)
@@ -329,7 +332,7 @@ pub fn set_frame_viewport(world: &World, viewport: Option<FrameViewport>) -> boo
         return false;
     };
     world
-        .root_view()
+        .root_scope()
         .with_mut::<FrameViewportSlot, _>(entity, |slot| slot.0 = viewport)
         .is_some()
 }
@@ -352,7 +355,7 @@ pub trait FrameSource: 'static {
     /// frame still records, and still applies its load ops.
     fn build_scene(
         &mut self,
-        view: &ScopedWorld<'_>,
+        scope: &Scope<'_>,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     );
@@ -437,11 +440,11 @@ impl Source {
     /// Assemble this source's scene for the frame.
     pub fn build_scene(
         &mut self,
-        view: &ScopedWorld<'_>,
+        scope: &Scope<'_>,
         ctx: RenderContext,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        self.source.build_scene(view, ctx, encoder);
+        self.source.build_scene(scope, ctx, encoder);
     }
 
     /// The scene this source built for the frame.
@@ -482,11 +485,11 @@ pub fn spawn_context(
         capabilities: world.reserve_entity(),
     };
     // Every one of these belongs to the shared subtree: a source reads the GPU
-    // state from its own view, and no view may remove what every other view
+    // state from its own scope, and no scope may remove what every other scope
     // depends on.
     let shared = world.shared();
     let mut shared_view = world
-        .view_mut(shared)
+        .scope_mut(shared)
         .expect("the shared scope exists from the moment the world is built");
     shared_view.spawn_at(context.device, (device, context));
     shared_view.spawn_at(context.queue, (queue, context));
@@ -534,7 +537,7 @@ impl SourceOrder {
         self.keys.clear();
         self.keys.extend(
             world
-                .root_view()
+                .root_scope()
                 .query::<&Source>()
                 .map(|(entity, source)| (source.order(), entity)),
         );
@@ -656,7 +659,7 @@ mod tests {
     impl FrameSource for RecordingSource {
         fn build_scene(
             &mut self,
-            _view: &ScopedWorld<'_>,
+            _view: &Scope<'_>,
             _ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
@@ -699,10 +702,10 @@ mod tests {
 
         // Spawned overlay-first, so spawn order is the opposite of draw order.
         let overlay = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
         let mesh = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
 
         let (order, ambiguous) = record_order(&world);
@@ -718,19 +721,19 @@ mod tests {
         test_context(&mut world);
 
         let first = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
         let second = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
         let third = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
         assert_eq!(record_order(&world).0, vec![first, second, third]);
 
         // An explicit order is the way to choose: the entity is only a
         // tie-break, and it does not survive a respawn reusing the index.
-        world.root_view_mut().despawn(second);
+        world.root_scope_mut().despawn(second);
         assert_eq!(
             record_order(&world).0,
             vec![first, third],
@@ -746,11 +749,11 @@ mod tests {
         test_context(&mut world);
 
         let a = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH))
                 .with_order(FrameSourceOrder::UI),));
         let b = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
 
         // `a` was spawned as an overlay, so it records last despite declaring
@@ -758,7 +761,7 @@ mod tests {
         assert_eq!(record_order(&world).0, vec![b, a]);
 
         let _ = world
-            .root_view()
+            .root_scope()
             .with_mut::<Source, _>(a, |source| source.set_order(None));
         assert_eq!(
             record_order(&world).0,
@@ -776,7 +779,7 @@ mod tests {
         impl FrameSource for OtherSource {
             fn build_scene(
                 &mut self,
-                _view: &ScopedWorld<'_>,
+                _view: &Scope<'_>,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -793,33 +796,33 @@ mod tests {
         test_context(&mut world);
 
         let recording = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let other = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(OtherSource(Scene::new())),));
 
         assert!(
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<Source, _>(recording, |s| s.as_mut::<RecordingSource>().is_some())
                 .unwrap()
         );
         assert!(
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<Source, _>(recording, |s| s.as_mut::<OtherSource>().is_none())
                 .unwrap()
         );
         assert!(
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<Source, _>(other, |s| s.as_mut::<OtherSource>().is_some())
                 .unwrap()
         );
         assert!(
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<Source, _>(other, |s| s.as_ref::<RecordingSource>().is_none())
                 .unwrap()
         );
@@ -834,7 +837,7 @@ mod tests {
         impl FrameSource for CountingSource {
             fn build_scene(
                 &mut self,
-                _view: &ScopedWorld<'_>,
+                _view: &Scope<'_>,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -851,29 +854,29 @@ mod tests {
         let mut world = World::new();
         let ctx = test_context(&mut world);
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(CountingSource(0, Scene::new())),));
 
         let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
             .0
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let entities: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query::<&Source>()
             .map(|(e, _)| e)
             .collect();
         assert_eq!(entities.len(), 2, "both sources are seen by one query type");
         for entity in entities {
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<Source, _>(entity, |source| {
-                    let view = world
-                        .view(entity)
+                    let scope = world
+                        .scope(entity)
                         .expect("a source entity is its own scope");
-                    source.build_scene(&view, ctx, &mut encoder)
+                    source.build_scene(&scope, ctx, &mut encoder)
                 })
                 .unwrap();
         }
@@ -895,7 +898,7 @@ mod tests {
         impl FrameSource for PhasedSource {
             fn build_scene(
                 &mut self,
-                _view: &ScopedWorld<'_>,
+                _view: &Scope<'_>,
                 _ctx: RenderContext,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
@@ -910,7 +913,7 @@ mod tests {
         }
 
         for name in ["a", "b"] {
-            world.root_view_mut().spawn((Source::new(PhasedSource {
+            world.root_scope_mut().spawn((Source::new(PhasedSource {
                 name,
                 log: Rc::clone(&order),
                 scene: Scene::new(),
@@ -921,18 +924,18 @@ mod tests {
             .0
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let entities: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query::<&Source>()
             .map(|(e, _)| e)
             .collect();
         for entity in &entities {
             world
-                .root_view()
+                .root_scope()
                 .with_mut::<Source, _>(*entity, |source| {
-                    let view = world
-                        .view(*entity)
+                    let scope = world
+                        .scope(*entity)
                         .expect("a source entity is its own scope");
-                    source.build_scene(&view, ctx, &mut encoder)
+                    source.build_scene(&scope, ctx, &mut encoder)
                 })
                 .unwrap();
         }
@@ -968,10 +971,10 @@ mod tests {
         test_context(&mut world);
 
         let a = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let b = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
 
         let (_, ambiguous) = record_order(&world);
@@ -986,14 +989,14 @@ mod tests {
         // Resolving the ambiguity stops the reporting; reintroducing it warns
         // once more.
         let _ = world
-            .root_view()
+            .root_scope()
             .with_mut::<Source, _>(b, |source| source.set_order(Some(FrameSourceOrder::UI)));
         let (_, resolved) = record_order(&world);
         assert!(resolved.is_empty());
         assert!(!warnings.check(&resolved));
 
         let _ = world
-            .root_view()
+            .root_scope()
             .with_mut::<Source, _>(b, |source| source.set_order(Some(FrameSourceOrder::MESH)));
         let (_, again) = record_order(&world);
         assert!(warnings.check(&again), "the ambiguity is back");
@@ -1012,11 +1015,11 @@ mod tests {
         test_context(&mut world);
         for _ in 0..4 {
             world
-                .root_view_mut()
+                .root_scope_mut()
                 .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         }
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let mut resolved = SourceOrder::default();
@@ -1028,12 +1031,12 @@ mod tests {
 
         // A later frame with fewer sources keeps both allocations.
         let first = world
-            .root_view()
+            .root_scope()
             .query::<&Source>()
             .next()
             .expect("a source")
             .0;
-        world.root_view_mut().despawn(first);
+        world.root_scope_mut().despawn(first);
         resolved.resolve(&world);
         assert_eq!(resolved.entities().len(), 4);
         assert_eq!(
@@ -1054,10 +1057,10 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let (order, ambiguous) = record_order(&world);
@@ -1111,10 +1114,10 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
         let a = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
         let b = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let messages = capture_logs(|| {
@@ -1145,10 +1148,10 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::UI)),));
 
         let messages = capture_logs(|| {
@@ -1165,10 +1168,10 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
         let a = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let _b = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let mut warnings = OrderWarnings::default();
 
@@ -1186,7 +1189,7 @@ mod tests {
 
         // Resolving it and reintroducing it warns once more, not twice.
         let _ = world
-            .root_view()
+            .root_scope()
             .with_mut::<Source, _>(a, |source| source.set_order(Some(FrameSourceOrder::UI)));
         let messages = capture_logs(|| {
             let (_, resolved) = record_order(&world);
@@ -1202,20 +1205,20 @@ mod tests {
         let mut world = World::new();
         test_context(&mut world);
         let a = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let b = world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),));
         let mut warnings = OrderWarnings::default();
 
         let messages = capture_logs(|| {
             for _ in 0..3 {
                 // What a caller that pins its sources' order every frame does.
-                let _ = world.root_view().with_mut::<Source, _>(a, |source| {
+                let _ = world.root_scope().with_mut::<Source, _>(a, |source| {
                     source.set_order(Some(FrameSourceOrder::MESH))
                 });
-                let _ = world.root_view().with_mut::<Source, _>(b, |source| {
+                let _ = world.root_scope().with_mut::<Source, _>(b, |source| {
                     source.set_order(Some(FrameSourceOrder::MESH))
                 });
                 let (_, ambiguous) = record_order(&world);
@@ -1239,7 +1242,7 @@ mod tests {
         let ids: Vec<Entity> = (0..3)
             .map(|_| {
                 world
-                    .root_view_mut()
+                    .root_scope_mut()
                     .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),))
             })
             .collect();
@@ -1259,7 +1262,7 @@ mod tests {
         let ids: Vec<Entity> = (0..3)
             .map(|_| {
                 world
-                    .root_view_mut()
+                    .root_scope_mut()
                     .spawn((Source::new(RecordingSource::new(FrameSourceOrder::MESH)),))
             })
             .collect();
@@ -1285,7 +1288,7 @@ mod release_tests {
     impl FrameSource for OwningSource {
         fn build_scene(
             &mut self,
-            view: &ScopedWorld<'_>,
+            scope: &Scope<'_>,
             ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
@@ -1294,7 +1297,8 @@ mod release_tests {
             self.context = ctx;
             if self.node.is_none() {
                 self.node = Some(
-                    view.get_mut::<ResourceGraph>(ctx.graph)
+                    scope
+                        .get_mut::<ResourceGraph>(ctx.graph)
                         .expect("the context's graph exists")
                         .insert(GraphResource::Virtual, None),
                 );
@@ -1321,17 +1325,18 @@ mod release_tests {
     impl FrameSource for EarlyReturnSource {
         fn build_scene(
             &mut self,
-            view: &ScopedWorld<'_>,
+            scope: &Scope<'_>,
             ctx: RenderContext,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             // The scope is the whole of the build's graph handling: this source
             // never calls `maintain`, and the return is what settles the graph.
-            let _maintain = ctx.maintain_scope(*view);
+            let _maintain = ctx.maintain_scope(*scope);
             self.context = ctx;
             if self.node.is_none() {
                 self.node = Some(
-                    view.get_mut::<ResourceGraph>(ctx.graph)
+                    scope
+                        .get_mut::<ResourceGraph>(ctx.graph)
                         .expect("the context's graph exists")
                         .insert(GraphResource::Virtual, None),
                 );
@@ -1371,12 +1376,12 @@ mod release_tests {
             .0
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         world
-            .root_view()
+            .root_scope()
             .with_mut::<Source, _>(entity, |source| {
-                let view = world
-                    .view(entity)
+                let scope = world
+                    .scope(entity)
                     .expect("a source entity is its own scope");
-                source.build_scene(&view, ctx, &mut encoder)
+                source.build_scene(&scope, ctx, &mut encoder)
             })
             .expect("the source entity exists");
     }
@@ -1384,7 +1389,7 @@ mod release_tests {
     /// How many nodes the context's graph holds.
     fn graph_len(world: &World, ctx: RenderContext) -> usize {
         world
-            .root_view()
+            .root_scope()
             .get_mut::<ResourceGraph>(ctx.graph)
             .unwrap()
             .len()
@@ -1393,7 +1398,7 @@ mod release_tests {
     /// Drive the graph's collection the way a frame would.
     fn maintain(world: &mut World, ctx: RenderContext) {
         world
-            .root_view()
+            .root_scope()
             .get_mut::<ResourceGraph>(ctx.graph)
             .unwrap()
             .maintain();
@@ -1408,7 +1413,7 @@ mod release_tests {
     fn dropping_a_source_releases_the_nodes_it_owns() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = world.root_view_mut().spawn((Source::new(OwningSource {
+        let entity = world.root_scope_mut().spawn((Source::new(OwningSource {
             context: ctx,
             node: None,
             scene: Scene::new(),
@@ -1420,7 +1425,7 @@ mod release_tests {
             "the source registered exactly the node it owns"
         );
 
-        world.root_view_mut().despawn(entity);
+        world.root_scope_mut().despawn(entity);
 
         // Giving up the id only moves a count: the node is still there, and
         // the graph resolves it until something maintains.
@@ -1444,14 +1449,14 @@ mod release_tests {
     fn removing_a_source_that_owns_nothing_still_removes_it() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = world.root_view_mut().spawn((Source::new(OwningSource {
+        let entity = world.root_scope_mut().spawn((Source::new(OwningSource {
             context: ctx,
             node: None,
             scene: Scene::new(),
         }),));
 
-        world.root_view_mut().despawn(entity);
-        assert!(!world.root_view().contains(entity));
+        world.root_scope_mut().despawn(entity);
+        assert!(!world.root_scope().contains(entity));
         maintain(&mut world, ctx);
         assert_eq!(graph_len(&world, ctx), 0);
     }
@@ -1467,7 +1472,7 @@ mod release_tests {
         let ctx = noop_context(&mut world);
         let mut entities = Vec::new();
         for _ in 0..2 {
-            entities.push(world.root_view_mut().spawn((Source::new(OwningSource {
+            entities.push(world.root_scope_mut().spawn((Source::new(OwningSource {
                 context: ctx,
                 node: None,
                 scene: Scene::new(),
@@ -1480,7 +1485,7 @@ mod release_tests {
         assert_eq!(graph_len(&world, ctx), 2, "each source registered a node");
 
         for &entity in &entities {
-            world.root_view_mut().despawn(entity);
+            world.root_scope_mut().despawn(entity);
         }
 
         // Both removals only moved counts: the nodes the two sources owned are
@@ -1507,11 +1512,13 @@ mod release_tests {
     fn a_build_that_returns_early_still_maintains() {
         let mut world = World::new();
         let ctx = noop_context(&mut world);
-        let entity = world.root_view_mut().spawn((Source::new(EarlyReturnSource {
-            context: ctx,
-            node: None,
-            scene: Scene::new(),
-        }),));
+        let entity = world
+            .root_scope_mut()
+            .spawn((Source::new(EarlyReturnSource {
+                context: ctx,
+                node: None,
+                scene: Scene::new(),
+            }),));
 
         // The first build registers the node the source owns.
         build_once(&mut world, entity, ctx);

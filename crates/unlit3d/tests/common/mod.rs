@@ -6,7 +6,7 @@
 pub use unlit_wgpu_test_util::{Ctx, Frame, assert_image_snapshot, count_pixels_off_background};
 
 use core::ops::DerefMut;
-use unlit_ecs::{Entity, ScopedWorld, World};
+use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::prelude::*;
 
@@ -43,9 +43,9 @@ impl TestGpu {
     /// registered, and the frame driver into `world`.
     pub fn new(world: &mut World, ctx: &Ctx) -> Self {
         let mut test = Self::frame_only(world, ctx);
-        let mut source = MeshSource::new(&world.root_view(), test.context);
-        source.register_unlit_family(&world.root_view());
-        test.source = Some(world.root_view_mut().spawn((Source::new(source),)));
+        let mut source = MeshSource::new(&world.root_scope(), test.context);
+        source.register_unlit_family(&world.root_scope());
+        test.source = Some(world.root_scope_mut().spawn((Source::new(source),)));
         test
     }
 
@@ -66,7 +66,7 @@ impl TestGpu {
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
-        let renderer = world.root_view_mut().spawn((Renderer::new(context),));
+        let renderer = world.root_scope_mut().spawn((Renderer::new(context),));
         Self {
             context,
             renderer,
@@ -97,7 +97,7 @@ impl TestGpu {
         bundle: B,
     ) -> Entity {
         world
-            .view_mut(source)
+            .scope_mut(source)
             .expect("a source entity is its own scope")
             .spawn(bundle)
     }
@@ -116,7 +116,7 @@ impl TestGpu {
     pub fn despawn(&self, world: &mut World, entity: Entity) -> bool {
         let source = self.mesh_source();
         world
-            .view_mut(source)
+            .scope_mut(source)
             .expect("the source entity is its own scope")
             .despawn(entity)
     }
@@ -125,26 +125,26 @@ impl TestGpu {
     pub fn with_mesh_source<R>(
         &self,
         world: &World,
-        f: impl FnOnce(&mut MeshSource, &ScopedWorld<'_>) -> R,
+        f: impl FnOnce(&mut MeshSource, &Scope<'_>) -> R,
     ) -> R {
         let entity = self.mesh_source();
         let mut source = world
-            .root_view()
+            .root_scope()
             .get_mut::<Source>(entity)
             .expect("the source entity exists");
         let mesh = source
             .as_mut::<MeshSource>()
             .expect("the source is a MeshSource");
-        // The closure works through the source's own view: a source entity is
+        // The closure works through the source's own scope: a source entity is
         // its own scope, which is what a frame hands it too.
-        let view = world.view(entity).expect("the source entity is alive");
-        f(mesh, &view)
+        let scope = world.scope(entity).expect("the source entity is alive");
+        f(mesh, &scope)
     }
 
     /// Run `f` on the frame driver.
     pub fn with_renderer<R>(&self, world: &World, f: impl FnOnce(&mut Renderer, &World) -> R) -> R {
         world
-            .root_view()
+            .root_scope()
             .with_mut::<Renderer, _>(self.renderer, |renderer| f(renderer, world))
             .expect("the renderer entity exists")
     }
@@ -152,7 +152,7 @@ impl TestGpu {
     /// The frame's resource graph.
     pub fn graph<'w>(&self, world: &'w World) -> impl DerefMut<Target = ResourceGraph> + 'w {
         world
-            .root_view()
+            .root_scope()
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's graph exists")
     }
@@ -356,7 +356,7 @@ impl TestGpu {
     ) -> wgpu::Texture {
         use unlit_wgpu::render_attachments::create_color_target;
         let device = world
-            .root_view()
+            .root_scope()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
@@ -389,7 +389,7 @@ impl TestGpu {
     ) -> wgpu::Texture {
         use unlit_wgpu::render_attachments::create_color_target;
         let device = world
-            .root_view()
+            .root_scope()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();

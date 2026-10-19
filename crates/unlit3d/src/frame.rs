@@ -13,7 +13,7 @@
 //! spawning behaviours, never by editing a list.
 //!
 //! Like every other behaviour, a frame behaviour runs with `&World`, so a
-//! structural change goes through [`unlit_ecs::ScopedWorld::queue`] and lands when the driver
+//! structural change goes through [`unlit_ecs::Scope::queue`] and lands when the driver
 //! applies after the dispatch. A behaviour that needs the rest of the frame
 //! skipped sets [FrameSkip], which its siblings read; [dispatch_frame] clears it
 //! before the first behaviour runs, so every frame starts whole.
@@ -64,7 +64,7 @@ impl FrameSkip {
     pub fn skip(world: &World) {
         for entity in Self::entities(world) {
             let _ = world
-                .root_view()
+                .root_scope()
                 .with_mut::<FrameSkip, _>(entity, |skip| skip.0 = true);
         }
     }
@@ -73,7 +73,7 @@ impl FrameSkip {
     #[must_use]
     pub fn is_skipped(world: &World) -> bool {
         world
-            .root_view()
+            .root_scope()
             .query::<&FrameSkip>()
             .any(|(_, skip)| skip.0)
     }
@@ -82,7 +82,7 @@ impl FrameSkip {
     fn reset(world: &World) {
         for entity in Self::entities(world) {
             let _ = world
-                .root_view()
+                .root_scope()
                 .with_mut::<FrameSkip, _>(entity, |skip| skip.0 = false);
         }
     }
@@ -91,7 +91,7 @@ impl FrameSkip {
     /// mutably.
     fn entities(world: &World) -> Vec<Entity> {
         world
-            .root_view()
+            .root_scope()
             .query::<&FrameSkip>()
             .map(|(entity, _)| entity)
             .collect()
@@ -212,14 +212,14 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
 /// after the dispatch.
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
-        .root_view()
+        .root_scope()
         .query::<&B>()
         .map(|(entity, behaviour)| (behaviour.order(), entity))
         .collect();
     order.sort_unstable_by_key(|(order, entity)| (*order, *entity));
     for (_, entity) in order {
         world
-            .root_view()
+            .root_scope()
             .with_mut::<B, _>(entity, |behaviour| behaviour.run(world, entity, frame))
             .expect("the behaviour entity exists");
     }
@@ -261,8 +261,8 @@ mod tests {
                 log.borrow_mut().push(1)
             })
         };
-        world.root_view_mut().spawn((later,));
-        world.root_view_mut().spawn((earlier,));
+        world.root_scope_mut().spawn((later,));
+        world.root_scope_mut().spawn((earlier,));
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec![1, 2]);
     }
@@ -274,7 +274,7 @@ mod tests {
         for value in [1, 2, 3] {
             let log = log.clone();
             world
-                .root_view_mut()
+                .root_scope_mut()
                 .spawn((OnFrame::new(UPDATE, move |_world, _entity, _frame| {
                     log.borrow_mut().push(value);
                 }),));
@@ -290,7 +290,7 @@ mod tests {
         {
             let seen = seen.clone();
             world
-                .root_view_mut()
+                .root_scope_mut()
                 .spawn((OnFrame::new(UPDATE, move |_world, _entity, frame| {
                     *seen.borrow_mut() = Some(*frame);
                 }),));
@@ -315,7 +315,7 @@ mod tests {
     fn a_frame_behaviour_may_advance_the_index() {
         let mut world = World::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((OnFrame::new(UPDATE, |_world, _entity, frame| {
                 frame.index += 1;
             }),));
@@ -329,12 +329,12 @@ mod tests {
         struct Marker;
         let mut world = World::new();
         world
-            .root_view_mut()
+            .root_scope_mut()
             .spawn((OnFrame::new(UPDATE, |world, _entity, _frame| {
-                let _ = world.root_view().queue().spawn((Marker,));
+                let _ = world.root_scope().queue().spawn((Marker,));
             }),));
         dispatch_frame(&mut world, &mut frame());
-        assert_eq!(world.root_view().query::<&Marker>().count(), 1);
+        assert_eq!(world.root_scope().query::<&Marker>().count(), 1);
     }
 
     /// A later order runs after an earlier one, however the two were spawned.
@@ -345,7 +345,7 @@ mod tests {
         {
             let log = log.clone();
             world
-                .root_view_mut()
+                .root_scope_mut()
                 .spawn((OnFrame::new(END, move |_world, _entity, _frame| {
                     log.borrow_mut().push("end");
                 }),));
@@ -353,7 +353,7 @@ mod tests {
         {
             let log = log.clone();
             world
-                .root_view_mut()
+                .root_scope_mut()
                 .spawn((OnFrame::new(UPDATE, move |_world, _entity, _frame| {
                     log.borrow_mut().push("update");
                 }),));
@@ -365,7 +365,7 @@ mod tests {
     #[test]
     fn skip_marks_the_frame_and_is_skipped_reads_it() {
         let mut world = World::new();
-        world.root_view_mut().spawn((FrameSkip::default(),));
+        world.root_scope_mut().spawn((FrameSkip::default(),));
         assert!(!FrameSkip::is_skipped(&world));
         FrameSkip::skip(&world);
         assert!(FrameSkip::is_skipped(&world));
@@ -384,11 +384,11 @@ mod tests {
     fn dispatch_clears_a_skip_left_by_the_previous_frame() {
         let mut world = World::new();
         let first = Rc::new(Cell::new(true));
-        world.root_view_mut().spawn((FrameSkip::default(),));
+        world.root_scope_mut().spawn((FrameSkip::default(),));
         {
             let first = first.clone();
             world
-                .root_view_mut()
+                .root_scope_mut()
                 .spawn((OnFrame::new(UPDATE, move |world, _entity, _frame| {
                     assert!(!FrameSkip::is_skipped(world), "the flag starts whole");
                     if first.replace(false) {

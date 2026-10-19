@@ -21,13 +21,13 @@
 //! `````rust
 //! # use unlit_ecs::{Query, Without, World};
 //! let mut world = World::new();
-//! world.root_view_mut().spawn((1u32, 10.0f32));
-//! world.root_view_mut().spawn((2u32, true));
-//! let sum: u32 = world.root_view().query::<&u32>().map(|(_, value)| *value).sum();
+//! world.root_scope_mut().spawn((1u32, 10.0f32));
+//! world.root_scope_mut().spawn((2u32, true));
+//! let sum: u32 = world.root_scope().query::<&u32>().map(|(_, value)| *value).sum();
 //! assert_eq!(sum, 3);
 //! // Only the entity without a `bool`.
 //! let sum: u32 = world
-//!     .root_view()
+//!     .root_scope()
 //!     .query_filtered::<&u32, Without<bool>>()
 //!     .map(|(_, value)| *value)
 //!     .sum();
@@ -218,9 +218,9 @@ mod sealed {
 /// `````rust
 /// # use unlit_ecs::{With, World};
 /// let mut world = World::new();
-/// let flagged = world.root_view_mut().spawn((1u32, true));
-/// world.root_view_mut().spawn((2u32,));
-/// let found: Vec<_> = world.root_view().query_filtered::<&u32, With<bool>>().collect();
+/// let flagged = world.root_scope_mut().spawn((1u32, true));
+/// world.root_scope_mut().spawn((2u32,));
+/// let found: Vec<_> = world.root_scope().query_filtered::<&u32, With<bool>>().collect();
 /// assert_eq!(found.len(), 1);
 /// `````
 pub struct With<T>(PhantomData<fn() -> T>);
@@ -238,9 +238,9 @@ impl<T: 'static> QueryFilter for With<T> {
 /// `````rust
 /// # use unlit_ecs::{Without, World};
 /// let mut world = World::new();
-/// let plain = world.root_view_mut().spawn((1u32,));
-/// world.root_view_mut().spawn((2u32, true));
-/// let found: Vec<_> = world.root_view().query_filtered::<&u32, Without<bool>>().collect();
+/// let plain = world.root_scope_mut().spawn((1u32,));
+/// world.root_scope_mut().spawn((2u32, true));
+/// let found: Vec<_> = world.root_scope().query_filtered::<&u32, Without<bool>>().collect();
 /// assert_eq!(found.len(), 1);
 /// `````
 pub struct Without<T>(PhantomData<fn() -> T>);
@@ -260,11 +260,11 @@ impl<T: 'static> QueryFilter for Without<T> {
 /// `````rust
 /// # use unlit_ecs::{Or, With, World};
 /// let mut world = World::new();
-/// world.root_view_mut().spawn((1u32, true));
-/// world.root_view_mut().spawn((2u32, 1i64));
-/// world.root_view_mut().spawn((3u32,));
+/// world.root_scope_mut().spawn((1u32, true));
+/// world.root_scope_mut().spawn((2u32, 1i64));
+/// world.root_scope_mut().spawn((3u32,));
 /// let found: Vec<_> = world
-///     .root_view()
+///     .root_scope()
 ///     .query_filtered::<&u32, Or<(With<bool>, With<i64>)>>()
 ///     .collect();
 /// assert_eq!(found.len(), 2);
@@ -374,7 +374,7 @@ impl_query_tuple!(A, B, C, D, E, F, G, H);
 ///
 /// An item borrows the world, so two items from one iterator may be alive at the
 /// same time. Asking for `&mut` components twice without dropping the first
-/// item panics; [`crate::ScopedWorld::for_each`] is the form that guarantees each item is
+/// item panics; [`crate::Scope::for_each`] is the form that guarantees each item is
 /// dropped before the next is fetched.
 pub struct QueryIter<'w, Q: Query, F: QueryFilter = ()> {
     world: &'w World,
@@ -414,7 +414,7 @@ impl<'w, Q: Query, F: QueryFilter> QueryIter<'w, Q, F> {
             // archetype of that parent still has this one visible row.
             ScopeSummary::Uniform(scope) => {
                 self.world.visible(self.scope, scope)
-                    || self.world.scope_of(self.scope) == Some(scope)
+                    || self.world.parent_scope(self.scope) == Some(scope)
             }
             ScopeSummary::Mixed => true,
         }
@@ -487,10 +487,10 @@ mod tests {
     #[test]
     fn a_single_component_query_visits_every_holder() {
         let mut world = crate::World::new();
-        world.root_view_mut().spawn((Marker(1),));
-        world.root_view_mut().spawn((Marker(2), true));
+        world.root_scope_mut().spawn((Marker(1),));
+        world.root_scope_mut().spawn((Marker(2), true));
         let mut values: Vec<u32> = world
-            .root_view()
+            .root_scope()
             .query::<&Marker>()
             .map(|(_, m)| m.0)
             .collect();
@@ -501,10 +501,10 @@ mod tests {
     #[test]
     fn a_tuple_query_requires_every_component() {
         let mut world = crate::World::new();
-        let both = world.root_view_mut().spawn((Marker(1), 9u32));
-        world.root_view_mut().spawn((Marker(2),));
+        let both = world.root_scope_mut().spawn((Marker(1), 9u32));
+        world.root_scope_mut().spawn((Marker(2),));
         let found: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query::<(&Marker, &u32)>()
             .map(|(e, _)| e)
             .collect();
@@ -514,13 +514,13 @@ mod tests {
     #[test]
     fn mutable_components_are_written_through_the_query() {
         let mut world = crate::World::new();
-        world.root_view_mut().spawn((Marker(1),));
-        world.root_view_mut().spawn((Marker(2),));
+        world.root_scope_mut().spawn((Marker(1),));
+        world.root_scope_mut().spawn((Marker(2),));
         world
-            .root_view()
+            .root_scope()
             .for_each::<(&mut Marker,), _>(|(mut marker,)| marker.0 *= 10);
         let mut values: Vec<u32> = world
-            .root_view()
+            .root_scope()
             .query::<&Marker>()
             .map(|(_, m)| m.0)
             .collect();
@@ -531,10 +531,10 @@ mod tests {
     #[test]
     fn optional_components_are_none_when_missing() {
         let mut world = crate::World::new();
-        let with = world.root_view_mut().spawn((Marker(1), 5u32));
-        let without = world.root_view_mut().spawn((Marker(2),));
+        let with = world.root_scope_mut().spawn((Marker(1), 5u32));
+        let without = world.root_scope_mut().spawn((Marker(2),));
         let mut found: Vec<(Entity, Option<u32>)> = world
-            .root_view()
+            .root_scope()
             .query::<(&Marker, Option<&u32>)>()
             .map(|(e, (_, value))| (e, value.map(|v| *v)))
             .collect();
@@ -547,10 +547,10 @@ mod tests {
     #[test]
     fn an_optional_component_alone_matches_every_archetype() {
         let mut world = crate::World::new();
-        let with = world.root_view_mut().spawn((7u32,));
-        let without = world.root_view_mut().spawn((true,));
+        let with = world.root_scope_mut().spawn((7u32,));
+        let without = world.root_scope_mut().spawn((true,));
         let mut found: Vec<(Entity, Option<u32>)> = world
-            .root_view()
+            .root_scope()
             .query::<Option<&u32>>()
             .map(|(e, value)| (e, value.map(|v| *v)))
             .collect();
@@ -563,34 +563,34 @@ mod tests {
     #[test]
     fn an_optional_mutable_component_is_written_where_present() {
         let mut world = crate::World::new();
-        let with = world.root_view_mut().spawn((Marker(1), 5u32));
-        let without = world.root_view_mut().spawn((Marker(2),));
+        let with = world.root_scope_mut().spawn((Marker(1), 5u32));
+        let without = world.root_scope_mut().spawn((Marker(2),));
         world
-            .root_view()
+            .root_scope()
             .for_each::<(Option<&mut u32>,), _>(|(value,)| {
                 if let Some(mut value) = value {
                     *value += 1;
                 }
             });
         assert_eq!(
-            world.root_view().get::<u32>(with).map(|value| *value),
+            world.root_scope().get::<u32>(with).map(|value| *value),
             Some(6)
         );
-        assert!(world.root_view().get::<u32>(without).is_none());
+        assert!(world.root_scope().get::<u32>(without).is_none());
     }
 
     #[test]
     fn with_and_without_filter_by_presence() {
         let mut world = crate::World::new();
-        let plain = world.root_view_mut().spawn((Marker(1),));
-        let flagged = world.root_view_mut().spawn((Marker(2), true));
+        let plain = world.root_scope_mut().spawn((Marker(1),));
+        let flagged = world.root_scope_mut().spawn((Marker(2), true));
         let with: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query_filtered::<&Marker, With<bool>>()
             .map(|(e, _)| e)
             .collect();
         let without: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query_filtered::<&Marker, Without<bool>>()
             .map(|(e, _)| e)
             .collect();
@@ -603,20 +603,20 @@ mod tests {
     #[test]
     fn filters_compose_by_conjunction_and_disjunction() {
         let mut world = crate::World::new();
-        let both = world.root_view_mut().spawn((Marker(1), true, 7u8));
-        world.root_view_mut().spawn((Marker(2), true, 7i64));
-        world.root_view_mut().spawn((Marker(3), true));
-        world.root_view_mut().spawn((Marker(4), 7u8));
+        let both = world.root_scope_mut().spawn((Marker(1), true, 7u8));
+        world.root_scope_mut().spawn((Marker(2), true, 7i64));
+        world.root_scope_mut().spawn((Marker(3), true));
+        world.root_scope_mut().spawn((Marker(4), 7u8));
 
         let conjunctive: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query_filtered::<&Marker, (With<bool>, With<u8>)>()
             .map(|(e, _)| e)
             .collect();
         assert_eq!(conjunctive, [both]);
 
         let disjunctive: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query_filtered::<&Marker, (With<bool>, Or<(With<u8>, With<i64>)>)>()
             .map(|(e, _)| e)
             .collect();
@@ -627,7 +627,7 @@ mod tests {
         );
 
         let nested: Vec<Entity> = world
-            .root_view()
+            .root_scope()
             .query_filtered::<&Marker, Or<(With<u8>, With<i64>)>>()
             .map(|(e, _)| e)
             .collect();
@@ -639,19 +639,19 @@ mod tests {
     #[test]
     fn a_filter_borrows_nothing() {
         let mut world = crate::World::new();
-        world.root_view_mut().spawn((Marker(1), true));
+        world.root_scope_mut().spawn((Marker(1), true));
 
         // Hold an exclusive borrow of `Marker`, then query `bool` with a
         // filter that names `Marker`. It works: the filter is answered from
         // the archetype's component set and never touches a cell, so it asks
         // for no borrow at all.
         let held = world
-            .root_view()
+            .root_scope()
             .query::<&mut Marker>()
             .next()
             .expect("one entity");
         let count = world
-            .root_view()
+            .root_scope()
             .query_filtered::<&bool, (With<Marker>, With<bool>)>()
             .count();
         assert_eq!(count, 1);
@@ -661,9 +661,9 @@ mod tests {
     #[test]
     fn the_entity_query_yields_handles() {
         let mut world = crate::World::new();
-        let entity = world.root_view_mut().spawn((Marker(1),));
+        let entity = world.root_scope_mut().spawn((Marker(1),));
         assert_eq!(
-            world.root_view().query::<Entity>().next(),
+            world.root_scope().query::<Entity>().next(),
             Some((entity, entity))
         );
     }
@@ -674,11 +674,11 @@ mod tests {
     #[should_panic(expected = "already borrowed")]
     fn an_optional_component_that_cannot_be_borrowed_panics() {
         let mut world = crate::World::new();
-        world.root_view_mut().spawn((Marker(1), 5u32));
+        world.root_scope_mut().spawn((Marker(1), 5u32));
         // The item is still alive, so the optional fetch must fail rather than
         // report the component as missing.
         let items: Vec<_> = world
-            .root_view()
+            .root_scope()
             .query::<(&mut u32, Option<&u32>)>()
             .collect();
         drop(items);
@@ -689,9 +689,9 @@ mod tests {
     #[should_panic(expected = "already borrowed")]
     fn an_optional_mutable_component_that_cannot_be_borrowed_panics() {
         let mut world = crate::World::new();
-        world.root_view_mut().spawn((Marker(1), 5u32));
+        world.root_scope_mut().spawn((Marker(1), 5u32));
         let items: Vec<_> = world
-            .root_view()
+            .root_scope()
             .query::<(&u32, Option<&mut u32>)>()
             .collect();
         drop(items);
@@ -701,10 +701,10 @@ mod tests {
     #[should_panic(expected = "already borrowed")]
     fn asking_for_the_same_component_twice_panics() {
         let mut world = crate::World::new();
-        world.root_view_mut().spawn((Marker(1),));
+        world.root_scope_mut().spawn((Marker(1),));
         // Both items stay alive, so the second exclusive borrow must fail.
         let items: Vec<_> = world
-            .root_view()
+            .root_scope()
             .query::<(&mut Marker, &mut Marker)>()
             .collect();
         drop(items);
@@ -713,10 +713,10 @@ mod tests {
     #[test]
     fn iterating_archetypes_directly_is_possible() {
         let mut world = crate::World::new();
-        world.root_view_mut().spawn((Marker(1),));
-        world.root_view_mut().spawn((Marker(2), true));
+        world.root_scope_mut().spawn((Marker(1),));
+        world.root_scope_mut().spawn((Marker(2), true));
         let total: usize = world
-            .root_view()
+            .root_scope()
             .archetypes()
             .map(|archetype| archetype.len())
             .sum();

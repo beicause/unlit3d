@@ -1,12 +1,12 @@
 //! Plain-data summaries of a world's shape.
 //!
 //! A world stores components behind type-erased columns, so a caller that only
-//! has a view can count entities and archetypes but cannot name a component:
+//! has a scope can count entities and archetypes but cannot name a component:
 //! the names live in a side table keyed by [`TypeId`]. These structures put a
 //! name back on every column and borrow nothing from the world, which is what a
 //! bridge that reports a world over JSON needs.
 //!
-//! Every count here is what one view sees, not what the world holds: a view of a
+//! Every count here is what one scope sees, not what the world holds: a scope of a
 //! scene reports that scene. The two root entities are reported by handle so
 //! that a caller can tell why the count is two higher than the content.
 //!
@@ -20,10 +20,10 @@ use crate::entity::Entity;
 
 /// A live entity's location and component names.
 ///
-/// Only a live, visible entity has one: [`ScopedWorld::entity_info`] answers
+/// Only a live, visible entity has one: [`Scope::entity_info`] answers
 /// `None` for a handle that is neither, so there is no `alive` field to report.
 ///
-/// [`ScopedWorld::entity_info`]: crate::ScopedWorld::entity_info
+/// [`Scope::entity_info`]: crate::Scope::entity_info
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct EntityInfo {
@@ -42,14 +42,14 @@ pub struct EntityInfo {
     pub components: Vec<&'static str>,
 }
 
-/// One archetype: its id, how many of its rows a view sees, and its component
+/// One archetype: its id, how many of its rows a scope sees, and its component
 /// names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct ArchetypeInfo {
     /// The archetype id, the value [`EntityInfo::archetype`] carries.
     pub index: u32,
-    /// The number of rows visible from the view, not the archetype's total.
+    /// The number of rows visible from the scope, not the archetype's total.
     ///
     /// This is the only definition under which the lengths sum to
     /// [`WorldInfo::entities`].
@@ -58,11 +58,11 @@ pub struct ArchetypeInfo {
     pub components: Vec<&'static str>,
 }
 
-/// A view's high-level shape.
+/// A scope's high-level shape.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct WorldInfo {
-    /// The number of live entities visible from the view, the roots included.
+    /// The number of live entities visible from the scope, the roots included.
     pub entities: usize,
     /// The number of archetypes with at least one visible row.
     pub archetypes: usize,
@@ -75,7 +75,7 @@ pub struct WorldInfo {
     /// The root entity, which owns everything.
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]
     pub root: Entity,
-    /// The shared entity, whose subtree every view sees.
+    /// The shared entity, whose subtree every scope sees.
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]
     pub shared: Entity,
 }

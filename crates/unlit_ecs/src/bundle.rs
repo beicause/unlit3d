@@ -5,7 +5,7 @@
 //! entity with no components.
 //!
 //! Tuples do not flatten: a nested tuple is itself a component, so
-//! `world.root_view_mut().spawn(((a, b), c))` stores `(a, b)` as one component rather than as
+//! `world.root_scope_mut().spawn(((a, b), c))` stores `(a, b)` as one component rather than as
 //! `a` and `b`. Every `'static` type is a component, tuples included, which is
 //! what keeps a blanket `Bundle` impl for single components and a recursive one
 //! for tuples from coexisting. To flatten nesting, build the bundle with the
@@ -163,10 +163,10 @@ impl_bundle!(A, B, C, D, E, F, G, H, I, J, K, L, N, O, P, Q);
 /// `````rust
 /// # use unlit_ecs::{bundle, World};
 /// let mut world = World::new();
-/// let entity = world.root_view_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
-/// assert!(world.root_view().has::<u32>(entity));
-/// assert!(world.root_view().has::<f32>(entity));
-/// assert!(world.root_view().has::<bool>(entity));
+/// let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
+/// assert!(world.root_scope().has::<u32>(entity));
+/// assert!(world.root_scope().has::<f32>(entity));
+/// assert!(world.root_scope().has::<bool>(entity));
 /// `````
 ///
 /// The width is bounded by the compiler's recursion limit rather than by a
@@ -174,7 +174,7 @@ impl_bundle!(A, B, C, D, E, F, G, H, I, J, K, L, N, O, P, Q);
 /// hundred components fit at the default limit of 128. A wider bundle is built
 /// by raising `#![recursion_limit]` in the calling crate.
 ///
-/// Only the macro flattens: `world.root_view_mut().spawn(((a, b), c))` still stores `(a, b)` as
+/// Only the macro flattens: `world.root_scope_mut().spawn(((a, b), c))` still stores `(a, b)` as
 /// one component. A group holding a single expression is likewise one
 /// component, so `bundle!((value,))` and `bundle!(value)` are the same. A type
 /// that appears twice anywhere in the macro panics when the bundle is spawned.
@@ -226,24 +226,24 @@ mod tests {
         builder.push(1u32);
         builder.push_bundle((2.0f32, true));
         builder.push_bundle(((7u8, 8u8), ()));
-        let entity = world.root_view_mut().spawn(builder);
+        let entity = world.root_scope_mut().spawn(builder);
         assert_eq!(
-            world.root_view().get::<u32>(entity).map(|value| *value),
+            world.root_scope().get::<u32>(entity).map(|value| *value),
             Some(1)
         );
         assert_eq!(
-            world.root_view().get::<f32>(entity).map(|value| *value),
+            world.root_scope().get::<f32>(entity).map(|value| *value),
             Some(2.0)
         );
         assert_eq!(
-            world.root_view().get::<bool>(entity).map(|value| *value),
+            world.root_scope().get::<bool>(entity).map(|value| *value),
             Some(true)
         );
         // The nested pair went in as one component, the way spawning it
         // alone would have.
         assert_eq!(
             world
-                .root_view()
+                .root_scope()
                 .get::<(u8, u8)>(entity)
                 .map(|value| *value),
             Some((7, 8))

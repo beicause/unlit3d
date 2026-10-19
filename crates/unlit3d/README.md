@@ -717,20 +717,20 @@ let ctx = spawn_context(
     ResourceGraph::new(),
     DeviceCapabilities::default(),
 );
-let mut mesh_source = MeshSource::new(&world.root_view(), ctx);
-mesh_source.register_unlit_family(&world.root_view());
-let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_view())));
-let renderer = world.root_view_mut().spawn((Renderer::new(ctx),));
+let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
+mesh_source.register_unlit_family(&world.root_scope());
+let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_scope())));
+let renderer = world.root_scope_mut().spawn((Renderer::new(ctx),));
 
 // 2. Mount the mesh source as a source. A source is its own scope: a frame
-//    hands it a view of its own subtree, so everything it draws lives under
-//    this entity.
-let source = world.root_view_mut().spawn((Source::new(mesh_source),));
-let view = world.view(source).unwrap();
+//    hands it its own scope, so everything it draws lives under this
+//    entity.
+let source = world.root_scope_mut().spawn((Source::new(mesh_source),));
+let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
 //    renderable entity under it, carrying the unlit key.
-let (mesh, material) = view
+let (mesh, material) = scope
     .with_mut::<Source, _>(source, |source| {
         let source = source.as_mut::<MeshSource>().unwrap();
         let positions = [[0.0; 3]; 3];
@@ -738,7 +738,7 @@ let (mesh, material) = view
         let colors = [[255u8; 4]; 3];
         let indices = [0u32, 1, 2];
         let mesh = source.allocate_unlit_mesh(
-            &view,
+            &scope,
             &key,
             UnlitMeshDesc {
                 positions: &positions,
@@ -748,7 +748,7 @@ let (mesh, material) = view
                 ..Default::default()
             },
         );
-        let device = source.device(&view);
+        let device = source.device(&scope);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("example::texture"),
             size: wgpu::Extent3d { width: 256, height: 256, depth_or_array_layers: 1 },
@@ -761,14 +761,14 @@ let (mesh, material) = view
         });
         // The material reads a view of the texture and a sampler, both of
         // which the graph keeps for it: only ids cross the boundary.
-        let texture_view = source.register_texture_and_default_view(&view, texture).1;
-        let sampler = source.register_sampler(&view, None);
-        let material = source.allocate_unlit_material(&view, &key, texture_view, sampler);
+        let texture_view = source.register_texture_and_default_view(&scope, texture).1;
+        let sampler = source.register_sampler(&scope, None);
+        let material = source.allocate_unlit_material(&scope, &key, texture_view, sampler);
         (mesh, material)
     })
     .unwrap();
 world
-    .view_mut(source)
+    .scope_mut(source)
     .unwrap()
     .spawn((Transform::default(), mesh, material, UnlitPipeline::new(key)));
 
@@ -777,7 +777,7 @@ world
 //    depth and multisample attachments are allocated and kept by
 //    `FrameAttachments`; the color attachment is this example's own.
 let color = create_color_target(
-    &world.root_view().get::<wgpu::Device>(ctx.device).unwrap(),
+    &world.root_scope().get::<wgpu::Device>(ctx.device).unwrap(),
     wgpu::TextureFormat::Rgba8UnormSrgb,
     1280, 720,
 );
@@ -789,18 +789,18 @@ let attachments = FrameAttachments::new(
     1,
     true,
 );
-let view = world.view(source).unwrap();
-let color_view = view
+let scope = world.scope(source).unwrap();
+let color_view = scope
     .with_mut::<Source, _>(source, |source| {
         source
             .as_mut::<MeshSource>()
             .unwrap()
-            .register_texture_and_default_view(&view, color)
+            .register_texture_and_default_view(&scope, color)
             .1
     })
     .unwrap();
 world
-    .root_view()
+    .root_scope()
     .with_mut::<Renderer, _>(renderer, |r| {
         attachments.bind(&world, r, color_view);
         r.render(&world);
@@ -817,10 +817,10 @@ spawn:
 use unlit3d::prelude::*;
 
 let mut world = World::new();
-// The panels of a UI source live under it: a frame hands the source a view
-// of its own subtree and drives whatever panels it finds there.
-let ui = world.root_view_mut().spawn((Source::new(UiSource::new()),));
-world.view_mut(ui).unwrap().spawn((UiPanel::new(|_world, _entity, ui| {
+// The panels of a UI source live under it: a frame hands the source its own
+// scope and drives whatever panels it finds there.
+let ui = world.root_scope_mut().spawn((Source::new(UiSource::new()),));
+world.scope_mut(ui).unwrap().spawn((UiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),));
 # }
@@ -944,7 +944,7 @@ the frame context in place of an event. Ordering is by
 orders, and the library declares no order values of its own: what runs before
 what is the application's to define. A windowed application's host world and each
 world it drives dispatch the same family, so the scene side is componentised the
-same way. Spawn a behaviour with [`ScopedWorldMut::spawn`](unlit_ecs::ScopedWorldMut::spawn).
+same way. Spawn a behaviour with [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn).
 A behaviour that needs the rest of the frame
 skipped sets a flag its siblings read; a behaviour that needs structural change
 queues it, because a callback only holds `&World`.
@@ -960,12 +960,12 @@ queues it, because a callback only holds `&World`.
 # fn main() -> Result<(), winit::error::EventLoopError> {
 let event_loop = EventLoop::new()?;
 let mut host = WinitHost::new();
-host.world_mut().root_view_mut().spawn((
+host.world_mut().root_scope_mut().spawn((
     WindowSpec(Window::default_attributes().with_title("unlit3d")),
     CreateWindowRequest(None),
     create_window_on_resume(),
 ));
-host.world_mut().root_view_mut().spawn((ExitRequest(false), exit_on_close_requested()));
+host.world_mut().root_scope_mut().spawn((ExitRequest(false), exit_on_close_requested()));
 host.run(event_loop)
 # }
 ```

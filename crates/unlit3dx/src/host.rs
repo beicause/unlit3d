@@ -44,9 +44,9 @@ pub fn spawn_sub_world(
     // The sub-world owns its async tasks, so a job that mounts something
     // asynchronous hands it a task instead of an executor.
     LocalTasks::install(&mut nested);
-    nested.root_view_mut().spawn((SubWorldInbox(receiver),));
+    nested.root_scope_mut().spawn((SubWorldInbox(receiver),));
     let commands = JobSender::new(commands);
-    let entity = host.root_view_mut().spawn((nested, WorldName(name)));
+    let entity = host.root_scope_mut().spawn((nested, WorldName(name)));
     WorldHandle::new(entity, commands, None)
 }
 
@@ -62,7 +62,7 @@ pub fn drain_sub_world(nested: &mut World) {
     // before the first one starts. Cloning the receiver is cheap and lets the
     // drain run without collecting the jobs first.
     let receiver = {
-        let Some((_, inbox)) = nested.root_view().query::<&SubWorldInbox>().next() else {
+        let Some((_, inbox)) = nested.root_scope().query::<&SubWorldInbox>().next() else {
             return;
         };
         inbox.0.clone()

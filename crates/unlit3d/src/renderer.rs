@@ -32,7 +32,7 @@ use crate::source::{
 /// [`Renderer::render`] every frame. It owns the render target binding and the
 /// order bookkeeping; everything else a frame draws comes from its
 /// [`FrameSource`](crate::source::FrameSource) components, which are spawned
-/// with [`ScopedWorldMut::spawn`](unlit_ecs::ScopedWorldMut::spawn) and are ordinary ECS entities.
+/// with [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn) and are ordinary ECS entities.
 ///
 /// ```rust
 /// # use unlit3d::prelude::*;
@@ -47,9 +47,9 @@ use crate::source::{
 ///     ResourceGraph::new(),
 ///     DeviceCapabilities::default(),
 /// );
-/// let source = MeshSource::new(&world.root_view(), ctx);
-/// let mesh = world.root_view_mut().spawn((Source::new(source),));
-/// let renderer = world.root_view_mut().spawn((Renderer::new(ctx),));
+/// let source = MeshSource::new(&world.root_scope(), ctx);
+/// let mesh = world.root_scope_mut().spawn((Source::new(source),));
+/// let renderer = world.root_scope_mut().spawn((Renderer::new(ctx),));
 /// ```
 pub struct Renderer {
     /// The world addresses of the frame's GPU state.
@@ -144,7 +144,7 @@ impl Renderer {
         // touched. The handles are cloned out only to derive the surface key;
         // the ids are what the frame path keeps.
         let graph = world
-            .root_view()
+            .root_scope()
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
         // The views are cloned out together with the formats they were
@@ -180,7 +180,7 @@ impl Renderer {
 
         // Sources read the frame's target from the world, so binding one here
         // is also what states it for the frame; see [`FrameTarget`].
-        set_frame_target(&world.root_view(), self.frame_target());
+        set_frame_target(&world.root_scope(), self.frame_target());
     }
 
     /// Unbind the render target, leaving the renderer with none.
@@ -247,12 +247,12 @@ impl Renderer {
         let load_ops = frame_load_ops(world);
 
         let device = world
-            .root_view()
+            .root_scope()
             .get::<wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
             .clone();
         let queue = world
-            .root_view()
+            .root_scope()
             .get::<wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
             .clone();
@@ -282,11 +282,11 @@ impl Renderer {
             // sources in one world draw different sets without either one
             // seeing the other's. The resources a source needs — the device,
             // the graph, the frame's target — live in the shared subtree, which
-            // every view sees.
-            let root = world.root_view();
+            // every scope sees.
+            let root = world.root_scope();
             for (entity, mut source) in root.query::<&mut Source>() {
-                let view = world.view(entity).unwrap_or(root);
-                source.build_scene(&view, self.context, &mut encoder);
+                let scope = world.scope(entity).unwrap_or(root);
+                source.build_scene(&scope, self.context, &mut encoder);
             }
         }
 
@@ -317,7 +317,7 @@ impl Renderer {
             let whole = full_viewport(width, height);
             for &entity in self.order.entities() {
                 world
-                    .root_view()
+                    .root_scope()
                     .with_mut::<Source, _>(entity, |source| {
                         source.scene().record_with_viewport(&mut pass, whole)
                     })
@@ -339,7 +339,7 @@ impl Renderer {
     /// every attachment through the graph.
     fn attachments(&self, world: &World) -> RenderAttachments {
         let graph = world
-            .root_view()
+            .root_scope()
             .get_mut::<ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
         let color = self
@@ -365,7 +365,7 @@ impl Renderer {
 /// one may carry them, and the renderer reads only the first.
 fn frame_load_ops(world: &World) -> RenderLoadOps {
     world
-        .root_view()
+        .root_scope()
         .query::<&RenderLoadOps>()
         .next()
         .map_or_else(RenderLoadOps::default, |(_, ops)| *ops)
@@ -387,7 +387,7 @@ mod tests {
         let mut world = World::new();
         // The entity carries load ops and nothing else: the component needs
         // no camera, no transform and no mesh to take effect.
-        world.root_view_mut().spawn((RenderLoadOps {
+        world.root_scope_mut().spawn((RenderLoadOps {
             color: wgpu::LoadOp::Load,
             ..Default::default()
         },));
@@ -398,16 +398,16 @@ mod tests {
     #[test]
     fn the_first_load_ops_entity_wins() {
         let mut world = World::new();
-        let first = world.root_view_mut().spawn((RenderLoadOps {
+        let first = world.root_scope_mut().spawn((RenderLoadOps {
             depth: wgpu::LoadOp::Load,
             ..Default::default()
         },));
-        world.root_view_mut().spawn((RenderLoadOps {
+        world.root_scope_mut().spawn((RenderLoadOps {
             depth: wgpu::LoadOp::Clear(1.0),
             ..Default::default()
         },));
 
         assert_eq!(frame_load_ops(&world).depth, wgpu::LoadOp::Load);
-        assert!(world.root_view().get::<RenderLoadOps>(first).is_some());
+        assert!(world.root_scope().get::<RenderLoadOps>(first).is_some());
     }
 }

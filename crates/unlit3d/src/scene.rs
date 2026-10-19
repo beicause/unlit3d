@@ -11,7 +11,7 @@ use core::cmp::Ordering;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
-use unlit_ecs::{Query, ScopedWorld};
+use unlit_ecs::{Query, Scope};
 use unlit_wgpu::instance_stream::InstanceBuffer;
 use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
@@ -140,7 +140,7 @@ pub(crate) struct VisibleEntry {
 pub(crate) struct FamilyFrame<'a> {
     /// The view the entities are drawn through: the drawing source's own
     /// subtree, so a family resolves what that source owns.
-    pub(crate) world: ScopedWorld<'a>,
+    pub(crate) world: Scope<'a>,
     /// The visible meshes culled this frame, with placement resolved.
     pub(crate) meshes: &'a [VisibleMesh],
     /// The frame's camera, for the z-sorted sort.
@@ -449,7 +449,7 @@ pub(crate) struct SceneFrame<'a> {
 /// by view-axis depth so blending is order-independent.
 pub(crate) fn collect_and_sort_visible(
     frame: SceneFrame<'_>,
-    view: ScopedWorld<'_>,
+    scope: Scope<'_>,
     camera: &Camera,
     surface: SurfaceKey,
     device: &wgpu::Device,
@@ -465,11 +465,11 @@ pub(crate) fn collect_and_sort_visible(
 
     {
         profiling::scope!("scene.cull");
-        collect_visible(&view, &frustum, meshes);
+        collect_visible(&scope, &frustum, meshes);
     }
     visible.clear();
     let frame = FamilyFrame {
-        world: view,
+        world: scope,
         meshes,
         camera,
         surface,
@@ -485,7 +485,7 @@ pub(crate) fn collect_and_sort_visible(
 
     // Sort: not z-sorted before z-sorted, then by pipeline, then by the key that
     // matters for that kind. Opaque draws are keyed by material so neighbours
-    // share a bind group; z-sorted ones by view-axis depth so they are
+    // share a bind group; z-sorted ones by scope-axis depth so they are
     // composited back-to-front.
     profiling::scope!("scene.sort");
     // Opaque and z-sorted entries are ordered by different keys, so each pair

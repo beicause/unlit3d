@@ -192,10 +192,10 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let device = source.device(&world.root_view());
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let device = source.device(&world.root_scope());
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot

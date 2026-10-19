@@ -156,10 +156,10 @@ fn spawn_scene(
     resources: &GltfResources,
 ) -> Vec<GltfNode> {
     let source = gpu.mesh_source();
-    let mut view = world
-        .view_mut(source)
+    let mut scope = world
+        .scope_mut(source)
         .expect("the source entity is its own scope");
-    gltf.spawn_default_scene(&mut view, resources)
+    gltf.spawn_default_scene(&mut scope, resources)
 }
 
 /// The glTF JSON of one quad skinned to a single joint, whose node sits at
@@ -279,7 +279,7 @@ async fn a_morphed_quad_follows_its_weights() {
 
     let weights_entity = {
         let (_, binding) = world
-            .root_view()
+            .root_scope()
             .query::<&MorphBinding>()
             .next()
             .expect("a morphed mesh binds to a weight entity");
@@ -287,7 +287,7 @@ async fn a_morphed_quad_follows_its_weights() {
     };
     assert_eq!(
         world
-            .root_view()
+            .root_scope()
             .get::<MorphWeights>(weights_entity)
             .expect("the weight entity carries a `MorphWeights`")
             .weights,
@@ -312,7 +312,7 @@ async fn a_morphed_quad_follows_its_weights() {
     // The first target collapses the quad onto a point, so weighting it fully
     // must empty the frame.
     world
-        .root_view()
+        .root_scope()
         .get_mut::<MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
         .weights = vec![1.0, 0.0];
@@ -327,7 +327,7 @@ async fn a_morphed_quad_follows_its_weights() {
     // frame too — by different geometry than the first, which is what shows
     // the two weights address their own target's displacements.
     world
-        .root_view()
+        .root_scope()
         .get_mut::<MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
         .weights = vec![0.0, 1.0];
@@ -421,7 +421,7 @@ async fn an_animation_moves_the_drawn_mesh() {
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
 
     let read = |gpu: &TestGpu, time: f32| {
-        gltf.apply_animation(&world.root_view(), 0, time, &nodes);
+        gltf.apply_animation(&world.root_scope(), 0, time, &nodes);
         gpu.render(&world);
         unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target)
     };
@@ -474,14 +474,14 @@ async fn a_skinned_quad_follows_its_joint() {
     // entity holds the rest pose: the identity, one matrix per joint.
     let pose = {
         let (_, binding) = world
-            .root_view()
+            .root_scope()
             .query::<&SkinBinding>()
             .next()
             .expect("a skinned mesh binds to a pose");
         binding.pose
     };
     let rest = world
-        .root_view()
+        .root_scope()
         .get::<SkinPose>(pose)
         .expect("the pose entity carries a `SkinPose`")
         .matrices
@@ -510,7 +510,7 @@ async fn a_skinned_quad_follows_its_joint() {
     // Move the joint a whole screen to the left: the quad follows it, and the
     // right side of the frame is left empty.
     *world
-        .root_view()
+        .root_scope()
         .get_mut::<SkinPose>(pose)
         .expect("the pose entity carries a `SkinPose`") =
         SkinPose::new(vec![glam::Mat4::from_translation(glam::Vec3::new(
@@ -803,7 +803,7 @@ async fn a_blended_material_composites_over_the_frame() {
 
     // ...and the spawned entity is marked for back-to-front compositing.
     let z_sorted: Vec<Entity> = world
-        .root_view()
+        .root_scope()
         .query::<&ZSortedDrawing>()
         .map(|(entity, _)| entity)
         .collect();
@@ -875,7 +875,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
         let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
         assert!(
             world
-                .root_view()
+                .root_scope()
                 .query::<&ZSortedDrawing>()
                 .next()
                 .is_none(),

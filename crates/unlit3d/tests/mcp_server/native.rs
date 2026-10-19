@@ -34,16 +34,16 @@ fn offscreen_world(ctx: &Ctx) -> World {
         ResourceGraph::new(),
         ctx.capabilities,
     );
-    let renderer = world.root_view_mut().spawn((Renderer::new(context),));
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let renderer = world.root_scope_mut().spawn((Renderer::new(context),));
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.
     let input = InputWriter::new();
     {
         let shared = world.shared();
-        let mut shared_view = world.view_mut(shared).expect("the shared scope exists");
+        let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
         shared_view.spawn((RenderLoadOps::default(),));
         shared_view.spawn((input.subscribe(),));
         shared_view.spawn((input,));
@@ -52,7 +52,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     let color = create_color_target(&ctx.device, COLOR_FORMAT, SIZE.0, SIZE.1);
     let color_view = {
         let mut graph = world
-            .root_view()
+            .root_scope()
             .get_mut::<ResourceGraph>(context.graph)
             .expect("spawn_context spawned the graph");
         // The texture is registered in its own right so a screenshot can name
@@ -67,7 +67,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     };
     let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, SIZE, SAMPLES, true);
     let _ = world
-        .root_view()
+        .root_scope()
         .with_mut::<Renderer, _>(renderer, |renderer| {
             attachments.bind(&world, renderer, color_view);
         });
@@ -75,7 +75,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     let aspect = SIZE.0.max(1) as f32 / SIZE.1.max(1) as f32;
     // The camera sits in the source's own subtree, which is what it frames.
     world
-        .view_mut(source_entity)
+        .scope_mut(source_entity)
         .expect("the source entity is its own scope")
         .spawn((Camera {
             view_from_world: glam::camera::rh::view::look_at_mat4(

@@ -102,11 +102,11 @@ fn build(
     size: (u32, u32),
     _options: SceneOptions,
 ) -> SceneControl {
-    let mut source = MeshSource::new(&world.root_view(), context);
-    source.register_unlit_family(&world.root_view());
+    let mut source = MeshSource::new(&world.root_scope(), context);
+    source.register_unlit_family(&world.root_scope());
     // Every cell is tinted through its instance colour.
-    let key = UnlitPipelineKey::new(super::unlit_options(&source.device(&world.root_view())));
-    let source_entity = world.root_view_mut().spawn((Source::new(source),));
+    let key = UnlitPipelineKey::new(super::unlit_options(&source.device(&world.root_scope())));
+    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
 
     let camera_entity = super::spawn_in(world, source_entity, (orbit_camera(0, size),));
 
@@ -177,7 +177,7 @@ fn build(
                 if let Some((entity, _)) = entry {
                     let transform = cell_transform(cell, step_index);
                     world
-                        .view(source_entity)
+                        .scope(source_entity)
                         .expect("the source is alive")
                         .with_mut::<Transform, _>(*entity, |current| *current = transform)
                         .expect("a live mesh carries a transform");

@@ -44,7 +44,7 @@
 
 use arrayvec::ArrayVec;
 use glam::Affine3A;
-use unlit_ecs::{Entity, ScopedWorld};
+use unlit_ecs::{Entity, Scope};
 use unlit_wgpu::mesh::JointMatrix;
 use unlit_wgpu::pipeline::{
     CAMERA_BINDING, FRAME_BINDING, GlobalBindings, JOINTS_BINDING, MESH_METADATA_BINDING,
@@ -299,7 +299,7 @@ pub struct DrawContext<'a> {
     pub device: &'a wgpu::Device,
     /// The view the entity is drawn through, for per-entity components a
     /// variant depends on -- an alpha cutoff, say.
-    pub world: ScopedWorld<'a>,
+    pub world: Scope<'a>,
     /// The entity being drawn.
     pub entity: Entity,
     /// The mesh the entity is drawn with.
@@ -330,11 +330,11 @@ pub use unlit_wgpu::instance_stream::InstanceStreamDesc;
 /// frame array and its own pack method. A family that reads neither calls
 /// neither; a family that needs one packs only that one.
 pub struct InstanceContext<'a> {
-    /// The view the entity is drawn through, for per-entity components.
+    /// The scope the entity is drawn through, for per-entity components.
     ///
-    /// It is the drawing source's own view, so a family reads the components
+    /// It is the drawing source's own scope, so a family reads the components
     /// of the subtree that source owns rather than of the whole world.
-    pub world: ScopedWorld<'a>,
+    pub world: Scope<'a>,
     /// The entity the record is for.
     pub entity: Entity,
     /// The entity's world transform, resolved by culling.
@@ -348,7 +348,7 @@ pub struct InstanceContext<'a> {
 impl<'a> InstanceContext<'a> {
     /// Build a context for one entity from the frame's two growing arrays.
     pub(crate) fn new(
-        world: ScopedWorld<'a>,
+        world: Scope<'a>,
         entity: Entity,
         world_from_local: Affine3A,
         joints: &'a mut Vec<JointMatrix>,

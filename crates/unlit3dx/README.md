@@ -32,8 +32,8 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 
 // Jobs run on the remote thread between ticks; a request brings its
 // answer back whenever it arrives.
-simulation.send(Box::new(|world: &mut World| world.root_view_mut().spawn((0u8,)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.root_view_mut().spawn((0u8,))));
+simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,))));
 // `spawned.poll()` is `Some(entity)` once the job has run.
 
 // Snapshots are the only data that flows back, and they are opt-in: the
@@ -42,7 +42,7 @@ let spawned = simulation.request(Box::new(|world: &mut World| world.root_view_mu
 // library defines none — so the collector is where a scene decides what it
 // wants to see.
 let reader = simulation.sender().subscribe(|world: &World| {
-    let bodies: Vec<u64> = world.root_view().query::<&u64>().map(|(_, id)| *id).collect();
+    let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
 if let Some(latest) = reader.latest() {
@@ -56,7 +56,7 @@ keeps its owner on the main thread but takes jobs like a remote world:
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 queued jobs
-let mut nested = host.root_view_mut().get_mut::<World>(render.entity()).expect("the nested world");
+let mut nested = host.root_scope_mut().get_mut::<World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // run the jobs other threads posted
 ```
 
@@ -324,7 +324,7 @@ frame, and runs `ready` as a queued command once the answer lands — nothing
 blocks, wasm-safe:
 
 ```rust,ignore
-world.root_view_mut().spawn((request_gpu(app, |world, gpu| {
+world.root_scope_mut().spawn((request_gpu(app, |world, gpu| {
     // ... build the scene where the request started ...
 }),));
 ```
