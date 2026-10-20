@@ -150,13 +150,13 @@ change the tree either — it queues that, the same way a read-only scope does.
 
 **Cost.** Visibility is decided on every access by walking the parent chain, and
 the walk is bounded by the number of nodes, so a malformed tree cannot hang it.
-The index behind [`World::children`] and [`World::is_descendant`] is derived
-from the `ScopeOf` components and can be rebuilt from them with
-[`World::rebuild_children`], which is why there is nothing to invalidate when a
-component is written through the reflection registry. Queries and counts skip
-the rows a scope cannot see, and [`Scope::archetype`] answers `None` for an
-archetype the scope only partly sees — [`Scope::archetype_infos`] reports the
-visible length instead.
+The index behind [`World::children`] and [`World::is_descendant`] is written by
+the world alongside the `ScopeOf` component, so the two cannot disagree; a
+`ScopeOf` written through the reflection registry is refused, because moving an
+entity is [`ScopeMut::link`]'s job. Queries and counts skip the rows a scope
+cannot see, and [`Scope::archetype`] answers `None` for an archetype the scope
+only partly sees — [`Scope::archetype_infos`] reports the visible length
+instead.
 
 ## What is in the box
 

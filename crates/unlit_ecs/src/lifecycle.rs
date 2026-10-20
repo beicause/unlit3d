@@ -11,7 +11,9 @@
 //! run in the order they were registered.
 //!
 //! A callback gets the scope of the entity's own scope, which is its parent, and
-//! cannot change the world's structure: it queues those changes instead.
+//! cannot change the world's structure: it queues those changes instead. It may
+//! read and write its own lifecycle component; a callback it adds there runs
+//! after the ones that were already registered.
 
 use crate::entity::Entity;
 use crate::view::Scope;
@@ -19,84 +21,77 @@ use crate::view::Scope;
 /// One callback of a lifecycle component.
 pub type LifecycleCallback = Box<dyn for<'a, 'b> FnMut(&'a Scope<'b>, Entity)>;
 
-/// The callbacks that run, in order, right after the entity is spawned.
-#[derive(Default)]
-pub struct OnSpawn(
-    /// The callbacks, in the order they run.
-    pub Vec<LifecycleCallback>,
-);
+/// Declare one lifecycle component: a list of callbacks with its builder.
+macro_rules! lifecycle_component {
+    ($(#[$meta:meta])* $name:ident) => {
+        $(#[$meta])*
+        #[derive(Default)]
+        pub struct $name(
+            /// The callbacks, in the order they run.
+            pub Vec<LifecycleCallback>,
+        );
 
-/// The callbacks that run, in order, right before the entity is despawned.
-#[derive(Default)]
-pub struct OnDespawn(
-    /// The callbacks, in the order they run.
-    pub Vec<LifecycleCallback>,
-);
+        impl $name {
+            /// No callbacks yet.
+            #[must_use]
+            pub fn new() -> Self {
+                Self::default()
+            }
 
-impl OnSpawn {
-    /// No callbacks yet.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
+            /// Append a callback, which runs after every callback added before it.
+            #[must_use]
+            pub fn with(
+                mut self,
+                callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static,
+            ) -> Self {
+                self.push(callback);
+                self
+            }
 
-    /// Append a callback, which runs after every callback added before it.
-    #[must_use]
-    pub fn with(
-        mut self,
-        callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static,
-    ) -> Self {
-        self.0.push(Box::new(callback));
-        self
-    }
+            /// Append a callback at run time.
+            pub fn push(
+                &mut self,
+                callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static,
+            ) {
+                self.0.push(Box::new(callback));
+            }
+        }
 
-    /// Append a callback at run time.
-    pub fn push(&mut self, callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static) {
-        self.0.push(Box::new(callback));
-    }
+        impl $crate::lifecycle::Lifecycle for $name {
+            fn callbacks(&mut self) -> &mut Vec<LifecycleCallback> {
+                &mut self.0
+            }
+        }
+    };
 }
 
-impl OnDespawn {
-    /// No callbacks yet.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Append a callback, which runs after every callback added before it.
-    #[must_use]
-    pub fn with(
-        mut self,
-        callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static,
-    ) -> Self {
-        self.0.push(Box::new(callback));
-        self
-    }
-
-    /// Append a callback at run time.
-    pub fn push(&mut self, callback: impl for<'a, 'b> FnMut(&'a Scope<'b>, Entity) + 'static) {
-        self.0.push(Box::new(callback));
-    }
-}
+lifecycle_component!(
+    /// The callbacks that run, in order, right after the entity is spawned.
+    OnSpawn
+);
+lifecycle_component!(
+    /// The callbacks that run, in order, right before the entity is despawned.
+    OnDespawn
+);
 
 /// A component whose callbacks the world runs at a structural change.
 ///
-/// The trait is what lets the spawn and despawn paths share one runner; it is
-/// implemented for [`OnSpawn`] and [`OnDespawn`] and is not meant to be
-/// implemented elsewhere.
-pub trait Lifecycle: 'static {
+/// The trait is what lets the spawn and despawn paths share one runner. It is
+/// sealed: the world only knows how to run [`OnSpawn`] and [`OnDespawn`], so
+/// implementing it elsewhere would not make anything run.
+pub trait Lifecycle: 'static + sealed::Sealed {
     /// The callbacks, in the order they run.
-    fn callbacks(&mut self) -> &mut [LifecycleCallback];
+    ///
+    /// A list rather than a slice so that the runner can move the callbacks out
+    /// of the component, run them without holding a borrow of it, and put back
+    /// whatever they registered.
+    fn callbacks(&mut self) -> &mut Vec<LifecycleCallback>;
 }
 
-impl Lifecycle for OnSpawn {
-    fn callbacks(&mut self) -> &mut [LifecycleCallback] {
-        &mut self.0
-    }
-}
+mod sealed {
+    /// Keeps [`Lifecycle`](super::Lifecycle) to the components the world runs.
+    pub trait Sealed {}
 
-impl Lifecycle for OnDespawn {
-    fn callbacks(&mut self) -> &mut [LifecycleCallback] {
-        &mut self.0
-    }
+    impl Sealed for super::OnSpawn {}
+    impl Sealed for super::OnDespawn {}
 }

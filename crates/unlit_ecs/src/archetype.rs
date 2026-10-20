@@ -12,16 +12,18 @@ use core::any::{Any, TypeId};
 
 use hashbrown::HashMap;
 
-use crate::column::{AnyColumn, Column};
+use crate::column::{AnyColumn, Column, borrow_conflict};
 use crate::entity::Entity;
 use crate::scope::ScopeOf;
+use crate::world::World;
 
 /// Which scopes an archetype's rows live in, as far as a whole-archetype gate
 /// can tell.
 ///
-/// A derived summary, not part of the archetype's identity: it is recomputed
-/// from the [`ScopeOf`] column whenever a row moves between scopes, and
-/// dropping it only costs a per-row visibility check.
+/// A derived summary, not part of the archetype's identity: it is read off the
+/// [`ScopeOf`] column, and the gates below are the only thing that uses it.
+/// Both gates are conservative in the same direction: they never accept a row
+/// that the per-row check would reject.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(crate) enum ScopeSummary {
     /// No rows.
@@ -33,12 +35,77 @@ pub(crate) enum ScopeSummary {
     Mixed,
 }
 
+impl ScopeSummary {
+    /// Whether at least one row of the archetype is visible from `caller`.
+    ///
+    /// This is the gate a query applies before it visits any row. A uniform
+    /// archetype is either entirely visible or has exactly one visible row: the
+    /// caller's own entity, which lives in `caller`'s parent scope and so sits
+    /// in that parent's uniform archetype.
+    pub(crate) fn any_visible(self, world: &World, caller: Entity) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::Uniform(scope) => {
+                world.visible(caller, scope) || world.parent_scope(caller) == Some(scope)
+            }
+            Self::Mixed => true,
+        }
+    }
+
+    /// Whether every row of the archetype is visible from `caller`.
+    ///
+    /// Vacuously true for an empty archetype, which is why the callers that
+    /// hand out rows also require the archetype to be non-empty.
+    pub(crate) fn all_visible(self, world: &World, caller: Entity) -> bool {
+        match self {
+            Self::Empty => true,
+            Self::Uniform(scope) => world.visible(caller, scope),
+            Self::Mixed => false,
+        }
+    }
+
+    /// Whether row `row` of `archetype` is visible from `caller`.
+    ///
+    /// The per-row answer for a summary a whole-archetype gate could not
+    /// decide. The caller's own row is always visible: a scope sees the entity
+    /// it is rooted at, and that entity lives in the scope's parent.
+    pub(crate) fn row_visible(
+        self,
+        archetype: &Archetype,
+        world: &World,
+        caller: Entity,
+        row: usize,
+    ) -> bool {
+        match self {
+            Self::Empty => false,
+            Self::Uniform(scope) => {
+                world.visible(caller, scope) || archetype.entities()[row] == caller
+            }
+            Self::Mixed => {
+                archetype.entities()[row] == caller
+                    || archetype.cell::<ScopeOf>(row).is_some_and(|cell| {
+                        let parent = cell
+                            .try_borrow()
+                            .unwrap_or_else(|_| borrow_conflict::<ScopeOf>("read"))
+                            .0;
+                        world.visible(caller, parent)
+                    })
+            }
+        }
+    }
+}
+
 /// One archetype: the entities that share a component set.
 pub struct Archetype {
     types: Box<[TypeId]>,
     columns: Box<[Box<dyn AnyColumn>]>,
     entities: Vec<Entity>,
-    scope: ScopeSummary,
+    /// How many rows live in each scope, one entry per distinct scope.
+    ///
+    /// The scope summary is derived from this rather than stored, so it cannot
+    /// go stale: an archetype whose rows all move out of one scope stops being
+    /// `Mixed` the moment the last of them leaves.
+    scope_counts: Vec<(Entity, u32)>,
 }
 
 impl Archetype {
@@ -55,7 +122,7 @@ impl Archetype {
             types,
             columns,
             entities: Vec::new(),
-            scope: ScopeSummary::Empty,
+            scope_counts: Vec::new(),
         }
     }
 
@@ -128,45 +195,55 @@ impl Archetype {
     /// Append one entity row that lives in `scope`.
     pub(crate) fn push_entity(&mut self, entity: Entity, scope: Entity) {
         self.entities.push(entity);
-        self.scope = match self.scope {
-            ScopeSummary::Empty => ScopeSummary::Uniform(scope),
-            ScopeSummary::Uniform(current) if current == scope => ScopeSummary::Uniform(scope),
-            _ => ScopeSummary::Mixed,
-        };
+        self.count_scope(scope, 1);
     }
 
     /// Which scopes the rows live in.
     pub(crate) fn scope_summary(&self) -> ScopeSummary {
-        self.scope
+        match self.scope_counts.as_slice() {
+            [] => ScopeSummary::Empty,
+            [(scope, _)] => ScopeSummary::Uniform(*scope),
+            _ => ScopeSummary::Mixed,
+        }
     }
 
-    /// Recompute [`Archetype::scope_summary`] from the [`ScopeOf`] column.
+    /// Move the count of one row from `from` to `to`.
     ///
-    /// Called when a row moves to another scope: the component set is
-    /// unchanged, so the archetype is the same one and only the summary is
-    /// stale.
-    pub(crate) fn recompute_scope_summary(&mut self) {
-        let Some(column) = self.column::<ScopeOf>() else {
-            self.scope = ScopeSummary::Empty;
+    /// Called when a row's [`ScopeOf`] is rewritten: the component set is
+    /// unchanged, so the row stays where it is and only the counts change.
+    pub(crate) fn move_scope(&mut self, from: Entity, to: Entity) {
+        self.count_scope(from, -1);
+        self.count_scope(to, 1);
+    }
+
+    /// Add `delta` to the row count of `scope`, dropping the entry at zero.
+    fn count_scope(&mut self, scope: Entity, delta: i32) {
+        if let Some(index) = self
+            .scope_counts
+            .iter()
+            .position(|(candidate, _)| *candidate == scope)
+        {
+            let count = &mut self.scope_counts[index].1;
+            *count = count.wrapping_add_signed(delta);
+            if *count == 0 {
+                self.scope_counts.swap_remove(index);
+            }
             return;
-        };
-        let mut summary = ScopeSummary::Empty;
-        for row in 0..self.entities.len() {
-            let Some(cell) = column.cell(row) else {
-                continue;
-            };
-            let Ok(scope) = cell.try_borrow() else {
-                // A row is being written right now; the summary stays as it
-                // was and the next move recomputes it.
-                return;
-            };
-            summary = match summary {
-                ScopeSummary::Empty => ScopeSummary::Uniform(scope.0),
-                ScopeSummary::Uniform(current) if current == scope.0 => summary,
-                _ => ScopeSummary::Mixed,
-            };
         }
-        self.scope = summary;
+        debug_assert!(delta > 0, "a scope with no rows cannot lose one");
+        self.scope_counts.push((scope, delta as u32));
+    }
+
+    /// The scope the row at `row` lives in.
+    ///
+    /// Every archetype that holds a row has a [`ScopeOf`] column: rows are only
+    /// ever pushed by [`World`], which writes the scope in the same step.
+    pub(crate) fn scope_at(&self, row: usize) -> Entity {
+        self.cell::<ScopeOf>(row)
+            .expect("every spawned row carries its scope")
+            .try_borrow()
+            .unwrap_or_else(|_| borrow_conflict::<ScopeOf>("read"))
+            .0
     }
 
     /// Drop the row at `row`, moving the last row into the hole.
@@ -175,13 +252,12 @@ impl Archetype {
     /// updated, or `None` when the row was the last one.
     pub(crate) fn swap_remove(&mut self, row: usize) -> Option<Entity> {
         let last = self.entities.len() - 1;
+        let scope = self.scope_at(row);
         for column in self.columns.iter_mut() {
             drop(column.swap_remove(row));
         }
         self.entities.swap_remove(row);
-        if self.entities.is_empty() {
-            self.scope = ScopeSummary::Empty;
-        }
+        self.count_scope(scope, -1);
         (row != last).then(|| self.entities[row])
     }
 }
@@ -271,20 +347,50 @@ mod tests {
         assert_eq!(archetypes.get(id).types(), types);
     }
 
+    /// An archetype holding one `ScopeOf` column, as every spawned row has.
+    fn scoped_archetype() -> Archetype {
+        Archetype::new(
+            Box::new([TypeId::of::<ScopeOf>()]),
+            Box::new([Column::<ScopeOf>::new().erase()]),
+        )
+    }
+
     #[test]
     fn swap_remove_reports_the_entity_moved_into_the_hole() {
-        let mut archetype = Archetype::new(Box::new([]), Box::new([]));
+        let mut archetype = scoped_archetype();
+        let scope = Entity::from_raw(9, 0);
         let a = Entity::from_raw(0, 0);
         let b = Entity::from_raw(1, 0);
         let c = Entity::from_raw(2, 0);
         for entity in [a, b, c] {
-            archetype.push_entity(entity, Entity::from_raw(9, 0));
+            archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(scope)));
+            archetype.push_entity(entity, scope);
         }
         assert_eq!(archetype.swap_remove(0), Some(c), "the last row moved in");
         assert_eq!(archetype.entities(), [c, b]);
         // Removing the last row moves nothing.
         assert_eq!(archetype.swap_remove(1), None);
         assert_eq!(archetype.entities(), [c]);
+    }
+
+    #[test]
+    fn the_scope_summary_follows_the_rows() {
+        let mut archetype = scoped_archetype();
+        let first = Entity::from_raw(9, 0);
+        let second = Entity::from_raw(10, 0);
+        assert_eq!(archetype.scope_summary(), ScopeSummary::Empty);
+        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(first)));
+        archetype.push_entity(Entity::from_raw(0, 0), first);
+        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(first)));
+        archetype.push_entity(Entity::from_raw(1, 0), first);
+        assert_eq!(archetype.scope_summary(), ScopeSummary::Uniform(first));
+        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(second)));
+        archetype.push_entity(Entity::from_raw(2, 0), second);
+        assert_eq!(archetype.scope_summary(), ScopeSummary::Mixed);
+        // Removing the only row of a scope drops it from the count, so the
+        // archetype is uniform again.
+        archetype.swap_remove(2);
+        assert_eq!(archetype.scope_summary(), ScopeSummary::Uniform(first));
     }
 
     #[test]

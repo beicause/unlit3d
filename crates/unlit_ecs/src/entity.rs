@@ -163,11 +163,6 @@ pub(crate) struct Entities {
 }
 
 impl Entities {
-    /// Number of live entities.
-    pub(crate) fn len(&self) -> usize {
-        self.meta.len() - self.free.len() - self.reserved
-    }
-
     /// Whether the handle refers to a live entity.
     pub(crate) fn contains(&self, entity: Entity) -> bool {
         self.location(entity).is_some()
@@ -183,9 +178,18 @@ impl Entities {
     }
 
     /// Record where an entity lives, replacing any earlier location.
+    ///
+    /// Panics when the handle is not live: a location is only ever recorded for
+    /// an entity that was just allocated or reserved.
     pub(crate) fn set_location(&mut self, entity: Entity, location: Location) {
-        let meta = &mut self.meta[entity.index as usize];
-        debug_assert_eq!(meta.generation, entity.generation);
+        let meta = self
+            .meta
+            .get_mut(entity.index as usize)
+            .unwrap_or_else(|| panic!("{entity:?} names no entity index"));
+        assert_eq!(
+            meta.generation, entity.generation,
+            "{entity:?} is a stale handle"
+        );
         meta.location = Some(location);
     }
 
@@ -233,11 +237,16 @@ impl Entities {
     }
 
     /// Mark a reserved handle as spawned.
-    pub(crate) fn take_reserved(&mut self, entity: Entity) {
-        if self.is_reserved(entity) {
-            self.meta[entity.index as usize].reserved = false;
-            self.reserved -= 1;
+    ///
+    /// Returns whether the handle was reserved; a handle that is not is left
+    /// untouched.
+    pub(crate) fn take_reserved(&mut self, entity: Entity) -> bool {
+        if !self.is_reserved(entity) {
+            return false;
         }
+        self.meta[entity.index as usize].reserved = false;
+        self.reserved -= 1;
+        true
     }
 
     /// Release a dead entity's index, so a later entity reuses it with a new
@@ -297,7 +306,6 @@ mod tests {
         let entity = entities.reserve();
         assert!(entities.is_reserved(entity));
         assert!(!entities.contains(entity));
-        assert_eq!(entities.len(), 0);
 
         entities.set_location(
             entity,
@@ -306,9 +314,12 @@ mod tests {
                 row: 0,
             },
         );
-        entities.take_reserved(entity);
+        assert!(
+            entities.take_reserved(entity),
+            "the reservation is consumed"
+        );
         assert!(entities.contains(entity));
-        assert_eq!(entities.len(), 1);
+        assert!(!entities.take_reserved(entity), "and only once");
     }
 
     #[test]
@@ -327,9 +338,8 @@ mod tests {
     }
 
     #[test]
-    fn len_counts_live_entities_only() {
+    fn freeing_retires_a_handle_and_keeps_the_other() {
         let mut entities = Entities::default();
-        assert_eq!(entities.len(), 0);
         let first = entities.alloc();
         let second = entities.alloc();
         entities.set_location(
@@ -346,9 +356,8 @@ mod tests {
                 row: 1,
             },
         );
-        assert_eq!(entities.len(), 2);
         assert!(entities.free(first));
-        assert_eq!(entities.len(), 1);
+        assert!(!entities.contains(first));
         assert!(entities.contains(second));
     }
 

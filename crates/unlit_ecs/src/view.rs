@@ -9,14 +9,13 @@
 //! changes -- spawning, despawning, relinking -- need [`ScopeMut`], whose
 //! operations are confined to the scope's own subtree.
 
-use crate::archetype::Archetype;
+use crate::archetype::{Archetype, ScopeSummary};
 use crate::bundle::Bundle;
 use crate::column::{CellRef, CellRefMut};
 use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
 use crate::query::{Query, QueryFilter, QueryIter};
-use crate::scope::ScopeOf;
 use crate::world::World;
 
 /// A read-only scope: one entity and everything below it.
@@ -57,19 +56,6 @@ impl<'w> Scope<'w> {
         self.world.visible(self.scope, entity)
     }
 
-    /// Whether `entity` is content rather than the tree's own scaffolding.
-    ///
-    /// The root and the shared scope are entities so that they can carry
-    /// components and be named as scopes, but they are not what a scope is
-    /// looking at: counting them would put a constant two on every report and
-    /// make an empty world non-empty. Their subtrees are content, though: a
-    /// resource spawned under the shared scope is visible to every scope and
-    /// belongs in what a scope counts.
-    #[must_use]
-    pub fn is_content(&self, entity: Entity) -> bool {
-        !self.world.is_scaffolding(entity)
-    }
-
     /// Whether `entity` is visible and carries component `C`.
     #[must_use]
     pub fn has<C: 'static>(&self, entity: Entity) -> bool {
@@ -82,7 +68,10 @@ impl<'w> Scope<'w> {
     #[must_use]
     #[inline]
     pub fn get<C: 'static>(&self, entity: Entity) -> Option<CellRef<'w, C>> {
-        self.contains(entity).then(|| self.world.get::<C>(entity))?
+        if !self.contains(entity) {
+            return None;
+        }
+        self.world.get::<C>(entity)
     }
 
     /// The component of `entity`, exclusively.
@@ -91,8 +80,10 @@ impl<'w> Scope<'w> {
     #[must_use]
     #[inline]
     pub fn get_mut<C: 'static>(&self, entity: Entity) -> Option<CellRefMut<'w, C>> {
-        self.contains(entity)
-            .then(|| self.world.get_mut::<C>(entity))?
+        if !self.contains(entity) {
+            return None;
+        }
+        self.world.get_mut::<C>(entity)
     }
 
     /// Run `f` on the component of `entity`.
@@ -114,7 +105,10 @@ impl<'w> Scope<'w> {
     /// Where a visible entity's components live.
     #[must_use]
     pub fn location(&self, entity: Entity) -> Option<Location> {
-        self.contains(entity).then(|| self.world.location(entity))?
+        if !self.contains(entity) {
+            return None;
+        }
+        self.world.location(entity)
     }
 
     // -- queries -----------------------------------------------------------
@@ -138,10 +132,16 @@ impl<'w> Scope<'w> {
     #[must_use]
     pub fn archetype(&self, id: u32) -> Option<&'w Archetype> {
         let archetype = self.world.archetype_at(id)?;
-        self.fully_visible(archetype).then_some(archetype)
+        if archetype.is_empty() || !self.fully_visible(archetype) {
+            return None;
+        }
+        Some(archetype)
     }
 
     /// Every archetype this scope sees in full, in id order.
+    ///
+    /// An empty archetype is seen in full, so it is included: a caller that
+    /// sums the lengths gets the same count as `Scope::len`.
     pub fn archetypes(&self) -> impl Iterator<Item = &'w Archetype> {
         self.world
             .archetypes_slice()
@@ -149,35 +149,33 @@ impl<'w> Scope<'w> {
             .filter(|archetype| self.fully_visible(archetype))
     }
 
-    /// The number of archetypes this scope sees in full.
-    #[must_use]
-    pub fn archetype_count(&self) -> usize {
-        self.archetypes().count()
-    }
-
     // -- the tree ----------------------------------------------------------
 
     /// The scope of a visible scope, or `None` when it is out of reach.
     #[must_use]
     pub fn scope(&self, scope: Entity) -> Option<Scope<'w>> {
-        self.contains(scope).then(|| Scope::new(self.world, scope))
+        if !self.contains(scope) {
+            return None;
+        }
+        Some(Scope::new(self.world, scope))
     }
 
     /// The parent of a visible entity.
     #[must_use]
     pub fn parent_scope(&self, entity: Entity) -> Option<Entity> {
-        self.contains(entity)
-            .then(|| self.world.parent_scope(entity))?
+        if !self.contains(entity) {
+            return None;
+        }
+        self.world.parent_scope(entity)
     }
 
     /// The direct children of a visible entity.
     #[must_use]
     pub fn children(&self, entity: Entity) -> Vec<Entity> {
-        if self.contains(entity) {
-            self.world.children(entity)
-        } else {
-            Vec::new()
+        if !self.contains(entity) {
+            return Vec::new();
         }
+        self.world.children(entity)
     }
 
     // -- counting and diagnostics ------------------------------------------
@@ -189,11 +187,9 @@ impl<'w> Scope<'w> {
     /// instead of being counted.
     #[must_use]
     pub fn len(&self) -> usize {
-        if self.world.is_root(self.scope) {
-            // The root sees every row, so the entity table already knows the
-            // answer and the two scaffolding entities are all that differ.
-            return self.world.live_count().saturating_sub(2);
-        }
+        // The query already skips the scaffolding and applies the visibility
+        // rules, so counting this way keeps the number and the iteration in
+        // agreement for every scope, the root included.
         self.query::<Entity>().count()
     }
 
@@ -208,9 +204,13 @@ impl<'w> Scope<'w> {
     #[must_use]
     pub fn info(&self) -> WorldInfo {
         let mut components: Vec<&'static str> = Vec::new();
-        for archetype in self.world.archetypes_slice() {
+        let mut archetypes = 0;
+        for (index, archetype) in self.world.archetypes_slice().iter().enumerate() {
             if !self.archetype_visible(archetype) {
                 continue;
+            }
+            if self.visible_len(index as u32, archetype) > 0 {
+                archetypes += 1;
             }
             for &type_id in archetype.types() {
                 if let Some(name) = self.world.type_name(type_id) {
@@ -222,11 +222,7 @@ impl<'w> Scope<'w> {
         components.dedup();
         WorldInfo {
             entities: self.len(),
-            archetypes: self
-                .archetype_infos()
-                .iter()
-                .filter(|info| info.len > 0)
-                .count(),
+            archetypes,
             components,
             root: self.world.root(),
             shared: self.world.shared(),
@@ -283,7 +279,7 @@ impl<'w> Scope<'w> {
                 .filter_map(|&type_id| self.world.type_name(type_id))
                 .collect();
             for (row, &entity) in archetype.entities().iter().enumerate() {
-                if !self.row_visible(archetype, row) || !self.is_content(entity) {
+                if !self.row_visible(archetype, row) || self.world.is_scaffolding(entity) {
                     continue;
                 }
                 if infos.len() == limit {
@@ -315,48 +311,24 @@ impl<'w> Scope<'w> {
     // -- visibility --------------------------------------------------------
 
     /// Whether an archetype has any row this scope can see.
-    ///
-    /// A `Uniform(scope)` archetype is either entirely visible or has exactly
-    /// one visible row: the scope's own entity, which lives in `scope` because
-    /// a scope is an entity and its parent is where it lives. Both cases are
-    /// decided here so that the row loop stays free of tree walks.
     fn archetype_visible(&self, archetype: &Archetype) -> bool {
-        match archetype.scope_summary() {
-            crate::archetype::ScopeSummary::Empty => false,
-            crate::archetype::ScopeSummary::Uniform(scope) => {
-                self.world.visible(self.scope, scope)
-                    || self.world.parent_scope(self.scope) == Some(scope)
-            }
-            crate::archetype::ScopeSummary::Mixed => true,
-        }
+        archetype
+            .scope_summary()
+            .any_visible(self.world, self.scope)
     }
 
     /// Whether every row of `archetype` is visible from this scope.
     fn fully_visible(&self, archetype: &Archetype) -> bool {
-        match archetype.scope_summary() {
-            crate::archetype::ScopeSummary::Empty => true,
-            crate::archetype::ScopeSummary::Uniform(scope) => self.world.visible(self.scope, scope),
-            crate::archetype::ScopeSummary::Mixed => false,
-        }
+        archetype
+            .scope_summary()
+            .all_visible(self.world, self.scope)
     }
 
     /// Whether row `row` of `archetype` is visible.
     fn row_visible(&self, archetype: &Archetype, row: usize) -> bool {
-        match archetype.scope_summary() {
-            crate::archetype::ScopeSummary::Empty => false,
-            crate::archetype::ScopeSummary::Uniform(scope) => {
-                self.world.visible(self.scope, scope) || archetype.entities()[row] == self.scope
-            }
-            crate::archetype::ScopeSummary::Mixed => {
-                // The scope's own entity lives in its parent's scope, so its
-                // row is visible even though that scope is above the scope.
-                archetype.entities()[row] == self.scope
-                    || archetype
-                        .cell::<ScopeOf>(row)
-                        .and_then(|cell| cell.try_borrow().ok().map(|scope| scope.0))
-                        .is_some_and(|scope| self.world.visible(self.scope, scope))
-            }
-        }
+        archetype
+            .scope_summary()
+            .row_visible(archetype, self.world, self.scope, row)
     }
 
     /// The number of rows of `archetype` this scope can see, its own content
@@ -375,8 +347,8 @@ impl<'w> Scope<'w> {
             0
         };
         match archetype.scope_summary() {
-            crate::archetype::ScopeSummary::Empty => 0,
-            crate::archetype::ScopeSummary::Uniform(scope) => {
+            ScopeSummary::Empty => 0,
+            ScopeSummary::Uniform(scope) => {
                 if self.world.visible(self.scope, scope) {
                     // The whole archetype is this one scope, so its rows are
                     // the scope's — except a shared row, which reaches the scope
@@ -384,17 +356,17 @@ impl<'w> Scope<'w> {
                     archetype.len() - scaffold
                 } else {
                     // A scope lives in its parent, which is above it, so the
-                    // only row of that archetype it can see is its own.
-                    archetype
-                        .entities()
-                        .iter()
-                        .filter(|entity| **entity == self.scope)
-                        .count()
+                    // only row of that archetype it can see is its own -- and
+                    // the scaffolding's own row is not content.
+                    usize::from(
+                        archetype.entities().contains(&self.scope)
+                            && !self.world.is_scaffolding(self.scope),
+                    )
                 }
             }
-            crate::archetype::ScopeSummary::Mixed => (0..archetype.len())
+            ScopeSummary::Mixed => (0..archetype.len())
                 .filter(|&row| self.row_visible(archetype, row))
-                .filter(|&row| self.is_content(archetype.entities()[row]))
+                .filter(|&row| !self.world.is_scaffolding(archetype.entities()[row]))
                 .count(),
         }
     }

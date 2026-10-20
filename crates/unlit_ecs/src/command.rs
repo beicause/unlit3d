@@ -17,7 +17,9 @@
 //! Commands run in the order they were queued. A command that acts on a
 //! reserved entity must therefore be queued after the `Spawn` that brings it
 //! to life: for example [`Commands::despawn`] does nothing when the entity is
-//! not alive yet. This holds for the handles [`Commands::spawn`] itself
+//! not alive yet. A queue only queues changes to what its scope owns, so a
+//! command that a queue should not have taken is dropped when it is applied
+//! rather than when it is queued. This holds for the handles [`Commands::spawn`] itself
 //! returns; a `Spawn` pushed by hand with [`Commands::push`] must be ordered the
 //! same way.
 //!
@@ -62,9 +64,18 @@ impl<C: Command> CommandErase for C {
 ///
 /// The queue lives in the world, so deferring a spawn from a callback to the
 /// driver needs no channel.
+#[derive(Clone, Copy)]
 pub struct Commands<'w> {
     world: &'w World,
     scope: Entity,
+}
+
+impl core::fmt::Debug for Commands<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Commands")
+            .field("scope", &self.scope)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'w> Commands<'w> {
@@ -74,7 +85,7 @@ impl<'w> Commands<'w> {
 
     /// The scope every command of this queue lands in.
     #[must_use]
-    pub fn entity(&self) -> Entity {
+    pub fn scope(&self) -> Entity {
         self.scope
     }
 
@@ -94,14 +105,18 @@ impl<'w> Commands<'w> {
 
     /// Queue the despawn of `entity` and its subtree.
     ///
-    /// The scope is read now, while the entity is still alive, so that applying
-    /// the command later cannot despawn something the queue's scope does not
-    /// own.
+    /// Does nothing when this queue's scope does not own `entity`, or when the
+    /// entity is one of the tree's roots: the command would be refused when it
+    /// was applied, and queueing it only to have it silently dropped later is
+    /// the worse of the two failures.
     pub fn despawn(&self, entity: Entity) {
-        let Some(scope) = self.world.parent_scope(entity) else {
+        if self.world.is_scaffolding(entity) || !self.world.owns(self.scope, entity) {
             return;
-        };
-        self.push(Despawn { entity, scope });
+        }
+        self.push(Despawn {
+            entity,
+            scope: self.scope,
+        });
     }
 
     /// Queue a relink of `child` into `parent`.
@@ -154,10 +169,12 @@ pub struct Despawn {
 impl Command for Despawn {
     fn apply(self: Box<Self>, world: &mut World) {
         // The scope is what the queue saw at queue time; an entity that has
-        // moved out of it since is not this command's to remove.
-        if world.parent_scope(self.entity) == Some(self.scope) {
-            world.despawn_in(self.entity);
+        // moved out of it since, or that turned out to be scaffolding, is not
+        // this command's to remove.
+        if world.is_scaffolding(self.entity) || !world.owns(self.scope, self.entity) {
+            return;
         }
+        world.despawn_in(self.entity);
     }
 }
 

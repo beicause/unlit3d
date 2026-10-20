@@ -199,3 +199,33 @@ fn a_queued_spawn_runs_the_callback_on_apply() {
     assert_eq!(*seen.borrow(), ["born"]);
     assert!(world.root_scope().contains(queued));
 }
+
+#[test]
+fn a_callback_may_touch_its_own_lifecycle_component() {
+    let mut world = World::new();
+    let observed = Rc::new(RefCell::new(None));
+    let sink = Rc::clone(&observed);
+    world.root_scope_mut().spawn((
+        Marker(1),
+        OnSpawn::new().with(move |scope, spawned| {
+            // The runner holds no borrow while the callbacks run, so reading
+            // the component the callback sits on is not a conflict.
+            *sink.borrow_mut() = scope.has::<OnSpawn>(spawned).then_some(());
+        }),
+    ));
+    assert_eq!(*observed.borrow(), Some(()));
+}
+
+#[test]
+fn a_callback_may_register_another_callback() {
+    let mut world = World::new();
+    let entity = world
+        .root_scope_mut()
+        .spawn((OnSpawn::new().with(|scope, spawned| {
+            if let Some(mut hooks) = scope.get_mut::<OnSpawn>(spawned) {
+                hooks.push(|_: &unlit_ecs::Scope<'_>, _: unlit_ecs::Entity| {});
+            }
+        }),));
+    let hooks = world.root_scope().get::<OnSpawn>(entity).unwrap();
+    assert_eq!(hooks.0.len(), 2, "the registered callback was kept");
+}

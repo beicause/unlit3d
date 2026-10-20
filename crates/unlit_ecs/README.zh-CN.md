@@ -111,9 +111,9 @@ scope 并在那里 spawn 资源；之后 despawn 那份资源是根的事，不�
 `OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读 scope 一样。
 
 **开销。** 每次访问都要沿父链走一遍来判定可见性，走查以节点数为上界，所以畸形的树也
-不会把它拖死。`World::children` 与 `World::is_descendant` 背后的索引由 `ScopeOf`
-组件派生，可以随时用 `World::rebuild_children` 从组件重建，因此通过反射注册表写入
-组件时没有任何东西需要失效。查询与计数会跳过 scope 看不见的行，而
+不会把它拖死。`World::children` 与 `World::is_descendant` 背后的索引由 world 与
+`ScopeOf` 组件一并写入，两者不可能互相矛盾；通过反射注册表写 `ScopeOf` 会被拒绝，
+因为搬动实体是 `ScopeMut::link` 的职责。查询与计数会跳过 scope 看不见的行，而
 `Scope::archetype` 对只看得见一部分的 archetype 回答 `None`——那种情况下
 `Scope::archetype_infos` 报告的是可见长度。
 

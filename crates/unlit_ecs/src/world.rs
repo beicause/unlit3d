@@ -33,7 +33,7 @@ use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
 use crate::bundle::Bundle;
-use crate::column::AnyColumn;
+use crate::column::{AnyColumn, borrow_conflict};
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
 use crate::hash::TypeIdHashMap;
@@ -171,9 +171,11 @@ impl World {
         if !self.entities_read().contains(candidate) {
             return false;
         }
-        self.is_shared(candidate)
-            || caller == self.root
+        // The root is the hot case: it sees everything, so it is answered
+        // before the parent-chain walks below.
+        caller == self.root
             || candidate == caller
+            || self.is_shared(candidate)
             || self.is_descendant(caller, candidate)
     }
 
@@ -196,25 +198,6 @@ impl World {
     #[must_use]
     pub fn children(&self, entity: Entity) -> Vec<Entity> {
         self.tree_read().children(entity).to_vec()
-    }
-
-    /// Rebuild the scope index from the [`ScopeOf`] components.
-    ///
-    /// The components are the truth and the index is derived, so this is the
-    /// repair a caller runs if it ever suspects the two have drifted.
-    pub fn rebuild_children(&mut self) {
-        let pairs: Vec<(Entity, Entity)> = self
-            .root_scope()
-            .query::<(Entity, &ScopeOf)>()
-            .map(|(entity, (_, scope))| (entity, scope.0))
-            .collect();
-        self.tree_write().rebuild(pairs.into_iter());
-    }
-
-    /// The number of live entities, the tree's scaffolding included.
-    #[must_use]
-    pub(crate) fn live_count(&self) -> usize {
-        self.entities_read().len()
     }
 
     /// Whether `archetype` holds the tree's two scaffolding entities.
@@ -287,15 +270,15 @@ impl World {
     /// Spawn `bundle` on `entity`, a handle from [`World::reserve_entity`], in
     /// `scope`.
     ///
-    /// Panics when the handle already refers to a live entity. This is a hard
-    /// check rather than a debug assertion: a second spawn would leave the
-    /// entity with two rows, one of them unreachable and impossible to free.
+    /// Panics when the handle is not a live reservation from
+    /// [`World::reserve_entity`]: spawning on a stale or never-reserved handle
+    /// would leave a row nobody can reach or free. This is a hard check rather
+    /// than a debug assertion.
     pub(crate) fn spawn_at_in<B: Bundle>(&mut self, entity: Entity, scope: Entity, bundle: B) {
         assert!(
-            !self.entities_read().contains(entity),
-            "{entity:?} is already spawned"
+            self.entities_write().take_reserved(entity),
+            "{entity:?} is not a reserved handle"
         );
-        self.entities_write().take_reserved(entity);
         self.insert_row(entity, scope, bundle);
         self.finish_spawn(entity);
     }
@@ -339,8 +322,11 @@ impl World {
     }
 
     /// Detach `child` from its parent and put it in `scope`.
+    ///
+    /// `child` may not be the scope itself: that would make it its own parent,
+    /// which is how the tree says "this is a root".
     pub(crate) fn unlink_in(&mut self, child: Entity, scope: Entity) -> bool {
-        if self.is_root(child) || self.is_shared(child) {
+        if child == scope || self.is_root(child) || self.is_shared(child) {
             return false;
         }
         if !self.entities_read().contains(child) || !self.entities_read().contains(scope) {
@@ -355,15 +341,14 @@ impl World {
 
     /// Rewrite the [`ScopeOf`] component of a live entity and reindex it.
     fn write_scope(&mut self, entity: Entity, scope: Entity) {
-        let Some(location) = self.location(entity) else {
-            return;
-        };
+        let location = self.location(entity).expect("a live entity has a location");
         let archetype = self.archetypes.get_mut(location.archetype());
-        let Some(cell) = archetype.cell::<ScopeOf>(location.row()) else {
-            return;
-        };
+        let cell = archetype
+            .cell::<ScopeOf>(location.row())
+            .expect("every spawned row carries its scope");
+        let old = cell.borrow().0;
         *cell.borrow_mut() = ScopeOf(scope);
-        archetype.recompute_scope_summary();
+        archetype.move_scope(old, scope);
         self.tree_write().attach(entity, scope);
     }
 
@@ -432,23 +417,26 @@ impl World {
         let Some(scope) = self.parent_scope(entity) else {
             return;
         };
-        let Some(location) = self.location(entity) else {
-            return;
-        };
-        if self
-            .archetypes
-            .get(location.archetype())
-            .column::<C>()
-            .is_none()
-        {
+        if self.location(entity).is_none() {
             return;
         }
         let scope = Scope::new(self, scope);
-        let mut hooks = self
-            .get_mut::<C>(entity)
-            .expect("the column was just found");
-        for callback in hooks.callbacks() {
+        // The callbacks are taken out for the duration of the run: a callback
+        // that touches its own lifecycle component would otherwise hit the
+        // component borrow the run holds. Anything a callback registers is
+        // appended after the callbacks that already ran.
+        let Some(mut hooks) = self.get_mut::<C>(entity) else {
+            return;
+        };
+        let mut callbacks = core::mem::take(hooks.callbacks());
+        drop(hooks);
+        for callback in &mut callbacks {
             callback(&scope, entity);
+        }
+        if let Some(mut hooks) = self.get_mut::<C>(entity) {
+            // A callback registered during the run goes after the ones that
+            // have run, so registration order is still the order they run in.
+            hooks.callbacks().splice(0..0, callbacks);
         }
     }
 
@@ -609,13 +597,4 @@ impl World {
     pub(crate) fn free_entity(&mut self, entity: Entity) -> bool {
         self.entities_write().free(entity)
     }
-}
-
-/// The borrow-conflict panic.
-fn borrow_conflict<C: 'static>(kind: &str) -> ! {
-    panic!(
-        "component `{}` is already borrowed while it is being {}",
-        core::any::type_name::<C>(),
-        kind,
-    )
 }

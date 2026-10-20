@@ -41,9 +41,9 @@ inventory::submit! { crate::reflect::ComponentEntry::scope() }
 
 /// The parent and child links of every live entity.
 ///
-/// Both directions are derived from the [`ScopeOf`] components and can be
-/// rebuilt from them with [`ScopeTree::rebuild`]; keeping them here is what
-/// lets the visibility check run without borrowing a component cell.
+/// Both directions are written by the world alongside the [`ScopeOf`]
+/// component; keeping them here is what lets the visibility check run without
+/// borrowing a component cell.
 #[derive(Default)]
 pub(crate) struct ScopeTree {
     parents: EntityHashMap<Entity>,
@@ -135,18 +135,6 @@ impl ScopeTree {
         }
         ordered
     }
-
-    /// Rebuild both directions from `parents`, the pairs a query produced.
-    pub(crate) fn rebuild(&mut self, pairs: impl Iterator<Item = (Entity, Entity)>) {
-        self.parents.clear();
-        self.children.clear();
-        for (entity, parent) in pairs {
-            self.parents.insert(entity, parent);
-            if parent != entity {
-                self.children.entry(parent).or_default().push(entity);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -212,16 +200,13 @@ mod tests {
     }
 
     #[test]
-    fn rebuilding_restores_both_directions() {
+    fn moving_a_node_moves_its_subtree_with_it() {
         let mut tree = fixture();
-        let pairs = vec![
-            (entity(0), entity(0)),
-            (entity(1), entity(0)),
-            (entity(2), entity(1)),
-        ];
-        tree.rebuild(pairs.into_iter());
-        assert_eq!(tree.parent(entity(2)), Some(entity(1)));
-        assert_eq!(tree.children(entity(0)), [entity(1)]);
-        assert_eq!(tree.children(entity(3)), &[] as &[Entity], "3 is gone");
+        // 2 moves from under 1 to under 3, and 1 keeps no children.
+        tree.attach(entity(2), entity(3));
+        assert_eq!(tree.parent(entity(2)), Some(entity(3)));
+        assert_eq!(tree.children(entity(1)), &[] as &[Entity]);
+        assert_eq!(tree.children(entity(3)), [entity(2)]);
+        assert!(tree.is_descendant(entity(0), entity(2)), "still reachable");
     }
 }

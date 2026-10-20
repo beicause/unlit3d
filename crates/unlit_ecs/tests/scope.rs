@@ -250,12 +250,14 @@ fn entity_infos_only_lists_what_the_view_sees() {
 }
 
 #[test]
-fn rebuilding_the_children_index_agrees_with_the_components() {
-    let (mut world, scene, child, _) = fixture();
-    assert_eq!(world.children(scene), [child]);
-    world.rebuild_children();
-    assert_eq!(world.children(scene), [child]);
-    assert_eq!(world.children(world.root()).len(), 2, "two scenes");
+fn the_tree_agrees_with_the_scope_components() {
+    let (mut world, scene, child, sibling) = fixture();
+    let extra = world.scope_mut(scene).unwrap().spawn((Marker(2),));
+    world.scope_mut(sibling).unwrap().link(child, extra);
+    assert_invariants(&world);
+
+    world.root_scope_mut().despawn(extra);
+    assert_invariants(&world);
 }
 
 #[test]
@@ -340,6 +342,119 @@ fn the_shared_subtree_is_content_that_every_view_sees() {
         [1, 2],
         "the resource and the child, and nothing else"
     );
+}
+
+/// The invariants the tree and the components have to agree on.
+fn assert_invariants(world: &World) {
+    let root = world.root();
+    let scope = world.root_scope();
+    // Every row's `ScopeOf` is the parent the tree records.
+    for archetype in scope.archetypes() {
+        for &entity in archetype.entities() {
+            let recorded = scope
+                .get::<ScopeOf>(entity)
+                .unwrap_or_else(|| panic!("{entity:?} has no scope"))
+                .0;
+            assert_eq!(
+                world.parent_scope(entity),
+                Some(recorded),
+                "{entity:?} disagrees with its ScopeOf"
+            );
+        }
+    }
+    // The child index is the parent index read the other way.
+    for archetype in scope.archetypes() {
+        for &entity in archetype.entities() {
+            for &child in &world.children(entity) {
+                assert_eq!(
+                    world.parent_scope(child),
+                    Some(entity),
+                    "{child:?} is listed under {entity:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(world.parent_scope(root), Some(root));
+    // Counting, querying and the per-archetype lengths are one number.
+    for scope in [
+        scope,
+        world.root_scope(),
+        world.scope(world.shared()).unwrap(),
+    ] {
+        let counted = scope.len();
+        assert_eq!(counted, scope.query::<Entity>().count(), "{scope:?}");
+        let summed: usize = scope.archetype_infos().iter().map(|info| info.len).sum();
+        assert_eq!(summed, counted, "{scope:?}");
+        assert_eq!(scope.info().entities, counted, "{scope:?}");
+    }
+}
+
+#[test]
+fn a_queued_despawn_of_something_the_scope_does_not_own_is_dropped() {
+    let (mut world, scene, child, sibling) = fixture();
+    // `scene` neither owns nor even sees its sibling.
+    world.scope(scene).unwrap().queue().despawn(sibling);
+    world.apply();
+    assert!(
+        world.root_scope().contains(sibling),
+        "a sibling survives a queued despawn from another scene"
+    );
+    assert!(world.scope(scene).unwrap().contains(child));
+}
+
+#[test]
+fn a_queued_despawn_cannot_remove_the_scaffolding() {
+    let (mut world, _, _, _) = fixture();
+    let root = world.root();
+    let shared = world.shared();
+    let queue = world.root_scope().queue();
+    queue.despawn(root);
+    queue.despawn(shared);
+    world.apply();
+    assert_eq!(
+        world.root_scope().entity(),
+        root,
+        "the root is still a scope"
+    );
+    assert_eq!(world.parent_scope(shared), Some(root));
+    assert!(world.root_scope().contains(root));
+    assert_invariants(&world);
+}
+
+#[test]
+fn unlinking_a_scope_into_itself_is_refused() {
+    let (mut world, scene, _, _) = fixture();
+    assert!(
+        !world.scope_mut(scene).unwrap().unlink(scene),
+        "a scope cannot become its own parent"
+    );
+    assert_eq!(world.parent_scope(scene), Some(world.root()));
+    assert_invariants(&world);
+}
+
+#[test]
+#[should_panic(expected = "is not a reserved handle")]
+fn spawning_at_a_dead_handle_panics() {
+    let (mut world, scene, child, _) = fixture();
+    world.root_scope_mut().despawn(child);
+    // A stale handle has no reservation left, so the spawn is refused rather
+    // than writing a second row for the same index.
+    world
+        .scope_mut(scene)
+        .unwrap()
+        .spawn_at(child, (Marker(9),));
+}
+
+#[test]
+#[should_panic(expected = "already borrowed")]
+fn an_exclusive_scope_borrow_during_a_query_panics() {
+    let (mut world, _, child, sibling) = fixture();
+    // Two scopes in one archetype: the query has to read each row's scope.
+    let other = world.scope_mut(sibling).unwrap().spawn((Marker(2),));
+    let held = world.root_scope().get_mut::<ScopeOf>(other).unwrap();
+    let _: Vec<_> = world.root_scope().query::<&Marker>().collect();
+    drop(held);
+    assert!(world.root_scope().contains(child));
 }
 
 #[test]

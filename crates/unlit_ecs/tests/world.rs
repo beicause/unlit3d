@@ -173,7 +173,7 @@ fn a_reserved_handle_can_be_released_without_spawning() {
 }
 
 #[test]
-#[should_panic(expected = "already spawned")]
+#[should_panic(expected = "is not a reserved handle")]
 fn spawning_twice_on_one_handle_panics() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn_empty();

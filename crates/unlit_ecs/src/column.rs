@@ -15,6 +15,19 @@ use core::cell::{Ref, RefCell, RefMut};
 /// The shared borrow of a component value.
 pub type CellRef<'a, T> = Ref<'a, T>;
 
+/// The panic for a component that is already borrowed in a conflicting way.
+///
+/// A cell that cannot be borrowed is a programming error, not an absent
+/// component: silently skipping the row would hide an entity the caller can
+/// still reach through the scope.
+pub(crate) fn borrow_conflict<C: 'static>(kind: &str) -> ! {
+    panic!(
+        "component `{}` is already borrowed while it is being {}",
+        core::any::type_name::<C>(),
+        kind,
+    )
+}
+
 /// The exclusive borrow of a component value.
 pub type CellRefMut<'a, T> = RefMut<'a, T>;
 

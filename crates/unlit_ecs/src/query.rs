@@ -37,10 +37,9 @@
 use core::any::TypeId;
 use core::marker::PhantomData;
 
-use crate::archetype::{Archetype, ScopeSummary};
+use crate::archetype::Archetype;
 use crate::column::{CellRef, CellRefMut, Column};
 use crate::entity::Entity;
-use crate::scope::ScopeOf;
 use crate::world::World;
 
 /// Panics when a matched archetype unexpectedly lacks a component. Only a
@@ -408,35 +407,16 @@ impl<'w, Q: Query, F: QueryFilter> QueryIter<'w, Q, F> {
         if !Q::matches(archetype) || !F::matches(archetype) {
             return false;
         }
-        match archetype.scope_summary() {
-            ScopeSummary::Empty => false,
-            // A scope sees itself, and it lives in its parent: a uniform
-            // archetype of that parent still has this one visible row.
-            ScopeSummary::Uniform(scope) => {
-                self.world.visible(self.scope, scope)
-                    || self.world.parent_scope(self.scope) == Some(scope)
-            }
-            ScopeSummary::Mixed => true,
-        }
+        archetype
+            .scope_summary()
+            .any_visible(self.world, self.scope)
     }
 
     /// Whether row `row` of `archetype` is visible from this query's scope.
     fn row_matches(&self, archetype: &Archetype, row: usize) -> bool {
-        match archetype.scope_summary() {
-            ScopeSummary::Empty => false,
-            ScopeSummary::Uniform(scope) => {
-                self.world.visible(self.scope, scope) || archetype.entities()[row] == self.scope
-            }
-            ScopeSummary::Mixed => {
-                // The query's own entity lives in its parent's scope, so its
-                // row is visible even though that scope is above it.
-                archetype.entities()[row] == self.scope
-                    || archetype
-                        .cell::<ScopeOf>(row)
-                        .and_then(|cell| cell.try_borrow().ok().map(|scope| scope.0))
-                        .is_some_and(|scope| self.world.visible(self.scope, scope))
-            }
-        }
+        archetype
+            .scope_summary()
+            .row_visible(archetype, self.world, self.scope, row)
     }
 }
 
