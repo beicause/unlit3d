@@ -95,6 +95,11 @@ impl<'w> Scope<'w> {
     /// `None` means the entity is out of this scope's reach or its archetype
     /// does not satisfy the query.
     ///
+    /// A lookup by handle does not filter the scaffolding: the root and the
+    /// shared scope answer like any other entity, which is what lets the
+    /// resources they carry be read. Iterating and counting go through a scope
+    /// and leave the pair out; see [`Scope::len`].
+    ///
     /// ````rust
     /// # use unlit_ecs::{Has, World, bundle};
     /// let mut world = World::new();

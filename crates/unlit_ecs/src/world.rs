@@ -83,8 +83,10 @@ impl World {
 
     /// A world holding its root and shared scope, and nothing else.
     ///
-    /// Both are ordinary entities: they appear in the root scope's count and
-    /// can carry components. Neither can be despawned or linked.
+    /// Both are ordinary entities: they are addressable, carry components and
+    /// can be opened as scopes, and they are what a shared resource hangs from.
+    /// Neither is counted, queried, despawned or linked; see [`Scope::len`],
+    /// which reports the entities a scope sees with the pair left out.
     pub fn new() -> Self {
         let mut world = Self {
             entities: RefCell::new(Entities::default()),

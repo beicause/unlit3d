@@ -238,7 +238,7 @@ let _ = world
     .count();
 
 // `Entity` and `Has<C>` are query items too: presence reads do not borrow.
-for (entity, has_spin) in world.root_scope().query::<(&Entity, Has<Spin>)>() {
+for (entity, has_spin) in world.root_scope().query::<(Entity, Has<Spin>)>() {
     let _ = (entity, has_spin);
 }
 ```

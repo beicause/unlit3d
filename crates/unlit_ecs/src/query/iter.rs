@@ -62,6 +62,10 @@ impl<'w, Q: Query, F: ArchetypeFilter> QueryIter<'w, Q, F> {
     /// any cell is borrowed, so rejecting an archetype costs one test rather than
     /// one per row, and works even when that archetype's components are already
     /// borrowed elsewhere. See [`ArchetypeFilter`].
+    ///
+    /// It may be applied part-way through an iteration, and then narrows the
+    /// archetype being visited too: what the filter rejects is not fetched, and
+    /// the rows already yielded stay yielded.
     #[must_use]
     pub fn by<G: ArchetypeFilter>(self, filter: G) -> QueryIter<'w, Q, G> {
         QueryIter {
@@ -70,9 +74,11 @@ impl<'w, Q: Query, F: ArchetypeFilter> QueryIter<'w, Q, F> {
             filter,
             archetype: self.archetype,
             row: self.row,
-            state: self.state,
-            resolved: self.resolved,
-            uniform_visible: self.uniform_visible,
+            // The archetype being visited is decided again, since the old
+            // decision was made without this filter.
+            state: None,
+            resolved: false,
+            uniform_visible: None,
         }
     }
 
@@ -121,7 +127,7 @@ impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
             if !self.resolved {
                 if !self.archetype_matches(archetype) {
                     self.archetype += 1;
-                    self.row = 0;
+                    self.row = self.world.content_start(self.archetype as u32);
                     continue;
                 }
                 self.state = Some(Q::fetch_state(archetype));

@@ -184,7 +184,7 @@ let _ = world
     .count();
 
 // `Entity` 与 `Has<C>` 也可以是查询项：存在性读取不借用。
-for (entity, has_spin) in world.root_scope().query::<(&Entity, Has<Spin>)>() {
+for (entity, has_spin) in world.root_scope().query::<(Entity, Has<Spin>)>() {
     let _ = (entity, has_spin);
 }
 ```

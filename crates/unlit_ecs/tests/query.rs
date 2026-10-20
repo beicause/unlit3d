@@ -406,7 +406,27 @@ fn has_narrows_nothing_and_by_narrows_for_it() {
 }
 
 #[test]
-fn a_query_cannot_name_the_same_component_twice() {
+fn by_applies_to_the_archetype_being_visited() {
+    let (world, _, _, _) = scene();
+
+    // The filter decides an archetype at a time, and may be attached after the
+    // first rows were taken: it narrows what is being visited too.
+    let mut midway = world.root_scope().query::<&Position>();
+    let taken = midway.next().is_some();
+    assert!(taken);
+    let narrowed = midway
+        .by(|archetype: &Archetype| archetype.has::<Velocity>())
+        .count();
+    let whole = world
+        .root_scope()
+        .query::<&Position>()
+        .by(|archetype: &Archetype| archetype.has::<Velocity>())
+        .count();
+    assert_eq!(narrowed, whole - 1);
+}
+
+#[test]
+fn has_beside_a_component_is_not_a_duplicate() {
     let (world, _, _, _) = scene();
 
     // Two queries over the same component, written as two distinct types, are

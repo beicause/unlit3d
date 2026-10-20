@@ -115,8 +115,9 @@ pub trait Bundle {
     /// The builder holding exactly this bundle's components.
     ///
     /// The bundle supplies the whole builder, so there is no target to append
-    /// to or overwrite; a caller that wants to gather several bundles calls
-    /// [`ArchetypeBuilder::push_component`] for each component instead.
+    /// to or overwrite. A caller gathering several bundles into one spawn
+    /// pushes each onto an [`ArchetypeBuilder`] with
+    /// [`ArchetypeBuilder::push_bundle`].
     fn into_builder(self) -> ArchetypeBuilder;
 }
 

@@ -184,22 +184,28 @@ where
     ///
     /// Each candidate is looked up through the family's own query, so an
     /// entity of another family is skipped rather than read as this one's.
+    /// Everything the draw needs comes out of that one lookup, which is how
+    /// the per-archetype cost of the family's query is paid once per entity
+    /// instead of once per component.
     fn collect(&mut self) {
         profiling::scope!("scene.resolve.family");
         // Copied out of `self.frame` so the query borrows the world rather than
         // `self`, which `push` needs mutably.
         let world = &self.frame.world;
         // What this family reads from one visible entity: the components its key
-        // names, with the material as the optional one. The z-sorted marker is
-        // asked for separately, since a marker query over a single entity only
-        // answers whether it is there.
+        // names, with the material as the optional one. The z-sorted marker
+        // rides along as `Has`, since its presence is all this ask wants;
+        // questioning the marker separately would fetch the same row twice.
         // The material is read once and both its uses come from it: it decides
         // how the draw is grouped and which bind group it binds.
         for &candidate in self.frame.meshes {
-            let Some((pipeline, gpu_mesh, material)) =
-                world.query_one::<(&GpuRenderPipeline<K>, &GpuMesh, Option<&GpuMaterial>)>(
-                    candidate.entity,
-                )
+            let Some((pipeline, gpu_mesh, material, z_sorted)) =
+                world.query_one::<(
+                    &GpuRenderPipeline<K>,
+                    &GpuMesh,
+                    Option<&GpuMaterial>,
+                    Has<ZSortedDrawing>,
+                )>(candidate.entity)
             else {
                 continue;
             };
@@ -214,9 +220,7 @@ where
                 material.as_deref(),
                 sort_key,
                 material_bg,
-                world
-                    .query_one::<Has<ZSortedDrawing>>(candidate.entity)
-                    .unwrap_or(false),
+                z_sorted,
             );
         }
     }

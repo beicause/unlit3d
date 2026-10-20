@@ -397,8 +397,10 @@ impl<F: Fn(&Archetype) -> bool> ArchetypeFilter for F {
 /// Panics when a query names one component twice.
 ///
 /// Type ids cannot be compared in a `const` context, so this is the earliest
-/// place a query can be checked. It is a development-time check: in a release
-/// build the conflict surfaces as the cell that refuses the second borrow.
+/// place a query can be checked. It is a development-time check: two shared
+/// reads of one component are a query that could have been written once, and
+/// they borrow without conflict, so a release build carries on and only a
+/// exclusive pair panics at the cell.
 #[cfg(debug_assertions)]
 #[track_caller]
 pub(crate) fn assert_no_duplicates<Q: Query>(origin: &'static core::panic::Location<'static>) {
@@ -406,7 +408,6 @@ pub(crate) fn assert_no_duplicates<Q: Query>(origin: &'static core::panic::Locat
     /// distinct components than this goes unchecked rather than panicking.
     const CAPACITY: usize = 16;
 
-    let mut names: [&'static str; CAPACITY] = [""; CAPACITY];
     let mut ids = [TypeId::of::<()>(); CAPACITY];
     let mut len = 0;
     Q::type_ids(&mut |type_id, name| {
@@ -416,7 +417,6 @@ pub(crate) fn assert_no_duplicates<Q: Query>(origin: &'static core::panic::Locat
         );
         if len < CAPACITY {
             ids[len] = type_id;
-            names[len] = name;
             len += 1;
         }
     });
