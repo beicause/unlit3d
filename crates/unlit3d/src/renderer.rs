@@ -273,8 +273,8 @@ impl Renderer {
         // declares.
         //
         // Each source is fetched and dropped before the next one, so no list of
-        // entities is built: `build_scene` only needs a shared borrow of the
-        // world, which is what `for_each` gives alongside the `&mut Source`.
+        // entities is built: the query hands out a `&mut Source` while the rest
+        // of the world stays shared for `build_scene` to read.
         {
             profiling::scope!("renderer.frame.build_sources");
             // Each source builds against its own subtree: the source entity is

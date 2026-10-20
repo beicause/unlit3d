@@ -1554,8 +1554,8 @@ mod tests {
 
     /// Register a color texture and a matching depth texture in the context's
     /// graph and state them as the frame's target.
-    fn bind_test_target(view: &Scope<'_>, ctx: RenderContext) -> FrameTarget {
-        let device = view
+    fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> FrameTarget {
+        let device = scope
             .get::<wgpu::Device>(ctx.device)
             .expect("the context's device")
             .clone();
@@ -1567,7 +1567,7 @@ mod tests {
             1,
         );
         let target = {
-            let mut graph = view
+            let mut graph = scope
                 .get_mut::<ResourceGraph>(ctx.graph)
                 .expect("the context's graph");
             let color = graph.insert(
@@ -1589,7 +1589,10 @@ mod tests {
                 height: TEST_SIZE,
             }
         };
-        assert!(set_frame_target(view, target), "the context spawned a slot");
+        assert!(
+            set_frame_target(scope, target),
+            "the context spawned a slot"
+        );
         target
     }
 
