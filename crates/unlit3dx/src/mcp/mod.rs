@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(started["duration_seconds"], 1.0);
 
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         let status = status(&mut world).expect("a recording reports");
         assert_eq!(status["recording"], true);
         assert_eq!(status["frames"], 4);

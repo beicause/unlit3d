@@ -8,14 +8,15 @@
 //!
 //! A component holds a list rather than a single callback: an entity may
 //! carry several behaviours of one family, and they run in the order they
-//! were added. The list is borrowed while it runs, so a callback still must
-//! not reach for its own family.
+//! were added. The driver runs them through [`unlit_ecs::World`], which takes
+//! one callback out of its component at a time, so a callback may reach for its
+//! own family and what it queued is applied before the next one runs.
 //!
 //! The macro is invoked from other modules, so every path it writes is
 //! `$crate`-absolute: a `macro_rules!` body resolves bare names in the module
 //! it is *invoked* from, not the one it is defined in.
 
-pub(crate) use unlit_ecs::{Entity, World};
+pub(crate) use unlit_ecs::{CallbackList, Entity, World};
 
 /// A callback that may read and write the world, and receives the entity it
 /// runs for together with one event.
@@ -37,6 +38,18 @@ macro_rules! behaviour {
         pub struct $name {
             /// The callbacks, in the order they were added.
             pub callbacks: Vec<$crate::behaviour::EventCallback<$event>>,
+        }
+
+        impl $crate::behaviour::CallbackList for $name {
+            type Callback = $crate::behaviour::EventCallback<$event>;
+
+            fn callbacks(&self) -> &[$crate::behaviour::EventCallback<$event>] {
+                &self.callbacks
+            }
+
+            fn callbacks_mut(&mut self) -> &mut Vec<$crate::behaviour::EventCallback<$event>> {
+                &mut self.callbacks
+            }
         }
 
         impl $name {
@@ -88,6 +101,10 @@ macro_rules! behaviour {
                 stringify!($name),
                 "`] for `entity`, in the order they were added."
             )]
+            ///
+            /// For a component a caller holds itself, outside the world; one
+            /// the world holds is driven by its host, which applies the queue
+            /// between two callbacks where this does not.
             pub fn run(
                 &mut self,
                 world: &$crate::behaviour::World,

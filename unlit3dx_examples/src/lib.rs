@@ -228,12 +228,16 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // The frame's input: the host dispatches its own key behaviours before
     // the draw. Nothing clears anything afterwards — each world and the
     // render world's UI source read their own copy of the stream.
+    // A frame callback has no `&mut World`; the queue hands it one where
+    // every other queued change lands, so this still runs before the draw.
     world
         .root_scope_mut()
         .spawn((OnFrame::new([OnFrame::callback(
             FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
             |world, _entity, _frame| {
-                dispatch_input(world);
+                world.root_scope().queue().run(|world| {
+                    dispatch_input(world);
+                });
             },
         )]),));
 

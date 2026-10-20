@@ -11,8 +11,9 @@
 //! after the dispatch.
 //!
 //! A component of one family may hold several callbacks and they run in the
-//! order they were added, but a behaviour is borrowed while it runs, so its
-//! callbacks must not reach for their own family. Different families never
+//! order they were added. The host takes one callback out of its component
+//! before running it, so a callback may reach for its own family too, and what
+//! it queued is applied before the next one runs. Different families never
 //! conflict.
 
 use std::sync::Arc;

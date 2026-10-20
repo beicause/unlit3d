@@ -372,6 +372,24 @@ pub fn with_stepped_world<R>(
     Some(f(&stepped.world))
 }
 
+/// Run `f` against a stepped world's world with it borrowed mutably.
+///
+/// The counterpart of [`with_stepped_world`] for work that changes the world's
+/// structure as well as reading it: a host that drives a world's behaviour
+/// components itself, an offline run pulling audio fills, say, needs to hand
+/// them the same `&mut World` the world's own thread would.
+pub fn with_stepped_world_mut<R>(
+    host: &World,
+    entity: Entity,
+    f: impl FnOnce(&mut World) -> R,
+) -> Option<R> {
+    let mut proxy = host.root_scope().get_mut::<WorldProxy>(entity)?;
+    let WorldKind::Stepped(stepped) = &mut proxy.kind else {
+        return None;
+    };
+    Some(f(&mut stepped.world))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

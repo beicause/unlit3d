@@ -13,16 +13,18 @@
 //! spawning behaviours, never by editing a list.
 //!
 //! Like every other behaviour, a frame behaviour runs with `&World`, so a
-//! structural change goes through [`unlit_ecs::Scope::queue`] and lands when the driver
-//! applies after the dispatch. A behaviour that needs the rest of the frame
-//! skipped sets [FrameSkip], which its siblings read; [dispatch_frame] clears it
-//! before the first behaviour runs, so every frame starts whole.
+//! structural change goes through [`unlit_ecs::Scope::queue`]. The dispatch
+//! runs one callback at a time and applies what it queued before the next one
+//! runs, so a later callback in the same frame sees the change. A behaviour
+//! that needs the rest of the frame skipped sets [FrameSkip], which its
+//! siblings read; [dispatch_frame] clears it before the first behaviour runs,
+//! so every frame starts whole.
 //!
 //! A component holds a list of callbacks, each with an order of its own, so one
 //! entity may carry several frame behaviours and place them independently.
 //! They run by order, then by entity, then by their position in the list.
 
-pub(crate) use unlit_ecs::{Entity, World};
+pub(crate) use unlit_ecs::{CallbackList, Entity, World};
 
 /// One frame's context: what changes from frame to frame and is not world
 /// state.
@@ -102,20 +104,6 @@ impl FrameSkip {
     }
 }
 
-/// A component that runs once per frame.
-///
-/// Implemented by the `frame_behaviour!` macro for each family; a caller adds a
-/// behaviour by spawning one of the family's components, not by implementing
-/// this itself.
-pub trait FrameBehaviour: 'static {
-    /// Every callback of this component, each with the order it runs in.
-    fn callbacks(&self) -> &[(FrameBehaviourOrder, FrameCallback)];
-
-    /// Every callback of this component, each with the order it runs in,
-    /// exclusively.
-    fn callbacks_mut(&mut self) -> &mut [(FrameBehaviourOrder, FrameCallback)];
-}
-
 /// Declares one frame behaviour family.
 macro_rules! frame_behaviour {
     ($name:ident, $doc:expr) => {
@@ -184,16 +172,14 @@ macro_rules! frame_behaviour {
             }
         }
 
-        impl $crate::frame::FrameBehaviour for $name {
-            fn callbacks(
-                &self,
-            ) -> &[($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback)] {
+        impl $crate::frame::CallbackList for $name {
+            type Callback = ($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback);
+
+            fn callbacks(&self) -> &[Self::Callback] {
                 &self.callbacks
             }
 
-            fn callbacks_mut(
-                &mut self,
-            ) -> &mut [($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback)] {
+            fn callbacks_mut(&mut self) -> &mut Vec<Self::Callback> {
                 &mut self.callbacks
             }
         }
@@ -205,41 +191,25 @@ frame_behaviour!(
     "Runs once per frame of a windowed application.\n\nDispatch it with [`dispatch_frame`]."
 );
 
-/// Run every [`OnFrame`] in `world`, in resolved order, then apply what they
-/// queued.
+/// Run every [`OnFrame`] in `world`, in resolved order.
 ///
 /// Any [FrameSkip] is cleared first, so a frame that was short-circuited does
-/// not stay short-circuited for the next one.
+/// not stay short-circuited for the next one. What a callback queued is applied
+/// before the next callback runs, so the frame it is handed is all a callback
+/// shares with its siblings.
 pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     FrameSkip::reset(world);
-    dispatch::<OnFrame>(world, frame);
-    world.apply();
-}
-
-/// Run every `B` in `world`, in the order their callbacks declare.
-///
-/// Sorted by `(order, entity, position)`, so the entity breaks a tie between
-/// equal orders and the position in the component breaks a tie between equal
-/// orders on one entity. A callback must not change the frame's behaviour set:
-/// the schedule is resolved before the first one runs, and a change landing
-/// inside the dispatch would leave it stale. Queue structural work instead; the
-/// driver applies it after the dispatch.
-fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     let mut schedule: Vec<(FrameBehaviourOrder, Entity, usize)> = Vec::new();
-    for (entity, behaviour) in world.root_scope().query::<&B>() {
-        for (index, (order, _)) in behaviour.callbacks().iter().enumerate() {
+    for (entity, behaviour) in world.root_scope().query::<&OnFrame>() {
+        for (index, (order, _)) in behaviour.callbacks.iter().enumerate() {
             schedule.push((*order, entity, index));
         }
     }
     schedule.sort_unstable();
     for (_, entity, index) in schedule {
-        world
-            .root_scope()
-            .with_mut::<B, _>(entity, |behaviour| {
-                let (_, callback) = &mut behaviour.callbacks_mut()[index];
-                callback(world, entity, frame);
-            })
-            .expect("the behaviour entity exists");
+        world.run_callback::<OnFrame, _>(entity, index, &mut |world, callback| {
+            (callback.1)(world, entity, frame);
+        });
     }
 }
 
@@ -410,6 +380,28 @@ mod tests {
             )]),));
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(world.root_scope().query::<&Marker>().count(), 1);
+    }
+
+    /// The queue is applied after each callback, not once at the end, so a
+    /// behaviour that runs later in the same frame sees what an earlier one
+    /// spawned or despawned.
+    #[test]
+    fn a_later_behaviour_sees_what_an_earlier_one_queued() {
+        struct Marker;
+        let mut world = World::new();
+        world.root_scope_mut().spawn((OnFrame::new([
+            OnFrame::callback(UPDATE, |world, _entity, _frame| {
+                let _ = world.root_scope().queue().spawn((Marker,));
+            }),
+            OnFrame::callback(UPDATE, |world, _entity, _frame| {
+                assert_eq!(
+                    world.root_scope().query::<&Marker>().count(),
+                    1,
+                    "the earlier callback's spawn has landed"
+                );
+            }),
+        ]),));
+        dispatch_frame(&mut world, &mut frame());
     }
 
     /// A later order runs after an earlier one, however the two were spawned.

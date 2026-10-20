@@ -153,7 +153,7 @@ pub fn run(
         if frames > 0 {
             samples_out.clear();
             samples_out.resize(frames * AUDIO_CHANNELS, 0.0);
-            let filled = with_stepped_world(&host, worlds.audio.entity(), |audio| {
+            let filled = with_stepped_world_mut(&host, worlds.audio.entity(), |audio| {
                 dispatch_audio_fill(
                     audio,
                     &mut samples_out,

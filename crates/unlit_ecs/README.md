@@ -144,7 +144,10 @@ ancestors. [`ScopeMut::link`] and `unlink` re-parent an entity inside the
 same scope, refusing to move a scope into its own descendant or to touch the
 scaffolding; they are pure structure changes and run no lifecycle callback. A
 read-only scope queues the same changes through [`Scope::queue`], and the
-driver applies them with [`World::apply`].
+driver applies them with [`World::apply`] — or, in a behaviour component,
+between two callbacks: [`World::run_callback`] takes one callback out of its
+component, calls it, restores it and applies what it queued, so the next
+callback runs against the world the previous one left.
 
 **Where callbacks land.** A lifecycle callback receives the scope of the
 entity's parent, so an `OnSpawn` on a scene's child sees the scene. It cannot
@@ -152,6 +155,12 @@ change the tree either — it queues that, the same way a read-only scope does.
 A callback registered during a run runs in a later one, behind the callbacks
 that were already there, and a callback that panics leaves the ones behind it
 registered.
+
+A spawn applies its queue before it returns, between one `OnSpawn` callback and
+the next. A despawn cascade does not: every `OnDespawn` callback of the whole
+subtree runs against the tree as it was, and the queue is applied once the
+cascade is over, because applying it midway would let a callback that queues
+the despawn of its own entity restart the cascade forever.
 
 **Cost.** Visibility is decided on every access by walking the parent chain, and
 the walk is bounded by the number of nodes, so a malformed tree cannot hang it.
@@ -172,7 +181,8 @@ visible length of each.
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
 [`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
 [`Query`] and [`QueryFilter`] ([`With`], [`Without`], [`Or`], tuples),
-[`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
+[`Command`] / [`Commands`] for queued structural changes, [`CallbackList`] for
+a component that holds a list of callbacks, [`Archetype`] /
 [`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
 component type a type-erased reader only knows by
 [`TypeId`](core::any::TypeId), [`WorldInfo`] / [`ArchetypeInfo`] / [`EntityInfo`]
@@ -193,7 +203,15 @@ A [`Commands`] queue exists because structural changes need `&mut World`: a
 callback that only holds a shared world queues a spawn or despawn instead, and
 the driver applies it with [`World::apply`]. [`Commands::spawn`] reserves an
 [`Entity`] immediately, so the handle is usable — storable in a component,
-passable to another callback — before the queue is applied.
+passable to another callback — before the queue is applied. [`Commands::run`]
+queues a closure that takes the whole [`World`] mutably, for the work a shared
+world cannot do at all, such as dispatching a family that applies its own queue.
+
+A component that implements [`CallbackList`] is driven by
+[`World::run_callbacks`], which runs each of its callbacks through
+[`World::run_callback`]. The caller names the component type and the world does
+the borrowing, so no borrow is held across a callback and nothing has to be
+given up by hand.
 
 Iteration is deterministic: archetypes are visited in creation order, rows in
 storage order. Archetypes are created on demand and never removed.

@@ -493,12 +493,17 @@ pub fn spawn_scene<R: WorldRunner>(
                 // it, so the host's fan-out never reaches it: it takes its own
                 // buffer, once, before the first tick reads one.
                 world.root_scope_mut().spawn((input.subscribe(),));
+                // A frame callback has no `&mut World`; the queue hands it one
+                // where every other queued change lands, so this still runs
+                // before any object ticks.
                 world
                     .root_scope_mut()
                     .spawn((OnFrame::new([OnFrame::callback(
                         FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
                         |world, _entity, _frame| {
-                            dispatch_input(world);
+                            world.root_scope().queue().run(|world| {
+                                dispatch_input(world);
+                            });
                         },
                     )]),));
                 let state = SceneState::new(world, render.clone());

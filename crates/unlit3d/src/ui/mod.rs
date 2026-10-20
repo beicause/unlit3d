@@ -88,8 +88,8 @@ pub type PanelCallback = Box<dyn for<'a> FnMut(Scope<'a>, Entity, &mut egui::Ui)
 /// calls its closure again whenever a pass asks for a discard to redo a
 /// multi-pass layout, so a panel may run several times in one frame. Anything
 /// that must advance once per frame belongs in a **sibling component**, which
-/// is also where a panel's own state belongs: a behaviour component is
-/// borrowed while it runs, so a panel must not reach for its own
+/// is also where a panel's own state belongs: the panel's callbacks are
+/// borrowed while one of them runs, so a panel must not reach for its own
 /// [`UiPanel`] — that is a borrow panic, not a compile error.
 ///
 /// A panel may otherwise read and write the world freely through the
@@ -97,6 +97,15 @@ pub type PanelCallback = Box<dyn for<'a> FnMut(Scope<'a>, Entity, &mut egui::Ui)
 /// for the frame loop to apply are all available while it runs. The scope is the
 /// one of the source that draws the panel, so a panel sees the subtree that
 /// source owns and the shared resources, not every entity in the world.
+///
+/// # Why panels apply their own queue
+///
+/// Unlike the other behaviour families, a panel's driver never holds the world
+/// mutably: [`lay_out`] runs inside egui's own layout pass and a
+/// [`FrameSource`] only receives a `&Scope`. A panel therefore cannot have
+/// the queue applied between its callbacks the way
+/// [`World::run_callbacks`](unlit_ecs::World::run_callbacks) does for them:
+/// what one callback queues is seen by the next pass, not by the next callback.
 pub struct UiPanel {
     /// The callbacks, in the order they were added.
     pub callbacks: Vec<PanelCallback>,

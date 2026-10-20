@@ -4,6 +4,7 @@
 
 mod archetype;
 mod bundle;
+mod callback;
 mod column;
 mod command;
 mod component;
@@ -24,6 +25,7 @@ mod world;
 
 pub use archetype::{Archetype, Archetypes};
 pub use bundle::{ArchetypeBuilder, Bundle};
+pub use callback::CallbackList;
 pub use column::{CellRef, CellRefMut};
 pub use command::{Command, CommandErase, Commands};
 #[doc(hidden)]
@@ -33,7 +35,7 @@ pub use entity::{Entity, Location};
 pub use entity::{EntityProxy, EntityVecProxy};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
-pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
+pub use lifecycle::{LifecycleCallback, OnDespawn, OnSpawn};
 pub use query::{Or, Query, QueryFilter, QueryIter, With, Without};
 pub use scope::ScopeOf;
 pub use view::{Scope, ScopeMut};

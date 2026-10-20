@@ -90,13 +90,15 @@ fn a_spawn_callback_sees_its_own_components() {
 }
 
 #[test]
-fn a_callback_can_queue_a_spawn_that_runs_on_apply() {
+fn a_callback_can_queue_a_spawn_that_runs_before_the_next_one() {
+    // What a callback queues lands before the next callback of the same
+    // component, so a later callback sees the world an earlier one built.
     let seen = log();
     let mut world = World::new();
     let sink = Rc::clone(&seen);
-    world
-        .root_scope_mut()
-        .spawn((OnSpawn::new().with(move |scope, _| {
+    let later = Rc::clone(&seen);
+    world.root_scope_mut().spawn((OnSpawn::new()
+        .with(move |scope, _| {
             scope.queue().spawn((
                 Marker(9),
                 OnSpawn::new().with({
@@ -104,10 +106,63 @@ fn a_callback_can_queue_a_spawn_that_runs_on_apply() {
                     move |_view, _| nested.borrow_mut().push("nested".to_owned())
                 }),
             ));
+        })
+        .with(move |view, _| {
+            let mut markers = view.query::<&Marker>();
+            let nested = markers.any(|(_, marker)| marker.0 == 9);
+            later.borrow_mut().push(format!("later sees {nested}"));
         }),));
-    assert!(seen.borrow().is_empty(), "queued, not spawned");
-    world.apply();
-    assert_eq!(*seen.borrow(), ["nested"]);
+    assert_eq!(*seen.borrow(), ["nested", "later sees true"]);
+}
+
+#[test]
+fn a_later_callback_runs_against_what_an_earlier_one_queued() {
+    // The callbacks of one component are driven through the world's own runner,
+    // which applies between them: the second sees the spawn the first queued.
+    let seen = log();
+    let mut world = World::new();
+    let sink = Rc::clone(&seen);
+    world.root_scope_mut().spawn((OnSpawn::new()
+        .with({
+            let sink = Rc::clone(&seen);
+            move |scope, _| {
+                sink.borrow_mut().push("first".to_owned());
+                scope.queue().spawn((Marker(9),));
+            }
+        })
+        .with(move |scope, _| {
+            let mut markers = scope.query::<&Marker>();
+            let spawned = markers.any(|(_, marker)| marker.0 == 9);
+            sink.borrow_mut().push(format!("second sees {spawned}"));
+        }),));
+    assert_eq!(*seen.borrow(), ["first", "second sees true"]);
+}
+
+#[test]
+fn a_despawn_cascade_applies_what_it_queued_after_every_callback() {
+    // A queued despawn of the entity whose callback is running must not restart
+    // the cascade: the row is still there, and the callbacks still to run read it.
+    let seen = log();
+    let mut world = World::new();
+    let inner = Rc::clone(&seen);
+    let outer = Rc::clone(&seen);
+    let entity = world.root_scope_mut().spawn((
+        Marker(1),
+        OnDespawn::new()
+            .with(move |view, doomed| {
+                inner.borrow_mut().push("first".to_owned());
+                view.queue().despawn(doomed);
+            })
+            .with(move |view, doomed| {
+                let alive = view.get::<Marker>(doomed).is_some();
+                outer
+                    .borrow_mut()
+                    .push(format!("second sees alive {alive}"));
+            }),
+    ));
+    world.root_scope_mut().despawn(entity);
+    assert_eq!(*seen.borrow(), ["first", "second sees alive true"]);
+    assert!(!world.root_scope().contains(entity));
 }
 
 #[test]

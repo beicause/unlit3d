@@ -767,31 +767,6 @@ struct SequenceStepped(bool);
 /// same time, so it is taken out, called, and put back.
 struct SceneAdvance(Option<Advance>);
 
-/// Run the scene's own per-frame behaviour, which needs `&mut World`.
-struct RunSceneAdvance {
-    /// The entity carrying the scene's [`SceneAdvance`] and sequence state.
-    entity: Entity,
-    /// The frame the behaviour is advanced by.
-    frame: Frame,
-}
-
-impl Command for RunSceneAdvance {
-    fn apply(self: Box<Self>, world: &mut World) {
-        let Self { entity, frame } = *self;
-        let advance = world
-            .root_scope()
-            .with_mut::<SceneAdvance, _>(entity, |slot| slot.0.take())
-            .flatten();
-        let Some(mut advance) = advance else {
-            return;
-        };
-        advance(world, frame.index, frame.delta_time, frame.size);
-        let _ = world
-            .root_scope()
-            .with_mut::<SceneAdvance, _>(entity, |slot| slot.0 = Some(advance));
-    }
-}
-
 /// Run one MCP command against a nested world of the host.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 struct RunInWorld {
@@ -1174,18 +1149,14 @@ const FRAME_CONTROLS: FrameBehaviourOrder = FrameBehaviourOrder(20);
 const FRAME_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(30);
 const FRAME_DRAW: FrameBehaviourOrder = FrameBehaviourOrder(40);
 
-/// The scene world's frame behaviours' order: input is dispatched before the
-/// sequence is stepped, and the sequence before the scene's own behaviour runs.
-const SCENE_INPUT: FrameBehaviourOrder = FrameBehaviourOrder(0);
+/// The scene world's frame behaviours' order: the sequence is stepped before
+/// the scene's own behaviour runs.
+///
+/// Input is dispatched first as well, but it needs a mutable world, which a
+/// frame callback does not have: [`Scene::advance`] dispatches it before it
+/// hands the behaviours the frame.
 const SCENE_SEQUENCE: FrameBehaviourOrder = FrameBehaviourOrder(10);
 const SCENE_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(20);
-
-/// Run the scene world's input dispatch for the frame.
-fn dispatch_input_on_frame() -> OnFrame {
-    OnFrame::new([OnFrame::callback(SCENE_INPUT, |world, _entity, _frame| {
-        dispatch_input(world);
-    })])
-}
 
 /// Decide whether this frame advances the scene's sequence.
 ///
@@ -1201,12 +1172,13 @@ fn step_sequence(entity: Entity) -> OnFrame {
                 .get::<SequenceStep>(entity)
                 .and_then(|step| step.0)
             {
-                Some(step) => world
-                    .root_scope()
-                    .with_mut::<SequenceClock, _>(entity, |clock| {
-                        tick(&mut clock.0, step, frame.delta_time)
-                    })
-                    .expect("the scene frame entity carries a sequence clock"),
+                Some(step) => {
+                    let mut clock = world
+                        .root_scope()
+                        .get_mut::<SequenceClock>(entity)
+                        .expect("the scene frame entity carries a sequence clock");
+                    tick(&mut clock.0, step, frame.delta_time)
+                }
                 None => true,
             };
             let _ = world
@@ -1220,8 +1192,9 @@ fn step_sequence(entity: Entity) -> OnFrame {
 /// count the frame.
 ///
 /// The behaviour needs `&mut World`, which a frame callback does not have, so
-/// it is queued; the index is captured before it is counted on, so the
-/// behaviour is handed the frame it advances from.
+/// it is queued; the dispatch applies it before the next behaviour runs. The
+/// index is captured before it is counted on, so the behaviour is handed the
+/// frame it advances from.
 fn run_scene_advance(entity: Entity) -> OnFrame {
     OnFrame::new([OnFrame::callback(
         SCENE_ADVANCE,
@@ -1233,9 +1206,19 @@ fn run_scene_advance(entity: Entity) -> OnFrame {
             if !stepped {
                 return;
             }
-            world.root_scope().queue().push(RunSceneAdvance {
-                entity,
-                frame: *frame,
+            let advanced = *frame;
+            world.root_scope().queue().run(move |world| {
+                let advance = world
+                    .root_scope()
+                    .with_mut::<SceneAdvance, _>(entity, |slot| slot.0.take())
+                    .flatten();
+                let Some(mut advance) = advance else {
+                    return;
+                };
+                advance(world, advanced.index, advanced.delta_time, advanced.size);
+                let _ = world
+                    .root_scope()
+                    .with_mut::<SceneAdvance, _>(entity, |slot| slot.0 = Some(advance));
             });
             frame.index = frame.index.wrapping_add(1);
         },
@@ -1820,10 +1803,9 @@ impl Scene {
             SequenceClock(0.0),
             SequenceStepped(true),
         ));
-        // The frame's own dispatch, in order: run the frame's input, step the
-        // index a fixed sequence holds each frame for, then advance the scene
-        // by the frame the index names.
-        world.root_scope_mut().spawn((dispatch_input_on_frame(),));
+        // The frame's own dispatch: step the index a fixed sequence holds each
+        // frame for, then advance the scene by the frame the index names.
+        // [`Scene::advance`] dispatches the frame's input first.
         world.root_scope_mut().spawn((step_sequence(frame_entity),));
         world
             .root_scope_mut()
@@ -1891,6 +1873,10 @@ impl Scene {
             .root_scope()
             .with_mut::<FrameRate, _>(self.frame_rate, |rate| rate.push(delta_time))
             .expect("the frame-rate component exists");
+
+        // This world's input, before its behaviours run: the dispatch needs a
+        // mutable world, which a frame callback does not have.
+        dispatch_input(world);
 
         let mut frame = Frame {
             delta_time,

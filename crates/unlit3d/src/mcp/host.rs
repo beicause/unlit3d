@@ -493,7 +493,11 @@ pub fn input_state(world: &World, entity: Option<Entity>) -> Result<Value, Strin
 ///
 /// The events go to the world's [`InputWriter`], which reaches every world
 /// subscribed to it; the dispatch that follows is this world's own tick.
-pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Result<Value, String> {
+pub fn send_input(
+    world: &mut World,
+    entity: Option<Entity>,
+    events: &Value,
+) -> Result<Value, String> {
     let text = serde_json::to_string(events).map_err(|error| error.to_string())?;
     let decoded = reflect::decode_events(&text)?;
     let entity = single_entity::<InputWriter>(world, entity, "input writer")?;

@@ -240,7 +240,7 @@ mod tests {
         let handle = start_recording(&mut world, 1.0);
         assert_eq!(handle.format(), None, "nothing fills it yet");
         let mut out = [0.0f32; 4];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         assert_eq!(handle.frame_count(), 4);
         assert!(!handle.is_full());
         assert_eq!(handle.format(), Some(format));
@@ -260,7 +260,7 @@ mod tests {
         };
         let handle = start_recording(&mut world, 0.5);
         let mut out = [0.0f32; 8];
-        dispatch_audio_fill(&world, &mut out, format.sample_rate, format.channels);
+        dispatch_audio_fill(&mut world, &mut out, format.sample_rate, format.channels);
         assert_eq!(handle.frame_count(), 2);
         assert!(handle.is_full());
         handle.cancel(&mut world);

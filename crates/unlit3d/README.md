@@ -630,7 +630,10 @@ bind-group layout to match.
 an interface is an entity — a frame can hold as many panels as entities, and one
 entity may carry several panels in one component that run as one interface, in
 the order they were added. The `ui::UiSource` driver runs whatever panels the
-world carries, in query order.
+world carries, in query order. A panel is the one family whose driver holds the
+world only shared — `ui::lay_out` runs inside egui's own layout pass — so what
+a panel callback queues is applied by the caller after the pass rather than
+between two callbacks, the way the other families get it.
 
 A panel can only be built where its egui context runs, because the callback is
 handed a `&mut egui::Ui` that belongs to the pass building it. A UI whose
@@ -842,9 +845,11 @@ one into the buffer of every world subscribed to it. A world's buffer is its
 tick, plus the [`InputState`](input::InputState) they built — modifiers,
 pointers, buttons, window size. [`dispatch_input`](input::dispatch_input)
 takes this world's queue as this tick's batch, folds it into the state, and
-drives the behaviours. A world owns the events it has not ticked on, so a
-world that ticks less often than input arrives still reads every event in
-order, and nothing has to clear anything afterwards.
+drives the behaviours, applying what each one queued before the next runs — so
+it takes the world mutably and needs no `apply` of its own afterwards. A world
+owns the events it has not ticked on, so a world that ticks less often than
+input arrives still reads every event in order, and nothing has to clear
+anything afterwards.
 [`distribute_input`](input::distribute_input) copies the writer into every
 nested world and subscribes it there, so one stream feeds them all while each
 builds its own state; a world spawned outside that hierarchy — one a runner
@@ -933,10 +938,12 @@ ready-made behaviours, and nothing in them has a path an application cannot take
 
 A callback component is an ordinary behaviour component, written and tested like
 any other: it receives `&World`, the entity it sits on, and the event, and it
-must not reach for its own component type or re-enter the host. One component may
-hold several callbacks, which all run for the same event in the order they were
-added. Structural changes go through `World::queue` and land when the host
-applies after the dispatch. The callback signature deliberately carries no `ActiveEventLoop`:
+must not re-enter the host. One component may hold several callbacks, which all
+run for the same event in the order they were added. The host runs one callback
+at a time, taking it out of its component first, so a callback may reach for its
+own component type and what it queued through `Scope::queue` is applied before
+the next callback runs — a change one callback makes is visible to the next. The
+callback signature deliberately carries no `ActiveEventLoop`:
 that type can only be built inside a callback, so a component taking it could
 never be unit-tested. What a callback needs from the loop is a request instead —
 `CreateWindowRequest` and `ExitRequest` are executed by the host after the
@@ -960,7 +967,9 @@ iterator of callbacks, each written with the family's `callback` helper, and
 `push` adds one at run time.
 A behaviour that needs the rest of the frame
 skipped sets a flag its siblings read; a behaviour that needs structural change
-queues it, because a callback only holds `&World`.
+queues it, because a callback only holds `&World` — and the dispatch applies that
+queue before the next callback runs, so a later behaviour in the same frame
+already sees it.
 
 ```rust,no_run
 # use unlit3d::winit::builtin::{

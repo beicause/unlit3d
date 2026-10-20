@@ -16,7 +16,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{CallbackList, Entity, World};
 
 use crate::channel::publish_subscribed;
 use crate::handle::WorldHandle;
@@ -145,6 +145,18 @@ impl OnAudioFill {
     }
 }
 
+impl CallbackList for OnAudioFill {
+    type Callback = (AudioFillOrder, AudioFillCallback);
+
+    fn callbacks(&self) -> &[(AudioFillOrder, AudioFillCallback)] {
+        &self.callbacks
+    }
+
+    fn callbacks_mut(&mut self) -> &mut Vec<(AudioFillOrder, AudioFillCallback)> {
+        &mut self.callbacks
+    }
+}
+
 /// The factor the mixed samples scale by, read from the audio world.
 ///
 /// The gain belongs to the output rather than to one source:
@@ -165,10 +177,11 @@ pub struct AudioGain(pub f32);
 /// range. This is the whole of the audio thread's per-chunk work, and a
 /// caller stepping a world inline calls it the same way.
 ///
-/// A source must not change the world's set of sources while it runs: it
-/// has a shared `&World`, so structural work goes through
-/// [`unlit_ecs::Scope::queue`] and is applied by the world's own driver between fills.
-pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
+/// Each callback runs with a shared `&World`, so structural work goes through
+/// [`unlit_ecs::Scope::queue`]; it is applied before the next callback runs,
+/// within this fill and beyond it. A source may spawn or despawn another
+/// source even while this dispatch is running.
+pub fn dispatch_audio_fill(world: &mut World, out: &mut [f32], sample_rate: u32, channels: u16) {
     out.fill(0.0);
     let mut schedule: Vec<(AudioFillOrder, Entity, usize)> = Vec::new();
     for (entity, fill) in world.root_scope().query::<&OnAudioFill>() {
@@ -183,13 +196,9 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
         channels,
     };
     for (_, entity, index) in schedule {
-        world
-            .root_scope()
-            .with_mut::<OnAudioFill, _>(entity, |fill| {
-                let (_, callback) = &mut fill.callbacks[index];
-                callback(world, entity, &mut chunk);
-            })
-            .expect("the source entity exists");
+        world.run_callback::<OnAudioFill, _>(entity, index, &mut |world, callback| {
+            (callback.1)(world, entity, &mut chunk);
+        });
     }
     let gain = world
         .root_scope()
