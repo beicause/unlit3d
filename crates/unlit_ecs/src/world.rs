@@ -299,16 +299,18 @@ impl World {
         true
     }
 
-    /// Make `child` a child of `parent`.
+    /// Make `child` a child of `parent` on behalf of `caller`.
     ///
-    /// Neither may be a root or in the shared subtree, both must be alive, and
-    /// `parent` may not be inside `child`'s subtree: moving a scope into its
-    /// own descendant would cut the tree in two.
-    pub(crate) fn link_in(&mut self, child: Entity, parent: Entity) -> bool {
-        if child == parent || self.is_root(child) || self.is_root(parent) {
+    /// Neither end may be a root or the shared scope itself, both must be
+    /// alive, and `parent` may not be inside `child`'s subtree: moving a scope
+    /// into its own descendant would cut the tree in two. The shared subtree is
+    /// readable from everywhere but it is the root's to rearrange, so only a
+    /// root caller may move an entity into or out of it.
+    pub(crate) fn link_in(&mut self, child: Entity, parent: Entity, caller: Entity) -> bool {
+        if child == parent || self.is_scaffolding(child) || self.is_scaffolding(parent) {
             return false;
         }
-        if self.is_shared(child) || self.is_shared(parent) {
+        if caller != self.root && (self.is_shared(child) || self.is_shared(parent)) {
             return false;
         }
         if !self.entities_read().contains(child) || !self.entities_read().contains(parent) {
@@ -321,12 +323,17 @@ impl World {
         true
     }
 
-    /// Detach `child` from its parent and put it in `scope`.
+    /// Detach `child` from its parent and put it in `scope`, on behalf of
+    /// `caller`.
     ///
     /// `child` may not be the scope itself: that would make it its own parent,
-    /// which is how the tree says "this is a root".
-    pub(crate) fn unlink_in(&mut self, child: Entity, scope: Entity) -> bool {
-        if child == scope || self.is_root(child) || self.is_shared(child) {
+    /// which is how the tree says "this is a root". Scaffolding does not move,
+    /// and only a root caller may take an entity out of the shared subtree.
+    pub(crate) fn unlink_in(&mut self, child: Entity, scope: Entity, caller: Entity) -> bool {
+        if child == scope || self.is_scaffolding(child) {
+            return false;
+        }
+        if caller != self.root && self.is_shared(child) {
             return false;
         }
         if !self.entities_read().contains(child) || !self.entities_read().contains(scope) {
@@ -346,8 +353,8 @@ impl World {
         let cell = archetype
             .cell::<ScopeOf>(location.row())
             .expect("every spawned row carries its scope");
-        let old = cell.borrow().0;
-        *cell.borrow_mut() = ScopeOf(scope);
+        let old = cell.borrow().parent();
+        *cell.borrow_mut() = ScopeOf::new(scope);
         archetype.move_scope(old, scope);
         self.tree_write().attach(entity, scope);
     }
@@ -374,7 +381,7 @@ impl World {
         self.names
             .entry(TypeId::of::<ScopeOf>())
             .or_insert(core::any::type_name::<ScopeOf>());
-        values.push((TypeId::of::<ScopeOf>(), Box::new(ScopeOf(scope))));
+        values.push((TypeId::of::<ScopeOf>(), Box::new(ScopeOf::new(scope))));
         let mut types: Vec<TypeId> = types.into_vec();
         types.push(TypeId::of::<ScopeOf>());
         types.sort_unstable();
@@ -410,8 +417,8 @@ impl World {
 
     /// Run every callback of the lifecycle component `C` the entity carries.
     ///
-    /// The callbacks run in the order they were registered. The scope is the
-    /// one of the entity's own scope, which is its parent: a callback that
+    /// The callbacks run in the order they were registered. The scope handed to
+    /// them is the one the entity lives in, that of its parent: a callback that
     /// wants the entity's own subtree descends into the entity itself.
     fn run_lifecycle<C: 'static + Lifecycle>(&mut self, entity: Entity) {
         let Some(scope) = self.parent_scope(entity) else {
@@ -421,22 +428,32 @@ impl World {
             return;
         }
         let scope = Scope::new(self, scope);
-        // The callbacks are taken out for the duration of the run: a callback
-        // that touches its own lifecycle component would otherwise hit the
-        // component borrow the run holds. Anything a callback registers is
-        // appended after the callbacks that already ran.
-        let Some(mut hooks) = self.get_mut::<C>(entity) else {
+        let Some(total) = self
+            .get_mut::<C>(entity)
+            .map(|mut hooks| hooks.callbacks().len())
+        else {
             return;
         };
-        let mut callbacks = core::mem::take(hooks.callbacks());
-        drop(hooks);
-        for callback in &mut callbacks {
+        for index in 0..total {
+            // One callback at a time is off the component while it runs, so a
+            // callback that touches its own lifecycle component does not hit a
+            // borrow the run would otherwise hold. A callback that panics then
+            // takes only itself down: the ones behind it are still on the
+            // component rather than in a dropped list.
+            let Some(mut callback) = self.get_mut::<C>(entity).and_then(|mut hooks| {
+                let callbacks = hooks.callbacks();
+                (index < callbacks.len()).then(|| callbacks.remove(index))
+            }) else {
+                break;
+            };
             callback(&scope, entity);
-        }
-        if let Some(mut hooks) = self.get_mut::<C>(entity) {
-            // A callback registered during the run goes after the ones that
-            // have run, so registration order is still the order they run in.
-            hooks.callbacks().splice(0..0, callbacks);
+            // Back where it was, so the next callback is the one that followed
+            // it and anything registered during the run stays behind everything
+            // that has already run.
+            if let Some(mut hooks) = self.get_mut::<C>(entity) {
+                let callbacks = hooks.callbacks();
+                callbacks.insert(index.min(callbacks.len()), callback);
+            }
         }
     }
 
@@ -596,5 +613,21 @@ impl World {
 
     pub(crate) fn free_entity(&mut self, entity: Entity) -> bool {
         self.entities_write().free(entity)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "a bundle cannot carry ScopeOf")]
+    fn a_bundle_cannot_carry_the_scope_the_world_writes() {
+        let mut world = World::new();
+        let root = world.root();
+        // The field is private, so a caller cannot even build this bundle: it
+        // is a compile error outside the crate, and the check stays for the
+        // crate's own code.
+        world.root_scope_mut().spawn((ScopeOf::new(root),));
     }
 }

@@ -126,9 +126,10 @@ impl<'w> Scope<'w> {
     /// The archetype with this id, when this scope sees every row of it.
     ///
     /// A partially visible archetype answers `None`: handing out its entity
-    /// list would report rows the scope cannot otherwise reach. A caller that
-    /// only wants the shape of an archetype uses [`Scope::archetype_infos`],
-    /// whose length is the visible one.
+    /// list would report rows the scope cannot otherwise reach. So does an
+    /// empty one, which has no row to see. A caller that only wants the shape
+    /// of an archetype uses [`Scope::archetype_infos`], whose length is the
+    /// visible one.
     #[must_use]
     pub fn archetype(&self, id: u32) -> Option<&'w Archetype> {
         let archetype = self.world.archetype_at(id)?;
@@ -140,13 +141,15 @@ impl<'w> Scope<'w> {
 
     /// Every archetype this scope sees in full, in id order.
     ///
-    /// An empty archetype is seen in full, so it is included: a caller that
-    /// sums the lengths gets the same count as `Scope::len`.
+    /// Empty archetypes are skipped: they hold no row, so there is nothing to
+    /// iterate. The one archetype holding the tree's scaffolding is included,
+    /// since its rows do exist; [`Scope::len`] is what leaves them out of the
+    /// count.
     pub fn archetypes(&self) -> impl Iterator<Item = &'w Archetype> {
         self.world
             .archetypes_slice()
             .iter()
-            .filter(|archetype| self.fully_visible(archetype))
+            .filter(|archetype| !archetype.is_empty() && self.fully_visible(archetype))
     }
 
     // -- the tree ----------------------------------------------------------
@@ -206,12 +209,13 @@ impl<'w> Scope<'w> {
         let mut components: Vec<&'static str> = Vec::new();
         let mut archetypes = 0;
         for (index, archetype) in self.world.archetypes_slice().iter().enumerate() {
-            if !self.archetype_visible(archetype) {
+            // Only an archetype with a row this scope can see has a shape to
+            // report: an empty one, or one whose rows all live elsewhere,
+            // would name components that nothing here carries.
+            if self.visible_len(index as u32, archetype) == 0 {
                 continue;
             }
-            if self.visible_len(index as u32, archetype) > 0 {
-                archetypes += 1;
-            }
+            archetypes += 1;
             for &type_id in archetype.types() {
                 if let Some(name) = self.world.type_name(type_id) {
                     components.push(name);
@@ -236,14 +240,17 @@ impl<'w> Scope<'w> {
             .archetypes_slice()
             .iter()
             .enumerate()
-            .map(|(index, archetype)| ArchetypeInfo {
-                index: index as u32,
-                len: self.visible_len(index as u32, archetype),
-                components: archetype
-                    .types()
-                    .iter()
-                    .filter_map(|&type_id| self.world.type_name(type_id))
-                    .collect(),
+            .filter_map(|(index, archetype)| {
+                let len = self.visible_len(index as u32, archetype);
+                (len > 0).then(|| ArchetypeInfo {
+                    index: index as u32,
+                    len,
+                    components: archetype
+                        .types()
+                        .iter()
+                        .filter_map(|&type_id| self.world.type_name(type_id))
+                        .collect(),
+                })
             })
             .collect()
     }
@@ -414,9 +421,12 @@ impl<'w> ScopeMut<'w> {
 
     /// Despawn `entity` and its whole subtree.
     ///
-    /// Returns `false` when the entity is not alive or not owned by this scope.
+    /// Returns `false` when the entity is not alive, is not owned by this
+    /// scope, or is one of the tree's two scaffolding entities. A resource in
+    /// the shared subtree is the root's to remove, so only a root scope takes
+    /// it; the shared scope itself is scaffolding and stays.
     pub fn despawn(&mut self, entity: Entity) -> bool {
-        if self.world.is_root(entity) || self.world.is_shared(entity) {
+        if self.world.is_scaffolding(entity) {
             return false;
         }
         if !self.world.owns(self.scope, entity) {
@@ -427,21 +437,27 @@ impl<'w> ScopeMut<'w> {
 
     /// Make `child` a child of `parent`.
     ///
-    /// Both must be owned by this scope, neither may be a root, and `parent`
-    /// may not be inside `child`'s subtree.
+    /// Both must be owned by this scope, neither may be a root or the shared
+    /// scope, and `parent` may not be inside `child`'s subtree. An entity in
+    /// the shared subtree is the root's to move, so only a root scope relinks
+    /// it.
     pub fn link(&mut self, child: Entity, parent: Entity) -> bool {
         if !self.world.owns(self.scope, child) || !self.world.owns(self.scope, parent) {
             return false;
         }
-        self.world.link_in(child, parent)
+        self.world.link_in(child, parent, self.scope)
     }
 
     /// Detach `child` from its parent and put it in this scope.
+    ///
+    /// Returns `false` when the entity is not alive, is not owned by this
+    /// scope, or is scaffolding: an entity in the shared subtree moves only for
+    /// the root.
     pub fn unlink(&mut self, child: Entity) -> bool {
         if !self.world.owns(self.scope, child) {
             return false;
         }
-        self.world.unlink_in(child, self.scope)
+        self.world.unlink_in(child, self.scope, self.scope)
     }
 
     /// The mutable scope of a visible scope.

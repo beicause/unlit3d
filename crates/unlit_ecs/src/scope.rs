@@ -20,15 +20,23 @@ use crate::hash::EntityHashMap;
 /// The parent entity of the entity that carries it: the scope it lives in.
 ///
 /// The root entity's scope is itself, which is where walking up the tree stops.
+///
+/// Only the world writes this: a bundle cannot carry it, the field is private,
+/// and moving an entity is [`ScopeMut::link`](crate::ScopeMut::link)'s job. The
+/// recorded parent, the tree index and the archetype's per-scope row counts have
+/// to agree, so they have one writer rather than three.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct ScopeOf(
-    /// The parent entity.
-    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]
-    pub Entity,
+    #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))] Entity,
 );
 
 impl ScopeOf {
+    /// The component that records `parent` as an entity's parent.
+    pub(crate) const fn new(parent: Entity) -> Self {
+        Self(parent)
+    }
+
     /// The parent entity.
     #[must_use]
     pub fn parent(self) -> Entity {

@@ -87,7 +87,7 @@ impl ScopeSummary {
                         let parent = cell
                             .try_borrow()
                             .unwrap_or_else(|_| borrow_conflict::<ScopeOf>("read"))
-                            .0;
+                            .parent();
                         world.visible(caller, parent)
                     })
             }
@@ -217,6 +217,10 @@ impl Archetype {
     }
 
     /// Add `delta` to the row count of `scope`, dropping the entry at zero.
+    ///
+    /// A count that would go below zero means the counts and the rows already
+    /// disagreed, and the per-scope gates would answer from the disagreement:
+    /// panicking here is what keeps it from spreading into the tree.
     fn count_scope(&mut self, scope: Entity, delta: i32) {
         if let Some(index) = self
             .scope_counts
@@ -224,13 +228,15 @@ impl Archetype {
             .position(|(candidate, _)| *candidate == scope)
         {
             let count = &mut self.scope_counts[index].1;
-            *count = count.wrapping_add_signed(delta);
+            *count = count
+                .checked_add_signed(delta)
+                .expect("a scope's row count cannot go below zero");
             if *count == 0 {
                 self.scope_counts.swap_remove(index);
             }
             return;
         }
-        debug_assert!(delta > 0, "a scope with no rows cannot lose one");
+        assert!(delta > 0, "a scope with no rows cannot lose one");
         self.scope_counts.push((scope, delta as u32));
     }
 
@@ -243,7 +249,7 @@ impl Archetype {
             .expect("every spawned row carries its scope")
             .try_borrow()
             .unwrap_or_else(|_| borrow_conflict::<ScopeOf>("read"))
-            .0
+            .parent()
     }
 
     /// Drop the row at `row`, moving the last row into the hole.
@@ -363,7 +369,7 @@ mod tests {
         let b = Entity::from_raw(1, 0);
         let c = Entity::from_raw(2, 0);
         for entity in [a, b, c] {
-            archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(scope)));
+            archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf::new(scope)));
             archetype.push_entity(entity, scope);
         }
         assert_eq!(archetype.swap_remove(0), Some(c), "the last row moved in");
@@ -379,12 +385,12 @@ mod tests {
         let first = Entity::from_raw(9, 0);
         let second = Entity::from_raw(10, 0);
         assert_eq!(archetype.scope_summary(), ScopeSummary::Empty);
-        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(first)));
+        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf::new(first)));
         archetype.push_entity(Entity::from_raw(0, 0), first);
-        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(first)));
+        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf::new(first)));
         archetype.push_entity(Entity::from_raw(1, 0), first);
         assert_eq!(archetype.scope_summary(), ScopeSummary::Uniform(first));
-        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf(second)));
+        archetype.push_erased(TypeId::of::<ScopeOf>(), Box::new(ScopeOf::new(second)));
         archetype.push_entity(Entity::from_raw(2, 0), second);
         assert_eq!(archetype.scope_summary(), ScopeSummary::Mixed);
         // Removing the only row of a scope drops it from the count, so the

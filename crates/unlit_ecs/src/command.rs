@@ -17,11 +17,14 @@
 //! Commands run in the order they were queued. A command that acts on a
 //! reserved entity must therefore be queued after the `Spawn` that brings it
 //! to life: for example [`Commands::despawn`] does nothing when the entity is
-//! not alive yet. A queue only queues changes to what its scope owns, so a
-//! command that a queue should not have taken is dropped when it is applied
-//! rather than when it is queued. This holds for the handles [`Commands::spawn`] itself
-//! returns; a `Spawn` pushed by hand with [`Commands::push`] must be ordered the
-//! same way.
+//! not alive yet.
+//!
+//! A queue only queues changes to what its scope owns, and a despawn it cannot
+//! take is dropped when it is queued rather than left to fail quietly when it
+//! is applied. What a command does not decide up front is where the entity has
+//! moved by the time it runs: a queued despawn re-checks its scope when it is
+//! applied, so an entity that has since left that scope survives. A `Spawn`
+//! pushed by hand with [`Commands::push`] carries its own ordering.
 //!
 //! `````rust
 //! # use unlit_ecs::World;
@@ -106,9 +109,10 @@ impl<'w> Commands<'w> {
     /// Queue the despawn of `entity` and its subtree.
     ///
     /// Does nothing when this queue's scope does not own `entity`, or when the
-    /// entity is one of the tree's roots: the command would be refused when it
-    /// was applied, and queueing it only to have it silently dropped later is
-    /// the worse of the two failures.
+    /// entity is one of the tree's two scaffolding entities: the command would
+    /// be refused when it was applied, and queueing it only to have it silently
+    /// dropped later is the worse of the two failures. A resource in the shared
+    /// subtree is the root's to remove, so a queue of any other scope drops it.
     pub fn despawn(&self, entity: Entity) {
         if self.world.is_scaffolding(entity) || !self.world.owns(self.scope, entity) {
             return;
@@ -120,6 +124,10 @@ impl<'w> Commands<'w> {
     }
 
     /// Queue a relink of `child` into `parent`.
+    ///
+    /// Nothing happens when it is applied if this queue's scope does not own
+    /// both ends: the shared subtree is the root's to rearrange, and nobody
+    /// moves a root or the shared scope itself.
     pub fn link(&self, child: Entity, parent: Entity) {
         self.push(Link {
             child,
@@ -129,6 +137,9 @@ impl<'w> Commands<'w> {
     }
 
     /// Queue a detach of `child` into this queue's scope.
+    ///
+    /// Nothing happens when it is applied if this queue's scope does not own
+    /// `child`: an entity in the shared subtree moves only for the root.
     pub fn unlink(&self, child: Entity) {
         self.push(Unlink {
             child,
@@ -191,7 +202,7 @@ pub struct Link {
 impl Command for Link {
     fn apply(self: Box<Self>, world: &mut World) {
         if world.owns(self.scope, self.child) && world.owns(self.scope, self.parent) {
-            world.link_in(self.child, self.parent);
+            world.link_in(self.child, self.parent, self.scope);
         }
     }
 }
@@ -207,7 +218,7 @@ pub struct Unlink {
 impl Command for Unlink {
     fn apply(self: Box<Self>, world: &mut World) {
         if world.owns(self.scope, self.child) {
-            world.unlink_in(self.child, self.scope);
+            world.unlink_in(self.child, self.scope, self.scope);
         }
     }
 }

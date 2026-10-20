@@ -124,10 +124,12 @@ not the same as there being something in it.
 **What a scope may change.** Ownership is stricter than visibility, and it
 covers only structural changes: a scope may despawn or relink an entity when the
 entity is its own or below it, or when the scope is the root. The shared subtree
-is readable from everywhere but only the root may move or remove it. Opening a
-nested scope is a visibility test again, so a scene scope can open the shared
-one and spawn a resource there; despawning that resource afterwards is the
-root's call, not the scene's.
+is readable from everywhere, but only the root may move or remove what is in it;
+the shared entity itself is the root's child and belongs to no scope, so no
+scope despawns or relinks it, the root included. Opening a nested scope is a
+visibility test again, so a scene scope can open the shared one and spawn a
+resource there; despawning that resource afterwards is the root's call, not the
+scene's.
 
 **There is no way up.** [`World::scope`] answers `None` for an entity that is
 not a scope, and [`Scope::scope`] only descends — into a visible child or into
@@ -147,16 +149,21 @@ driver applies them with [`World::apply`].
 **Where callbacks land.** A lifecycle callback receives the scope of the
 entity's parent, so an `OnSpawn` on a scene's child sees the scene. It cannot
 change the tree either — it queues that, the same way a read-only scope does.
+A callback registered during a run runs in a later one, behind the callbacks
+that were already there, and a callback that panics leaves the ones behind it
+registered.
 
 **Cost.** Visibility is decided on every access by walking the parent chain, and
 the walk is bounded by the number of nodes, so a malformed tree cannot hang it.
 The index behind [`World::children`] and [`World::is_descendant`] is written by
-the world alongside the `ScopeOf` component, so the two cannot disagree; a
+the world alongside the `ScopeOf` component, so the two cannot disagree. The
+component is the world's: its field is private, a bundle cannot carry it, and a
 `ScopeOf` written through the reflection registry is refused, because moving an
 entity is [`ScopeMut::link`]'s job. Queries and counts skip the rows a scope
-cannot see, and [`Scope::archetype`] answers `None` for an archetype the scope
-only partly sees — [`Scope::archetype_infos`] reports the visible length
-instead.
+cannot see; [`Scope::archetype`] answers `None` for an empty archetype and for
+one the scope only partly sees, [`Scope::archetypes`] yields only the non-empty
+archetypes the scope sees in full, and [`Scope::archetype_infos`] reports the
+visible length of each.
 
 ## What is in the box
 

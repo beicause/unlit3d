@@ -29,7 +29,10 @@ fn every_entity_carries_the_scope_it_lives_in() {
     assert_eq!(world.parent_scope(world.shared()), Some(root));
     assert_eq!(world.parent_scope(scene), Some(root));
     assert_eq!(world.parent_scope(child), Some(scene));
-    assert_eq!(world.root_scope().get::<ScopeOf>(child).unwrap().0, scene);
+    assert_eq!(
+        world.root_scope().get::<ScopeOf>(child).unwrap().parent(),
+        scene
+    );
 }
 
 #[test]
@@ -277,19 +280,6 @@ fn a_queued_despawn_removes_the_subtree() {
 }
 
 #[test]
-fn a_bundle_carrying_a_scope_is_refused() {
-    let mut world = World::new();
-    let root = world.root();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        world.root_scope_mut().spawn((Marker(1), ScopeOf(root)));
-    }));
-    assert!(
-        result.is_err(),
-        "the world writes the scope, not the bundle"
-    );
-}
-
-#[test]
 fn a_view_of_an_unknown_scope_is_none() {
     let world = World::new();
     assert!(world.scope(Entity::from_raw(999, 0)).is_none());
@@ -354,7 +344,7 @@ fn assert_invariants(world: &World) {
             let recorded = scope
                 .get::<ScopeOf>(entity)
                 .unwrap_or_else(|| panic!("{entity:?} has no scope"))
-                .0;
+                .parent();
             assert_eq!(
                 world.parent_scope(entity),
                 Some(recorded),
@@ -429,6 +419,64 @@ fn unlinking_a_scope_into_itself_is_refused() {
         "a scope cannot become its own parent"
     );
     assert_eq!(world.parent_scope(scene), Some(world.root()));
+    assert_invariants(&world);
+}
+
+#[test]
+fn a_shared_resource_is_the_root_s_to_despawn() {
+    let mut world = World::new();
+    let shared = world.shared();
+    let scene = world.root_scope_mut().spawn((Name("scene"),));
+    let resource = world.scope_mut(shared).unwrap().spawn((Marker(1),));
+    assert!(
+        !world.scope_mut(scene).unwrap().despawn(resource),
+        "a scene cannot remove what the shared subtree lends it"
+    );
+    world.root_scope().queue().despawn(resource);
+    world.apply();
+    assert!(
+        !world.root_scope().contains(resource),
+        "the root removes it"
+    );
+    assert_eq!(world.parent_scope(shared), Some(world.root()));
+    assert_invariants(&world);
+}
+
+#[test]
+fn a_shared_resource_is_the_root_s_to_move() {
+    let mut world = World::new();
+    let root = world.root();
+    let shared = world.shared();
+    let scene = world.root_scope_mut().spawn((Name("scene"),));
+    let resource = world.scope_mut(shared).unwrap().spawn((Marker(1),));
+    assert!(
+        !world.scope_mut(scene).unwrap().link(resource, scene),
+        "a scene cannot move what the shared subtree lends it"
+    );
+    assert!(!world.scope_mut(scene).unwrap().unlink(resource));
+    // A queue of another scope drops the relink when it is applied.
+    world.scope(scene).unwrap().queue().link(resource, scene);
+    world.apply();
+    assert_eq!(
+        world.parent_scope(resource),
+        Some(shared),
+        "a scene's queue cannot move it either"
+    );
+
+    assert!(world.root_scope_mut().unlink(resource));
+    assert_eq!(world.parent_scope(resource), Some(root));
+    world.root_scope().queue().link(resource, scene);
+    world.apply();
+    assert_eq!(world.parent_scope(resource), Some(scene));
+    world.root_scope().queue().unlink(resource);
+    world.apply();
+    assert_eq!(world.parent_scope(resource), Some(root));
+
+    // The shared scope itself is scaffolding: it neither moves nor goes.
+    assert!(!world.root_scope_mut().link(shared, scene));
+    assert!(!world.root_scope_mut().unlink(shared));
+    assert!(!world.root_scope_mut().despawn(shared));
+    assert_eq!(world.parent_scope(shared), Some(root));
     assert_invariants(&world);
 }
 

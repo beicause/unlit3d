@@ -229,3 +229,59 @@ fn a_callback_may_register_another_callback() {
     let hooks = world.root_scope().get::<OnSpawn>(entity).unwrap();
     assert_eq!(hooks.0.len(), 2, "the registered callback was kept");
 }
+
+#[test]
+fn a_callback_registered_during_a_run_goes_last_and_waits_its_turn() {
+    let seen = log();
+    let mut world = World::new();
+    let first = Rc::clone(&seen);
+    let second = Rc::clone(&seen);
+    let late = Rc::clone(&seen);
+    let entity = world.root_scope_mut().spawn((OnSpawn::new()
+        .with(move |scope, spawned| {
+            first.borrow_mut().push("first".to_owned());
+            let late = Rc::clone(&late);
+            if let Some(mut hooks) = scope.get_mut::<OnSpawn>(spawned) {
+                hooks.push(move |_, _| late.borrow_mut().push("late".to_owned()));
+            }
+        })
+        .with(move |_, _| second.borrow_mut().push("second".to_owned())),));
+    assert_eq!(
+        *seen.borrow(),
+        ["first", "second"],
+        "the run stays as long as it was when it started"
+    );
+    let hooks = world.root_scope().get::<OnSpawn>(entity).unwrap();
+    assert_eq!(
+        hooks.0.len(),
+        3,
+        "the new callback is kept for the next run"
+    );
+}
+
+#[test]
+fn a_panicking_callback_leaves_the_ones_behind_it_registered() {
+    let mut world = World::new();
+    let entity = world.reserve_entity();
+    let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        world.root_scope_mut().spawn_at(
+            entity,
+            (
+                Marker(1),
+                OnSpawn::new()
+                    .with(|_, _| panic!("this callback fails"))
+                    .with(|_, _| {}),
+            ),
+        );
+    }));
+    assert!(spawned.is_err(), "the panic reaches the caller");
+    let hooks = world
+        .root_scope()
+        .get::<OnSpawn>(entity)
+        .expect("the row is in place");
+    assert_eq!(
+        hooks.0.len(),
+        1,
+        "the callback behind the one that panicked is still registered"
+    );
+}

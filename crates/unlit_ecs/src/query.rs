@@ -771,5 +771,12 @@ mod tests {
             .map(|archetype| archetype.len())
             .sum();
         assert_eq!(total, 4, "two spawned entities and the tree's two roots");
+        assert!(
+            world
+                .root_scope()
+                .archetypes()
+                .all(|archetype| !archetype.is_empty()),
+            "an empty archetype holds no row, so it is no archetype to see"
+        );
     }
 }

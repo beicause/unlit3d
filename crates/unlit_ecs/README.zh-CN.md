@@ -93,8 +93,10 @@ despawn、不可重挂，正因如此空 world 计数是零而不是二。
 
 **scope 能改动什么。** 所有权比可见性更严，且只覆盖结构变更：当实体就是 scope 自身
 或在其下，或者 scope 是根时，scope 才能 despawn 或重挂它。shared 子树处处可读，但只有
-根能搬动或删除它。打开嵌套 scope 又是一次可见性判定，所以场景 scope 能打开 shared 的
-scope 并在那里 spawn 资源；之后 despawn 那份资源是根的事，不是场景的事。
+根能搬动或删除其中的内容；shared 实体本身是根的子实体，不属于任何 scope，所以哪个
+scope 都不能 despawn 或重挂它，根也不行。打开嵌套 scope 又是一次可见性判定，所以场景
+scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那份资源是根的事，不是
+场景的事。
 
 **没有向上的路。** 对不是 scope 的实体，`World::scope` 回答 `None`；`Scope::scope`
 只能向下——进入看得见的子实体，或进入 shared 子树。scope 说不出自己来自哪个 world，
@@ -108,14 +110,16 @@ scope 并在那里 spawn 资源；之后 despawn 那份资源是根的事，不�
 变更，再由驱动器调用 `World::apply` 落盘。
 
 **回调落在哪里。** 生命周期回调拿到的是该实体父实体的 scope，所以场景子实体上的
-`OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读 scope 一样。
+`OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读 scope 一样。运行中注册的
+回调排到之后那次运行，位于原有回调之后；某个回调 panic 时，排在它后面的回调仍然保留。
 
 **开销。** 每次访问都要沿父链走一遍来判定可见性，走查以节点数为上界，所以畸形的树也
 不会把它拖死。`World::children` 与 `World::is_descendant` 背后的索引由 world 与
-`ScopeOf` 组件一并写入，两者不可能互相矛盾；通过反射注册表写 `ScopeOf` 会被拒绝，
-因为搬动实体是 `ScopeMut::link` 的职责。查询与计数会跳过 scope 看不见的行，而
-`Scope::archetype` 对只看得见一部分的 archetype 回答 `None`——那种情况下
-`Scope::archetype_infos` 报告的是可见长度。
+`ScopeOf` 组件一并写入，两者不可能互相矛盾。这个组件属于 world：字段私有、bundle
+不能携带它，通过反射注册表写 `ScopeOf` 也会被拒绝，因为搬动实体是 `ScopeMut::link`
+的职责。查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
+看得见一部分的 archetype 都回答 `None`，`Scope::archetypes` 只给出非空且完整可见的
+archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 
 ## 内容概览
 
