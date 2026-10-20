@@ -17,6 +17,10 @@
 //! applies after the dispatch. A behaviour that needs the rest of the frame
 //! skipped sets [FrameSkip], which its siblings read; [dispatch_frame] clears it
 //! before the first behaviour runs, so every frame starts whole.
+//!
+//! A component holds a list of callbacks, each with an order of its own, so one
+//! entity may carry several frame behaviours and place them independently.
+//! They run by order, then by entity, then by their position in the list.
 
 pub(crate) use unlit_ecs::{Entity, World};
 
@@ -104,84 +108,93 @@ impl FrameSkip {
 /// behaviour by spawning one of the family's components, not by implementing
 /// this itself.
 pub trait FrameBehaviour: 'static {
-    /// The order this behaviour runs in.
-    fn order(&self) -> FrameBehaviourOrder;
+    /// Every callback of this component, each with the order it runs in.
+    fn callbacks(&self) -> &[(FrameBehaviourOrder, FrameCallback)];
 
-    /// Run this behaviour for `entity` with `frame`.
-    fn run(&mut self, world: &World, entity: Entity, frame: &mut Frame);
-}
-
-/// The state every frame behaviour family shares: its callback and its order.
-pub(crate) struct BehaviourSlot {
-    callback: FrameCallback,
-    order: FrameBehaviourOrder,
-}
-
-impl BehaviourSlot {
-    fn new(order: FrameBehaviourOrder, callback: FrameCallback) -> Self {
-        Self { callback, order }
-    }
-
-    fn order(&self) -> FrameBehaviourOrder {
-        self.order
-    }
-
-    fn run(&mut self, world: &World, entity: Entity, frame: &mut Frame) {
-        (self.callback)(world, entity, frame);
-    }
+    /// Every callback of this component, each with the order it runs in,
+    /// exclusively.
+    fn callbacks_mut(&mut self) -> &mut [(FrameBehaviourOrder, FrameCallback)];
 }
 
 /// Declares one frame behaviour family.
 macro_rules! frame_behaviour {
     ($name:ident, $doc:expr) => {
         #[doc = $doc]
-        pub struct $name($crate::frame::BehaviourSlot);
+        pub struct $name {
+            /// Every callback, each with the order it runs in.
+            pub callbacks: Vec<($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback)>,
+        }
 
         impl $name {
-            #[doc = concat!("Wrap `f` as an [`", stringify!($name), "`].")]
+            #[doc = concat!(
+                "Box `f` as one callback of an [`",
+                stringify!($name),
+                "`], running at `order`."
+            )]
             ///
-            /// `order` places it among the world's other frame behaviours:
-            /// unlit3d supplies no order values, so the caller's are the only
-            /// ones that exist.
-            pub fn new(
+            /// [`new`](Self::new) takes callbacks in this form, which is what
+            /// lets a closure be written without naming the family's frame
+            /// type.
+            pub fn callback(
                 order: $crate::frame::FrameBehaviourOrder,
                 f: impl FnMut(
                     &$crate::frame::World,
                     $crate::frame::Entity,
                     &mut $crate::frame::Frame,
                 ) + 'static,
+            ) -> ($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback) {
+                (order, Box::new(f))
+            }
+
+            #[doc = concat!(
+                "Wrap the callbacks `cbs` as an [`",
+                stringify!($name),
+                "`]."
+            )]
+            ///
+            /// Each carries its own order, which places it among the world's
+            /// other frame behaviours: unlit3d supplies no order values, so the
+            /// caller's are the only ones that exist. An empty iterator
+            /// declares a component that runs nothing yet.
+            pub fn new(
+                cbs: impl IntoIterator<
+                    Item = ($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback),
+                >,
             ) -> Self {
-                Self($crate::frame::BehaviourSlot::new(order, Box::new(f)))
+                Self {
+                    callbacks: cbs.into_iter().collect(),
+                }
             }
 
-            /// The order this behaviour runs in.
-            pub fn order(&self) -> $crate::frame::FrameBehaviourOrder {
-                self.0.order()
-            }
-
-            /// Run this behaviour for `entity` with `frame`.
-            pub fn run(
+            #[doc = concat!(
+                "Add `f` to this [`",
+                stringify!($name),
+                "`] at run time, after the callbacks already in it."
+            )]
+            pub fn push(
                 &mut self,
-                world: &$crate::frame::World,
-                entity: $crate::frame::Entity,
-                frame: &mut $crate::frame::Frame,
+                order: $crate::frame::FrameBehaviourOrder,
+                f: impl FnMut(
+                    &$crate::frame::World,
+                    $crate::frame::Entity,
+                    &mut $crate::frame::Frame,
+                ) + 'static,
             ) {
-                self.0.run(world, entity, frame);
+                self.callbacks.push((order, Box::new(f)));
             }
         }
 
         impl $crate::frame::FrameBehaviour for $name {
-            fn order(&self) -> $crate::frame::FrameBehaviourOrder {
-                self.0.order()
+            fn callbacks(
+                &self,
+            ) -> &[($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback)] {
+                &self.callbacks
             }
 
-            fn run(
+            fn callbacks_mut(
                 &mut self,
-                world: &$crate::frame::World,
-                entity: $crate::frame::Entity,
-                frame: &mut $crate::frame::Frame,
-            ) {
-                self.0.run(world, entity, frame);
+            ) -> &mut [($crate::frame::FrameBehaviourOrder, $crate::frame::FrameCallback)] {
+                &mut self.callbacks
             }
         }
     };
@@ -203,24 +216,29 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     world.apply();
 }
 
-/// Run every `B` in `world`, in the order their components declare.
+/// Run every `B` in `world`, in the order their callbacks declare.
 ///
-/// Sorted by `(order, entity)`, so the entity breaks a tie between equal
-/// orders. A callback must not change the frame's behaviour set: the list is
-/// resolved before the first one runs, and a change landing inside the dispatch
-/// would leave it stale. Queue structural work instead; the driver applies it
-/// after the dispatch.
+/// Sorted by `(order, entity, position)`, so the entity breaks a tie between
+/// equal orders and the position in the component breaks a tie between equal
+/// orders on one entity. A callback must not change the frame's behaviour set:
+/// the schedule is resolved before the first one runs, and a change landing
+/// inside the dispatch would leave it stale. Queue structural work instead; the
+/// driver applies it after the dispatch.
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
-    let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
-        .root_scope()
-        .query::<&B>()
-        .map(|(entity, behaviour)| (behaviour.order(), entity))
-        .collect();
-    order.sort_unstable_by_key(|(order, entity)| (*order, *entity));
-    for (_, entity) in order {
+    let mut schedule: Vec<(FrameBehaviourOrder, Entity, usize)> = Vec::new();
+    for (entity, behaviour) in world.root_scope().query::<&B>() {
+        for (index, (order, _)) in behaviour.callbacks().iter().enumerate() {
+            schedule.push((*order, entity, index));
+        }
+    }
+    schedule.sort_unstable();
+    for (_, entity, index) in schedule {
         world
             .root_scope()
-            .with_mut::<B, _>(entity, |behaviour| behaviour.run(world, entity, frame))
+            .with_mut::<B, _>(entity, |behaviour| {
+                let (_, callback) = &mut behaviour.callbacks_mut()[index];
+                callback(world, entity, frame);
+            })
             .expect("the behaviour entity exists");
     }
 }
@@ -251,15 +269,17 @@ mod tests {
         let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
         let later = {
             let log = log.clone();
-            OnFrame::new(FrameBehaviourOrder(10), move |_world, _entity, _frame| {
-                log.borrow_mut().push(2)
-            })
+            OnFrame::new([OnFrame::callback(
+                FrameBehaviourOrder(10),
+                move |_world, _entity, _frame| log.borrow_mut().push(2),
+            )])
         };
         let earlier = {
             let log = log.clone();
-            OnFrame::new(FrameBehaviourOrder(5), move |_world, _entity, _frame| {
-                log.borrow_mut().push(1)
-            })
+            OnFrame::new([OnFrame::callback(
+                FrameBehaviourOrder(5),
+                move |_world, _entity, _frame| log.borrow_mut().push(1),
+            )])
         };
         world.root_scope_mut().spawn((later,));
         world.root_scope_mut().spawn((earlier,));
@@ -275,12 +295,58 @@ mod tests {
             let log = log.clone();
             world
                 .root_scope_mut()
-                .spawn((OnFrame::new(UPDATE, move |_world, _entity, _frame| {
-                    log.borrow_mut().push(value);
-                }),));
+                .spawn((OnFrame::new([OnFrame::callback(
+                    UPDATE,
+                    move |_world, _entity, _frame| {
+                        log.borrow_mut().push(value);
+                    },
+                )]),));
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec![1, 2, 3]);
+    }
+
+    /// One entity may carry several callbacks, each with an order of its own.
+    #[test]
+    fn one_entity_runs_every_callback_of_its_component() {
+        let mut world = World::new();
+        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let first = log.clone();
+        let second = log.clone();
+        let third = log.clone();
+        let component = OnFrame::new([
+            OnFrame::callback(UPDATE, move |_world, _entity, _frame| {
+                first.borrow_mut().push(1);
+            }),
+            OnFrame::callback(END, move |_world, _entity, _frame| {
+                second.borrow_mut().push(3);
+            }),
+            OnFrame::callback(FrameBehaviourOrder(50), move |_world, _entity, _frame| {
+                third.borrow_mut().push(2);
+            }),
+        ]);
+        world.root_scope_mut().spawn((component,));
+        dispatch_frame(&mut world, &mut frame());
+        assert_eq!(*log.borrow(), vec![1, 2, 3]);
+    }
+
+    /// A callback added at run time joins the schedule at its own order.
+    #[test]
+    fn a_pushed_callback_runs_at_its_order() {
+        let mut world = World::new();
+        let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
+        let first = log.clone();
+        let second = log.clone();
+        let mut component =
+            OnFrame::new([OnFrame::callback(END, move |_world, _entity, _frame| {
+                first.borrow_mut().push(2);
+            })]);
+        component.push(FrameBehaviourOrder(0), move |_world, _entity, _frame| {
+            second.borrow_mut().push(1);
+        });
+        world.root_scope_mut().spawn((component,));
+        dispatch_frame(&mut world, &mut frame());
+        assert_eq!(*log.borrow(), vec![1, 2]);
     }
 
     #[test]
@@ -291,9 +357,12 @@ mod tests {
             let seen = seen.clone();
             world
                 .root_scope_mut()
-                .spawn((OnFrame::new(UPDATE, move |_world, _entity, frame| {
-                    *seen.borrow_mut() = Some(*frame);
-                }),));
+                .spawn((OnFrame::new([OnFrame::callback(
+                    UPDATE,
+                    move |_world, _entity, frame| {
+                        *seen.borrow_mut() = Some(*frame);
+                    },
+                )]),));
         }
         let mut frame = Frame {
             delta_time: 0.5,
@@ -316,9 +385,12 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn((OnFrame::new(UPDATE, |_world, _entity, frame| {
-                frame.index += 1;
-            }),));
+            .spawn((OnFrame::new([OnFrame::callback(
+                UPDATE,
+                |_world, _entity, frame| {
+                    frame.index += 1;
+                },
+            )]),));
         let mut frame = frame();
         dispatch_frame(&mut world, &mut frame);
         assert_eq!(frame.index, 1);
@@ -330,9 +402,12 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn((OnFrame::new(UPDATE, |world, _entity, _frame| {
-                let _ = world.root_scope().queue().spawn((Marker,));
-            }),));
+            .spawn((OnFrame::new([OnFrame::callback(
+                UPDATE,
+                |world, _entity, _frame| {
+                    let _ = world.root_scope().queue().spawn((Marker,));
+                },
+            )]),));
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(world.root_scope().query::<&Marker>().count(), 1);
     }
@@ -346,17 +421,23 @@ mod tests {
             let log = log.clone();
             world
                 .root_scope_mut()
-                .spawn((OnFrame::new(END, move |_world, _entity, _frame| {
-                    log.borrow_mut().push("end");
-                }),));
+                .spawn((OnFrame::new([OnFrame::callback(
+                    END,
+                    move |_world, _entity, _frame| {
+                        log.borrow_mut().push("end");
+                    },
+                )]),));
         }
         {
             let log = log.clone();
             world
                 .root_scope_mut()
-                .spawn((OnFrame::new(UPDATE, move |_world, _entity, _frame| {
-                    log.borrow_mut().push("update");
-                }),));
+                .spawn((OnFrame::new([OnFrame::callback(
+                    UPDATE,
+                    move |_world, _entity, _frame| {
+                        log.borrow_mut().push("update");
+                    },
+                )]),));
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec!["update", "end"]);
@@ -389,12 +470,15 @@ mod tests {
             let first = first.clone();
             world
                 .root_scope_mut()
-                .spawn((OnFrame::new(UPDATE, move |world, _entity, _frame| {
-                    assert!(!FrameSkip::is_skipped(world), "the flag starts whole");
-                    if first.replace(false) {
-                        FrameSkip::skip(world);
-                    }
-                }),));
+                .spawn((OnFrame::new([OnFrame::callback(
+                    UPDATE,
+                    move |world, _entity, _frame| {
+                        assert!(!FrameSkip::is_skipped(world), "the flag starts whole");
+                        if first.replace(false) {
+                            FrameSkip::skip(world);
+                        }
+                    },
+                )]),));
         }
         dispatch_frame(&mut world, &mut frame());
         assert!(FrameSkip::is_skipped(&world));

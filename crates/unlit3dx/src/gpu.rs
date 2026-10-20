@@ -129,7 +129,7 @@ where
     let answer: Rc<RefCell<Option<Result<Gpu, String>>>> = Rc::default();
     let mut state = 0u8;
     let mut ready = Some(ready);
-    OnFrame::new(
+    OnFrame::new([OnFrame::callback(
         FrameBehaviourOrder(REQUEST_GPU_ORDER),
         move |world, _entity, _frame| {
             if state == 2 {
@@ -193,7 +193,7 @@ where
             });
             debug_assert!(spawned, "the frame's world carries its own tasks");
         },
-    )
+    )])
 }
 
 /// Run the GPU request's ready callback with a mutable world.

@@ -205,10 +205,12 @@ The bridges:
   caller that steps it inline with `step_once`.
 - **audio** (on by default): `spawn_audio_world_with::<R>` opens the output
   device and owns its stream on the audio thread. Its `OnAudioFill` components are
-  the sources:
-  `dispatch_audio_fill` runs them once per chunk of a ring buffer sized by
-  `AudioConfig`, mixing their samples and scaling the sum by the world's
-  `AudioGain`; the device callback drains the ring and underruns to silence.
+  the sources, and one entity may hold several layers in one component, each
+  with an `AudioFillOrder` of its own:
+  `dispatch_audio_fill` runs every callback once per chunk of a ring buffer sized by
+  `AudioConfig`, in that order, mixing their samples and scaling the sum by the
+  world's `AudioGain`; the device callback drains the ring and underruns to
+  silence.
   A world that carries no source plays nothing.
   Gameplay never touches audio directly — it sends jobs. The world spawns an
   `AudioFormat` component the moment its stream opens — a source that renders

@@ -335,7 +335,8 @@ entity carries. A host that wants its other worlds addressable answers
 - **No events or observers.** As a substitute, call a component's method
   directly or use a behaviour component. A *behaviour component* holds a
   function pointer or closure that can run accesses to the world inside it, just
-  like a system or an observer, and the function inside it can also be async.
+  like a system or an observer, and the function inside it can also be async; one
+  component may hold a list of them and runs them in order.
   Callbacks like a Godot node's per-frame update, fixed-interval update and
   keyboard/mouse/touch input are then behaviour components on entities, and an
   external caller visits the world and calls them — such features are

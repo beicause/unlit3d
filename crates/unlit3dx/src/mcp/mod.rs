@@ -246,10 +246,12 @@ mod tests {
     fn audio_world(level: f32) -> (World, AudioFormat) {
         let mut world = World::new();
         world.root_scope_mut().spawn((AudioGain(1.0),));
-        world.root_scope_mut().spawn((OnAudioFill::new(
-            AudioFillOrder(0),
-            move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),
-        ),));
+        world
+            .root_scope_mut()
+            .spawn((OnAudioFill::new([OnAudioFill::callback(
+                AudioFillOrder(0),
+                move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),
+            )]),));
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,

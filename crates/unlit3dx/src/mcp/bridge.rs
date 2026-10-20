@@ -55,7 +55,7 @@ pub fn serve_mcp(world: &mut World) {
 /// itself: it is the only one that knows which entities carry a world —
 /// a nested one, or a sender to one that runs apart from it.
 fn drain_mcp() -> OnAboutToWait {
-    OnAboutToWait::new(move |world, _entity, ()| {
+    OnAboutToWait::new([OnAboutToWait::callback(move |world, _entity, ()| {
         let Some(inbox) = world
             .root_scope()
             .query::<&McpInbox>()
@@ -67,7 +67,7 @@ fn drain_mcp() -> OnAboutToWait {
         while let Ok(command) = inbox.receiver.try_recv() {
             dispatch_command(world, command);
         }
-    })
+    })])
 }
 
 /// Run one MCP command against the world it names.

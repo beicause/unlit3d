@@ -167,8 +167,10 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
   `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
 - **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
-  持有其流。它的 `OnAudioFill` 组件就是音源：`dispatch_audio_fill` 每块运行一次它们，把各自叠加的
-  样本混进由 `AudioConfig` 定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
+  持有其流。它的 `OnAudioFill` 组件就是音源，一个实体可以在一个组件里叠加多层，
+  每层带着自己的 `AudioFillOrder`：
+  `dispatch_audio_fill` 按该顺序每块运行每个回调，把各自叠加的样本混进由 `AudioConfig`
+  定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
   设备回调消费这个缓冲，欠载时静音。没有任何音源的 world 不出声。
   玩法从不直接触碰音频——它发送 job。world 在流打开的那一刻生成 `AudioFormat`
   组件——按固定速率渲染的音源必须按设备实际采用的速率构建，而这一点在流打开之前

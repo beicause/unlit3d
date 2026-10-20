@@ -237,10 +237,12 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(move |_, _, ui: &mut egui::Ui| {
-                counted.set(counted.get() + 1);
-                ui.label("hello");
-            }),));
+            .spawn((UiPanel::new([UiPanel::callback(
+                move |_, _, ui: &mut egui::Ui| {
+                    counted.set(counted.get() + 1);
+                    ui.label("hello");
+                },
+            )]),));
         (world, runs)
     }
 
@@ -367,11 +369,13 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(move |_, _, ui: &mut egui::Ui| {
-                counted.set(counted.get() + 1);
-                ui.ctx()
-                    .request_repaint_after(core::time::Duration::from_millis(50));
-            }),));
+            .spawn((UiPanel::new([UiPanel::callback(
+                move |_, _, ui: &mut egui::Ui| {
+                    counted.set(counted.get() + 1);
+                    ui.ctx()
+                        .request_repaint_after(core::time::Duration::from_millis(50));
+                },
+            )]),));
         let (_, mut host) = test_host();
 
         // egui answers a request for the next possible pass with a second

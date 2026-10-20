@@ -10,9 +10,10 @@
 //! component ([`CreateWindowRequest`], [`ExitRequest`]) that the host executes
 //! after the dispatch.
 //!
-//! Two behaviours of the same family must sit on two entities, because a
-//! behaviour is borrowed while it runs. Two behaviours of different families
-//! never conflict.
+//! A component of one family may hold several callbacks and they run in the
+//! order they were added, but a behaviour is borrowed while it runs, so its
+//! callbacks must not reach for their own family. Different families never
+//! conflict.
 
 use std::sync::Arc;
 
@@ -86,7 +87,7 @@ pub struct WinitProxy<U: 'static>(pub EventLoopProxy<U>);
 ///
 /// The entity must carry both a [`WindowSpec`] and a [`CreateWindowRequest`].
 pub fn create_window_on_resume() -> OnResumed {
-    OnResumed::new(|world, entity, ()| {
+    OnResumed::new([OnResumed::callback(|world, entity, ()| {
         if window(world).is_some() {
             return;
         }
@@ -103,25 +104,25 @@ pub fn create_window_on_resume() -> OnResumed {
         let _ = world
             .root_scope()
             .with_mut::<CreateWindowRequest, _>(entity, |request| request.0 = Some(attributes));
-    })
+    })])
 }
 
 /// Exit when the window is closed.
 pub fn exit_on_close_requested() -> OnWindowEvent {
-    OnWindowEvent::new(|world, entity, payload| {
+    OnWindowEvent::new([OnWindowEvent::callback(|world, entity, payload| {
         if matches!(payload.event, WindowEvent::CloseRequested) {
             let _ = world
                 .root_scope()
                 .with_mut::<ExitRequest, _>(entity, |request| request.0 = true);
         }
-    })
+    })])
 }
 
 /// Exit when Escape is pressed.
 ///
 /// A repeat is ignored, so holding the key down does not fire twice.
 pub fn exit_on_escape() -> OnWindowEvent {
-    OnWindowEvent::new(|world, entity, payload| {
+    OnWindowEvent::new([OnWindowEvent::callback(|world, entity, payload| {
         if let WindowEvent::KeyboardInput { event, .. } = &payload.event
             && event.state == ElementState::Pressed
             && !event.repeat
@@ -131,7 +132,7 @@ pub fn exit_on_escape() -> OnWindowEvent {
                 .root_scope()
                 .with_mut::<ExitRequest, _>(entity, |request| request.0 = true);
         }
-    })
+    })])
 }
 
 /// Request a redraw every turn while the application is resumed.
@@ -139,7 +140,7 @@ pub fn exit_on_escape() -> OnWindowEvent {
 /// "Foreground" is approximated by the host's [`Resumed`] state. An
 /// application with a finer policy writes its own [`OnAboutToWait`].
 pub fn request_redraw_while_foreground() -> OnAboutToWait {
-    OnAboutToWait::new(|world, _entity, ()| {
+    OnAboutToWait::new([OnAboutToWait::callback(|world, _entity, ()| {
         let resumed = world
             .root_scope()
             .query::<&Resumed>()
@@ -148,7 +149,7 @@ pub fn request_redraw_while_foreground() -> OnAboutToWait {
         if resumed && let Some(window) = window(world) {
             window.request_redraw();
         }
-    })
+    })])
 }
 
 /// Feed every window event into a [`WinitInput`].
@@ -157,9 +158,9 @@ pub fn request_redraw_while_foreground() -> OnAboutToWait {
 /// [`InputWriter`](crate::input::InputWriter); dispatch it with
 /// [`dispatch_input`](crate::input::dispatch_input).
 pub fn winit_input_behaviour(input: WinitInput) -> OnWindowEvent {
-    OnWindowEvent::new(move |_world, _entity, payload| {
+    OnWindowEvent::new([OnWindowEvent::callback(move |_world, _entity, payload| {
         input.on_window_event(&payload.event);
-    })
+    })])
 }
 
 #[cfg(test)]

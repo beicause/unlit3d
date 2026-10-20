@@ -25,9 +25,9 @@
 //! // sibling state.
 //! let ui = world.root_scope_mut().spawn((Source::new(UiSource::new()),));
 //! world.scope_mut(ui).unwrap().spawn((
-//!     UiPanel::new(|_world, _entity, ui| {
+//!     UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
 //!         ui.label("hello");
-//!     }),
+//!     })]),
 //! ));
 //! ```
 //!
@@ -71,15 +71,16 @@ pub mod convert;
 
 /// A callback that may read and write the world, and receives the entity it
 /// runs for together with the UI surface its interface is built in.
-type PanelCallback = Box<dyn FnMut(Scope<'_>, Entity, &mut egui::Ui)>;
+pub type PanelCallback = Box<dyn for<'a> FnMut(Scope<'a>, Entity, &mut egui::Ui)>;
 
 /// A UI panel: one interface, held as a behaviour component.
 ///
-/// A panel is the interface itself — the closure egui runs to build it — and
+/// A panel is the interface itself — the closures egui runs to build it — and
 /// not a field on the source, so an interface lives in the world like any
-/// other behaviour: multiple panels are multiple entities, each free to carry
-/// its own sibling state, and a third party can define its own panel component
-/// for a [`UiSource`] to drive.
+/// other behaviour: an entity may carry several panels, each free to carry its
+/// own sibling state, and a third party can define its own panel component for
+/// a [`UiSource`] to drive. A component's callbacks run in the order they were
+/// added, as one interface.
 ///
 /// # What a panel must not assume
 ///
@@ -96,17 +97,40 @@ type PanelCallback = Box<dyn FnMut(Scope<'_>, Entity, &mut egui::Ui)>;
 /// for the frame loop to apply are all available while it runs. The scope is the
 /// one of the source that draws the panel, so a panel sees the subtree that
 /// source owns and the shared resources, not every entity in the world.
-pub struct UiPanel(pub PanelCallback);
+pub struct UiPanel {
+    /// The callbacks, in the order they were added.
+    pub callbacks: Vec<PanelCallback>,
+}
 
 impl UiPanel {
-    /// Wrap `f` as a [`UiPanel`].
-    pub fn new(f: impl FnMut(Scope<'_>, Entity, &mut egui::Ui) + 'static) -> Self {
-        Self(Box::new(f))
+    /// Box `f` as one callback of a [`UiPanel`].
+    ///
+    /// [`new`](Self::new) takes callbacks in this form, which is what lets a
+    /// closure be written without naming its parameters' types.
+    pub fn callback(f: impl FnMut(Scope<'_>, Entity, &mut egui::Ui) + 'static) -> PanelCallback {
+        Box::new(f)
+    }
+
+    /// Wrap the callbacks `cbs` as a [`UiPanel`].
+    ///
+    /// They build one interface, in the order the iterator yields them. An
+    /// empty iterator declares a panel that draws nothing yet.
+    pub fn new(cbs: impl IntoIterator<Item = PanelCallback>) -> Self {
+        Self {
+            callbacks: cbs.into_iter().collect(),
+        }
+    }
+
+    /// Add `f` at run time, after the callbacks already in this panel.
+    pub fn push(&mut self, f: impl FnMut(Scope<'_>, Entity, &mut egui::Ui) + 'static) {
+        self.callbacks.push(Box::new(f));
     }
 
     /// Run this panel for `entity`, building its interface in `ui`.
     pub fn run(&mut self, scope: Scope<'_>, entity: Entity, ui: &mut egui::Ui) {
-        (self.0)(scope, entity, ui)
+        for callback in &mut self.callbacks {
+            callback(scope, entity, ui);
+        }
     }
 }
 
@@ -909,13 +933,13 @@ mod tests {
             let runs = Rc::clone(&runs);
             world.root_scope_mut().spawn((
                 Runs(0),
-                UiPanel::new(move |world, entity, ui| {
+                UiPanel::new([UiPanel::callback(move |world, entity, ui| {
                     runs.set(runs.get() + 1);
                     // Read the sibling, then write it back advanced by one.
                     let seen = world.get::<Runs>(entity).expect("the sibling exists").0;
                     let _ = world.with_mut::<Runs, _>(entity, |runs| runs.0 = seen + 1);
                     ui.label("panel");
-                }),
+                })]),
             ));
         }
 
@@ -952,6 +976,39 @@ mod tests {
         assert_eq!(runs.get(), 2, "one closure call per panel");
     }
 
+    /// One entity may carry several panels; they all run, in the order they
+    /// were added, as one interface.
+    #[test]
+    fn one_entity_may_carry_several_panels() {
+        let mut world = World::new();
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let first = Rc::clone(&log);
+        let second = Rc::clone(&log);
+        world.root_scope_mut().spawn((UiPanel::new([
+            UiPanel::callback(move |_world, _entity, ui| {
+                first.borrow_mut().push(1);
+                ui.label("one");
+            }),
+            UiPanel::callback(move |_world, _entity, ui| {
+                second.borrow_mut().push(2);
+                ui.label("two");
+            }),
+        ]),));
+
+        let source = UiSource::new();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::Vec2::new(128.0, 96.0),
+            )),
+            ..Default::default()
+        };
+        let mut output = source.run_panels(&world.root_scope(), input);
+        output.textures_delta.clear();
+
+        assert_eq!(*log.borrow(), vec![1, 2], "both panels ran, in order");
+    }
+
     /// A panel is driven by the source: the source builds its pipeline and
     /// turns what the panel painted into draws.
     #[test]
@@ -960,7 +1017,7 @@ mod tests {
         assert!(set_frame_target(&world.root_scope(), test_target()));
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(|_world, _entity, ui| {
+            .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
                 // A plain rectangle, so the frame's contents do not depend on the
                 // font atlas being ready on the first pass.
                 ui.painter().rect_filled(
@@ -971,7 +1028,7 @@ mod tests {
                     0.0,
                     egui::Color32::from_rgb(0, 255, 0),
                 );
-            }),));
+            })]),));
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -990,9 +1047,9 @@ mod tests {
         let (mut world, ctx) = test_world();
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(|_world, _entity, ui| {
+            .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
                 ui.label("not drawn");
-            }),));
+            })]),));
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -1026,12 +1083,14 @@ mod tests {
             world
                 .borrow_mut()
                 .root_scope_mut()
-                .spawn((UiPanel::new(move |world, _entity, ui| {
-                    if world.query::<&Spawned>().next().is_none() {
-                        world.queue().spawn((Spawned,));
-                    }
-                    ui.label("once");
-                }),));
+                .spawn((UiPanel::new([UiPanel::callback(
+                    move |world, _entity, ui| {
+                        if world.query::<&Spawned>().next().is_none() {
+                            world.queue().spawn((Spawned,));
+                        }
+                        ui.label("once");
+                    },
+                )]),));
         }
 
         let input = egui::RawInput {
@@ -1084,9 +1143,11 @@ mod tests {
             let runs = Rc::clone(&runs);
             world
                 .root_scope_mut()
-                .spawn((UiPanel::new(move |_world, _entity, _ui| {
-                    runs.set(runs.get() + 1);
-                }),));
+                .spawn((UiPanel::new([UiPanel::callback(
+                    move |_world, _entity, _ui| {
+                        runs.set(runs.get() + 1);
+                    },
+                )]),));
         }
 
         let source = UiSource::new();
@@ -1127,12 +1188,13 @@ mod tests {
         struct Foreground;
 
         let mut world = World::new();
+        world.root_scope_mut().spawn((
+            Foreground,
+            UiPanel::new([UiPanel::callback(|_world, _entity, _ui| {})]),
+        ));
         world
             .root_scope_mut()
-            .spawn((Foreground, UiPanel::new(|_world, _entity, _ui| {})));
-        world
-            .root_scope_mut()
-            .spawn((UiPanel::new(|_world, _entity, _ui| {}),));
+            .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, _ui| {})]),));
 
         let foreground: Vec<Entity> = world
             .root_scope()
@@ -1166,23 +1228,25 @@ mod tests {
         let recorded = Rc::clone(&seen);
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(move |_world, _entity, ui| {
-                // egui's own input state is what a widget reads; the raw events are
-                // not exposed to a panel, so this asserts on the effect instead: a
-                // typed character must land in the text a focused field sees.
-                ui.text_edit_singleline(&mut String::new());
-                let pressed = ui.input(|input| {
-                    input
-                        .events
-                        .iter()
-                        .filter_map(|event| match event {
-                            egui::Event::Text(text) => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                });
-                recorded.borrow_mut().extend(pressed);
-            }),));
+            .spawn((UiPanel::new([UiPanel::callback(
+                move |_world, _entity, ui| {
+                    // egui's own input state is what a widget reads; the raw events are
+                    // not exposed to a panel, so this asserts on the effect instead: a
+                    // typed character must land in the text a focused field sees.
+                    ui.text_edit_singleline(&mut String::new());
+                    let pressed = ui.input(|input| {
+                        input
+                            .events
+                            .iter()
+                            .filter_map(|event| match event {
+                                egui::Event::Text(text) => Some(text.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                    recorded.borrow_mut().extend(pressed);
+                },
+            )]),));
 
         // The pointer and a typed key arrive in the world's own event types.
         let input = InputWriter::new();
@@ -1226,14 +1290,16 @@ mod tests {
         let flag = Rc::clone(&clicked);
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(move |_world, _entity, ui| {
-                // A real widget, so the click has to come through egui's own hit
-                // testing rather than a hand-rolled rectangle test.
-                let response = ui.allocate_rect(button(), egui::Sense::click());
-                if response.clicked() {
-                    flag.set(true);
-                }
-            }),));
+            .spawn((UiPanel::new([UiPanel::callback(
+                move |_world, _entity, ui| {
+                    // A real widget, so the click has to come through egui's own hit
+                    // testing rather than a hand-rolled rectangle test.
+                    let response = ui.allocate_rect(button(), egui::Sense::click());
+                    if response.clicked() {
+                        flag.set(true);
+                    }
+                },
+            )]),));
 
         let input = InputWriter::new();
         let events = input.subscribe();
@@ -1294,13 +1360,13 @@ mod tests {
         let mut other = World::new();
         other
             .root_scope_mut()
-            .spawn((UiPanel::new(|_world, _entity, ui| {
+            .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                     0.0,
                     egui::Color32::RED,
                 );
-            }),));
+            })]),));
         let target = test_ui_target();
         let frame = lay_out(
             &other,
@@ -1342,13 +1408,13 @@ mod tests {
         let mut other = World::new();
         other
             .root_scope_mut()
-            .spawn((UiPanel::new(|_world, _entity, ui| {
+            .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                     0.0,
                     egui::Color32::RED,
                 );
-            }),));
+            })]),));
         let frame = lay_out(
             &other,
             &egui::Context::default(),
@@ -1391,13 +1457,13 @@ mod tests {
         assert!(set_frame_target(&world.root_scope(), test_target()));
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(|_world, _entity, ui| {
+            .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                     0.0,
                     egui::Color32::RED,
                 );
-            }),));
+            })]),));
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);

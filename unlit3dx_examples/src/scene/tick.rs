@@ -38,9 +38,12 @@ pub const TICK_AUDIO: i32 = 300;
 /// an [`OnFrame`] like any other: the object declares where it runs, and the
 /// scene never sorts its objects itself.
 pub fn tick_behaviour<T: Tick + 'static>(order: i32) -> OnFrame {
-    OnFrame::new(FrameBehaviourOrder(order), |world, entity, _frame| {
-        let _ = world
-            .root_scope()
-            .with_mut::<T, _>(entity, |state| state.tick(world));
-    })
+    OnFrame::new([OnFrame::callback(
+        FrameBehaviourOrder(order),
+        |world, entity, _frame| {
+            let _ = world
+                .root_scope()
+                .with_mut::<T, _>(entity, |state| state.tick(world));
+        },
+    )])
 }

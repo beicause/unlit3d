@@ -54,15 +54,17 @@ fn install_synth(world: &mut World, bytes: &[u8], gain: f32, tracks: &[&str], sa
 /// sample, the way a synthesizer adds its block to the chunk.
 fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
     let counted = Arc::clone(counts);
-    world.root_scope_mut().spawn((OnAudioFill::new(
-        AudioFillOrder::default(),
-        move |_world, _entity, chunk| {
-            counted.fetch_add(1, Ordering::SeqCst);
-            for sample in chunk.out.iter_mut() {
-                *sample += level;
-            }
-        },
-    ),));
+    world
+        .root_scope_mut()
+        .spawn((OnAudioFill::new([OnAudioFill::callback(
+            AudioFillOrder::default(),
+            move |_world, _entity, chunk| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                for sample in chunk.out.iter_mut() {
+                    *sample += level;
+                }
+            },
+        )]),));
 }
 
 /// A world with no sources fills with silence; a source adds to the chunk
@@ -86,6 +88,32 @@ fn the_dispatcher_mixes_the_worlds_sources() {
         out.iter().all(|sample| (sample - 0.75).abs() < 1e-6),
         "both sources must add up"
     );
+}
+
+/// One entity may hold several sources in one component: the dispatcher mixes
+/// every callback, in the order it was added.
+#[test]
+fn one_entity_may_hold_several_sources() {
+    let mut world = World::new();
+    let counts = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&counts);
+    world.root_scope_mut().spawn((OnAudioFill::new([
+        OnAudioFill::callback(AudioFillOrder::default(), move |_world, _entity, chunk| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            for sample in chunk.out.iter_mut() {
+                *sample += 0.25;
+            }
+        }),
+        OnAudioFill::callback(AudioFillOrder::default(), move |_world, _entity, chunk| {
+            for sample in chunk.out.iter_mut() {
+                *sample += 0.5;
+            }
+        }),
+    ]),));
+    let mut out = vec![0.0f32; 4];
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
+    assert!(out.iter().all(|sample| (sample - 0.75).abs() < 1e-6));
+    assert_eq!(counts.load(Ordering::SeqCst), 1, "one dispatched fill");
 }
 
 /// The world's gain scales the mix once, after the sources summed, and an
@@ -115,24 +143,28 @@ fn equal_orders_run_in_entity_order() {
     let ran: Arc<Mutex<Vec<&'static str>>> = Arc::default();
     for (name, level) in [("first", 0.1), ("second", 0.2)] {
         let ran = Arc::clone(&ran);
-        world.root_scope_mut().spawn((OnAudioFill::new(
-            AudioFillOrder::default(),
-            move |_world, _entity, chunk| {
-                ran.lock().unwrap().push(name);
-                for sample in chunk.out.iter_mut() {
-                    *sample += level;
-                }
-            },
-        ),));
+        world
+            .root_scope_mut()
+            .spawn((OnAudioFill::new([OnAudioFill::callback(
+                AudioFillOrder::default(),
+                move |_world, _entity, chunk| {
+                    ran.lock().unwrap().push(name);
+                    for sample in chunk.out.iter_mut() {
+                        *sample += level;
+                    }
+                },
+            )]),));
     }
     // A later order runs after every earlier one.
     let late = Arc::clone(&ran);
-    world.root_scope_mut().spawn((OnAudioFill::new(
-        AudioFillOrder(1),
-        move |_world, _entity, _chunk| {
-            late.lock().unwrap().push("late");
-        },
-    ),));
+    world
+        .root_scope_mut()
+        .spawn((OnAudioFill::new([OnAudioFill::callback(
+            AudioFillOrder(1),
+            move |_world, _entity, _chunk| {
+                late.lock().unwrap().push("late");
+            },
+        )]),));
     let mut out = vec![0.0f32; 2];
     dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert_eq!(*ran.lock().unwrap(), vec!["first", "second", "late"]);

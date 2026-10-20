@@ -2,9 +2,9 @@
 //!
 //! Every [`ApplicationHandler`] callback has a behaviour component family of
 //! its own, and [`WinitHost`] is the one `ApplicationHandler` that dispatches
-//! to them. A family is an ordinary behaviour component: it holds a closure and
-//! is driven by the host, exactly like the input callbacks are driven by
-//! [`dispatch_input`](crate::input::dispatch_input).
+//! to them. A family is an ordinary behaviour component: it holds a list of
+//! callbacks and is driven by the host, exactly like the input callbacks are
+//! driven by [`dispatch_input`](crate::input::dispatch_input).
 //!
 //! The callback signature deliberately carries no [`ActiveEventLoop`]. The loop
 //! is only reachable inside a callback, so a component that took it could never
@@ -27,9 +27,10 @@
 //! - Structural changes go through [`unlit_ecs::Scope::queue`] and land when the host
 //!   applies the queue after the dispatch. Use the entity [`Commands::spawn`]
 //!   returns to refer to an entity that does not exist yet.
-//! - Different families on one entity are different cells and never conflict;
-//!   two behaviours of the *same* family on one entity do. Put them on two
-//!   entities.
+//! - Different families on one entity are different cells and never conflict.
+//!   One component of the *same* family may hold several callbacks, and they
+//!   run in the order they were added; a callback still must not reach for its
+//!   own family.
 //!
 //! [`Commands::spawn`]: unlit_ecs::Commands::spawn
 
@@ -100,17 +101,41 @@ pub type WinitUserCallback<U> = Box<dyn FnMut(&World, Entity, &mut U)>;
 ///
 /// The event type is the generic parameter of the [`EventLoop`], so this one
 /// cannot come from the `behaviour!` macro.
-pub struct OnUserEvent<U: 'static>(pub WinitUserCallback<U>);
+pub struct OnUserEvent<U: 'static> {
+    /// The callbacks, in the order they were added.
+    pub callbacks: Vec<WinitUserCallback<U>>,
+}
 
 impl<U: 'static> OnUserEvent<U> {
-    /// Wrap `f` as an [`OnUserEvent`].
-    pub fn new(f: impl FnMut(&World, Entity, &mut U) + 'static) -> Self {
-        Self(Box::new(f))
+    /// Box `f` as one callback of an [`OnUserEvent`].
+    ///
+    /// [`new`](Self::new) takes callbacks in this form, which is what lets a
+    /// closure be written without naming the world's user event type.
+    pub fn callback(f: impl FnMut(&World, Entity, &mut U) + 'static) -> WinitUserCallback<U> {
+        Box::new(f)
     }
 
-    /// Run this behaviour for `entity` with `event`.
+    /// Wrap the callbacks `cbs` as an [`OnUserEvent`].
+    ///
+    /// They run in the order the iterator yields them. An empty iterator
+    /// declares a component that runs nothing yet.
+    pub fn new(cbs: impl IntoIterator<Item = WinitUserCallback<U>>) -> Self {
+        Self {
+            callbacks: cbs.into_iter().collect(),
+        }
+    }
+
+    /// Add `f` at run time, after the callbacks already in this behaviour.
+    pub fn push(&mut self, f: impl FnMut(&World, Entity, &mut U) + 'static) {
+        self.callbacks.push(Box::new(f));
+    }
+
+    /// Run every callback of this behaviour for `entity`, in the order they
+    /// were added.
     pub fn run(&mut self, world: &World, entity: Entity, event: &mut U) {
-        (self.0)(world, entity, event);
+        for callback in &mut self.callbacks {
+            callback(world, entity, event);
+        }
     }
 }
 
@@ -418,31 +443,75 @@ mod tests {
             window_id: WindowId::dummy(),
             event: WindowEvent::Focused(true),
         };
-        let first = OnWindowEvent::new({
+        let first = OnWindowEvent::new([OnWindowEvent::callback({
             let seen = seen.clone();
             move |_world, _entity, event| {
                 assert!(matches!(event.event, WindowEvent::Focused(true)));
                 *seen.borrow_mut() += 1;
             }
-        });
-        let second = OnWindowEvent::new({
+        })]);
+        let second = OnWindowEvent::new([OnWindowEvent::callback({
             let seen = seen.clone();
             move |_world, _entity, _event| *seen.borrow_mut() += 1
-        });
+        })]);
         for mut behaviour in [first, second] {
             behaviour.run(&world, Entity::from_bits(0), &payload);
         }
         assert_eq!(*seen.borrow(), 2);
     }
 
+    /// One entity may carry several callbacks in one component; every one of
+    /// them sees the same event, in the order they were added.
+    #[test]
+    fn one_component_runs_every_callback_it_holds() {
+        let world = World::new();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let first = seen.clone();
+        let second = seen.clone();
+        let payload = WinitWindowEvent {
+            window_id: WindowId::dummy(),
+            event: WindowEvent::Focused(true),
+        };
+        let mut behaviour = OnWindowEvent::new([
+            OnWindowEvent::callback(move |_world, _entity, event| {
+                assert!(matches!(event.event, WindowEvent::Focused(true)));
+                first.borrow_mut().push(1);
+            }),
+            OnWindowEvent::callback(move |_world, _entity, _event| second.borrow_mut().push(2)),
+        ]);
+        behaviour.run(&world, Entity::from_bits(0), &payload);
+        assert_eq!(*seen.borrow(), vec![1, 2]);
+    }
+
+    /// A user-event component holds a list too, and its callbacks all receive
+    /// the same mutable payload.
+    #[test]
+    fn a_user_event_component_runs_every_callback() {
+        let world = World::new();
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let first = seen.clone();
+        let second = seen.clone();
+        let mut behaviour = OnUserEvent::<u32>::new([
+            OnUserEvent::<u32>::callback(move |_world, _entity, event| {
+                first.borrow_mut().push(*event);
+                *event += 1;
+            }),
+            OnUserEvent::<u32>::callback(move |_world, _entity, event| {
+                second.borrow_mut().push(*event)
+            }),
+        ]);
+        behaviour.run(&world, Entity::from_bits(0), &mut 7);
+        assert_eq!(*seen.borrow(), vec![7, 8]);
+    }
+
     #[test]
     fn a_user_event_carries_its_own_type() {
         let world = World::new();
         let seen = Rc::new(RefCell::new(None));
-        let mut behaviour = OnUserEvent::<u32>::new({
+        let mut behaviour = OnUserEvent::<u32>::new([OnUserEvent::<u32>::callback({
             let seen = seen.clone();
             move |_world, _entity, event| *seen.borrow_mut() = Some(*event)
-        });
+        })]);
         behaviour.run(&world, Entity::from_bits(0), &mut 7);
         assert_eq!(*seen.borrow(), Some(7));
     }

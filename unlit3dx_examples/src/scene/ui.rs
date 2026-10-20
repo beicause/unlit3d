@@ -313,7 +313,7 @@ impl Controls {
             (
                 self,
                 TrackRows::START,
-                UiPanel::new(move |world, entity, ui| {
+                UiPanel::new([UiPanel::callback(move |world, entity, ui| {
                     // The panel reads its own handle: the object on this entity
                     // owns it, so the callback carries nothing but the counts.
                     let Some(audio) = world.get::<Controls>(entity).map(|c| c.audio.clone()) else {
@@ -359,7 +359,7 @@ impl Controls {
                             }
                         });
                     });
-                }),
+                })]),
             ),
         );
         if let Some(audio) = watcher_audio {
