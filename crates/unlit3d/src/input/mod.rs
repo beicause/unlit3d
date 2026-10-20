@@ -18,8 +18,8 @@
 //! 2. [`dispatch_input`] starts this world's input tick: everything buffered
 //!    since the last tick becomes the tick's batch, the batch is folded into
 //!    this world's [`InputState`] — modifiers, pointers, buttons, focus, size
-//!    — and the behaviour components run for it. What a callback queues is
-//!    applied before the next callback runs.
+//!    — and the behaviour components run for it. It does not apply structural
+//!    changes; the caller does.
 //!
 //! Nothing clears the events afterwards. A world's [`InputEvents`] is the one
 //! buffer everything in that world reads — the events of this tick and the
@@ -29,8 +29,8 @@
 //! ```rust
 //! use unlit3d::prelude::*;
 //!
-//! // What a callback accumulates, in a sibling component, which the rest of
-//! // the world reads afterwards.
+//! // What a callback accumulates, in a sibling component: a behaviour is
+//! // borrowed while it runs, so it cannot keep state in itself.
 //! struct Presses(u32);
 //!
 //! let mut world = World::new();
@@ -41,11 +41,11 @@
 //! // A behaviour that reacts to the keyboard.
 //! world.root_scope_mut().spawn((
 //!     Presses(0),
-//!     OnKey::new([OnKey::callback(|world, entity, key| {
+//!     OnKey::new(|world, entity, key| {
 //!         if key.pressed {
 //!             let _ = world.root_scope().with_mut::<Presses, _>(entity, |presses| presses.0 += 1);
 //!         }
-//!     })]),
+//!     }),
 //! ));
 //!
 //! // This frame's events, as a translation layer would feed them in.
@@ -56,25 +56,28 @@
 //!     modifiers: Modifiers::default(),
 //! }));
 //!
-//! // End of the tick: take what arrived as this tick's batch and deliver it.
-//! // The state the events left stays.
-//! assert!(dispatch_input(&mut world));
+//! // End of the tick: take what arrived as this tick's batch, deliver it,
+//! // and land what the callbacks queued. The state the events left stays.
+//! assert!(dispatch_input(&world));
+//! world.apply();
 //! // A second dispatch has nothing left to deliver.
-//! assert!(!dispatch_input(&mut world));
+//! assert!(!dispatch_input(&world));
 //! ```
 //!
 //! # Constraints on a callback
 //!
-//! The driver takes a callback out of its component before calling it, so a
-//! callback may reach for its own component type, on any entity. It must not
-//! re-enter [`dispatch_input`] for the same world.
+//! A behaviour component is borrowed while it runs, so a callback cannot reach
+//! for its own component type — that is a borrow panic, not a compile error.
+//! State a callback needs across events belongs in a sibling component. Two
+//! different behaviour types on the same entity are fine: they are different
+//! cells, so [`OnKey`] and [`OnInput`] never conflict.
 
 use core::ops::Deref;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use async_channel::{Receiver, Sender, unbounded};
 use bitflags::bitflags;
-use unlit_ecs::{CallbackList, Entity, World};
+use unlit_ecs::World;
 
 use crate::behaviour::behaviour;
 
@@ -722,7 +725,7 @@ pub enum InputEvent {
 /// world.root_scope_mut().spawn((input.clone(), input.subscribe()));
 /// let observer = world.root_scope_mut().spawn((
 ///     CtrlPresses(0),
-///     OnInput::new([OnInput::callback(|world, entity, _event| {
+///     OnInput::new(|world, entity, _event| {
 ///         let ctrl = world
 ///             .root_scope()
 ///             .query::<&InputEvents>()
@@ -731,11 +734,11 @@ pub enum InputEvent {
 ///         if ctrl {
 ///             let _ = world.root_scope().with_mut::<CtrlPresses, _>(entity, |presses| presses.0 += 1);
 ///         }
-///     })]),
+///     }),
 /// ));
 ///
 /// input.push(InputEvent::ModifiersChanged(Modifiers { ctrl: true, ..Modifiers::default() }));
-/// dispatch_input(&mut world);
+/// dispatch_input(&world);
 ///
 /// assert_eq!(world.root_scope().get::<CtrlPresses>(observer).unwrap().0, 1);
 /// ```
@@ -1221,10 +1224,11 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// nothing and returns `false`: a world that never asked for input has
 /// nothing to deliver, and that is not an error.
 ///
-/// Returns whether any event was delivered.
+/// Returns whether any event was delivered, so a caller can skip the
+/// [`World::apply`] that would otherwise follow an empty dispatch.
 ///
-/// Each event goes to its category's behaviour components and, in addition,
-/// to every [`OnInput`]:
+/// Each event goes to its category's behaviour component and, in addition, to
+/// every [`OnInput`]:
 ///
 /// | event | components that receive it |
 /// |---|---|
@@ -1236,30 +1240,36 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// | [`InputEvent::Ime`] | [`OnIme`], [`OnInput`] |
 /// | [`InputEvent::ModifiersChanged`] / [`InputEvent::FocusChanged`] | [`OnInput`] |
 ///
-/// # What a callback may do
+/// # What a callback may not do
 ///
 /// The events are taken out of the queue before any callback runs, so a
 /// callback may freely read and write the [`InputState`] — a common need,
 /// since the resource is where "is Ctrl still held?" lives — and may even
 /// feed input, which lands in the next dispatch.
 ///
-/// One component may hold several callbacks, and they all run for every
-/// event, in the order they were added. Each of them is taken out of its
-/// component before it runs, so a callback may reach for its own component
-/// type, and may queue structural changes through
-/// [`unlit_ecs::Scope::queue`]: the queue is applied before the next callback
-/// runs, so a later callback already sees what an earlier one spawned or
-/// despawned.
+/// Two things stay off limits, both consequences of `unlit_ecs` borrowing a
+/// component to call it:
 ///
-/// A callback must not re-enter this function: the events of one dispatch are
-/// copied out first, and a nested dispatch would deliver the same tick twice.
+/// - A callback must not reach for its *own* component type, on any entity.
+///   That is a borrow panic; keep per-callback state in a sibling component.
+///   [`OnInput`] and [`OnKey`] on one entity do not conflict, because they are
+///   different cells.
+/// - A callback must not re-enter this function for the same component type.
+///
+/// Structural changes queue through [`unlit_ecs::Scope::queue`] and land when the
+/// caller applies them. The caller applies **once**, after the whole dispatch,
+/// not between callbacks: the behaviour components are iterated directly, so
+/// the world is borrowed for the duration and cannot be applied to. Typically
+/// that looks like:
 ///
 /// ```rust
 /// # use unlit3d::prelude::*;
 /// # let mut world = World::new();
-/// dispatch_input(&mut world);
+/// if dispatch_input(&world) {
+///     world.apply();
+/// }
 /// ```
-pub fn dispatch_input(world: &mut World) -> bool {
+pub fn dispatch_input(world: &World) -> bool {
     // The tick starts by moving everything queued into the batch, before any
     // behaviour runs: a callback may feed input itself, and that belongs to
     // the next tick rather than to this dispatch.
@@ -1280,40 +1290,37 @@ pub fn dispatch_input(world: &mut World) -> bool {
 
     let delivered = !events.is_empty();
 
-    // One scratch list, reused for every family of every event.
-    let mut entities = Vec::new();
-
     for event in &events {
         match event {
             InputEvent::Key(event) => {
-                deliver::<OnKey, _>(world, &mut entities, |world, entity, callback| {
-                    callback(world, entity, event);
-                });
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnKey>() {
+                    behaviour.run(world, entity, event);
+                }
             }
             InputEvent::Mouse(event) => {
-                deliver::<OnMouse, _>(world, &mut entities, |world, entity, callback| {
-                    callback(world, entity, event);
-                });
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnMouse>() {
+                    behaviour.run(world, entity, event);
+                }
             }
             InputEvent::Pointer(event) => {
-                deliver::<OnPointer, _>(world, &mut entities, |world, entity, callback| {
-                    callback(world, entity, event);
-                });
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnPointer>() {
+                    behaviour.run(world, entity, event);
+                }
             }
             InputEvent::Touch(event) => {
-                deliver::<OnTouch, _>(world, &mut entities, |world, entity, callback| {
-                    callback(world, entity, event);
-                });
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnTouch>() {
+                    behaviour.run(world, entity, event);
+                }
             }
             InputEvent::Text(event) => {
-                deliver::<OnText, _>(world, &mut entities, |world, entity, callback| {
-                    callback(world, entity, event);
-                });
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnText>() {
+                    behaviour.run(world, entity, event);
+                }
             }
             InputEvent::Ime(event) => {
-                deliver::<OnIme, _>(world, &mut entities, |world, entity, callback| {
-                    callback(world, entity, event);
-                });
+                for (entity, mut behaviour) in world.root_scope().query::<&mut OnIme>() {
+                    behaviour.run(world, entity, event);
+                }
             }
             // These carry no per-category payload to route, so only the
             // catch-all hears them.
@@ -1323,31 +1330,12 @@ pub fn dispatch_input(world: &mut World) -> bool {
             | InputEvent::ScaleFactorChanged { .. } => {}
         }
 
-        deliver::<OnInput, _>(world, &mut entities, |world, entity, callback| {
-            callback(world, entity, event);
-        });
+        for (entity, mut behaviour) in world.root_scope().query::<&mut OnInput>() {
+            behaviour.run(world, entity, event);
+        }
     }
 
     delivered
-}
-
-/// Run every behaviour of one family, in order, applying what each queued.
-///
-/// `entities` is the caller's scratch list, so a dispatch over many events
-/// allocates once. An entity whose component an applied command removed is
-/// skipped by the world, which finds nothing left to run.
-fn deliver<C, F>(world: &mut World, entities: &mut Vec<Entity>, mut run: F)
-where
-    C: CallbackList,
-    F: FnMut(&World, Entity, &mut C::Callback),
-{
-    entities.clear();
-    entities.extend(world.root_scope().query::<&C>().map(|(entity, _)| entity));
-    for entity in entities.iter().copied() {
-        world.run_callbacks::<C, _>(entity, &mut |world, callback| {
-            run(world, entity, callback);
-        });
-    }
 }
 
 #[cfg(test)]
@@ -1412,28 +1400,6 @@ mod tests {
         (shared.clone(), shared)
     }
 
-    /// One entity may carry several callbacks of one category; every one of
-    /// them runs for the same event, in the order it was added.
-    #[test]
-    fn one_entity_runs_every_callback_of_a_category() {
-        let mut world = World::new();
-        let log = Rc::new(core::cell::RefCell::new(Vec::new()));
-        let first = log.clone();
-        let second = log.clone();
-        world.root_scope_mut().spawn((OnKey::new([
-            OnKey::callback(move |_, _, _| first.borrow_mut().push(1)),
-            OnKey::callback(move |_, _, _| second.borrow_mut().push(2)),
-        ]),));
-
-        let input_handle = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn((input_handle.clone(), input_handle.subscribe()));
-        input_handle.push(key_event(Key::W));
-        assert!(dispatch_input(&mut world));
-        assert_eq!(*log.borrow(), vec![1, 2]);
-    }
-
     #[test]
     fn each_event_reaches_its_category_and_every_on_input() {
         let mut world = World::new();
@@ -1445,41 +1411,29 @@ mod tests {
         let (seen_text, text) = counter();
         let (seen_ime, ime) = counter();
 
+        world.root_scope_mut().spawn((OnInput::new(move |_, _, _| {
+            seen_input.set(seen_input.get() + 1);
+        }),));
+        world.root_scope_mut().spawn((OnKey::new(move |_, _, _| {
+            seen_key.set(seen_key.get() + 1);
+        }),));
+        world.root_scope_mut().spawn((OnMouse::new(move |_, _, _| {
+            seen_mouse.set(seen_mouse.get() + 1);
+        }),));
         world
             .root_scope_mut()
-            .spawn((OnInput::new([OnInput::callback(move |_, _, _| {
-                seen_input.set(seen_input.get() + 1);
-            })]),));
-        world
-            .root_scope_mut()
-            .spawn((OnKey::new([OnKey::callback(move |_, _, _| {
-                seen_key.set(seen_key.get() + 1);
-            })]),));
-        world
-            .root_scope_mut()
-            .spawn((OnMouse::new([OnMouse::callback(move |_, _, _| {
-                seen_mouse.set(seen_mouse.get() + 1);
-            })]),));
-        world
-            .root_scope_mut()
-            .spawn((OnPointer::new([OnPointer::callback(move |_, _, _| {
+            .spawn((OnPointer::new(move |_, _, _| {
                 seen_pointer.set(seen_pointer.get() + 1);
-            })]),));
-        world
-            .root_scope_mut()
-            .spawn((OnTouch::new([OnTouch::callback(move |_, _, _| {
-                seen_touch.set(seen_touch.get() + 1);
-            })]),));
-        world
-            .root_scope_mut()
-            .spawn((OnText::new([OnText::callback(move |_, _, _| {
-                seen_text.set(seen_text.get() + 1);
-            })]),));
-        world
-            .root_scope_mut()
-            .spawn((OnIme::new([OnIme::callback(move |_, _, _| {
-                seen_ime.set(seen_ime.get() + 1);
-            })]),));
+            }),));
+        world.root_scope_mut().spawn((OnTouch::new(move |_, _, _| {
+            seen_touch.set(seen_touch.get() + 1);
+        }),));
+        world.root_scope_mut().spawn((OnText::new(move |_, _, _| {
+            seen_text.set(seen_text.get() + 1);
+        }),));
+        world.root_scope_mut().spawn((OnIme::new(move |_, _, _| {
+            seen_ime.set(seen_ime.get() + 1);
+        }),));
 
         let input_handle = InputWriter::new();
         world
@@ -1503,7 +1457,7 @@ mod tests {
             input_handle.push(event);
         }
 
-        assert!(dispatch_input(&mut world), "events were delivered");
+        assert!(dispatch_input(&world), "events were delivered");
 
         assert_eq!(input.get(), event_count, "OnInput hears every event");
         assert_eq!(key.get(), 1, "OnKey hears only the key event");
@@ -1523,8 +1477,8 @@ mod tests {
         let (all, all_count) = counter();
 
         world.root_scope_mut().spawn((
-            OnKey::new([OnKey::callback(move |_, _, _| keys.set(keys.get() + 1))]),
-            OnInput::new([OnInput::callback(move |_, _, _| all.set(all.get() + 1))]),
+            OnKey::new(move |_, _, _| keys.set(keys.get() + 1)),
+            OnInput::new(move |_, _, _| all.set(all.get() + 1)),
         ));
         let input = InputWriter::new();
         world
@@ -1533,7 +1487,7 @@ mod tests {
         input.push(key_event(Key::A));
         input.push(mouse_event());
 
-        dispatch_input(&mut world);
+        dispatch_input(&world);
 
         assert_eq!(key_count.get(), 1);
         assert_eq!(all_count.get(), 2);
@@ -1547,9 +1501,7 @@ mod tests {
             let count = count.clone();
             world
                 .root_scope_mut()
-                .spawn((OnKey::new([OnKey::callback(move |_, _, _| {
-                    count.set(count.get() + 1)
-                })]),));
+                .spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
         }
 
         let input = InputWriter::new();
@@ -1558,7 +1510,7 @@ mod tests {
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
-        dispatch_input(&mut world);
+        dispatch_input(&world);
 
         assert_eq!(seen.get(), 3, "one key event per behaviour");
     }
@@ -1571,15 +1523,15 @@ mod tests {
         let (matches, seen) = counter();
         world.root_scope_mut().spawn((
             7u32,
-            OnKey::new([OnKey::callback(move |world, entity, _| {
+            OnKey::new(move |world, entity, _| {
                 let marker = *world.root_scope().get::<u32>(entity).unwrap();
                 matches.set(marker as usize);
-            })]),
+            }),
         ));
         // Another entity of the same kind must not be substituted.
         world
             .root_scope_mut()
-            .spawn((9u32, OnKey::new([OnKey::callback(|_, _, _| {})])));
+            .spawn((9u32, OnKey::new(|_, _, _| {})));
 
         let input = InputWriter::new();
         world
@@ -1587,7 +1539,7 @@ mod tests {
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
-        dispatch_input(&mut world);
+        dispatch_input(&world);
 
         assert_eq!(seen.get(), 7);
     }
@@ -1604,7 +1556,7 @@ mod tests {
         let (held, seen) = counter();
         world
             .root_scope_mut()
-            .spawn((OnKey::new([OnKey::callback(move |world, _, _| {
+            .spawn((OnKey::new(move |world, _, _| {
                 let ctrl = world
                     .root_scope()
                     .query::<&InputEvents>()
@@ -1613,7 +1565,7 @@ mod tests {
                 if ctrl {
                     held.set(held.get() + 1);
                 }
-            })]),));
+            }),));
         input.push(InputEvent::Key(KeyEvent {
             key: Key::C,
             pressed: true,
@@ -1624,7 +1576,7 @@ mod tests {
             },
         }));
 
-        dispatch_input(&mut world);
+        dispatch_input(&world);
 
         assert_eq!(seen.get(), 1, "the callback read the state the event built");
     }
@@ -1637,16 +1589,14 @@ mod tests {
         let (count, seen) = counter();
         world
             .root_scope_mut()
-            .spawn((OnKey::new([OnKey::callback(move |world, _, _| {
+            .spawn((OnKey::new(move |world, _, _| {
                 let siblings = world
                     .root_scope()
                     .query_filtered::<Entity, With<OnKey>>()
                     .count();
                 count.set(siblings);
-            })]),));
-        world
-            .root_scope_mut()
-            .spawn((OnKey::new([OnKey::callback(|_, _, _| {})]),));
+            }),));
+        world.root_scope_mut().spawn((OnKey::new(|_, _, _| {}),));
 
         let input = InputWriter::new();
         world
@@ -1654,45 +1604,38 @@ mod tests {
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
-        dispatch_input(&mut world);
+        dispatch_input(&world);
 
         assert_eq!(seen.get(), 2);
     }
 
     #[test]
-    fn a_queued_spawn_lands_before_the_next_callback_runs() {
+    fn a_queued_spawn_lands_after_apply() {
         let mut world = World::new();
-        world.root_scope_mut().spawn((OnKey::new([
-            OnKey::callback(|world, _, _| {
-                world.root_scope().queue().spawn((42u32,));
-            }),
-            OnKey::callback(|world, _, _| {
-                let spawned = world
-                    .root_scope()
-                    .query_filtered::<Entity, With<u32>>()
-                    .count();
-                assert_eq!(spawned, 1, "the earlier callback's spawn has landed");
-            }),
-        ]),));
+        world.root_scope_mut().spawn((OnKey::new(|world, _, _| {
+            world.root_scope().queue().spawn((42u32,));
+        }),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
-        assert!(dispatch_input(&mut world));
+        assert!(dispatch_input(&world));
+        assert_eq!(world.root_scope().len(), 2, "queued, not applied");
+
+        world.apply();
         assert_eq!(world.root_scope().len(), 3);
     }
 
     #[test]
     fn a_callback_may_queue_its_own_despawn() {
         let mut world = World::new();
-        let doomed =
-            world
-                .root_scope_mut()
-                .spawn((OnKey::new([OnKey::callback(|world, entity, _| {
-                    world.root_scope().queue().despawn(entity);
-                })]),));
+        let doomed = world
+            .root_scope_mut()
+            .spawn((OnKey::new(|world, entity, _| {
+                world.root_scope().queue().despawn(entity);
+            }),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
@@ -1700,7 +1643,7 @@ mod tests {
         input.push(key_event(Key::A));
         input.push(key_event(Key::B));
 
-        dispatch_input(&mut world);
+        dispatch_input(&world);
         world.apply();
 
         assert!(!world.root_scope().has::<OnKey>(doomed));
@@ -1712,12 +1655,10 @@ mod tests {
         let (count, seen) = counter();
         world
             .root_scope_mut()
-            .spawn((OnInput::new([OnInput::callback(move |_, _, _| {
-                count.set(count.get() + 1)
-            })]),));
+            .spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
         world.root_scope_mut().spawn((InputWriter::new(),));
 
-        assert!(!dispatch_input(&mut world));
+        assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
     }
 
@@ -1727,11 +1668,9 @@ mod tests {
         let (count, seen) = counter();
         world
             .root_scope_mut()
-            .spawn((OnInput::new([OnInput::callback(move |_, _, _| {
-                count.set(count.get() + 1)
-            })]),));
+            .spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
 
-        assert!(!dispatch_input(&mut world));
+        assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
     }
 
@@ -1745,7 +1684,7 @@ mod tests {
         input.push(key_event(Key::A));
 
         // Events did arrive, so the caller still owes an `apply`.
-        assert!(dispatch_input(&mut world));
+        assert!(dispatch_input(&world));
     }
 
     #[test]
@@ -2038,7 +1977,7 @@ mod tests {
         input.push(InputEvent::FocusChanged(false));
         input.push(key_event(Key::S));
 
-        assert!(dispatch_input(&mut world));
+        assert!(dispatch_input(&world));
         world.apply();
 
         let (_, events) = world
@@ -2061,9 +2000,7 @@ mod tests {
         let (count, seen) = counter();
         world
             .root_scope_mut()
-            .spawn((OnKey::new([OnKey::callback(move |_, _, _| {
-                count.set(count.get() + 1)
-            })]),));
+            .spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
@@ -2074,11 +2011,11 @@ mod tests {
         input.push(key_event(Key::B));
         input.push(key_event(Key::C));
 
-        assert!(dispatch_input(&mut world));
+        assert!(dispatch_input(&world));
         assert_eq!(seen.get(), 3, "every event waited for this dispatch");
 
         // And the queue is empty afterwards, so nothing is delivered twice.
-        assert!(!dispatch_input(&mut world));
+        assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 3);
     }
 
@@ -2152,30 +2089,22 @@ mod tests {
     }
 
     #[test]
-    fn a_behaviour_may_read_its_own_component() {
-        // The callback is taken out of its component before it runs, so the
-        // component is free to be read -- and written -- from inside it. The
-        // running callback is the one that is out, so the list reads one short.
+    #[should_panic(expected = "already borrowed")]
+    fn a_behaviour_cannot_reborrow_its_own_component() {
+        // The boundary a callback has to stay inside, pinned here so it cannot
+        // regress into a silently different failure.
         let mut world = World::new();
-        let seen = Rc::new(Cell::new(usize::MAX));
-        let counted = seen.clone();
-        world.root_scope_mut().spawn((OnKey::new([
-            OnKey::callback(|_, _, _| {}),
-            OnKey::callback(move |world, entity, _| {
-                let behaviour = world
-                    .root_scope()
-                    .get::<OnKey>(entity)
-                    .expect("the component is not borrowed while its callback runs");
-                counted.set(behaviour.callbacks.len());
-            }),
-        ]),));
+        world
+            .root_scope_mut()
+            .spawn((OnKey::new(|world, entity, _| {
+                let _ = world.root_scope().get::<OnKey>(entity);
+            }),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
             .spawn((input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
-        dispatch_input(&mut world);
-        assert_eq!(seen.get(), 1, "the running callback is out of the list");
+        dispatch_input(&world);
     }
 }

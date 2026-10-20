@@ -418,10 +418,7 @@ primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它�
 ## UI
 
 `ui::UiPanel` 本身就是一个持有闭包的行为组件，所以一个界面就是一个实体——一帧可以有
-与实体数量相同的面板，而一个实体也可以在同一个组件里携带多个面板，它们作为一个界面
-按加入顺序运行。`ui::UiSource` 驱动器会按查询顺序运行 world 携带的所有面板。面板是唯一
-一类驱动器只持有共享 world 的行为族——`ui::lay_out` 运行在 egui 自己的布局 pass 里——
-因此面板回调排下的变更由调用方在这一趟之后应用，而不是像其他行为族那样在两次回调之间应用。
+与实体数量相同的面板，`ui::UiSource` 驱动器会按查询顺序运行 world 携带的所有面板。
 
 面板只能在它自己的 egui context 所运行的地方构建，因为回调拿到的是属于正在构建它的那一趟
 pass 的 `&mut egui::Ui`。因此「面板住在一个 world、绘制属于另一个 world」的 UI 以**数据**
@@ -440,9 +437,8 @@ context 保持独立：共用会让两个 world 同时写同一份 memory 与字
 **界面本身就是行为组件，不是源上的闭包字段。** 这与「调用者即系统」的约定一致：源是
 驱动器，它决定调用哪些面板、以什么顺序；面板要记状态就放在它自己的兄弟组件里（行为
 组件运行期间被借用，不能重入借用自己）；面板拿到 `&World`，可以读写组件、也可以
-`queue()` 结构变更。需要独立增删时多个面板就是多个实体；共享同一生命周期的面板可以
-放在同一个实体的面板组件里。第三方也能定义自己的面板类组件由源筛选——源本身不需要
-知道有哪些界面。
+`queue()` 结构变更。因此多个面板就是多个实体，可以按需增删，第三方也能定义自己的
+面板类组件由源筛选——源本身不需要知道有哪些界面。
 
 **单位约定是这套 API 最容易错的地方**：egui 的顶点与裁剪矩形使用逻辑点，而窗口事件
 坐标是物理像素。因此投影用点（物理尺寸除以缩放因子），而 scissor 必须乘缩放因子——
@@ -591,12 +587,9 @@ let mut world = World::new();
 // The panels of a UI source live under it: a frame hands the source its own
 // scope and drives whatever panels it finds there.
 let ui = world.root_scope_mut().spawn((Source::new(UiSource::new()),));
-// 一个组件可以持有界面所需的任意多个面板，它们按顺序运行。
-world.scope_mut(ui).unwrap().spawn((UiPanel::new([UiPanel::callback(
-    |_world, _entity, ui| {
-        ui.label("hello");
-    },
-)]),));
+world.scope_mut(ui).unwrap().spawn((UiPanel::new(|_world, _entity, ui| {
+    ui.label("hello");
+}),));
 # }
 ```
 
@@ -606,9 +599,8 @@ world.scope_mut(ui).unwrap().spawn((UiPanel::new([UiPanel::callback(
 也不依赖 egui。一帧经由 `InputWriter` 送入事件，它把每条事件投进每个订阅了它的世界
 的缓冲。世界的缓冲就是它的 `InputEvents`：距上次 tick 以来到达的事件，加上这些事件
 留下的 `InputState`（修饰键、指针、按键、窗口尺寸）。`dispatch_input` 把本世界的
-队列取作本次 tick 的批次、折进状态并驱动这些行为，在下一个回调运行之前应用上一个回调
-排下的变更——因此它取可变 world，事后也不需要自己再 `apply`。世界独占它还没 tick 的
-事件，因此 tick 频率低于输入到达频率的世界依然按顺序读到每一条，之后也不需要谁去清空。
+队列取作本次 tick 的批次、折进状态并驱动这些行为。世界独占它还没 tick 的事件，因此
+tick 频率低于输入到达频率的世界依然按顺序读到每一条，之后也不需要谁去清空。
 `distribute_input` 把 `InputWriter` 复制进每个嵌套世界并在那里订阅，一条流即可供给
 全部世界，而每个世界各建自己的状态；不在这个层级里的世界——由 runner 作为兄弟世界
 启动的那个——则在自己的初始化里自行订阅。只读输入而完全不分发的世界改为每 tick 调用
@@ -622,8 +614,8 @@ egui 的事件。
 - **事件类型不依赖 winit，也不依赖 egui**：核心类型自持，winit 与 egui 的转换放在各自
   feature 之后。这样游戏逻辑与 UI 共用同一条事件流，不需要两套事件。
 - **事件回调是行为组件**，与 ECS 既有的行为组件范式同构：按事件类别调用所有对应行为
-  组件，一个组件持有多个回调时按加入顺序全部运行。`OnInput` 收到全部事件，
-  `OnKey`/`OnMouse`/`OnPointer`/`OnTouch`/`OnText`/`OnIme` 各收一类。鼠标族一律以 `Mouse` 命名（`MouseEvent`/`MouseButton`/
+  组件。`OnInput` 收到全部事件，`OnKey`/`OnMouse`/`OnPointer`/`OnTouch`/`OnText`/
+  `OnIme` 各收一类。鼠标族一律以 `Mouse` 命名（`MouseEvent`/`MouseButton`/
   `MouseButtons`/`OnMouse`），`Pointer` 专指**设备无关的「点输入」**：鼠标与触摸都
   产生 `PointerEvent`，因此同一段拖拽行为在桌面和触屏上都能用；`Touch` 保留手指独有的
   信息（触摸 id、压力）。反过来，触摸**不会**置位鼠标按键，`InputState` 里的按键状态
@@ -645,9 +637,8 @@ egui 的事件。
   让回调排队的变更延迟到下一次外部 `apply`，且这个延迟对用户不可见。显式调用也让调用
   方掌控分发时机与顺序，与「调用者即系统」一致。
 - 分发**直接遍历**行为组件即可，不需要先收集实体：回调借用的是不同实体的不同 cell，
-  互不冲突。同一个组件里的多个回调则在组件内部依次运行。真正的限制来自 ECS 自身有意
-  为之的取舍——回调不能重入借用自己那个组件（也包括同组件的其它回调），也不能重入同类
-  分发；要保留状态就放到兄弟组件上。
+  互不冲突。真正的限制来自 ECS 自身有意为之的取舍——回调不能重入借用自己那个组件，
+  也不能重入同类分发；要保留状态就放到兄弟组件上。
 
 UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回世界：一帧布局完成后，源
 那个 context 上的 `egui_wants_pointer_input` 与 `egui_wants_keyboard_input`
@@ -667,10 +658,8 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 任何一条是应用走不了的路径。
 
 回调组件就是普通的行为组件，按普通方式编写与测试：它拿到 `&World`、它所在实体与事件，
-且不能重入宿主。一个组件可以持有多个回调，它们对同一条事件按加入顺序全部运行。宿主
-一次只驱动一个回调，先把该回调从组件里取出，因此回调可以触达自己那个组件类型，且它经
-`Scope::queue` 排下的变更会在下一个回调运行之前落盘——前一个回调做的改动后一个看得见。
-回调签名刻意不带 `ActiveEventLoop`：该类型只能在回调内
+且不能触达自己那个组件类型，也不能重入宿主。结构变更经 `World::queue` 排队，在分发
+之后由宿主 `apply` 时落地。回调签名刻意不带 `ActiveEventLoop`：该类型只能在回调内
 构造，带它的组件永远无法单元测试。回调需要事件循环做的事改为请求组件——
 `CreateWindowRequest` 与 `ExitRequest` 由宿主在分发后执行，`WinitWindow` 是组件
 请求重绘时所用的窗口，而 `Resumed` 与 `DisplayHandle` 由宿主自己维护。
@@ -680,14 +669,11 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 帧行为拿到 `&World`、它所在实体，以及一个 `&mut`
 [`Frame`](frame::Frame)——里面是这一帧的 delta、序号与尺寸。形状与事件族完全一致，
 只是把「事件」换成了「这一帧的上下文」。排序先按
-[`FrameBehaviourOrder`](frame::FrameBehaviourOrder)，同序时再按实体，最后按组件内列表的
-位置。顺序属于每个回调，因此一个组件可以独立安排它持有的多个回调。库自身不声明任何
+[`FrameBehaviourOrder`](frame::FrameBehaviourOrder)，同序时再按实体；库自身不声明任何
 顺序值，谁先谁后由应用定义。窗口应用的宿主 world 与它驱动的每个 world 派发的是同一个族，
 所以场景侧也用同样的方式组件化。用 [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn)
-生成行为：`new` 接受回调的迭代器，每个回调用该族的 `callback` 辅助函数书写，
-`push` 在运行时再追加一个。需要跳过本帧其余工作的行为写一个兄弟行为会读的标志；需要结构
-变更的行为把变更排队，因为回调只持有 `&World`——而分发会在下一个回调运行之前应用该队列，
-所以同一帧里靠后的行为已经看得见它。
+生成行为。需要跳过本帧其余工作的行为写一个兄弟行为会读的标志；需要结构
+变更的行为把变更排队，因为回调只持有 `&World`。
 
 ```rust,no_run
 # use unlit3d::winit::builtin::{

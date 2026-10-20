@@ -14,14 +14,6 @@
 //! cannot change the world's structure: it queues those changes instead. It may
 //! read and write its own lifecycle component; a callback it adds there runs
 //! after the ones that were already registered.
-//!
-//! The world drives a list through
-//! [`World::run_callbacks`](crate::World::run_callbacks), which takes one
-//! callback out of the component before calling it. On a spawn the queue is
-//! applied after every callback, so a later one sees what an earlier one
-//! spawned. A despawn cascade does not apply anything in the middle: every
-//! callback of the whole subtree runs against the tree as it was, and the queue
-//! is drained once the cascade is over.
 
 use crate::entity::Entity;
 use crate::view::Scope;
@@ -65,14 +57,8 @@ macro_rules! lifecycle_component {
             }
         }
 
-        impl $crate::callback::CallbackList for $name {
-            type Callback = LifecycleCallback;
-
-            fn callbacks(&self) -> &[LifecycleCallback] {
-                &self.0
-            }
-
-            fn callbacks_mut(&mut self) -> &mut Vec<LifecycleCallback> {
+        impl $crate::lifecycle::Lifecycle for $name {
+            fn callbacks(&mut self) -> &mut Vec<LifecycleCallback> {
                 &mut self.0
             }
         }
@@ -87,3 +73,25 @@ lifecycle_component!(
     /// The callbacks that run, in order, right before the entity is despawned.
     OnDespawn
 );
+
+/// A component whose callbacks the world runs at a structural change.
+///
+/// The trait is what lets the spawn and despawn paths share one runner. It is
+/// sealed: the world only knows how to run [`OnSpawn`] and [`OnDespawn`], so
+/// implementing it elsewhere would not make anything run.
+pub trait Lifecycle: 'static + sealed::Sealed {
+    /// The callbacks, in the order they run.
+    ///
+    /// A list rather than a slice so that the runner can move the callbacks out
+    /// of the component, run them without holding a borrow of it, and put back
+    /// whatever they registered.
+    fn callbacks(&mut self) -> &mut Vec<LifecycleCallback>;
+}
+
+mod sealed {
+    /// Keeps [`Lifecycle`](super::Lifecycle) to the components the world runs.
+    pub trait Sealed {}
+
+    impl Sealed for super::OnSpawn {}
+    impl Sealed for super::OnDespawn {}
+}

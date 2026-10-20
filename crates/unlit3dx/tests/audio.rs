@@ -54,17 +54,15 @@ fn install_synth(world: &mut World, bytes: &[u8], gain: f32, tracks: &[&str], sa
 /// sample, the way a synthesizer adds its block to the chunk.
 fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
     let counted = Arc::clone(counts);
-    world
-        .root_scope_mut()
-        .spawn((OnAudioFill::new([OnAudioFill::callback(
-            AudioFillOrder::default(),
-            move |_world, _entity, chunk| {
-                counted.fetch_add(1, Ordering::SeqCst);
-                for sample in chunk.out.iter_mut() {
-                    *sample += level;
-                }
-            },
-        )]),));
+    world.root_scope_mut().spawn((OnAudioFill::new(
+        AudioFillOrder::default(),
+        move |_world, _entity, chunk| {
+            counted.fetch_add(1, Ordering::SeqCst);
+            for sample in chunk.out.iter_mut() {
+                *sample += level;
+            }
+        },
+    ),));
 }
 
 /// A world with no sources fills with silence; a source adds to the chunk
@@ -72,48 +70,22 @@ fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
 #[test]
 fn the_dispatcher_mixes_the_worlds_sources() {
     let mut out = vec![1.0f32; 128];
-    dispatch_audio_fill(&mut World::new(), &mut out, 48_000, 2);
+    dispatch_audio_fill(&World::new(), &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0), "nothing to play");
 
     let mut world = World::new();
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.25, &counts);
-    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.25));
     assert_eq!(counts.load(Ordering::SeqCst), 1);
 
     counting_source(&mut world, 0.5, &counts);
-    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(
         out.iter().all(|sample| (sample - 0.75).abs() < 1e-6),
         "both sources must add up"
     );
-}
-
-/// One entity may hold several sources in one component: the dispatcher mixes
-/// every callback, in the order it was added.
-#[test]
-fn one_entity_may_hold_several_sources() {
-    let mut world = World::new();
-    let counts = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&counts);
-    world.root_scope_mut().spawn((OnAudioFill::new([
-        OnAudioFill::callback(AudioFillOrder::default(), move |_world, _entity, chunk| {
-            counted.fetch_add(1, Ordering::SeqCst);
-            for sample in chunk.out.iter_mut() {
-                *sample += 0.25;
-            }
-        }),
-        OnAudioFill::callback(AudioFillOrder::default(), move |_world, _entity, chunk| {
-            for sample in chunk.out.iter_mut() {
-                *sample += 0.5;
-            }
-        }),
-    ]),));
-    let mut out = vec![0.0f32; 4];
-    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
-    assert!(out.iter().all(|sample| (sample - 0.75).abs() < 1e-6));
-    assert_eq!(counts.load(Ordering::SeqCst), 1, "one dispatched fill");
 }
 
 /// The world's gain scales the mix once, after the sources summed, and an
@@ -125,13 +97,13 @@ fn the_worlds_gain_scales_the_mix() {
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.4, &counts);
     let mut out = vec![0.0f32; 8];
-    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| (sample - 0.8).abs() < 1e-6));
 
     // A second source pushes the sum past full scale: the clamp lands on
     // the unit range, not on a wrapped sample.
     counting_source(&mut world, 0.4, &counts);
-    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 1.0));
 }
 
@@ -143,30 +115,26 @@ fn equal_orders_run_in_entity_order() {
     let ran: Arc<Mutex<Vec<&'static str>>> = Arc::default();
     for (name, level) in [("first", 0.1), ("second", 0.2)] {
         let ran = Arc::clone(&ran);
-        world
-            .root_scope_mut()
-            .spawn((OnAudioFill::new([OnAudioFill::callback(
-                AudioFillOrder::default(),
-                move |_world, _entity, chunk| {
-                    ran.lock().unwrap().push(name);
-                    for sample in chunk.out.iter_mut() {
-                        *sample += level;
-                    }
-                },
-            )]),));
+        world.root_scope_mut().spawn((OnAudioFill::new(
+            AudioFillOrder::default(),
+            move |_world, _entity, chunk| {
+                ran.lock().unwrap().push(name);
+                for sample in chunk.out.iter_mut() {
+                    *sample += level;
+                }
+            },
+        ),));
     }
     // A later order runs after every earlier one.
     let late = Arc::clone(&ran);
-    world
-        .root_scope_mut()
-        .spawn((OnAudioFill::new([OnAudioFill::callback(
-            AudioFillOrder(1),
-            move |_world, _entity, _chunk| {
-                late.lock().unwrap().push("late");
-            },
-        )]),));
+    world.root_scope_mut().spawn((OnAudioFill::new(
+        AudioFillOrder(1),
+        move |_world, _entity, _chunk| {
+            late.lock().unwrap().push("late");
+        },
+    ),));
     let mut out = vec![0.0f32; 2];
-    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert_eq!(*ran.lock().unwrap(), vec!["first", "second", "late"]);
 }
 
@@ -286,7 +254,7 @@ fn a_failed_soundfont_leaves_the_world_silent() {
         "a world whose soundfont failed carries no sources"
     );
     let mut out = vec![1.0f32; 256];
-    dispatch_audio_fill(&mut world, &mut out, 48_000, 2);
+    dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0));
 }
 
@@ -342,7 +310,7 @@ fn transport_jobs_for_unknown_tracks_do_nothing() {
         48_000,
     );
     let mut out = vec![1.0f32; 64];
-    dispatch_audio_fill(&mut broken, &mut out, 48_000, 2);
+    dispatch_audio_fill(&broken, &mut out, 48_000, 2);
     assert!(out.iter().all(|sample| *sample == 0.0));
 }
 
@@ -378,7 +346,7 @@ fn a_track_holds_its_clock_across_pause_and_rewind() {
     play_track_job("sequence", file, false)(&mut world);
 
     // The onset lands where the note says it should.
-    let onset = fills_until_sound(&mut world, ONSET_FILLS * 2);
+    let onset = fills_until_sound(&world, ONSET_FILLS * 2);
     assert!(
         (ONSET_FILLS - 8..ONSET_FILLS + 8).contains(&onset),
         "the note sounded after {onset} fills, expected about {ONSET_FILLS}"
@@ -390,20 +358,20 @@ fn a_track_holds_its_clock_across_pause_and_rewind() {
     pause_track_job("sequence", true)(&mut world);
     for _ in 0..ONSET_FILLS * 3 {
         assert!(
-            !sounding(&mut world),
+            !sounding(&world),
             "a paused track is still rendering samples"
         );
     }
     pause_track_job("sequence", false)(&mut world);
     assert!(
-        sounding(&mut world),
+        sounding(&world),
         "the resume found nothing left to play: the pause ran the sequencer's clock"
     );
 
     // Rewind: the same file starts over, so the note is a second of playing
     // away again rather than still sounding where it was held.
     rewind_track_job("sequence")(&mut world);
-    let after_rewind = fills_until_sound(&mut world, ONSET_FILLS * 3);
+    let after_rewind = fills_until_sound(&world, ONSET_FILLS * 3);
     assert!(
         (ONSET_FILLS - 8..ONSET_FILLS + 8).contains(&after_rewind),
         "after the rewind the note came after {after_rewind} fills, expected about {ONSET_FILLS}"
@@ -430,7 +398,7 @@ fn the_other_track_keeps_playing() {
     let file = midi_file(&[(0.0, 0x90, 60, 100), (0.5, 0x80, 60, 0)]).expect("a one note file");
     play_track_job("background", file.clone(), true)(&mut world);
     play_track_job("sequence", file, false)(&mut world);
-    assert!(sounding(&mut world), "both tracks sound");
+    assert!(sounding(&world), "both tracks sound");
 
     pause_track_job("sequence", true)(&mut world);
     stop_track_job("nobody")(&mut world);
@@ -438,7 +406,7 @@ fn the_other_track_keeps_playing() {
     // stays alive while the paused track holds still.
     let mut quiet = 0;
     for _ in 0..ONSET_FILLS {
-        if sounding(&mut world) {
+        if sounding(&world) {
             return;
         }
         quiet += 1;
@@ -457,19 +425,19 @@ const SAMPLE_RATE: u32 = 48_000;
 const ONSET_FILLS: usize = SAMPLE_RATE as usize / BLOCK;
 
 /// Render one chunk and answer whether any sample moved.
-fn sounding(world: &mut World) -> bool {
+fn sounding(world: &World) -> bool {
     fill(world).iter().any(|sample| *sample != 0.0)
 }
 
 /// Render one chunk of interleaved frames.
-fn fill(world: &mut World) -> Vec<f32> {
+fn fill(world: &World) -> Vec<f32> {
     let mut out = vec![0.0f32; BLOCK * 2];
     dispatch_audio_fill(world, &mut out, SAMPLE_RATE, 2);
     out
 }
 
 /// How many fills until a sample moves, or `limit` when none does.
-fn fills_until_sound(world: &mut World, limit: usize) -> usize {
+fn fills_until_sound(world: &World, limit: usize) -> usize {
     for index in 0..limit {
         if sounding(world) {
             return index;
@@ -525,7 +493,7 @@ fn a_finished_track_is_counted_once_per_play() {
 
     let mut seen = 0;
     for _ in 0..ONSET_FILLS * 2 {
-        let _ = fill(&mut world);
+        let _ = fill(&world);
         let ends = ends_of(&world, "sequence");
         assert!(ends >= seen, "the count fell from {seen} to {ends}");
         assert!(ends <= 1, "one play was counted {ends} times");
@@ -538,7 +506,7 @@ fn a_finished_track_is_counted_once_per_play() {
     let short = midi_file(&[(0.0, 0x90, 60, 100), (0.2, 0x80, 60, 0)]).expect("a short file");
     play_track_job("sequence", short, false)(&mut world);
     for _ in 0..ONSET_FILLS * 2 {
-        let _ = fill(&mut world);
+        let _ = fill(&world);
         if ends_of(&world, "sequence") == 2 {
             return;
         }

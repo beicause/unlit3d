@@ -33,11 +33,11 @@ use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
 use crate::bundle::Bundle;
-use crate::callback::CallbackList;
 use crate::column::{AnyColumn, borrow_conflict};
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
 use crate::hash::TypeIdHashMap;
+use crate::lifecycle::Lifecycle;
 use crate::scope::{ScopeOf, ScopeTree};
 use crate::view::{Scope, ScopeMut};
 
@@ -61,14 +61,6 @@ pub struct World {
     /// They are the only entities that exist without being content, so a scope
     /// that counts rows has to know where they are.
     scaffolding: u32,
-    /// Whether a despawn cascade is running, which keeps it from applying the
-    /// queue in the middle of one.
-    ///
-    /// A cascade runs these callbacks while the entity still has its row, and
-    /// the callbacks of the entities around it are still to run. Applying there
-    /// would move rows under them, and a queued despawn of the entity whose
-    /// callback is running would restart the cascade for the same entity.
-    cascading: bool,
 }
 
 /// The exclusive borrow of a world's command queue.
@@ -96,7 +88,6 @@ impl World {
             root: Entity::PLACEHOLDER,
             shared: Entity::PLACEHOLDER,
             scaffolding: 0,
-            cascading: false,
         };
         // The root's scope is itself, which is where walking up the tree stops.
         // It is recorded before the shared scope is inserted, because that one
@@ -302,13 +293,9 @@ impl World {
             return false;
         }
         let doomed = self.tree_read().subtree_post_order(entity);
-        let was_cascading = self.cascading;
-        self.cascading = true;
         for victim in doomed {
             self.remove_entity(victim);
         }
-        self.cascading = was_cascading;
-        self.apply();
         true
     }
 
@@ -417,9 +404,6 @@ impl World {
         let Some(location) = self.location(entity) else {
             return;
         };
-        // The callbacks of the whole cascade run before any row moves, so each
-        // of them still reads the entity it runs for and the entities around it.
-        // What they queue is applied once the cascade is over, by despawn_in.
         self.run_lifecycle::<crate::OnDespawn>(entity);
         self.tree_write().detach(entity);
         self.remove_row(location);
@@ -431,111 +415,46 @@ impl World {
         self.run_lifecycle::<crate::OnSpawn>(entity);
     }
 
-    /// Run every callback of the behaviour component `C` the entity carries.
+    /// Run every callback of the lifecycle component `C` the entity carries.
     ///
-    /// The callbacks run in the order they were registered. Each gets the scope
-    /// of the entity's own scope, which is its parent: a callback that wants the
-    /// entity's own subtree descends into the entity itself.
-    fn run_lifecycle<C>(&mut self, entity: Entity)
-    where
-        C: CallbackList,
-        C::Callback: for<'a, 'b> FnMut(&'a Scope<'b>, Entity),
-    {
-        let Some(scope_of) = self.parent_scope(entity) else {
+    /// The callbacks run in the order they were registered. The scope handed to
+    /// them is the one the entity lives in, that of its parent: a callback that
+    /// wants the entity's own subtree descends into the entity itself.
+    fn run_lifecycle<C: 'static + Lifecycle>(&mut self, entity: Entity) {
+        let Some(scope) = self.parent_scope(entity) else {
             return;
         };
         if self.location(entity).is_none() {
             return;
         }
-        self.run_callbacks::<C, _>(entity, &mut |world, callback| {
-            callback(&Scope::new(world, scope_of), entity);
-        });
-    }
-
-    /// Run one callback of the behaviour component `C` on `entity`.
-    ///
-    /// The callback is taken out of the component and put back once it has
-    /// returned, so the world does not hold the component while it runs. That is
-    /// what lets a driver apply the queue between two callbacks of one
-    /// component, and what lets a callback reach for its own component.
-    ///
-    /// What the callback queued is applied before this returns, so the next
-    /// callback runs against the world the previous one left behind. A queued
-    /// change to the list itself is not run: the caller resolved the list before
-    /// the first callback.
-    ///
-    /// Returns whether the component was still there. `false` means a callback
-    /// despawned the entity it was running for, and the callback went with it.
-    ///
-    /// No borrow is held across the callback, so it may read or write its own
-    /// component like any other.
-    pub fn run_callback<C, F>(&mut self, entity: Entity, index: usize, run: &mut F) -> bool
-    where
-        C: CallbackList,
-        F: FnMut(&World, &mut C::Callback),
-    {
-        let Some(mut callback) = self.take_callback::<C>(entity, index) else {
-            return false;
-        };
-        run(self, &mut callback);
-        self.restore_callback::<C>(entity, index, callback);
-        self.apply_between();
-        true
-    }
-
-    /// Run every callback of `C` on `entity`, in order.
-    ///
-    /// The list is read once, so a callback that adds one to its own component is
-    /// not run until the next dispatch. Returns `false` when the component is
-    /// gone before the list is exhausted.
-    pub fn run_callbacks<C, F>(&mut self, entity: Entity, run: &mut F) -> bool
-    where
-        C: CallbackList,
-        F: FnMut(&World, &mut C::Callback),
-    {
-        let len = match self.get::<C>(entity) {
-            Some(list) => list.callbacks().len(),
-            None => return true,
-        };
-        for index in 0..len {
-            if !self.run_callback::<C, F>(entity, index, run) {
-                return false;
-            }
-        }
-        true
-    }
-
-    /// Take the callback at `index` out of the `C` component of `entity`.
-    fn take_callback<C: CallbackList>(
-        &mut self,
-        entity: Entity,
-        index: usize,
-    ) -> Option<C::Callback> {
-        let mut list = self.get_mut::<C>(entity)?;
-        let callbacks = list.callbacks_mut();
-        if index >= callbacks.len() {
-            return None;
-        }
-        Some(callbacks.remove(index))
-    }
-
-    /// Put a callback back at the index it came from.
-    ///
-    /// The position holds even when the callbacks on either side of it changed
-    /// while it ran, which is why it is an index rather than the end of the list;
-    /// an index past the end appends instead.
-    fn restore_callback<C: CallbackList>(
-        &mut self,
-        entity: Entity,
-        index: usize,
-        callback: C::Callback,
-    ) {
-        let Some(mut list) = self.get_mut::<C>(entity) else {
+        let scope = Scope::new(self, scope);
+        let Some(total) = self
+            .get_mut::<C>(entity)
+            .map(|mut hooks| hooks.callbacks().len())
+        else {
             return;
         };
-        let callbacks = list.callbacks_mut();
-        let index = index.min(callbacks.len());
-        callbacks.insert(index, callback);
+        for index in 0..total {
+            // One callback at a time is off the component while it runs, so a
+            // callback that touches its own lifecycle component does not hit a
+            // borrow the run would otherwise hold. A callback that panics then
+            // takes only itself down: the ones behind it are still on the
+            // component rather than in a dropped list.
+            let Some(mut callback) = self.get_mut::<C>(entity).and_then(|mut hooks| {
+                let callbacks = hooks.callbacks();
+                (index < callbacks.len()).then(|| callbacks.remove(index))
+            }) else {
+                break;
+            };
+            callback(&scope, entity);
+            // Back where it was, so the next callback is the one that followed
+            // it and anything registered during the run stays behind everything
+            // that has already run.
+            if let Some(mut hooks) = self.get_mut::<C>(entity) {
+                let callbacks = hooks.callbacks();
+                callbacks.insert(index.min(callbacks.len()), callback);
+            }
+        }
     }
 
     // -- queries and diagnostics -------------------------------------------
@@ -567,19 +486,6 @@ impl World {
             };
             command.apply(self);
         }
-    }
-
-    /// Apply the queue between two callbacks of a behaviour dispatch.
-    ///
-    /// A despawn cascade runs its callbacks before any of its rows move, so it
-    /// applies nothing until it is done: applying there would move rows under
-    /// the callbacks still to run, and a queued despawn of the entity whose
-    /// callback is running would restart the cascade for it.
-    pub(crate) fn apply_between(&mut self) {
-        if self.cascading {
-            return;
-        }
-        self.apply();
     }
 
     // -- internals ---------------------------------------------------------

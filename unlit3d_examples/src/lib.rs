@@ -767,6 +767,31 @@ struct SequenceStepped(bool);
 /// same time, so it is taken out, called, and put back.
 struct SceneAdvance(Option<Advance>);
 
+/// Run the scene's own per-frame behaviour, which needs `&mut World`.
+struct RunSceneAdvance {
+    /// The entity carrying the scene's [`SceneAdvance`] and sequence state.
+    entity: Entity,
+    /// The frame the behaviour is advanced by.
+    frame: Frame,
+}
+
+impl Command for RunSceneAdvance {
+    fn apply(self: Box<Self>, world: &mut World) {
+        let Self { entity, frame } = *self;
+        let advance = world
+            .root_scope()
+            .with_mut::<SceneAdvance, _>(entity, |slot| slot.0.take())
+            .flatten();
+        let Some(mut advance) = advance else {
+            return;
+        };
+        advance(world, frame.index, frame.delta_time, frame.size);
+        let _ = world
+            .root_scope()
+            .with_mut::<SceneAdvance, _>(entity, |slot| slot.0 = Some(advance));
+    }
+}
+
 /// Run one MCP command against a nested world of the host.
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 struct RunInWorld {
@@ -1149,14 +1174,18 @@ const FRAME_CONTROLS: FrameBehaviourOrder = FrameBehaviourOrder(20);
 const FRAME_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(30);
 const FRAME_DRAW: FrameBehaviourOrder = FrameBehaviourOrder(40);
 
-/// The scene world's frame behaviours' order: the sequence is stepped before
-/// the scene's own behaviour runs.
-///
-/// Input is dispatched first as well, but it needs a mutable world, which a
-/// frame callback does not have: [`Scene::advance`] dispatches it before it
-/// hands the behaviours the frame.
+/// The scene world's frame behaviours' order: input is dispatched before the
+/// sequence is stepped, and the sequence before the scene's own behaviour runs.
+const SCENE_INPUT: FrameBehaviourOrder = FrameBehaviourOrder(0);
 const SCENE_SEQUENCE: FrameBehaviourOrder = FrameBehaviourOrder(10);
 const SCENE_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(20);
+
+/// Run the scene world's input dispatch for the frame.
+fn dispatch_input_on_frame() -> OnFrame {
+    OnFrame::new(SCENE_INPUT, |world, _entity, _frame| {
+        dispatch_input(world);
+    })
+}
 
 /// Decide whether this frame advances the scene's sequence.
 ///
@@ -1164,65 +1193,47 @@ const SCENE_ADVANCE: FrameBehaviourOrder = FrameBehaviourOrder(20);
 /// without advances every frame. The decision is recorded in `SequenceStepped`
 /// for the behaviour that runs the advance.
 fn step_sequence(entity: Entity) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
-        SCENE_SEQUENCE,
-        move |world, _entity, frame| {
-            let stepped = match world
+    OnFrame::new(SCENE_SEQUENCE, move |world, _entity, frame| {
+        let stepped = match world
+            .root_scope()
+            .get::<SequenceStep>(entity)
+            .and_then(|step| step.0)
+        {
+            Some(step) => world
                 .root_scope()
-                .get::<SequenceStep>(entity)
-                .and_then(|step| step.0)
-            {
-                Some(step) => {
-                    let mut clock = world
-                        .root_scope()
-                        .get_mut::<SequenceClock>(entity)
-                        .expect("the scene frame entity carries a sequence clock");
+                .with_mut::<SequenceClock, _>(entity, |clock| {
                     tick(&mut clock.0, step, frame.delta_time)
-                }
-                None => true,
-            };
-            let _ = world
-                .root_scope()
-                .with_mut::<SequenceStepped, _>(entity, |flag| flag.0 = stepped);
-        },
-    )])
+                })
+                .expect("the scene frame entity carries a sequence clock"),
+            None => true,
+        };
+        let _ = world
+            .root_scope()
+            .with_mut::<SequenceStepped, _>(entity, |flag| flag.0 = stepped);
+    })
 }
 
 /// Run the scene's own per-frame behaviour when the sequence advanced, and
 /// count the frame.
 ///
 /// The behaviour needs `&mut World`, which a frame callback does not have, so
-/// it is queued; the dispatch applies it before the next behaviour runs. The
-/// index is captured before it is counted on, so the behaviour is handed the
-/// frame it advances from.
+/// it is queued; the index is captured before it is counted on, so the
+/// behaviour is handed the frame it advances from.
 fn run_scene_advance(entity: Entity) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
-        SCENE_ADVANCE,
-        move |world, _entity, frame| {
-            let stepped = world
-                .root_scope()
-                .get::<SequenceStepped>(entity)
-                .is_some_and(|flag| flag.0);
-            if !stepped {
-                return;
-            }
-            let advanced = *frame;
-            world.root_scope().queue().run(move |world| {
-                let advance = world
-                    .root_scope()
-                    .with_mut::<SceneAdvance, _>(entity, |slot| slot.0.take())
-                    .flatten();
-                let Some(mut advance) = advance else {
-                    return;
-                };
-                advance(world, advanced.index, advanced.delta_time, advanced.size);
-                let _ = world
-                    .root_scope()
-                    .with_mut::<SceneAdvance, _>(entity, |slot| slot.0 = Some(advance));
-            });
-            frame.index = frame.index.wrapping_add(1);
-        },
-    )])
+    OnFrame::new(SCENE_ADVANCE, move |world, _entity, frame| {
+        let stepped = world
+            .root_scope()
+            .get::<SequenceStepped>(entity)
+            .is_some_and(|flag| flag.0);
+        if !stepped {
+            return;
+        }
+        world.root_scope().queue().push(RunSceneAdvance {
+            entity,
+            frame: *frame,
+        });
+        frame.index = frame.index.wrapping_add(1);
+    })
 }
 
 /// Build the scene and its surface, and short-circuit the frame until both are
@@ -1232,43 +1243,40 @@ fn run_scene_advance(entity: Entity) -> OnFrame {
 /// `apply`; the surface is built out of that world. Each frame retries, and
 /// the frames that cannot yet draw are skipped.
 fn ensure_presented(app: Entity) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
-        FRAME_PRESENT,
-        move |world, _entity, _frame| {
-            let resumed = world
-                .root_scope()
-                .query::<&Resumed>()
-                .next()
-                .is_some_and(|(_, state)| state.0);
-            if !resumed {
-                FrameSkip::skip(world);
-                return;
-            }
-            if world
-                .root_scope()
-                .get::<SceneEntity>(app)
-                .is_none_or(|slot| slot.0.is_none())
-            {
-                present(world, app);
-                FrameSkip::skip(world);
-                return;
-            }
+    OnFrame::new(FRAME_PRESENT, move |world, _entity, _frame| {
+        let resumed = world
+            .root_scope()
+            .query::<&Resumed>()
+            .next()
+            .is_some_and(|(_, state)| state.0);
+        if !resumed {
+            FrameSkip::skip(world);
+            return;
+        }
+        if world
+            .root_scope()
+            .get::<SceneEntity>(app)
+            .is_none_or(|slot| slot.0.is_none())
+        {
+            present(world, app);
+            FrameSkip::skip(world);
+            return;
+        }
+        if !world
+            .root_scope()
+            .get::<SurfaceSlot>(app)
+            .is_some_and(|slot| slot.0.is_some())
+        {
+            present(world, app);
             if !world
                 .root_scope()
                 .get::<SurfaceSlot>(app)
                 .is_some_and(|slot| slot.0.is_some())
             {
-                present(world, app);
-                if !world
-                    .root_scope()
-                    .get::<SurfaceSlot>(app)
-                    .is_some_and(|slot| slot.0.is_some())
-                {
-                    FrameSkip::skip(world);
-                }
+                FrameSkip::skip(world);
             }
-        },
-    )])
+        }
+    })
 }
 
 /// Open a URL the UI asked for, in a new tab when it asked for one.
@@ -1297,178 +1305,169 @@ fn open_url(url: &OpenUrl) {
 /// from it when the switch is served: the control state is read in one block
 /// and acted on after.
 fn serve_scene_controls(app: Entity) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
-        FRAME_CONTROLS,
-        move |world, _entity, _frame| {
-            if FrameSkip::is_skipped(world) {
-                return;
-            }
-            let Some(scene_entity) = world
-                .root_scope()
-                .get::<SceneEntity>(app)
-                .and_then(|slot| slot.0)
-            else {
+    OnFrame::new(FRAME_CONTROLS, move |world, _entity, _frame| {
+        if FrameSkip::is_skipped(world) {
+            return;
+        }
+        let Some(scene_entity) = world
+            .root_scope()
+            .get::<SceneEntity>(app)
+            .and_then(|slot| slot.0)
+        else {
+            return;
+        };
+        let active = window(world).is_some_and(|window| fullscreen::active(&window));
+        let (selector_pos, gpu_info_pos, switch, fullscreen) = {
+            let Some(nested) = world.root_scope().get::<World>(scene_entity) else {
                 return;
             };
-            let active = window(world).is_some_and(|window| fullscreen::active(&window));
-            let (selector_pos, gpu_info_pos, switch, fullscreen) = {
-                let Some(nested) = world.root_scope().get::<World>(scene_entity) else {
-                    return;
-                };
-                let (selector_pos, gpu_info_pos) = {
-                    let scene = world
-                        .root_scope()
-                        .get::<Scene>(scene_entity)
-                        .expect("the scene component exists");
-                    (scene.selector_rect(&nested), scene.gpu_info_rect(&nested))
-                };
-                let switch = world
+            let (selector_pos, gpu_info_pos) = {
+                let scene = world
                     .root_scope()
-                    .with_mut::<Scene, _>(scene_entity, |scene| scene.pending.take())
-                    .flatten();
-                let fullscreen = world
-                    .root_scope()
-                    .get_mut::<Scene>(scene_entity)
-                    .is_some_and(|mut scene| scene.fullscreen_request(&nested, active));
-                (selector_pos, gpu_info_pos, switch, fullscreen)
+                    .get::<Scene>(scene_entity)
+                    .expect("the scene component exists");
+                (scene.selector_rect(&nested), scene.gpu_info_rect(&nested))
             };
-            let _ = world
+            let switch = world
                 .root_scope()
-                .with_mut::<SelectorPos, _>(app, |slot| slot.0 = selector_pos);
-            let _ = world
+                .with_mut::<Scene, _>(scene_entity, |scene| scene.pending.take())
+                .flatten();
+            let fullscreen = world
                 .root_scope()
-                .with_mut::<GpuInfoPos, _>(app, |slot| slot.0 = gpu_info_pos);
-            if let Some(def) = switch {
-                switch_scene(world, app, def);
-                FrameSkip::skip(world);
-                return;
+                .get_mut::<Scene>(scene_entity)
+                .is_some_and(|mut scene| scene.fullscreen_request(&nested, active));
+            (selector_pos, gpu_info_pos, switch, fullscreen)
+        };
+        let _ = world
+            .root_scope()
+            .with_mut::<SelectorPos, _>(app, |slot| slot.0 = selector_pos);
+        let _ = world
+            .root_scope()
+            .with_mut::<GpuInfoPos, _>(app, |slot| slot.0 = gpu_info_pos);
+        if let Some(def) = switch {
+            switch_scene(world, app, def);
+            FrameSkip::skip(world);
+            return;
+        }
+        if fullscreen && let Some(window) = window(world) {
+            fullscreen::toggle(&window);
+        }
+        // The UI publishes the URLs it was asked to open in the scene's own
+        // world, so it is drained there rather than here in the host.
+        if let Some(nested) = world.root_scope().get::<World>(scene_entity) {
+            for url in drain_open_urls(&nested) {
+                open_url(&url);
             }
-            if fullscreen && let Some(window) = window(world) {
-                fullscreen::toggle(&window);
-            }
-            // The UI publishes the URLs it was asked to open in the scene's own
-            // world, so it is drained there rather than here in the host.
-            if let Some(nested) = world.root_scope().get::<World>(scene_entity) {
-                for url in drain_open_urls(&nested) {
-                    open_url(&url);
-                }
-            }
-        },
-    )])
+        }
+    })
 }
 
 /// Advance the scene by the frame's delta.
 fn advance_scene(app: Entity) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
-        FRAME_ADVANCE,
-        move |world, _entity, frame| {
-            if FrameSkip::is_skipped(world) {
-                return;
-            }
-            let Some(scene_entity) = world
-                .root_scope()
-                .get::<SceneEntity>(app)
-                .and_then(|slot| slot.0)
-            else {
-                return;
-            };
-            let Some(mut nested) = world.root_scope().get_mut::<World>(scene_entity) else {
-                return;
-            };
-            let _ = world
-                .root_scope()
-                .with_mut::<Scene, _>(scene_entity, |scene| {
-                    scene.advance(&mut nested, frame.delta_time);
-                });
-        },
-    )])
+    OnFrame::new(FRAME_ADVANCE, move |world, _entity, frame| {
+        if FrameSkip::is_skipped(world) {
+            return;
+        }
+        let Some(scene_entity) = world
+            .root_scope()
+            .get::<SceneEntity>(app)
+            .and_then(|slot| slot.0)
+        else {
+            return;
+        };
+        let Some(mut nested) = world.root_scope().get_mut::<World>(scene_entity) else {
+            return;
+        };
+        let _ = world
+            .root_scope()
+            .with_mut::<Scene, _>(scene_entity, |scene| {
+                scene.advance(&mut nested, frame.delta_time);
+            });
+    })
 }
 
 /// Present the advanced scene, or blit it into the swap chain in MCP mode.
 fn present_frame(app: Entity) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
-        FRAME_DRAW,
-        move |world, _entity, _frame| {
-            if FrameSkip::is_skipped(world) {
-                return;
-            }
-            let Some(scene_entity) = world
-                .root_scope()
-                .get::<SceneEntity>(app)
-                .and_then(|slot| slot.0)
-            else {
-                return;
-            };
-            let Some(mut nested) = world.root_scope().get_mut::<World>(scene_entity) else {
-                return;
-            };
-            let renderer = world
-                .root_scope()
-                .get::<Scene>(scene_entity)
-                .expect("the scene entity carries a scene")
-                .renderer;
-            let viewport = world
-                .root_scope()
-                .get::<Scene>(scene_entity)
-                .expect("the scene entity carries a scene")
-                .viewport;
+    OnFrame::new(FRAME_DRAW, move |world, _entity, _frame| {
+        if FrameSkip::is_skipped(world) {
+            return;
+        }
+        let Some(scene_entity) = world
+            .root_scope()
+            .get::<SceneEntity>(app)
+            .and_then(|slot| slot.0)
+        else {
+            return;
+        };
+        let Some(mut nested) = world.root_scope().get_mut::<World>(scene_entity) else {
+            return;
+        };
+        let renderer = world
+            .root_scope()
+            .get::<Scene>(scene_entity)
+            .expect("the scene entity carries a scene")
+            .renderer;
+        let viewport = world
+            .root_scope()
+            .get::<Scene>(scene_entity)
+            .expect("the scene entity carries a scene")
+            .viewport;
 
-            if world
-                .root_scope()
-                .get::<McpEnabled>(app)
-                .is_some_and(|mcp| mcp.0)
-            {
-                let nested_world: &World = &nested;
-                nested_world
-                    .root_scope()
-                    .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(nested_world))
-                    .expect("the renderer is a resource entity");
-                let _ = world
-                    .root_scope()
-                    .with_mut::<Scene, _>(scene_entity, |scene| {
-                        scene.end_frame(&mut nested);
-                    });
-                draw_blit(world, app);
-                return;
-            }
-
-            let Some(mut slot) = world.root_scope().get_mut::<SurfaceSlot>(app) else {
-                return;
-            };
-            let Some(surface) = slot.0.as_mut() else {
-                return;
-            };
+        if world
+            .root_scope()
+            .get::<McpEnabled>(app)
+            .is_some_and(|mcp| mcp.0)
+        {
             let nested_world: &World = &nested;
-            let attachments = world
-                .root_scope()
-                .get_mut::<AttachmentsSlot>(app)
-                .expect("the app entity carries its attachments slot");
-            let attachments = attachments.0.as_ref();
             nested_world
                 .root_scope()
-                .with_mut::<Renderer, _>(renderer, |renderer| {
-                    let Some(frame) = surface.acquire(nested_world, renderer) else {
-                        return;
-                    };
-                    if let Some(attachments) = attachments {
-                        attachments.bind(nested_world, renderer, frame.color_view().clone());
-                    }
-                    set_frame_viewport(nested_world, viewport.map(FrameViewport));
-                    renderer.render(nested_world);
-                    let queue = nested_world
-                        .root_scope()
-                        .get::<wgpu::Queue>(renderer.context().queue)
-                        .expect("the queue resource");
-                    frame.present(&queue);
-                })
+                .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(nested_world))
                 .expect("the renderer is a resource entity");
             let _ = world
                 .root_scope()
                 .with_mut::<Scene, _>(scene_entity, |scene| {
                     scene.end_frame(&mut nested);
                 });
-        },
-    )])
+            draw_blit(world, app);
+            return;
+        }
+
+        let Some(mut slot) = world.root_scope().get_mut::<SurfaceSlot>(app) else {
+            return;
+        };
+        let Some(surface) = slot.0.as_mut() else {
+            return;
+        };
+        let nested_world: &World = &nested;
+        let attachments = world
+            .root_scope()
+            .get_mut::<AttachmentsSlot>(app)
+            .expect("the app entity carries its attachments slot");
+        let attachments = attachments.0.as_ref();
+        nested_world
+            .root_scope()
+            .with_mut::<Renderer, _>(renderer, |renderer| {
+                let Some(frame) = surface.acquire(nested_world, renderer) else {
+                    return;
+                };
+                if let Some(attachments) = attachments {
+                    attachments.bind(nested_world, renderer, frame.color_view().clone());
+                }
+                set_frame_viewport(nested_world, viewport.map(FrameViewport));
+                renderer.render(nested_world);
+                let queue = nested_world
+                    .root_scope()
+                    .get::<wgpu::Queue>(renderer.context().queue)
+                    .expect("the queue resource");
+                frame.present(&queue);
+            })
+            .expect("the renderer is a resource entity");
+        let _ = world
+            .root_scope()
+            .with_mut::<Scene, _>(scene_entity, |scene| {
+                scene.end_frame(&mut nested);
+            });
+    })
 }
 
 /// Present the blit world into the swap chain, in MCP mode.
@@ -1524,107 +1523,102 @@ fn draw_blit(world: &World, app: Entity) {
 /// request waits for a later frame; a `GpuState` that is no longer idle keeps
 /// a later frame from starting it twice.
 fn request_gpu(app: Entity) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
-        FRAME_GPU,
-        move |world, _entity, _frame| {
-            if !world
-                .root_scope()
-                .get::<GpuState>(app)
-                .is_some_and(|state| matches!(&*state, GpuState::Idle))
-            {
-                return;
-            }
-            let Some(window) = window(world) else {
-                return;
-            };
-            let Some(display) = world
-                .root_scope()
-                .query::<&DisplayHandle>()
-                .next()
-                .map(|(_, handle)| handle.0.clone())
-            else {
-                return;
-            };
-            let Some(proxy) = world
-                .root_scope()
-                .get::<WinitProxy<UserEvent>>(app)
-                .map(|proxy| proxy.0.clone())
-            else {
-                return;
-            };
-            let _ = world
-                .root_scope()
-                .with_mut::<GpuState, _>(app, |state| *state = GpuState::Requested);
-            // The display handle is owned, not borrowed: the instance it builds has
-            // to outlive this callback. The descriptor is the environment-aware one
-            // so `WGPU_BACKEND` still selects a backend.
-            spawn(async move {
-                let instance = wgpu::util::new_instance_with_webgpu_detection(
-                    wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
-                )
-                .await;
-                let surface = instance
-                    .create_surface(window)
-                    .expect("the window presents to a surface");
-                match Gpu::request(instance, surface).await {
-                    Ok(gpu) => {
-                        let _ = proxy.send_event(UserEvent::Ready(gpu));
-                    }
-                    Err(error) => {
-                        let _ = proxy.send_event(UserEvent::Failed(error.to_string()));
-                    }
+    OnFrame::new(FRAME_GPU, move |world, _entity, _frame| {
+        if !world
+            .root_scope()
+            .get::<GpuState>(app)
+            .is_some_and(|state| matches!(&*state, GpuState::Idle))
+        {
+            return;
+        }
+        let Some(window) = window(world) else {
+            return;
+        };
+        let Some(display) = world
+            .root_scope()
+            .query::<&DisplayHandle>()
+            .next()
+            .map(|(_, handle)| handle.0.clone())
+        else {
+            return;
+        };
+        let Some(proxy) = world
+            .root_scope()
+            .get::<WinitProxy<UserEvent>>(app)
+            .map(|proxy| proxy.0.clone())
+        else {
+            return;
+        };
+        let _ = world
+            .root_scope()
+            .with_mut::<GpuState, _>(app, |state| *state = GpuState::Requested);
+        // The display handle is owned, not borrowed: the instance it builds has
+        // to outlive this callback. The descriptor is the environment-aware one
+        // so `WGPU_BACKEND` still selects a backend.
+        spawn(async move {
+            let instance = wgpu::util::new_instance_with_webgpu_detection(
+                wgpu::InstanceDescriptor::new_with_display_handle_from_env(Box::new(display)),
+            )
+            .await;
+            let surface = instance
+                .create_surface(window)
+                .expect("the window presents to a surface");
+            match Gpu::request(instance, surface).await {
+                Ok(gpu) => {
+                    let _ = proxy.send_event(UserEvent::Ready(gpu));
                 }
-            });
-        },
-    )])
+                Err(error) => {
+                    let _ = proxy.send_event(UserEvent::Failed(error.to_string()));
+                }
+            }
+        });
+    })
 }
 
 /// Serve the events the app posts to itself.
 fn handle_user_event(app: Entity) -> OnUserEvent<UserEvent> {
-    OnUserEvent::new([OnUserEvent::callback(
-        move |world, _entity, event| match event {
-            UserEvent::Ready(gpu) => {
-                let _ = world.root_scope().with_mut::<GpuState, _>(app, |state| {
-                    *state = GpuState::Ready(gpu.clone());
-                });
-                #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-                if world
-                    .root_scope()
-                    .get::<McpEnabled>(app)
-                    .is_some_and(|mcp| mcp.0)
-                {
-                    start_mcp(world, app);
-                }
-                present(world, app);
-            }
+    OnUserEvent::new(move |world, _entity, event| match event {
+        UserEvent::Ready(gpu) => {
+            let _ = world.root_scope().with_mut::<GpuState, _>(app, |state| {
+                *state = GpuState::Ready(gpu.clone());
+            });
             #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
-            UserEvent::Command(command) => {
-                if let Some(command) = command.take() {
-                    dispatch_command(world, command);
-                }
+            if world
+                .root_scope()
+                .get::<McpEnabled>(app)
+                .is_some_and(|mcp| mcp.0)
+            {
+                start_mcp(world, app);
             }
-            UserEvent::Failed(error) => {
-                log::error!("failed to start the renderer: {error}");
-                let _ = world
-                    .root_scope()
-                    .with_mut::<ExitRequest, _>(app, |request| request.0 = true);
+            present(world, app);
+        }
+        #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
+        UserEvent::Command(command) => {
+            if let Some(command) = command.take() {
+                dispatch_command(world, command);
             }
-        },
-    )])
+        }
+        UserEvent::Failed(error) => {
+            log::error!("failed to start the renderer: {error}");
+            let _ = world
+                .root_scope()
+                .with_mut::<ExitRequest, _>(app, |request| request.0 = true);
+        }
+    })
 }
 
 /// Draw on the frames the loop asks for.
 fn draw_on_redraw() -> OnWindowEvent {
-    OnWindowEvent::new([OnWindowEvent::callback(|world, entity, payload| {
+    OnWindowEvent::new(|world, entity, payload| {
         if matches!(&payload.event, WindowEvent::RedrawRequested) {
             world.root_scope().queue().push(DrawFrame { app: entity });
         }
-    })])
+    })
 }
 
 /// Re-state the scene and the surface for a new window size.
 fn resize_scene(app: Entity) -> OnWindowEvent {
-    OnWindowEvent::new([OnWindowEvent::callback(move |world, _entity, payload| {
+    OnWindowEvent::new(move |world, _entity, payload| {
         let WindowEvent::Resized(size) = &payload.event else {
             return;
         };
@@ -1656,15 +1650,15 @@ fn resize_scene(app: Entity) -> OnWindowEvent {
             resize_offscreen(world, app, size);
         }
         resize_surface(world, app, size.0, size.1);
-    })])
+    })
 }
 
 /// Drop the swap chain the platform is about to invalidate.
 #[cfg(target_os = "android")]
 fn release_on_suspend(app: Entity) -> OnSuspended {
-    OnSuspended::new([OnSuspended::callback(move |world, _entity, ()| {
+    OnSuspended::new(move |world, _entity, ()| {
         release(world, app);
-    })])
+    })
 }
 
 /// Start the MCP stdio transport, which posts each command back to the loop.
@@ -1803,9 +1797,10 @@ impl Scene {
             SequenceClock(0.0),
             SequenceStepped(true),
         ));
-        // The frame's own dispatch: step the index a fixed sequence holds each
-        // frame for, then advance the scene by the frame the index names.
-        // [`Scene::advance`] dispatches the frame's input first.
+        // The frame's own dispatch, in order: run the frame's input, step the
+        // index a fixed sequence holds each frame for, then advance the scene
+        // by the frame the index names.
+        world.root_scope_mut().spawn((dispatch_input_on_frame(),));
         world.root_scope_mut().spawn((step_sequence(frame_entity),));
         world
             .root_scope_mut()
@@ -1873,10 +1868,6 @@ impl Scene {
             .root_scope()
             .with_mut::<FrameRate, _>(self.frame_rate, |rate| rate.push(delta_time))
             .expect("the frame-rate component exists");
-
-        // This world's input, before its behaviours run: the dispatch needs a
-        // mutable world, which a frame callback does not have.
-        dispatch_input(world);
 
         let mut frame = Frame {
             delta_time,
@@ -2054,49 +2045,47 @@ fn mount_selector(
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn((UiPanel::new([UiPanel::callback(
-            move |world, _entity, ui| {
-                // The id is set explicitly: `Window::new` derives it from the title's
-                // `Atoms` text, whose hash differs from a plain string id, so the
-                // shell's read of the remembered rect would never match.
-                let id = egui::Id::new(SELECTOR_WINDOW);
-                // The window belongs to the bottom-right corner. A fresh one is seeded
-                // by that corner, so the corner stays put while the first layout
-                // measures the content; a carried rectangle is seeded by its own
-                // bottom-right and given its size, so the first frame lays it out
-                // exactly where the previous scene left it. `follow_screen_corner`
-                // keeps the corner when the screen changes shape.
-                let pivot = egui::Align2::RIGHT_BOTTOM;
-                let window = egui::Window::new(SELECTOR_WINDOW).id(id).pivot(pivot);
-                let window = match initial {
-                    Some(rect) => window
-                        .default_pos(rect.lerp_inside(pivot_factor(pivot)))
-                        .default_size(rect.size()),
-                    None => window
-                        .default_width(SELECTOR_DEFAULT_WIDTH)
-                        .default_pos(selector_default_pos(ui.ctx())),
-                };
-                // A titled window that is movable discards `current_pos`: egui
-                // re-applies the pivot it had stored before the area began, so the
-                // position given here would not stick. The reposition pass therefore
-                // also turns the window immovable; every other pass is movable again
-                // and a user's drag works as before.
-                let window = match follow_screen_corner(ui.ctx(), id, pivot) {
-                    Some(pos) => window.current_pos(pos).movable(false),
-                    None => window,
-                };
-                window.show(ui.ctx(), |ui| {
-                    ui.label(format!("{} — {}", current.title, current.description));
-                    ui.separator();
-                    for scene in scenes::SCENES.iter().copied() {
-                        let selected = scene.id == current.id;
-                        if ui.selectable_label(selected, scene.title).clicked() {
-                            let _ = world.with_mut::<SceneSwitch, _>(switch, |s| s.0 = Some(scene));
-                        }
+        .spawn((UiPanel::new(move |world, _entity, ui| {
+            // The id is set explicitly: `Window::new` derives it from the title's
+            // `Atoms` text, whose hash differs from a plain string id, so the
+            // shell's read of the remembered rect would never match.
+            let id = egui::Id::new(SELECTOR_WINDOW);
+            // The window belongs to the bottom-right corner. A fresh one is seeded
+            // by that corner, so the corner stays put while the first layout
+            // measures the content; a carried rectangle is seeded by its own
+            // bottom-right and given its size, so the first frame lays it out
+            // exactly where the previous scene left it. `follow_screen_corner`
+            // keeps the corner when the screen changes shape.
+            let pivot = egui::Align2::RIGHT_BOTTOM;
+            let window = egui::Window::new(SELECTOR_WINDOW).id(id).pivot(pivot);
+            let window = match initial {
+                Some(rect) => window
+                    .default_pos(rect.lerp_inside(pivot_factor(pivot)))
+                    .default_size(rect.size()),
+                None => window
+                    .default_width(SELECTOR_DEFAULT_WIDTH)
+                    .default_pos(selector_default_pos(ui.ctx())),
+            };
+            // A titled window that is movable discards `current_pos`: egui
+            // re-applies the pivot it had stored before the area began, so the
+            // position given here would not stick. The reposition pass therefore
+            // also turns the window immovable; every other pass is movable again
+            // and a user's drag works as before.
+            let window = match follow_screen_corner(ui.ctx(), id, pivot) {
+                Some(pos) => window.current_pos(pos).movable(false),
+                None => window,
+            };
+            window.show(ui.ctx(), |ui| {
+                ui.label(format!("{} — {}", current.title, current.description));
+                ui.separator();
+                for scene in scenes::SCENES.iter().copied() {
+                    let selected = scene.id == current.id;
+                    if ui.selectable_label(selected, scene.title).clicked() {
+                        let _ = world.with_mut::<SceneSwitch, _>(switch, |s| s.0 = Some(scene));
                     }
-                });
-            },
-        )]),));
+                }
+            });
+        }),));
 }
 
 /// The frame rate the windowed shell reports, as a component so the panel that
@@ -2252,14 +2241,12 @@ fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn((UiPanel::new([UiPanel::callback(
-            move |world, _entity, ui| {
-                let text = world
-                    .with_mut::<FrameRate, _>(rate, |rate| rate.text())
-                    .expect("the frame-rate component exists");
-                frame_rate_readout(ui, &text);
-            },
-        )]),));
+        .spawn((UiPanel::new(move |world, _entity, ui| {
+            let text = world
+                .with_mut::<FrameRate, _>(rate, |rate| rate.text())
+                .expect("the frame-rate component exists");
+            frame_rate_readout(ui, &text);
+        }),));
 }
 
 /// Draw the frame-rate readout, showing `text`, centred along the top edge of
@@ -2433,11 +2420,9 @@ fn mount_gpu_info(world: &mut World, ui: Entity, device: Entity, initial: Option
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn((UiPanel::new([UiPanel::callback(
-            move |_world, _entity, ui| {
-                gpu_info_panel(ui, &info, initial);
-            },
-        )]),));
+        .spawn((UiPanel::new(move |_world, _entity, ui| {
+            gpu_info_panel(ui, &info, initial);
+        }),));
 }
 
 /// One line of the GPU-info panel.
@@ -2648,17 +2633,14 @@ fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entit
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn((UiPanel::new([UiPanel::callback(
-            move |world, _entity, ui| {
-                let active = world
-                    .get::<FullscreenActive>(state)
-                    .is_some_and(|state| state.0);
-                if fullscreen_button(ui, active) {
-                    let _ =
-                        world.with_mut::<FullscreenRequest, _>(request, |request| request.0 = true);
-                }
-            },
-        )]),));
+        .spawn((UiPanel::new(move |world, _entity, ui| {
+            let active = world
+                .get::<FullscreenActive>(state)
+                .is_some_and(|state| state.0);
+            if fullscreen_button(ui, active) {
+                let _ = world.with_mut::<FullscreenRequest, _>(request, |request| request.0 = true);
+            }
+        }),));
 }
 
 /// Mount the link to the API docs in the window's top-right corner.
@@ -2677,9 +2659,9 @@ fn mount_api_docs(world: &mut World, ui: Entity) {
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
+        .spawn((UiPanel::new(|_world, _entity, ui| {
             api_docs_button(ui);
-        })]),));
+        }),));
 }
 
 /// The vertical offset a corner button's anchor is drawn at, given the area

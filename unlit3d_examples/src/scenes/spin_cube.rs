@@ -145,7 +145,7 @@ fn build(
     );
 
     if panels {
-        let panel = UiPanel::new([UiPanel::callback(move |world, _entity, ui| {
+        let panel = UiPanel::new(move |world, _entity, ui| {
             // The id is set explicitly: `Window::new` derives it from the
             // title's `Atoms` text, whose hash differs from a plain string
             // id, so other panels could not find this window's rect.
@@ -198,7 +198,7 @@ fn build(
                         None => ui.label("no camera state"),
                     };
                 });
-        })]);
+        });
         super::spawn_in(world, ui.expect("the UI source was mounted"), (panel,));
     }
     // The second panel shows the world's input state, which is what makes the
@@ -207,92 +207,90 @@ fn build(
     // panel's checkbox also writes.
     world
         .root_scope_mut()
-        .spawn((OnKey::new([OnKey::callback(move |world, _entity, key| {
+        .spawn((OnKey::new(move |world, _entity, key| {
             if key.pressed && !key.repeat && key.key == Key::Space {
                 let _ = world
                     .root_scope()
                     .with_mut::<Spin, _>(spin, |state| state.spinning = !state.spinning);
             }
-        })]),));
+        }),));
 
     // A pointer behaviour: dragging orbits the camera. It is mounted on
     // `OnPointer` rather than `OnMouse`, so the same drag works with a mouse
     // and with a finger on a touch screen.
     world
         .root_scope_mut()
-        .spawn((OnPointer::new([OnPointer::callback(
-            move |world, _entity, event| {
-                let Some(position) = event.position else {
-                    if matches!(
-                        event.action,
-                        PointerAction::Released { .. } | PointerAction::Left
-                    ) {
-                        let _ = world
-                            .root_scope()
-                            .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
-                    }
-                    return;
-                };
-
-                // A press or drag over one of the panels drives the panel, not the
-                // camera: the UI's context knows what it claimed of the frame it laid
-                // out, and a pointer behaviour yields to it. The claim is broad — it
-                // is `true` whenever the pointer hangs over a panel, let alone drags
-                // one — so a gesture that started on the scene keeps working even when
-                // it sweeps over a panel. The contact is dropped here too, so a press
-                // that ends over a UI never leaves a drag behind for the scene.
-                let over_ui = world.root_scope().query::<&Source>().any(|(_, source)| {
-                    source
-                        .as_ref::<UiSource>()
-                        .is_some_and(|ui| ui.context().egui_wants_pointer_input())
-                });
-                if over_ui {
+        .spawn((OnPointer::new(move |world, _entity, event| {
+            let Some(position) = event.position else {
+                if matches!(
+                    event.action,
+                    PointerAction::Released { .. } | PointerAction::Left
+                ) {
                     let _ = world
                         .root_scope()
                         .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
-                    return;
                 }
+                return;
+            };
 
-                match event.action {
-                    PointerAction::Pressed => {
-                        let _ = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
-                            drag.0 = Some(PointerContact {
-                                kind: event.kind,
-                                id: event.id,
-                                position,
-                            });
+            // A press or drag over one of the panels drives the panel, not the
+            // camera: the UI's context knows what it claimed of the frame it laid
+            // out, and a pointer behaviour yields to it. The claim is broad — it
+            // is `true` whenever the pointer hangs over a panel, let alone drags
+            // one — so a gesture that started on the scene keeps working even when
+            // it sweeps over a panel. The contact is dropped here too, so a press
+            // that ends over a UI never leaves a drag behind for the scene.
+            let over_ui = world.root_scope().query::<&Source>().any(|(_, source)| {
+                source
+                    .as_ref::<UiSource>()
+                    .is_some_and(|ui| ui.context().egui_wants_pointer_input())
+            });
+            if over_ui {
+                let _ = world
+                    .root_scope()
+                    .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
+                return;
+            }
+
+            match event.action {
+                PointerAction::Pressed => {
+                    let _ = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
+                        drag.0 = Some(PointerContact {
+                            kind: event.kind,
+                            id: event.id,
+                            position,
                         });
-                    }
-                    PointerAction::Moved => {
-                        let previous = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
-                            let tracked = drag.0.as_mut()?;
-                            if (tracked.kind, tracked.id) != (event.kind, event.id) {
-                                return None;
-                            }
-                            Some(std::mem::replace(&mut tracked.position, position))
-                        });
-                        let Some(Some(previous)) = previous else {
-                            return;
-                        };
-                        const RADIANS_PER_PIXEL: f32 = 0.01;
-                        let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
-                        let _ = world
-                            .root_scope()
-                            .with_mut::<CameraOrbit, _>(orbit, |drag| {
-                                drag.azimuth -= dx * RADIANS_PER_PIXEL;
-                                drag.elevation =
-                                    (drag.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
-                            });
-                    }
-                    PointerAction::Released { .. } | PointerAction::Left => {
-                        let _ = world
-                            .root_scope()
-                            .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
-                    }
-                    PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
+                    });
                 }
-            },
-        )]),));
+                PointerAction::Moved => {
+                    let previous = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
+                        let tracked = drag.0.as_mut()?;
+                        if (tracked.kind, tracked.id) != (event.kind, event.id) {
+                            return None;
+                        }
+                        Some(std::mem::replace(&mut tracked.position, position))
+                    });
+                    let Some(Some(previous)) = previous else {
+                        return;
+                    };
+                    const RADIANS_PER_PIXEL: f32 = 0.01;
+                    let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
+                    let _ = world
+                        .root_scope()
+                        .with_mut::<CameraOrbit, _>(orbit, |drag| {
+                            drag.azimuth -= dx * RADIANS_PER_PIXEL;
+                            drag.elevation =
+                                (drag.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+                        });
+                }
+                PointerAction::Released { .. } | PointerAction::Left => {
+                    let _ = world
+                        .root_scope()
+                        .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
+                }
+                PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
+            }
+        }),));
 
     SceneControl {
         advance: Box::new(move |world, _frame, delta_time, frame_size| {

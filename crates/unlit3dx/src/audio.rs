@@ -16,7 +16,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
-use unlit_ecs::{CallbackList, Entity, World};
+use unlit_ecs::{Entity, World};
 
 use crate::channel::publish_subscribed;
 use crate::handle::WorldHandle;
@@ -92,7 +92,13 @@ impl AudioChunk<'_> {
 
 /// The callback a fill behaviour runs: it adds its source's samples to the
 /// chunk it is handed.
-pub type AudioFillCallback = Box<dyn FnMut(&World, Entity, &mut AudioChunk)>;
+type AudioFillCallback = Box<dyn FnMut(&World, Entity, &mut AudioChunk)>;
+
+/// The state every fill behaviour shares: its callback and its order.
+struct AudioFillSlot {
+    callback: AudioFillCallback,
+    order: AudioFillOrder,
+}
 
 /// A source of audio samples: a component the audio thread runs once per
 /// filled chunk.
@@ -101,59 +107,33 @@ pub type AudioFillCallback = Box<dyn FnMut(&World, Entity, &mut AudioChunk)>;
 /// bundle it with the state it renders from — a synthesizer, say — and
 /// spawn that entity directly. [`dispatch_audio_fill`] runs a world's sources and
 /// mixes them.
-///
-/// A component may hold several callbacks, each with an order of its own, so
-/// one entity can contribute several layers to the mix and place them
-/// independently. They run by order, then by their position in the list.
-pub struct OnAudioFill {
-    /// Every callback, each with the order it runs in.
-    pub callbacks: Vec<(AudioFillOrder, AudioFillCallback)>,
-}
+pub struct OnAudioFill(AudioFillSlot);
 
 impl OnAudioFill {
-    /// Box `f` as one callback of an [`OnAudioFill`], running at `order`.
+    /// Wrap `f` as an [`OnAudioFill`].
     ///
-    /// `order` places it among the world's other sources; a source that only
-    /// adds its own samples can keep [`AudioFillOrder::default`].
-    /// [`new`](Self::new) takes callbacks in this form, which is what lets a
-    /// closure be written without naming its parameters' types.
-    pub fn callback(
-        order: AudioFillOrder,
-        f: impl FnMut(&World, Entity, &mut AudioChunk) + 'static,
-    ) -> (AudioFillOrder, AudioFillCallback) {
-        (order, Box::new(f))
-    }
-
-    /// Wrap the callbacks `cbs` as an [`OnAudioFill`].
-    ///
-    /// Each carries its own order. An empty iterator declares a source that
-    /// contributes nothing yet.
+    /// `order` places it among the world's other sources; a source that
+    /// only adds its own samples can keep [`AudioFillOrder::default`].
     #[must_use]
-    pub fn new(cbs: impl IntoIterator<Item = (AudioFillOrder, AudioFillCallback)>) -> Self {
-        Self {
-            callbacks: cbs.into_iter().collect(),
-        }
-    }
-
-    /// Add `f` to this source at run time, after the callbacks already in it.
-    pub fn push(
-        &mut self,
+    pub fn new(
         order: AudioFillOrder,
         f: impl FnMut(&World, Entity, &mut AudioChunk) + 'static,
-    ) {
-        self.callbacks.push((order, Box::new(f)));
-    }
-}
-
-impl CallbackList for OnAudioFill {
-    type Callback = (AudioFillOrder, AudioFillCallback);
-
-    fn callbacks(&self) -> &[(AudioFillOrder, AudioFillCallback)] {
-        &self.callbacks
+    ) -> Self {
+        Self(AudioFillSlot {
+            callback: Box::new(f),
+            order,
+        })
     }
 
-    fn callbacks_mut(&mut self) -> &mut Vec<(AudioFillOrder, AudioFillCallback)> {
-        &mut self.callbacks
+    /// The order this source runs in.
+    #[must_use]
+    pub fn order(&self) -> AudioFillOrder {
+        self.0.order
+    }
+
+    /// Run this source for `entity`, adding its samples to `chunk`.
+    fn run(&mut self, world: &World, entity: Entity, chunk: &mut AudioChunk) {
+        (self.0.callback)(world, entity, chunk);
     }
 }
 
@@ -177,28 +157,27 @@ pub struct AudioGain(pub f32);
 /// range. This is the whole of the audio thread's per-chunk work, and a
 /// caller stepping a world inline calls it the same way.
 ///
-/// Each callback runs with a shared `&World`, so structural work goes through
-/// [`unlit_ecs::Scope::queue`]; it is applied before the next callback runs,
-/// within this fill and beyond it. A source may spawn or despawn another
-/// source even while this dispatch is running.
-pub fn dispatch_audio_fill(world: &mut World, out: &mut [f32], sample_rate: u32, channels: u16) {
+/// A source must not change the world's set of sources while it runs: it
+/// has a shared `&World`, so structural work goes through
+/// [`unlit_ecs::Scope::queue`] and is applied by the world's own driver between fills.
+pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
     out.fill(0.0);
-    let mut schedule: Vec<(AudioFillOrder, Entity, usize)> = Vec::new();
-    for (entity, fill) in world.root_scope().query::<&OnAudioFill>() {
-        for (index, (order, _)) in fill.callbacks.iter().enumerate() {
-            schedule.push((*order, entity, index));
-        }
-    }
-    schedule.sort_unstable();
+    let mut sources: Vec<(AudioFillOrder, Entity)> = world
+        .root_scope()
+        .query::<&OnAudioFill>()
+        .map(|(entity, fill)| (fill.order(), entity))
+        .collect();
+    sources.sort_unstable_by_key(|(order, entity)| (*order, *entity));
     let mut chunk = AudioChunk {
         out,
         sample_rate,
         channels,
     };
-    for (_, entity, index) in schedule {
-        world.run_callback::<OnAudioFill, _>(entity, index, &mut |world, callback| {
-            (callback.1)(world, entity, &mut chunk);
-        });
+    for (_, entity) in sources {
+        world
+            .root_scope()
+            .with_mut::<OnAudioFill, _>(entity, |fill| fill.run(world, entity, &mut chunk))
+            .expect("the source entity exists");
     }
     let gain = world
         .root_scope()

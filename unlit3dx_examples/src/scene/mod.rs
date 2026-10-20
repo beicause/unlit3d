@@ -227,26 +227,24 @@ pub fn camera_job() -> Job<()> {
                 60f32.to_radians(),
                 0.1,
             ),));
-        world
-            .root_scope_mut()
-            .spawn((OnFrame::new([OnFrame::callback(
-                FrameBehaviourOrder(RENDER_CAMERA),
-                move |world, _entity, frame| {
-                    azimuth += ORBIT_SPEED * frame.delta_time;
-                    let camera = camera_looking_at(
-                        frame.size,
-                        orbit_eye(azimuth),
-                        ORBIT_TARGET,
-                        60f32.to_radians(),
-                        0.1,
-                    );
-                    let _ = world
-                        .root_scope()
-                        .with_mut::<Camera, _>(camera_entity, |current| {
-                            *current = camera;
-                        });
-                },
-            )]),));
+        world.root_scope_mut().spawn((OnFrame::new(
+            FrameBehaviourOrder(RENDER_CAMERA),
+            move |world, _entity, frame| {
+                azimuth += ORBIT_SPEED * frame.delta_time;
+                let camera = camera_looking_at(
+                    frame.size,
+                    orbit_eye(azimuth),
+                    ORBIT_TARGET,
+                    60f32.to_radians(),
+                    0.1,
+                );
+                let _ = world
+                    .root_scope()
+                    .with_mut::<Camera, _>(camera_entity, |current| {
+                        *current = camera;
+                    });
+            },
+        ),));
     })
 }
 
@@ -493,19 +491,12 @@ pub fn spawn_scene<R: WorldRunner>(
                 // it, so the host's fan-out never reaches it: it takes its own
                 // buffer, once, before the first tick reads one.
                 world.root_scope_mut().spawn((input.subscribe(),));
-                // A frame callback has no `&mut World`; the queue hands it one
-                // where every other queued change lands, so this still runs
-                // before any object ticks.
-                world
-                    .root_scope_mut()
-                    .spawn((OnFrame::new([OnFrame::callback(
-                        FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
-                        |world, _entity, _frame| {
-                            world.root_scope().queue().run(|world| {
-                                dispatch_input(world);
-                            });
-                        },
-                    )]),));
+                world.root_scope_mut().spawn((OnFrame::new(
+                    FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
+                    |world, _entity, _frame| {
+                        dispatch_input(world);
+                    },
+                ),));
                 let state = SceneState::new(world, render.clone());
                 world
                     .root_scope_mut()
@@ -537,12 +528,10 @@ pub fn spawn_scene<R: WorldRunner>(
                     PANEL_SLOT,
                 ),));
                 Controls::new(panel_audio).mount(world);
-                world
-                    .root_scope_mut()
-                    .spawn((OnFrame::new([OnFrame::callback(
-                        FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
-                        |world, _entity, _frame| publish_panels(world),
-                    )]),));
+                world.root_scope_mut().spawn((OnFrame::new(
+                    FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
+                    |world, _entity, _frame| publish_panels(world),
+                ),));
             }
         },
         {
@@ -727,11 +716,9 @@ mod tests {
             .send(Box::new(move |world: &mut World| {
                 world
                     .root_scope_mut()
-                    .spawn((UiPanel::new([UiPanel::callback(
-                        move |_, _, _ui: &mut egui::Ui| {
-                            counted.fetch_add(1, Ordering::Relaxed);
-                        },
-                    )]),));
+                    .spawn((UiPanel::new(move |_, _, _ui: &mut egui::Ui| {
+                        counted.fetch_add(1, Ordering::Relaxed);
+                    }),));
             }))
             .expect("the gameplay world accepts a job");
 
@@ -786,17 +773,15 @@ mod tests {
             .gameplay
             .sender()
             .send(Box::new(move |world: &mut World| {
-                world
-                    .root_scope_mut()
-                    .spawn((UiPanel::new([UiPanel::callback(
-                        move |world, _, _ui: &mut egui::Ui| {
-                            if let Some((_, events)) = world.query::<&InputEvents>().next() {
-                                events.with_batch(|batch| {
-                                    counted.fetch_add(batch.len(), Ordering::Relaxed);
-                                });
-                            }
-                        },
-                    )]),));
+                world.root_scope_mut().spawn((UiPanel::new(
+                    move |world, _, _ui: &mut egui::Ui| {
+                        if let Some((_, events)) = world.query::<&InputEvents>().next() {
+                            events.with_batch(|batch| {
+                                counted.fetch_add(batch.len(), Ordering::Relaxed);
+                            });
+                        }
+                    },
+                ),));
             }))
             .expect("the gameplay world accepts a job");
 

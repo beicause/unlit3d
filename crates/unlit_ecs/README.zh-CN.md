@@ -107,17 +107,11 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先。`ScopeMut::link` 与
 `unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；
 它们是纯结构变更，不跑任何生命周期回调。只读 scope 通过 `Scope::queue` 排队做同样的
-变更，再由驱动器调用 `World::apply` 落盘；在行为组件里则由 `World::run_callback`
-在两个回调之间落盘——它把一个回调从组件里取出、调用、放回，再应用它排下的队列，因此
-下一个回调面对的是上一个回调留下的 world。
+变更，再由驱动器调用 `World::apply` 落盘。
 
 **回调落在哪里。** 生命周期回调拿到的是该实体父实体的 scope，所以场景子实体上的
 `OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读 scope 一样。运行中注册的
 回调排到之后那次运行，位于原有回调之后；某个回调 panic 时，排在它后面的回调仍然保留。
-
-spawn 在返回之前就把队列应用完，也就是在相邻两个 `OnSpawn` 回调之间。despawn 级联
-则不然：整棵子树的 `OnDespawn` 回调都面对还未改动的树，队列在级联结束后统一应用——
-中途应用会让一个排队 despawn 自己实体的回调把级联无限重启。
 
 **开销。** 每次访问都要沿父链走一遍来判定可见性，走查以节点数为上界，所以畸形的树也
 不会把它拖死。`World::children` 与 `World::is_descendant` 背后的索引由 world 与
@@ -133,8 +127,7 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 `bundle!` 宏）、把 world 收窄到一个 scope 的 `ScopeOf` 与
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
 `Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、用于延迟结构变更的
-`Command` / `Commands`、给持有回调列表的组件用的 `CallbackList`、用于直接检视存储的
-`Archetype` / `Archetypes`、用于给
+`Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`、用于给
 只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`、用于把 world
 形态当作纯数据汇报的 `WorldInfo` / `ArchetypeInfo` / `EntityInfo`（实体字段反射时
 指名 `EntityProxy` 与 `EntityVecProxy`），以及
@@ -149,12 +142,7 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 `Commands` 队列之所以存在，是因为结构变更需要 `&mut World`：只持有共享 world 的
 回调改为把 spawn 或 despawn 排入队列，由驱动器调用 `World::apply` 落盘。
 `Commands::spawn` 会立即预留一个 `Entity`，因此该句柄在队列被应用之前就可用了
-——可以存进组件里，也可以传给另一个回调。`Commands::run` 排入的是一个拿到整个
-`World` 可变引用的闭包，用于共享 world 根本做不了的事，比如驱动一个自己会应用队列的族。
-
-实现 `CallbackList` 的组件由 `World::run_callbacks` 驱动，它把每个回调交给
-`World::run_callback` 跑。调用者只报出组件类型，借用由 world 负责，因此不会有借用跨过
-一个回调，也不需要手动交出借用。
+——可以存进组件里，也可以传给另一个回调。
 
 遍历是确定性的：archetype 按创建顺序访问，行按存储顺序访问。archetype 按需创建，
 永不删除。
@@ -303,7 +291,7 @@ world，为 `{"Handle": bits}` 时指某个宿主实体所携带的 world。想�
   也可以自己写一个驱动。
 - **没有事件和观察者。** 作为替代，可以直接调用组件的方法或使用行为组件。*行为组件*
   指包含函数指针或闭包的组件，并且该函数中能运行对 world 的访问，就像系统或观察者
-  一样，其中的函数也可以是 async 的；一个组件可以持有多个这样的函数，并按顺序运行。于是类似 Godot 节点的帧更新、固定间隔更新、
+  一样，其中的函数也可以是 async 的。于是类似 Godot 节点的帧更新、固定间隔更新、
   按键鼠标触摸输入等回调都可以视作实体上的行为组件，由外部调用者访问 world 调用
   它们——由此通过组合的方式实现此类功能。
 - **没有资源。** 想被随处访问的实体就是普通实体，调用者自行保存其 `Entity` 句柄；

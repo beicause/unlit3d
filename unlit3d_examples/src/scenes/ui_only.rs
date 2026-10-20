@@ -97,7 +97,7 @@ pub(crate) fn rich_panel() -> UiPanel {
     let mut spin = true;
     let mut blend = 0.5f32;
 
-    UiPanel::new([UiPanel::callback(move |_world, _entity, ui| {
+    UiPanel::new(move |_world, _entity, ui| {
         let image = image.get_or_insert_with(|| {
             ui.ctx().load_texture(
                 "unlit3d::test-image",
@@ -162,7 +162,7 @@ pub(crate) fn rich_panel() -> UiPanel {
             0.0,
             egui::Color32::from_rgba_premultiplied(128, 0, 0, 128),
         );
-    })])
+    })
 }
 
 /// The texels of the test image: four quadrants, each checkerboarded between a

@@ -446,7 +446,7 @@ impl Command for DrawFrame {
 /// presenter renders the world that owns the swap chain, and that is the
 /// scene's own world otherwise.
 pub fn draw_presented() -> OnFrame {
-    OnFrame::new([OnFrame::callback(
+    OnFrame::new(
         FrameBehaviourOrder(DRAW_ORDER),
         move |world, _entity, frame| {
             let Some(mut presenter) = world
@@ -476,7 +476,7 @@ pub fn draw_presented() -> OnFrame {
             drop(nested);
             presenter.present(world);
         },
-    )])
+    )
 }
 
 /// The behaviours that keep frames coming: one per turn of the event
@@ -491,17 +491,17 @@ pub fn pump_presented() -> (OnAboutToWait, OnWindowEvent) {
     let pending: Arc<AtomicBool> = Arc::default();
     let pump = {
         let (last, index, pending) = (Arc::clone(&last), Arc::clone(&index), Arc::clone(&pending));
-        OnAboutToWait::new([OnAboutToWait::callback(move |world, _entity, ()| {
+        OnAboutToWait::new(move |world, _entity, ()| {
             queue_draw(world, &last, &index, &pending);
-        })])
+        })
     };
     let redraw = {
         let (last, index, pending) = (Arc::clone(&last), Arc::clone(&index), Arc::clone(&pending));
-        OnWindowEvent::new([OnWindowEvent::callback(move |world, _entity, payload| {
+        OnWindowEvent::new(move |world, _entity, payload| {
             if matches!(payload.event, WindowEvent::RedrawRequested) {
                 queue_draw(world, &last, &index, &pending);
             }
-        })])
+        })
     };
     (pump, redraw)
 }
@@ -530,7 +530,7 @@ fn queue_draw(
 /// The resize behaviour: match the presenter to the window's new size,
 /// skipping the degenerate zero size windows report on minimize.
 pub fn resize_presented() -> OnWindowEvent {
-    OnWindowEvent::new([OnWindowEvent::callback(move |world, _entity, payload| {
+    OnWindowEvent::new(move |world, _entity, payload| {
         let WindowEvent::Resized(size) = &payload.event else {
             return;
         };
@@ -545,5 +545,5 @@ pub fn resize_presented() -> OnWindowEvent {
         {
             presenter.resize(world, (size.width, size.height));
         }
-    })])
+    })
 }

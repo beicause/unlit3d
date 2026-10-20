@@ -151,30 +151,6 @@ impl<'w> Commands<'w> {
     pub fn push<C: Command + CommandErase>(&self, command: C) {
         self.world.push_command(command.erase());
     }
-
-    /// Queue `f` to run with the whole world once the queue is applied.
-    ///
-    /// A callback that only has a shared world still sometimes has work that
-    /// needs it mutably: dispatching input, which applies its own queue, or
-    /// driving a nested world. Queue it here and the driver runs it where it
-    /// would apply a spawn, so it needs no separate queue of its own.
-    pub fn run<F: FnOnce(&mut World) + 'static>(&self, f: F) {
-        self.push(Run { f: Some(f) });
-    }
-}
-
-/// Runs a closure with the whole world.
-///
-/// Queued by [`Commands::run`].
-pub struct Run<F: FnOnce(&mut World)> {
-    f: Option<F>,
-}
-
-impl<F: FnOnce(&mut World) + 'static> Command for Run<F> {
-    fn apply(mut self: Box<Self>, world: &mut World) {
-        let f = self.f.take().expect("a command is applied only once");
-        f(world);
-    }
 }
 
 /// Spawns a bundle on a reserved entity, in a scope.

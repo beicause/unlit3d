@@ -97,9 +97,9 @@ impl Rect {
 
 /// A panel that paints `rect` in `color`.
 fn paint(rect: Rect, color: egui::Color32) -> UiPanel {
-    UiPanel::new([UiPanel::callback(move |_world, _entity, ui| {
+    UiPanel::new(move |_world, _entity, ui| {
         ui.painter().rect_filled(rect.egui(), 0.0, color);
-    })])
+    })
 }
 
 /// The texels of the test image: four quadrants, each checkerboarded between a
@@ -157,7 +157,7 @@ fn rich_panel() -> UiPanel {
     let mut spin = true;
     let mut blend = 0.5f32;
 
-    UiPanel::new([UiPanel::callback(move |_world, _entity, ui| {
+    UiPanel::new(move |_world, _entity, ui| {
         let image = image.get_or_insert_with(|| {
             ui.ctx().load_texture(
                 "unlit3d::test-image",
@@ -219,7 +219,7 @@ fn rich_panel() -> UiPanel {
             egui::StrokeKind::Inside,
         );
         painter.rect_filled(BAND.egui(), 0.0, TRANSLUCENT_RED);
-    })])
+    })
 }
 
 /// A panel that paints the band in `color`, opaque or not.
@@ -621,14 +621,14 @@ async fn ui_does_not_clip_the_mesh() {
 
     world
         .root_scope_mut()
-        .spawn((UiPanel::new([UiPanel::callback(|_world, _entity, ui| {
+        .spawn((UiPanel::new(|_world, _entity, ui| {
             let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP));
             ui.painter().with_clip_rect(clip).rect_filled(
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP)),
                 0.0,
                 RED,
             );
-        })]),));
+        }),));
     world
         .root_scope_mut()
         .spawn((Source::new(UiSource::new()),));
@@ -701,7 +701,7 @@ struct Burst(usize);
 /// geometry buffer grows geometrically and never shrinks, so a frame that once
 /// held many of them leaves the buffer with room to spare for every later one.
 fn burst_panel(extra: Entity) -> UiPanel {
-    UiPanel::new([UiPanel::callback(move |world, _entity, ui| {
+    UiPanel::new(move |world, _entity, ui| {
         let burst = world.get::<Burst>(extra).map_or(0, |burst| burst.0);
         let painter = ui.painter();
         for index in 0..burst {
@@ -717,7 +717,7 @@ fn burst_panel(extra: Entity) -> UiPanel {
             );
         }
         painter.rect_filled(FIXED.egui(), 0.0, RED);
-    })])
+    })
 }
 
 /// Render the same small panel twice, after a frame of `burst` extra geometry.
@@ -797,7 +797,7 @@ fn patched_texture() -> UiPanel {
     let mut handle: Option<egui::TextureHandle> = None;
     let mut patched = false;
 
-    UiPanel::new([UiPanel::callback(move |_world, _entity, ui| {
+    UiPanel::new(move |_world, _entity, ui| {
         let handle = handle.get_or_insert_with(|| {
             let blank = egui::ColorImage::new(
                 [PATCHED_SIDE, PATCHED_SIDE],
@@ -830,7 +830,7 @@ fn patched_texture() -> UiPanel {
             egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
             egui::Color32::WHITE,
         );
-    })])
+    })
 }
 
 /// A texture update that arrives after the texture's first upload is applied.

@@ -130,7 +130,7 @@ impl SynthVoice {
             left: Vec::new(),
             right: Vec::new(),
         };
-        let fill = OnAudioFill::new([OnAudioFill::callback(AudioFillOrder::default(), fill_voice)]);
+        let fill = OnAudioFill::new(AudioFillOrder::default(), fill_voice);
         Ok(world.root_scope_mut().spawn((voice, fill)))
     }
 
@@ -235,7 +235,7 @@ impl MidiPlayer {
             left: Vec::new(),
             right: Vec::new(),
         };
-        let fill = OnAudioFill::new([OnAudioFill::callback(AudioFillOrder::default(), fill_track)]);
+        let fill = OnAudioFill::new(AudioFillOrder::default(), fill_track);
         Ok(world.root_scope_mut().spawn((player, fill)))
     }
 

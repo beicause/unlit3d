@@ -2,9 +2,9 @@
 //!
 //! Every [`ApplicationHandler`] callback has a behaviour component family of
 //! its own, and [`WinitHost`] is the one `ApplicationHandler` that dispatches
-//! to them. A family is an ordinary behaviour component: it holds a list of
-//! callbacks and is driven by the host, exactly like the input callbacks are
-//! driven by [`dispatch_input`](crate::input::dispatch_input).
+//! to them. A family is an ordinary behaviour component: it holds a closure and
+//! is driven by the host, exactly like the input callbacks are driven by
+//! [`dispatch_input`](crate::input::dispatch_input).
 //!
 //! The callback signature deliberately carries no [`ActiveEventLoop`]. The loop
 //! is only reachable inside a callback, so a component that took it could never
@@ -21,25 +21,22 @@
 //!
 //! - A callback runs with `&World`. It must not re-enter the host, which would
 //!   dispatch recursively.
-//! - Structural changes go through [`unlit_ecs::Scope::queue`]. The host
-//!   dispatches one callback at a time, taking it out of its component before
-//!   it runs, so the queue is applied after every callback, not after the whole
-//!   dispatch: a change made by one callback is visible to the next one. Use
-//!   the entity [`Commands::spawn`] returns to refer to an entity that does not
-//!   exist yet.
-//! - Every family on one entity is a different cell and never conflicts, and
-//!   the running callback is out of its own component, so a callback may reach
-//!   for its own family too. State that outlives one event still belongs in a
+//! - A callback must not reach for its own component family: that is a borrow
+//!   panic, not a compile error. State that outlives one event belongs in a
 //!   sibling component.
-//! - One component may hold several callbacks of the *same* family, and they
-//!   run in the order they were added.
+//! - Structural changes go through [`unlit_ecs::Scope::queue`] and land when the host
+//!   applies the queue after the dispatch. Use the entity [`Commands::spawn`]
+//!   returns to refer to an entity that does not exist yet.
+//! - Different families on one entity are different cells and never conflict;
+//!   two behaviours of the *same* family on one entity do. Put them on two
+//!   entities.
 //!
 //! [`Commands::spawn`]: unlit_ecs::Commands::spawn
 
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use unlit_ecs::{CallbackList, Entity, World};
+use unlit_ecs::{Entity, World};
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
@@ -103,53 +100,17 @@ pub type WinitUserCallback<U> = Box<dyn FnMut(&World, Entity, &mut U)>;
 ///
 /// The event type is the generic parameter of the [`EventLoop`], so this one
 /// cannot come from the `behaviour!` macro.
-pub struct OnUserEvent<U: 'static> {
-    /// The callbacks, in the order they were added.
-    pub callbacks: Vec<WinitUserCallback<U>>,
-}
+pub struct OnUserEvent<U: 'static>(pub WinitUserCallback<U>);
 
 impl<U: 'static> OnUserEvent<U> {
-    /// Box `f` as one callback of an [`OnUserEvent`].
-    ///
-    /// [`new`](Self::new) takes callbacks in this form, which is what lets a
-    /// closure be written without naming the world's user event type.
-    pub fn callback(f: impl FnMut(&World, Entity, &mut U) + 'static) -> WinitUserCallback<U> {
-        Box::new(f)
+    /// Wrap `f` as an [`OnUserEvent`].
+    pub fn new(f: impl FnMut(&World, Entity, &mut U) + 'static) -> Self {
+        Self(Box::new(f))
     }
 
-    /// Wrap the callbacks `cbs` as an [`OnUserEvent`].
-    ///
-    /// They run in the order the iterator yields them. An empty iterator
-    /// declares a component that runs nothing yet.
-    pub fn new(cbs: impl IntoIterator<Item = WinitUserCallback<U>>) -> Self {
-        Self {
-            callbacks: cbs.into_iter().collect(),
-        }
-    }
-
-    /// Add `f` at run time, after the callbacks already in this behaviour.
-    pub fn push(&mut self, f: impl FnMut(&World, Entity, &mut U) + 'static) {
-        self.callbacks.push(Box::new(f));
-    }
-
-    /// Run every callback of this behaviour for `entity`, in the order they
-    /// were added.
+    /// Run this behaviour for `entity` with `event`.
     pub fn run(&mut self, world: &World, entity: Entity, event: &mut U) {
-        for callback in &mut self.callbacks {
-            callback(world, entity, event);
-        }
-    }
-}
-
-impl<U: 'static> CallbackList for OnUserEvent<U> {
-    type Callback = WinitUserCallback<U>;
-
-    fn callbacks(&self) -> &[WinitUserCallback<U>] {
-        &self.callbacks
-    }
-
-    fn callbacks_mut(&mut self) -> &mut Vec<WinitUserCallback<U>> {
-        &mut self.callbacks
+        (self.0)(world, entity, event);
     }
 }
 
@@ -326,29 +287,6 @@ impl<U: 'static> WinitHost<U> {
         }
     }
 
-    /// Run every behaviour of one family, in order.
-    ///
-    /// What a callback queued is applied before the next callback runs, so the
-    /// host's own request components are read once the whole family has run.
-    fn dispatch<C, F>(&mut self, mut run: F)
-    where
-        C: CallbackList,
-        F: FnMut(&World, Entity, &mut C::Callback),
-    {
-        let entities: Vec<Entity> = self
-            .world
-            .root_scope()
-            .query::<&C>()
-            .map(|(entity, _)| entity)
-            .collect();
-        for entity in entities {
-            self.world
-                .run_callbacks::<C, _>(entity, &mut |world, callback| {
-                    run(world, entity, callback);
-                });
-        }
-    }
-
     /// Exit the event loop when any [`ExitRequest`] is set.
     fn exit_requested(&mut self, event_loop: &ActiveEventLoop) {
         let mut exit = false;
@@ -372,26 +310,32 @@ impl<U: 'static> Default for WinitHost<U> {
 
 impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        self.dispatch::<OnNewEvents, _>(|world, entity, callback| callback(world, entity, &cause));
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnNewEvents>() {
+            behaviour.run(&self.world, entity, &cause);
+        }
         self.settle(event_loop);
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.set_resumed(true);
-        self.dispatch::<OnResumed, _>(|world, entity, callback| callback(world, entity, &()));
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnResumed>() {
+            behaviour.run(&self.world, entity, &());
+        }
         self.settle(event_loop);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        self.dispatch::<OnSuspended, _>(|world, entity, callback| callback(world, entity, &()));
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnSuspended>() {
+            behaviour.run(&self.world, entity, &());
+        }
         self.settle(event_loop);
         self.set_resumed(false);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, mut event: U) {
-        self.dispatch::<OnUserEvent<U>, _>(|world, entity, callback| {
-            callback(world, entity, &mut event)
-        });
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnUserEvent<U>>() {
+            behaviour.run(&self.world, entity, &mut event);
+        }
         self.settle(event_loop);
     }
 
@@ -402,9 +346,9 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: WindowEvent,
     ) {
         let event = WinitWindowEvent { window_id, event };
-        self.dispatch::<OnWindowEvent, _>(|world, entity, callback| {
-            callback(world, entity, &event)
-        });
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnWindowEvent>() {
+            behaviour.run(&self.world, entity, &event);
+        }
         self.settle(event_loop);
     }
 
@@ -415,24 +359,30 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: DeviceEvent,
     ) {
         let event = WinitDeviceEvent { device_id, event };
-        self.dispatch::<OnDeviceEvent, _>(|world, entity, callback| {
-            callback(world, entity, &event)
-        });
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnDeviceEvent>() {
+            behaviour.run(&self.world, entity, &event);
+        }
         self.settle(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.dispatch::<OnAboutToWait, _>(|world, entity, callback| callback(world, entity, &()));
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnAboutToWait>() {
+            behaviour.run(&self.world, entity, &());
+        }
         self.settle(event_loop);
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        self.dispatch::<OnExiting, _>(|world, entity, callback| callback(world, entity, &()));
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnExiting>() {
+            behaviour.run(&self.world, entity, &());
+        }
         self.settle(event_loop);
     }
 
     fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-        self.dispatch::<OnMemoryWarning, _>(|world, entity, callback| callback(world, entity, &()));
+        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnMemoryWarning>() {
+            behaviour.run(&self.world, entity, &());
+        }
         self.settle(event_loop);
     }
 }
@@ -468,75 +418,31 @@ mod tests {
             window_id: WindowId::dummy(),
             event: WindowEvent::Focused(true),
         };
-        let first = OnWindowEvent::new([OnWindowEvent::callback({
+        let first = OnWindowEvent::new({
             let seen = seen.clone();
             move |_world, _entity, event| {
                 assert!(matches!(event.event, WindowEvent::Focused(true)));
                 *seen.borrow_mut() += 1;
             }
-        })]);
-        let second = OnWindowEvent::new([OnWindowEvent::callback({
+        });
+        let second = OnWindowEvent::new({
             let seen = seen.clone();
             move |_world, _entity, _event| *seen.borrow_mut() += 1
-        })]);
+        });
         for mut behaviour in [first, second] {
             behaviour.run(&world, Entity::from_bits(0), &payload);
         }
         assert_eq!(*seen.borrow(), 2);
     }
 
-    /// One entity may carry several callbacks in one component; every one of
-    /// them sees the same event, in the order they were added.
-    #[test]
-    fn one_component_runs_every_callback_it_holds() {
-        let world = World::new();
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let first = seen.clone();
-        let second = seen.clone();
-        let payload = WinitWindowEvent {
-            window_id: WindowId::dummy(),
-            event: WindowEvent::Focused(true),
-        };
-        let mut behaviour = OnWindowEvent::new([
-            OnWindowEvent::callback(move |_world, _entity, event| {
-                assert!(matches!(event.event, WindowEvent::Focused(true)));
-                first.borrow_mut().push(1);
-            }),
-            OnWindowEvent::callback(move |_world, _entity, _event| second.borrow_mut().push(2)),
-        ]);
-        behaviour.run(&world, Entity::from_bits(0), &payload);
-        assert_eq!(*seen.borrow(), vec![1, 2]);
-    }
-
-    /// A user-event component holds a list too, and its callbacks all receive
-    /// the same mutable payload.
-    #[test]
-    fn a_user_event_component_runs_every_callback() {
-        let world = World::new();
-        let seen = Rc::new(RefCell::new(Vec::new()));
-        let first = seen.clone();
-        let second = seen.clone();
-        let mut behaviour = OnUserEvent::<u32>::new([
-            OnUserEvent::<u32>::callback(move |_world, _entity, event| {
-                first.borrow_mut().push(*event);
-                *event += 1;
-            }),
-            OnUserEvent::<u32>::callback(move |_world, _entity, event| {
-                second.borrow_mut().push(*event)
-            }),
-        ]);
-        behaviour.run(&world, Entity::from_bits(0), &mut 7);
-        assert_eq!(*seen.borrow(), vec![7, 8]);
-    }
-
     #[test]
     fn a_user_event_carries_its_own_type() {
         let world = World::new();
         let seen = Rc::new(RefCell::new(None));
-        let mut behaviour = OnUserEvent::<u32>::new([OnUserEvent::<u32>::callback({
+        let mut behaviour = OnUserEvent::<u32>::new({
             let seen = seen.clone();
             move |_world, _entity, event| *seen.borrow_mut() = Some(*event)
-        })]);
+        });
         behaviour.run(&world, Entity::from_bits(0), &mut 7);
         assert_eq!(*seen.borrow(), Some(7));
     }

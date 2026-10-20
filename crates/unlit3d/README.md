@@ -626,14 +626,10 @@ bind-group layout to match.
 
 ## UI
 
-`ui::UiPanel` is itself a behaviour component holding closures, so
-an interface is an entity — a frame can hold as many panels as entities, and one
-entity may carry several panels in one component that run as one interface, in
-the order they were added. The `ui::UiSource` driver runs whatever panels the
-world carries, in query order. A panel is the one family whose driver holds the
-world only shared — `ui::lay_out` runs inside egui's own layout pass — so what
-a panel callback queues is applied by the caller after the pass rather than
-between two callbacks, the way the other families get it.
+`ui::UiPanel` is itself a behaviour component holding a closure, so
+an interface is an entity — a frame can hold as many panels as entities, and the
+`ui::UiSource` driver runs whatever panels the world carries, in
+query order.
 
 A panel can only be built where its egui context runs, because the callback is
 handed a `&mut egui::Ui` that belongs to the pass building it. A UI whose
@@ -660,11 +656,9 @@ and decides which panels to call and in what order; a panel that wants to keep
 state puts it in its own sibling components (a behaviour component is borrowed
 while it runs, so it cannot re-enter a borrow of itself); and a panel receives
 `&World`, so it can read and write components and can `queue()` structural
-changes. Several panels are several entities when they must be added and
-removed independently; a single entity's panel component can hold a list of them
-when they share that lifetime. Third parties can define their own panel-like
-components for the source to select — the source itself need not know which
-interfaces exist.
+changes. Several panels are therefore several entities, added and removed as
+needed, and third parties can define their own panel-like components for the
+source to select — the source itself need not know which interfaces exist.
 
 **The unit convention is the easiest thing to get wrong in this API**: egui's
 vertices and clip rectangles use logical points while window event coordinates
@@ -826,12 +820,9 @@ let mut world = World::new();
 // The panels of a UI source live under it: a frame hands the source its own
 // scope and drives whatever panels it finds there.
 let ui = world.root_scope_mut().spawn((Source::new(UiSource::new()),));
-// One component holds as many panels as the interface needs; they run in order.
-world.scope_mut(ui).unwrap().spawn((UiPanel::new([UiPanel::callback(
-    |_world, _entity, ui| {
-        ui.label("hello");
-    },
-)]),));
+world.scope_mut(ui).unwrap().spawn((UiPanel::new(|_world, _entity, ui| {
+    ui.label("hello");
+}),));
 # }
 ```
 
@@ -845,11 +836,9 @@ one into the buffer of every world subscribed to it. A world's buffer is its
 tick, plus the [`InputState`](input::InputState) they built — modifiers,
 pointers, buttons, window size. [`dispatch_input`](input::dispatch_input)
 takes this world's queue as this tick's batch, folds it into the state, and
-drives the behaviours, applying what each one queued before the next runs — so
-it takes the world mutably and needs no `apply` of its own afterwards. A world
-owns the events it has not ticked on, so a world that ticks less often than
-input arrives still reads every event in order, and nothing has to clear
-anything afterwards.
+drives the behaviours. A world owns the events it has not ticked on, so a
+world that ticks less often than input arrives still reads every event in
+order, and nothing has to clear anything afterwards.
 [`distribute_input`](input::distribute_input) copies the writer into every
 nested world and subscribes it there, so one stream feeds them all while each
 builds its own state; a world spawned outside that hierarchy — one a runner
@@ -869,8 +858,7 @@ crate's events into egui's.
   logic and UI thus share one event stream and need no two sets of events.
 - **Event callbacks are behaviour components**, isomorphic to the ECS's existing
   behaviour-component paradigm: all matching behaviour components are called per
-  event category, and a component holding several callbacks runs all of them in
-  the order they were added. `OnInput` receives every event, while
+  event category. `OnInput` receives every event, while
   `OnKey`/`OnMouse`/`OnPointer`/`OnTouch`/`OnText`/`OnIme` each receive one
   category. The mouse family is always named `Mouse`
   (`MouseEvent`/`MouseButton`/`MouseButtons`/`OnMouse`), while `Pointer` means
@@ -906,11 +894,10 @@ crate's events into egui's.
   with "the caller is the system".
 - Dispatch **traverses** the behaviour components directly without collecting
   entities first: callbacks borrow different cells of different entities, so
-  they do not conflict, and the callbacks inside one component run one after
-  another in that same borrow. The real limits come from the ECS's own deliberate
-  trade-offs — a callback cannot re-enter a borrow of its own component (nor of
-  a later callback in the same component), nor re-enter a dispatch of the same
-  kind; state is kept in sibling components instead.
+  they do not conflict. The real limits come from the ECS's own deliberate
+  trade-offs — a callback cannot re-enter a borrow of its own component, nor
+  re-enter a dispatch of the same kind; state is kept in sibling components
+  instead.
 
 Whether the UI wants the pointer or the keyboard is **egui's own answer**, not
 one the source republishes: after a frame is laid out, `egui_wants_pointer_input`
@@ -938,12 +925,9 @@ ready-made behaviours, and nothing in them has a path an application cannot take
 
 A callback component is an ordinary behaviour component, written and tested like
 any other: it receives `&World`, the entity it sits on, and the event, and it
-must not re-enter the host. One component may hold several callbacks, which all
-run for the same event in the order they were added. The host runs one callback
-at a time, taking it out of its component first, so a callback may reach for its
-own component type and what it queued through `Scope::queue` is applied before
-the next callback runs — a change one callback makes is visible to the next. The
-callback signature deliberately carries no `ActiveEventLoop`:
+must not reach for its own component type or re-enter the host. Structural
+changes go through `World::queue` and land when the host applies after the
+dispatch. The callback signature deliberately carries no `ActiveEventLoop`:
 that type can only be built inside a callback, so a component taking it could
 never be unit-tested. What a callback needs from the loop is a request instead —
 `CreateWindowRequest` and `ExitRequest` are executed by the host after the
@@ -957,19 +941,13 @@ the entity it sits on, and a `&mut` [`Frame`](frame::Frame) carrying the frame's
 delta time, index and size. That is the same shape as the event families, with
 the frame context in place of an event. Ordering is by
 [`FrameBehaviourOrder`](frame::FrameBehaviourOrder), then by entity for equal
-orders, then by position within a component's list. The order belongs to each
-callback, so one component can place several callbacks independently. The library
-declares no order values of its own: what runs before what is the application's
-to define. A windowed application's host world and each world it drives dispatch
-the same family, so the scene side is componentised the same way. Spawn a
-behaviour with [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn); `new` takes an
-iterator of callbacks, each written with the family's `callback` helper, and
-`push` adds one at run time.
+orders, and the library declares no order values of its own: what runs before
+what is the application's to define. A windowed application's host world and each
+world it drives dispatch the same family, so the scene side is componentised the
+same way. Spawn a behaviour with [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn).
 A behaviour that needs the rest of the frame
 skipped sets a flag its siblings read; a behaviour that needs structural change
-queues it, because a callback only holds `&World` — and the dispatch applies that
-queue before the next callback runs, so a later behaviour in the same frame
-already sees it.
+queues it, because a callback only holds `&World`.
 
 ```rust,no_run
 # use unlit3d::winit::builtin::{

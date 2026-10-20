@@ -106,7 +106,7 @@ pub mod prelude {
         world::{
             Stepped, Threaded, WorldName, WorldRunner, spawn_remote_world,
             spawn_remote_world_with_init, spawn_stepped_world_with_init, step_stepped_world,
-            with_stepped_world, with_stepped_world_mut,
+            with_stepped_world,
         },
     };
 }

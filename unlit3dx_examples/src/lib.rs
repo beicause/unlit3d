@@ -215,31 +215,25 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
 
     // Space drops a body; the music and the shapes are driven from the
     // render world's control panel.
-    world.root_scope_mut().spawn((OnKey::new([OnKey::callback(
-        move |_world, _entity, key| {
+    world
+        .root_scope_mut()
+        .spawn((OnKey::new(move |_world, _entity, key| {
             if !key.pressed || key.repeat {
                 return;
             }
             if key.key == Key::Space {
                 request_drop(&gameplay_sender);
             }
-        },
-    )]),));
+        }),));
     // The frame's input: the host dispatches its own key behaviours before
     // the draw. Nothing clears anything afterwards — each world and the
     // render world's UI source read their own copy of the stream.
-    // A frame callback has no `&mut World`; the queue hands it one where
-    // every other queued change lands, so this still runs before the draw.
-    world
-        .root_scope_mut()
-        .spawn((OnFrame::new([OnFrame::callback(
-            FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
-            |world, _entity, _frame| {
-                world.root_scope().queue().run(|world| {
-                    dispatch_input(world);
-                });
-            },
-        )]),));
+    world.root_scope_mut().spawn((OnFrame::new(
+        FrameBehaviourOrder(FRAME_DISPATCH_INPUT),
+        |world, _entity, _frame| {
+            dispatch_input(world);
+        },
+    ),));
 
     host.run(event_loop).expect("the event loop runs");
 }
@@ -251,12 +245,12 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
 /// carries the step remainders, so the worlds keep their rates whatever
 /// the display redraws at.
 fn stepped_frame(worlds: SceneWorlds, mut stepper: SceneStepper) -> OnFrame {
-    OnFrame::new([OnFrame::callback(
+    OnFrame::new(
         FrameBehaviourOrder(FRAME_INLINE_STEP),
         move |world, _entity, frame| {
             stepper.step(world, &worlds, f64::from(frame.delta_time));
         },
-    )])
+    )
 }
 
 /// The audio setup a windowed run takes when the host steps the worlds.
