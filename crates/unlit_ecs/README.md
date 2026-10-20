@@ -44,8 +44,8 @@ It is at an **early stage of development** and its API changes freely.
   is a component too. A *bundle* is therefore not a tuple of components but the
   list [`bundle!`] builds or an [`ArchetypeBuilder`] gathers, and a plain
   `(a, b)` handed to a spawn is one component, the pair. The macro walks the
-  syntax while expanding, so `bundle!(a, b)` is two components and a group in
-  parentheses is flattened into the components it holds.
+  syntax while expanding, so `bundle!(a, b)` is two components and a
+  parenthesised item is one component, tuples included.
 - **There are no systems.** Driving behaviour means the caller reading the
   world and calling the method or closure it wants — or running a *behaviour
   component*, a component that holds a closure and is invoked by whatever
@@ -257,11 +257,11 @@ assert!(world.root_scope().contains(entity));
 ```
 
 A bundle is what [`bundle!`] writes or what an [`ArchetypeBuilder`] gathers; a
-tuple is not one, because a tuple is itself a component. `bundle!(a, b)` is two
-components, and parentheses are grouping rather than a tuple, so the macro
-flattens them at any depth — `bundle!((a, b), c)` is three. Its width is limited
-by the compiler's recursion limit, about a hundred components at the default,
-and a wider one is built by raising `#![recursion_limit]`:
+tuple is not one, because a tuple is itself a component. Every item of the list
+is one component — a parenthesised tuple stays a tuple, so `bundle!((a, b), c)`
+is a tuple component and `c`, and `bundle!(())` is an empty tuple component. Its
+width is limited by the compiler's recursion limit, about a hundred components
+at the default, and a wider one is built by raising `#![recursion_limit]`:
 
 ```rust
 use unlit_ecs::{World, bundle};
@@ -269,27 +269,10 @@ use unlit_ecs::{World, bundle};
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
-// The macro flattened the nesting: three components, not a nested tuple.
-assert!(world.root_scope().has::<u32>(entity));
-assert!(world.root_scope().has::<f32>(entity));
-assert!(world.root_scope().has::<bool>(entity));
-assert!(!world.root_scope().has::<(u32, f32)>(entity));
-```
-
-A component that is itself a tuple is pushed whole, which is the one way to
-spawn one:
-
-```rust
-use unlit_ecs::{ArchetypeBuilder, World};
-
-let mut builder = ArchetypeBuilder::new();
-builder.push_component((1u8, 2u8));
-
-let mut world = World::new();
-let entity = world.root_scope_mut().spawn(builder);
-
-assert!(world.root_scope().has::<(u8, u8)>(entity));
-assert!(!world.root_scope().has::<u8>(entity));
+// Two components: one tuple, and a nested one.
+assert!(world.root_scope().has::<(u32, f32)>(entity));
+assert!(world.root_scope().has::<(bool, ())>(entity));
+assert!(!world.root_scope().has::<u32>(entity));
 ```
 
 A bundle written as `..value` is spread into its own components, so a bundle

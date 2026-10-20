@@ -31,7 +31,7 @@
 - **任何 `'static` 类型都是组件。** 不需要 derive，也不需要注册；元组同样是组件。
   因此 *bundle* 不是「组件的元组」，而是 `bundle!` 写出的、或 `ArchetypeBuilder`
   收集的那份组件清单；直接交给 spawn 的 `(a, b)` 是一个组件，即那个二元组。宏在展开期
-  遍历语法，所以 `bundle!(a, b)` 是两个组件，而括号组会被展平成它里面的组件。
+  遍历语法，所以 `bundle!(a, b)` 是两个组件，而带括号的项是一个组件，元组也不例外。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
@@ -202,9 +202,10 @@ assert!(world.root_scope().contains(entity));
 ```
 
 bundle 是 `bundle!` 写出的或 `ArchetypeBuilder` 收集的那份清单；元组不是 bundle，因为
-元组本身就是组件。`bundle!(a, b)` 是两个组件，而括号是分组而不是元组，所以宏会在任意
-深度展平它们——`bundle!((a, b), c)` 是三个。宽度受编译器递归上限约束，默认上限下约
-一百个组件；更宽的需要在调用方 crate 里提高 `#![recursion_limit]`：
+元组本身就是组件。清单里每一项都是一个组件——带括号的元组仍然是元组，所以
+`bundle!((a, b), c)` 是一个元组组件加一个 `c`，`bundle!(())` 则是一个空元组组件。宽度
+受编译器递归上限约束，默认上限下约一百个组件；更宽的需要在调用方 crate 里提高
+`#![recursion_limit]`：
 
 ```rust
 use unlit_ecs::{World, bundle};
@@ -212,26 +213,10 @@ use unlit_ecs::{World, bundle};
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
-// 宏展平了嵌套：得到三个组件，而不是一个嵌套元组。
-assert!(world.root_scope().has::<u32>(entity));
-assert!(world.root_scope().has::<f32>(entity));
-assert!(world.root_scope().has::<bool>(entity));
-assert!(!world.root_scope().has::<(u32, f32)>(entity));
-```
-
-本身就是元组的组件要整体推入，这也是 spawn 一个元组组件的唯一办法：
-
-```rust
-use unlit_ecs::{ArchetypeBuilder, World};
-
-let mut builder = ArchetypeBuilder::new();
-builder.push_component((1u8, 2u8));
-
-let mut world = World::new();
-let entity = world.root_scope_mut().spawn(builder);
-
-assert!(world.root_scope().has::<(u8, u8)>(entity));
-assert!(!world.root_scope().has::<u8>(entity));
+// 两个组件：一个元组，一个空元组。
+assert!(world.root_scope().has::<(u32, f32)>(entity));
+assert!(world.root_scope().has::<(bool, ())>(entity));
+assert!(!world.root_scope().has::<u32>(entity));
 ```
 
 用 `..value` 写下的 bundle 会被展开成它自己的组件，于是别处建好的 bundle 可以原样
