@@ -5,7 +5,7 @@
 - **尽量采用通用方法而不是给内置功能特权**，要考虑功能的通用性，便于用户使用本库进行自定义和拓展。本库的一些内置实现（如unlit渲染）不应该拥有特权和内部专用实现，内部实现应该挪到外部以保证本库的可自定义性和可拓展性。
 - **着色器结构体布局用 glam + `const_shader_layout`**，在编译期对照 WGSL 对齐规则校验。对于 SSBO ，用`const_shader_layout::ShaderLayout`，对于 UBO 用 `const_shader_layout::ShaderLayoutCompat` 。信任 `const_shader_layout` 的结果，无需额外添加对布局和大小的断言。
 - **不要用字面量硬编码可能会变的常量**，如缓冲大小、顶点属性大小、纹理像素大小、结构体大小、字节数组索引等，可用`size_of`、`VertexFormat::size`、`TextureFormat::block_copy_size`、`ShaderLayout::SIZE`等计算。
-- **减少不必要的内存分配**，例如：遍历迭代器而不是收集到Vec再遍历、返回迭代其而不是Vec、每帧复用Vec/HashMap而不是重新创建。
+- **减少不必要的内存分配**，例如：谨慎考虑返回`Vec`的函数，优先考虑返回迭代器或接受`&mut Vec`。遍历迭代器，避免不必要地收集到`Vec`再遍历。每帧复用Vec/HashMap缓存而不是重新创建。
 - **字节转换统一走 zerocopy**。
 - **可执行程序（`[[bin]]`/`[[example]]`）的名字用连字符（`-`）连接**，包名与库名保持下划线。
 - **单元测试和集成测试**：对于较复杂、易错的函数逻辑要添加单元测试，对于各个库的功能添加集成测试，对于整体渲染的正确性添加快照测试。具体测试所在目录参见根目录 [`README.md`](./README.md) 的「测试与基准」一节。对于发现的bug或回归问题，要告知用户，并尽可能添加针对性测试。
@@ -39,6 +39,8 @@
 | `chore`    | Maintenance/misc               |
 | `revert`   | Revert commit                  |
 
+对于仅文档的任何改动（包括错别字、`cargo doc`修复），总是使用`docs`，不用`fix`。
+
 ## 常用命令
 
 `cargo xtask`约定含有一些常用命令，各命令及其解释见根目录 [`README.md`](./README.md) 的「常用命令」一节；更新`xtask`时，注意同步更新该列表。
@@ -70,4 +72,4 @@
 - **代码内的文档注释、git提交信息默认全用英文**。文档注释随代码一并更新，保持最新；注释面向用户，不含无关上下文、特定于用户与Agent的会话内容、显而易见的细节等。
 - **不要看docs/internal/**。这里面是WIP的实施细节，极易过时且可能存在错误。
 - **测试生成的二进制快照文件一律放`unlit3d_asset_files`子模块中**。
-- **调试examples时，可以用unlit3d-mcp skill，绝不用截屏软件**。
+- **调试examples时，可以用 unlit3d-mcp 技能，绝不用截屏软件**。
