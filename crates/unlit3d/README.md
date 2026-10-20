@@ -20,7 +20,7 @@ directly, and you are expected to know WebGPU to use it well.
 | `winit` | yes | the `winit` module: `WindowSurface`, which presents a [`Renderer`](renderer::Renderer) into a window's swap chain; the winit input translation; and `WinitHost`, which drives winit's callbacks as behaviour components |
 | `gltf` | no | the `gltf` module: load a glTF document into an `UnlitGltf`, patch its images, materials and meshes into another world's [`MeshSource`](mesh_source::MeshSource), and spawn the entities that draw them |
 | `reflect` | no | [`facet`](https://docs.rs/facet) reflection on the components that cross a JSON boundary, plus the proxies glam and ECS values are reflected through; the engine itself never reads it |
-| `mcp` | no | the [`mcp`](mcp) module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
+| `mcp` | no | the `mcp` module: the rendering tools a world answers through the Model Context Protocol server the [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.md) crate defines. Implies `reflect` and `gltf`, and is not built on `wasm32` |
 
 With `--no-default-features` the crate keeps the ECS components, the frame
 sources, the mesh path, the pipeline abstraction and the portable [`input`]
@@ -534,8 +534,8 @@ a *record* of the model, not a GPU resource: it owns no `World` and no
 What it does is patch the world you already render:
 
 - `insert_resources` uploads the whole document in one call and returns a
-  [`GltfResources`](gltf::GltfResources) holding every handle it made; that is
-  the struct `spawn_node` / `spawn_default_scene` take. A caller that wants one
+  `gltf::GltfResources` holding every handle it made; that is the struct
+  `spawn_node` / `spawn_default_scene` take. A caller that wants one
   kind of resource at a time — to share a texture between two documents, say —
   can instead call `insert_image` / `insert_material` / `insert_mesh` for a
   single image, material or mesh, or the batch versions (`insert_images`,

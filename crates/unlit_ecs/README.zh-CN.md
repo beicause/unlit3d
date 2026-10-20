@@ -10,7 +10,7 @@
 外本 crate 没有其他依赖，也不依赖工作区中的任何其他 crate，因此可以单独使用；它对
 渲染一无所知。唯一的例外是可选的 `reflect` feature，它为[世界信息](crate::WorldInfo)
 结构体派生 [facet](https://docs.rs/facet)，好让桥接层直接序列化它们，并导出实体字段所经由的
-[`EntityProxy`]。类型为实体的反射字段指名该 proxy，于是 ECS 自己的结构体与任何调用者的组件
+`EntityProxy`。类型为实体的反射字段指名该 proxy，于是 ECS 自己的结构体与任何调用者的组件
 都用同一种方式书写实体——即它的 [`Entity::to_bits`] 整数。ECS 本身从不读取这份反射。
 
 本 crate 处于**极早期开发阶段**，API 会自由变动。

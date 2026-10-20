@@ -17,7 +17,7 @@
 | `winit` | 是 | `winit` 模块：`WindowSurface`，把 `Renderer` 呈现到窗口交换链；winit 输入转发；以及 `WinitHost`，把 winit 的回调作为行为组件驱动 |
 | `gltf` | 否 | `gltf` 模块：把一个 glTF 文档加载为 `UnlitGltf`，把它的图像、材质与网格修补进另一个世界的 `MeshSource`，并生成绘制它们的实体 |
 | `reflect` | 否 | 给跨越 JSON 边界的组件派生 [`facet`](https://docs.rs/facet) 反射，以及 glam 与 ECS 值所经由的代理类型；引擎自身从不读取它 |
-| `mcp` | 否 | [`mcp`](mcp) 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
+| `mcp` | 否 | `mcp` 模块：world 通过 [`unlit_ecs`](https://github.com/beicause/unlit3d/blob/main/crates/unlit_ecs/README.zh-CN.md) crate 所定义的 Model Context Protocol 服务器回答的渲染工具。蕴含 `reflect` 与 `gltf`，且不在 `wasm32` 上构建 |
 
 使用 `--no-default-features` 时，本 crate 保留 ECS 组件、帧源、mesh 路径、管线抽象
 与可移植的 `input` 模块——它们都不依赖 egui 或 winit。开启 `gltf` 则在同一套 ECS 与

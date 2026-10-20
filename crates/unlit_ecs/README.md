@@ -13,7 +13,7 @@ dependencies beyond a hasher and depends on nothing else in the workspace, so it
 can be used on its own; it knows nothing about rendering. The one exception is
 the optional `reflect` feature, which derives [facet](https://docs.rs/facet) for
 the [world information](crate::WorldInfo) structures so a bridge can serialise
-them as they are, and exports the [`EntityProxy`] an entity field reflects
+them as they are, and exports the `EntityProxy` an entity field reflects
 through. A reflected field whose type is an entity names that proxy, so the ECS's
 own structures and any caller's component spell an entity the same way — as its
 [`Entity::to_bits`] integer. Nothing in the ECS reads the reflection.
@@ -169,8 +169,8 @@ visible length instead.
 [`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
 component type a type-erased reader only knows by
 [`TypeId`](core::any::TypeId), [`WorldInfo`] / [`ArchetypeInfo`] / [`EntityInfo`]
-for reporting a world's shape as plain data (with [`EntityProxy`] and
-[`EntityVecProxy`] as the reflection an entity field names), and the specialized
+for reporting a world's shape as plain data (with `EntityProxy` and
+`EntityVecProxy` as the reflection an entity field names), and the specialized
 hash containers
 [`TypeIdHashMap`], [`EntityHashMap`] and friends.
 
@@ -290,9 +290,9 @@ The crate still keeps its one-dependency shape. The module is gated off on
 adds is optional and target-gated, so a browser build carries none of them.
 
 Tools come from the crates that define what they act on, not from this one.
-A crate submits a [`ToolSource`](crate::mcp::ToolSource) to a link-time table —
-the same `inventory` mechanism the [`reflect`] registry uses — and
-`McpServer::new` walks the table to register each one:
+A crate submits a `crate::mcp::ToolSource` to a link-time table — the same
+`inventory` mechanism the `reflect` registry uses — and `McpServer::new` walks
+the table to register each one:
 
 ```rust,ignore
 unlit_ecs::mcp::inventory::submit! {
@@ -317,24 +317,22 @@ one MCP session can inspect a world's private parts without the host exposing th
 An operation the scope does not own — a spawn outside its subtree, a despawn of an
 ancestor — is refused rather than silently redirected.
 
-Components are addressed by name through the [`reflect`] registry: a
-component's crate submits a [`ComponentEntry`](crate::reflect::ComponentEntry)
-to the same kind of link-time table, so `get_component` and `set_component`
-can encode and decode a value the ECS itself has never heard of.
+Components are addressed by name through the `reflect` registry: a component's
+crate submits a `crate::reflect::ComponentEntry` to the same kind of link-time
+table, so `get_component` and `set_component` can encode and decode a value the
+ECS itself has never heard of.
 
 ## The MCP server, and what it cannot reach
 
 The transport thread is not the world's thread. It reads the protocol, turns a
-call into a [`McpCommand`](crate::mcp::McpCommand), and posts it through a
-channel the host drains; whoever owns the world runs the job and answers on
-the command's own channel.
-A world is `!Send`, and this is the shape that keeps it that way.
+call into a `crate::mcp::McpCommand`, and posts it through a channel the host
+drains; whoever owns the world runs the job and answers on the command's own
+channel. A world is `!Send`, and this is the shape that keeps it that way.
 
-Which world a tool names is the client's to say:
-[`WorldId`](crate::mcp::WorldId) is `"Host"` for the world the server was built
-around, or `{"Handle": bits}` for a world a host
-entity carries. A host that wants its other worlds addressable answers
-`list_worlds` itself, because only it knows which entities carry one.
+Which world a tool names is the client's to say: `crate::mcp::WorldId` is
+`"Host"` for the world the server was built around, or `{"Handle": bits}` for a
+world a host entity carries. A host that wants its other worlds addressable
+answers `list_worlds` itself, because only it knows which entities carry one.
 
 
 ## Why the ECS is this small
