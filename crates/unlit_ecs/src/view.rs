@@ -129,42 +129,6 @@ impl<'w> Scope<'w> {
         QueryIter::new(self.world, self.scope)
     }
 
-    /// Run `f` for every visible entity matching `Q`.
-    ///
-    /// Each item is fetched and dropped before the next one, so a query may ask
-    /// for `&mut` components.
-    pub fn for_each<Q: Query, F>(&self, f: F)
-    where
-        F: FnMut(Q::Item<'_>),
-    {
-        self.for_each_filtered::<Q, (), F>(f);
-    }
-
-    /// Run `f` for every visible entity matching `Q` that passes `T`.
-    pub fn for_each_filtered<Q: Query, T: QueryFilter, F>(&self, mut f: F)
-    where
-        F: FnMut(Q::Item<'_>),
-    {
-        for archetype in self.world.archetypes_slice() {
-            if !Q::matches(archetype) || !T::matches(archetype) {
-                continue;
-            }
-            if !self.archetype_visible(archetype) {
-                continue;
-            }
-            let state = Q::fetch_state(archetype);
-            for row in 0..archetype.len() {
-                if !self.row_visible(archetype, row) {
-                    continue;
-                }
-                if !self.is_content(archetype.entities()[row]) {
-                    continue;
-                }
-                f(Q::fetch(&state, row));
-            }
-        }
-    }
-
     /// The archetype with this id, when this scope sees every row of it.
     ///
     /// A partially visible archetype answers `None`: handing out its entity

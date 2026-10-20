@@ -374,8 +374,8 @@ impl_query_tuple!(A, B, C, D, E, F, G, H);
 ///
 /// An item borrows the world, so two items from one iterator may be alive at the
 /// same time. Asking for `&mut` components twice without dropping the first
-/// item panics; [`crate::Scope::for_each`] is the form that guarantees each item is
-/// dropped before the next is fetched.
+/// item panics, so an item that writes has to be dropped before the next one is
+/// fetched.
 pub struct QueryIter<'w, Q: Query, F: QueryFilter = ()> {
     world: &'w World,
     /// The scope the query looks through.
@@ -516,9 +516,9 @@ mod tests {
         let mut world = crate::World::new();
         world.root_scope_mut().spawn((Marker(1),));
         world.root_scope_mut().spawn((Marker(2),));
-        world
-            .root_scope()
-            .for_each::<(&mut Marker,), _>(|(mut marker,)| marker.0 *= 10);
+        for (_, mut marker) in world.root_scope().query::<&mut Marker>() {
+            marker.0 *= 10;
+        }
         let mut values: Vec<u32> = world
             .root_scope()
             .query::<&Marker>()
@@ -565,13 +565,11 @@ mod tests {
         let mut world = crate::World::new();
         let with = world.root_scope_mut().spawn((Marker(1), 5u32));
         let without = world.root_scope_mut().spawn((Marker(2),));
-        world
-            .root_scope()
-            .for_each::<(Option<&mut u32>,), _>(|(value,)| {
-                if let Some(mut value) = value {
-                    *value += 1;
-                }
-            });
+        for (_, value) in world.root_scope().query::<Option<&mut u32>>() {
+            if let Some(mut value) = value {
+                *value += 1;
+            }
+        }
         assert_eq!(
             world.root_scope().get::<u32>(with).map(|value| *value),
             Some(6)

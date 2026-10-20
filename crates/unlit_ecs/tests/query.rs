@@ -100,12 +100,10 @@ fn a_query_can_fetch_the_entity_alone() {
 fn mutable_components_are_written_through_a_query() {
     let (world, mover, hidden, still) = scene();
 
-    world
-        .root_scope()
-        .for_each::<(&mut Position, &Velocity), _>(|(mut position, velocity)| {
-            position.x += velocity.dx;
-            position.y += velocity.dy;
-        });
+    for (_, (mut position, velocity)) in world.root_scope().query::<(&mut Position, &Velocity)>() {
+        position.x += velocity.dx;
+        position.y += velocity.dy;
+    }
 
     assert_eq!(world.root_scope().get::<Position>(mover).unwrap().x, 1.0);
     assert_eq!(world.root_scope().get::<Position>(hidden).unwrap().x, 12.0);
@@ -153,13 +151,11 @@ fn an_optional_component_alone_yields_none_for_holders_without_it() {
 fn an_optional_mutable_component_writes_only_where_present() {
     let (world, mover, hidden, still) = scene();
 
-    world
-        .root_scope()
-        .for_each::<(Option<&mut Velocity>,), _>(|(velocity,)| {
-            if let Some(mut velocity) = velocity {
-                velocity.dx += 10.0;
-            }
-        });
+    for (_, velocity) in world.root_scope().query::<Option<&mut Velocity>>() {
+        if let Some(mut velocity) = velocity {
+            velocity.dx += 10.0;
+        }
+    }
 
     assert_eq!(world.root_scope().get::<Velocity>(mover).unwrap().dx, 11.0);
     assert_eq!(world.root_scope().get::<Velocity>(hidden).unwrap().dx, 12.0);
