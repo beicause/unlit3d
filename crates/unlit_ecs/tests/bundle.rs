@@ -203,8 +203,8 @@ fn a_built_bundle_is_a_bundle() {
     // The macro's output implements `Bundle`, so a caller can build one, pass it
     // around, and spawn it later.
     let mut builder = ArchetypeBuilder::new();
-    builder.push(1u32);
-    builder.push(2.0f32);
+    builder.push_component(1u32);
+    builder.push_component(2.0f32);
 
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(builder);
@@ -228,6 +228,112 @@ fn into_builder_returns_exactly_the_bundles_components() {
     assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
     assert!(world.root_scope().has::<f32>(entity));
     assert!(world.root_scope().has::<bool>(entity));
+}
+
+#[test]
+fn a_builder_is_flattened_with_a_dot_dot() {
+    // A bundle written with `..` contributes its own components, so a builder
+    // the macro produced lands as its flat leaves rather than as one component.
+    let mut gathered = ArchetypeBuilder::new();
+    gathered.push_component(Position { x: 1.0, y: 2.0 });
+    gathered.push_component(7u32);
+
+    let mut world = World::new();
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(..gathered, Velocity { dx: 3.0, dy: 4.0 }));
+
+    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().y, 2.0);
+    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 7);
+    assert_eq!(world.root_scope().get::<Velocity>(entity).unwrap().dy, 4.0);
+    assert!(
+        !world.root_scope().has::<ArchetypeBuilder>(entity),
+        "the builder is not stored as a component"
+    );
+}
+
+#[test]
+fn a_custom_bundle_is_flattened_with_a_dot_dot() {
+    struct Pose(Position);
+
+    impl Bundle for Pose {
+        fn into_builder(self) -> ArchetypeBuilder {
+            let mut builder = ArchetypeBuilder::new();
+            builder.push_component(self.0);
+            builder.push_component(Velocity { dx: 0.0, dy: 1.0 });
+            builder
+        }
+    }
+
+    let mut world = World::new();
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(..Pose(Position { x: 5.0, y: 6.0 }), true));
+
+    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().x, 5.0);
+    assert_eq!(world.root_scope().get::<Velocity>(entity).unwrap().dy, 1.0);
+    assert!(world.root_scope().has::<bool>(entity));
+    assert!(
+        !world.root_scope().has::<Pose>(entity),
+        "the bundle is not stored as a component"
+    );
+}
+
+#[test]
+fn a_bundle_spread_keeps_a_tuple_component_whole() {
+    // The spread spawns the bundle exactly as spawning it alone would, so a
+    // tuple a bundle holds stays one component instead of being flattened.
+    let mut world = World::new();
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(..(1u32, (2.0f32, true))));
+
+    assert!(world.root_scope().has::<(f32, bool)>(entity));
+    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
+    assert!(!world.root_scope().has::<f32>(entity));
+}
+
+#[test]
+fn a_spread_bundle_nests_inside_groups() {
+    let mut builder = ArchetypeBuilder::new();
+    builder.push_component(1u32);
+
+    let mut world = World::new();
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!((..builder, 2.0f32), (true,)));
+
+    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
+    assert_eq!(*world.root_scope().get::<f32>(entity).unwrap(), 2.0);
+    assert!(world.root_scope().has::<bool>(entity));
+}
+
+#[test]
+fn a_queued_spread_bundle_applies() {
+    let mut builder = ArchetypeBuilder::new();
+    builder.push_component(1u32);
+
+    let mut world = World::new();
+    let entity = {
+        let commands: Commands<'_> = world.root_scope().queue();
+        commands.spawn(bundle!(..builder, 2.0f32))
+    };
+
+    assert!(!world.root_scope().contains(entity), "queued, not spawned");
+    world.apply();
+
+    assert!(world.root_scope().has::<u32>(entity));
+    assert!(world.root_scope().has::<f32>(entity));
+}
+
+#[test]
+#[should_panic(expected = "same component twice")]
+fn a_duplicate_across_a_spread_panics() {
+    let mut builder = ArchetypeBuilder::new();
+    builder.push_component(1u32);
+
+    let mut world = World::new();
+    world.root_scope_mut().spawn(bundle!(1u32, ..builder));
 }
 
 #[test]

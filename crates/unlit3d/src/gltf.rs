@@ -1085,26 +1085,26 @@ impl UnlitGltf {
                 // written as a tuple: an absent material is a component left
                 // out, not a `None` the renderer would have to look through.
                 let mut bundle = ArchetypeBuilder::new();
-                bundle.push(transform.clone());
-                bundle.push(mesh_handle.mesh.clone());
-                bundle.push(UnlitPipeline::new(mesh_handle.key.clone()));
-                bundle.push(InstanceColor::new(tint));
+                bundle.push_component(transform.clone());
+                bundle.push_component(mesh_handle.mesh.clone());
+                bundle.push_component(UnlitPipeline::new(mesh_handle.key.clone()));
+                bundle.push_component(InstanceColor::new(tint));
                 // The cutoff is per-instance state, so the entity carries it
                 // and the shader reads it out of the instance stream.
                 if let Some(cutoff) = cutoff {
-                    bundle.push(InstanceCutoff::new(cutoff));
+                    bundle.push_component(InstanceCutoff::new(cutoff));
                 }
                 if let Some(material) = material {
-                    bundle.push(material.bind_group.clone());
+                    bundle.push_component(material.bind_group.clone());
                 }
                 if let Some(binding) = binding {
-                    bundle.push(binding);
+                    bundle.push_component(binding);
                 }
                 if let Some(binding) = morph_binding {
-                    bundle.push(binding);
+                    bundle.push_component(binding);
                 }
                 if z_sorted {
-                    bundle.push(ZSortedDrawing);
+                    bundle.push_component(ZSortedDrawing);
                 }
                 entities.push(world.spawn(bundle));
             }

@@ -209,7 +209,7 @@ fn push_component<C: Facet<'static> + Clone>(
 ) -> Result<(), String> {
     let partial = Partial::alloc_owned::<C>().map_err(|error| error.to_string())?;
     let partial = facet_json::from_str_into(patch, partial).map_err(|error| error.to_string())?;
-    builder.push(materialize::<C>(partial)?);
+    builder.push_component(materialize::<C>(partial)?);
     Ok(())
 }
 
@@ -217,7 +217,7 @@ fn push_default_component<C: Facet<'static> + Default + Clone>(
     builder: &mut ArchetypeBuilder,
     patch: &str,
 ) -> Result<(), String> {
-    builder.push(apply(C::default(), patch)?);
+    builder.push_component(apply(C::default(), patch)?);
     Ok(())
 }
 

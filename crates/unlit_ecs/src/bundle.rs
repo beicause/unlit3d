@@ -50,13 +50,25 @@ impl ArchetypeBuilder {
     }
 
     /// Add one component.
-    pub fn push<C: 'static>(&mut self, value: C) {
+    pub fn push_component<C: 'static>(&mut self, value: C) {
         self.values.push((TypeId::of::<C>(), Box::new(value)));
         self.ctors.push((
             TypeId::of::<C>(),
             core::any::type_name::<C>(),
             Column::<C>::eraser(),
         ));
+    }
+
+    /// Add every component `components` yields, in order.
+    ///
+    /// Every item is of the same type, so the iterator adds one component type
+    /// as many times as it is long; a bundle cannot hold the same component
+    /// twice, so an iterator longer than one is refused when the bundle is
+    /// finished.
+    pub fn push_components<C: 'static>(&mut self, components: impl IntoIterator<Item = C>) {
+        for value in components {
+            self.push_component(value);
+        }
     }
 
     /// Add every component of `bundle` to this builder.
@@ -101,7 +113,7 @@ pub trait Bundle {
     ///
     /// The bundle supplies the whole builder, so there is no target to append
     /// to or overwrite; a caller that wants to gather several bundles calls
-    /// [`ArchetypeBuilder::push`] for each component instead.
+    /// [`ArchetypeBuilder::push_component`] for each component instead.
     fn into_builder(self) -> ArchetypeBuilder;
 }
 
@@ -124,7 +136,7 @@ macro_rules! impl_bundle {
             fn into_builder(self) -> ArchetypeBuilder {
                 let ($($name,)*) = self;
                 let mut builder = ArchetypeBuilder::new();
-                $(builder.push::<$name>($name);)*
+                $(builder.push_component::<$name>($name);)*
                 builder
             }
         }
@@ -169,6 +181,22 @@ impl_bundle!(A, B, C, D, E, F, G, H, I, J, K, L, N, O, P, Q);
 /// assert!(world.root_scope().has::<bool>(entity));
 /// `````
 ///
+/// A bundle written as `..value` is unwrapped into its own components, the way
+/// spawning it alone would: a builder the macro produced contributes its flat
+/// leaves, while a tuple or a custom bundle keeps the components it defines.
+/// The syntax is needed because the macro walks the source and cannot tell a
+/// bundle from a component; written plainly, a bundle is one component.
+///
+/// ```rust
+/// # use unlit_ecs::{ArchetypeBuilder, World, bundle};
+/// let mut gathered = ArchetypeBuilder::new();
+/// gathered.push_component(1u32);
+/// let mut world = World::new();
+/// let entity = world.root_scope_mut().spawn(bundle!(..gathered, true));
+/// assert!(world.root_scope().has::<u32>(entity));
+/// assert!(world.root_scope().has::<bool>(entity));
+/// ```
+///
 /// The width is bounded by the compiler's recursion limit rather than by a
 /// fixed count: each item costs a level of macro recursion, so roughly a
 /// hundred components fit at the default limit of 128. A wider bundle is built
@@ -198,12 +226,21 @@ macro_rules! bundle {
     (@list $builder:ident, ($($inner:tt)*)) => {
         $crate::bundle!(@push $builder, ($($inner)*));
     };
+    // A bundle written as `..value`, unwrapped into its own components. It is
+    // matched before the `$leaf:expr` arms because `..value` is not an
+    // expression, and it cannot collide with the group arms above because a
+    // group starts with `(`.
+    (@list $builder:ident, ..$bundle:expr, $($rest:tt)*) => {
+        $builder.push_bundle($bundle);
+        $crate::bundle!(@list $builder, $($rest)*);
+    };
+    (@list $builder:ident, ..$bundle:expr) => { $builder.push_bundle($bundle) };
     (@list $builder:ident, $leaf:expr, $($rest:tt)*) => {
-        $builder.push($leaf);
+        $builder.push_component($leaf);
         $crate::bundle!(@list $builder, $($rest)*);
     };
     (@list $builder:ident,) => {};
-    (@list $builder:ident, $leaf:expr) => { $builder.push($leaf) };
+    (@list $builder:ident, $leaf:expr) => { $builder.push_component($leaf) };
     ($($item:tt)+) => {{
         let mut builder = $crate::ArchetypeBuilder::new();
         $crate::bundle!(@list builder, $($item)+);
@@ -216,6 +253,31 @@ mod tests {
     use super::*;
     use crate::World;
 
+    /// An iterator adds each of its items as a component of its own type.
+    #[test]
+    fn push_components_adds_every_item() {
+        let mut world = World::new();
+        let mut builder = ArchetypeBuilder::new();
+        builder.push_components(core::iter::empty::<u8>());
+        builder.push_components([1u32]);
+        let entity = world.root_scope_mut().spawn(builder);
+        assert_eq!(
+            world.root_scope().get::<u32>(entity).map(|value| *value),
+            Some(1)
+        );
+    }
+
+    /// The items of one iterator share a type, so a bundle can hold at most one
+    /// of them.
+    #[test]
+    #[should_panic(expected = "same component twice")]
+    fn push_components_repeats_a_type() {
+        let mut world = World::new();
+        let mut builder = ArchetypeBuilder::new();
+        builder.push_components([1u32, 2u32]);
+        world.root_scope_mut().spawn(builder);
+    }
+
     /// Gathering bundles keeps each one's own components: a tuple bundle
     /// contributes its leaves, and a component that is itself a tuple stays
     /// one component.
@@ -223,7 +285,7 @@ mod tests {
     fn push_bundle_gathers_bundles() {
         let mut world = World::new();
         let mut builder = ArchetypeBuilder::new();
-        builder.push(1u32);
+        builder.push_component(1u32);
         builder.push_bundle((2.0f32, true));
         builder.push_bundle(((7u8, 8u8), ()));
         let entity = world.root_scope_mut().spawn(builder);

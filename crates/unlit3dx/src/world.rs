@@ -293,9 +293,9 @@ fn spawn_proxy(
     sender: WorldSender,
 ) -> Entity {
     let mut bundle = ArchetypeBuilder::new();
-    bundle.push(WorldProxy { kind });
-    bundle.push(WorldName(name));
-    bundle.push(sender);
+    bundle.push_component(WorldProxy { kind });
+    bundle.push_component(WorldName(name));
+    bundle.push_component(sender);
     host.root_scope_mut().spawn(bundle)
 }
 

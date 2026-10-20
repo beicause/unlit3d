@@ -256,6 +256,26 @@ assert!(world.root_scope().has::<bool>(entity));
 assert!(!world.root_scope().has::<(u32, f32)>(entity));
 ```
 
+A bundle written as `..value` is spread into its own components, so a bundle
+built elsewhere joins the spawn as itself: a builder the macro produced
+contributes its flat leaves, while a tuple or a custom `Bundle` keeps the
+components it defines. The syntax is needed because the macro walks the source
+and cannot tell a bundle from a component — written plainly, a bundle is one
+component:
+
+```rust
+use unlit_ecs::{ArchetypeBuilder, bundle, World};
+
+let mut gathered = ArchetypeBuilder::new();
+gathered.push_component(1u32);
+
+let mut world = World::new();
+let entity = world.root_scope_mut().spawn(bundle!(..gathered, 2.0f32));
+
+assert!(world.root_scope().has::<u32>(entity));
+assert!(world.root_scope().has::<f32>(entity));
+```
+
 ## The MCP server
 
 The `mcp` feature (off by default, native only) turns the crate into a

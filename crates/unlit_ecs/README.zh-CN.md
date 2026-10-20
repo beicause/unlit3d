@@ -205,6 +205,24 @@ assert!(world.root_scope().has::<bool>(entity));
 assert!(!world.root_scope().has::<(u32, f32)>(entity));
 ```
 
+用 `..value` 写下的 bundle 会被展开成它自己的组件，于是别处建好的 bundle 可以原样
+并入这次 spawn：宏产出的 builder 贡献它展平后的叶子，而元组或自定义 `Bundle` 保持
+它自己定义的组件。之所以需要这个语法，是因为宏只遍历源码，分不清 bundle 和组件——
+裸写的话 bundle 会被当成一个组件：
+
+```rust
+use unlit_ecs::{ArchetypeBuilder, bundle, World};
+
+let mut gathered = ArchetypeBuilder::new();
+gathered.push_component(1u32);
+
+let mut world = World::new();
+let entity = world.root_scope_mut().spawn(bundle!(..gathered, 2.0f32));
+
+assert!(world.root_scope().has::<u32>(entity));
+assert!(world.root_scope().has::<f32>(entity));
+```
+
 ## MCP 服务器
 
 `mcp` feature（默认关闭，仅原生目标）把本 crate 变成一个经 stdio 由客户端驱动的

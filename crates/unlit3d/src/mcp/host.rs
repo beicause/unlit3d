@@ -542,12 +542,12 @@ pub fn create_mesh(
     };
     let color = args.color.map_or(glam::Vec4::ONE, glam::Vec4::from_array);
     let mut builder = ArchetypeBuilder::new();
-    builder.push(transform);
-    builder.push(mesh);
-    builder.push(UnlitPipeline::new(key));
-    builder.push(InstanceColor::new(color));
+    builder.push_component(transform);
+    builder.push_component(mesh);
+    builder.push_component(UnlitPipeline::new(key));
+    builder.push_component(InstanceColor::new(color));
     if let Some(cutoff) = args.cutoff {
-        builder.push(InstanceCutoff::new(cutoff));
+        builder.push_component(InstanceCutoff::new(cutoff));
     }
     // The mesh lands in the requested scope, which defaults to the source
     // entity itself: a frame draws a source's own subtree, so a mesh spawned
