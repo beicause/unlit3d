@@ -343,21 +343,30 @@ fn has_reports_a_component_without_borrowing_it() {
             .query_one::<Has<Position>>(mover)
             .unwrap()
     );
-    // A component the entity lacks makes the query not match, so the answer is
-    // `None` rather than `false`.
-    assert!(
-        world
-            .root_scope()
-            .query_one::<Has<Velocity>>(still)
-            .is_none()
-    );
-    assert!(
-        !world
-            .root_scope()
-            .query_one::<Has<Velocity>>(still)
-            .unwrap_or(false)
+    // `Has` narrows nothing, so a component the entity lacks answers `false`
+    // rather than dropping the row.
+    assert_eq!(
+        world.root_scope().query_one::<Has<Velocity>>(still),
+        Some(false)
     );
     position.x = 42.0;
+}
+
+#[test]
+fn has_narrows_nothing_and_by_narrows_for_it() {
+    let (world, _, _, _) = scene();
+
+    // Every row is visited, including the one entity without a `Velocity`.
+    assert_eq!(world.root_scope().query::<Has<Velocity>>().count(), 3);
+    // Narrowing to the carriers is the predicate's job.
+    assert_eq!(
+        world
+            .root_scope()
+            .query::<Has<Velocity>>()
+            .by(|archetype: &Archetype| archetype.has::<Velocity>())
+            .count(),
+        2
+    );
 }
 
 #[test]

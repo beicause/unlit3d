@@ -243,7 +243,10 @@ for (entity, has_spin) in world.root_scope().query::<(&Entity, Has<Spin>)>() {
 
 A query is a type, not a value: `&C` reads a component, `&mut C` writes one,
 `Option<&C>` and `Option<&mut C>` make it optional, [`Entity`] yields the
-entity, and [`Has<C>`] yields whether `C` is there. Items do not nest —
+entity, and [`Has<C>`] yields whether `C` is there. `Has<C>` narrows nothing, so
+it reports a `false` for an entity that lacks `C` rather than skipping it; a
+query that should visit only the carriers pairs it with [`QueryIter::by`],
+`by(|archetype| archetype.has::<C>())`. Items do not nest —
 `&(a, b)` is one tuple component and `(&a, &b)` is two — and a query with more
 components than a tuple impl covers is written by implementing [`Query`]
 yourself. [`Scope::query_one`] runs the same query over one entity, so a lookup
@@ -280,10 +283,9 @@ let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
 // Two components: one tuple, and a nested one.
 let scope = world.root_scope();
-assert_eq!(scope.query::<Has<(u32, f32)>>().count(), 1);
-assert_eq!(scope.query_one::<Has<(u32, f32)>>(entity), Some(true));
-assert_eq!(scope.query_one::<Has<(bool, ())>>(entity), Some(true));
-assert_eq!(scope.query_one::<Has<u32>>(entity), None);
+assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap());
+assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap());
+assert!(!scope.query_one::<Has<u32>>(entity).unwrap());
 ```
 
 A bundle written as `..value` is spread into its own components, so a bundle

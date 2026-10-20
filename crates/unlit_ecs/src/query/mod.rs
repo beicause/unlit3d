@@ -11,7 +11,7 @@
 //! | `Option<&T>` | `Some` when the archetype carries the component |
 //! | `Option<&mut T>` | `Some` when it carries it, exclusive |
 //! | `Entity` | the entity itself |
-//! | [`Has<T>`] | whether the archetype carries `T` |
+//! | [`Has<T>`] | whether the archetype carries `T`, narrowing nothing |
 //!
 //! A tuple of items asks for all of them at once and yields a tuple of their
 //! items. Items do not nest: `&(a, b)` is one tuple component, `(&a, &b)` is
@@ -26,7 +26,9 @@
 //! let sum: u32 = world.root_scope().query::<&u32>().map(|value| *value).sum();
 //! assert_eq!(sum, 3);
 //!
-//! // The entity, its component, and whether it also carries a `bool`.
+//! // The entity, its component, and whether it also carries a `bool`. The
+//! // `Has<bool>` reports the answer without narrowing anything, so both spawns
+//! // above are visited and the one without a `bool` prints `false`.
 //! for (entity, value, has_bool) in world.root_scope().query::<(Entity, &u32, Has<bool>)>() {
 //!     println!("{entity:?} has {value}, and a bool: {has_bool}");
 //! }
@@ -260,27 +262,35 @@ impl Query for Entity {
 
 impl QueryItem for Entity {}
 
-/// Asks whether the archetype carries `T`.
+/// Yields whether the archetype carries `T`.
 ///
-/// The answer is read from the archetype, so it borrows no cell and never
-/// conflicts: `(&mut T, Has<T>)` is legal and yields `true` for every row of
-/// a match. Use it instead of `Option<&T>::is_some()` to ask about a component
-/// without borrowing it.
+/// The answer is read from the archetype's component set, so it borrows no cell
+/// and never conflicts: `(&mut T, Has<T>)` is legal. Use it instead of
+/// `Option<&T>::is_some()` to ask about a component without borrowing it.
+///
+/// It narrows nothing: every archetype matches, and a row whose archetype lacks
+/// `T` yields `false`. That is what lets a query report presence for rows it was
+/// going to visit anyway, and what keeps `query_one::<Has<T>>` answering
+/// `Some(false)` rather than `None` for an entity that lacks `T`. To visit only
+/// the archetypes carrying `T`, pair it with [`QueryIter::by`]:
+/// `.by(|archetype: &Archetype| archetype.has::<T>())`.
 #[derive(Clone, Copy, Debug)]
 pub struct Has<T>(PhantomData<fn() -> T>);
 
 impl<T: 'static> Query for Has<T> {
     type Item<'a> = bool;
-    type Fetch<'a> = ();
+    type Fetch<'a> = bool;
 
-    fn matches(archetype: &Archetype) -> bool {
+    fn matches(_: &Archetype) -> bool {
+        true
+    }
+
+    fn fetch_state(archetype: &Archetype) -> Self::Fetch<'_> {
         archetype.has::<T>()
     }
 
-    fn fetch_state(_: &Archetype) -> Self::Fetch<'_> {}
-
-    fn fetch<'a>(_: &Self::Fetch<'a>, _: usize) -> Self::Item<'a> {
-        true
+    fn fetch<'a>(state: &Self::Fetch<'a>, _: usize) -> Self::Item<'a> {
+        *state
     }
 
     fn type_ids(_: &mut dyn FnMut(TypeId, &'static str)) {}

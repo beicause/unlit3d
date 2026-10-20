@@ -189,7 +189,9 @@ for (entity, has_spin) in world.root_scope().query::<(&Entity, Has<Spin>)>() {
 ```
 
 查询是类型而不是值：`&C` 读组件，`&mut C` 写组件，`Option<&C>` 与 `Option<&mut C>`
-表示可选，`Entity` 交出实体本身，`Has<C>` 交出 `C` 在不在。项不可嵌套——`&(a, b)`
+表示可选，`Entity` 交出实体本身，`Has<C>` 交出 `C` 在不在。`Has<C>` 不收窄任何
+东西，所以实体没有 `C` 时它交出 `false` 而不是跳过该行；只想到访携带者的查询要配合
+`QueryIter::by`，即 `by(|archetype| archetype.has::<C>())`。项不可嵌套——`&(a, b)`
 是一个元组组件，`(&a, &b)` 才是两个——而组件数超出元组 impl 覆盖面时，由调用者自己
 `impl Query`。`Scope::query_one` 在单个实体上跑同一个查询，于是按句柄查找与遍历 scope
 共用同一套词汇。
@@ -224,10 +226,9 @@ let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
 // 两个组件：一个元组，一个嵌套的元组。
 let scope = world.root_scope();
-assert_eq!(scope.query::<Has<(u32, f32)>>().count(), 1);
-assert_eq!(scope.query_one::<Has<(u32, f32)>>(entity), Some(true));
-assert_eq!(scope.query_one::<Has<bool>>(entity), Some(true));
-assert_eq!(scope.query_one::<Has<u32>>(entity), None);
+assert!(scope.query_one::<Has<(u32, f32)>>(entity).unwrap());
+assert!(scope.query_one::<Has<(bool, ())>>(entity).unwrap());
+assert!(!scope.query_one::<Has<u32>>(entity).unwrap());
 ```
 
 用 `..value` 写下的 bundle 会被展开成它自己的组件，于是别处建好的 bundle 可以原样

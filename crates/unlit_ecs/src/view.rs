@@ -102,6 +102,7 @@ impl<'w> Scope<'w> {
     ///
     /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 1);
     /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap());
+    /// assert!(!world.root_scope().query_one::<Has<bool>>(entity).unwrap());
     /// assert!(world.root_scope().query_one::<&bool>(entity).is_none());
     /// ````
     #[must_use]
