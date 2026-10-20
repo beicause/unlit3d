@@ -348,8 +348,8 @@ impl<'w> Scope<'w> {
         };
         match archetype.scope_summary() {
             ScopeSummary::Empty => 0,
-            ScopeSummary::Uniform(scope) => {
-                if self.world.visible(self.scope, scope) {
+            ScopeSummary::Uniform(_) => {
+                if self.fully_visible(archetype) {
                     // The whole archetype is this one scope, so its rows are
                     // the scope's — except a shared row, which reaches the scope
                     // from outside it and so belongs to no other archetype.

@@ -37,7 +37,7 @@
 use core::any::TypeId;
 use core::marker::PhantomData;
 
-use crate::archetype::Archetype;
+use crate::archetype::{Archetype, ScopeSummary};
 use crate::column::{CellRef, CellRefMut, Column};
 use crate::entity::Entity;
 use crate::world::World;
@@ -384,6 +384,13 @@ pub struct QueryIter<'w, Q: Query, F: QueryFilter = ()> {
     /// The columns of the archetype currently being visited, resolved once in
     /// [`Query::fetch_state`].
     state: Option<Q::Fetch<'w>>,
+    /// Set while the archetype being visited is uniform: whether the one scope
+    /// its rows live in is visible, which is the answer every row shares.
+    /// `None` for a mixed archetype, and until the columns are resolved.
+    ///
+    /// Resolved here rather than per row because deciding it walks the scope
+    /// tree, and a uniform archetype answers the same thing for every row.
+    uniform_visible: Option<bool>,
     _query: PhantomData<fn() -> (Q, F)>,
 }
 
@@ -395,6 +402,7 @@ impl<'w, Q: Query, F: QueryFilter> QueryIter<'w, Q, F> {
             archetype: 0,
             row: 0,
             state: None,
+            uniform_visible: None,
             _query: PhantomData,
         }
     }
@@ -414,9 +422,16 @@ impl<'w, Q: Query, F: QueryFilter> QueryIter<'w, Q, F> {
 
     /// Whether row `row` of `archetype` is visible from this query's scope.
     fn row_matches(&self, archetype: &Archetype, row: usize) -> bool {
-        archetype
-            .scope_summary()
-            .row_visible(archetype, self.world, self.scope, row)
+        match self.uniform_visible {
+            // The whole archetype lives in one scope, so the tree walk is done
+            // once for it. The one row that can still be visible without it is
+            // the caller's own: a scope lives in its parent, and that row sits
+            // in the parent's archetype, not in the caller's.
+            Some(visible) => visible || archetype.entities()[row] == self.scope,
+            None => archetype
+                .scope_summary()
+                .row_visible(archetype, self.world, self.scope, row),
+        }
     }
 }
 
@@ -433,6 +448,7 @@ impl<'w, Q: Query, F: QueryFilter> Iterator for QueryIter<'w, Q, F> {
                 self.archetype += 1;
                 self.row = 0;
                 self.state = None;
+                self.uniform_visible = None;
                 continue;
             }
             if self.state.is_none() {
@@ -442,6 +458,14 @@ impl<'w, Q: Query, F: QueryFilter> Iterator for QueryIter<'w, Q, F> {
                     continue;
                 }
                 self.state = Some(Q::fetch_state(archetype));
+                let summary = archetype.scope_summary();
+                self.uniform_visible = match summary {
+                    // `all_visible` on a uniform archetype is exactly "the
+                    // scope its rows live in is visible", the row-invariant
+                    // half of `row_visible`.
+                    ScopeSummary::Uniform(_) => Some(summary.all_visible(self.world, self.scope)),
+                    _ => None,
+                };
             }
             let row = self.row;
             self.row += 1;
@@ -686,6 +710,54 @@ mod tests {
             .query::<(&mut Marker, &mut Marker)>()
             .collect();
         drop(items);
+    }
+
+    /// A uniform archetype is gated once for the whole archetype, but the
+    /// caller's own row still comes through: a scope lives in its parent, so
+    /// its own entity is a row of an archetype it cannot see.
+    #[test]
+    fn a_uniform_archetype_above_the_scope_yields_only_its_own_row() {
+        let mut world = crate::World::new();
+        let scene = world.root_scope_mut().spawn((Marker(1),));
+        let sibling = world.root_scope_mut().spawn((Marker(2),));
+        let child = world.scope_mut(scene).unwrap().spawn((Marker(3), true));
+
+        let found: Vec<Entity> = world
+            .scope(scene)
+            .unwrap()
+            .query::<&Marker>()
+            .map(|(entity, _)| entity)
+            .collect();
+        assert_eq!(
+            found,
+            [scene, child],
+            "the scene's own row and the archetype it does see, not the sibling's"
+        );
+        assert!(!found.contains(&sibling));
+    }
+
+    /// The cached answer belongs to one archetype: a mixed archetype that
+    /// follows a uniform one is still decided row by row.
+    #[test]
+    fn a_mixed_archetype_is_still_decided_per_row_after_a_uniform_one() {
+        let mut world = crate::World::new();
+        let first = world.root_scope_mut().spawn((Marker(1),));
+        let second = world.root_scope_mut().spawn((Marker(2),));
+        let first_child = world.scope_mut(first).unwrap().spawn((Marker(3), true));
+        let second_child = world.scope_mut(second).unwrap().spawn((Marker(4), true));
+
+        let found: Vec<Entity> = world
+            .scope(first)
+            .unwrap()
+            .query::<&Marker>()
+            .map(|(entity, _)| entity)
+            .collect();
+        assert_eq!(
+            found,
+            [first, first_child],
+            "one uniform archetype and one mixed one, each gated on its own"
+        );
+        assert!(!found.contains(&second) && !found.contains(&second_child));
     }
 
     #[test]
