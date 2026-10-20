@@ -44,7 +44,6 @@ use crate::scene::{
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target, frame_viewport};
-use unlit_ecs::query;
 use unlit_wgpu::capabilities::DeviceCapabilities;
 
 /// The capacity that covers `needed` after growing from `current`.
@@ -257,15 +256,15 @@ impl MeshSource {
     /// If `ctx` does not name the world's device, queue and resource graph.
     pub fn new(world: &Scope<'_>, ctx: RenderContext) -> Self {
         let device = world
-            .get::<wgpu::Device>(ctx.device)
+            .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context names the world's device")
             .clone();
         let queue = world
-            .get::<wgpu::Queue>(ctx.queue)
+            .query_one::<&wgpu::Queue>(ctx.queue)
             .expect("the context names the world's queue")
             .clone();
         let mut graph = world
-            .get_mut::<ResourceGraph>(ctx.graph)
+            .query_one::<&mut ResourceGraph>(ctx.graph)
             .expect("the context names the world's resource graph");
 
         // Camera uniform buffer.
@@ -405,7 +404,7 @@ impl MeshSource {
     /// The world addresses this source draws through.
     ///
     /// Setup-time code that needs the resource graph reaches it with
-    /// `view.get_mut::<ResourceGraph>(source.context().graph)`, which is an
+    /// `view.query_one::<&mut ResourceGraph>(source.context().graph)`, which is an
     /// ordinary ECS access: the graph and the source live in different cells.
     pub fn context(&self) -> RenderContext {
         self.context
@@ -418,7 +417,7 @@ impl MeshSource {
     /// If the context's device resource is gone.
     pub fn device(&self, world: &Scope<'_>) -> wgpu::Device {
         world
-            .get::<wgpu::Device>(self.context.device)
+            .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
             .clone()
     }
@@ -430,7 +429,7 @@ impl MeshSource {
     /// If the context's queue resource is gone.
     pub fn queue(&self, world: &Scope<'_>) -> wgpu::Queue {
         world
-            .get::<wgpu::Queue>(self.context.queue)
+            .query_one::<&wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
             .clone()
     }
@@ -446,7 +445,7 @@ impl MeshSource {
     /// If the context's capabilities resource is gone.
     pub fn capabilities(&self, world: &Scope<'_>) -> DeviceCapabilities {
         *world
-            .get::<DeviceCapabilities>(self.context.capabilities)
+            .query_one::<&DeviceCapabilities>(self.context.capabilities)
             .expect("the context's capabilities resource exists")
     }
 
@@ -471,7 +470,7 @@ impl MeshSource {
         ctx: RenderContext,
     ) -> impl DerefMut<Target = ResourceGraph> + 'w {
         scope
-            .get_mut::<ResourceGraph>(ctx.graph)
+            .query_one::<&mut ResourceGraph>(ctx.graph)
             .expect("the context's resource graph exists")
     }
 
@@ -1187,7 +1186,7 @@ impl MeshSource {
                 }
 
                 let mesh = world
-                    .get::<GpuMesh>(entry.mesh.entity)
+                    .query_one::<&GpuMesh>(entry.mesh.entity)
                     .expect("visible entity has GpuMesh");
 
                 let mesh_bg = mesh
@@ -1287,8 +1286,7 @@ impl MeshSource {
 /// active camera, and the source draws nothing.
 fn frame_camera(scope: &Scope<'_>) -> Option<Camera> {
     scope
-        .query(query!(&Camera))
-        .map(|(_, row)| row.read::<Camera>())
+        .query::<&Camera>()
         .find(|camera| camera.active)
         .map(|camera| Camera {
             view_from_world: camera.view_from_world,
@@ -1559,7 +1557,7 @@ mod tests {
     /// graph and state them as the frame's target.
     fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> FrameTarget {
         let device = scope
-            .get::<wgpu::Device>(ctx.device)
+            .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context's device")
             .clone();
         let ft = create_render_target(
@@ -1571,7 +1569,7 @@ mod tests {
         );
         let target = {
             let mut graph = scope
-                .get_mut::<ResourceGraph>(ctx.graph)
+                .query_one::<&mut ResourceGraph>(ctx.graph)
                 .expect("the context's graph");
             let color = graph.insert(
                 TextureExt::create_view(&ft.color, &wgpu::TextureViewDescriptor::default()),
@@ -1698,7 +1696,8 @@ mod tests {
         },));
         world
             .root_scope()
-            .with_mut::<Camera, _>(inactive, |camera| camera.active = false)
+            .query_one::<&mut Camera>(inactive)
+            .map(|mut camera| camera.active = false)
             .expect("the entity carries a camera");
         let active = world.root_scope_mut().spawn(bundle!(Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
@@ -1713,7 +1712,8 @@ mod tests {
         // With every camera inactive, the frame has nothing to draw through.
         world
             .root_scope()
-            .with_mut::<Camera, _>(active, |camera| camera.active = false)
+            .query_one::<&mut Camera>(active)
+            .map(|mut camera| camera.active = false)
             .expect("the entity carries a camera");
         assert!(frame_camera(&world.root_scope()).is_none());
     }

@@ -143,7 +143,8 @@ pub async fn render(config: &Config) -> Result<Frame, Error> {
 
     world
         .root_scope()
-        .with_mut::<Renderer, _>(renderer, |renderer| renderer.render(&world))
+        .query_one::<&mut Renderer>(renderer)
+        .map(|mut renderer| renderer.render(&world))
         .expect("the renderer entity exists");
 
     let rgba = unlit_wgpu::readback::readback_texture(&device, &queue, &target);
@@ -216,10 +217,11 @@ pub fn build_world(
 
     let target = world
         .root_scope()
-        .with_mut::<Renderer, _>(renderer, |renderer| {
+        .query_one::<&mut Renderer>(renderer)
+        .map(|mut renderer| {
             bind_target(
                 &world,
-                renderer,
+                &mut renderer,
                 device,
                 output_size,
                 config.output.samples,
@@ -267,7 +269,8 @@ pub fn build_world(
                 for &entity in &node.entities {
                     let _ = world
                         .root_scope()
-                        .with_mut::<Transform, _>(entity, |current| *current = transform.clone());
+                        .query_one::<&mut Transform>(entity)
+                        .map(|mut current| *current = transform.clone());
                 }
             }
         }
@@ -340,7 +343,7 @@ pub fn offscreen_world(
     let color_view = {
         let mut graph = world
             .root_scope()
-            .get_mut::<ResourceGraph>(context.graph)
+            .query_one::<&mut ResourceGraph>(context.graph)
             .expect("spawn_context spawned the graph");
         // The texture is registered in its own right so a screenshot can name
         // it, and the view depends on it so the graph keeps it alive.
@@ -355,8 +358,9 @@ pub fn offscreen_world(
     let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
     let _ = world
         .root_scope()
-        .with_mut::<Renderer, _>(renderer, |renderer| {
-            attachments.bind(&world, renderer, color_view);
+        .query_one::<&mut Renderer>(renderer)
+        .map(|mut renderer| {
+            attachments.bind(&world, &mut renderer, color_view);
         });
     // The camera sits in the source's own subtree, which is what it frames.
     world
@@ -509,7 +513,7 @@ fn bind_target(
     let color = create_color_target(device, COLOR_FORMAT, size.0, size.1);
     let color_view = world
         .root_scope()
-        .get_mut::<ResourceGraph>(renderer.context().graph)
+        .query_one::<&mut ResourceGraph>(renderer.context().graph)
         .expect("the context's resource graph exists")
         .insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
@@ -539,7 +543,7 @@ fn with_mesh_source<R>(
         .scope(source_entity)
         .expect("the source entity is alive");
     let mut source = scope
-        .get_mut::<Source>(source_entity)
+        .query_one::<&mut Source>(source_entity)
         .expect("the mesh source entity exists");
     let mesh = source
         .as_mut::<MeshSource>()

@@ -25,7 +25,7 @@
 
 use core::time::Duration;
 
-use unlit_ecs::{World, query};
+use unlit_ecs::World;
 use unlit_wgpu::ui::ScreenDescriptor;
 use unlit3d::input::{InputEvent, InputEvents};
 use unlit3d::ui::{ExternalFrames, UiScreen, UiTarget, egui, lay_out, raw_input};
@@ -111,8 +111,8 @@ impl UiPanelHost {
         // twice.
         let mut events = core::mem::take(&mut self.input_scratch);
         events.clear();
-        if let Some((_, row)) = world.root_scope().query(query!(&InputEvents)).next() {
-            row.read::<InputEvents>().copy_events_into(&mut events);
+        if let Some(input_events) = world.root_scope().query::<&InputEvents>().next() {
+            input_events.copy_events_into(&mut events);
         }
         let due = self
             .repaint_at
@@ -179,12 +179,9 @@ const FALLBACK_TEXTURE_SIDE: u32 = 2048;
 fn fallback_target(world: &World) -> UiTarget {
     let state = world
         .root_scope()
-        .query(query!(&InputEvents))
+        .query::<&InputEvents>()
         .next()
-        .map(|(_, row)| {
-            row.read::<InputEvents>()
-                .with_state(|state| (state.scale_factor, state.size_px))
-        });
+        .map(|input_events| input_events.with_state(|state| (state.scale_factor, state.size_px)));
     let (scale_factor, size_px) = state.unwrap_or((1.0, (0, 0)));
     let pixels_per_point = if scale_factor > 0.0 {
         scale_factor

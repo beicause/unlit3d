@@ -10,7 +10,7 @@
 pub mod common;
 
 use common::*;
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::gltf::{GltfNode, GltfResources, UnlitGltf};
 use unlit3d::prelude::*;
@@ -279,17 +279,17 @@ async fn a_morphed_quad_follows_its_weights() {
     assert_eq!(entities.len(), 1, "one mesh node draws one entity");
 
     let weights_entity = {
-        let (_, row) = world
+        let morph_binding = world
             .root_scope()
-            .query(query!(&MorphBinding))
+            .query::<&MorphBinding>()
             .next()
             .expect("a morphed mesh binds to a weight entity");
-        row.read::<MorphBinding>().weights
+        morph_binding.weights
     };
     assert_eq!(
         world
             .root_scope()
-            .get::<MorphWeights>(weights_entity)
+            .query_one::<&MorphWeights>(weights_entity)
             .expect("the weight entity carries a `MorphWeights`")
             .weights,
         vec![0.0, 0.0],
@@ -314,7 +314,7 @@ async fn a_morphed_quad_follows_its_weights() {
     // must empty the frame.
     world
         .root_scope()
-        .get_mut::<MorphWeights>(weights_entity)
+        .query_one::<&mut MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
         .weights = vec![1.0, 0.0];
     let collapsed = read(&gpu);
@@ -329,7 +329,7 @@ async fn a_morphed_quad_follows_its_weights() {
     // the two weights address their own target's displacements.
     world
         .root_scope()
-        .get_mut::<MorphWeights>(weights_entity)
+        .query_one::<&mut MorphWeights>(weights_entity)
         .expect("the weight entity carries a `MorphWeights`")
         .weights = vec![0.0, 1.0];
     let displaced = read(&gpu);
@@ -474,16 +474,16 @@ async fn a_skinned_quad_follows_its_joint() {
     // The drawn entity names the pose entity the spawn created, and that
     // entity holds the rest pose: the identity, one matrix per joint.
     let pose = {
-        let (_, row) = world
+        let skin_binding = world
             .root_scope()
-            .query(query!(&SkinBinding))
+            .query::<&SkinBinding>()
             .next()
             .expect("a skinned mesh binds to a pose");
-        row.read::<SkinBinding>().pose
+        skin_binding.pose
     };
     let rest = world
         .root_scope()
-        .get::<SkinPose>(pose)
+        .query_one::<&SkinPose>(pose)
         .expect("the pose entity carries a `SkinPose`")
         .matrices
         .clone();
@@ -512,7 +512,7 @@ async fn a_skinned_quad_follows_its_joint() {
     // right side of the frame is left empty.
     *world
         .root_scope()
-        .get_mut::<SkinPose>(pose)
+        .query_one::<&mut SkinPose>(pose)
         .expect("the pose entity carries a `SkinPose`") =
         SkinPose::new(vec![glam::Mat4::from_translation(glam::Vec3::new(
             -5.0, 0.0, 0.0,
@@ -805,8 +805,8 @@ async fn a_blended_material_composites_over_the_frame() {
     // ...and the spawned entity is marked for back-to-front compositing.
     let z_sorted: Vec<Entity> = world
         .root_scope()
-        .query(query!(&ZSortedDrawing))
-        .map(|(entity, _)| entity)
+        .query::<(&ZSortedDrawing, Entity)>()
+        .map(|(_zsorted_drawing, entity)| entity)
         .collect();
     let spawned: Vec<Entity> = entities
         .iter()
@@ -877,7 +877,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
         assert!(
             world
                 .root_scope()
-                .query(query!(&ZSortedDrawing))
+                .query::<&ZSortedDrawing>()
                 .next()
                 .is_none(),
             "a cut-off material draws opaque coverage, so it needs no sort"

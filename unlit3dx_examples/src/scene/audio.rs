@@ -12,7 +12,7 @@ use unlit3dx::prelude::*;
 use super::SceneWiring;
 use super::music::bgm_midi;
 use super::tick::Tick;
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 
 /// The factor every synthesizer sample scales by, making up the headroom
 /// soundfont presets leave.
@@ -62,14 +62,10 @@ pub fn subscribe_audio(sender: &JobSender) -> SnapshotReader<()> {
             if published
                 || world
                     .root_scope()
-                    .query(query!(&AudioOutputOpen))
+                    .query::<&AudioOutputOpen>()
                     .next()
                     .is_none()
-                || world
-                    .root_scope()
-                    .query(query!(&OnAudioFill))
-                    .next()
-                    .is_none()
+                || world.root_scope().query::<&OnAudioFill>().next().is_none()
             {
                 return None;
             }

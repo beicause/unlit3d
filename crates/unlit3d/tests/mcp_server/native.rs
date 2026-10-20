@@ -56,7 +56,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     let color_view = {
         let mut graph = world
             .root_scope()
-            .get_mut::<ResourceGraph>(context.graph)
+            .query_one::<&mut ResourceGraph>(context.graph)
             .expect("spawn_context spawned the graph");
         // The texture is registered in its own right so a screenshot can name
         // it, and the view depends on it so the graph keeps it alive.
@@ -71,8 +71,9 @@ fn offscreen_world(ctx: &Ctx) -> World {
     let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, SIZE, SAMPLES, true);
     let _ = world
         .root_scope()
-        .with_mut::<Renderer, _>(renderer, |renderer| {
-            attachments.bind(&world, renderer, color_view);
+        .query_one::<&mut Renderer>(renderer)
+        .map(|mut renderer| {
+            attachments.bind(&world, &mut renderer, color_view);
         });
 
     let aspect = SIZE.0.max(1) as f32 / SIZE.1.max(1) as f32;

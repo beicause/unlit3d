@@ -11,7 +11,7 @@ use core::cmp::Ordering;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
-use unlit_ecs::{Query, Scope, query};
+use unlit_ecs::{Has, Scope};
 use unlit_wgpu::instance_stream::InstanceBuffer;
 use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
@@ -172,17 +172,6 @@ where
     register: &'a mut dyn FnMut(RegisteredRenderPipeline) -> RenderPipelineId,
 }
 
-/// What this family reads from one visible entity: the components its key
-/// names, with the material and z-sorted marker as the two optional ones.
-fn resolve_query<K: RenderPipelineKey>() -> &'static Query {
-    query!(
-        &GpuRenderPipeline<K>,
-        &GpuMesh,
-        Option<&GpuMaterial>,
-        Option<&ZSortedDrawing>,
-    )
-}
-
 impl<K, F> Resolver<'_, '_, K, F>
 where
     K: RenderPipelineKey,
@@ -200,16 +189,20 @@ where
         // Copied out of `self.frame` so the query borrows the world rather than
         // `self`, which `push` needs mutably.
         let world = &self.frame.world;
-        let query = resolve_query::<K>();
+        // What this family reads from one visible entity: the components its key
+        // names, with the material as the optional one. The z-sorted marker is
+        // asked for separately, since a marker query over a single entity only
+        // answers whether it is there.
         // The material is read once and both its uses come from it: it decides
         // how the draw is grouped and which bind group it binds.
         for &candidate in self.frame.meshes {
-            let Some(row) = world.row(candidate.entity, query) else {
+            let Some((pipeline, gpu_mesh, material)) =
+                world.query_one::<(&GpuRenderPipeline<K>, &GpuMesh, Option<&GpuMaterial>)>(
+                    candidate.entity,
+                )
+            else {
                 continue;
             };
-            let pipeline = row.read::<GpuRenderPipeline<K>>();
-            let gpu_mesh = row.read::<GpuMesh>();
-            let material = row.try_read::<GpuMaterial>();
             let (sort_key, material_bg) = match &material {
                 Some(material) => (material.sort_key(), Some(material.bind_group_id.clone())),
                 None => (0, None),
@@ -221,7 +214,9 @@ where
                 material.as_deref(),
                 sort_key,
                 material_bg,
-                row.has::<ZSortedDrawing>(),
+                world
+                    .query_one::<Has<ZSortedDrawing>>(candidate.entity)
+                    .unwrap_or(false),
             );
         }
     }

@@ -133,7 +133,7 @@ impl TestGpu {
         let entity = self.mesh_source();
         let mut source = world
             .root_scope()
-            .get_mut::<Source>(entity)
+            .query_one::<&mut Source>(entity)
             .expect("the source entity exists");
         let mesh = source
             .as_mut::<MeshSource>()
@@ -148,7 +148,8 @@ impl TestGpu {
     pub fn with_renderer<R>(&self, world: &World, f: impl FnOnce(&mut Renderer, &World) -> R) -> R {
         world
             .root_scope()
-            .with_mut::<Renderer, _>(self.renderer, |renderer| f(renderer, world))
+            .query_one::<&mut Renderer>(self.renderer)
+            .map(|mut renderer| f(&mut renderer, world))
             .expect("the renderer entity exists")
     }
 
@@ -156,7 +157,7 @@ impl TestGpu {
     pub fn graph<'w>(&self, world: &'w World) -> impl DerefMut<Target = ResourceGraph> + 'w {
         world
             .root_scope()
-            .get_mut::<ResourceGraph>(self.context.graph)
+            .query_one::<&mut ResourceGraph>(self.context.graph)
             .expect("the context's graph exists")
     }
 
@@ -360,7 +361,7 @@ impl TestGpu {
         use unlit_wgpu::render_attachments::create_color_target;
         let device = world
             .root_scope()
-            .get::<wgpu::Device>(self.context.device)
+            .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
         let color = create_color_target(&device, COLOR_FORMAT, WIDTH, HEIGHT);
@@ -393,7 +394,7 @@ impl TestGpu {
         use unlit_wgpu::render_attachments::create_color_target;
         let device = world
             .root_scope()
-            .get::<wgpu::Device>(self.context.device)
+            .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
         let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);

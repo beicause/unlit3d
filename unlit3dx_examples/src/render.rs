@@ -24,7 +24,7 @@ use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
 use unlit3d::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
 
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 use unlit3dx::job::Job;
 
 /// A mesh description that owns its vertex data, so it can cross a thread
@@ -67,17 +67,16 @@ impl OwnedUnlitMeshDesc {
 /// through `unlit3d`'s [`MeshSource`] directly; the world is the same
 /// registry either way.
 pub(crate) fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
-    let (entity, row) = world
+    let (source, entity) = world
         .root_scope()
-        .query(query!(&Source))
-        .find(|(_, row)| row.read::<Source>().as_ref::<MeshSource>().is_some())?;
-    let source = row.read::<Source>();
+        .query::<(&Source, Entity)>()
+        .find(|(source, _)| source.as_ref::<MeshSource>().is_some())?;
     let mesh_source = source.as_ref::<MeshSource>()?;
     let key = world
         .root_scope()
-        .query(query!(&UnlitPipelineKey))
+        .query::<&UnlitPipelineKey>()
         .next()
-        .map(|(_, row)| row.read::<UnlitPipelineKey>().clone())
+        .map(|unlit_pipeline_key| unlit_pipeline_key.clone())
         .unwrap_or_else(|| {
             UnlitPipelineKey::new(UnlitOptions::standard(
                 &mesh_source.device(&world.root_scope()),
@@ -97,7 +96,8 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
         };
         let root = world.root_scope();
         let mesh = root
-            .with_mut::<Source, _>(source_entity, |source| {
+            .query_one::<&mut Source>(source_entity)
+            .map(|mut source| {
                 source
                     .as_mut::<MeshSource>()
                     .expect("the source carries a MeshSource")
@@ -156,7 +156,8 @@ fn allocate_material(
     };
     let root = world.root_scope();
     let material = root
-        .with_mut::<Source, _>(source_entity, |source| {
+        .query_one::<&mut Source>(source_entity)
+        .map(|mut source| {
             let source = source
                 .as_mut::<MeshSource>()
                 .expect("the source carries a MeshSource");
@@ -186,12 +187,12 @@ pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> J
         };
         let mesh = world
             .root_scope()
-            .get::<GpuMesh>(mesh)
+            .query_one::<&GpuMesh>(mesh)
             .expect("the mesh asset entity exists")
             .clone();
         let material = world
             .root_scope()
-            .get::<GpuMaterial>(material)
+            .query_one::<&GpuMaterial>(material)
             .expect("the material asset entity exists")
             .clone();
         // The instance hangs under the source that draws it: a source draws

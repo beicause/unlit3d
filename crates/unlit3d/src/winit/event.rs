@@ -36,7 +36,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use unlit_ecs::{Entity, World, bundle, query};
+use unlit_ecs::{Entity, World, bundle};
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
@@ -221,16 +221,17 @@ impl<U: 'static> WinitHost<U> {
         let Some(entity) = self
             .world
             .root_scope()
-            .query(query!(&Resumed))
+            .query::<(&Resumed, Entity)>()
             .next()
-            .map(|(entity, _)| entity)
+            .map(|(_resumed, entity)| entity)
         else {
             return;
         };
         let _ = self
             .world
             .root_scope()
-            .with_mut::<Resumed, _>(entity, |state| state.0 = resumed);
+            .query_one::<&mut Resumed>(entity)
+            .map(|mut state| state.0 = resumed);
     }
 
     /// The actions that follow a dispatch, in a fixed order.
@@ -259,8 +260,8 @@ impl<U: 'static> WinitHost<U> {
         let requests: Vec<WindowAttributes> = self
             .world
             .root_scope()
-            .query(query!(&mut CreateWindowRequest))
-            .filter_map(|(_, row)| row.write::<CreateWindowRequest>().0.take())
+            .query::<&mut CreateWindowRequest>()
+            .filter_map(|mut create_window_request| create_window_request.0.take())
             .collect();
         for attributes in requests {
             match event_loop.create_window(attributes) {
@@ -269,13 +270,12 @@ impl<U: 'static> WinitHost<U> {
                     // and a window is already laid out by then: feed the one it
                     // starts with, or nothing that needs logical points ever
                     // learns it.
-                    if let Some((_, row)) =
-                        self.world.root_scope().query(query!(&InputWriter)).next()
+                    if let Some(input_writer) =
+                        self.world.root_scope().query::<&InputWriter>().next()
                     {
-                        row.read::<InputWriter>()
-                            .push(InputEvent::ScaleFactorChanged {
-                                scale_factor: window.scale_factor() as f32,
-                            });
+                        input_writer.push(InputEvent::ScaleFactorChanged {
+                            scale_factor: window.scale_factor() as f32,
+                        });
                     }
                     self.world
                         .root_scope_mut()
@@ -292,8 +292,12 @@ impl<U: 'static> WinitHost<U> {
     /// Exit the event loop when any [`ExitRequest`] is set.
     fn exit_requested(&mut self, event_loop: &ActiveEventLoop) {
         let mut exit = false;
-        for (_entity, row) in self.world.root_scope().query(query!(&mut ExitRequest)) {
-            let mut request = row.write::<ExitRequest>();
+        for (exit_request, _entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut ExitRequest, Entity)>()
+        {
+            let mut request = exit_request;
             if request.0 {
                 request.0 = false;
                 exit = true;
@@ -313,32 +317,44 @@ impl<U: 'static> Default for WinitHost<U> {
 
 impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnNewEvents)) {
-            row.write::<OnNewEvents>().run(&self.world, entity, &cause);
+        for (mut on_new_events, entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut OnNewEvents, Entity)>()
+        {
+            on_new_events.run(&self.world, entity, &cause);
         }
         self.settle(event_loop);
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.set_resumed(true);
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnResumed)) {
-            row.write::<OnResumed>().run(&self.world, entity, &());
+        for (mut on_resumed, entity) in self.world.root_scope().query::<(&mut OnResumed, Entity)>()
+        {
+            on_resumed.run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnSuspended)) {
-            row.write::<OnSuspended>().run(&self.world, entity, &());
+        for (mut on_suspended, entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut OnSuspended, Entity)>()
+        {
+            on_suspended.run(&self.world, entity, &());
         }
         self.settle(event_loop);
         self.set_resumed(false);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, mut event: U) {
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnUserEvent<U>)) {
-            row.write::<OnUserEvent<U>>()
-                .run(&self.world, entity, &mut event);
+        for (mut on_user_event, entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut OnUserEvent<U>, Entity)>()
+        {
+            on_user_event.run(&self.world, entity, &mut event);
         }
         self.settle(event_loop);
     }
@@ -350,9 +366,12 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: WindowEvent,
     ) {
         let event = WinitWindowEvent { window_id, event };
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnWindowEvent)) {
-            row.write::<OnWindowEvent>()
-                .run(&self.world, entity, &event);
+        for (mut on_window_event, entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut OnWindowEvent, Entity)>()
+        {
+            on_window_event.run(&self.world, entity, &event);
         }
         self.settle(event_loop);
     }
@@ -364,30 +383,42 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: DeviceEvent,
     ) {
         let event = WinitDeviceEvent { device_id, event };
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnDeviceEvent)) {
-            row.write::<OnDeviceEvent>()
-                .run(&self.world, entity, &event);
+        for (mut on_device_event, entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut OnDeviceEvent, Entity)>()
+        {
+            on_device_event.run(&self.world, entity, &event);
         }
         self.settle(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnAboutToWait)) {
-            row.write::<OnAboutToWait>().run(&self.world, entity, &());
+        for (mut on_about_to_wait, entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut OnAboutToWait, Entity)>()
+        {
+            on_about_to_wait.run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnExiting)) {
-            row.write::<OnExiting>().run(&self.world, entity, &());
+        for (mut on_exiting, entity) in self.world.root_scope().query::<(&mut OnExiting, Entity)>()
+        {
+            on_exiting.run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, row) in self.world.root_scope().query(query!(&mut OnMemoryWarning)) {
-            row.write::<OnMemoryWarning>().run(&self.world, entity, &());
+        for (mut on_memory_warning, entity) in self
+            .world
+            .root_scope()
+            .query::<(&mut OnMemoryWarning, Entity)>()
+        {
+            on_memory_warning.run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
@@ -411,9 +442,9 @@ mod tests {
         assert_eq!(
             host.world()
                 .root_scope()
-                .query(query!(&Resumed))
+                .query::<&Resumed>()
                 .next()
-                .map(|(_, row)| row.read::<Resumed>().0),
+                .map(|resumed| resumed.0),
             Some(true)
         );
     }

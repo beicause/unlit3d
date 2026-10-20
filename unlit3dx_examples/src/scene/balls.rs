@@ -19,7 +19,6 @@ use super::shapes::{ShapeKind, shape_body};
 use super::shared::SceneState;
 use super::tick::Tick;
 use super::{GAME_HZ, GamePhysics, ScenePoses, SceneWiring, pose_job};
-use unlit_ecs::query;
 
 /// How long between automatic ball drops, in seconds.
 const SPAWN_PERIOD: f64 = 0.7;
@@ -144,8 +143,8 @@ impl Balls {
     fn drop_ball(&mut self, world: &World, state: Entity) {
         let (slot, kind) = match world
             .root_scope()
-            .with_mut::<SceneState, _>(state, SceneState::take_slot)
-            .flatten()
+            .query_one::<&mut SceneState>(state)
+            .and_then(|mut state| state.take_slot())
         {
             Some(slot) => slot,
             None => {
@@ -203,8 +202,10 @@ impl Balls {
         self.requests = 0;
         let free = world
             .root_scope()
-            .with_mut::<SceneState, _>(state, |state| {
-                state.restore_free(available_slots(state.slots(), &self.pending));
+            .query_one::<&mut SceneState>(state)
+            .map(|mut scene_state| {
+                let free = available_slots(scene_state.slots(), &self.pending);
+                scene_state.restore_free(free);
             })
             .is_some();
         debug_assert!(free, "the pool lives on its own entity");
@@ -214,7 +215,7 @@ impl Balls {
             "the shapes were cleared: {live} bodies despawned, {} slots free",
             world
                 .root_scope()
-                .get::<SceneState>(state)
+                .query_one::<&SceneState>(state)
                 .map_or(0, |state| state.free_count())
         );
     }
@@ -232,7 +233,8 @@ impl Balls {
                 if ticks - *age > PENDING_TIMEOUT_TICKS {
                     let _ = world
                         .root_scope()
-                        .with_mut::<SceneState, _>(state, |state| state.give((*slot, *kind)));
+                        .query_one::<&mut SceneState>(state)
+                        .map(|mut state| state.give((*slot, *kind)));
                     return false;
                 }
                 match request.poll() {
@@ -248,9 +250,8 @@ impl Balls {
                                 .ok();
                             let _ = world
                                 .root_scope()
-                                .with_mut::<SceneState, _>(state, |state| {
-                                    state.give((*slot, *kind))
-                                });
+                                .query_one::<&mut SceneState>(state)
+                                .map(|mut state| state.give((*slot, *kind)));
                         }
                         false
                     }
@@ -306,7 +307,8 @@ impl Balls {
         self.poses_sent = poses.len();
         let frame = world
             .root_scope()
-            .with_mut::<SceneState, _>(state, |state| scene_frame(state.slots(), &poses))
+            .query_one::<&mut SceneState>(state)
+            .map(|state| scene_frame(state.slots(), &poses))
             .unwrap_or_default();
         // The poses travel as a job: what the render world shows is its
         // own to hold, so the shapes send the state rather than leaving it
@@ -322,9 +324,9 @@ impl Tick for Balls {
         self.ticks += 1;
         let Some((state, ready)) = world
             .root_scope()
-            .query(query!(&SceneState))
+            .query::<(&SceneState, Entity)>()
             .next()
-            .map(|(entity, row)| (entity, row.read::<SceneState>().is_ready()))
+            .map(|(scene_state, entity)| (entity, scene_state.is_ready()))
         else {
             return;
         };

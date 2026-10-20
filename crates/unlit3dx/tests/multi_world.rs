@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use unlit_ecs::World;
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 use unlit3dx::prelude::*;
 
 /// A remote world that idles between ticks, for the tests to drive.
@@ -48,7 +48,7 @@ fn sub_world_jobs_drain_in_order() {
 
     let mut nested = host
         .root_scope()
-        .get_mut::<World>(proxy.entity())
+        .query_one::<&mut World>(proxy.entity())
         .expect("the nested world");
     drain_sub_world(&mut nested);
 
@@ -70,7 +70,7 @@ fn a_panicking_job_fails_only_its_own_request() {
 
     let mut nested = host
         .root_scope()
-        .get_mut::<World>(proxy.entity())
+        .query_one::<&mut World>(proxy.entity())
         .expect("the nested world");
     drain_sub_world(&mut nested);
 
@@ -96,22 +96,18 @@ fn remote_world_state_persists_between_jobs() {
         let _ = remote.send(Box::new(|world: &mut World| {
             world
                 .root_scope()
-                .query(query!(&mut Count))
+                .query::<&mut Count>()
                 .next()
                 .expect("the counter")
-                .1
-                .write::<Count>()
                 .0 += 1;
         }));
     }
     let count = remote.request(Box::new(|world: &mut World| {
         world
             .root_scope()
-            .query(query!(&Count))
+            .query::<&Count>()
             .next()
             .expect("the counter")
-            .1
-            .read::<Count>()
             .0
     }));
 

@@ -306,7 +306,7 @@ fn spawn_proxy(
 /// world; a panic is caught, logged and recorded the way a remote world's
 /// thread panic is, and ends the world too.
 pub fn step_stepped_world(host: &World, entity: Entity) {
-    let Some(mut proxy) = host.root_scope().get_mut::<WorldProxy>(entity) else {
+    let Some(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
         return;
     };
     let WorldKind::Stepped(stepped) = &mut proxy.kind else {
@@ -365,7 +365,7 @@ pub fn with_stepped_world<R>(
     entity: Entity,
     f: impl FnOnce(&World) -> R,
 ) -> Option<R> {
-    let proxy = host.root_scope().get::<WorldProxy>(entity)?;
+    let proxy = host.root_scope().query_one::<&WorldProxy>(entity)?;
     let WorldKind::Stepped(stepped) = &proxy.kind else {
         return None;
     };
@@ -377,7 +377,7 @@ mod tests {
     use super::*;
     use crate::job::SendError;
     use std::time::Duration;
-    use unlit_ecs::{bundle, query};
+    use unlit_ecs::bundle;
 
     /// Jobs sent through the handle run, and a request answers back.
     #[test]
@@ -395,19 +395,15 @@ mod tests {
         let request = handle.request(Box::new(|world: &mut World| {
             world
                 .root_scope()
-                .query(query!(&mut Count))
+                .query::<&mut Count>()
                 .next()
                 .expect("the counter")
-                .1
-                .write::<Count>()
                 .0 += 1;
             world
                 .root_scope()
-                .query(query!(&Count))
+                .query::<&Count>()
                 .next()
                 .expect("the counter")
-                .1
-                .read::<Count>()
                 .0
         }));
         let mut answer = None;
@@ -438,7 +434,7 @@ mod tests {
             },
         );
         let request = handle.request(Box::new(|world: &mut World| {
-            world.root_scope().query(query!(&Count)).next().is_some()
+            world.root_scope().query::<&Count>().next().is_some()
         }));
         let mut answered = None;
         for _ in 0..2_000 {
@@ -480,11 +476,9 @@ mod tests {
             |world: &mut World, _control: &ThreadControl, ()| {
                 world
                     .root_scope()
-                    .query(query!(&mut Count))
+                    .query::<&mut Count>()
                     .next()
                     .expect("the counter")
-                    .1
-                    .write::<Count>()
                     .0 += 1;
                 true
             },
@@ -495,11 +489,9 @@ mod tests {
                 .request(Box::new(|world: &mut World| {
                     world
                         .root_scope()
-                        .query(query!(&Count))
+                        .query::<&Count>()
                         .next()
                         .expect("the counter")
-                        .1
-                        .read::<Count>()
                         .0
                 }))
                 .poll(),
@@ -511,11 +503,9 @@ mod tests {
                 .request(Box::new(|world: &mut World| {
                     world
                         .root_scope()
-                        .query(query!(&Count))
+                        .query::<&Count>()
                         .next()
                         .expect("the counter")
-                        .1
-                        .read::<Count>()
                         .0
                 }))
                 .poll(),
@@ -525,11 +515,9 @@ mod tests {
         let request = handle.request(Box::new(|world: &mut World| {
             world
                 .root_scope()
-                .query(query!(&Count))
+                .query::<&Count>()
                 .next()
                 .expect("the counter")
-                .1
-                .read::<Count>()
                 .0
         }));
         // A step drains the queue before it ticks, exactly as a remote

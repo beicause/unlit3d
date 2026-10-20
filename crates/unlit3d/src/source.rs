@@ -18,8 +18,8 @@
 
 use core::any::Any;
 
+use unlit_ecs::bundle;
 use unlit_ecs::{Entity, Scope, World};
-use unlit_ecs::{bundle, query};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::{Scene, ViewportRect};
@@ -45,7 +45,7 @@ impl FrameSourceOrder {
 /// It holds [`Entity`] handles rather than borrows, so it is `Copy` and never
 /// conflicts with a source's own borrow of the world. A source fetches what it
 /// needs from the components those entities carry:
-/// `world.root_scope().get_mut::<ResourceGraph>(ctx.graph)`.
+/// `world.root_scope().query_one::<&mut ResourceGraph>(ctx.graph)`.
 ///
 /// The handles are spawned once by [`spawn_context`] and stay valid for the
 /// world's life; a resource entity is never despawned while frames are drawn.
@@ -102,7 +102,7 @@ impl RenderContext {
     pub fn of(world: &World, anchor: Entity) -> Option<Self> {
         world
             .root_scope()
-            .get::<RenderContext>(anchor)
+            .query_one::<&RenderContext>(anchor)
             .map(|context| *context)
     }
 }
@@ -124,7 +124,7 @@ impl Drop for MaintainScope<'_> {
     fn drop(&mut self) {
         // A missing graph is a caller error, and panicking here would be a
         // second panic on the way out of one, so the scope does nothing.
-        if let Some(mut graph) = self.scope.get_mut::<ResourceGraph>(self.ctx.graph) {
+        if let Some(mut graph) = self.scope.query_one::<&mut ResourceGraph>(self.ctx.graph) {
             graph.maintain();
         }
     }
@@ -233,15 +233,16 @@ impl OpenUrls {
 pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
     let Some(entity) = world
         .root_scope()
-        .query(query!(&OpenUrls))
+        .query::<(&OpenUrls, Entity)>()
         .next()
-        .map(|(e, _)| e)
+        .map(|(_open_urls, e)| e)
     else {
         return Vec::new();
     };
     world
         .root_scope()
-        .with_mut::<OpenUrls, _>(entity, |urls| std::mem::take(&mut urls.0))
+        .query_one::<&mut OpenUrls>(entity)
+        .map(|mut urls| std::mem::take(&mut urls.0))
         .unwrap_or_default()
 }
 
@@ -254,9 +255,9 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
 /// draw rather than fall back.
 pub fn frame_target(scope: &Scope<'_>) -> Option<FrameTarget> {
     scope
-        .query(query!(&FrameTargetSlot))
+        .query::<&FrameTargetSlot>()
         .next()
-        .and_then(|(_, row)| row.read::<FrameTargetSlot>().0)
+        .and_then(|frame_target_slot| frame_target_slot.0)
 }
 
 /// State the target the frame draws into.
@@ -265,11 +266,16 @@ pub fn frame_target(scope: &Scope<'_>) -> Option<FrameTarget> {
 /// does it for the built-in path. Returns whether a slot existed to write; a
 /// world only gets one from [`spawn_context`].
 pub fn set_frame_target(scope: &Scope<'_>, target: FrameTarget) -> bool {
-    let Some(entity) = scope.query(query!(&FrameTargetSlot)).next().map(|(e, _)| e) else {
+    let Some(entity) = scope
+        .query::<(&FrameTargetSlot, Entity)>()
+        .next()
+        .map(|(_frame_target_slot, e)| e)
+    else {
         return false;
     };
     scope
-        .with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = Some(target))
+        .query_one::<&mut FrameTargetSlot>(entity)
+        .map(|mut slot| slot.0 = Some(target))
         .is_some()
 }
 
@@ -285,15 +291,16 @@ pub fn set_frame_target(scope: &Scope<'_>, target: FrameTarget) -> bool {
 pub(crate) fn unset_frame_target(world: &World) -> bool {
     let Some(entity) = world
         .root_scope()
-        .query(query!(&FrameTargetSlot))
+        .query::<(&FrameTargetSlot, Entity)>()
         .next()
-        .map(|(e, _)| e)
+        .map(|(_frame_target_slot, e)| e)
     else {
         return false;
     };
     world
         .root_scope()
-        .with_mut::<FrameTargetSlot, _>(entity, |slot| slot.0 = None)
+        .query_one::<&mut FrameTargetSlot>(entity)
+        .map(|mut slot| slot.0 = None)
         .is_some()
 }
 
@@ -308,9 +315,9 @@ pub(crate) fn unset_frame_target(world: &World) -> bool {
 /// leaves the world in.
 pub fn frame_viewport(scope: &Scope<'_>) -> Option<FrameViewport> {
     scope
-        .query(query!(&FrameViewportSlot))
+        .query::<&FrameViewportSlot>()
         .next()
-        .and_then(|(_, row)| row.read::<FrameViewportSlot>().0)
+        .and_then(|frame_viewport_slot| frame_viewport_slot.0)
 }
 
 /// State the region of the frame's target that 3D sources draw into.
@@ -326,15 +333,16 @@ pub fn frame_viewport(scope: &Scope<'_>) -> Option<FrameViewport> {
 pub fn set_frame_viewport(world: &World, viewport: Option<FrameViewport>) -> bool {
     let Some(entity) = world
         .root_scope()
-        .query(query!(&FrameViewportSlot))
+        .query::<(&FrameViewportSlot, Entity)>()
         .next()
-        .map(|(e, _)| e)
+        .map(|(_frame_viewport_slot, e)| e)
     else {
         return false;
     };
     world
         .root_scope()
-        .with_mut::<FrameViewportSlot, _>(entity, |slot| slot.0 = viewport)
+        .query_one::<&mut FrameViewportSlot>(entity)
+        .map(|mut slot| slot.0 = viewport)
         .is_some()
 }
 
@@ -539,8 +547,8 @@ impl SourceOrder {
         self.keys.extend(
             world
                 .root_scope()
-                .query(query!(&Source))
-                .map(|(entity, row)| (row.read::<Source>().order(), entity)),
+                .query::<(&Source, Entity)>()
+                .map(|(source, entity)| (source.order(), entity)),
         );
         self.keys
             .sort_unstable_by_key(|(order, entity)| (*order, *entity));
@@ -775,7 +783,8 @@ mod tests {
 
         let _ = world
             .root_scope()
-            .with_mut::<Source, _>(a, |source| source.set_order(None));
+            .query_one::<&mut Source>(a)
+            .map(|mut source| source.set_order(None));
         assert_eq!(
             record_order(&world).0,
             vec![a, b],
@@ -820,25 +829,29 @@ mod tests {
         assert!(
             world
                 .root_scope()
-                .with_mut::<Source, _>(recording, |s| s.as_mut::<RecordingSource>().is_some())
+                .query_one::<&mut Source>(recording)
+                .map(|mut s| s.as_mut::<RecordingSource>().is_some())
                 .unwrap()
         );
         assert!(
             world
                 .root_scope()
-                .with_mut::<Source, _>(recording, |s| s.as_mut::<OtherSource>().is_none())
+                .query_one::<&mut Source>(recording)
+                .map(|mut s| s.as_mut::<OtherSource>().is_none())
                 .unwrap()
         );
         assert!(
             world
                 .root_scope()
-                .with_mut::<Source, _>(other, |s| s.as_mut::<OtherSource>().is_some())
+                .query_one::<&mut Source>(other)
+                .map(|mut s| s.as_mut::<OtherSource>().is_some())
                 .unwrap()
         );
         assert!(
             world
                 .root_scope()
-                .with_mut::<Source, _>(other, |s| s.as_ref::<RecordingSource>().is_none())
+                .query_one::<&mut Source>(other)
+                .map(|s| s.as_ref::<RecordingSource>().is_none())
                 .unwrap()
         );
     }
@@ -882,14 +895,15 @@ mod tests {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let entities: Vec<Entity> = world
             .root_scope()
-            .query(query!(&Source))
-            .map(|(e, _)| e)
+            .query::<(&Source, Entity)>()
+            .map(|(_source, e)| e)
             .collect();
         assert_eq!(entities.len(), 2, "both sources are seen by one query type");
         for entity in entities {
             world
                 .root_scope()
-                .with_mut::<Source, _>(entity, |source| {
+                .query_one::<&mut Source>(entity)
+                .map(|mut source| {
                     let scope = world
                         .scope(entity)
                         .expect("a source entity is its own scope");
@@ -944,13 +958,14 @@ mod tests {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let entities: Vec<Entity> = world
             .root_scope()
-            .query(query!(&Source))
-            .map(|(e, _)| e)
+            .query::<(&Source, Entity)>()
+            .map(|(_source, e)| e)
             .collect();
         for entity in &entities {
             world
                 .root_scope()
-                .with_mut::<Source, _>(*entity, |source| {
+                .query_one::<&mut Source>(*entity)
+                .map(|mut source| {
                     let scope = world
                         .scope(*entity)
                         .expect("a source entity is its own scope");
@@ -1013,14 +1028,16 @@ mod tests {
         // once more.
         let _ = world
             .root_scope()
-            .with_mut::<Source, _>(b, |source| source.set_order(Some(FrameSourceOrder::UI)));
+            .query_one::<&mut Source>(b)
+            .map(|mut source| source.set_order(Some(FrameSourceOrder::UI)));
         let (_, resolved) = record_order(&world);
         assert!(resolved.is_empty());
         assert!(!warnings.check(&resolved));
 
         let _ = world
             .root_scope()
-            .with_mut::<Source, _>(b, |source| source.set_order(Some(FrameSourceOrder::MESH)));
+            .query_one::<&mut Source>(b)
+            .map(|mut source| source.set_order(Some(FrameSourceOrder::MESH)));
         let (_, again) = record_order(&world);
         assert!(warnings.check(&again), "the ambiguity is back");
         assert!(!warnings.check(&again), "and still reports only once");
@@ -1059,10 +1076,10 @@ mod tests {
         // A later frame with fewer sources keeps both allocations.
         let first = world
             .root_scope()
-            .query(query!(&Source))
+            .query::<(&Source, Entity)>()
             .next()
             .expect("a source")
-            .0;
+            .1;
         world.root_scope_mut().despawn(first);
         resolved.resolve(&world);
         assert_eq!(resolved.entities().len(), 4);
@@ -1233,7 +1250,8 @@ mod tests {
         // Resolving it and reintroducing it warns once more, not twice.
         let _ = world
             .root_scope()
-            .with_mut::<Source, _>(a, |source| source.set_order(Some(FrameSourceOrder::UI)));
+            .query_one::<&mut Source>(a)
+            .map(|mut source| source.set_order(Some(FrameSourceOrder::UI)));
         let messages = capture_logs(|| {
             let (_, resolved) = record_order(&world);
             assert!(!warnings.check(&resolved), "resolved: nothing to say");
@@ -1262,12 +1280,14 @@ mod tests {
         let messages = capture_logs(|| {
             for _ in 0..3 {
                 // What a caller that pins its sources' order every frame does.
-                let _ = world.root_scope().with_mut::<Source, _>(a, |source| {
-                    source.set_order(Some(FrameSourceOrder::MESH))
-                });
-                let _ = world.root_scope().with_mut::<Source, _>(b, |source| {
-                    source.set_order(Some(FrameSourceOrder::MESH))
-                });
+                let _ = world
+                    .root_scope()
+                    .query_one::<&mut Source>(a)
+                    .map(|mut source| source.set_order(Some(FrameSourceOrder::MESH)));
+                let _ = world
+                    .root_scope()
+                    .query_one::<&mut Source>(b)
+                    .map(|mut source| source.set_order(Some(FrameSourceOrder::MESH)));
                 let (_, ambiguous) = record_order(&world);
                 warnings.check(&ambiguous);
             }
@@ -1349,7 +1369,7 @@ mod release_tests {
             if self.node.is_none() {
                 self.node = Some(
                     scope
-                        .get_mut::<ResourceGraph>(ctx.graph)
+                        .query_one::<&mut ResourceGraph>(ctx.graph)
                         .expect("the context's graph exists")
                         .insert(GraphResource::Virtual, None),
                 );
@@ -1387,7 +1407,7 @@ mod release_tests {
             if self.node.is_none() {
                 self.node = Some(
                     scope
-                        .get_mut::<ResourceGraph>(ctx.graph)
+                        .query_one::<&mut ResourceGraph>(ctx.graph)
                         .expect("the context's graph exists")
                         .insert(GraphResource::Virtual, None),
                 );
@@ -1428,7 +1448,8 @@ mod release_tests {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         world
             .root_scope()
-            .with_mut::<Source, _>(entity, |source| {
+            .query_one::<&mut Source>(entity)
+            .map(|mut source| {
                 let scope = world
                     .scope(entity)
                     .expect("a source entity is its own scope");
@@ -1441,7 +1462,7 @@ mod release_tests {
     fn graph_len(world: &World, ctx: RenderContext) -> usize {
         world
             .root_scope()
-            .get_mut::<ResourceGraph>(ctx.graph)
+            .query_one::<&mut ResourceGraph>(ctx.graph)
             .unwrap()
             .len()
     }
@@ -1450,7 +1471,7 @@ mod release_tests {
     fn maintain(world: &mut World, ctx: RenderContext) {
         world
             .root_scope()
-            .get_mut::<ResourceGraph>(ctx.graph)
+            .query_one::<&mut ResourceGraph>(ctx.graph)
             .unwrap()
             .maintain();
     }

@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use unlit_ecs::{Entity, World, bundle, query};
+use unlit_ecs::{Entity, World, bundle};
 
 use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, AudioGain, OnAudioFill};
 use crate::sync::lock;
@@ -104,9 +104,9 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
             }
             let gain = world
                 .root_scope()
-                .query(query!(&AudioGain))
+                .query::<&AudioGain>()
                 .next()
-                .map(|(_, row)| row.read::<AudioGain>().0)
+                .map(|audio_gain| audio_gain.0)
                 .unwrap_or(1.0);
             for &sample in chunk.out.iter() {
                 if state.samples.len() >= state.max_samples {

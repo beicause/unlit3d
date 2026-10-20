@@ -13,7 +13,7 @@ use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{
     CommandSender, McpServer, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
 };
-use unlit_ecs::{World, bundle, query};
+use unlit_ecs::{Entity, World, bundle};
 
 use crate::record::{RecordingHandle, start_recording, write_wav};
 
@@ -82,7 +82,7 @@ async fn audio_recording_status(commands: CommandSender, args: WorldArg) -> Tool
 fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, String> {
     if world
         .root_scope()
-        .query(query!(&ActiveRecording))
+        .query::<&ActiveRecording>()
         .next()
         .is_some()
     {
@@ -131,9 +131,9 @@ fn cancel(world: &mut World) -> Result<Value, String> {
 fn status(world: &mut World) -> Result<Value, String> {
     let Some(recording) = world
         .root_scope()
-        .query(query!(&ActiveRecording))
+        .query::<&ActiveRecording>()
         .next()
-        .map(|(_, row)| row.read::<ActiveRecording>().0.clone())
+        .map(|active_recording| active_recording.0.clone())
     else {
         return Ok(serde_json::json!({ "recording": false }));
     };
@@ -153,13 +153,13 @@ fn status(world: &mut World) -> Result<Value, String> {
 fn take(world: &mut World) -> Result<RecordingHandle, String> {
     let entity = world
         .root_scope()
-        .query(query!(&ActiveRecording))
+        .query::<(&ActiveRecording, Entity)>()
         .next()
-        .map(|(entity, _)| entity)
+        .map(|(_active_recording, entity)| entity)
         .ok_or_else(|| "no recording is in progress on this world".to_owned())?;
     let handle = world
         .root_scope()
-        .get::<ActiveRecording>(entity)
+        .query_one::<&ActiveRecording>(entity)
         .expect("the recording entity exists")
         .0
         .clone();

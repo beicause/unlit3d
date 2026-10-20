@@ -541,9 +541,12 @@ fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPane
     let ui = mount_ui_source(world);
     spawn_panel(world, ui, panel);
     if ui_first {
-        let _ = world.root_scope().with_mut::<Source, _>(ui, |source| {
-            source.set_order(Some(FrameSourceOrder(FrameSourceOrder::MESH.0 - 1)))
-        });
+        let _ = world
+            .root_scope()
+            .query_one::<&mut Source>(ui)
+            .map(|mut source| {
+                source.set_order(Some(FrameSourceOrder(FrameSourceOrder::MESH.0 - 1)))
+            });
     }
 
     let target = gpu.bind_offscreen_target_with(world, 1, true);
@@ -702,7 +705,7 @@ struct Burst(usize);
 /// held many of them leaves the buffer with room to spare for every later one.
 fn burst_panel(extra: Entity) -> UiPanel {
     UiPanel::new(move |world, _entity, ui| {
-        let burst = world.get::<Burst>(extra).map_or(0, |burst| burst.0);
+        let burst = world.query_one::<&Burst>(extra).map_or(0, |burst| burst.0);
         let painter = ui.painter();
         for index in 0..burst {
             let column = (index % 8) as f32;
@@ -739,7 +742,8 @@ fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
     gpu.render(&world);
     let _ = world
         .root_scope()
-        .with_mut::<Burst, _>(extra, |burst| burst.0 = 0);
+        .query_one::<&mut Burst>(extra)
+        .map(|mut burst| burst.0 = 0);
     gpu.render(&world);
     read(ctx, &target)
 }

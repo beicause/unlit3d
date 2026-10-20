@@ -14,19 +14,18 @@
 //! one before it, so `get_three`'s cost can be read apart:
 //!
 //! - `location` — the entity-table borrow and the metadata read;
-//! - `states_per_entity` — adds building the row handle for the query, which
-//!   matches it against the archetype;
-//! - `rows_per_entity` — adds borrowing each row's cell, which is the
-//!   `TypeId` search and the downcast;
-//! - `rows_per_archetype` — the same reads with the archetype already resolved
-//!   by the caller instead of looked up per entity.
+//! - `states_per_entity` — adds the archetype lookup and the match itself;
+//! - `rows_per_entity` — adds resolving the query's columns in that archetype
+//!   and borrowing each row's cell, which is the `TypeId` search and the
+//!   downcast.
 //!
 //! The rungs say where a per-entity lookup's time goes and therefore which part
-//! a change to `World::get` would have to remove to close the gap; a rung that
-//! is small is not what stands between the two shapes. `grouping` then runs the
-//! grouped shape against the same work in an order that defeats the
-//! per-archetype cache, so a difference there is the grouping rather than the
-//! shape.
+//! a change to `Scope::query_one` would have to remove to close the gap; a rung
+//! that is small is not what stands between the two shapes. `query` is the
+//! shape the renderer's resolve pass takes instead: it resolves the columns once
+//! per archetype and the entity list comes from the world rather than a cull,
+//! so comparing it with `rows_per_entity` is what the per-archetype resolution
+//! is worth.
 //!
 //! Every function returns a sum so the compiler cannot discard the work.
 //!
@@ -38,8 +37,8 @@
 use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use unlit_ecs::{Archetype, Entity, Query, Row, World};
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
+use unlit_ecs::{Entity, Query, World};
 
 /// The pipeline an entity draws through. A visible entity always has one.
 #[derive(Clone, Copy)]
@@ -56,15 +55,13 @@ struct Material(u64);
 
 /// What one visible entity is resolved from: exactly the query the resolve pass
 /// reads.
-fn resolve() -> &'static Query {
-    query!(&Pipeline, &Mesh, Option<&Material>)
-}
+///
+/// It is a type rather than a value, so every shape below names the same one and
+/// the compiler builds one state per shape instead of looking a descriptor up.
+type Resolve = (&'static Pipeline, &'static Mesh, Option<&'static Material>);
 
 /// The sum one row contributes: the three components the resolve pass reads.
-fn read(row: &Row<'_>) -> u64 {
-    let pipeline = row.read::<Pipeline>();
-    let mesh = row.read::<Mesh>();
-    let material = row.try_read::<Material>();
+fn read(pipeline: &Pipeline, mesh: &Mesh, material: Option<&Material>) -> u64 {
     u64::from(pipeline.0) + u64::from(mesh.0) + material.map_or(0, |m| m.0)
 }
 
@@ -162,7 +159,7 @@ fn get_one(world: &World, candidates: &[Entity]) -> u64 {
     for &entity in candidates {
         let mesh = world
             .root_scope()
-            .get::<Mesh>(entity)
+            .query_one::<&Mesh>(entity)
             .expect("a candidate has a mesh");
         sum += u64::from(mesh.0);
     }
@@ -175,13 +172,13 @@ fn get_three(world: &World, candidates: &[Entity]) -> u64 {
     for &entity in candidates {
         let pipeline = world
             .root_scope()
-            .get::<Pipeline>(entity)
+            .query_one::<&Pipeline>(entity)
             .expect("a candidate has one");
         let mesh = world
             .root_scope()
-            .get::<Mesh>(entity)
+            .query_one::<&Mesh>(entity)
             .expect("a candidate has a mesh");
-        let material = world.root_scope().get::<Material>(entity);
+        let material = world.root_scope().query_one::<&Material>(entity);
         sum += u64::from(pipeline.0) + u64::from(mesh.0) + material.map_or(0, |m| m.0);
     }
     sum
@@ -201,21 +198,21 @@ fn location(world: &World, candidates: &[Entity]) -> u64 {
     sum
 }
 
-/// `location` plus resolving each component's column in the archetype, without
-/// fetching a row.
+/// `location` plus matching the archetype and resolving the query's columns in
+/// it, without fetching a row.
 fn states_per_entity(world: &World, candidates: &[Entity]) -> u64 {
+    let root = world.root_scope();
     let mut sum = 0u64;
     for &entity in candidates {
-        let location = world
-            .root_scope()
-            .location(entity)
-            .expect("a candidate is alive");
-        let archetype = world
-            .root_scope()
+        let location = root.location(entity).expect("a candidate is alive");
+        let archetype = root
             .archetype(location.archetype())
             .expect("a live entity's archetype exists");
-        let row = Row::at(archetype, resolve(), location.row());
-        black_box(&row);
+        if !<Resolve as Query>::matches(archetype) {
+            continue;
+        }
+        let state = <Resolve as Query>::fetch_state(archetype);
+        black_box(&state);
         sum += location.row() as u64;
     }
     sum
@@ -223,18 +220,19 @@ fn states_per_entity(world: &World, candidates: &[Entity]) -> u64 {
 
 /// `states_per_entity` plus borrowing and reading each row's cell.
 fn rows_per_entity(world: &World, candidates: &[Entity]) -> u64 {
+    let root = world.root_scope();
     let mut sum = 0u64;
     for &entity in candidates {
-        let location = world
-            .root_scope()
-            .location(entity)
-            .expect("a candidate is alive");
-        let archetype = world
-            .root_scope()
+        let location = root.location(entity).expect("a candidate is alive");
+        let archetype = root
             .archetype(location.archetype())
             .expect("a live entity's archetype exists");
-        let row = Row::at(archetype, resolve(), location.row());
-        sum += read(&row);
+        if !<Resolve as Query>::matches(archetype) {
+            continue;
+        }
+        let state = <Resolve as Query>::fetch_state(archetype);
+        let (pipeline, mesh, material) = <Resolve as Query>::fetch(&state, location.row());
+        sum += read(&pipeline, &mesh, material.as_deref());
     }
     sum
 }
@@ -243,26 +241,39 @@ fn rows_per_entity(world: &World, candidates: &[Entity]) -> u64 {
 /// through that state. Falls back to re-resolving on a miss, so the order of
 /// the candidates only changes what it costs, never what it reads.
 fn rows_per_archetype(world: &World, candidates: &[Entity]) -> u64 {
+    let root = world.root_scope();
     let mut sum = 0u64;
     let mut cached = None;
-    let mut matched: Option<&Archetype> = None;
+    let mut state = None;
     for &entity in candidates {
-        let location = world
-            .root_scope()
-            .location(entity)
-            .expect("a candidate is alive");
+        let location = root.location(entity).expect("a candidate is alive");
         if cached != Some(location.archetype()) {
             cached = Some(location.archetype());
-            let archetype = world
-                .root_scope()
+            let archetype = root
                 .archetype(location.archetype())
                 .expect("a live entity's archetype exists");
-            matched = resolve().matches_archetype(archetype).then_some(archetype);
+            state = <Resolve as Query>::matches(archetype)
+                .then(|| <Resolve as Query>::fetch_state(archetype));
         }
-        let Some(archetype) = matched else {
+        let Some(state) = state.as_ref() else {
             continue;
         };
-        sum += read(&Row::at(archetype, resolve(), location.row()));
+        let (pipeline, mesh, material) = <Resolve as Query>::fetch(state, location.row());
+        sum += read(&pipeline, &mesh, material.as_deref());
+    }
+    sum
+}
+
+/// One `Scope::query_one` per candidate: the shape a resolve pass takes when it
+/// looks each candidate up on its own.
+fn query_one_three(world: &World, candidates: &[Entity]) -> u64 {
+    let root = world.root_scope();
+    let mut sum = 0u64;
+    for &entity in candidates {
+        let Some((pipeline, mesh, material)) = root.query_one::<Resolve>(entity) else {
+            continue;
+        };
+        sum += read(&pipeline, &mesh, material.as_deref());
     }
     sum
 }
@@ -271,8 +282,8 @@ fn rows_per_archetype(world: &World, candidates: &[Entity]) -> u64 {
 /// archetype, with the entity list coming from the world rather than a cull.
 fn query(world: &World) -> u64 {
     let mut sum = 0u64;
-    for (_, row) in world.root_scope().query(resolve()) {
-        sum += read(&row);
+    for (pipeline, mesh, material) in world.root_scope().query::<Resolve>() {
+        sum += read(&pipeline, &mesh, material.as_deref());
     }
     sum
 }
@@ -287,11 +298,12 @@ fn access(c: &mut Criterion) {
         // to compare across sizes.
         group.throughput(Throughput::Elements(u64::from(count)));
 
-        let shapes: [(&str, Shape); 6] = [
+        let shapes: [(&str, Shape); 7] = [
             ("location", location),
             ("states_per_entity", states_per_entity),
             ("rows_per_entity", rows_per_entity),
             ("rows_per_archetype", rows_per_archetype),
+            ("query_one_three", query_one_three),
             ("get_one", get_one),
             ("get_three", get_three),
         ];

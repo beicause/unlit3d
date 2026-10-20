@@ -38,7 +38,7 @@ let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_m
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
 let reader = simulation.sender().subscribe(|world: &World| {
-    let bodies: Vec<u64> = world.root_scope().query(query!(&u64)).map(|(_, row)| *row.read::<u64>()).collect();
+    let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|body| *body).collect();
     Some(bodies)
 }).expect("room in the queue");
 if let Some(latest) = reader.latest() {
@@ -52,7 +52,7 @@ if let Some(latest) = reader.latest() {
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 个排队 job
-let mut nested = host.root_scope_mut().get_mut::<World>(render.entity()).expect("the nested world");
+let mut nested = host.root_scope().query_one::<&mut World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 

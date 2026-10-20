@@ -7,7 +7,7 @@
 pub mod common;
 
 use common::*;
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
@@ -221,7 +221,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     // Retire the cube, then hand its pools' ranges to a replacement mesh.
     let cube = world
         .root_scope()
-        .get::<GpuMesh>(cube_entity)
+        .query_one::<&GpuMesh>(cube_entity)
         .expect("the cube carries a mesh")
         .clone();
     assert!(gpu.despawn(&mut world, cube_entity));
@@ -389,14 +389,14 @@ async fn a_source_draws_only_its_own_subtree() {
         let owned = world
             .scope(scope)
             .expect("the source is a scope")
-            .query(query!(&GpuMesh))
+            .query::<&GpuMesh>()
             .count();
         assert_eq!(owned, 1, "a source draws only the instances it owns");
     }
 
     // The root sees both, which is what makes the two frames one scene.
     assert_eq!(
-        world.root_scope().query(query!(&GpuMesh)).count(),
+        world.root_scope().query::<&GpuMesh>().count(),
         2,
         "the root sees every source's instances"
     );
@@ -412,13 +412,13 @@ async fn a_source_draws_only_its_own_subtree() {
             let root = world.root_scope();
             let source_scope = world.scope(scope).expect("the source is a scope");
             let mut source = root
-                .get_mut::<Source>(scope)
+                .query_one::<&mut Source>(scope)
                 .expect("the source entity exists");
             source
                 .as_mut::<MeshSource>()
                 .expect("the source is a mesh source");
             // The count the renderer would hand this source.
-            source_scope.query(query!(&GpuMesh)).count()
+            source_scope.query::<&GpuMesh>().count()
         };
         assert_eq!(drawn, 1, "{label} draws exactly its own instance");
     }

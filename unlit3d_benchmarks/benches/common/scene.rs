@@ -145,7 +145,7 @@ impl Frame {
         let device = self
             .world
             .root_scope()
-            .get::<wgpu::Device>(self.context.device)
+            .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device")
             .clone();
         let mut encoder = device.create_command_encoder(&Default::default());

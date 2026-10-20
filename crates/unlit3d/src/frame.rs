@@ -20,8 +20,6 @@
 
 pub(crate) use unlit_ecs::{Entity, World};
 
-use unlit_ecs::query;
-
 /// One frame's context: what changes from frame to frame and is not world
 /// state.
 ///
@@ -67,7 +65,8 @@ impl FrameSkip {
         for entity in Self::entities(world) {
             let _ = world
                 .root_scope()
-                .with_mut::<FrameSkip, _>(entity, |skip| skip.0 = true);
+                .query_one::<&mut FrameSkip>(entity)
+                .map(|mut skip| skip.0 = true);
         }
     }
 
@@ -76,8 +75,8 @@ impl FrameSkip {
     pub fn is_skipped(world: &World) -> bool {
         world
             .root_scope()
-            .query(query!(&FrameSkip))
-            .any(|(_, row)| row.read::<FrameSkip>().0)
+            .query::<&FrameSkip>()
+            .any(|frame_skip| frame_skip.0)
     }
 
     /// Clear the flag, readying the frame for its behaviours.
@@ -85,7 +84,8 @@ impl FrameSkip {
         for entity in Self::entities(world) {
             let _ = world
                 .root_scope()
-                .with_mut::<FrameSkip, _>(entity, |skip| skip.0 = false);
+                .query_one::<&mut FrameSkip>(entity)
+                .map(|mut skip| skip.0 = false);
         }
     }
 
@@ -94,8 +94,8 @@ impl FrameSkip {
     fn entities(world: &World) -> Vec<Entity> {
         world
             .root_scope()
-            .query(query!(&FrameSkip))
-            .map(|(entity, _)| entity)
+            .query::<(&FrameSkip, Entity)>()
+            .map(|(_frame_skip, entity)| entity)
             .collect()
     }
 }
@@ -215,14 +215,15 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
 fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
     let mut order: Vec<(FrameBehaviourOrder, Entity)> = world
         .root_scope()
-        .query(query!(&B))
-        .map(|(entity, row)| (row.read::<B>().order(), entity))
+        .query::<(&B, Entity)>()
+        .map(|(b, entity)| (b.order(), entity))
         .collect();
     order.sort_unstable_by_key(|(order, entity)| (*order, *entity));
     for (_, entity) in order {
         world
             .root_scope()
-            .with_mut::<B, _>(entity, |behaviour| behaviour.run(world, entity, frame))
+            .query_one::<&mut B>(entity)
+            .map(|mut behaviour| behaviour.run(world, entity, frame))
             .expect("the behaviour entity exists");
     }
 }
@@ -339,7 +340,7 @@ mod tests {
                 let _ = world.root_scope().queue().spawn(bundle!(Marker,));
             }),));
         dispatch_frame(&mut world, &mut frame());
-        assert_eq!(world.root_scope().query(query!(&Marker)).count(), 1);
+        assert_eq!(world.root_scope().query::<&Marker>().count(), 1);
     }
 
     /// A later order runs after an earlier one, however the two were spawned.

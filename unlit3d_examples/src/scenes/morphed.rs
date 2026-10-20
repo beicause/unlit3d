@@ -96,7 +96,7 @@ fn build(
             world
                 .scope(source_entity)
                 .expect("the source is alive")
-                .get_mut::<MorphWeights>(weights_entity)
+                .query_one::<&mut MorphWeights>(weights_entity)
                 .expect("the weight entity carries a `MorphWeights`")
                 .weights = weights(frame).to_vec();
             // The camera the whole sequence shares, re-aimed at the frame's

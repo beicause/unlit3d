@@ -16,7 +16,7 @@ use std::time::Duration;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
-use unlit_ecs::{Entity, World, bundle, query};
+use unlit_ecs::{Entity, World, bundle};
 
 use crate::channel::publish_subscribed;
 use crate::handle::WorldHandle;
@@ -164,8 +164,8 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
     out.fill(0.0);
     let mut sources: Vec<(AudioFillOrder, Entity)> = world
         .root_scope()
-        .query(query!(&OnAudioFill))
-        .map(|(entity, row)| (row.read::<OnAudioFill>().order(), entity))
+        .query::<(&OnAudioFill, Entity)>()
+        .map(|(on_audio_fill, entity)| (on_audio_fill.order(), entity))
         .collect();
     sources.sort_unstable_by_key(|(order, entity)| (*order, *entity));
     let mut chunk = AudioChunk {
@@ -176,14 +176,15 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
     for (_, entity) in sources {
         world
             .root_scope()
-            .with_mut::<OnAudioFill, _>(entity, |fill| fill.run(world, entity, &mut chunk))
+            .query_one::<&mut OnAudioFill>(entity)
+            .map(|mut fill| fill.run(world, entity, &mut chunk))
             .expect("the source entity exists");
     }
     let gain = world
         .root_scope()
-        .query(query!(&AudioGain))
+        .query::<&AudioGain>()
         .next()
-        .map(|(_, row)| row.read::<AudioGain>().0)
+        .map(|audio_gain| audio_gain.0)
         .unwrap_or(1.0);
     for sample in chunk.out.iter_mut() {
         *sample = (*sample * gain).clamp(-1.0, 1.0);
@@ -335,18 +336,13 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
             if open
                 && world
                     .root_scope()
-                    .query(query!(&AudioOutputOpen))
+                    .query::<&AudioOutputOpen>()
                     .next()
                     .is_none()
             {
                 world.root_scope_mut().spawn(bundle!(AudioOutputOpen,));
             }
-            let sounding = open
-                && world
-                    .root_scope()
-                    .query(query!(&OnAudioFill))
-                    .next()
-                    .is_some();
+            let sounding = open && world.root_scope().query::<&OnAudioFill>().next().is_some();
             if sounding != ready {
                 ready = sounding;
                 if sounding {

@@ -184,7 +184,7 @@ mod tests {
         .expect("a partial load op is accepted");
         let ops = world
             .root_scope()
-            .get::<RenderLoadOps>(entity)
+            .query_one::<&RenderLoadOps>(entity)
             .expect("the load ops are there");
         assert_eq!(ops.depth, wgpu::LoadOp::Clear(0.5));
         assert_eq!(ops.color, RenderLoadOps::default().color);

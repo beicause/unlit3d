@@ -22,7 +22,7 @@ use unlit3dx::prelude::*;
 
 use super::music::sequence_midi;
 use super::{BGM_TRACK, PanelSlots, SEQUENCE_TRACK, request_clear_in, request_drop_in};
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 
 /// The panel, living on its own entity in the gameplay world.
 ///
@@ -45,9 +45,9 @@ fn track_ends_job(track: &str) -> Job<u64> {
     Box::new(move |world: &mut World| {
         world
             .root_scope()
-            .query(query!(&MidiPlayer))
-            .find(|(_, row)| row.read::<MidiPlayer>().name() == track.as_str())
-            .map_or(0, |(_, row)| row.read::<MidiPlayer>().ends())
+            .query::<&MidiPlayer>()
+            .find(|midi_player| midi_player.name() == track.as_str())
+            .map_or(0, |midi_player| midi_player.ends())
     })
 }
 
@@ -317,7 +317,10 @@ impl Controls {
                 UiPanel::new(move |world, entity, ui| {
                     // The panel reads its own handle: the object on this entity
                     // owns it, so the callback carries nothing but the counts.
-                    let Some(audio) = world.get::<Controls>(entity).map(|c| c.audio.clone()) else {
+                    let Some(audio) = world
+                        .query_one::<&Controls>(entity)
+                        .map(|c| c.audio.clone())
+                    else {
                         return;
                     };
                     egui::Window::new("Controls").show(ui.ctx(), |ui| {
@@ -326,7 +329,7 @@ impl Controls {
                             // the end the watcher has already picked up.
                             let counts = *panel_counts.borrow();
                             let shown = world
-                                .get::<TrackRows>(entity)
+                                .query_one::<&TrackRows>(entity)
                                 .map_or(TrackRows::START, |rows| *rows);
                             let now = TrackRows {
                                 background: track_controls(
@@ -347,7 +350,9 @@ impl Controls {
                                 ),
                             };
                             if now != shown {
-                                let _ = world.with_mut::<TrackRows, _>(entity, |rows| *rows = now);
+                                let _ = world
+                                    .query_one::<&mut TrackRows>(entity)
+                                    .map(|mut rows| *rows = now);
                             }
                             ui.separator();
                         }

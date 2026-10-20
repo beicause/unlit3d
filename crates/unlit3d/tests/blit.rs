@@ -9,7 +9,7 @@
 pub mod common;
 
 use common::*;
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 use unlit_wgpu::resources::TextureExt;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
@@ -131,9 +131,9 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
     let blit = BlitTexture::new(&world, gpu.context, view);
     let entity = world
         .root_scope()
-        .query(query!(&BlitTexture))
+        .query::<(&BlitTexture, Entity)>()
         .next()
-        .map(|(entity, _)| entity)
+        .map(|(_blit_texture, entity)| entity)
         .expect("the world has a blit texture");
     world.root_scope_mut().despawn(entity);
     world

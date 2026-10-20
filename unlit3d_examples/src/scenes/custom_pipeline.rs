@@ -669,7 +669,7 @@ impl InstanceData for ParticleInstances {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let particle = context
             .world
-            .get::<Particle>(context.entity)
+            .query_one::<&Particle>(context.entity)
             .expect("every visible particle carries a Particle component");
         let record = ParticleRecord {
             origin: [
@@ -1209,7 +1209,7 @@ fn build(
             let camera = world
                 .scope(source_entity)
                 .expect("the source is alive")
-                .get::<Camera>(camera_entity)
+                .query_one::<&Camera>(camera_entity)
                 .expect("the scene's camera exists");
             let sky = SkyUniforms {
                 zenith: glam::Vec4::new(0.29, 0.45, 0.95, 1.0),

@@ -123,9 +123,11 @@ pub fn pose_job(poses: ScenePoses) -> Job<()> {
             return;
         };
         for (entity, pose) in poses.0.iter() {
-            let _ = scope.with_mut::<Transform, _>(*entity, |transform| {
-                transform.clone_from(pose);
-            });
+            let _ = scope
+                .query_one::<&mut Transform>(*entity)
+                .map(|mut transform| {
+                    transform.clone_from(pose);
+                });
         }
     })
 }
@@ -183,7 +185,7 @@ pub fn setup_render_world(
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
 ) -> Entity {
-    let Some(mut nested) = host.root_scope().get_mut::<World>(render_world) else {
+    let Some(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
     let context = spawn_context(
@@ -242,7 +244,8 @@ pub fn camera_job() -> Job<()> {
                 );
                 let _ = world
                     .root_scope()
-                    .with_mut::<Camera, _>(camera_entity, |current| {
+                    .query_one::<&mut Camera>(camera_entity)
+                    .map(|mut current| {
                         *current = camera;
                     });
             },
@@ -326,8 +329,8 @@ fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
     sender
         .subscribe(move |world: &World| {
             let mut transforms = Vec::new();
-            if let Some((_, row)) = world.root_scope().query(query!(&PhysicsWorld)).next() {
-                for (handle, body) in row.read::<PhysicsWorld>().bodies.iter() {
+            if let Some(physics) = world.root_scope().query::<&PhysicsWorld>().next() {
+                for (handle, body) in physics.bodies.iter() {
                     if body.is_dynamic() || body.is_kinematic() {
                         transforms.push((handle, body.translation(), *body.rotation()));
                     }
@@ -456,9 +459,9 @@ pub fn spawn_scene<R: WorldRunner>(
                 .subscribe(|world: &World| {
                     world
                         .root_scope()
-                        .query(query!(&AudioFormat))
+                        .query::<&AudioFormat>()
                         .next()
-                        .map(|(_, row)| *row.read::<AudioFormat>())
+                        .map(|audio_format| *audio_format)
                 })
                 .expect("the audio world accepts a subscription");
             (Some(format), true)
@@ -576,8 +579,8 @@ pub fn spawn_scene<R: WorldRunner>(
 /// The events the panel reads are this world's own, from the buffer its tick
 /// filled, so what the user clicked on is what this tick dispatched.
 fn publish_panels(world: &World) {
-    if let Some((_, row)) = world.root_scope().query(query!(&mut UiPanelHost)).next() {
-        row.write::<UiPanelHost>().publish(world);
+    if let Some(mut host) = world.root_scope().query::<&mut UiPanelHost>().next() {
+        host.publish(world);
     }
 }
 
@@ -673,8 +676,8 @@ pub fn request_drop(sender: &JobSender) {
 
 /// Ask the shapes to drop the next one, from inside the gameplay world.
 pub fn request_drop_in(world: &Scope<'_>) {
-    if let Some((_, row)) = world.query(query!(&mut Balls)).next() {
-        row.write::<Balls>().request_drop();
+    if let Some(mut balls) = world.query::<&mut Balls>().next() {
+        balls.request_drop();
     }
 }
 
@@ -682,8 +685,8 @@ pub fn request_drop_in(world: &Scope<'_>) {
 ///
 /// The music keeps playing; the panel drives it.
 pub fn request_clear_in(world: &Scope<'_>) {
-    if let Some((_, row)) = world.query(query!(&mut Balls)).next() {
-        row.write::<Balls>().request_clear();
+    if let Some(mut balls) = world.query::<&mut Balls>().next() {
+        balls.request_clear();
     }
 }
 
@@ -777,8 +780,8 @@ mod tests {
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle!(UiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
-                        if let Some((_, row)) = world.query(query!(&InputEvents)).next() {
-                            row.read::<InputEvents>().with_batch(|batch| {
+                        if let Some(input_events) = world.query::<&InputEvents>().next() {
+                            input_events.with_batch(|batch| {
                                 counted.fetch_add(batch.len(), Ordering::Relaxed);
                             });
                         }

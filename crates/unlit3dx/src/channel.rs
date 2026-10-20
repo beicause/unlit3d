@@ -22,7 +22,7 @@ use arc_swap::ArcSwapOption;
 use unlit_ecs::World;
 
 use crate::job::{JobSender, SendError};
-use unlit_ecs::{bundle, query};
+use unlit_ecs::{Entity, bundle};
 
 /// The reading half of a snapshot mailbox, and the subscription that fills it.
 ///
@@ -107,10 +107,9 @@ impl JobSender {
 /// Call this from the world's own tick, after the state a collector reads has
 /// been updated.
 pub fn publish_subscribed(world: &World) -> usize {
-    let Some((_, row)) = world.root_scope().query(query!(&mut SnapshotOutlet)).next() else {
+    let Some(mut outlet) = world.root_scope().query::<&mut SnapshotOutlet>().next() else {
         return 0;
     };
-    let mut outlet = row.write::<SnapshotOutlet>();
     outlet.entries.retain_mut(|entry| entry.publish(world));
     outlet.entries.len()
 }
@@ -155,13 +154,13 @@ struct SnapshotOutlet {
 fn install(world: &mut World, entry: Box<dyn Entry>) {
     let existing = world
         .root_scope()
-        .query(query!(&SnapshotOutlet))
+        .query::<(&SnapshotOutlet, Entity)>()
         .next()
-        .map(|(entity, _)| entity);
+        .map(|(_snapshot_outlet, entity)| entity);
     match existing {
         Some(entity) => world
             .root_scope()
-            .get_mut::<SnapshotOutlet>(entity)
+            .query_one::<&mut SnapshotOutlet>(entity)
             .expect("the subscription outlet exists")
             .entries
             .push(entry),

@@ -25,7 +25,7 @@ use crate::source::{
     FrameTarget, OrderWarnings, RenderContext, Source, SourceOrder, set_frame_target,
     unset_frame_target,
 };
-use unlit_ecs::query;
+use unlit_ecs::Entity;
 
 /// The top-level frame driver.
 ///
@@ -146,7 +146,7 @@ impl Renderer {
         // the ids are what the frame path keeps.
         let graph = world
             .root_scope()
-            .get_mut::<ResourceGraph>(self.context.graph)
+            .query_one::<&mut ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
         // The views are cloned out together with the formats they were
         // created with, which wgpu itself cannot report: a view that
@@ -249,12 +249,12 @@ impl Renderer {
 
         let device = world
             .root_scope()
-            .get::<wgpu::Device>(self.context.device)
+            .query_one::<&wgpu::Device>(self.context.device)
             .expect("the context's device resource exists")
             .clone();
         let queue = world
             .root_scope()
-            .get::<wgpu::Queue>(self.context.queue)
+            .query_one::<&wgpu::Queue>(self.context.queue)
             .expect("the context's queue resource exists")
             .clone();
 
@@ -285,10 +285,9 @@ impl Renderer {
             // the graph, the frame's target — live in the shared subtree, which
             // every scope sees.
             let root = world.root_scope();
-            for (entity, row) in root.query(query!(&mut Source)) {
+            for (mut source, entity) in root.query::<(&mut Source, Entity)>() {
                 let scope = world.scope(entity).unwrap_or(root);
-                row.write::<Source>()
-                    .build_scene(&scope, self.context, &mut encoder);
+                source.build_scene(&scope, self.context, &mut encoder);
             }
         }
 
@@ -320,9 +319,8 @@ impl Renderer {
             for &entity in self.order.entities() {
                 world
                     .root_scope()
-                    .with_mut::<Source, _>(entity, |source| {
-                        source.scene().record_with_viewport(&mut pass, whole)
-                    })
+                    .query_one::<&mut Source>(entity)
+                    .map(|source| source.scene().record_with_viewport(&mut pass, whole))
                     .expect("the source entity exists");
             }
         }
@@ -342,7 +340,7 @@ impl Renderer {
     fn attachments(&self, world: &World) -> RenderAttachments {
         let graph = world
             .root_scope()
-            .get_mut::<ResourceGraph>(self.context.graph)
+            .query_one::<&mut ResourceGraph>(self.context.graph)
             .expect("the context's resource graph exists");
         let color = self
             .color_view
@@ -368,11 +366,9 @@ impl Renderer {
 fn frame_load_ops(world: &World) -> RenderLoadOps {
     world
         .root_scope()
-        .query(query!(&RenderLoadOps))
+        .query::<&RenderLoadOps>()
         .next()
-        .map_or_else(RenderLoadOps::default, |(_, row)| {
-            *row.read::<RenderLoadOps>()
-        })
+        .map_or_else(RenderLoadOps::default, |render_load_ops| *render_load_ops)
 }
 
 #[cfg(test)]
@@ -413,6 +409,11 @@ mod tests {
         },));
 
         assert_eq!(frame_load_ops(&world).depth, wgpu::LoadOp::Load);
-        assert!(world.root_scope().get::<RenderLoadOps>(first).is_some());
+        assert!(
+            world
+                .root_scope()
+                .query_one::<&RenderLoadOps>(first)
+                .is_some()
+        );
     }
 }

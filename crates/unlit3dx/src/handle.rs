@@ -111,7 +111,7 @@ mod tests {
         let request = handle.request(Box::new(|_: &mut World| 5));
         let mut nested = host
             .root_scope()
-            .get_mut::<World>(handle.entity())
+            .query_one::<&mut World>(handle.entity())
             .expect("the nested world");
         crate::host::drain_sub_world(&mut nested);
         assert_eq!(request.poll(), Some(5));

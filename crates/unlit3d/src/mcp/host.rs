@@ -26,7 +26,6 @@ use unlit_wgpu::resources::{
 use crate::gltf::UnlitGltf;
 use crate::prelude::*;
 use crate::reflect;
-use unlit_ecs::query;
 
 /// The render context the world holds, found from `handle` or by query.
 ///
@@ -40,8 +39,8 @@ fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext
             .ok_or_else(|| format!("entity {} carries no render context", entity.to_bits()));
     }
     let mut found: Option<RenderContext> = None;
-    for (_, row) in world.root_scope().query(query!(&RenderContext)) {
-        let context = *row.read::<RenderContext>();
+    for render_context in world.root_scope().query::<&RenderContext>() {
+        let context = *render_context;
         match found {
             None => found = Some(context),
             Some(existing) if existing == context => {}
@@ -60,12 +59,13 @@ fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, Stri
     if let Some(entity) = handle {
         return world
             .root_scope()
-            .has::<Renderer>(entity)
+            .query_one::<Has<Renderer>>(entity)
+            .unwrap_or(false)
             .then_some(entity)
             .ok_or_else(|| format!("entity {} carries no renderer", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.root_scope().query(query!(&Renderer)) {
+    for (_renderer, entity) in world.root_scope().query::<(&Renderer, Entity)>() {
         if found.is_some() {
             return Err("the world has more than one renderer; pass `renderer`".to_string());
         }
@@ -79,15 +79,15 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
     if let Some(entity) = handle {
         let is_mesh_source = world
             .root_scope()
-            .get::<Source>(entity)
+            .query_one::<&Source>(entity)
             .is_some_and(|source| source.as_ref::<MeshSource>().is_some());
         return is_mesh_source
             .then_some(entity)
             .ok_or_else(|| format!("entity {} carries no mesh source", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, row) in world.root_scope().query(query!(&Source)) {
-        if row.read::<Source>().as_ref::<MeshSource>().is_some() {
+    for (source, entity) in world.root_scope().query::<(&Source, Entity)>() {
+        if source.as_ref::<MeshSource>().is_some() {
             if found.is_some() {
                 return Err("the world has more than one mesh source; pass `source`".to_string());
             }
@@ -110,7 +110,7 @@ fn with_mesh_source<R>(
         .scope(entity)
         .ok_or_else(|| "the mesh source entity is gone".to_string())?;
     let mut source = scope
-        .get_mut::<Source>(entity)
+        .query_one::<&mut Source>(entity)
         .ok_or_else(|| "the mesh source entity is gone".to_string())?;
     let mesh_source = source
         .as_mut::<MeshSource>()
@@ -122,7 +122,7 @@ fn with_mesh_source<R>(
 fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, String> {
     world
         .root_scope()
-        .get::<wgpu::Device>(context.device)
+        .query_one::<&wgpu::Device>(context.device)
         .map(|device| device.clone())
         .ok_or_else(|| "the render context has no device".to_string())
 }
@@ -131,7 +131,7 @@ fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, Stri
 fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String> {
     world
         .root_scope()
-        .get::<wgpu::Queue>(context.queue)
+        .query_one::<&wgpu::Queue>(context.queue)
         .map(|queue| queue.clone())
         .ok_or_else(|| "the render context has no queue".to_string())
 }
@@ -143,7 +143,7 @@ fn graph_of<'w>(
 ) -> Result<unlit_ecs::CellRef<'w, ResourceGraph>, String> {
     world
         .root_scope()
-        .get::<ResourceGraph>(context.graph)
+        .query_one::<&ResourceGraph>(context.graph)
         .ok_or_else(|| "the render context has no resource graph".to_string())
 }
 
@@ -154,7 +154,7 @@ fn graph_of_mut<'w>(
 ) -> Result<unlit_ecs::CellRefMut<'w, ResourceGraph>, String> {
     world
         .root_scope()
-        .get_mut::<ResourceGraph>(context.graph)
+        .query_one::<&mut ResourceGraph>(context.graph)
         .ok_or_else(|| "the render context has no resource graph".to_string())
 }
 
@@ -469,12 +469,13 @@ fn single_entity<T: 'static>(
     if let Some(entity) = handle {
         return world
             .root_scope()
-            .has::<T>(entity)
+            .query_one::<Has<T>>(entity)
+            .unwrap_or(false)
             .then_some(entity)
             .ok_or_else(|| format!("entity {} carries no {what}", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.root_scope().query(query!(&T)) {
+    for (_t, entity) in world.root_scope().query::<(&T, Entity)>() {
         if found.is_some() {
             return Err(format!("the world has more than one {what}; pass `entity`"));
         }
@@ -501,7 +502,8 @@ pub fn send_input(world: &World, entity: Option<Entity>, events: &Value) -> Resu
     let entity = single_entity::<InputWriter>(world, entity, "input writer")?;
     let _ = world
         .root_scope()
-        .with_mut::<InputWriter, _>(entity, |writer| writer.push_all(decoded));
+        .query_one::<&mut InputWriter>(entity)
+        .map(|writer| writer.push_all(decoded));
     let delivered = dispatch_input(world);
     to_value(&Delivered { delivered })
 }
@@ -579,7 +581,7 @@ pub fn remove_mesh(
 ) -> Result<Value, String> {
     let mesh = world
         .root_scope()
-        .get::<GpuMesh>(entity)
+        .query_one::<&GpuMesh>(entity)
         .map(|mesh| mesh.clone())
         .ok_or_else(|| format!("entity {} has no GpuMesh", entity.to_bits()))?;
     with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
@@ -592,7 +594,9 @@ pub fn render_frame(world: &mut World, renderer: Option<Entity>) -> Result<Value
     let entity = renderer_entity(world, renderer)?;
     let world_ref: &World = &*world;
     let scope = world_ref.root_scope();
-    let _ = scope.with_mut::<Renderer, _>(entity, |renderer| renderer.render(world_ref));
+    let _ = scope
+        .query_one::<&mut Renderer>(entity)
+        .map(|mut renderer| renderer.render(world_ref));
     Ok(Value::Null)
 }
 

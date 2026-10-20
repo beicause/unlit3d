@@ -23,7 +23,6 @@ use unlit_wgpu::specialize::{
 };
 
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
-use unlit_ecs::query;
 
 /// The WESL module whose fullscreen vertex the blit draws.
 const VERTEX_MODULE: &str = "fullscreen_vertex";
@@ -44,7 +43,7 @@ fn resource_graph<'w>(
     ctx: RenderContext,
 ) -> impl DerefMut<Target = ResourceGraph> + 'w {
     scope
-        .get_mut::<ResourceGraph>(ctx.graph)
+        .query_one::<&mut ResourceGraph>(ctx.graph)
         .expect("the context's resource graph exists")
 }
 
@@ -73,7 +72,7 @@ impl BlitTexture {
         let root = world.root_scope();
         let sampler = {
             let device = root
-                .get::<wgpu::Device>(ctx.device)
+                .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("unlit3d::blit::sampler"),
@@ -156,7 +155,7 @@ impl BlitSource {
     ) {
         let device = wgpu::Device::clone(
             &scope
-                .get::<wgpu::Device>(ctx.device)
+                .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists"),
         );
         let layout = bind_group_layout(&device);
@@ -222,7 +221,7 @@ impl FrameSource for BlitSource {
             );
             return;
         };
-        let Some((_, row)) = scope.query(query!(&BlitTexture)).next() else {
+        let Some(blit_texture) = scope.query::<&BlitTexture>().next() else {
             log::warn!(
                 "BlitSource::build_scene: no BlitTexture component, so there is no texture to blit"
             );
@@ -233,19 +232,18 @@ impl FrameSource for BlitSource {
             // The first frame, or a new target: the bind-group layout
             // changes with the pipeline, so the bind group is rebuilt with
             // it.
-            self.build_gpu(scope, ctx, &row.read::<BlitTexture>(), target.surface);
+            self.build_gpu(scope, ctx, &blit_texture, target.surface);
         } else if let Some(gpu) = &mut self.gpu
-            && gpu.texture != *row.read::<BlitTexture>()
+            && gpu.texture != *blit_texture
         {
             // The same target, a different texture: the layout and the
             // pipeline stay, and the texture's new ids get their own group.
             let layout = gpu.layout.clone();
             let device = scope
-                .get::<wgpu::Device>(ctx.device)
+                .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
-            let texture = row.read::<BlitTexture>();
-            gpu.bind_group = allocate_bind_group(scope, ctx, &device, &layout, &texture);
-            gpu.texture = texture.clone();
+            gpu.bind_group = allocate_bind_group(scope, ctx, &device, &layout, &blit_texture);
+            gpu.texture = (*blit_texture).clone();
         }
 
         // Drop the scope so the graph maintains before the group is read back

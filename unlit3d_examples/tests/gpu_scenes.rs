@@ -17,7 +17,6 @@
 //! compile time. The scene still names each frame itself, and the test checks
 //! the two agree, so the table cannot drift from the scene it describes.
 
-use unlit_ecs::query;
 use unlit_wgpu_test_util::{
     Ctx, Snapshot, Tolerance, assert_image_snapshot_with_tolerance, gpu_test_main, gpu_tests,
     snapshots,
@@ -169,10 +168,11 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
     let renderer = scene.renderer;
     let target = world
         .root_scope()
-        .with_mut::<Renderer, _>(renderer, |renderer| {
+        .query_one::<&mut Renderer>(renderer)
+        .map(|mut renderer| {
             unlit3d_examples::bind_offscreen_target(
                 &world,
-                renderer,
+                &mut renderer,
                 &ctx.device,
                 size,
                 def.samples,
@@ -248,10 +248,11 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
     let renderer = scene.renderer;
     let target = world
         .root_scope()
-        .with_mut::<Renderer, _>(renderer, |renderer| {
+        .query_one::<&mut Renderer>(renderer)
+        .map(|mut renderer| {
             unlit3d_examples::bind_offscreen_target(
                 &world,
-                renderer,
+                &mut renderer,
                 &ctx.device,
                 size,
                 def.samples,
@@ -467,12 +468,12 @@ async fn custom_pipeline_animates_between_frames() {
 
 /// The eye position of the scene's camera.
 fn camera_eye(world: &World) -> glam::Vec3 {
-    let (_, row) = world
+    let camera = world
         .root_scope()
-        .query(query!(&Camera))
+        .query::<&Camera>()
         .next()
         .expect("the scene has a camera");
-    row.read::<Camera>().position()
+    camera.position()
 }
 
 /// The default scene at a target narrower than its baseline.

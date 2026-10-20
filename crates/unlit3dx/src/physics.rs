@@ -26,7 +26,7 @@ use crate::channel::publish_subscribed;
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
 use crate::world::WorldRunner;
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 
 /// The simulation's default step rate, in hertz.
 pub const PHYSICS_HZ: f64 = 64.0;
@@ -123,20 +123,12 @@ impl PhysicsEvents {
 
 /// The event plumbing a physics world carries, if it has any.
 fn physics_events(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsEvents>> {
-    world
-        .root_scope()
-        .query(query!(&mut PhysicsEvents))
-        .next()
-        .map(|(_, row)| row.write::<PhysicsEvents>())
+    world.root_scope().query::<&mut PhysicsEvents>().next()
 }
 
 /// The contact buffer a physics world carries, if it has one.
 fn physics_contacts(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsContacts>> {
-    world
-        .root_scope()
-        .query(query!(&mut PhysicsContacts))
-        .next()
-        .map(|(_, row)| row.write::<PhysicsContacts>())
+    world.root_scope().query::<&mut PhysicsContacts>().next()
 }
 
 /// The collider shape a dynamic body carries.
@@ -245,11 +237,9 @@ pub fn spawn_fixed_cuboid(world: &mut World, position: Vec3, half_extents: Vec3,
 fn physics_world(world: &World) -> unlit_ecs::CellRefMut<'_, PhysicsWorld> {
     world
         .root_scope()
-        .query(query!(&mut PhysicsWorld))
+        .query::<&mut PhysicsWorld>()
         .next()
         .expect("the physics world exists")
-        .1
-        .write::<PhysicsWorld>()
 }
 
 /// Spawn the physics world driven by `R`: on its own thread
@@ -315,12 +305,7 @@ pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
 /// world's own tick calls this; thread-free callers — deterministic tests,
 /// offline rendering — drive the same simulation on a cadence of their own.
 pub fn step_once(world: &World) -> bool {
-    let Some(mut physics) = world
-        .root_scope()
-        .query(query!(&mut PhysicsWorld))
-        .next()
-        .map(|(_, row)| row.write::<PhysicsWorld>())
-    else {
+    let Some(mut physics) = world.root_scope().query::<&mut PhysicsWorld>().next() else {
         return false;
     };
     // The contact events rapier reports this step describe contacts that

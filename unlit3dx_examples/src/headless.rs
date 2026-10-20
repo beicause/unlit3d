@@ -114,11 +114,14 @@ pub fn run(
     {
         let nested = host
             .root_scope()
-            .get_mut::<World>(render.entity())
+            .query_one::<&mut World>(render.entity())
             .expect("the render sub-world exists");
-        let _ = nested.root_scope().with_mut::<Renderer, _>(renderer, |r| {
-            offscreen = bind_offscreen(&nested, r, device, config.size);
-        });
+        let _ = nested
+            .root_scope()
+            .query_one::<&mut Renderer>(renderer)
+            .map(|mut r| {
+                offscreen = bind_offscreen(&nested, &mut r, device, config.size);
+            });
     }
 
     let mut output = HeadlessOutput {
@@ -172,14 +175,17 @@ pub fn run(
         // to the picture alone.
         let mut nested = host
             .root_scope()
-            .get_mut::<World>(render.entity())
+            .query_one::<&mut World>(render.entity())
             .expect("the render sub-world exists");
         drain_sub_world(&mut nested);
         if !config.capture.is_empty() {
             dispatch_frame(&mut nested, &mut frame);
-            let _ = nested.root_scope().with_mut::<Renderer, _>(renderer, |r| {
-                r.render(&nested);
-            });
+            let _ = nested
+                .root_scope()
+                .query_one::<&mut Renderer>(renderer)
+                .map(|mut r| {
+                    r.render(&nested);
+                });
             if config.capture.contains(&index) {
                 let color = offscreen.as_ref().expect("the offscreen target exists");
                 output.frames.push(readback_texture(device, queue, color));

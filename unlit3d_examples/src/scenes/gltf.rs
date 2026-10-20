@@ -139,13 +139,16 @@ fn build(
             .expect("the source entity is alive");
         for node in &fox_nodes {
             for &entity in &node.entities {
-                let _ = scope.with_mut::<Transform, _>(entity, |current| *current = FOX_PLACEMENT);
+                let _ = scope
+                    .query_one::<&mut Transform>(entity)
+                    .map(|mut current| *current = FOX_PLACEMENT);
             }
         }
         for node in &morph_nodes {
             for &entity in &node.entities {
-                let _ =
-                    scope.with_mut::<Transform, _>(entity, |current| *current = MORPH_PLACEMENT);
+                let _ = scope
+                    .query_one::<&mut Transform>(entity)
+                    .map(|mut current| *current = MORPH_PLACEMENT);
             }
         }
     }

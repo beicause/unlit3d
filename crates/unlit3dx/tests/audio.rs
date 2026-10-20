@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use unlit_ecs::{World, bundle, query};
+use unlit_ecs::{World, bundle};
 use unlit3dx::prelude::*;
 
 /// Waits until `probe` answers `true`, giving up after five seconds.
@@ -159,7 +159,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
         world.root_scope_mut().spawn(bundle!(Marker,));
     }));
     let marked = world.request(Box::new(|world: &mut World| {
-        world.root_scope().query(query!(&Marker)).next().is_some()
+        world.root_scope().query::<&Marker>().next().is_some()
     }));
     assert!(
         wait_for(|| marked.poll() == Some(true)),
@@ -196,18 +196,18 @@ fn the_audio_world_reports_its_output_opening() {
         .subscribe(|world: &World| {
             world
                 .root_scope()
-                .query(query!(&AudioFormat))
+                .query::<&AudioFormat>()
                 .next()
-                .map(|(_, row)| *row.read::<AudioFormat>())
+                .map(|audio_format| *audio_format)
         })
         .expect("the audio world accepts a subscription");
     let opened = sender
         .subscribe(|world: &World| {
             world
                 .root_scope()
-                .query(query!(&AudioOutputOpen))
+                .query::<&AudioOutputOpen>()
                 .next()
-                .map(|_| ())
+                .map(|_audio_output_open| ())
         })
         .expect("the audio world accepts a subscription");
     let installed = wait_for(|| format.latest().is_some());
@@ -250,11 +250,7 @@ fn a_failed_soundfont_leaves_the_world_silent() {
     let mut world = World::new();
     install_synth(&mut world, b"not a soundfont", 4.0, &["a", "b"], 48_000);
     assert!(
-        world
-            .root_scope()
-            .query(query!(&OnAudioFill))
-            .next()
-            .is_none(),
+        world.root_scope().query::<&OnAudioFill>().next().is_none(),
         "a world whose soundfont failed carries no sources"
     );
     let mut out = vec![1.0f32; 256];
@@ -464,9 +460,9 @@ fn asset_soundfont() -> Option<Arc<[u8]>> {
 fn ends_of(world: &World, track: &str) -> u64 {
     world
         .root_scope()
-        .query(query!(&MidiPlayer))
-        .find(|(_, row)| row.read::<MidiPlayer>().name() == track)
-        .map_or(0, |(_, row)| row.read::<MidiPlayer>().ends())
+        .query::<&MidiPlayer>()
+        .find(|midi_player| midi_player.name() == track)
+        .map_or(0, |midi_player| midi_player.ends())
 }
 
 /// A one-shot track counts each play to its end, and a looping one never

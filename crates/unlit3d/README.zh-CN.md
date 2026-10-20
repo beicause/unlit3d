@@ -499,7 +499,8 @@ let scope = world.scope(source).unwrap();
 // 3. Allocate geometry and a material through the mesh source, and spawn the
 //    renderable entity under it, carrying the unlit key.
 let (mesh, material) = scope
-    .with_mut::<Source, _>(source, |source| {
+    .query_one::<&mut Source>(source)
+    .map(|mut source| {
         let source = source.as_mut::<MeshSource>().unwrap();
         let positions = [[0.0; 3]; 3];
         let uvs = [[0.0; 2]; 3];
@@ -550,7 +551,7 @@ world
 //    depth and multisample attachments are allocated and kept by
 //    `FrameAttachments`; the color attachment is this example's own.
 let color = create_color_target(
-    &world.root_scope().get::<wgpu::Device>(ctx.device).unwrap(),
+    &world.root_scope().query_one::<&wgpu::Device>(ctx.device).unwrap(),
     wgpu::TextureFormat::Rgba8UnormSrgb,
     1280, 720,
 );
@@ -564,7 +565,8 @@ let attachments = FrameAttachments::new(
 );
 let scope = world.scope(source).unwrap();
 let color_view = scope
-    .with_mut::<Source, _>(source, |source| {
+    .query_one::<&mut Source>(source)
+    .map(|mut source| {
         source
             .as_mut::<MeshSource>()
             .unwrap()
@@ -574,9 +576,10 @@ let color_view = scope
     .unwrap();
 world
     .root_scope()
-    .with_mut::<Renderer, _>(renderer, |r| {
-        attachments.bind(&world, r, color_view);
-        r.render(&world);
+    .query_one::<&mut Renderer>(renderer)
+    .map(|mut renderer| {
+        attachments.bind(&world, &mut renderer, color_view);
+        renderer.render(&world);
     })
     .unwrap();
 ```

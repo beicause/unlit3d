@@ -35,7 +35,7 @@ use crate::source::RenderContext;
 fn context_device(world: &World, ctx: RenderContext) -> wgpu::Device {
     world
         .root_scope()
-        .get::<wgpu::Device>(ctx.device)
+        .query_one::<&wgpu::Device>(ctx.device)
         .expect("the context's device resource exists")
         .clone()
 }
@@ -51,7 +51,7 @@ fn context_graph<'w>(
 ) -> impl DerefMut<Target = ResourceGraph> + 'w {
     world
         .root_scope()
-        .get_mut::<ResourceGraph>(ctx.graph)
+        .query_one::<&mut ResourceGraph>(ctx.graph)
         .expect("the context's resource graph exists")
 }
 

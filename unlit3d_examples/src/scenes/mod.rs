@@ -354,7 +354,8 @@ pub fn aim_camera(
     world
         .scope(scope)
         .expect("the scope is alive")
-        .with_mut::<Camera, _>(entity, |current| {
+        .query_one::<&mut Camera>(entity)
+        .map(|mut current| {
             camera.active = current.active;
             *current = camera;
         })
@@ -534,7 +535,7 @@ pub fn with_mesh_source<R>(
         .scope(source_entity)
         .expect("the source entity is alive");
     let mut source = scope
-        .get_mut::<Source>(source_entity)
+        .query_one::<&mut Source>(source_entity)
         .expect("the source entity exists");
     let mesh = source
         .as_mut::<MeshSource>()

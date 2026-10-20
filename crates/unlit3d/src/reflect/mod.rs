@@ -113,7 +113,7 @@ mod tests {
         writer.push(InputEvent::FocusChanged(false));
         world
             .root_scope()
-            .get::<InputEvents>(entity)
+            .query_one::<&InputEvents>(entity)
             .expect("the buffer spawned")
             .refresh();
 

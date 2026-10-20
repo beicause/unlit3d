@@ -11,7 +11,6 @@
 //! The file uses the harness `gpu_scenes.rs` uses, so the same binary runs
 //! natively and as the module a wasm test page loads.
 
-use unlit_ecs::query;
 use unlit_wgpu_test_util::{Ctx, gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
@@ -178,15 +177,12 @@ fn gpu_info_rect(world: &World) -> Option<egui::Rect> {
 
 /// The rectangle egui remembers for the window with `id`.
 fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
-    world
-        .root_scope()
-        .query(query!(&Source))
-        .find_map(|(_, row)| {
-            let source = row.read::<Source>();
-            let ui = source.as_ref::<UiSource>()?;
-            ui.context()
-                .memory(|memory| memory.area_rect(egui::Id::new(id)))
-        })
+    world.root_scope().query::<&Source>().find_map(|source| {
+        let source = source;
+        let ui = source.as_ref::<UiSource>()?;
+        ui.context()
+            .memory(|memory| memory.area_rect(egui::Id::new(id)))
+    })
 }
 
 fn scene_at(
@@ -259,8 +255,16 @@ fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
     let renderer = scene.renderer;
     world
         .root_scope()
-        .with_mut::<Renderer, _>(renderer, |renderer| {
-            unlit3d_examples::bind_offscreen_target(world, renderer, &ctx.device, size, 1, false)
+        .query_one::<&mut Renderer>(renderer)
+        .map(|mut renderer| {
+            unlit3d_examples::bind_offscreen_target(
+                world,
+                &mut renderer,
+                &ctx.device,
+                size,
+                1,
+                false,
+            )
         })
         .expect("the renderer is a resource entity");
 }

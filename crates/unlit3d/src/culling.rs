@@ -12,7 +12,6 @@ use unlit_ecs::{Entity, Scope};
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
 use crate::components::{GpuMesh, Transform};
-use unlit_ecs::query;
 
 /// Whether a mesh whose local bounds are `aabb`, placed by
 /// `world_from_local`, lies entirely outside `frustum` and can be skipped.
@@ -56,12 +55,12 @@ pub(crate) fn collect_visible(
     out: &mut Vec<VisibleMesh>,
 ) {
     out.clear();
-    for (entity, row) in scope.query(query!(&GpuMesh, Option<&Transform>)) {
-        let model = match row.try_read::<Transform>() {
+    for (gpu_mesh, option, entity) in scope.query::<(&GpuMesh, Option<&Transform>, Entity)>() {
+        let model = match option {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
         };
-        if is_culled(row.read::<GpuMesh>().aabb, &model, frustum) {
+        if is_culled(gpu_mesh.aabb, &model, frustum) {
             continue;
         }
         out.push(VisibleMesh {

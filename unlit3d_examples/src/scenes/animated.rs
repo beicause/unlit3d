@@ -180,7 +180,8 @@ fn build(
                     world
                         .scope(source_entity)
                         .expect("the source is alive")
-                        .with_mut::<Transform, _>(*entity, |current| *current = transform)
+                        .query_one::<&mut Transform>(*entity)
+                        .map(|mut current| *current = transform)
                         .expect("a live mesh carries a transform");
                 }
             }

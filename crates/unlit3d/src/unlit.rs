@@ -399,13 +399,13 @@ impl InstanceData for UnlitInstance {
         let world = &context.world;
         let entity = context.entity;
         let mesh = world
-            .get::<GpuMesh>(entity)
+            .query_one::<&GpuMesh>(entity)
             .expect("every visible entity carries the mesh culling resolved");
         let base_color = world
-            .get::<InstanceColor>(entity)
+            .query_one::<&InstanceColor>(entity)
             .map_or(glam::Vec4::ONE, |color| color.color);
         let cutoff = world
-            .get::<InstanceCutoff>(entity)
+            .query_one::<&InstanceCutoff>(entity)
             .map_or(0.0, |cutoff| cutoff.cutoff);
         // Skinning and morphing are independent: a mesh may have either, both
         // or neither, and each packs into its own array.

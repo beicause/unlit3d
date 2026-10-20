@@ -8,7 +8,7 @@ use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
 use crate::thread::panic_message;
 use crate::world::WorldName;
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
 
 /// The sub-world's command inbox, a component of the nested world itself.
 ///
@@ -67,10 +67,10 @@ pub fn drain_sub_world(nested: &mut World) {
     // before the first one starts. Cloning the receiver is cheap and lets the
     // drain run without collecting the jobs first.
     let receiver = {
-        let Some((_, row)) = nested.root_scope().query(query!(&SubWorldInbox)).next() else {
+        let Some(sub_world_inbox) = nested.root_scope().query::<&SubWorldInbox>().next() else {
             return;
         };
-        row.read::<SubWorldInbox>().0.clone()
+        sub_world_inbox.0.clone()
     };
     while let Ok(job) = receiver.try_recv() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(nested)));

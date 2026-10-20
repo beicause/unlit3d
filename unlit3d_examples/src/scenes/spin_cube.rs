@@ -61,7 +61,8 @@ fn build(
     // through the mesh source so they live in the frame's resource graph.
     let root = world.root_scope();
     let (mesh, material) = root
-        .with_mut::<Source, _>(source_entity, |source| {
+        .query_one::<&mut Source>(source_entity)
+        .map(|mut source| {
             let source = source
                 .as_mut::<MeshSource>()
                 .expect("the source entity carries a MeshSource");
@@ -152,31 +153,38 @@ fn build(
             egui::Window::new("unlit3d")
                 .id(egui::Id::new("unlit3d"))
                 .show(ui.ctx(), |ui| {
-                    let frames = world.get::<FrameCount>(spin).map_or(0, |frames| frames.0);
+                    let frames = world
+                        .query_one::<&FrameCount>(spin)
+                        .map_or(0, |frames| frames.0);
                     ui.label(format!("frame {frames}"));
                     ui.label("The cube spins behind this panel.");
 
-                    let spinning = world.get::<Spin>(spin).is_some_and(|state| state.spinning);
+                    let spinning = world
+                        .query_one::<&Spin>(spin)
+                        .is_some_and(|state| state.spinning);
                     let mut spinning_now = spinning;
                     if ui.checkbox(&mut spinning_now, "Spin").changed() {
-                        let _ =
-                            world.with_mut::<Spin, _>(spin, |state| state.spinning = spinning_now);
+                        let _ = world
+                            .query_one::<&mut Spin>(spin)
+                            .map(|mut state| state.spinning = spinning_now);
                     }
 
                     let mut speed = world
-                        .get::<Spin>(spin)
+                        .query_one::<&Spin>(spin)
                         .map_or(SPIN, |state| state.radians_per_second);
                     if ui
                         .add(egui::Slider::new(&mut speed, 0.0..=4.0).text("rad/s"))
                         .changed()
                     {
-                        let _ = world.with_mut::<Spin, _>(spin, |state| {
+                        let _ = world.query_one::<&mut Spin>(spin).map(|mut state| {
                             state.radians_per_second = speed;
                         });
                     }
 
                     if ui.button("Reset the spin").clicked() {
-                        let _ = world.with_mut::<SpinReset, _>(spin, |reset| reset.0 = true);
+                        let _ = world
+                            .query_one::<&mut SpinReset>(spin)
+                            .map(|mut reset| reset.0 = true);
                     }
 
                     // The world's input state, read out under the panel's own
@@ -186,14 +194,13 @@ fn build(
                     // the user is working in.
                     ui.separator();
                     let held = world
-                        .query(query!(&InputEvents))
+                        .query::<&InputEvents>()
                         .next()
-                        .is_some_and(|(_, row)| {
-                            row.read::<InputEvents>()
-                                .with_state(|state| state.pointer_down)
+                        .is_some_and(|input_events| {
+                            input_events.with_state(|state| state.pointer_down)
                         });
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
-                    match world.get::<CameraOrbit>(orbit) {
+                    match world.query_one::<&CameraOrbit>(orbit) {
                         Some(orbit) => ui.label(format!(
                             "azimuth {:.2}, elevation {:.2}",
                             orbit.azimuth, orbit.elevation
@@ -218,7 +225,8 @@ fn build(
             if key.pressed && !key.repeat && key.key == Key::Space {
                 let _ = world
                     .root_scope()
-                    .with_mut::<Spin, _>(spin, |state| state.spinning = !state.spinning);
+                    .query_one::<&mut Spin>(spin)
+                    .map(|mut state| state.spinning = !state.spinning);
             }
         }),));
 
@@ -235,7 +243,8 @@ fn build(
                 ) {
                     let _ = world
                         .root_scope()
-                        .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
+                        .query_one::<&mut DragFrom>(spin)
+                        .map(|mut drag| drag.0 = None);
                 }
                 return;
             };
@@ -247,53 +256,64 @@ fn build(
             // one — so a gesture that started on the scene keeps working even when
             // it sweeps over a panel. The contact is dropped here too, so a press
             // that ends over a UI never leaves a drag behind for the scene.
-            let over_ui = world.root_scope().query(query!(&Source)).any(|(_, row)| {
-                row.read::<Source>()
+            let over_ui = world.root_scope().query::<&Source>().any(|source| {
+                source
                     .as_ref::<UiSource>()
                     .is_some_and(|ui| ui.context().egui_wants_pointer_input())
             });
             if over_ui {
                 let _ = world
                     .root_scope()
-                    .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
+                    .query_one::<&mut DragFrom>(spin)
+                    .map(|mut drag| drag.0 = None);
                 return;
             }
 
             match event.action {
                 PointerAction::Pressed => {
-                    let _ = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
-                        drag.0 = Some(PointerContact {
-                            kind: event.kind,
-                            id: event.id,
-                            position,
+                    let _ = world
+                        .root_scope()
+                        .query_one::<&mut DragFrom>(spin)
+                        .map(|mut drag| {
+                            drag.0 = Some(PointerContact {
+                                kind: event.kind,
+                                id: event.id,
+                                position,
+                            });
                         });
-                    });
                 }
                 PointerAction::Moved => {
-                    let previous = world.root_scope().with_mut::<DragFrom, _>(spin, |drag| {
-                        let tracked = drag.0.as_mut()?;
-                        if (tracked.kind, tracked.id) != (event.kind, event.id) {
-                            return None;
-                        }
-                        Some(std::mem::replace(&mut tracked.position, position))
-                    });
+                    let previous =
+                        world
+                            .root_scope()
+                            .query_one::<&mut DragFrom>(spin)
+                            .map(|mut drag| {
+                                let tracked = drag.0.as_mut()?;
+                                if (tracked.kind, tracked.id) != (event.kind, event.id) {
+                                    return None;
+                                }
+                                Some(std::mem::replace(&mut tracked.position, position))
+                            });
                     let Some(Some(previous)) = previous else {
                         return;
                     };
                     const RADIANS_PER_PIXEL: f32 = 0.01;
                     let (dx, dy) = (position[0] - previous[0], position[1] - previous[1]);
-                    let _ = world
-                        .root_scope()
-                        .with_mut::<CameraOrbit, _>(orbit, |drag| {
-                            drag.azimuth -= dx * RADIANS_PER_PIXEL;
-                            drag.elevation =
-                                (drag.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
-                        });
+                    let _ =
+                        world
+                            .root_scope()
+                            .query_one::<&mut CameraOrbit>(orbit)
+                            .map(|mut drag| {
+                                drag.azimuth -= dx * RADIANS_PER_PIXEL;
+                                drag.elevation =
+                                    (drag.elevation + dy * RADIANS_PER_PIXEL).clamp(-1.4, 1.4);
+                            });
                 }
                 PointerAction::Released { .. } | PointerAction::Left => {
                     let _ = world
                         .root_scope()
-                        .with_mut::<DragFrom, _>(spin, |drag| drag.0 = None);
+                        .query_one::<&mut DragFrom>(spin)
+                        .map(|mut drag| drag.0 = None);
                 }
                 PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
             }
@@ -307,21 +327,20 @@ fn build(
 
             // The panel's button leaves its press as state; consume it here,
             // once.
-            for (_, row) in root.query(query!(&mut SpinReset)) {
-                if core::mem::take(&mut row.write::<SpinReset>().0) {
-                    for (_, row) in root.query(query!(&mut Spin)) {
-                        row.write::<Spin>().angle = 0.0;
+            for mut spin_reset in root.query::<&mut SpinReset>() {
+                if core::mem::take(&mut spin_reset.0) {
+                    for mut spin in root.query::<&mut Spin>() {
+                        spin.angle = 0.0;
                     }
                 }
             }
 
             // The behaviour components run first: the world the renderer reads
             // is this frame's.
-            for (_, row) in root.query(query!(&mut FrameCount)) {
-                row.write::<FrameCount>().0 += 1;
+            for mut frame_count in root.query::<&mut FrameCount>() {
+                frame_count.0 += 1;
             }
-            for (_, row) in root.query(query!(&mut Spin)) {
-                let mut spin = row.write::<Spin>();
+            for mut spin in root.query::<&mut Spin>() {
                 if spin.spinning {
                     spin.angle += spin.radians_per_second * delta_time;
                 }
@@ -332,32 +351,29 @@ fn build(
             let view = world
                 .scope(source_entity)
                 .expect("the source entity is alive");
-            let angle = root
-                .query(query!(&Spin))
-                .next()
-                .map_or(0.0, |(_, row)| row.read::<Spin>().angle);
-            for (_, row) in view.query(query!(&mut Transform)) {
-                row.write::<Transform>().rotation = glam::Quat::from_rotation_y(angle);
+            let angle = root.query::<&Spin>().next().map_or(0.0, |spin| spin.angle);
+            for mut transform in view.query::<&mut Transform>() {
+                transform.rotation = glam::Quat::from_rotation_y(angle);
             }
 
             // The camera follows the orbit a slider or a drag set — and the
             // frame's own size, so a window that changes shape re-aims it
             // instead of stretching the cube.
-            let orbit = root.query(query!(&CameraOrbit)).next().map_or(
+            let orbit = root.query::<&CameraOrbit>().next().map_or(
                 CameraOrbit {
                     azimuth: 0.6,
                     elevation: ORBIT_ELEVATION,
                 },
-                |(_, row)| {
-                    let orbit = row.read::<CameraOrbit>();
+                |orbit| {
+                    let orbit = orbit;
                     CameraOrbit {
                         azimuth: orbit.azimuth,
                         elevation: orbit.elevation,
                     }
                 },
             );
-            for (_, row) in view.query(query!(&mut Camera)) {
-                *row.write::<Camera>() = orbit_camera(frame_size, orbit.azimuth, orbit.elevation);
+            for mut camera in view.query::<&mut Camera>() {
+                *camera = orbit_camera(frame_size, orbit.azimuth, orbit.elevation);
             }
         }),
         snapshot: Box::new(|frame| (frame == 29).then(|| "spin_cube.webp".to_owned())),

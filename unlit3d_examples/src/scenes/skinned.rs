@@ -96,7 +96,7 @@ fn build(
             *world
                 .scope(source_entity)
                 .expect("the source is alive")
-                .get_mut::<SkinPose>(pose_entity)
+                .query_one::<&mut SkinPose>(pose_entity)
                 .expect("the pose entity carries a `SkinPose`") = skin.pose();
             // The camera the whole sequence shares, re-aimed at the frame's
             // aspect so a resized window does not stretch the cube.
