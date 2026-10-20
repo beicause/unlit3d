@@ -41,10 +41,11 @@ It is at an **early stage of development** and its API changes freely.
   entity whose handle the caller keeps, optionally marked with a marker
   component of the caller's own.
 - **Every `'static` type is a component.** No derive, no registration: a tuple
-  is a component too. That is what makes a *bundle* a tuple of components rather
-  than a hierarchy of them, so a nested tuple is one component and not a group
-  of them. To flatten nesting, write the bundle with [`bundle!`], which walks
-  the syntax while expanding.
+  is a component too. A *bundle* is therefore not a tuple of components but the
+  list [`bundle!`] builds or an [`ArchetypeBuilder`] gathers, and a plain
+  `(a, b)` handed to a spawn is one component, the pair. The macro walks the
+  syntax while expanding, so `bundle!(a, b)` is two components and a group in
+  parentheses is flattened into the components it holds.
 - **There are no systems.** Driving behaviour means the caller reading the
   world and calling the method or closure it wants — or running a *behaviour
   component*, a component that holds a closure and is invoked by whatever
@@ -78,12 +79,12 @@ that one relation is the whole tree: a scene is a subtree, and what a caller
 holds is [`Scope`], an accessor narrowed to one entity's place in it.
 
 ```rust
-use unlit_ecs::World;
+use unlit_ecs::{World, bundle, query};
 
 let mut world = World::new();
-let scene = world.root_scope_mut().spawn((),);
-let cube = world.scope_mut(scene).unwrap().spawn((0u32,));
-let camera = world.scope_mut(scene).unwrap().spawn((0f32,));
+let scene = world.root_scope_mut().spawn_empty();
+let cube = world.scope_mut(scene).unwrap().spawn(bundle!(0u32));
+let camera = world.scope_mut(scene).unwrap().spawn(bundle!(0f32));
 
 // The scene's scope sees the scene and everything below it, and nothing beside.
 let scope = world.scope(scene).unwrap();
@@ -91,7 +92,7 @@ assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
 assert_eq!(scope.children(scene).len(), 2);
-assert!(scope.query::<&u32>().any(|(entity, _)| entity == cube));
+assert!(scope.query(query!(&u32)).any(|(entity, _)| entity == cube));
 
 // Root is a scope too, and it sees every scope.
 assert_eq!(world.root_scope().len(), 3);
@@ -168,10 +169,11 @@ visible length of each.
 ## What is in the box
 
 [`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`] (and the
-[`bundle!`] macro for flattening nested tuples), [`ScopeOf`] and the
+[`bundle!`] macro that writes one), [`ScopeOf`] and the
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
-[`OnSpawn`] / [`OnDespawn`] for the callback a spawn and a despawn run,
-[`Query`] and [`QueryFilter`] ([`With`], [`Without`], [`Or`], tuples),
+[`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
+[`Query`] / [`Row`] (and the [`query!`] macro, with [`With`], [`Without`]
+and [`Or`] naming filters),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
 [`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
 component type a type-erased reader only knows by
@@ -181,9 +183,11 @@ for reporting a world's shape as plain data (with `EntityProxy` and
 hash containers
 [`TypeIdHashMap`], [`EntityHashMap`] and friends.
 
-A query resolves the columns it needs once per archetype and then fetches rows
-through that state, so its cost is proportional to the number of *component
-sets* rather than to the number of entities. [`Scope::location`] and
+A query is data: a list of slots and a filter, which [`query!` assembles in a
+const block and which a caller can also build at run time. A row looks a
+component up in its archetype when it is asked for and hands out a borrow that
+lives as long as the row, so reading two rows at once is allowed and writing the
+same component twice without dropping the first borrow panics. [`Scope::location`] and
 [`Scope::archetype`] expose the same shape to a caller that holds many entities
 — for instance one that culled a scene into a list — so it can group them by
 archetype and resolve each archetype's columns once for all of them instead of
@@ -201,7 +205,7 @@ storage order. Archetypes are created on demand and never removed.
 ## Usage
 
 ```rust
-use unlit_ecs::{Query, Without, World};
+use unlit_ecs::{World, Without, bundle, query};
 
 struct Spin {
     radians_per_second: f32,
@@ -209,34 +213,42 @@ struct Spin {
 }
 
 let mut world = World::new();
-let cube = world.root_scope_mut().spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-let clock = world.root_scope_mut().spawn((0.016f32,));
+let cube = world.root_scope_mut().spawn(bundle!(Spin { radians_per_second: 1.0, angle: 0.0 }));
+let clock = world.root_scope_mut().spawn(bundle!(0.016f32));
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.
-let delta = world.root_scope().get::<f32>(clock).unwrap().to_owned();
-for (_, mut spin) in world.root_scope().query::<&mut Spin>() {
+let delta = *world.root_scope().get::<f32>(clock).unwrap();
+for (_, row) in world.root_scope().query(query!(&mut Spin)) {
+    let mut spin = row.write::<Spin>();
     spin.angle += spin.radians_per_second * delta;
 }
 assert_ne!(world.root_scope().get::<Spin>(cube).unwrap().angle, 0.0);
 
-// Filters narrow the archetypes a query visits, without fetching anything.
+// A filter narrows the archetypes a query visits, without fetching anything.
 let _ = world
     .root_scope()
-    .query_filtered::<&Spin, Without<f32>>()
-    .map(|(_, spin)| spin.angle)
+    .query(query!(&Spin; Without<f32>))
+    .map(|(_, row)| row.read::<Spin>().angle)
     .count();
 ```
+
+A query is data, not a type parameter: [`query!`] is the shorthand, and
+[`Query::new`] with [`Query::read`] and [`Query::write`] builds the same value
+at run time. A row hands out components by name, and each borrow lives as long
+as the row, so a row can be read and written across statements instead of
+inside a `for` pattern. Naming a component the query did not ask for panics and
+says which one it was.
 
 Spawning and despawning need a `&mut` scope, or a queued command:
 
 ```rust
-use unlit_ecs::World;
+use unlit_ecs::{World, bundle};
 
 let mut world = World::new();
 let entity = {
     let commands = world.root_scope().queue();
-    commands.spawn(("entity",))
+    commands.spawn(bundle!("entity"))
 };
 // Nothing has happened yet.
 assert!(!world.root_scope().contains(entity));
@@ -244,14 +256,15 @@ world.apply();
 assert!(world.root_scope().contains(entity));
 ```
 
-A tuple bundle does not flatten, because a tuple is itself a component. Reach for
-`bundle!` when the components are written nested, or when there are more than
-sixteen of them. Its width is limited by the compiler's recursion limit — about a
-hundred components at the default — and a wider one is built by raising
-`#![recursion_limit]`:
+A bundle is what [`bundle!`] writes or what an [`ArchetypeBuilder`] gathers; a
+tuple is not one, because a tuple is itself a component. `bundle!(a, b)` is two
+components, and parentheses are grouping rather than a tuple, so the macro
+flattens them at any depth — `bundle!((a, b), c)` is three. Its width is limited
+by the compiler's recursion limit, about a hundred components at the default,
+and a wider one is built by raising `#![recursion_limit]`:
 
 ```rust
-use unlit_ecs::{bundle, World};
+use unlit_ecs::{World, bundle};
 
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
@@ -263,15 +276,29 @@ assert!(world.root_scope().has::<bool>(entity));
 assert!(!world.root_scope().has::<(u32, f32)>(entity));
 ```
 
-A bundle written as `..value` is spread into its own components, so a bundle
-built elsewhere joins the spawn as itself: a builder the macro produced
-contributes its flat leaves, while a tuple or a custom `Bundle` keeps the
-components it defines. The syntax is needed because the macro walks the source
-and cannot tell a bundle from a component — written plainly, a bundle is one
-component:
+A component that is itself a tuple is pushed whole, which is the one way to
+spawn one:
 
 ```rust
-use unlit_ecs::{ArchetypeBuilder, bundle, World};
+use unlit_ecs::{ArchetypeBuilder, World};
+
+let mut builder = ArchetypeBuilder::new();
+builder.push_component((1u8, 2u8));
+
+let mut world = World::new();
+let entity = world.root_scope_mut().spawn(builder);
+
+assert!(world.root_scope().has::<(u8, u8)>(entity));
+assert!(!world.root_scope().has::<u8>(entity));
+```
+
+A bundle written as `..value` is spread into its own components, so a bundle
+built elsewhere joins the spawn as itself. The syntax is needed because the
+macro walks the source and cannot tell a bundle from a component — written
+plainly, a bundle is one component:
+
+```rust
+use unlit_ecs::{ArchetypeBuilder, World, bundle};
 
 let mut gathered = ArchetypeBuilder::new();
 gathered.push_component(1u32);

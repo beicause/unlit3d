@@ -260,6 +260,7 @@ fn missing<C: Facet<'static>>(entity: Entity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle;
 
     /// A component defined here, so the registry is tested on its own rather
     /// than through a crate above it.
@@ -277,7 +278,7 @@ mod tests {
     #[test]
     fn a_reflected_component_round_trips_through_its_own_fields() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn((Position::default(),));
+        let entity = world.root_scope_mut().spawn(bundle!(Position::default(),));
 
         set(&world.root_scope(), entity, "Position", r#"{"x":1.0}"#)
             .expect("a partial value is accepted");

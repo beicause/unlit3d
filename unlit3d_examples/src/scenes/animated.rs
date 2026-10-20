@@ -9,6 +9,7 @@
 //! from frame to frame.
 
 use super::{SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// The grid of cells a cube can occupy, in the XZ plane.
@@ -106,9 +107,9 @@ fn build(
     source.register_unlit_family(&world.root_scope());
     // Every cell is tinted through its instance colour.
     let key = UnlitPipelineKey::new(super::unlit_options(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
-    let camera_entity = super::spawn_in(world, source_entity, (orbit_camera(0, size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle!(orbit_camera(0, size),));
 
     // One entry per cell, holding the entity and the mesh while it is
     // occupied. Counts allocations, not cells: a cell that is filled twice
@@ -160,7 +161,7 @@ fn build(
                 let entity = super::spawn_in(
                     world,
                     source_entity,
-                    (
+                    bundle!(
                         cell_transform(cell, step_index),
                         InstanceColor::new(TINTS[allocated % TINTS.len()]),
                         mesh.clone(),

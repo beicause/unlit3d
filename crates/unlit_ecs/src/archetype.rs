@@ -174,7 +174,8 @@ impl Archetype {
     /// The column of component `C`.
     ///
     /// A query resolves this once per archetype instead of doing the lookup per
-    /// row; see [`Query::Fetch`](crate::Query::Fetch).
+    /// row; a [`Row`](crate::Row) resolves it again on every component it hands
+    /// out, from the archetype it was made for.
     #[inline]
     pub(crate) fn column<C: 'static>(&self) -> Option<&Column<C>> {
         let index = self.column_index(TypeId::of::<C>())?;

@@ -22,6 +22,7 @@ use unlit3dx::prelude::*;
 
 use super::music::sequence_midi;
 use super::{BGM_TRACK, PanelSlots, SEQUENCE_TRACK, request_clear_in, request_drop_in};
+use unlit_ecs::{bundle, query};
 
 /// The panel, living on its own entity in the gameplay world.
 ///
@@ -44,9 +45,9 @@ fn track_ends_job(track: &str) -> Job<u64> {
     Box::new(move |world: &mut World| {
         world
             .root_scope()
-            .query::<&MidiPlayer>()
-            .find(|(_, player)| player.name() == track.as_str())
-            .map_or(0, |(_, player)| player.ends())
+            .query(query!(&MidiPlayer))
+            .find(|(_, row)| row.read::<MidiPlayer>().name() == track.as_str())
+            .map_or(0, |(_, row)| row.read::<MidiPlayer>().ends())
     })
 }
 
@@ -310,7 +311,7 @@ impl Controls {
         let entity = world.reserve_entity();
         world.root_scope_mut().spawn_at(
             entity,
-            (
+            bundle!(
                 self,
                 TrackRows::START,
                 UiPanel::new(move |world, entity, ui| {
@@ -382,7 +383,7 @@ pub fn control_panel_job(panels: PanelSlots) -> Job<()> {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
         source.draw_published(panels.frames, panels.screen);
-        world.root_scope_mut().spawn((Source::new(source),));
+        world.root_scope_mut().spawn(bundle!(Source::new(source),));
     })
 }
 

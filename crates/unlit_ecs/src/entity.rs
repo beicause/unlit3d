@@ -119,7 +119,7 @@ impl From<&Vec<Entity>> for EntityVecProxy {
 /// A location names an archetype and a row in it. Entities of the same
 /// archetype share the archetype, so a caller holding many locations can group
 /// them by [`Location::archetype`] and resolve that archetype's columns once,
-/// then fetch each row through [`Query::fetch`](crate::Query::fetch).
+/// then reach each row through [`Scope::row`](crate::Scope::row).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Location {
     pub(crate) archetype: u32,

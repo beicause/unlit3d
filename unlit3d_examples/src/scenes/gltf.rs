@@ -11,6 +11,7 @@
 //! or a stale binding shows up as a frame that does not move the way it should.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
+use unlit_ecs::bundle;
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
 
@@ -101,7 +102,7 @@ fn build(
 
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so
@@ -152,7 +153,7 @@ fn build(
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        (super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
+        bundle!(super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
     );
 
     let fox_animation = animation_index(&fox, FOX_ANIMATION);

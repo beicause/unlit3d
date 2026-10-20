@@ -296,6 +296,7 @@ pub fn write_file(directory: &str, file_name: &str, bytes: &[u8]) -> Result<Save
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle;
 
     /// The JSON a tool argument carries for a world.
     #[derive(Debug, Deserialize)]
@@ -360,7 +361,7 @@ mod tests {
             McpCommand::new(|world| Ok(Output::Json(serde_json::json!(world.root_scope().len()))));
         assert!(!command.wants_worlds());
         let mut world = World::new();
-        world.root_scope_mut().spawn((1u32,));
+        world.root_scope_mut().spawn(bundle!(1u32,));
         command.dispatch(&mut world);
         let answer = receiver.recv_blocking().unwrap().unwrap();
         let Output::Json(value) = answer else {

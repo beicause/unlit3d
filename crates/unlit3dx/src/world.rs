@@ -377,6 +377,7 @@ mod tests {
     use super::*;
     use crate::job::SendError;
     use std::time::Duration;
+    use unlit_ecs::{bundle, query};
 
     /// Jobs sent through the handle run, and a request answers back.
     #[test]
@@ -388,23 +389,25 @@ mod tests {
         });
         handle
             .send(Box::new(|world: &mut World| {
-                world.root_scope_mut().spawn((Count(0),));
+                world.root_scope_mut().spawn(bundle!(Count(0),));
             }))
             .expect("the world accepts jobs");
         let request = handle.request(Box::new(|world: &mut World| {
             world
                 .root_scope()
-                .query::<&mut Count>()
+                .query(query!(&mut Count))
                 .next()
                 .expect("the counter")
                 .1
+                .write::<Count>()
                 .0 += 1;
             world
                 .root_scope()
-                .query::<&Count>()
+                .query(query!(&Count))
                 .next()
                 .expect("the counter")
                 .1
+                .read::<Count>()
                 .0
         }));
         let mut answer = None;
@@ -427,7 +430,7 @@ mod tests {
             "test",
             8,
             |world: &mut World| {
-                world.root_scope_mut().spawn((Count(0),));
+                world.root_scope_mut().spawn(bundle!(Count(0),));
             },
             |_, control, ()| {
                 control.wait_timeout(Duration::from_millis(1));
@@ -435,7 +438,7 @@ mod tests {
             },
         );
         let request = handle.request(Box::new(|world: &mut World| {
-            world.root_scope().query::<&Count>().next().is_some()
+            world.root_scope().query(query!(&Count)).next().is_some()
         }));
         let mut answered = None;
         for _ in 0..2_000 {
@@ -472,15 +475,16 @@ mod tests {
             "stepped",
             8,
             |world: &mut World| {
-                world.root_scope_mut().spawn((Count(0),));
+                world.root_scope_mut().spawn(bundle!(Count(0),));
             },
             |world: &mut World, _control: &ThreadControl, ()| {
                 world
                     .root_scope()
-                    .query::<&mut Count>()
+                    .query(query!(&mut Count))
                     .next()
                     .expect("the counter")
                     .1
+                    .write::<Count>()
                     .0 += 1;
                 true
             },
@@ -491,10 +495,11 @@ mod tests {
                 .request(Box::new(|world: &mut World| {
                     world
                         .root_scope()
-                        .query::<&Count>()
+                        .query(query!(&Count))
                         .next()
                         .expect("the counter")
                         .1
+                        .read::<Count>()
                         .0
                 }))
                 .poll(),
@@ -506,10 +511,11 @@ mod tests {
                 .request(Box::new(|world: &mut World| {
                     world
                         .root_scope()
-                        .query::<&Count>()
+                        .query(query!(&Count))
                         .next()
                         .expect("the counter")
                         .1
+                        .read::<Count>()
                         .0
                 }))
                 .poll(),
@@ -519,10 +525,11 @@ mod tests {
         let request = handle.request(Box::new(|world: &mut World| {
             world
                 .root_scope()
-                .query::<&Count>()
+                .query(query!(&Count))
                 .next()
                 .expect("the counter")
                 .1
+                .read::<Count>()
                 .0
         }));
         // A step drains the queue before it ticks, exactly as a remote
@@ -551,7 +558,7 @@ mod tests {
     #[test]
     fn stepping_a_foreign_entity_does_nothing() {
         let mut host = World::new();
-        let plain = host.root_scope_mut().spawn((Count(0),));
+        let plain = host.root_scope_mut().spawn(bundle!(Count(0),));
         step_stepped_world(&host, plain);
     }
 

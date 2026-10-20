@@ -25,6 +25,7 @@ use crate::source::{
     FrameTarget, OrderWarnings, RenderContext, Source, SourceOrder, set_frame_target,
     unset_frame_target,
 };
+use unlit_ecs::query;
 
 /// The top-level frame driver.
 ///
@@ -48,8 +49,8 @@ use crate::source::{
 ///     DeviceCapabilities::default(),
 /// );
 /// let source = MeshSource::new(&world.root_scope(), ctx);
-/// let mesh = world.root_scope_mut().spawn((Source::new(source),));
-/// let renderer = world.root_scope_mut().spawn((Renderer::new(ctx),));
+/// let mesh = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+/// let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx),));
 /// ```
 pub struct Renderer {
     /// The world addresses of the frame's GPU state.
@@ -284,9 +285,10 @@ impl Renderer {
             // the graph, the frame's target — live in the shared subtree, which
             // every scope sees.
             let root = world.root_scope();
-            for (entity, mut source) in root.query::<&mut Source>() {
+            for (entity, row) in root.query(query!(&mut Source)) {
                 let scope = world.scope(entity).unwrap_or(root);
-                source.build_scene(&scope, self.context, &mut encoder);
+                row.write::<Source>()
+                    .build_scene(&scope, self.context, &mut encoder);
             }
         }
 
@@ -366,14 +368,17 @@ impl Renderer {
 fn frame_load_ops(world: &World) -> RenderLoadOps {
     world
         .root_scope()
-        .query::<&RenderLoadOps>()
+        .query(query!(&RenderLoadOps))
         .next()
-        .map_or_else(RenderLoadOps::default, |(_, ops)| *ops)
+        .map_or_else(RenderLoadOps::default, |(_, row)| {
+            *row.read::<RenderLoadOps>()
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unlit_ecs::bundle;
 
     #[test]
     fn a_world_without_load_ops_clears_with_the_defaults() {
@@ -387,7 +392,7 @@ mod tests {
         let mut world = World::new();
         // The entity carries load ops and nothing else: the component needs
         // no camera, no transform and no mesh to take effect.
-        world.root_scope_mut().spawn((RenderLoadOps {
+        world.root_scope_mut().spawn(bundle!(RenderLoadOps {
             color: wgpu::LoadOp::Load,
             ..Default::default()
         },));
@@ -398,11 +403,11 @@ mod tests {
     #[test]
     fn the_first_load_ops_entity_wins() {
         let mut world = World::new();
-        let first = world.root_scope_mut().spawn((RenderLoadOps {
+        let first = world.root_scope_mut().spawn(bundle!(RenderLoadOps {
             depth: wgpu::LoadOp::Load,
             ..Default::default()
         },));
-        world.root_scope_mut().spawn((RenderLoadOps {
+        world.root_scope_mut().spawn(bundle!(RenderLoadOps {
             depth: wgpu::LoadOp::Clear(1.0),
             ..Default::default()
         },));

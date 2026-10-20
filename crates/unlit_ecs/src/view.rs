@@ -10,12 +10,12 @@
 //! operations are confined to the scope's own subtree.
 
 use crate::archetype::{Archetype, ScopeSummary};
-use crate::bundle::Bundle;
+use crate::bundle::{ArchetypeBuilder, Bundle};
 use crate::column::{CellRef, CellRefMut};
 use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
-use crate::query::{Query, QueryFilter, QueryIter};
+use crate::query::{Query, QueryIter, Row};
 use crate::world::World;
 
 /// A read-only scope: one entity and everything below it.
@@ -113,14 +113,34 @@ impl<'w> Scope<'w> {
 
     // -- queries -----------------------------------------------------------
 
-    /// Iterate the visible entities matching `Q`.
-    pub fn query<Q: Query>(&self) -> QueryIter<'w, Q> {
-        QueryIter::new(self.world, self.scope)
+    /// Iterate the visible entities `query` matches.
+    ///
+    /// The query is a value, so it can be built at run time or written as a
+    /// constant by the [`crate::query!`] macro.
+    pub fn query<'q>(&self, query: &'q Query) -> QueryIter<'w, 'q>
+    where
+        'w: 'q,
+    {
+        QueryIter::new(self.world, self.scope, query)
     }
 
-    /// Iterate the visible entities matching `Q` that pass the filter `F`.
-    pub fn query_filtered<Q: Query, F: QueryFilter>(&self) -> QueryIter<'w, Q, F> {
-        QueryIter::new(self.world, self.scope)
+    /// The row of `entity`, when it is visible here and `query` matches it.
+    ///
+    /// Iterating [`Scope::query`] is the usual way to reach rows. This is for
+    /// a caller that already has the entity, such as one walking a list culled
+    /// from elsewhere, and wants the same components the iterator would hand
+    /// out. `None` means the entity is out of this scope's reach or its
+    /// archetype does not satisfy the query.
+    #[must_use]
+    pub fn row<'q>(&self, entity: Entity, query: &'q Query) -> Option<Row<'q>>
+    where
+        'w: 'q,
+    {
+        let location = self.location(entity)?;
+        let archetype = self.archetype(location.archetype())?;
+        query
+            .matches_archetype(archetype)
+            .then(|| Row::new(archetype, query, location.row()))
     }
 
     /// The archetype with this id, when this scope sees every row of it.
@@ -193,7 +213,7 @@ impl<'w> Scope<'w> {
         // The query already skips the scaffolding and applies the visibility
         // rules, so counting this way keeps the number and the iteration in
         // agreement for every scope, the root included.
-        self.query::<Entity>().count()
+        self.query(&Query::new()).count()
     }
 
     /// Whether nothing is visible.
@@ -409,7 +429,7 @@ impl<'w> ScopeMut<'w> {
 
     /// Spawn an entity with no components in this scope.
     pub fn spawn_empty(&mut self) -> Entity {
-        self.spawn(())
+        self.spawn(ArchetypeBuilder::new())
     }
 
     /// Spawn `bundle` on `entity`, a handle from [`World::reserve_entity`].

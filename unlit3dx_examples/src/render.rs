@@ -24,6 +24,7 @@ use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
 use unlit3d::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
 
+use unlit_ecs::{bundle, query};
 use unlit3dx::job::Job;
 
 /// A mesh description that owns its vertex data, so it can cross a thread
@@ -66,16 +67,17 @@ impl OwnedUnlitMeshDesc {
 /// through `unlit3d`'s [`MeshSource`] directly; the world is the same
 /// registry either way.
 pub(crate) fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
-    let (entity, source) = world
+    let (entity, row) = world
         .root_scope()
-        .query::<&Source>()
-        .find(|(_, source)| source.as_ref::<MeshSource>().is_some())?;
+        .query(query!(&Source))
+        .find(|(_, row)| row.read::<Source>().as_ref::<MeshSource>().is_some())?;
+    let source = row.read::<Source>();
     let mesh_source = source.as_ref::<MeshSource>()?;
     let key = world
         .root_scope()
-        .query::<&UnlitPipelineKey>()
+        .query(query!(&UnlitPipelineKey))
         .next()
-        .map(|(_, key)| key.clone())
+        .map(|(_, row)| row.read::<UnlitPipelineKey>().clone())
         .unwrap_or_else(|| {
             UnlitPipelineKey::new(UnlitOptions::standard(
                 &mesh_source.device(&world.root_scope()),
@@ -107,7 +109,7 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
         world
             .scope_mut(source_entity)
             .expect("the mesh source entity exists")
-            .spawn((mesh,))
+            .spawn(bundle!(mesh,))
     })
 }
 
@@ -167,7 +169,7 @@ fn allocate_material(
     world
         .scope_mut(source_entity)
         .expect("the mesh source entity exists")
-        .spawn((material,))
+        .spawn(bundle!(material,))
 }
 
 /// A job that spawns one render entity from asset entities: a [`GpuMesh`]
@@ -197,7 +199,7 @@ pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> J
         world
             .scope_mut(source_entity)
             .expect("the mesh source entity exists")
-            .spawn((transform, mesh, material, UnlitPipeline::new(key)))
+            .spawn(bundle!(transform, mesh, material, UnlitPipeline::new(key)))
     })
 }
 

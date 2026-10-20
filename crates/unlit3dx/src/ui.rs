@@ -25,7 +25,7 @@
 
 use core::time::Duration;
 
-use unlit_ecs::World;
+use unlit_ecs::{World, query};
 use unlit_wgpu::ui::ScreenDescriptor;
 use unlit3d::input::{InputEvent, InputEvents};
 use unlit3d::ui::{ExternalFrames, UiScreen, UiTarget, egui, lay_out, raw_input};
@@ -111,8 +111,8 @@ impl UiPanelHost {
         // twice.
         let mut events = core::mem::take(&mut self.input_scratch);
         events.clear();
-        if let Some((_, input)) = world.root_scope().query::<&InputEvents>().next() {
-            input.copy_events_into(&mut events);
+        if let Some((_, row)) = world.root_scope().query(query!(&InputEvents)).next() {
+            row.read::<InputEvents>().copy_events_into(&mut events);
         }
         let due = self
             .repaint_at
@@ -179,9 +179,12 @@ const FALLBACK_TEXTURE_SIDE: u32 = 2048;
 fn fallback_target(world: &World) -> UiTarget {
     let state = world
         .root_scope()
-        .query::<&InputEvents>()
+        .query(query!(&InputEvents))
         .next()
-        .map(|(_, events)| events.with_state(|state| (state.scale_factor, state.size_px)));
+        .map(|(_, row)| {
+            row.read::<InputEvents>()
+                .with_state(|state| (state.scale_factor, state.size_px))
+        });
     let (scale_factor, size_px) = state.unwrap_or((1.0, (0, 0)));
     let pixels_per_point = if scale_factor > 0.0 {
         scale_factor
@@ -202,6 +205,7 @@ mod tests {
     use super::*;
     use core::cell::Cell;
     use std::rc::Rc;
+    use unlit_ecs::bundle;
     use unlit3d::input::{InputWriter, Modifiers, refresh_input};
     use unlit3d::ui::UiPanel;
 
@@ -237,7 +241,7 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(move |_, _, ui: &mut egui::Ui| {
+            .spawn(bundle!(UiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.label("hello");
             }),));
@@ -297,7 +301,7 @@ mod tests {
         let (mut world, runs) = counting_world();
         let (_, mut host) = test_host();
         let writer = InputWriter::new();
-        world.root_scope_mut().spawn((writer.subscribe(),));
+        world.root_scope_mut().spawn(bundle!(writer.subscribe(),));
         settle(&mut host, &world);
 
         let settled = runs.get();
@@ -367,7 +371,7 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn((UiPanel::new(move |_, _, ui: &mut egui::Ui| {
+            .spawn(bundle!(UiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.ctx()
                     .request_repaint_after(core::time::Duration::from_millis(50));

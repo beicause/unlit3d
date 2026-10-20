@@ -29,6 +29,7 @@ use std::sync::Arc;
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_FORMAT, TEST_SIZE, camera_looking_at,
 };
+use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::{GlobalBindings, global_bind_group_layout, supports_storage_buffers};
 use unlit_wgpu::resources::{ResHandle, Resource, TextureExt, TextureView};
 use unlit_wgpu::specialize::{
@@ -1146,18 +1147,18 @@ fn build(
 
     // No family of the built-in unlit pipeline is registered: every draw in this
     // scene goes through a pipeline the example compiled itself.
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        (camera_looking_at(
+        bundle!(camera_looking_at(
             orbit_eye(ORBIT_START),
             CAMERA_TARGET,
             size,
         ),),
     );
 
-    super::spawn_in(world, source_entity, (sky_mesh, sky_pipeline));
+    super::spawn_in(world, source_entity, bundle!(sky_mesh, sky_pipeline));
     // One mesh, one pipeline and one material for the whole cloud, so the
     // renderer folds the particles into a single instanced draw and every
     // sprite's placement comes from its own record.
@@ -1165,7 +1166,7 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            (
+            bundle!(
                 particle_mesh.clone(),
                 particle_pipeline.clone(),
                 particle_material.clone(),

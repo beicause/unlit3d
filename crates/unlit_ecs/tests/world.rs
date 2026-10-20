@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use unlit_ecs::{Entity, World};
+use unlit_ecs::{bundle, query};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -25,7 +26,7 @@ fn a_spawned_entity_reads_back_its_components() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn((Position { x: 1.0, y: 2.0 }, Name("cube")));
+        .spawn(bundle!(Position { x: 1.0, y: 2.0 }, Name("cube")));
 
     assert!(world.root_scope().contains(entity));
     assert_eq!(world.root_scope().len(), 1);
@@ -58,9 +59,10 @@ fn an_empty_entity_has_no_components() {
 #[test]
 fn components_are_written_through_a_scoped_borrow() {
     let mut world = World::new();
-    let entity = world
-        .root_scope_mut()
-        .spawn((Position { x: 0.0, y: 0.0 }, Velocity { dx: 1.0, dy: 2.0 }));
+    let entity = world.root_scope_mut().spawn(bundle!(
+        Position { x: 0.0, y: 0.0 },
+        Velocity { dx: 1.0, dy: 2.0 }
+    ));
 
     // A behaviour reads the entity's own velocity while writing its position.
     // The two live in different cells, so the borrows do not conflict.
@@ -80,7 +82,9 @@ fn components_are_written_through_a_scoped_borrow() {
 #[test]
 fn get_mut_holds_an_exclusive_borrow() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((Position { x: 0.0, y: 0.0 },));
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
 
     {
         let mut position = world.root_scope().get_mut::<Position>(entity).unwrap();
@@ -93,7 +97,9 @@ fn get_mut_holds_an_exclusive_borrow() {
 #[test]
 fn with_mut_is_none_without_the_component() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((Position { x: 0.0, y: 0.0 },));
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
     assert!(
         world
             .root_scope()
@@ -105,7 +111,7 @@ fn with_mut_is_none_without_the_component() {
 #[test]
 fn a_despawned_handle_never_resolves_to_the_next_entity() {
     let mut world = World::new();
-    let first = world.root_scope_mut().spawn((Name("first"),));
+    let first = world.root_scope_mut().spawn(bundle!(Name("first"),));
 
     assert!(world.root_scope_mut().despawn(first));
     assert!(!world.root_scope().contains(first));
@@ -118,7 +124,7 @@ fn a_despawned_handle_never_resolves_to_the_next_entity() {
 
     // The index is handed out again, but the handle is not: the generation
     // changed, so the old handle stays dead.
-    let second = world.root_scope_mut().spawn((Name("second"),));
+    let second = world.root_scope_mut().spawn(bundle!(Name("second"),));
     assert_eq!(second.index(), first.index(), "the index is reused");
     assert_ne!(second, first, "but the handle is not");
     assert!(world.root_scope().contains(second));
@@ -136,7 +142,9 @@ fn despawning_drops_the_component_values() {
 
     let drops = Rc::new(Cell::new(0));
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((Tracked(drops.clone()),));
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(Tracked(drops.clone()),));
     assert_eq!(drops.get(), 0);
 
     world.root_scope_mut().despawn(entity);
@@ -153,7 +161,7 @@ fn a_reserved_handle_becomes_live_only_when_spawned() {
 
     world
         .root_scope_mut()
-        .spawn_at(entity, (Name("late"), 7u32));
+        .spawn_at(entity, bundle!(Name("late"), 7u32));
     assert!(world.root_scope().contains(entity));
     assert_eq!(world.root_scope().get::<u32>(entity).unwrap().to_owned(), 7);
     assert_eq!(world.root_scope().get::<Name>(entity).unwrap().0, "late");
@@ -177,20 +185,22 @@ fn a_reserved_handle_can_be_released_without_spawning() {
 fn spawning_twice_on_one_handle_panics() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn_empty();
-    world.root_scope_mut().spawn_at(entity, (Name("again"),));
+    world
+        .root_scope_mut()
+        .spawn_at(entity, bundle!(Name("again"),));
 }
 
 #[test]
 #[should_panic(expected = "same component twice")]
 fn a_bundle_cannot_repeat_a_component() {
     let mut world = World::new();
-    world.root_scope_mut().spawn((1u32, 2u32));
+    world.root_scope_mut().spawn(bundle!(1u32, 2u32));
 }
 
 #[test]
 fn the_placeholder_handle_refers_to_nothing() {
     let mut world = World::new();
-    world.root_scope_mut().spawn((Name("real"),));
+    world.root_scope_mut().spawn(bundle!(Name("real"),));
 
     assert!(!world.root_scope().contains(Entity::PLACEHOLDER));
     assert!(
@@ -213,7 +223,7 @@ fn a_handle_round_trips_through_its_bits() {
 #[test]
 fn a_wide_bundle_spawns_every_component() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((
+    let entity = world.root_scope_mut().spawn(bundle!(
         1u8,
         2u16,
         3u32,
@@ -246,15 +256,17 @@ fn entities_sharing_a_component_set_share_an_archetype() {
     let mut world = World::new();
     world
         .root_scope_mut()
-        .spawn((Position { x: 0.0, y: 0.0 }, Name("a")));
+        .spawn(bundle!(Position { x: 0.0, y: 0.0 }, Name("a")));
     let before = world.archetype_count();
 
     world
         .root_scope_mut()
-        .spawn((Position { x: 1.0, y: 1.0 }, Name("b")));
+        .spawn(bundle!(Position { x: 1.0, y: 1.0 }, Name("b")));
     assert_eq!(world.archetype_count(), before, "same set, same archetype");
 
-    world.root_scope_mut().spawn((Position { x: 2.0, y: 2.0 },));
+    world
+        .root_scope_mut()
+        .spawn(bundle!(Position { x: 2.0, y: 2.0 },));
     assert_eq!(
         world.archetype_count(),
         before + 1,
@@ -265,11 +277,15 @@ fn entities_sharing_a_component_set_share_an_archetype() {
 #[test]
 fn a_location_names_the_archetype_and_row_of_a_live_entity() {
     let mut world = World::new();
-    let first = world.root_scope_mut().spawn((Position { x: 1.0, y: 0.0 },));
-    let second = world.root_scope_mut().spawn((Position { x: 2.0, y: 0.0 },));
+    let first = world
+        .root_scope_mut()
+        .spawn(bundle!(Position { x: 1.0, y: 0.0 },));
+    let second = world
+        .root_scope_mut()
+        .spawn(bundle!(Position { x: 2.0, y: 0.0 },));
     let other = world
         .root_scope_mut()
-        .spawn((Velocity { dx: 0.0, dy: 0.0 },));
+        .spawn(bundle!(Velocity { dx: 0.0, dy: 0.0 },));
 
     let location = world.root_scope().location(first).expect("spawned");
     let archetype = world
@@ -301,7 +317,9 @@ fn a_location_names_the_archetype_and_row_of_a_live_entity() {
 #[test]
 fn a_despawned_entity_has_no_location() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((Position { x: 0.0, y: 0.0 },));
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
     assert!(world.root_scope().location(entity).is_some());
     world.root_scope_mut().despawn(entity);
     assert!(world.root_scope().location(entity).is_none());
@@ -309,22 +327,18 @@ fn a_despawned_entity_has_no_location() {
 
 #[test]
 fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
-    // This is the access shape the renderer's resolve pass uses: resolve the
-    // columns once per archetype, then fetch every row through that state.
-    use unlit_ecs::Query;
-
-    type Resolve<'a> = (&'a Position, Option<&'a Velocity>);
-
+    // This is the access shape the renderer's resolve pass uses: walk the
+    // archetypes once, then fetch every row of each through one query.
     let mut world = World::new();
     let entities: Vec<Entity> = (0..8)
         .map(|i| {
             if i % 2 == 0 {
-                world.root_scope_mut().spawn((Position {
+                world.root_scope_mut().spawn(bundle!(Position {
                     x: i as f32,
                     y: 0.0,
                 },))
             } else {
-                world.root_scope_mut().spawn((
+                world.root_scope_mut().spawn(bundle!(
                     Position {
                         x: i as f32,
                         y: 0.0,
@@ -335,27 +349,28 @@ fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
         })
         .collect();
 
+    let resolved: Vec<(Entity, f32, Option<f32>)> = world
+        .root_scope()
+        .query(query!(&Position, Option<&Velocity>))
+        .map(|(entity, row)| {
+            let position = row.read::<Position>();
+            let velocity = row.try_read::<Velocity>().map(|velocity| velocity.dx);
+            (entity, position.x, velocity)
+        })
+        .collect();
+    assert_eq!(resolved.len(), entities.len());
+
     for &entity in &entities {
-        let location = world.root_scope().location(entity).expect("live");
-        let archetype = world
+        let expected_x = world.root_scope().get::<Position>(entity).unwrap().x;
+        let expected_velocity = world
             .root_scope()
-            .archetype(location.archetype())
-            .expect("exists");
-        let state = <Resolve<'_> as Query>::fetch_state(archetype);
-        let (position, velocity) = <Resolve<'_> as Query>::fetch(&state, location.row());
-        assert_eq!(
-            position.x,
-            world.root_scope().get::<Position>(entity).unwrap().x
-        );
-        assert_eq!(
-            velocity.is_some(),
-            world.root_scope().has::<Velocity>(entity)
-        );
-        if let Some(velocity) = velocity {
-            assert_eq!(
-                velocity.dx,
-                world.root_scope().get::<Velocity>(entity).unwrap().dx
-            );
-        }
+            .get::<Velocity>(entity)
+            .map(|velocity| velocity.dx);
+        let found = resolved
+            .iter()
+            .find(|(candidate, _, _)| *candidate == entity)
+            .expect("every entity is visited");
+        assert_eq!(found.1, expected_x);
+        assert_eq!(found.2, expected_velocity);
     }
 }

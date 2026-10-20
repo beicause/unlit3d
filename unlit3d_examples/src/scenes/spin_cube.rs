@@ -55,7 +55,7 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let key = UnlitPipelineKey::new(UnlitOptions::standard(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.
@@ -103,7 +103,7 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        (orbit_camera(size, 0.6, ORBIT_ELEVATION),),
+        bundle!(orbit_camera(size, 0.6, ORBIT_ELEVATION)),
     );
     // The panel is drawn by the UI source and the cube by the mesh source, and
     // one source's scope reaches nothing of the other's. The state both of them
@@ -115,7 +115,7 @@ fn build(
             .scope_mut(world.shared())
             .expect("the shared scope exists");
         (
-            shared.spawn((
+            shared.spawn(bundle!(
                 Spin {
                     radians_per_second: SPIN,
                     spinning: true,
@@ -125,7 +125,7 @@ fn build(
                 DragFrom(None),
                 FrameCount(0),
             )),
-            shared.spawn((CameraOrbit {
+            shared.spawn(bundle!(CameraOrbit {
                 azimuth: 0.6,
                 elevation: ORBIT_ELEVATION,
             },)),
@@ -136,11 +136,11 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        (
+        bundle!(
             Transform::default(),
             mesh,
             material,
-            UnlitPipeline::new(key),
+            UnlitPipeline::new(key)
         ),
     );
 
@@ -186,9 +186,12 @@ fn build(
                     // the user is working in.
                     ui.separator();
                     let held = world
-                        .query::<&InputEvents>()
+                        .query(query!(&InputEvents))
                         .next()
-                        .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
+                        .is_some_and(|(_, row)| {
+                            row.read::<InputEvents>()
+                                .with_state(|state| state.pointer_down)
+                        });
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
                     match world.get::<CameraOrbit>(orbit) {
                         Some(orbit) => ui.label(format!(
@@ -199,7 +202,11 @@ fn build(
                     };
                 });
         });
-        super::spawn_in(world, ui.expect("the UI source was mounted"), (panel,));
+        super::spawn_in(
+            world,
+            ui.expect("the UI source was mounted"),
+            bundle!(panel),
+        );
     }
     // The second panel shows the world's input state, which is what makes the
     // events visible next to the UI they also drive.
@@ -207,7 +214,7 @@ fn build(
     // panel's checkbox also writes.
     world
         .root_scope_mut()
-        .spawn((OnKey::new(move |world, _entity, key| {
+        .spawn(bundle!(OnKey::new(move |world, _entity, key| {
             if key.pressed && !key.repeat && key.key == Key::Space {
                 let _ = world
                     .root_scope()
@@ -220,7 +227,7 @@ fn build(
     // and with a finger on a touch screen.
     world
         .root_scope_mut()
-        .spawn((OnPointer::new(move |world, _entity, event| {
+        .spawn(bundle!(OnPointer::new(move |world, _entity, event| {
             let Some(position) = event.position else {
                 if matches!(
                     event.action,
@@ -240,8 +247,8 @@ fn build(
             // one — so a gesture that started on the scene keeps working even when
             // it sweeps over a panel. The contact is dropped here too, so a press
             // that ends over a UI never leaves a drag behind for the scene.
-            let over_ui = world.root_scope().query::<&Source>().any(|(_, source)| {
-                source
+            let over_ui = world.root_scope().query(query!(&Source)).any(|(_, row)| {
+                row.read::<Source>()
                     .as_ref::<UiSource>()
                     .is_some_and(|ui| ui.context().egui_wants_pointer_input())
             });
@@ -300,20 +307,21 @@ fn build(
 
             // The panel's button leaves its press as state; consume it here,
             // once.
-            for (_, mut reset) in root.query::<&mut SpinReset>() {
-                if core::mem::take(&mut reset.0) {
-                    for (_, mut spin) in root.query::<&mut Spin>() {
-                        spin.angle = 0.0;
+            for (_, row) in root.query(query!(&mut SpinReset)) {
+                if core::mem::take(&mut row.write::<SpinReset>().0) {
+                    for (_, row) in root.query(query!(&mut Spin)) {
+                        row.write::<Spin>().angle = 0.0;
                     }
                 }
             }
 
             // The behaviour components run first: the world the renderer reads
             // is this frame's.
-            for (_, mut frames) in root.query::<&mut FrameCount>() {
-                frames.0 += 1;
+            for (_, row) in root.query(query!(&mut FrameCount)) {
+                row.write::<FrameCount>().0 += 1;
             }
-            for (_, mut spin) in root.query::<&mut Spin>() {
+            for (_, row) in root.query(query!(&mut Spin)) {
+                let mut spin = row.write::<Spin>();
                 if spin.spinning {
                     spin.angle += spin.radians_per_second * delta_time;
                 }
@@ -325,28 +333,31 @@ fn build(
                 .scope(source_entity)
                 .expect("the source entity is alive");
             let angle = root
-                .query::<&Spin>()
+                .query(query!(&Spin))
                 .next()
-                .map_or(0.0, |(_, spin)| spin.angle);
-            for (_, mut transform) in view.query::<&mut Transform>() {
-                transform.rotation = glam::Quat::from_rotation_y(angle);
+                .map_or(0.0, |(_, row)| row.read::<Spin>().angle);
+            for (_, row) in view.query(query!(&mut Transform)) {
+                row.write::<Transform>().rotation = glam::Quat::from_rotation_y(angle);
             }
 
             // The camera follows the orbit a slider or a drag set — and the
             // frame's own size, so a window that changes shape re-aims it
             // instead of stretching the cube.
-            let orbit = root.query::<&CameraOrbit>().next().map_or(
+            let orbit = root.query(query!(&CameraOrbit)).next().map_or(
                 CameraOrbit {
                     azimuth: 0.6,
                     elevation: ORBIT_ELEVATION,
                 },
-                |(_, orbit)| CameraOrbit {
-                    azimuth: orbit.azimuth,
-                    elevation: orbit.elevation,
+                |(_, row)| {
+                    let orbit = row.read::<CameraOrbit>();
+                    CameraOrbit {
+                        azimuth: orbit.azimuth,
+                        elevation: orbit.elevation,
+                    }
                 },
             );
-            for (_, mut camera) in view.query::<&mut Camera>() {
-                *camera = orbit_camera(frame_size, orbit.azimuth, orbit.elevation);
+            for (_, row) in view.query(query!(&mut Camera)) {
+                *row.write::<Camera>() = orbit_camera(frame_size, orbit.azimuth, orbit.elevation);
             }
         }),
         snapshot: Box::new(|frame| (frame == 29).then(|| "spin_cube.webp".to_owned())),

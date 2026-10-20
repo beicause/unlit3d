@@ -26,6 +26,7 @@ use crate::channel::publish_subscribed;
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
 use crate::world::WorldRunner;
+use unlit_ecs::{bundle, query};
 
 /// The simulation's default step rate, in hertz.
 pub const PHYSICS_HZ: f64 = 64.0;
@@ -124,18 +125,18 @@ impl PhysicsEvents {
 fn physics_events(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsEvents>> {
     world
         .root_scope()
-        .query::<&mut PhysicsEvents>()
+        .query(query!(&mut PhysicsEvents))
         .next()
-        .map(|(_, events)| events)
+        .map(|(_, row)| row.write::<PhysicsEvents>())
 }
 
 /// The contact buffer a physics world carries, if it has one.
 fn physics_contacts(world: &World) -> Option<unlit_ecs::CellRefMut<'_, PhysicsContacts>> {
     world
         .root_scope()
-        .query::<&mut PhysicsContacts>()
+        .query(query!(&mut PhysicsContacts))
         .next()
-        .map(|(_, contacts)| contacts)
+        .map(|(_, row)| row.write::<PhysicsContacts>())
 }
 
 /// The collider shape a dynamic body carries.
@@ -244,10 +245,11 @@ pub fn spawn_fixed_cuboid(world: &mut World, position: Vec3, half_extents: Vec3,
 fn physics_world(world: &World) -> unlit_ecs::CellRefMut<'_, PhysicsWorld> {
     world
         .root_scope()
-        .query::<&mut PhysicsWorld>()
+        .query(query!(&mut PhysicsWorld))
         .next()
         .expect("the physics world exists")
         .1
+        .write::<PhysicsWorld>()
 }
 
 /// Spawn the physics world driven by `R`: on its own thread
@@ -299,9 +301,11 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = PhysicsWorld::new();
     physics.gravity = config.gravity;
-    world
-        .root_scope_mut()
-        .spawn((physics, PhysicsEvents::new(), PhysicsContacts::default()));
+    world.root_scope_mut().spawn(bundle!(
+        physics,
+        PhysicsEvents::new(),
+        PhysicsContacts::default()
+    ));
 }
 
 /// Step the rapier world once, draining its contacts into
@@ -313,9 +317,9 @@ pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
 pub fn step_once(world: &World) -> bool {
     let Some(mut physics) = world
         .root_scope()
-        .query::<&mut PhysicsWorld>()
+        .query(query!(&mut PhysicsWorld))
         .next()
-        .map(|(_, physics)| physics)
+        .map(|(_, row)| row.write::<PhysicsWorld>())
     else {
         return false;
     };

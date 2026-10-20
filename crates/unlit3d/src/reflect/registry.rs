@@ -34,7 +34,7 @@ inventory::submit! { ComponentEntry::new::<InputEvents>() }
 mod tests {
     use super::*;
     use unlit_ecs::reflect::{contains, encode, entry, names, push, set};
-    use unlit_ecs::{ArchetypeBuilder, Entity, World};
+    use unlit_ecs::{ArchetypeBuilder, Entity, World, bundle};
 
     /// The reflected fields are the codec: a component's own struct is the only
     /// place its field list is written down, so reading and writing cannot
@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn a_reflected_component_round_trips_through_its_own_fields() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn((Transform::default(),));
+        let entity = world.root_scope_mut().spawn(bundle!(Transform::default(),));
 
         set(
             &world.root_scope(),
@@ -70,7 +70,7 @@ mod tests {
         assert!(contains("unlit3d::components::Transform"));
         assert!(!contains("unlit3d::other::Transform"));
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn((Transform::default(),));
+        let entity = world.root_scope_mut().spawn(bundle!(Transform::default(),));
         assert!(
             encode(
                 &world.root_scope(),
@@ -146,7 +146,7 @@ mod tests {
             morph_targets: 0,
             skinned: false,
         };
-        let entity = world.root_scope_mut().spawn((mesh,));
+        let entity = world.root_scope_mut().spawn(bundle!(mesh,));
         let error =
             set(&world.root_scope(), entity, "GpuMesh", "{}").expect_err("GpuMesh is read-only");
         assert!(error.contains("read-only"), "{error}");
@@ -172,7 +172,9 @@ mod tests {
     #[test]
     fn a_proxied_field_is_set_without_disturbing_the_others() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn((RenderLoadOps::default(),));
+        let entity = world
+            .root_scope_mut()
+            .spawn(bundle!(RenderLoadOps::default(),));
         set(
             &world.root_scope(),
             entity,

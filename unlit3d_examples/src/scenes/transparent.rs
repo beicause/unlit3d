@@ -16,6 +16,7 @@
 //! round and fail the snapshot rather than happening to look right.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// How far in front of the panes the camera sits.
@@ -117,7 +118,7 @@ fn build(
     // tint is its own instance colour, so one mesh serves all of them.
     let translucent_key = UnlitPipelineKey::new(translucent);
 
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
 
@@ -156,13 +157,13 @@ fn build(
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        (camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
+        bundle!(camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
     );
 
     super::spawn_in(
         world,
         source_entity,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, -1.6),
                 scale: glam::Vec3::splat(1.1),
@@ -181,7 +182,7 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            (
+            bundle!(
                 Transform {
                     translation: glam::Vec3::new(*x, 0.0, *z),
                     rotation: glam::Quat::from_rotation_y(0.35),

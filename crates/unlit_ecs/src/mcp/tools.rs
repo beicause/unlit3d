@@ -279,6 +279,7 @@ fn register(router: &mut ToolRouter<McpServer>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bundle;
 
     /// A component the tests read and write through the tools.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, facet::Facet)]
@@ -289,9 +290,9 @@ mod tests {
     /// A world with a scene holding one child, and a sibling scene of its own.
     fn fixture() -> (World, Entity, Entity, Entity) {
         let mut world = World::new();
-        let scene = world.root_scope_mut().spawn((0u32,));
-        let child = world.scope_mut(scene).unwrap().spawn((Marker(1),));
-        let sibling = world.root_scope_mut().spawn((Marker(2),));
+        let scene = world.root_scope_mut().spawn(bundle!(0u32,));
+        let child = world.scope_mut(scene).unwrap().spawn(bundle!(Marker(1),));
+        let sibling = world.root_scope_mut().spawn(bundle!(Marker(2),));
         (world, scene, child, sibling)
     }
 

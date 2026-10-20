@@ -37,6 +37,7 @@ use winit::window::Window;
 use crate::gpu::Gpu;
 use crate::host::drain_sub_world;
 use crate::world::WorldName;
+use unlit_ecs::{bundle, query};
 
 /// The color format the offscreen target uses; the blit converts into the
 /// surface's own format.
@@ -320,23 +321,23 @@ pub fn setup_presenter(
         );
         let blit_renderer = blit_world
             .root_scope_mut()
-            .spawn((Renderer::new(blit_frame),));
+            .spawn(bundle!(Renderer::new(blit_frame),));
         let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
         // The texture hangs under the source that samples it: a source draws
         // the subtree it owns, so a texture spawned beside it is never found.
         let blit_source = blit_world
             .root_scope_mut()
-            .spawn((Source::new(BlitSource::new()),));
+            .spawn(bundle!(Source::new(BlitSource::new()),));
         let blit_texture = {
             let texture = BlitTexture::new(&blit_world, blit_frame, view);
             blit_world
                 .scope_mut(blit_source)
                 .expect("the blit source is alive")
-                .spawn((texture,))
+                .spawn(bundle!(texture,))
         };
         let blit_entity = world
             .root_scope_mut()
-            .spawn((blit_world, WorldName("blit")));
+            .spawn(bundle!(blit_world, WorldName("blit")));
         let (surface, attachments) = {
             let nested = world
                 .root_scope()
@@ -345,7 +346,7 @@ pub fn setup_presenter(
             open_surface(&nested, blit_renderer, gpu, window, surface, 1, false)
                 .ok_or("failed to open the window surface: the blit renderer was gone")?
         };
-        world.root_scope_mut().spawn((Presenter {
+        world.root_scope_mut().spawn(bundle!(Presenter {
             render,
             renderer,
             gpu: gpu.clone(),
@@ -369,7 +370,7 @@ pub fn setup_presenter(
         open_surface(&nested, renderer, gpu, window, surface, FRAME_SAMPLES, true)
             .ok_or("failed to open the window surface: the renderer was gone")?
     };
-    world.root_scope_mut().spawn((Presenter {
+    world.root_scope_mut().spawn(bundle!(Presenter {
         render,
         renderer,
         gpu: gpu.clone(),
@@ -415,9 +416,9 @@ impl Command for DrawFrame {
             .or_else(|| {
                 world
                     .root_scope()
-                    .query::<&Presenter>()
+                    .query(query!(&Presenter))
                     .next()
-                    .map(|(_, presenter)| presenter.fallback_size)
+                    .map(|(_, row)| row.read::<Presenter>().fallback_size)
             })
             .unwrap_or((1, 1));
         let mut frame = Frame {
@@ -449,14 +450,10 @@ pub fn draw_presented() -> OnFrame {
     OnFrame::new(
         FrameBehaviourOrder(DRAW_ORDER),
         move |world, _entity, frame| {
-            let Some(mut presenter) = world
-                .root_scope()
-                .query::<&mut Presenter>()
-                .next()
-                .map(|(_, p)| p)
-            else {
+            let Some((_, row)) = world.root_scope().query(query!(&mut Presenter)).next() else {
                 return;
             };
+            let mut presenter = row.write::<Presenter>();
             let (render, renderer) = (presenter.render, presenter.renderer);
             let Some(mut nested) = world.root_scope().get_mut::<World>(render) else {
                 return;
@@ -537,13 +534,9 @@ pub fn resize_presented() -> OnWindowEvent {
         if size.width == 0 || size.height == 0 {
             return;
         }
-        if let Some(mut presenter) = world
-            .root_scope()
-            .query::<&mut Presenter>()
-            .next()
-            .map(|(_, p)| p)
-        {
-            presenter.resize(world, (size.width, size.height));
+        if let Some((_, row)) = world.root_scope().query(query!(&mut Presenter)).next() {
+            row.write::<Presenter>()
+                .resize(world, (size.width, size.height));
         }
     })
 }

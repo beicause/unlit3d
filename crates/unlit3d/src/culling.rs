@@ -12,6 +12,7 @@ use unlit_ecs::{Entity, Scope};
 
 use crate::bounds::{Aabb, FrustumPlanes, Obb};
 use crate::components::{GpuMesh, Transform};
+use unlit_ecs::query;
 
 /// Whether a mesh whose local bounds are `aabb`, placed by
 /// `world_from_local`, lies entirely outside `frustum` and can be skipped.
@@ -55,12 +56,12 @@ pub(crate) fn collect_visible(
     out: &mut Vec<VisibleMesh>,
 ) {
     out.clear();
-    for (entity, (mesh, transform)) in scope.query::<(&GpuMesh, Option<&Transform>)>() {
-        let model = match transform {
+    for (entity, row) in scope.query(query!(&GpuMesh, Option<&Transform>)) {
+        let model = match row.try_read::<Transform>() {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
         };
-        if is_culled(mesh.aabb, &model, frustum) {
+        if is_culled(row.read::<GpuMesh>().aabb, &model, frustum) {
             continue;
         }
         out.push(VisibleMesh {
@@ -76,6 +77,7 @@ mod tests {
     use arrayvec::ArrayVec;
     use glam::Vec3;
     use std::rc::Rc;
+    use unlit_ecs::bundle;
     use unlit_wgpu::resources::{ResourceGraph, Virtual};
     use unlit_wgpu::specialize::VertexLayout;
 
@@ -141,8 +143,8 @@ mod tests {
         };
         let near = world
             .root_scope_mut()
-            .spawn((mesh.clone(), Transform::default()));
-        let far = world.root_scope_mut().spawn((
+            .spawn(bundle!(mesh.clone(), Transform::default()));
+        let far = world.root_scope_mut().spawn(bundle!(
             mesh,
             Transform {
                 translation: Vec3::new(0.0, 0.0, 20.0),

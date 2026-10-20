@@ -193,10 +193,12 @@ pub fn setup_render_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = nested.root_scope_mut().spawn((Renderer::new(context),));
+    let renderer = nested
+        .root_scope_mut()
+        .spawn(bundle!(Renderer::new(context),));
     let mut source = MeshSource::new(&nested.root_scope(), context);
     source.register_unlit_family(&nested.root_scope());
-    nested.root_scope_mut().spawn((Source::new(source),));
+    nested.root_scope_mut().spawn(bundle!(Source::new(source),));
     renderer
 }
 
@@ -220,14 +222,14 @@ pub fn camera_job() -> Job<()> {
         let camera_entity = world
             .scope_mut(source)
             .expect("the mesh source entity exists")
-            .spawn((camera_looking_at(
+            .spawn(bundle!(camera_looking_at(
                 WINDOW_SIZE,
                 orbit_eye(azimuth),
                 ORBIT_TARGET,
                 60f32.to_radians(),
                 0.1,
             ),));
-        world.root_scope_mut().spawn((OnFrame::new(
+        world.root_scope_mut().spawn(bundle!(OnFrame::new(
             FrameBehaviourOrder(RENDER_CAMERA),
             move |world, _entity, frame| {
                 azimuth += ORBIT_SPEED * frame.delta_time;
@@ -324,8 +326,8 @@ fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
     sender
         .subscribe(move |world: &World| {
             let mut transforms = Vec::new();
-            if let Some(physics) = world.root_scope().query::<&PhysicsWorld>().next() {
-                for (handle, body) in physics.1.bodies.iter() {
+            if let Some((_, row)) = world.root_scope().query(query!(&PhysicsWorld)).next() {
+                for (handle, body) in row.read::<PhysicsWorld>().bodies.iter() {
                     if body.is_dynamic() || body.is_kinematic() {
                         transforms.push((handle, body.translation(), *body.rotation()));
                     }
@@ -454,9 +456,9 @@ pub fn spawn_scene<R: WorldRunner>(
                 .subscribe(|world: &World| {
                     world
                         .root_scope()
-                        .query::<&AudioFormat>()
+                        .query(query!(&AudioFormat))
                         .next()
-                        .map(|(_, format)| *format)
+                        .map(|(_, row)| *row.read::<AudioFormat>())
                 })
                 .expect("the audio world accepts a subscription");
             (Some(format), true)
@@ -490,8 +492,8 @@ pub fn spawn_scene<R: WorldRunner>(
                 // This world is a sibling of the host, not a world nested in
                 // it, so the host's fan-out never reaches it: it takes its own
                 // buffer, once, before the first tick reads one.
-                world.root_scope_mut().spawn((input.subscribe(),));
-                world.root_scope_mut().spawn((OnFrame::new(
+                world.root_scope_mut().spawn(bundle!(input.subscribe(),));
+                world.root_scope_mut().spawn(bundle!(OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
                     |world, _entity, _frame| {
                         dispatch_input(world);
@@ -500,20 +502,20 @@ pub fn spawn_scene<R: WorldRunner>(
                 let state = SceneState::new(world, render.clone());
                 world
                     .root_scope_mut()
-                    .spawn((state, tick_behaviour::<SceneState>(TICK_SCENE)));
+                    .spawn(bundle!(state, tick_behaviour::<SceneState>(TICK_SCENE)));
                 let floor = Floor::new(&wiring, render.clone());
                 world
                     .root_scope_mut()
-                    .spawn((floor, tick_behaviour::<Floor>(TICK_FLOOR)));
+                    .spawn(bundle!(floor, tick_behaviour::<Floor>(TICK_FLOOR)));
                 let balls = Balls::new(&wiring);
                 world
                     .root_scope_mut()
-                    .spawn((balls, tick_behaviour::<Balls>(TICK_BALLS)));
+                    .spawn(bundle!(balls, tick_behaviour::<Balls>(TICK_BALLS)));
                 if audio_sources {
                     let audio = SceneAudio::new(&wiring, audio_format);
                     world
                         .root_scope_mut()
-                        .spawn((audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
+                        .spawn(bundle!(audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
                 }
                 // The panel is the fifth object, and lives here with the rest.
                 // The host that lays it out is an entity of its own, so the
@@ -522,13 +524,13 @@ pub fn spawn_scene<R: WorldRunner>(
                 // frame, after everything that could change what the panel
                 // shows has ticked, and the render world draws whatever is
                 // there.
-                world.root_scope_mut().spawn((UiPanelHost::new(
+                world.root_scope_mut().spawn(bundle!(UiPanelHost::new(
                     panels.frames.clone(),
                     panels.screen.clone(),
                     PANEL_SLOT,
                 ),));
                 Controls::new(panel_audio).mount(world);
-                world.root_scope_mut().spawn((OnFrame::new(
+                world.root_scope_mut().spawn(bundle!(OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
                     |world, _entity, _frame| publish_panels(world),
                 ),));
@@ -574,8 +576,8 @@ pub fn spawn_scene<R: WorldRunner>(
 /// The events the panel reads are this world's own, from the buffer its tick
 /// filled, so what the user clicked on is what this tick dispatched.
 fn publish_panels(world: &World) {
-    if let Some((_, mut host)) = world.root_scope().query::<&mut UiPanelHost>().next() {
-        host.publish(world);
+    if let Some((_, row)) = world.root_scope().query(query!(&mut UiPanelHost)).next() {
+        row.write::<UiPanelHost>().publish(world);
     }
 }
 
@@ -671,8 +673,8 @@ pub fn request_drop(sender: &JobSender) {
 
 /// Ask the shapes to drop the next one, from inside the gameplay world.
 pub fn request_drop_in(world: &Scope<'_>) {
-    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
-        balls.request_drop();
+    if let Some((_, row)) = world.query(query!(&mut Balls)).next() {
+        row.write::<Balls>().request_drop();
     }
 }
 
@@ -680,8 +682,8 @@ pub fn request_drop_in(world: &Scope<'_>) {
 ///
 /// The music keeps playing; the panel drives it.
 pub fn request_clear_in(world: &Scope<'_>) {
-    if let Some((_, mut balls)) = world.query::<&mut Balls>().next() {
-        balls.request_clear();
+    if let Some((_, row)) = world.query(query!(&mut Balls)).next() {
+        row.write::<Balls>().request_clear();
     }
 }
 
@@ -714,11 +716,11 @@ mod tests {
             .gameplay
             .sender()
             .send(Box::new(move |world: &mut World| {
-                world
-                    .root_scope_mut()
-                    .spawn((UiPanel::new(move |_, _, _ui: &mut egui::Ui| {
+                world.root_scope_mut().spawn(bundle!(UiPanel::new(
+                    move |_, _, _ui: &mut egui::Ui| {
                         counted.fetch_add(1, Ordering::Relaxed);
-                    }),));
+                    }
+                ),));
             }))
             .expect("the gameplay world accepts a job");
 
@@ -773,10 +775,10 @@ mod tests {
             .gameplay
             .sender()
             .send(Box::new(move |world: &mut World| {
-                world.root_scope_mut().spawn((UiPanel::new(
+                world.root_scope_mut().spawn(bundle!(UiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
-                        if let Some((_, events)) = world.query::<&InputEvents>().next() {
-                            events.with_batch(|batch| {
+                        if let Some((_, row)) = world.query(query!(&InputEvents)).next() {
+                            row.read::<InputEvents>().with_batch(|batch| {
                                 counted.fetch_add(batch.len(), Ordering::Relaxed);
                             });
                         }

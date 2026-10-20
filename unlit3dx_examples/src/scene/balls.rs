@@ -19,6 +19,7 @@ use super::shapes::{ShapeKind, shape_body};
 use super::shared::SceneState;
 use super::tick::Tick;
 use super::{GAME_HZ, GamePhysics, ScenePoses, SceneWiring, pose_job};
+use unlit_ecs::query;
 
 /// How long between automatic ball drops, in seconds.
 const SPAWN_PERIOD: f64 = 0.7;
@@ -321,9 +322,9 @@ impl Tick for Balls {
         self.ticks += 1;
         let Some((state, ready)) = world
             .root_scope()
-            .query::<&SceneState>()
+            .query(query!(&SceneState))
             .next()
-            .map(|(entity, state)| (entity, state.is_ready()))
+            .map(|(entity, row)| (entity, row.read::<SceneState>().is_ready()))
         else {
             return;
         };

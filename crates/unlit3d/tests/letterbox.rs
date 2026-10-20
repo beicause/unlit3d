@@ -15,6 +15,7 @@
 pub mod common;
 
 use common::*;
+use unlit_ecs::bundle;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
@@ -106,11 +107,11 @@ fn cube_world(ctx: &Ctx, size: (u32, u32), viewport: Option<ViewportRect>) -> (W
     let mesh = gpu.allocate_cube_mesh(&world);
     gpu.spawn(
         &mut world,
-        (camera_view(size.0 as f32 / size.1.max(1) as f32),),
+        bundle!(camera_view(size.0 as f32 / size.1.max(1) as f32),),
     );
     gpu.spawn(
         &mut world,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),

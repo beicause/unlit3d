@@ -13,6 +13,7 @@ use std::rc::Rc;
 use unlit_ecs::{Command, Entity, World};
 
 use crate::executor::LocalTasks;
+use unlit_ecs::query;
 use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
 use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 use unlit3d::winit::builtin::{DisplayHandle, ExitRequest, Resumed, window};
@@ -159,17 +160,17 @@ where
             };
             let resumed = world
                 .root_scope()
-                .query::<&Resumed>()
+                .query(query!(&Resumed))
                 .next()
-                .is_some_and(|(_, resumed)| resumed.0);
+                .is_some_and(|(_, row)| row.read::<Resumed>().0);
             if !resumed {
                 return;
             }
             let Some(display) = world
                 .root_scope()
-                .query::<&DisplayHandle>()
+                .query(query!(&DisplayHandle))
                 .next()
-                .map(|(_, handle)| handle.0.clone())
+                .map(|(_, row)| row.read::<DisplayHandle>().0.clone())
             else {
                 return;
             };

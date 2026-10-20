@@ -9,11 +9,11 @@ mod bridge;
 
 pub use bridge::serve_mcp;
 
-use unlit_ecs::World;
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{
     CommandSender, McpServer, ToolResult, ToolRouter, ToolSource, WorldArg, command, tool,
 };
+use unlit_ecs::{World, bundle, query};
 
 use crate::record::{RecordingHandle, start_recording, write_wav};
 
@@ -82,7 +82,7 @@ async fn audio_recording_status(commands: CommandSender, args: WorldArg) -> Tool
 fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, String> {
     if world
         .root_scope()
-        .query::<&ActiveRecording>()
+        .query(query!(&ActiveRecording))
         .next()
         .is_some()
     {
@@ -93,7 +93,9 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Stri
     let report = Started {
         duration_seconds: seconds,
     };
-    world.root_scope_mut().spawn((ActiveRecording(handle),));
+    world
+        .root_scope_mut()
+        .spawn(bundle!(ActiveRecording(handle),));
     serde_json::to_value(report).map_err(|error| error.to_string())
 }
 
@@ -129,9 +131,9 @@ fn cancel(world: &mut World) -> Result<Value, String> {
 fn status(world: &mut World) -> Result<Value, String> {
     let Some(recording) = world
         .root_scope()
-        .query::<&ActiveRecording>()
+        .query(query!(&ActiveRecording))
         .next()
-        .map(|(_, recording)| recording.0.clone())
+        .map(|(_, row)| row.read::<ActiveRecording>().0.clone())
     else {
         return Ok(serde_json::json!({ "recording": false }));
     };
@@ -151,7 +153,7 @@ fn status(world: &mut World) -> Result<Value, String> {
 fn take(world: &mut World) -> Result<RecordingHandle, String> {
     let entity = world
         .root_scope()
-        .query::<(unlit_ecs::Entity, &ActiveRecording)>()
+        .query(query!(&ActiveRecording))
         .next()
         .map(|(entity, _)| entity)
         .ok_or_else(|| "no recording is in progress on this world".to_owned())?;
@@ -245,8 +247,8 @@ mod tests {
     /// its fills carry.
     fn audio_world(level: f32) -> (World, AudioFormat) {
         let mut world = World::new();
-        world.root_scope_mut().spawn((AudioGain(1.0),));
-        world.root_scope_mut().spawn((OnAudioFill::new(
+        world.root_scope_mut().spawn(bundle!(AudioGain(1.0),));
+        world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
             AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),
         ),));

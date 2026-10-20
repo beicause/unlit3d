@@ -17,6 +17,7 @@
 //! compile time. The scene still names each frame itself, and the test checks
 //! the two agree, so the table cannot drift from the scene it describes.
 
+use unlit_ecs::query;
 use unlit_wgpu_test_util::{
     Ctx, Snapshot, Tolerance, assert_image_snapshot_with_tolerance, gpu_test_main, gpu_tests,
     snapshots,
@@ -466,12 +467,12 @@ async fn custom_pipeline_animates_between_frames() {
 
 /// The eye position of the scene's camera.
 fn camera_eye(world: &World) -> glam::Vec3 {
-    let (_, camera) = world
+    let (_, row) = world
         .root_scope()
-        .query::<&Camera>()
+        .query(query!(&Camera))
         .next()
         .expect("the scene has a camera");
-    camera.position()
+    row.read::<Camera>().position()
 }
 
 /// The default scene at a target narrower than its baseline.

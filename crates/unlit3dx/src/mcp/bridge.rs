@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, unbounded};
 use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId};
-use unlit_ecs::{Command, Entity, World};
+use unlit_ecs::{Command, Entity, World, bundle, query};
 use unlit3d::winit::event::OnAboutToWait;
 
 use crate::sync;
@@ -37,7 +37,7 @@ pub fn serve_mcp(world: &mut World) {
         });
     match started {
         Ok(_) => {
-            world.root_scope_mut().spawn((
+            world.root_scope_mut().spawn(bundle!(
                 McpInbox {
                     receiver: Arc::new(receiver),
                 },
@@ -58,9 +58,9 @@ fn drain_mcp() -> OnAboutToWait {
     OnAboutToWait::new(move |world, _entity, ()| {
         let Some(inbox) = world
             .root_scope()
-            .query::<&McpInbox>()
+            .query(query!(&McpInbox))
             .next()
-            .map(|(_, inbox)| inbox)
+            .map(|(_, row)| row.read::<McpInbox>())
         else {
             return;
         };
@@ -115,10 +115,10 @@ fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
             name: name.0,
         });
     };
-    for (entity, _) in world.root_scope().query::<(Entity, &World)>() {
+    for (entity, _) in world.root_scope().query(query!(&World)) {
         push(entity, &mut worlds);
     }
-    for (entity, _) in world.root_scope().query::<(Entity, &WorldSender)>() {
+    for (entity, _) in world.root_scope().query(query!(&WorldSender)) {
         push(entity, &mut worlds);
     }
     worlds
@@ -207,7 +207,7 @@ mod tests {
     fn host_with_inbox() -> (World, async_channel::Sender<McpCommand>) {
         let mut host = World::new();
         let (sender, receiver) = unbounded::<McpCommand>();
-        host.root_scope_mut().spawn((
+        host.root_scope_mut().spawn(bundle!(
             McpInbox {
                 receiver: Arc::new(receiver),
             },
@@ -220,8 +220,9 @@ mod tests {
     /// whatever the transport posted and queues it, then the queued
     /// commands apply — the order the real loop runs them in.
     fn run_turn(host: &mut World) {
-        for (_, mut behaviour) in host.root_scope().query::<&mut OnAboutToWait>() {
-            behaviour.run(host, Entity::from_bits(0), &());
+        for (_, row) in host.root_scope().query(query!(&mut OnAboutToWait)) {
+            row.write::<OnAboutToWait>()
+                .run(host, Entity::from_bits(0), &());
         }
         host.apply();
     }
@@ -233,7 +234,7 @@ mod tests {
         let (mut host, transport) = host_with_inbox();
         let nested = host
             .root_scope_mut()
-            .spawn((World::new(), WorldName("nested")));
+            .spawn(bundle!(World::new(), WorldName("nested")));
 
         let (command, reply) = McpCommand::list_worlds();
         transport.try_send(command).expect("the inbox takes it");
@@ -257,7 +258,7 @@ mod tests {
     #[test]
     fn list_worlds_leaves_out_a_world_it_cannot_name() {
         let (mut host, transport) = host_with_inbox();
-        let unnamed = host.root_scope_mut().spawn((World::new(),));
+        let unnamed = host.root_scope_mut().spawn(bundle!(World::new(),));
 
         let (command, reply) = McpCommand::list_worlds();
         transport.try_send(command).expect("the inbox takes it");
@@ -279,7 +280,7 @@ mod tests {
     #[test]
     fn a_command_for_a_worldless_entity_fails_readably() {
         let (mut host, transport) = host_with_inbox();
-        let bare = host.root_scope_mut().spawn((Marker,));
+        let bare = host.root_scope_mut().spawn(bundle!(Marker,));
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
         let command = command.with_world(WorldId::handle(bare));
@@ -302,11 +303,11 @@ mod tests {
     fn a_command_runs_against_the_nested_world_it_names() {
         let (mut host, transport) = host_with_inbox();
         let mut nested = World::new();
-        nested.root_scope_mut().spawn((Marker,));
-        let nested_world = host.root_scope_mut().spawn((nested,));
+        nested.root_scope_mut().spawn(bundle!(Marker,));
+        let nested_world = host.root_scope_mut().spawn(bundle!(nested,));
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query(query!(&Marker)).count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         let command = command.with_world(WorldId::handle(nested_world));
@@ -324,10 +325,10 @@ mod tests {
     #[test]
     fn a_host_command_runs_against_the_host_world() {
         let (mut host, transport) = host_with_inbox();
-        host.root_scope_mut().spawn((Marker,));
+        host.root_scope_mut().spawn(bundle!(Marker,));
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query(query!(&Marker)).count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         transport.try_send(command).expect("the inbox takes it");
@@ -374,7 +375,7 @@ mod tests {
             true
         });
         let seeded = threaded.request(Box::new(|world: &mut World| {
-            world.root_scope_mut().spawn((Marker,));
+            world.root_scope_mut().spawn(bundle!(Marker,));
         }));
         let deadline = Instant::now() + Duration::from_secs(2);
         while !seeded.answered() && !seeded.dropped() && Instant::now() < deadline {
@@ -383,7 +384,7 @@ mod tests {
         assert_eq!(seeded.poll(), Some(()), "the thread ran the seeding job");
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query(query!(&Marker)).count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         let command = command.with_world(WorldId::handle(threaded.entity()));
@@ -407,13 +408,13 @@ mod tests {
             "stepped",
             8,
             |world: &mut World| {
-                world.root_scope_mut().spawn((Marker,));
+                world.root_scope_mut().spawn(bundle!(Marker,));
             },
             |_, _: &ThreadControl, ()| true,
         );
 
         let (command, reply) = McpCommand::new(|world| {
-            let count = world.root_scope().query::<&Marker>().count();
+            let count = world.root_scope().query(query!(&Marker)).count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
         let command = command.with_world(WorldId::handle(stepped.entity()));

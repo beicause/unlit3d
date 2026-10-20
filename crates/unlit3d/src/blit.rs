@@ -23,6 +23,7 @@ use unlit_wgpu::specialize::{
 };
 
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
+use unlit_ecs::query;
 
 /// The WESL module whose fullscreen vertex the blit draws.
 const VERTEX_MODULE: &str = "fullscreen_vertex";
@@ -221,7 +222,7 @@ impl FrameSource for BlitSource {
             );
             return;
         };
-        let Some((_, texture)) = scope.query::<&BlitTexture>().next() else {
+        let Some((_, row)) = scope.query(query!(&BlitTexture)).next() else {
             log::warn!(
                 "BlitSource::build_scene: no BlitTexture component, so there is no texture to blit"
             );
@@ -232,9 +233,9 @@ impl FrameSource for BlitSource {
             // The first frame, or a new target: the bind-group layout
             // changes with the pipeline, so the bind group is rebuilt with
             // it.
-            self.build_gpu(scope, ctx, &texture, target.surface);
+            self.build_gpu(scope, ctx, &row.read::<BlitTexture>(), target.surface);
         } else if let Some(gpu) = &mut self.gpu
-            && gpu.texture != *texture
+            && gpu.texture != *row.read::<BlitTexture>()
         {
             // The same target, a different texture: the layout and the
             // pipeline stay, and the texture's new ids get their own group.
@@ -242,6 +243,7 @@ impl FrameSource for BlitSource {
             let device = scope
                 .get::<wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
+            let texture = row.read::<BlitTexture>();
             gpu.bind_group = allocate_bind_group(scope, ctx, &device, &layout, &texture);
             gpu.texture = texture.clone();
         }

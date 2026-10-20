@@ -11,6 +11,7 @@
 //! The file uses the harness `gpu_scenes.rs` uses, so the same binary runs
 //! natively and as the module a wasm test page loads.
 
+use unlit_ecs::query;
 use unlit_wgpu_test_util::{Ctx, gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
@@ -179,8 +180,9 @@ fn gpu_info_rect(world: &World) -> Option<egui::Rect> {
 fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
     world
         .root_scope()
-        .query::<&Source>()
-        .find_map(|(_, source)| {
+        .query(query!(&Source))
+        .find_map(|(_, row)| {
+            let source = row.read::<Source>();
             let ui = source.as_ref::<UiSource>()?;
             ui.context()
                 .memory(|memory| memory.area_rect(egui::Id::new(id)))

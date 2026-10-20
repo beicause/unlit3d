@@ -17,6 +17,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use unlit_ecs::{Entity, World};
+use unlit_ecs::{bundle, query};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -129,7 +130,7 @@ fn drive_fixed_step(world: &World, entity: Entity, delta_seconds: f32) {
 #[test]
 fn a_closure_behaviour_runs_and_reaches_the_world() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((
+    let entity = world.root_scope_mut().spawn(bundle!(
         Position { x: 0.0, y: 0.0 },
         OnFrame::new(|world, entity| {
             let _ = world
@@ -158,7 +159,7 @@ fn a_function_pointer_behaviour_runs() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn((Position { x: 0.0, y: 0.0 }, OnFrameFn(advance)));
+        .spawn(bundle!(Position { x: 0.0, y: 0.0 }, OnFrameFn(advance)));
 
     let _ = world
         .root_scope()
@@ -189,10 +190,10 @@ fn a_function_pointer_field_is_copy_so_one_callback_serves_many_entities() {
     // shared rather than duplicated per entity.
     let first = world
         .root_scope_mut()
-        .spawn((Position { x: 0.0, y: 0.0 }, handler));
+        .spawn(bundle!(Position { x: 0.0, y: 0.0 }, handler));
     let second = world
         .root_scope_mut()
-        .spawn((Position { x: 0.0, y: 0.0 }, handler));
+        .spawn(bundle!(Position { x: 0.0, y: 0.0 }, handler));
 
     for entity in [first, second] {
         let _ = world
@@ -224,7 +225,7 @@ fn one_named_function_serves_both_component_shapes() {
     }
 
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((
+    let entity = world.root_scope_mut().spawn(bundle!(
         Position { x: 0.0, y: 0.0 },
         OnFrameFn(advance),
         OnFrame::new(advance),
@@ -243,21 +244,21 @@ fn one_named_function_serves_both_component_shapes() {
 #[test]
 fn a_behaviour_can_act_on_the_whole_world() {
     let mut world = World::new();
-    let scale = world.root_scope_mut().spawn((10.0f32,));
+    let scale = world.root_scope_mut().spawn(bundle!(10.0f32,));
     let seen = Rc::new(Cell::new(0.0f32));
     let sink = seen.clone();
 
     let system = world
         .root_scope_mut()
-        .spawn((OnFrame::new(move |world, _entity| {
+        .spawn(bundle!(OnFrame::new(move |world, _entity| {
             // This closure is a system: it acts on every matching entity, not just
             // the one it is attached to.
-            let count = world.root_scope().query::<&Speed>().count() as f32;
+            let count = world.root_scope().query(query!(&Speed)).count() as f32;
             let scale = *world.root_scope().get::<f32>(scale).unwrap();
             sink.set(count * scale);
         }),));
-    world.root_scope_mut().spawn((Speed(1.0),));
-    world.root_scope_mut().spawn((Speed(2.0),));
+    world.root_scope_mut().spawn(bundle!(Speed(1.0),));
+    world.root_scope_mut().spawn(bundle!(Speed(2.0),));
 
     let _ = world
         .root_scope()
@@ -269,13 +270,13 @@ fn a_behaviour_can_act_on_the_whole_world() {
 #[test]
 fn a_behaviour_reads_a_marked_entity() {
     let mut world = World::new();
-    let clock = world.root_scope_mut().spawn((0.25f32,));
+    let clock = world.root_scope_mut().spawn(bundle!(0.25f32,));
     let seen = Rc::new(Cell::new(0.0f32));
     let sink = seen.clone();
 
     let entity = world
         .root_scope_mut()
-        .spawn((OnFrame::new(move |world, _entity| {
+        .spawn(bundle!(OnFrame::new(move |world, _entity| {
             // A resource is reachable from anywhere because the closure holds its
             // handle.
             sink.set(*world.root_scope().get::<f32>(clock).unwrap());
@@ -297,7 +298,7 @@ fn a_behaviour_keeps_state_itself() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn((OnFrame::new(move |_world, _entity| {
+        .spawn(bundle!(OnFrame::new(move |_world, _entity| {
             seen.set(seen.get() + 1);
         }),));
 
@@ -315,9 +316,9 @@ fn a_behaviour_can_queue_structural_changes() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn((OnFrame::new(|world, _entity| {
-            world.root_scope().queue().spawn((1u32,));
-        }),));
+        .spawn(bundle!(OnFrame::new(|world, _entity| {
+            world.root_scope().queue().spawn(bundle!(1u32));
+        })));
 
     let _ = world
         .root_scope()
@@ -334,9 +335,11 @@ fn a_behaviour_cannot_reborrow_its_own_component() {
     // The behaviour is borrowed while it runs, so reaching for itself is a
     // borrow conflict. That is the boundary the caller has to stay inside.
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((OnFrame::new(|world, entity| {
-        let _ = world.root_scope().get::<OnFrame>(entity);
-    }),));
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle!(OnFrame::new(|world, entity| {
+            let _ = world.root_scope().get::<OnFrame>(entity);
+        }),));
 
     let _ = world
         .root_scope()
@@ -349,7 +352,7 @@ fn a_fixed_interval_callback_runs_once_per_interval() {
     let ticks = Rc::new(Cell::new(0u32));
     let seen = ticks.clone();
 
-    let entity = world.root_scope_mut().spawn((
+    let entity = world.root_scope_mut().spawn(bundle!(
         Position { x: 0.0, y: 0.0 },
         StepState {
             interval: 2.0,
@@ -381,7 +384,7 @@ fn a_fixed_interval_callback_runs_once_per_interval() {
 #[test]
 fn an_input_callback_reacts_to_a_key() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((
+    let entity = world.root_scope_mut().spawn(bundle!(
         Position { x: 0.0, y: 0.0 },
         Speed(4.0),
         OnInput::new(|key, world, entity| {
@@ -410,7 +413,7 @@ fn callbacks_compose_as_separate_components() {
     // The Godot-style callbacks are just behaviour components: an entity takes
     // the ones it needs, and the caller drives each of them.
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((
+    let entity = world.root_scope_mut().spawn(bundle!(
         Position { x: 0.0, y: 0.0 },
         StepState {
             interval: 1.0,
@@ -469,7 +472,7 @@ fn the_caller_chooses_which_behaviours_run() {
         driven.push(
             world
                 .root_scope_mut()
-                .spawn((OnFrame::new(move |_world, _entity| {
+                .spawn(bundle!(OnFrame::new(move |_world, _entity| {
                     counter.set(counter.get() + 1);
                 }),)),
         );

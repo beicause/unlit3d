@@ -9,6 +9,7 @@
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, morph_deltas, unlit_options,
 };
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -44,7 +45,7 @@ fn build(
     // The variant that reads the morph bindings: its mesh group carries the
     // displacement buffer a plain cube's does not.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let deltas = morph_deltas(&positions);
@@ -63,15 +64,19 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, (camera(size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle!(camera(size),));
     // The weights are an entity of their own: the mesh names it rather than
     // owning it, so blending a pose is one component write and nothing on the
     // mesh changes.
-    let weights_entity = super::spawn_in(world, source_entity, (MorphWeights::new(weights(0)),));
+    let weights_entity = super::spawn_in(
+        world,
+        source_entity,
+        bundle!(MorphWeights::new(weights(0)),),
+    );
     super::spawn_in(
         world,
         source_entity,
-        (
+        bundle!(
             Transform {
                 scale: glam::Vec3::splat(0.9),
                 ..Default::default()

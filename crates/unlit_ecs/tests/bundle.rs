@@ -48,9 +48,12 @@ fn nesting_is_flattened_at_any_depth() {
 }
 
 #[test]
-fn a_nested_tuple_spawned_plainly_is_one_component() {
+fn a_tuple_pushed_whole_is_one_component() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn(((1u32, 2.0f32), true));
+    let mut builder = ArchetypeBuilder::new();
+    builder.push_component((1u32, 2.0f32));
+    builder.push_component(true);
+    let entity = world.root_scope_mut().spawn(builder);
 
     assert!(
         world.root_scope().has::<(u32, f32)>(entity),
@@ -58,7 +61,7 @@ fn a_nested_tuple_spawned_plainly_is_one_component() {
     );
     assert!(
         !world.root_scope().has::<u32>(entity),
-        "not flattened without the macro"
+        "a builder never takes a component apart"
     );
     assert!(world.root_scope().has::<bool>(entity));
 }
@@ -86,11 +89,11 @@ fn the_macro_returns_a_bundle_that_spawns_nothing() {
 }
 
 #[test]
-fn a_group_holding_one_expression_is_one_leaf() {
+fn a_group_holding_one_expression_flattens_to_it() {
     let mut world = World::new();
     let value = 4u32;
-    // Each group holds a single expression, so it is pushed as itself rather
-    // than recursed into; the two are different types, so neither duplicates.
+    // Each group holds a single expression, so it contributes that expression;
+    // the two are different types, so neither duplicates.
     let entity = world
         .root_scope_mut()
         .spawn(bundle!((value,), (value as u64,)));
@@ -154,7 +157,7 @@ fn a_flattened_bundle_matches_the_equivalent_tuple() {
     let flattened = flat
         .root_scope_mut()
         .spawn(bundle!((1u32, 2.0f32), (true,)));
-    let tupled = nested.root_scope_mut().spawn((1u32, 2.0f32, true));
+    let tupled = nested.root_scope_mut().spawn(bundle!(1u32, 2.0f32, true));
 
     let flat_location = flat.root_scope().location(flattened).unwrap();
     let flat_types = flat
@@ -283,10 +286,12 @@ fn a_custom_bundle_is_flattened_with_a_dot_dot() {
 fn a_bundle_spread_keeps_a_tuple_component_whole() {
     // The spread spawns the bundle exactly as spawning it alone would, so a
     // tuple a bundle holds stays one component instead of being flattened.
+    let mut builder = ArchetypeBuilder::new();
+    builder.push_component(1u32);
+    builder.push_component((2.0f32, true));
+
     let mut world = World::new();
-    let entity = world
-        .root_scope_mut()
-        .spawn(bundle!(..(1u32, (2.0f32, true))));
+    let entity = world.root_scope_mut().spawn(bundle!(..builder));
 
     assert!(world.root_scope().has::<(f32, bool)>(entity));
     assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
@@ -337,10 +342,12 @@ fn a_duplicate_across_a_spread_panics() {
 }
 
 #[test]
-fn a_tuple_bundle_becomes_its_components() {
-    let mut world = World::new();
-    let entity = world.root_scope_mut().spawn((1u32, 2.0f32).into_builder());
+#[should_panic(expected = "same component twice")]
+fn a_component_pushed_twice_panics() {
+    let mut builder = ArchetypeBuilder::new();
+    builder.push_component(1u32);
+    builder.push_component(2u32);
 
-    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
-    assert_eq!(*world.root_scope().get::<f32>(entity).unwrap(), 2.0);
+    let mut world = World::new();
+    world.root_scope_mut().spawn(builder);
 }

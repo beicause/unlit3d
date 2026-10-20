@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use unlit_ecs::World;
+use unlit_ecs::{bundle, query};
 use unlit3dx::prelude::*;
 
 /// A remote world that idles between ticks, for the tests to drive.
@@ -89,26 +90,28 @@ fn remote_world_state_persists_between_jobs() {
     let (_host, remote) = idle_host();
 
     let _ = remote.send(Box::new(|world: &mut World| {
-        world.root_scope_mut().spawn((Count(0),));
+        world.root_scope_mut().spawn(bundle!(Count(0),));
     }));
     for _ in 0..5 {
         let _ = remote.send(Box::new(|world: &mut World| {
             world
                 .root_scope()
-                .query::<&mut Count>()
+                .query(query!(&mut Count))
                 .next()
                 .expect("the counter")
                 .1
+                .write::<Count>()
                 .0 += 1;
         }));
     }
     let count = remote.request(Box::new(|world: &mut World| {
         world
             .root_scope()
-            .query::<&Count>()
+            .query(query!(&Count))
             .next()
             .expect("the counter")
             .1
+            .read::<Count>()
             .0
     }));
 

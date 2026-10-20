@@ -129,6 +129,7 @@ use crate::unlit::{
 };
 use gltf::animation::util::ReadOutputs;
 use gltf::animation::{Interpolation, Property};
+use unlit_ecs::bundle;
 use unlit_ecs::{ArchetypeBuilder, Scope, ScopeMut, prelude::Entity};
 use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
@@ -1069,14 +1070,14 @@ impl UnlitGltf {
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
                 let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
-                    let pose =
-                        *pose.get_or_insert_with(|| world.spawn((self.skin_pose(node.index()),)));
+                    let pose = *pose
+                        .get_or_insert_with(|| world.spawn(bundle!(self.skin_pose(node.index()),)));
                     SkinBinding::new(pose)
                 });
                 let morphed = mesh_handle.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
                     let weights = *morphs.get_or_insert_with(|| {
-                        world.spawn((MorphWeights::new(self.morph_weights(node.index())),))
+                        world.spawn(bundle!(MorphWeights::new(self.morph_weights(node.index())),))
                     });
                     MorphBinding::new(weights)
                 });
@@ -2878,8 +2879,8 @@ mod tests {
         ))
         .expect("the animated document parses");
         let mut world = World::new();
-        let parent = world.root_scope_mut().spawn((Transform::default(),));
-        let child = world.root_scope_mut().spawn((Transform::default(),));
+        let parent = world.root_scope_mut().spawn(bundle!(Transform::default(),));
+        let child = world.root_scope_mut().spawn(bundle!(Transform::default(),));
         let nodes = [
             GltfNode {
                 node: 0,
@@ -2925,7 +2926,7 @@ mod tests {
         ))
         .expect("the animated document parses");
         let mut world = World::new();
-        let parent = world.root_scope_mut().spawn((Transform::default(),));
+        let parent = world.root_scope_mut().spawn(bundle!(Transform::default(),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![parent],
@@ -2951,8 +2952,8 @@ mod tests {
         ))
         .expect("the animated skinned document parses");
         let mut world = World::new();
-        let mesh = world.root_scope_mut().spawn((Transform::default(),));
-        let pose = world.root_scope_mut().spawn((SkinPose::default(),));
+        let mesh = world.root_scope_mut().spawn(bundle!(Transform::default(),));
+        let pose = world.root_scope_mut().spawn(bundle!(SkinPose::default(),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![mesh],
@@ -2979,10 +2980,10 @@ mod tests {
         let gltf = UnlitGltf::from_bytes(&animated_morphed_document(&[0.0, 2.0], &[0.0, 2.0]))
             .expect("the animated morphed document parses");
         let mut world = World::new();
-        let mesh = world.root_scope_mut().spawn((Transform::default(),));
+        let mesh = world.root_scope_mut().spawn(bundle!(Transform::default(),));
         let weights = world
             .root_scope_mut()
-            .spawn((MorphWeights::new(vec![0.0]),));
+            .spawn(bundle!(MorphWeights::new(vec![0.0]),));
         let nodes = [GltfNode {
             node: 0,
             entities: vec![mesh],

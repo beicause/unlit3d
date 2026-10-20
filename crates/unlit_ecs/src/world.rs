@@ -114,7 +114,7 @@ impl World {
         } else {
             self.root
         };
-        self.insert_row(entity, scope, ());
+        self.insert_row(entity, scope, crate::ArchetypeBuilder::new());
         entity
     }
 
@@ -606,6 +606,8 @@ mod tests {
         // The field is private, so a caller cannot even build this bundle: it
         // is a compile error outside the crate, and the check stays for the
         // crate's own code.
-        world.root_scope_mut().spawn((ScopeOf::new(root),));
+        world
+            .root_scope_mut()
+            .spawn(crate::bundle!(ScopeOf::new(root),));
     }
 }

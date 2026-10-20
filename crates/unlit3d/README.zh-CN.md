@@ -488,12 +488,12 @@ let ctx = spawn_context(
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
 mesh_source.register_unlit_family(&world.root_scope());
 let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_scope())));
-let renderer = world.root_scope_mut().spawn((Renderer::new(ctx),));
+let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx)));
 
 // 2. Mount the mesh source as a source. A source is its own scope: a frame
 //    hands it its own scope, so everything it draws lives under this
 //    entity.
-let source = world.root_scope_mut().spawn((Source::new(mesh_source),));
+let source = world.root_scope_mut().spawn(bundle!(Source::new(mesh_source)));
 let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
@@ -538,7 +538,12 @@ let (mesh, material) = scope
 world
     .scope_mut(source)
     .unwrap()
-    .spawn((Transform::default(), mesh, material, UnlitPipeline::new(key)));
+    .spawn(bundle!(
+        Transform::default(),
+        mesh,
+        material,
+        UnlitPipeline::new(key)
+    ));
 
 // 4. Bind a render target and render one frame (uses the noop device, so it
 //    produces a valid command buffer without touching a GPU). The frame's
@@ -586,8 +591,8 @@ use unlit3d::prelude::*;
 let mut world = World::new();
 // The panels of a UI source live under it: a frame hands the source its own
 // scope and drives whatever panels it finds there.
-let ui = world.root_scope_mut().spawn((Source::new(UiSource::new()),));
-world.scope_mut(ui).unwrap().spawn((UiPanel::new(|_world, _entity, ui| {
+let ui = world.root_scope_mut().spawn(bundle!(Source::new(UiSource::new())));
+world.scope_mut(ui).unwrap().spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
     ui.label("hello");
 }),));
 # }
@@ -676,6 +681,7 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 变更的行为把变更排队，因为回调只持有 `&World`。
 
 ```rust,no_run
+# use unlit_ecs::bundle;
 # use unlit3d::winit::builtin::{
 #     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,
 #     exit_on_close_requested,
@@ -686,12 +692,12 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 # fn main() -> Result<(), winit::error::EventLoopError> {
 let event_loop = EventLoop::new()?;
 let mut host = WinitHost::new();
-host.world_mut().root_scope_mut().spawn((
+host.world_mut().root_scope_mut().spawn(bundle!(
     WindowSpec(Window::default_attributes().with_title("unlit3d")),
     CreateWindowRequest(None),
     create_window_on_resume(),
 ));
-host.world_mut().root_scope_mut().spawn((ExitRequest(false), exit_on_close_requested()));
+host.world_mut().root_scope_mut().spawn(bundle!(ExitRequest(false), exit_on_close_requested()));
 host.run(event_loop)
 # }
 ```

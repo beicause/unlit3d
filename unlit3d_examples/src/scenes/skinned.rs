@@ -8,6 +8,7 @@
 use super::{
     BendSkin, SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, unlit_options,
 };
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -45,7 +46,7 @@ fn build(
     // The variant that reads the joint stream: its position buffer is wider by
     // the joint pair, so a stream packed for the plain cube would misread.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));
@@ -65,15 +66,15 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, (camera(size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle!(camera(size),));
     // The pose is an entity of its own: the mesh names it rather than owning
     // it, so animating the skeleton is one component write and nothing on the
     // mesh changes.
-    let pose_entity = super::spawn_in(world, source_entity, (skin.pose(),));
+    let pose_entity = super::spawn_in(world, source_entity, bundle!(skin.pose(),));
     super::spawn_in(
         world,
         source_entity,
-        (
+        bundle!(
             Transform {
                 scale: glam::Vec3::splat(0.9),
                 ..Default::default()

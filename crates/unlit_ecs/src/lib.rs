@@ -17,8 +17,6 @@ mod query;
 #[cfg(feature = "reflect")]
 pub mod reflect;
 mod scope;
-#[cfg(test)]
-mod tests_common;
 mod view;
 mod world;
 
@@ -34,12 +32,17 @@ pub use entity::{EntityProxy, EntityVecProxy};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
-pub use query::{Or, Query, QueryFilter, QueryIter, With, Without};
+pub use query::{Access, Filter, Or, Query, QueryIter, Row, Slot, With, Without};
+#[doc(hidden)]
+pub use query::{IntoFilter, IntoFilterTuple, IntoSlot};
 pub use scope::ScopeOf;
 pub use view::{Scope, ScopeMut};
 pub use world::World;
 
 /// The types most callers need.
 pub mod prelude {
-    pub use crate::{Entity, Query, Scope, ScopeOf, Without, World};
+    pub use crate::{
+        Access, Entity, Filter, Or, Query, QueryIter, Row, Scope, ScopeOf, Slot, With, Without,
+        World, bundle, filter, query,
+    };
 }

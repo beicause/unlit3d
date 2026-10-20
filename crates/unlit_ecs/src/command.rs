@@ -27,13 +27,13 @@
 //! pushed by hand with [`Commands::push`] carries its own ordering.
 //!
 //! `````rust
-//! # use unlit_ecs::World;
+//! # use unlit_ecs::{World, bundle};
 //! let mut world = World::new();
 //!
 //! let entity = {
 //!     let scope = world.root_scope();
 //!     let commands = scope.queue();
-//!     commands.spawn(("entity",))
+//!     commands.spawn(bundle!("entity",))
 //! };
 //! // Nothing has happened yet.
 //! assert!(!world.root_scope().contains(entity));

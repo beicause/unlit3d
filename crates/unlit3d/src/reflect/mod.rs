@@ -43,7 +43,7 @@ pub fn decode_events(text: &str) -> Result<Vec<InputEvent>, String> {
 mod tests {
     use facet::Facet;
     use glam::{Mat4, Quat, Vec3, Vec4};
-    use unlit_ecs::{Entity, EntityProxy};
+    use unlit_ecs::{Entity, EntityProxy, bundle};
 
     use super::*;
     use crate::components::{Camera, MorphBinding, MorphWeights, SkinBinding, SkinPose, Transform};
@@ -108,7 +108,7 @@ mod tests {
         });
         let writer = InputWriter::new();
         let mut world = unlit_ecs::World::new();
-        let entity = world.root_scope_mut().spawn((writer.subscribe(),));
+        let entity = world.root_scope_mut().spawn(bundle!(writer.subscribe(),));
         writer.push(key.clone());
         writer.push(InputEvent::FocusChanged(false));
         world

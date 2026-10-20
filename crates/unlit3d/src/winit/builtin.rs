@@ -25,6 +25,7 @@ use winit::window::{Window, WindowAttributes};
 use crate::input::winit::WinitInput;
 
 use super::event::{OnAboutToWait, OnResumed, OnWindowEvent};
+use unlit_ecs::query;
 
 /// The window attributes [`create_window_on_resume`] builds the window from.
 #[derive(Clone)]
@@ -42,9 +43,9 @@ pub struct WinitWindow(pub Arc<Window>);
 pub fn window(world: &World) -> Option<Arc<Window>> {
     world
         .root_scope()
-        .query::<&WinitWindow>()
+        .query(query!(&WinitWindow))
         .next()
-        .map(|(_, window)| window.0.clone())
+        .map(|(_, row)| row.read::<WinitWindow>().0.clone())
 }
 
 /// Asks the host to create the window in this component.
@@ -142,9 +143,9 @@ pub fn request_redraw_while_foreground() -> OnAboutToWait {
     OnAboutToWait::new(|world, _entity, ()| {
         let resumed = world
             .root_scope()
-            .query::<&Resumed>()
+            .query(query!(&Resumed))
             .next()
-            .is_some_and(|(_, state)| state.0);
+            .is_some_and(|(_, row)| row.read::<Resumed>().0);
         if resumed && let Some(window) = window(world) {
             window.request_redraw();
         }
@@ -166,6 +167,7 @@ pub fn winit_input_behaviour(input: WinitInput) -> OnWindowEvent {
 mod tests {
     use super::*;
     use crate::winit::event::WinitWindowEvent;
+    use unlit_ecs::bundle;
     use winit::window::WindowId;
 
     fn window_event(event: WindowEvent) -> WinitWindowEvent {
@@ -178,7 +180,7 @@ mod tests {
     #[test]
     fn exit_on_close_requested_asks_the_host_to_exit() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn((ExitRequest(false),));
+        let entity = world.root_scope_mut().spawn(bundle!(ExitRequest(false),));
         world.apply();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::CloseRequested));
@@ -193,7 +195,7 @@ mod tests {
     #[test]
     fn exit_on_close_requested_ignores_other_events() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn((ExitRequest(false),));
+        let entity = world.root_scope_mut().spawn(bundle!(ExitRequest(false),));
         world.apply();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::Focused(true)));
@@ -209,7 +211,7 @@ mod tests {
     fn create_window_on_resume_copies_the_spec_into_the_request() {
         let mut world = World::new();
         let spec = WindowSpec(Window::default_attributes().with_title("unlit3d"));
-        let entity = world.root_scope_mut().spawn((
+        let entity = world.root_scope_mut().spawn(bundle!(
             spec,
             CreateWindowRequest(None),
             create_window_on_resume(),
@@ -233,7 +235,7 @@ mod tests {
         let mut world = World::new();
         let entity = world
             .root_scope_mut()
-            .spawn((Resumed(false), request_redraw_while_foreground()));
+            .spawn(bundle!(Resumed(false), request_redraw_while_foreground()));
         world.apply();
         let mut behaviour = world
             .root_scope()

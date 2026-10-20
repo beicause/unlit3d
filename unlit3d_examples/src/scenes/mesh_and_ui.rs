@@ -6,6 +6,7 @@
 //! second frame.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_view, cube, unlit_options};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 
 /// The colour the scene clears to.
@@ -43,7 +44,7 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();
@@ -60,11 +61,11 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, (camera_view(size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle!(camera_view(size),));
     super::spawn_in(
         world,
         source_entity,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -78,17 +79,17 @@ fn build(
     // The pass opens with this world's load ops.
     super::spawn_shared(
         world,
-        (RenderLoadOps {
+        bundle!(RenderLoadOps {
             color: wgpu::LoadOp::Clear(CLEAR_COLOR),
             ..RenderLoadOps::default()
-        },),
+        }),
     );
 
     if options.ui {
         super::spawn_in(
             world,
             ui.expect("the UI source was mounted"),
-            (super::ui_only::rich_panel(),),
+            bundle!(super::ui_only::rich_panel(),),
         );
     }
 

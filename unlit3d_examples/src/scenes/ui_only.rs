@@ -7,6 +7,7 @@
 //! frame — the first only warms egui's font atlas up.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
 
@@ -46,17 +47,17 @@ fn build(
     // over. The UI source reads them from the shared subtree.
     super::spawn_shared(
         world,
-        (RenderLoadOps {
+        bundle!(RenderLoadOps {
             color: wgpu::LoadOp::Clear(CLEAR_COLOR),
             ..RenderLoadOps::default()
-        },),
+        }),
     );
 
     if options.ui {
         super::spawn_in(
             world,
             ui.expect("the UI source was mounted"),
-            (rich_panel(),),
+            bundle!(rich_panel(),),
         );
     }
 

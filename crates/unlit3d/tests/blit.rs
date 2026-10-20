@@ -9,6 +9,7 @@
 pub mod common;
 
 use common::*;
+use unlit_ecs::{bundle, query};
 use unlit_wgpu::resources::TextureExt;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
@@ -81,11 +82,11 @@ fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture, Entit
     let blit = BlitTexture::new(&world, gpu.context, view);
     let source = world
         .root_scope_mut()
-        .spawn((Source::new(BlitSource::new()),));
+        .spawn(bundle!(Source::new(BlitSource::new()),));
     world
         .scope_mut(source)
         .expect("a source entity is its own scope")
-        .spawn((blit,));
+        .spawn(bundle!(blit,));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     (world, gpu, target, source)
 }
@@ -130,7 +131,7 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
     let blit = BlitTexture::new(&world, gpu.context, view);
     let entity = world
         .root_scope()
-        .query::<&BlitTexture>()
+        .query(query!(&BlitTexture))
         .next()
         .map(|(entity, _)| entity)
         .expect("the world has a blit texture");
@@ -138,7 +139,7 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
     world
         .scope_mut(source)
         .expect("a source entity is its own scope")
-        .spawn((blit,));
+        .spawn(bundle!(blit,));
     gpu.render(&world);
 
     assert_eq!(

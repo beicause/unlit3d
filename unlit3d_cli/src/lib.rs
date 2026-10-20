@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use glam::Mat4;
+use unlit_ecs::bundle;
 use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
@@ -209,7 +210,9 @@ pub fn build_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = world.root_scope_mut().spawn((Renderer::new(context),));
+    let renderer = world
+        .root_scope_mut()
+        .spawn(bundle!(Renderer::new(context),));
 
     let target = world
         .root_scope()
@@ -231,7 +234,7 @@ pub fn build_world(
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn((RenderLoadOps {
+        shared_view.spawn(bundle!(RenderLoadOps {
             color: wgpu::LoadOp::Clear(wgpu::Color {
                 r: clear[0],
                 g: clear[1],
@@ -245,7 +248,7 @@ pub fn build_world(
 
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     for document in &config.documents {
         let gltf = UnlitGltf::load(&document.path)?;
@@ -278,7 +281,7 @@ pub fn build_world(
     world
         .scope_mut(source_entity)
         .expect("the source entity is its own scope")
-        .spawn((camera(&config.camera, render_size),));
+        .spawn(bundle!(camera(&config.camera, render_size),));
 
     let viewport_width = render_size.0 as f32 * config.output.scale.0;
     let viewport_height = render_size.1 as f32 * config.output.scale.1;
@@ -317,18 +320,20 @@ pub fn offscreen_world(
         ResourceGraph::new(),
         capabilities,
     );
-    let renderer = world.root_scope_mut().spawn((Renderer::new(context),));
+    let renderer = world
+        .root_scope_mut()
+        .spawn(bundle!(Renderer::new(context),));
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
     // The frame's load ops and input are shared by every source, so they live
     // in the subtree every scope sees.
     let input = InputWriter::new();
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn((RenderLoadOps::default(),));
-        shared_view.spawn((input.clone(), input.subscribe()));
+        shared_view.spawn(bundle!(RenderLoadOps::default(),));
+        shared_view.spawn(bundle!(input.clone(), input.subscribe()));
     }
 
     let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
@@ -357,7 +362,7 @@ pub fn offscreen_world(
     world
         .scope_mut(source_entity)
         .expect("the source entity is its own scope")
-        .spawn((default_camera(size),));
+        .spawn(bundle!(default_camera(size),));
     (world, renderer)
 }
 

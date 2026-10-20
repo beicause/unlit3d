@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use unlit_ecs::World;
+use unlit_ecs::{bundle, query};
 use unlit3dx::prelude::*;
 
 /// A stepped world whose tick publishes whatever its subscriptions collect.
@@ -18,7 +19,7 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
         "subscribed",
         capacity,
         |world: &mut World| {
-            world.root_scope_mut().spawn((Marker(0),));
+            world.root_scope_mut().spawn(bundle!(Marker(0),));
         },
         |world: &mut World, _control: &ThreadControl, ()| {
             publish_subscribed(world);
@@ -71,9 +72,9 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
         .subscribe(|world: &World| {
             world
                 .root_scope()
-                .query::<&Marker>()
+                .query(query!(&Marker))
                 .next()
-                .map(|(_, marker)| marker.0)
+                .map(|(_, row)| row.read::<Marker>().0)
         })
         .expect("the world accepts a subscription");
     assert_eq!(

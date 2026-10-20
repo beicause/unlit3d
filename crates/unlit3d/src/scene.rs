@@ -11,7 +11,7 @@ use core::cmp::Ordering;
 
 use arrayvec::ArrayVec;
 use hashbrown::HashMap;
-use unlit_ecs::{Query, Scope};
+use unlit_ecs::{Query, Scope, query};
 use unlit_wgpu::instance_stream::InstanceBuffer;
 use unlit_wgpu::resources::{ResHandle, Virtual};
 use unlit_wgpu::specialize::{PipelineVariant, SurfaceKey, Variants};
@@ -172,19 +172,16 @@ where
     register: &'a mut dyn FnMut(RegisteredRenderPipeline) -> RenderPipelineId,
 }
 
-/// What a family reads from one visible entity while resolving it.
-///
-/// Resolving the columns once per archetype rather than once per entity is what
-/// makes the frame's resolve pass proportional to the number of *distinct
-/// component sets* rather than to the number of entities: a `World::get` per
-/// entity would re-read the world's entity table and re-look-up the component
-/// type every time.
-type Resolve<'a, K> = (
-    &'a GpuRenderPipeline<K>,
-    &'a GpuMesh,
-    Option<&'a GpuMaterial>,
-    Option<&'a ZSortedDrawing>,
-);
+/// What this family reads from one visible entity: the components its key
+/// names, with the material and z-sorted marker as the two optional ones.
+fn resolve_query<K: RenderPipelineKey>() -> &'static Query {
+    query!(
+        &GpuRenderPipeline<K>,
+        &GpuMesh,
+        Option<&GpuMaterial>,
+        Option<&ZSortedDrawing>,
+    )
+}
 
 impl<K, F> Resolver<'_, '_, K, F>
 where
@@ -196,43 +193,23 @@ where
     /// The frame's meshes were already culled and their placement resolved,
     /// so this only picks out the ones whose pipeline belongs to the family.
     ///
-    /// Culling walks the archetypes in storage order, so the candidates arrive
-    /// grouped by archetype and the columns below are resolved once per group.
-    /// The caching only helps when they are grouped, but it is correct either
-    /// way: a cache miss just re-resolves.
+    /// Each candidate is looked up through the family's own query, so an
+    /// entity of another family is skipped rather than read as this one's.
     fn collect(&mut self) {
         profiling::scope!("scene.resolve.family");
-        // Copied out of `self.frame` so the resolved state borrows the world
-        // rather than `self`, which `push` needs mutably.
+        // Copied out of `self.frame` so the query borrows the world rather than
+        // `self`, which `push` needs mutably.
         let world = &self.frame.world;
-        let mut cached: Option<u32> = None;
-        let mut state = None;
+        let query = resolve_query::<K>();
+        // The material is read once and both its uses come from it: it decides
+        // how the draw is grouped and which bind group it binds.
         for &candidate in self.frame.meshes {
-            let Some(location) = world.location(candidate.entity) else {
+            let Some(row) = world.row(candidate.entity, query) else {
                 continue;
             };
-            if cached != Some(location.archetype()) {
-                cached = Some(location.archetype());
-                // A view only hands out the archetypes it sees in full: one
-                // shared with a sibling scope is not among them, and none of
-                // its rows are this source's to draw.
-                let Some(archetype) = world.archetype(location.archetype()) else {
-                    state = None;
-                    continue;
-                };
-                // An entity from another family carries a different key type,
-                // so its archetype does not match and the whole group is
-                // skipped.
-                state = <Resolve<'_, K> as Query>::matches(archetype)
-                    .then(|| <Resolve<'_, K> as Query>::fetch_state(archetype));
-            }
-            let Some(state) = state.as_ref() else {
-                continue;
-            };
-            let (pipeline, gpu_mesh, material, z_sorted) =
-                <Resolve<'_, K> as Query>::fetch(state, location.row());
-            // The material decides both how the draw is grouped and which bind
-            // group it binds, so it is read once and both are taken from it.
+            let pipeline = row.read::<GpuRenderPipeline<K>>();
+            let gpu_mesh = row.read::<GpuMesh>();
+            let material = row.try_read::<GpuMaterial>();
             let (sort_key, material_bg) = match &material {
                 Some(material) => (material.sort_key(), Some(material.bind_group_id.clone())),
                 None => (0, None),
@@ -244,7 +221,7 @@ where
                 material.as_deref(),
                 sort_key,
                 material_bg,
-                z_sorted.is_some(),
+                row.has::<ZSortedDrawing>(),
             );
         }
     }

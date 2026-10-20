@@ -29,8 +29,9 @@
 - **没有资源（resource）。** crate 不标记也不追踪任何资源；想被随处访问的实体就是
   普通实体，调用者自行保存它的句柄，需要时可以用自己的标记组件加以标记。
 - **任何 `'static` 类型都是组件。** 不需要 derive，也不需要注册；元组同样是组件。
-  正因如此，*bundle* 是「组件的元组」，而不是组件的层级结构——嵌套元组是一个组件，
-  而不是一组组件。要展平嵌套，就用 `bundle!` 写 bundle，它在展开期遍历语法。
+  因此 *bundle* 不是「组件的元组」，而是 `bundle!` 写出的、或 `ArchetypeBuilder`
+  收集的那份组件清单；直接交给 spawn 的 `(a, b)` 是一个组件，即那个二元组。宏在展开期
+  遍历语法，所以 `bundle!(a, b)` 是两个组件，而括号组会被展平成它里面的组件。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
@@ -53,12 +54,12 @@ scope 就是一个实体。每个实体都带一个指向父实体的 `ScopeOf`�
 一个场景是一棵子树，而调用者手里拿到的是 `Scope`，一个收窄到树中某个实体位置的访问器。
 
 ```rust
-use unlit_ecs::World;
+use unlit_ecs::{World, bundle, query};
 
 let mut world = World::new();
-let scene = world.root_scope_mut().spawn((),);
-let cube = world.scope_mut(scene).unwrap().spawn((0u32,));
-let camera = world.scope_mut(scene).unwrap().spawn((0f32,));
+let scene = world.root_scope_mut().spawn_empty();
+let cube = world.scope_mut(scene).unwrap().spawn(bundle!(0u32));
+let camera = world.scope_mut(scene).unwrap().spawn(bundle!(0f32));
 
 // 场景的 scope 看得见场景及其下的一切，看不见旁边的东西。
 let scope = world.scope(scene).unwrap();
@@ -66,7 +67,7 @@ assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
 assert_eq!(scope.children(scene).len(), 2);
-assert!(scope.query::<&u32>().any(|(entity, _)| entity == cube));
+assert!(scope.query(query!(&u32)).any(|(entity, _)| entity == cube));
 
 // 根也是一个 scope，它看得见所有 scope。
 assert_eq!(world.root_scope().len(), 3);
@@ -124,18 +125,19 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 
 ## 内容概览
 
-`World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及用于展平嵌套元组的
+`World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及写出 bundle 的
 `bundle!` 宏）、把 world 收窄到一个 scope 的 `ScopeOf` 与
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
-`Query` 与 `QueryFilter`（`With`、`Without`、`Or`、元组）、用于延迟结构变更的
+`Query` / `Row`（以及 `query!` 宏，过滤器写作 `With`、`Without`、`Or`）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`、用于给
 只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`、用于把 world
 形态当作纯数据汇报的 `WorldInfo` / `ArchetypeInfo` / `EntityInfo`（实体字段反射时
 指名 `EntityProxy` 与 `EntityVecProxy`），以及
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
 
-查询会按 archetype 解析一次它需要的列，再通过该状态逐行取值，因此其开销与
-*组件集合*的数量成正比，而不是与实体数量成正比。`Scope::location` 与
+查询就是数据：一份 slot 清单加一个过滤器，由 `query!` 在 const 块里组装，调用者也可以
+在运行时构建。行在被请求时才到自己的 archetype 里查列，交出的借用与行同寿，所以同时读两行
+是允许的；同一组件写两次而不先 drop 第一个借用则会 panic。`Scope::location` 与
 `Scope::archetype` 把同样的形态开放给持有大量实体的调用者——比如把场景剔除成
 一个列表的调用者——让它能按 archetype 分组，一次性解析每个 archetype 的列，
 而不必逐实体重新查找。
@@ -151,7 +153,7 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 ## 用法
 
 ```rust
-use unlit_ecs::{Query, Without, World};
+use unlit_ecs::{World, Without, bundle, query};
 
 struct Spin {
     radians_per_second: f32,
@@ -159,46 +161,53 @@ struct Spin {
 }
 
 let mut world = World::new();
-let cube = world.root_scope_mut().spawn((Spin { radians_per_second: 1.0, angle: 0.0 },));
-let clock = world.root_scope_mut().spawn((0.016f32,));
+let cube = world.root_scope_mut().spawn(bundle!(Spin { radians_per_second: 1.0, angle: 0.0 }));
+let clock = world.root_scope_mut().spawn(bundle!(0.016f32));
 
-// Drive every `Spin`. The caller picks which entities to touch and in what
-// order; the library has no built-in notion of a scene graph.
-let delta = world.root_scope().get::<f32>(clock).unwrap().to_owned();
-for (_, mut spin) in world.root_scope().query::<&mut Spin>() {
+// 驱动每一个 `Spin`。由调用者决定碰哪些实体、按什么顺序；库内没有场景图的概念。
+let delta = *world.root_scope().get::<f32>(clock).unwrap();
+for (_, row) in world.root_scope().query(query!(&mut Spin)) {
+    let mut spin = row.write::<Spin>();
     spin.angle += spin.radians_per_second * delta;
 }
 assert_ne!(world.root_scope().get::<Spin>(cube).unwrap().angle, 0.0);
 
-// Filters narrow the archetypes a query visits, without fetching anything.
+// 过滤器收窄查询访问的 archetype，本身不取任何组件。
 let _ = world
-    .query_filtered::<&Spin, Without<f32>>()
-    .map(|(_, spin)| spin.angle)
+    .root_scope()
+    .query(query!(&Spin; Without<f32>))
+    .map(|(_, row)| row.read::<Spin>().angle)
     .count();
 ```
 
-spawn 与 despawn 需要 `&mut World`，或者排入队列的命令：
+查询是数据而不是类型参数：`query!` 是简写，`Query::new` 配合 `Query::read` 与
+`Query::write` 在运行时构建出同样的值。行按名字交出组件，且每个借用与行同寿，所以
+一个行可以跨语句读写，而不必挤在 `for` 的模式里。向查询没要过的组件取值会 panic，
+并报出是哪一个。
+
+spawn 与 despawn 需要 `&mut` scope，或者排入队列的命令：
 
 ```rust
-use unlit_ecs::World;
+use unlit_ecs::{World, bundle};
 
 let mut world = World::new();
 let entity = {
     let commands = world.root_scope().queue();
-    commands.spawn(("entity",))
+    commands.spawn(bundle!("entity"))
 };
-// Nothing has happened yet.
+// 此时还什么都没发生。
 assert!(!world.root_scope().contains(entity));
 world.apply();
 assert!(world.root_scope().contains(entity));
 ```
 
-元组 bundle 不会展平，因为元组本身就是一个组件。当组件是嵌套写下的，或者超过
-十六个时，用 `bundle!`。它的宽度受编译器递归上限约束——默认上限下约一百个组件；
-更宽的需要在调用方 crate 里提高 `#![recursion_limit]`：
+bundle 是 `bundle!` 写出的或 `ArchetypeBuilder` 收集的那份清单；元组不是 bundle，因为
+元组本身就是组件。`bundle!(a, b)` 是两个组件，而括号是分组而不是元组，所以宏会在任意
+深度展平它们——`bundle!((a, b), c)` 是三个。宽度受编译器递归上限约束，默认上限下约
+一百个组件；更宽的需要在调用方 crate 里提高 `#![recursion_limit]`：
 
 ```rust
-use unlit_ecs::{bundle, World};
+use unlit_ecs::{World, bundle};
 
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
@@ -210,13 +219,27 @@ assert!(world.root_scope().has::<bool>(entity));
 assert!(!world.root_scope().has::<(u32, f32)>(entity));
 ```
 
+本身就是元组的组件要整体推入，这也是 spawn 一个元组组件的唯一办法：
+
+```rust
+use unlit_ecs::{ArchetypeBuilder, World};
+
+let mut builder = ArchetypeBuilder::new();
+builder.push_component((1u8, 2u8));
+
+let mut world = World::new();
+let entity = world.root_scope_mut().spawn(builder);
+
+assert!(world.root_scope().has::<(u8, u8)>(entity));
+assert!(!world.root_scope().has::<u8>(entity));
+```
+
 用 `..value` 写下的 bundle 会被展开成它自己的组件，于是别处建好的 bundle 可以原样
-并入这次 spawn：宏产出的 builder 贡献它展平后的叶子，而元组或自定义 `Bundle` 保持
-它自己定义的组件。之所以需要这个语法，是因为宏只遍历源码，分不清 bundle 和组件——
+并入这次 spawn。之所以需要这个语法，是因为宏只遍历源码，分不清 bundle 和组件——
 裸写的话 bundle 会被当成一个组件：
 
 ```rust
-use unlit_ecs::{ArchetypeBuilder, bundle, World};
+use unlit_ecs::{ArchetypeBuilder, World, bundle};
 
 let mut gathered = ArchetypeBuilder::new();
 gathered.push_component(1u32);

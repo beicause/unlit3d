@@ -21,6 +21,7 @@
 //! are what exercise the specializer that derives it from the mesh.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at, unlit_options};
+use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::prelude::*;
 
@@ -195,7 +196,7 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let device = source.device(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn((Source::new(source),));
+    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot
@@ -210,7 +211,7 @@ fn build(
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        (camera_looking_at(
+        bundle!(camera_looking_at(
             glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
             glam::Vec3::ZERO,
             size,
@@ -252,7 +253,7 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            (mesh, UnlitPipeline::new(keys[column].clone())),
+            bundle!(mesh, UnlitPipeline::new(keys[column].clone())),
         );
     }
 

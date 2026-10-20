@@ -293,7 +293,7 @@ fn ui_only_world(world: &mut World, ctx: &Ctx) -> (TestGpu, Entity) {
 fn mount_ui_source(world: &mut World) -> Entity {
     world
         .root_scope_mut()
-        .spawn((Source::new(UiSource::new()),))
+        .spawn(bundle!(Source::new(UiSource::new()),))
 }
 
 /// Spawn `panel` under the UI source, which is the scope it runs.
@@ -301,7 +301,7 @@ fn spawn_panel(world: &mut World, ui: Entity, panel: UiPanel) -> Entity {
     world
         .scope_mut(ui)
         .expect("a source entity is its own scope")
-        .spawn((panel,))
+        .spawn(bundle!(panel,))
 }
 
 /// Spawn an input buffer stating the window's size and density.
@@ -315,7 +315,7 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
     world
         .scope_mut(world.shared())
         .expect("the shared scope exists")
-        .spawn((events.clone(),));
+        .spawn(bundle!(events.clone(),));
     input.push(InputEvent::Resized {
         size_px: (WIDTH, HEIGHT),
     });
@@ -330,7 +330,7 @@ fn spawn_load_ops(world: &mut World) {
     world
         .scope_mut(world.shared())
         .expect("the shared scope exists")
-        .spawn((RenderLoadOps {
+        .spawn(bundle!(RenderLoadOps {
             color: wgpu::LoadOp::Clear(CLEAR_COLOR),
             ..RenderLoadOps::default()
         },));
@@ -514,10 +514,10 @@ fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
     let gpu = TestGpu::new(world, ctx);
     let key = gpu.key.clone();
     let mesh = gpu.allocate_cube_mesh(world);
-    gpu.spawn(world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
+    gpu.spawn(world, bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),));
     gpu.spawn(
         world,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -621,7 +621,7 @@ async fn ui_does_not_clip_the_mesh() {
 
     world
         .root_scope_mut()
-        .spawn((UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
             let clip = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP));
             ui.painter().with_clip_rect(clip).rect_filled(
                 egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(CLIP)),
@@ -631,7 +631,7 @@ async fn ui_does_not_clip_the_mesh() {
         }),));
     world
         .root_scope_mut()
-        .spawn((Source::new(UiSource::new()),));
+        .spawn(bundle!(Source::new(UiSource::new()),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
@@ -669,10 +669,10 @@ async fn mesh_and_ui_survive_a_second_frame() {
     let gpu = mesh_world(&ctx, &mut world);
     spawn_load_ops(&mut world);
 
-    world.root_scope_mut().spawn((rich_panel(),));
+    world.root_scope_mut().spawn(bundle!(rich_panel(),));
     world
         .root_scope_mut()
-        .spawn((Source::new(UiSource::new()),));
+        .spawn(bundle!(Source::new(UiSource::new()),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     // One frame warms egui up, then two are compared.
@@ -731,7 +731,7 @@ fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
     let (gpu, ui) = ui_only_world(&mut world, ctx);
     spawn_load_ops(&mut world);
 
-    let extra = world.root_scope_mut().spawn((Burst(burst),));
+    let extra = world.root_scope_mut().spawn(bundle!(Burst(burst),));
     spawn_panel(&mut world, ui, burst_panel(extra));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, false);

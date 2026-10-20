@@ -34,6 +34,7 @@
 use std::future::Future;
 
 use unlit_ecs::World;
+use unlit_ecs::{bundle, query};
 
 pub use futures_executor::LocalPool;
 pub use futures_util::future::try_join_all;
@@ -58,8 +59,13 @@ impl LocalTasks {
     /// Every world the framework builds is given one this way at creation,
     /// before its setup runs, so the setup can spawn a task of its own.
     pub fn install(world: &mut World) {
-        if world.root_scope().query::<&LocalTasks>().next().is_none() {
-            world.root_scope_mut().spawn((Self::new(),));
+        if world
+            .root_scope()
+            .query(query!(&LocalTasks))
+            .next()
+            .is_none()
+        {
+            world.root_scope_mut().spawn(bundle!(Self::new(),));
         }
     }
 
@@ -74,10 +80,10 @@ impl LocalTasks {
     /// turn with it, exactly as a panicking job or tick would.
     pub fn pump(world: &mut World) {
         Self::install(world);
-        let Some((_, mut tasks)) = world.root_scope().query::<&mut LocalTasks>().next() else {
+        let Some((_, row)) = world.root_scope().query(query!(&mut LocalTasks)).next() else {
             return;
         };
-        tasks.0.run_until_stalled();
+        row.write::<LocalTasks>().0.run_until_stalled();
     }
 
     /// Hand `future` to the tasks `world` runs, answering whether it took it.
@@ -89,10 +95,14 @@ impl LocalTasks {
     where
         F: Future<Output = ()> + 'static,
     {
-        let Some((_, tasks)) = world.root_scope().query::<&LocalTasks>().next() else {
+        let Some((_, row)) = world.root_scope().query(query!(&LocalTasks)).next() else {
             return false;
         };
-        tasks.0.spawner().spawn_local(future).is_ok()
+        row.read::<LocalTasks>()
+            .0
+            .spawner()
+            .spawn_local(future)
+            .is_ok()
     }
 }
 

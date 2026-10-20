@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use arrayvec::ArrayVec;
 use common::*;
+use unlit_ecs::bundle;
 use unlit_wgpu::specialize::{
     PipelineVariant, RenderPipelineDesc, SpecializedPipeline, VertexLayout,
 };
@@ -377,10 +378,13 @@ async fn a_custom_family_owns_its_instance_stream() {
 
     // The renderer wants a camera to derive its uniforms from, but the custom
     // shader reads none of them.
-    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
     gpu.spawn(
         &mut world,
-        (
+        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+    );
+    gpu.spawn(
+        &mut world,
+        bundle!(
             mesh.clone(),
             pipeline.clone(),
             CustomInstance {
@@ -391,7 +395,7 @@ async fn a_custom_family_owns_its_instance_stream() {
     );
     gpu.spawn(
         &mut world,
-        (
+        bundle!(
             mesh,
             pipeline,
             CustomInstance {

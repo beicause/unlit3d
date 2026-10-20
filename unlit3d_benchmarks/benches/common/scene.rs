@@ -11,6 +11,7 @@
 //! lookup and a handle set, not a mesh.
 
 use glam::{Quat, Vec3};
+use unlit_ecs::bundle;
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::ResourceGraph;
@@ -101,7 +102,7 @@ impl Frame {
             let y = (index / side) % side;
             let z = index / (side * side);
             let cell = Vec3::new(x as f32, y as f32, z as f32) - Vec3::splat(side as f32 * 0.5);
-            world.root_scope_mut().spawn((
+            world.root_scope_mut().spawn(bundle!(
                 Transform {
                     translation: cell * spread,
                     rotation: Quat::IDENTITY,
@@ -116,7 +117,7 @@ impl Frame {
         // the benchmarks use.
         let eye = Vec3::new(0.0, 0.0, side as f32 * 1.5 + 20.0);
         let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
-        world.root_scope_mut().spawn((Camera {
+        world.root_scope_mut().spawn(bundle!(Camera {
             view_from_world: view,
             clip_from_view: glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0),
             active: true,

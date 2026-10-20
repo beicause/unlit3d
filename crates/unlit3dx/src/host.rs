@@ -8,6 +8,7 @@ use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
 use crate::thread::panic_message;
 use crate::world::WorldName;
+use unlit_ecs::{bundle, query};
 
 /// The sub-world's command inbox, a component of the nested world itself.
 ///
@@ -44,9 +45,13 @@ pub fn spawn_sub_world(
     // The sub-world owns its async tasks, so a job that mounts something
     // asynchronous hands it a task instead of an executor.
     LocalTasks::install(&mut nested);
-    nested.root_scope_mut().spawn((SubWorldInbox(receiver),));
+    nested
+        .root_scope_mut()
+        .spawn(bundle!(SubWorldInbox(receiver),));
     let commands = JobSender::new(commands);
-    let entity = host.root_scope_mut().spawn((nested, WorldName(name)));
+    let entity = host
+        .root_scope_mut()
+        .spawn(bundle!(nested, WorldName(name)));
     WorldHandle::new(entity, commands, None)
 }
 
@@ -62,10 +67,10 @@ pub fn drain_sub_world(nested: &mut World) {
     // before the first one starts. Cloning the receiver is cheap and lets the
     // drain run without collecting the jobs first.
     let receiver = {
-        let Some((_, inbox)) = nested.root_scope().query::<&SubWorldInbox>().next() else {
+        let Some((_, row)) = nested.root_scope().query(query!(&SubWorldInbox)).next() else {
             return;
         };
-        inbox.0.clone()
+        row.read::<SubWorldInbox>().0.clone()
     };
     while let Ok(job) = receiver.try_recv() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(nested)));

@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use glam::{Quat, Vec3};
 use unlit_ecs::World;
+use unlit_ecs::query;
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
 
@@ -26,7 +27,8 @@ type Poses = Vec<(RigidBodyHandle, Vec3, Quat)>;
 /// The library defines no payload of its own, so the demo and the tests each
 /// name the state they want: this is the whole of the subscription's work.
 fn collect_poses(world: &World) -> Option<Poses> {
-    let physics = world.root_scope().query::<&PhysicsWorld>().next()?.1;
+    let (_, row) = world.root_scope().query(query!(&PhysicsWorld)).next()?;
+    let physics = row.read::<PhysicsWorld>();
     Some(
         physics
             .bodies
@@ -167,8 +169,8 @@ fn a_collector_sees_contacts_from_every_step() {
     // reader is only the subscription's liveness token here.
     let _events: SnapshotReader<()> = sender
         .subscribe(move |world: &World| {
-            if let Some(contacts) = world.root_scope().query::<&PhysicsContacts>().next() {
-                for &contact in &contacts.1.started {
+            if let Some((_, row)) = world.root_scope().query(query!(&PhysicsContacts)).next() {
+                for &contact in &row.read::<PhysicsContacts>().started {
                     let _ = queue.send(contact);
                 }
             }
@@ -254,20 +256,19 @@ fn a_landing_reports_the_closing_speed() {
         // The contacts live in the world until the next step overwrites
         // them, so read them before stepping again.
         {
-            let contacts = world
+            let (_, row) = world
                 .root_scope()
-                .query::<&PhysicsContacts>()
+                .query(query!(&PhysicsContacts))
                 .next()
-                .expect("the setup creates the contact buffer")
-                .1;
-            landings.extend(contacts.started.iter().copied());
+                .expect("the setup creates the contact buffer");
+            landings.extend(row.read::<PhysicsContacts>().started.iter().copied());
         }
-        let physics = world
+        let (_, row) = world
             .root_scope()
-            .query::<&PhysicsWorld>()
+            .query(query!(&PhysicsWorld))
             .next()
-            .expect("the setup created the world")
-            .1;
+            .expect("the setup created the world");
+        let physics = row.read::<PhysicsWorld>();
         height = physics
             .bodies
             .get(ball)
@@ -278,12 +279,12 @@ fn a_landing_reports_the_closing_speed() {
     let (one, two, speed) = landings[0];
     let partner = if one == ball { two } else { one };
     assert_ne!(partner, ball, "a landing names two different bodies");
-    let physics = world
+    let (_, row) = world
         .root_scope()
-        .query::<&PhysicsWorld>()
+        .query(query!(&PhysicsWorld))
         .next()
-        .expect("the setup created the world")
-        .1;
+        .expect("the setup created the world");
+    let physics = row.read::<PhysicsWorld>();
     let Some(partner_body) = physics.bodies.get(partner) else {
         panic!("the body the ball landed on is not in the world");
     };
@@ -322,8 +323,9 @@ fn an_empty_world_publishes_empty_contacts() {
     let reader = world
         .sender()
         .subscribe(|world: &World| {
-            let contacts = world.root_scope().query::<&PhysicsContacts>().next()?;
-            Some((contacts.1.started.len(), contacts.1.stopped.len()))
+            let (_, row) = world.root_scope().query(query!(&PhysicsContacts)).next()?;
+            let contacts = row.read::<PhysicsContacts>();
+            Some((contacts.started.len(), contacts.stopped.len()))
         })
         .expect("the physics world accepts a subscription");
 
@@ -353,10 +355,11 @@ fn the_configured_gravity_reaches_the_world() {
     let probed = world.request(Box::new(|world: &mut World| {
         world
             .root_scope()
-            .query::<&PhysicsWorld>()
+            .query(query!(&PhysicsWorld))
             .next()
             .expect("the setup creates the world before any job")
             .1
+            .read::<PhysicsWorld>()
             .gravity
     }));
 

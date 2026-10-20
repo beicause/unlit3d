@@ -26,6 +26,7 @@ use unlit_wgpu::resources::{
 use crate::gltf::UnlitGltf;
 use crate::prelude::*;
 use crate::reflect;
+use unlit_ecs::query;
 
 /// The render context the world holds, found from `handle` or by query.
 ///
@@ -39,10 +40,11 @@ fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext
             .ok_or_else(|| format!("entity {} carries no render context", entity.to_bits()));
     }
     let mut found: Option<RenderContext> = None;
-    for (_, context) in world.root_scope().query::<&RenderContext>() {
+    for (_, row) in world.root_scope().query(query!(&RenderContext)) {
+        let context = *row.read::<RenderContext>();
         match found {
-            None => found = Some(*context),
-            Some(existing) if existing == *context => {}
+            None => found = Some(context),
+            Some(existing) if existing == context => {}
             Some(_) => {
                 return Err(
                     "the world has more than one render context; pass `context`".to_string()
@@ -63,7 +65,7 @@ fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, Stri
             .ok_or_else(|| format!("entity {} carries no renderer", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.root_scope().query::<&Renderer>() {
+    for (entity, _) in world.root_scope().query(query!(&Renderer)) {
         if found.is_some() {
             return Err("the world has more than one renderer; pass `renderer`".to_string());
         }
@@ -84,8 +86,8 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
             .ok_or_else(|| format!("entity {} carries no mesh source", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, source) in world.root_scope().query::<&Source>() {
-        if source.as_ref::<MeshSource>().is_some() {
+    for (entity, row) in world.root_scope().query(query!(&Source)) {
+        if row.read::<Source>().as_ref::<MeshSource>().is_some() {
             if found.is_some() {
                 return Err("the world has more than one mesh source; pass `source`".to_string());
             }
@@ -472,7 +474,7 @@ fn single_entity<T: 'static>(
             .ok_or_else(|| format!("entity {} carries no {what}", entity.to_bits()));
     }
     let mut found: Option<Entity> = None;
-    for (entity, _) in world.root_scope().query::<&T>() {
+    for (entity, _) in world.root_scope().query(query!(&T)) {
         if found.is_some() {
             return Err(format!("the world has more than one {what}; pass `entity`"));
         }

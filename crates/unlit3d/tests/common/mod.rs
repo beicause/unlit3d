@@ -6,6 +6,7 @@
 pub use unlit_wgpu_test_util::{Ctx, Frame, assert_image_snapshot, count_pixels_off_background};
 
 use core::ops::DerefMut;
+use unlit_ecs::bundle;
 use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::prelude::*;
@@ -45,7 +46,7 @@ impl TestGpu {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(&world.root_scope(), test.context);
         source.register_unlit_family(&world.root_scope());
-        test.source = Some(world.root_scope_mut().spawn((Source::new(source),)));
+        test.source = Some(world.root_scope_mut().spawn(bundle!(Source::new(source),)));
         test
     }
 
@@ -66,7 +67,9 @@ impl TestGpu {
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
-        let renderer = world.root_scope_mut().spawn((Renderer::new(context),));
+        let renderer = world
+            .root_scope_mut()
+            .spawn(bundle!(Renderer::new(context),));
         Self {
             context,
             renderer,

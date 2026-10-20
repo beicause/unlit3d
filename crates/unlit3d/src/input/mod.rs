@@ -37,9 +37,9 @@
 //! // The handle feeds the events in; the buffer is the world's own, holding
 //! // what arrived since its last tick.
 //! let input = InputWriter::new();
-//! world.root_scope_mut().spawn((input.clone(), input.subscribe()));
+//! world.root_scope_mut().spawn(bundle!(input.clone(), input.subscribe()));
 //! // A behaviour that reacts to the keyboard.
-//! world.root_scope_mut().spawn((
+//! world.root_scope_mut().spawn(bundle!(
 //!     Presses(0),
 //!     OnKey::new(|world, entity, key| {
 //!         if key.pressed {
@@ -77,7 +77,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use async_channel::{Receiver, Sender, unbounded};
 use bitflags::bitflags;
-use unlit_ecs::World;
+use unlit_ecs::{World, bundle, query};
 
 use crate::behaviour::behaviour;
 
@@ -722,15 +722,18 @@ pub enum InputEvent {
 ///
 /// let mut world = World::new();
 /// let input = InputWriter::new();
-/// world.root_scope_mut().spawn((input.clone(), input.subscribe()));
-/// let observer = world.root_scope_mut().spawn((
+/// world.root_scope_mut().spawn(bundle!(input.clone(), input.subscribe()));
+/// let observer = world.root_scope_mut().spawn(bundle!(
 ///     CtrlPresses(0),
 ///     OnInput::new(|world, entity, _event| {
 ///         let ctrl = world
 ///             .root_scope()
-///             .query::<&InputEvents>()
+///             .query(query!(&InputEvents))
 ///             .next()
-///             .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
+///             .is_some_and(|(_, row)| {
+///                 row.read::<InputEvents>()
+///                     .with_state(|state| state.modifiers.ctrl)
+///             });
 ///         if ctrl {
 ///             let _ = world.root_scope().with_mut::<CtrlPresses, _>(entity, |presses| presses.0 += 1);
 ///         }
@@ -1100,7 +1103,7 @@ impl InputWriter {
 pub fn refresh_input(world: &World) -> bool {
     let entities: Vec<_> = world
         .root_scope()
-        .query::<&InputEvents>()
+        .query(query!(&InputEvents))
         .map(|(entity, _)| entity)
         .collect();
     let present = !entities.is_empty();
@@ -1124,14 +1127,19 @@ pub fn refresh_input(world: &World) -> bool {
 /// spawned outside that hierarchy — one a runner started as a sibling —
 /// subscribes itself from its own setup.
 pub fn subscribe_input(world: &mut World) -> bool {
-    if world.root_scope().query::<&InputEvents>().next().is_some() {
+    if world
+        .root_scope()
+        .query(query!(&InputEvents))
+        .next()
+        .is_some()
+    {
         return false;
     }
     let Some(events) = world
         .root_scope()
-        .query::<&InputWriter>()
+        .query(query!(&InputWriter))
         .next()
-        .map(|(_, writer)| writer.subscribe())
+        .map(|(_, row)| row.read::<InputWriter>().subscribe())
     else {
         return false;
     };
@@ -1141,7 +1149,7 @@ pub fn subscribe_input(world: &mut World) -> bool {
     world
         .scope_mut(shared)
         .expect("the shared scope exists")
-        .spawn((events,));
+        .spawn(bundle!(events,));
     true
 }
 
@@ -1160,9 +1168,9 @@ pub fn subscribe_input(world: &mut World) -> bool {
 pub fn distribute_input(world: &World) -> bool {
     let Some(writer) = world
         .root_scope()
-        .query::<&InputWriter>()
+        .query(query!(&InputWriter))
         .next()
-        .map(|(_, writer)| InputWriter::clone(&writer))
+        .map(|(_, row)| InputWriter::clone(&row.read::<InputWriter>()))
     else {
         return false;
     };
@@ -1172,14 +1180,19 @@ pub fn distribute_input(world: &World) -> bool {
 /// The recursion behind [`distribute_input`].
 fn distribute_into(world: &World, writer: &InputWriter) -> bool {
     let mut changed = false;
-    for (entity, child) in world.root_scope().query::<&World>() {
-        let has = child.root_scope().query::<&InputWriter>().next().is_some();
+    for (entity, row) in world.root_scope().query(query!(&World)) {
+        let child = row.read::<World>();
+        let has = child
+            .root_scope()
+            .query(query!(&InputWriter))
+            .next()
+            .is_some();
         // The child is borrowed to ask the question; release it before
         // writing, or the write finds the cell already borrowed.
         drop(child);
         let nested = world.root_scope().with_mut::<World, _>(entity, |child| {
             if !has {
-                child.root_scope_mut().spawn((writer.clone(),));
+                child.root_scope_mut().spawn(bundle!(writer.clone(),));
             }
             // A buffer subscribed here is what the child's own tick reads.
             let subscribed = subscribe_input(child);
@@ -1281,9 +1294,9 @@ pub fn dispatch_input(world: &World) -> bool {
     // may read the world — including this component — freely.
     let Some(events) = world
         .root_scope()
-        .query::<&InputEvents>()
+        .query(query!(&InputEvents))
         .next()
-        .map(|(_, events)| events.to_vec())
+        .map(|(_, row)| row.read::<InputEvents>().to_vec())
     else {
         return false;
     };
@@ -1293,33 +1306,33 @@ pub fn dispatch_input(world: &World) -> bool {
     for event in &events {
         match event {
             InputEvent::Key(event) => {
-                for (entity, mut behaviour) in world.root_scope().query::<&mut OnKey>() {
-                    behaviour.run(world, entity, event);
+                for (entity, row) in world.root_scope().query(query!(&mut OnKey)) {
+                    row.write::<OnKey>().run(world, entity, event);
                 }
             }
             InputEvent::Mouse(event) => {
-                for (entity, mut behaviour) in world.root_scope().query::<&mut OnMouse>() {
-                    behaviour.run(world, entity, event);
+                for (entity, row) in world.root_scope().query(query!(&mut OnMouse)) {
+                    row.write::<OnMouse>().run(world, entity, event);
                 }
             }
             InputEvent::Pointer(event) => {
-                for (entity, mut behaviour) in world.root_scope().query::<&mut OnPointer>() {
-                    behaviour.run(world, entity, event);
+                for (entity, row) in world.root_scope().query(query!(&mut OnPointer)) {
+                    row.write::<OnPointer>().run(world, entity, event);
                 }
             }
             InputEvent::Touch(event) => {
-                for (entity, mut behaviour) in world.root_scope().query::<&mut OnTouch>() {
-                    behaviour.run(world, entity, event);
+                for (entity, row) in world.root_scope().query(query!(&mut OnTouch)) {
+                    row.write::<OnTouch>().run(world, entity, event);
                 }
             }
             InputEvent::Text(event) => {
-                for (entity, mut behaviour) in world.root_scope().query::<&mut OnText>() {
-                    behaviour.run(world, entity, event);
+                for (entity, row) in world.root_scope().query(query!(&mut OnText)) {
+                    row.write::<OnText>().run(world, entity, event);
                 }
             }
             InputEvent::Ime(event) => {
-                for (entity, mut behaviour) in world.root_scope().query::<&mut OnIme>() {
-                    behaviour.run(world, entity, event);
+                for (entity, row) in world.root_scope().query(query!(&mut OnIme)) {
+                    row.write::<OnIme>().run(world, entity, event);
                 }
             }
             // These carry no per-category payload to route, so only the
@@ -1330,8 +1343,8 @@ pub fn dispatch_input(world: &World) -> bool {
             | InputEvent::ScaleFactorChanged { .. } => {}
         }
 
-        for (entity, mut behaviour) in world.root_scope().query::<&mut OnInput>() {
-            behaviour.run(world, entity, event);
+        for (entity, row) in world.root_scope().query(query!(&mut OnInput)) {
+            row.write::<OnInput>().run(world, entity, event);
         }
     }
 
@@ -1343,7 +1356,7 @@ mod tests {
     use core::cell::Cell;
     use std::rc::Rc;
 
-    use unlit_ecs::{Entity, With};
+    use unlit_ecs::With;
 
     use super::*;
 
@@ -1411,34 +1424,46 @@ mod tests {
         let (seen_text, text) = counter();
         let (seen_ime, ime) = counter();
 
-        world.root_scope_mut().spawn((OnInput::new(move |_, _, _| {
-            seen_input.set(seen_input.get() + 1);
-        }),));
-        world.root_scope_mut().spawn((OnKey::new(move |_, _, _| {
-            seen_key.set(seen_key.get() + 1);
-        }),));
-        world.root_scope_mut().spawn((OnMouse::new(move |_, _, _| {
-            seen_mouse.set(seen_mouse.get() + 1);
-        }),));
         world
             .root_scope_mut()
-            .spawn((OnPointer::new(move |_, _, _| {
+            .spawn(bundle!(OnInput::new(move |_, _, _| {
+                seen_input.set(seen_input.get() + 1);
+            }),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnKey::new(move |_, _, _| {
+                seen_key.set(seen_key.get() + 1);
+            }),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnMouse::new(move |_, _, _| {
+                seen_mouse.set(seen_mouse.get() + 1);
+            }),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnPointer::new(move |_, _, _| {
                 seen_pointer.set(seen_pointer.get() + 1);
             }),));
-        world.root_scope_mut().spawn((OnTouch::new(move |_, _, _| {
-            seen_touch.set(seen_touch.get() + 1);
-        }),));
-        world.root_scope_mut().spawn((OnText::new(move |_, _, _| {
-            seen_text.set(seen_text.get() + 1);
-        }),));
-        world.root_scope_mut().spawn((OnIme::new(move |_, _, _| {
-            seen_ime.set(seen_ime.get() + 1);
-        }),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnTouch::new(move |_, _, _| {
+                seen_touch.set(seen_touch.get() + 1);
+            }),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnText::new(move |_, _, _| {
+                seen_text.set(seen_text.get() + 1);
+            }),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnIme::new(move |_, _, _| {
+                seen_ime.set(seen_ime.get() + 1);
+            }),));
 
         let input_handle = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input_handle.clone(), input_handle.subscribe()));
+            .spawn(bundle!(input_handle.clone(), input_handle.subscribe()));
         let events = [
             key_event(Key::W),
             mouse_event(),
@@ -1476,14 +1501,14 @@ mod tests {
         let (keys, key_count) = counter();
         let (all, all_count) = counter();
 
-        world.root_scope_mut().spawn((
+        world.root_scope_mut().spawn(bundle!(
             OnKey::new(move |_, _, _| keys.set(keys.get() + 1)),
             OnInput::new(move |_, _, _| all.set(all.get() + 1)),
         ));
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
         input.push(mouse_event());
 
@@ -1499,15 +1524,15 @@ mod tests {
         let (count, seen) = counter();
         for _ in 0..3 {
             let count = count.clone();
-            world
-                .root_scope_mut()
-                .spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
+            world.root_scope_mut().spawn(bundle!(OnKey::new(
+                move |_, _, _| count.set(count.get() + 1)
+            ),));
         }
 
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);
@@ -1521,7 +1546,7 @@ mod tests {
         // a callback can reach its own sibling components.
         let mut world = World::new();
         let (matches, seen) = counter();
-        world.root_scope_mut().spawn((
+        world.root_scope_mut().spawn(bundle!(
             7u32,
             OnKey::new(move |world, entity, _| {
                 let marker = *world.root_scope().get::<u32>(entity).unwrap();
@@ -1531,12 +1556,12 @@ mod tests {
         // Another entity of the same kind must not be substituted.
         world
             .root_scope_mut()
-            .spawn((9u32, OnKey::new(|_, _, _| {})));
+            .spawn(bundle!(9u32, OnKey::new(|_, _, _| {})));
 
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);
@@ -1552,16 +1577,19 @@ mod tests {
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         let (held, seen) = counter();
         world
             .root_scope_mut()
-            .spawn((OnKey::new(move |world, _, _| {
+            .spawn(bundle!(OnKey::new(move |world, _, _| {
                 let ctrl = world
                     .root_scope()
-                    .query::<&InputEvents>()
+                    .query(query!(&InputEvents))
                     .next()
-                    .is_some_and(|(_, events)| events.with_state(|state| state.modifiers.ctrl));
+                    .is_some_and(|(_, row)| {
+                        row.read::<InputEvents>()
+                            .with_state(|state| state.modifiers.ctrl)
+                    });
                 if ctrl {
                     held.set(held.get() + 1);
                 }
@@ -1589,19 +1617,18 @@ mod tests {
         let (count, seen) = counter();
         world
             .root_scope_mut()
-            .spawn((OnKey::new(move |world, _, _| {
-                let siblings = world
-                    .root_scope()
-                    .query_filtered::<Entity, With<OnKey>>()
-                    .count();
+            .spawn(bundle!(OnKey::new(move |world, _, _| {
+                let siblings = world.root_scope().query(query!(; With<OnKey>)).count();
                 count.set(siblings);
             }),));
-        world.root_scope_mut().spawn((OnKey::new(|_, _, _| {}),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnKey::new(|_, _, _| {}),));
 
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);
@@ -1612,13 +1639,15 @@ mod tests {
     #[test]
     fn a_queued_spawn_lands_after_apply() {
         let mut world = World::new();
-        world.root_scope_mut().spawn((OnKey::new(|world, _, _| {
-            world.root_scope().queue().spawn((42u32,));
-        }),));
+        world
+            .root_scope_mut()
+            .spawn(bundle!(OnKey::new(|world, _, _| {
+                world.root_scope().queue().spawn(bundle!(42u32,));
+            }),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
         assert!(dispatch_input(&world));
@@ -1633,13 +1662,13 @@ mod tests {
         let mut world = World::new();
         let doomed = world
             .root_scope_mut()
-            .spawn((OnKey::new(|world, entity, _| {
+            .spawn(bundle!(OnKey::new(|world, entity, _| {
                 world.root_scope().queue().despawn(entity);
             }),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
         input.push(key_event(Key::B));
 
@@ -1653,10 +1682,10 @@ mod tests {
     fn an_empty_event_list_delivers_nothing() {
         let mut world = World::new();
         let (count, seen) = counter();
-        world
-            .root_scope_mut()
-            .spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
-        world.root_scope_mut().spawn((InputWriter::new(),));
+        world.root_scope_mut().spawn(bundle!(OnInput::new(
+            move |_, _, _| count.set(count.get() + 1)
+        ),));
+        world.root_scope_mut().spawn(bundle!(InputWriter::new(),));
 
         assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
@@ -1666,9 +1695,9 @@ mod tests {
     fn no_input_state_resource_is_not_an_error() {
         let mut world = World::new();
         let (count, seen) = counter();
-        world
-            .root_scope_mut()
-            .spawn((OnInput::new(move |_, _, _| count.set(count.get() + 1)),));
+        world.root_scope_mut().spawn(bundle!(OnInput::new(
+            move |_, _, _| count.set(count.get() + 1)
+        ),));
 
         assert!(!dispatch_input(&world));
         assert_eq!(seen.get(), 0);
@@ -1680,7 +1709,7 @@ mod tests {
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
         // Events did arrive, so the caller still owes an `apply`.
@@ -1969,7 +1998,7 @@ mod tests {
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(InputEvent::Resized {
             size_px: (800, 600),
         });
@@ -1980,12 +2009,12 @@ mod tests {
         assert!(dispatch_input(&world));
         world.apply();
 
-        let (_, events) = world
+        let (_, row) = world
             .root_scope()
-            .query::<&InputEvents>()
+            .query(query!(&InputEvents))
             .next()
             .expect("the world has a buffer");
-        events.with_state(|state| {
+        row.read::<InputEvents>().with_state(|state| {
             assert_eq!(state.size_px, (800, 600));
             assert_eq!(state.scale_factor, 1.5);
             assert!(!state.focused);
@@ -1998,13 +2027,13 @@ mod tests {
     fn a_slow_consumer_reads_every_event() {
         let mut world = World::new();
         let (count, seen) = counter();
-        world
-            .root_scope_mut()
-            .spawn((OnKey::new(move |_, _, _| count.set(count.get() + 1)),));
+        world.root_scope_mut().spawn(bundle!(OnKey::new(
+            move |_, _, _| count.set(count.get() + 1)
+        ),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
 
         // Three frames of input arrive before the world dispatches once.
         input.push(key_event(Key::A));
@@ -2096,13 +2125,13 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn((OnKey::new(|world, entity, _| {
+            .spawn(bundle!(OnKey::new(|world, entity, _| {
                 let _ = world.root_scope().get::<OnKey>(entity);
             }),));
         let input = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn((input.clone(), input.subscribe()));
+            .spawn(bundle!(input.clone(), input.subscribe()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);

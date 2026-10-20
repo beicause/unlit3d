@@ -36,7 +36,7 @@
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use unlit_ecs::{Entity, World};
+use unlit_ecs::{Entity, World, bundle, query};
 use winit::application::ApplicationHandler;
 use winit::error::EventLoopError;
 use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
@@ -137,6 +137,7 @@ pub struct WinitDeviceEvent {
 /// hand the host to [`WinitHost::run`].
 ///
 /// ```rust,no_run
+/// use unlit_ecs::bundle;
 /// use unlit3d::winit::builtin::{WindowSpec, create_window_on_resume, exit_on_close_requested};
 /// use unlit3d::winit::event::WinitHost;
 /// use winit::event_loop::EventLoop;
@@ -145,7 +146,7 @@ pub struct WinitDeviceEvent {
 /// # fn main() -> Result<(), winit::error::EventLoopError> {
 /// let event_loop = EventLoop::new()?;
 /// let mut host = WinitHost::new();
-/// host.world_mut().root_scope_mut().spawn((
+/// host.world_mut().root_scope_mut().spawn(bundle!(
 ///     WindowSpec(Window::default_attributes().with_title("unlit3d")),
 ///     create_window_on_resume(),
 ///     exit_on_close_requested(),
@@ -212,7 +213,7 @@ impl<U: 'static> WinitHost<U> {
         let display = event_loop.owned_display_handle();
         self.world
             .root_scope_mut()
-            .spawn((Resumed(false), DisplayHandle(display)));
+            .spawn(bundle!(Resumed(false), DisplayHandle(display)));
     }
 
     /// Set the host's [`Resumed`] state.
@@ -220,7 +221,7 @@ impl<U: 'static> WinitHost<U> {
         let Some(entity) = self
             .world
             .root_scope()
-            .query::<&Resumed>()
+            .query(query!(&Resumed))
             .next()
             .map(|(entity, _)| entity)
         else {
@@ -258,8 +259,8 @@ impl<U: 'static> WinitHost<U> {
         let requests: Vec<WindowAttributes> = self
             .world
             .root_scope()
-            .query::<&mut CreateWindowRequest>()
-            .filter_map(|(_, mut request)| request.0.take())
+            .query(query!(&mut CreateWindowRequest))
+            .filter_map(|(_, row)| row.write::<CreateWindowRequest>().0.take())
             .collect();
         for attributes in requests {
             match event_loop.create_window(attributes) {
@@ -268,16 +269,17 @@ impl<U: 'static> WinitHost<U> {
                     // and a window is already laid out by then: feed the one it
                     // starts with, or nothing that needs logical points ever
                     // learns it.
-                    if let Some((_, writer)) =
-                        self.world.root_scope().query::<&InputWriter>().next()
+                    if let Some((_, row)) =
+                        self.world.root_scope().query(query!(&InputWriter)).next()
                     {
-                        writer.push(InputEvent::ScaleFactorChanged {
-                            scale_factor: window.scale_factor() as f32,
-                        });
+                        row.read::<InputWriter>()
+                            .push(InputEvent::ScaleFactorChanged {
+                                scale_factor: window.scale_factor() as f32,
+                            });
                     }
                     self.world
                         .root_scope_mut()
-                        .spawn((WinitWindow(Arc::new(window)),));
+                        .spawn(bundle!(WinitWindow(Arc::new(window)),));
                 }
                 Err(error) => {
                     log::error!("could not create the window: {error}");
@@ -290,7 +292,8 @@ impl<U: 'static> WinitHost<U> {
     /// Exit the event loop when any [`ExitRequest`] is set.
     fn exit_requested(&mut self, event_loop: &ActiveEventLoop) {
         let mut exit = false;
-        for (_entity, mut request) in self.world.root_scope().query::<&mut ExitRequest>() {
+        for (_entity, row) in self.world.root_scope().query(query!(&mut ExitRequest)) {
+            let mut request = row.write::<ExitRequest>();
             if request.0 {
                 request.0 = false;
                 exit = true;
@@ -310,31 +313,32 @@ impl<U: 'static> Default for WinitHost<U> {
 
 impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
     fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: StartCause) {
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnNewEvents>() {
-            behaviour.run(&self.world, entity, &cause);
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnNewEvents)) {
+            row.write::<OnNewEvents>().run(&self.world, entity, &cause);
         }
         self.settle(event_loop);
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.set_resumed(true);
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnResumed>() {
-            behaviour.run(&self.world, entity, &());
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnResumed)) {
+            row.write::<OnResumed>().run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnSuspended>() {
-            behaviour.run(&self.world, entity, &());
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnSuspended)) {
+            row.write::<OnSuspended>().run(&self.world, entity, &());
         }
         self.settle(event_loop);
         self.set_resumed(false);
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, mut event: U) {
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnUserEvent<U>>() {
-            behaviour.run(&self.world, entity, &mut event);
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnUserEvent<U>)) {
+            row.write::<OnUserEvent<U>>()
+                .run(&self.world, entity, &mut event);
         }
         self.settle(event_loop);
     }
@@ -346,8 +350,9 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: WindowEvent,
     ) {
         let event = WinitWindowEvent { window_id, event };
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnWindowEvent>() {
-            behaviour.run(&self.world, entity, &event);
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnWindowEvent)) {
+            row.write::<OnWindowEvent>()
+                .run(&self.world, entity, &event);
         }
         self.settle(event_loop);
     }
@@ -359,29 +364,30 @@ impl<U: 'static> ApplicationHandler<U> for WinitHost<U> {
         event: DeviceEvent,
     ) {
         let event = WinitDeviceEvent { device_id, event };
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnDeviceEvent>() {
-            behaviour.run(&self.world, entity, &event);
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnDeviceEvent)) {
+            row.write::<OnDeviceEvent>()
+                .run(&self.world, entity, &event);
         }
         self.settle(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnAboutToWait>() {
-            behaviour.run(&self.world, entity, &());
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnAboutToWait)) {
+            row.write::<OnAboutToWait>().run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnExiting>() {
-            behaviour.run(&self.world, entity, &());
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnExiting)) {
+            row.write::<OnExiting>().run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
 
     fn memory_warning(&mut self, event_loop: &ActiveEventLoop) {
-        for (entity, mut behaviour) in self.world.root_scope().query::<&mut OnMemoryWarning>() {
-            behaviour.run(&self.world, entity, &());
+        for (entity, row) in self.world.root_scope().query(query!(&mut OnMemoryWarning)) {
+            row.write::<OnMemoryWarning>().run(&self.world, entity, &());
         }
         self.settle(event_loop);
     }
@@ -398,14 +404,16 @@ mod tests {
     #[test]
     fn set_resumed_writes_the_host_state() {
         let mut host = WinitHost::<()>::new();
-        host.world_mut().root_scope_mut().spawn((Resumed(false),));
+        host.world_mut()
+            .root_scope_mut()
+            .spawn(bundle!(Resumed(false),));
         host.set_resumed(true);
         assert_eq!(
             host.world()
                 .root_scope()
-                .query::<&Resumed>()
+                .query(query!(&Resumed))
                 .next()
-                .map(|(_, state)| state.0),
+                .map(|(_, row)| row.read::<Resumed>().0),
             Some(true)
         );
     }

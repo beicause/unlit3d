@@ -7,6 +7,7 @@
 pub mod common;
 
 use common::*;
+use unlit_ecs::{bundle, query};
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
@@ -28,8 +29,8 @@ async fn ecs_cube_covers_the_frame() {
     // its own AABB now, so no bounding component is needed.
     world
         .root_scope_mut()
-        .spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.root_scope_mut().spawn((
+        .spawn(bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),));
+    world.root_scope_mut().spawn(bundle!(
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -71,12 +72,15 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
 
     // The camera and the instances live in the source's own subtree, which is
     // the scope the frame draws from.
-    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
+    gpu.spawn(
+        &mut world,
+        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+    );
 
     // Far cube, red.
     gpu.spawn(
         &mut world,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, -0.6),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -91,7 +95,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
     // Near cube, green.
     gpu.spawn(
         &mut world,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.6),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -177,7 +181,10 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
-    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
+    gpu.spawn(
+        &mut world,
+        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+    );
 
     // A cube fills a roughly square block of the frame, and the replacement
     // draws at the same spot through the ranges it vacated.
@@ -191,7 +198,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let cube = gpu.allocate_cube_mesh(&world);
     let cube_entity = gpu.spawn(
         &mut world,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -227,7 +234,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let replacement = gpu.allocate_cube_mesh(&world);
     gpu.spawn(
         &mut world,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -285,14 +292,17 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     let mut world = World::new();
     let gpu = TestGpu::new(&mut world, &ctx);
     let key = gpu.key.clone();
-    gpu.spawn(&mut world, (camera_view(WIDTH as f32 / HEIGHT as f32),));
+    gpu.spawn(
+        &mut world,
+        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+    );
 
     // The first mesh draws at the centre of the frame and never moves, so the
     // pixel there is its own as long as its data survives every grow.
     let first = gpu.allocate_cube_mesh(&world);
     gpu.spawn(
         &mut world,
-        (
+        bundle!(
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -309,7 +319,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     for (frame_index, mesh) in grids.into_iter().enumerate() {
         gpu.spawn(
             &mut world,
-            (
+            bundle!(
                 Transform {
                     translation: glam::Vec3::new(-3.0 + 2.4 * frame_index as f32, -1.4, -2.0),
                     rotation: glam::Quat::from_rotation_y(0.3),
@@ -356,15 +366,17 @@ async fn a_source_draws_only_its_own_subtree() {
     // A second source beside the first, both children of the root.
     let mut second_source = MeshSource::new(&world.root_scope(), gpu.context);
     second_source.register_unlit_family(&world.root_scope());
-    let second = world.root_scope_mut().spawn((Source::new(second_source),));
+    let second = world
+        .root_scope_mut()
+        .spawn(bundle!(Source::new(second_source),));
 
     // One cube per source, each with the camera that frames it.
     let near = gpu.allocate_cube_mesh(&world);
     let far = gpu.allocate_cube_mesh(&world);
     for (scope, mesh) in [(first, near), (second, far)] {
         let mut scope = world.scope_mut(scope).expect("the source is a scope");
-        scope.spawn((camera_view(WIDTH as f32 / HEIGHT as f32),));
-        scope.spawn((
+        scope.spawn(bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),));
+        scope.spawn(bundle!(
             Transform::default(),
             mesh,
             UnlitPipeline::new(gpu.key.clone()),
@@ -377,14 +389,14 @@ async fn a_source_draws_only_its_own_subtree() {
         let owned = world
             .scope(scope)
             .expect("the source is a scope")
-            .query::<&GpuMesh>()
+            .query(query!(&GpuMesh))
             .count();
         assert_eq!(owned, 1, "a source draws only the instances it owns");
     }
 
     // The root sees both, which is what makes the two frames one scene.
     assert_eq!(
-        world.root_scope().query::<&GpuMesh>().count(),
+        world.root_scope().query(query!(&GpuMesh)).count(),
         2,
         "the root sees every source's instances"
     );
@@ -406,7 +418,7 @@ async fn a_source_draws_only_its_own_subtree() {
                 .as_mut::<MeshSource>()
                 .expect("the source is a mesh source");
             // The count the renderer would hand this source.
-            source_scope.query::<&GpuMesh>().count()
+            source_scope.query(query!(&GpuMesh)).count()
         };
         assert_eq!(drawn, 1, "{label} draws exactly its own instance");
     }
