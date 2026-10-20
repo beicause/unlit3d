@@ -2,63 +2,90 @@
 
 use crate::archetype::{Archetype, ScopeSummary};
 use crate::entity::Entity;
-use crate::query::{Query, Row};
+#[cfg(debug_assertions)]
+use crate::query::assert_no_duplicates;
+use crate::query::{ArchetypeFilter, Query};
 use crate::world::World;
 
 /// Iterates the entities a [`Query`] matches.
 ///
-/// An item borrows the world through its [`Row`], so two items from one
-/// iterator may be alive at the same time. Asking for a component exclusively
-/// twice without dropping the first borrow panics, so a row that writes has to
-/// be dropped before the next one is fetched.
-pub struct QueryIter<'w, 'q> {
+/// The per-archetype state is resolved once, before the rows of that archetype
+/// are visited, so the components are looked up a handful of times per archetype
+/// rather than once per row. An item borrows its component from the world, so two
+/// items may be alive at once; asking for one exclusively twice without dropping
+/// the first borrow panics, so a row that writes has to be dropped before the
+/// next one is fetched.
+pub struct QueryIter<'w, Q: Query, F: ArchetypeFilter = ()> {
     world: &'w World,
     /// The scope the query looks through.
     scope: Entity,
-    /// What to fetch, and which archetypes to visit.
-    query: &'q Query,
+    /// Narrows which of the archetypes the query matches are visited.
+    filter: F,
     archetype: usize,
     row: usize,
-    /// Whether the archetype being visited has been accepted and its visibility
+    /// What the archetype being visited resolves its components to.
+    /// [`None`] until that archetype is accepted.
+    state: Option<Q::Fetch<'w>>,
+    /// Set once the archetype being visited has been accepted and its visibility
     /// decided, so that the per-row loop repeats neither.
     resolved: bool,
     /// Set while the archetype being visited is uniform: whether the one scope
     /// its rows live in is visible, which is the answer every row shares.
-    /// `None` for a mixed archetype, and until the archetype is resolved.
+    /// [`None`] for a mixed archetype, and until the archetype is resolved.
     ///
     /// Resolved here rather than per row because deciding it walks the scope
     /// tree, and a uniform archetype answers the same thing for every row.
     uniform_visible: Option<bool>,
 }
 
-impl<'w, 'q> QueryIter<'w, 'q> {
-    pub(crate) fn new(world: &'w World, scope: Entity, query: &'q Query) -> Self {
-        query.assert_consistent();
+impl<'w, Q: Query> QueryIter<'w, Q, ()> {
+    pub(crate) fn new(world: &'w World, scope: Entity) -> Self {
+        #[cfg(debug_assertions)]
+        assert_no_duplicates::<Q>(core::panic::Location::caller());
         Self {
             world,
             scope,
-            query,
+            filter: (),
             archetype: 0,
             row: 0,
+            state: None,
             resolved: false,
             uniform_visible: None,
         }
     }
+}
 
-    /// Whether the archetype at `self.archetype` is one this query visits.
-    fn archetype_matches(&self) -> bool {
-        let Some(archetype) = self.world.archetypes_slice().get(self.archetype) else {
-            return false;
-        };
-        if !self.query.matches_archetype(archetype) {
-            return false;
+impl<'w, Q: Query, F: ArchetypeFilter> QueryIter<'w, Q, F> {
+    /// Visit only the archetypes the filter accepts.
+    ///
+    /// The filter sees an archetype before any of its rows is fetched and before
+    /// any cell is borrowed, so rejecting an archetype costs one test rather than
+    /// one per row, and works even when that archetype's components are already
+    /// borrowed elsewhere. See [`ArchetypeFilter`].
+    #[must_use]
+    pub fn by<G: ArchetypeFilter>(self, filter: G) -> QueryIter<'w, Q, G> {
+        QueryIter {
+            world: self.world,
+            scope: self.scope,
+            filter,
+            archetype: self.archetype,
+            row: self.row,
+            state: self.state,
+            resolved: self.resolved,
+            uniform_visible: self.uniform_visible,
         }
-        archetype
-            .scope_summary()
-            .any_visible(self.world, self.scope)
     }
 
-    /// Whether row `row` of `archetype` is visible from this query's scope.
+    /// Whether `archetype` is one this query visits.
+    fn archetype_matches(&self, archetype: &Archetype) -> bool {
+        Q::matches(archetype)
+            && self.filter.accept(archetype)
+            && archetype
+                .scope_summary()
+                .any_visible(self.world, self.scope)
+    }
+
+    /// Whether `row` of `archetype` is visible from this query's scope.
     fn row_matches(&self, archetype: &Archetype, row: usize) -> bool {
         match self.uniform_visible {
             // The whole archetype lives in one scope, so the tree walk is done
@@ -73,8 +100,8 @@ impl<'w, 'q> QueryIter<'w, 'q> {
     }
 }
 
-impl<'w: 'q, 'q> Iterator for QueryIter<'w, 'q> {
-    type Item = (Entity, Row<'q>);
+impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
+    type Item = Q::Item<'w>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let archetypes = self.world.archetypes_slice();
@@ -85,16 +112,18 @@ impl<'w: 'q, 'q> Iterator for QueryIter<'w, 'q> {
                 // lazily.
                 self.archetype += 1;
                 self.row = 0;
+                self.state = None;
                 self.resolved = false;
                 self.uniform_visible = None;
                 continue;
             }
             if !self.resolved {
-                if !self.archetype_matches() {
+                if !self.archetype_matches(archetype) {
                     self.archetype += 1;
                     self.row = 0;
                     continue;
                 }
+                self.state = Some(Q::fetch_state(archetype));
                 let summary = archetype.scope_summary();
                 self.uniform_visible = match summary {
                     // `all_visible` on a uniform archetype is exactly "the
@@ -116,7 +145,8 @@ impl<'w: 'q, 'q> Iterator for QueryIter<'w, 'q> {
                 // a caller spawns under the shared one is content.
                 continue;
             }
-            return Some((entity, Row::new(archetype, self.query, row)));
+            let state = self.state.as_ref()?;
+            return Some(Q::fetch(state, row));
         }
     }
 }

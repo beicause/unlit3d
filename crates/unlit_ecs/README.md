@@ -79,7 +79,7 @@ that one relation is the whole tree: a scene is a subtree, and what a caller
 holds is [`Scope`], an accessor narrowed to one entity's place in it.
 
 ```rust
-use unlit_ecs::{World, bundle, query};
+use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
 let scene = world.root_scope_mut().spawn_empty();
@@ -92,7 +92,7 @@ assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
 assert_eq!(scope.children(scene).len(), 2);
-assert!(scope.query(query!(&u32)).any(|(entity, _)| entity == cube));
+assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
 
 // Root is a scope too, and it sees every scope.
 assert_eq!(world.root_scope().len(), 3);
@@ -172,8 +172,8 @@ visible length of each.
 [`bundle!`] macro that writes one), [`ScopeOf`] and the
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
 [`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
-[`Query`] / [`Row`] (and the [`query!`] macro, with [`With`], [`Without`]
-and [`Or`] naming filters),
+[`Query`] (the type parameter naming what a row yields, with [`Entity`] and
+[`Has<C>`] as items and [`QueryIter::by`] as the archetype predicate),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
 [`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
 component type a type-erased reader only knows by
@@ -183,11 +183,14 @@ for reporting a world's shape as plain data (with `EntityProxy` and
 hash containers
 [`TypeIdHashMap`], [`EntityHashMap`] and friends.
 
-A query is data: a list of slots and a filter, which [`query!` assembles in a
-const block and which a caller can also build at run time. A row looks a
-component up in its archetype when it is asked for and hands out a borrow that
-lives as long as the row, so reading two rows at once is allowed and writing the
-same component twice without dropping the first borrow panics. [`Scope::location`] and
+A query is a type parameter. [`Scope::query`] and [`Scope::query_one`] name what
+to fetch, and `Q` is `&C`, `&mut C`, `Option<&C>`, `Option<&mut C>`, [`Entity`],
+[`Has<C>`], or a tuple of those, in that order. Each archetype resolves its
+columns once, so a yielded row costs no lookup. A borrow lives as long as the
+row, so reading two rows at once is allowed and writing the same component twice
+without dropping the first borrow panics. `Has<C>` reads presence without
+borrowing the cell, and [`QueryIter::by`] narrows the archetypes a query visits
+with a closure over [`Archetype`] before any cell is borrowed. [`Scope::location`] and
 [`Scope::archetype`] expose the same shape to a caller that holds many entities
 — for instance one that culled a scene into a list — so it can group them by
 archetype and resolve each archetype's columns once for all of them instead of
@@ -205,7 +208,7 @@ storage order. Archetypes are created on demand and never removed.
 ## Usage
 
 ```rust
-use unlit_ecs::{World, Without, bundle, query};
+use unlit_ecs::{Entity, Has, World, bundle};
 
 struct Spin {
     radians_per_second: f32,
@@ -218,27 +221,33 @@ let clock = world.root_scope_mut().spawn(bundle!(0.016f32));
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.
-let delta = *world.root_scope().get::<f32>(clock).unwrap();
-for (_, row) in world.root_scope().query(query!(&mut Spin)) {
-    let mut spin = row.write::<Spin>();
+let delta = *world.root_scope().query_one::<&f32>(clock).unwrap();
+for mut spin in world.root_scope().query::<&mut Spin>() {
     spin.angle += spin.radians_per_second * delta;
 }
-assert_ne!(world.root_scope().get::<Spin>(cube).unwrap().angle, 0.0);
+assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().angle, 0.0);
 
-// A filter narrows the archetypes a query visits, without fetching anything.
+// A predicate narrows the archetypes a query visits, before any cell is
+// borrowed: here, everything that is not a clock.
 let _ = world
     .root_scope()
-    .query(query!(&Spin; Without<f32>))
-    .map(|(_, row)| row.read::<Spin>().angle)
+    .query::<&Spin>()
+    .by(|archetype: &unlit_ecs::Archetype| !archetype.has::<f32>())
     .count();
+
+// `Entity` and `Has<C>` are query items too: presence reads do not borrow.
+for (entity, has_spin) in world.root_scope().query::<(&Entity, Has<Spin>)>() {
+    let _ = (entity, has_spin);
+}
 ```
 
-A query is data, not a type parameter: [`query!`] is the shorthand, and
-[`Query::new`] with [`Query::read`] and [`Query::write`] builds the same value
-at run time. A row hands out components by name, and each borrow lives as long
-as the row, so a row can be read and written across statements instead of
-inside a `for` pattern. Naming a component the query did not ask for panics and
-says which one it was.
+A query is a type, not a value: `&C` reads a component, `&mut C` writes one,
+`Option<&C>` and `Option<&mut C>` make it optional, [`Entity`] yields the
+entity, and [`Has<C>`] yields whether `C` is there. Items do not nest —
+`&(a, b)` is one tuple component and `(&a, &b)` is two — and a query with more
+components than a tuple impl covers is written by implementing [`Query`]
+yourself. [`Scope::query_one`] runs the same query over one entity, so a lookup
+by handle and a pass over a scope share one vocabulary.
 
 Spawning and despawning need a `&mut` scope, or a queued command:
 
@@ -264,15 +273,17 @@ width is limited by the compiler's recursion limit, about a hundred components
 at the default, and a wider one is built by raising `#![recursion_limit]`:
 
 ```rust
-use unlit_ecs::{World, bundle};
+use unlit_ecs::{Has, World, bundle};
 
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
 // Two components: one tuple, and a nested one.
-assert!(world.root_scope().has::<(u32, f32)>(entity));
-assert!(world.root_scope().has::<(bool, ())>(entity));
-assert!(!world.root_scope().has::<u32>(entity));
+let scope = world.root_scope();
+assert_eq!(scope.query::<Has<(u32, f32)>>().count(), 1);
+assert_eq!(scope.query_one::<Has<(u32, f32)>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<(bool, ())>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<u32>>(entity), None);
 ```
 
 A bundle written as `..value` is spread into its own components, so a bundle
@@ -281,7 +292,7 @@ macro walks the source and cannot tell a bundle from a component — written
 plainly, a bundle is one component:
 
 ```rust
-use unlit_ecs::{ArchetypeBuilder, World, bundle};
+use unlit_ecs::{ArchetypeBuilder, Has, World, bundle};
 
 let mut gathered = ArchetypeBuilder::new();
 gathered.push_component(1u32);
@@ -289,8 +300,9 @@ gathered.push_component(1u32);
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!(..gathered, 2.0f32));
 
-assert!(world.root_scope().has::<u32>(entity));
-assert!(world.root_scope().has::<f32>(entity));
+let scope = world.root_scope();
+assert_eq!(scope.query_one::<Has<u32>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<f32>>(entity), Some(true));
 ```
 
 ## The MCP server

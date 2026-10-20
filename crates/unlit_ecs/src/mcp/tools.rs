@@ -344,7 +344,10 @@ mod tests {
         let error = write_component(&scope, sibling, "Marker", &serde_json::json!({ "0": 9 }))
             .expect_err("the sibling is out of reach");
         assert!(error.contains(&sibling.to_bits().to_string()), "{error}");
-        assert_eq!(world.root_scope().get::<Marker>(sibling).unwrap().0, 2);
+        assert_eq!(
+            world.root_scope().query_one::<&Marker>(sibling).unwrap().0,
+            2
+        );
     }
 
     #[test]

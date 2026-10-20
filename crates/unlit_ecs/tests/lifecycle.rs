@@ -37,7 +37,7 @@ fn a_despawn_callback_runs_before_the_row_is_removed() {
         OnDespawn::new(move |scope, doomed| {
             // The entity still has its components, which is the whole reason
             // a despawn callback cannot be deferred.
-            let marker = scope.get::<Marker>(doomed).expect("still alive").0;
+            let marker = scope.query_one::<&Marker>(doomed).expect("still alive").0;
             sink.borrow_mut().push(format!("despawn {marker}"));
         }),
     ));
@@ -71,7 +71,7 @@ fn a_spawn_callback_sees_its_own_components() {
     world.root_scope_mut().spawn(bundle!(
         Marker(42),
         OnSpawn::new(move |scope, spawned| {
-            *sink.borrow_mut() = scope.get::<Marker>(spawned).map(|marker| marker.0);
+            *sink.borrow_mut() = scope.query_one::<&Marker>(spawned).map(|marker| marker.0);
         }),
     ));
     assert_eq!(*observed.borrow(), Some(42));
@@ -197,7 +197,7 @@ fn a_callback_cannot_reborrow_its_own_lifecycle_component() {
         .spawn(bundle!(OnSpawn::new(|scope, spawned| {
             // The runner holds the component for the whole run, the same way every
             // other behaviour component is held while it runs.
-            let _ = scope.get_mut::<OnSpawn>(spawned);
+            let _ = scope.query_one::<&mut OnSpawn>(spawned);
         }),));
 }
 
@@ -216,7 +216,7 @@ fn a_panicking_callback_leaves_the_component_registered() {
     }));
     assert!(spawned.is_err(), "the panic reaches the caller");
     assert!(
-        world.root_scope().get::<OnSpawn>(entity).is_some(),
+        world.root_scope().query_one::<&OnSpawn>(entity).is_some(),
         "the callback is still on the row it was spawned with"
     );
 }

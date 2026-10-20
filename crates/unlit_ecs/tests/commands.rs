@@ -1,7 +1,7 @@
 //! Deferred structural changes, from a callback that only has `&World`.
 
-use unlit_ecs::{Commands, Entity, World};
-use unlit_ecs::{bundle, query};
+use unlit_ecs::bundle;
+use unlit_ecs::{Commands, Entity, Has, World};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Spawned;
@@ -13,7 +13,7 @@ struct Marker(u32);
 /// it needs from it, queues what it needs through `Commands`, and the driver
 /// applies the queue afterwards.
 fn run_behaviour(world: &World, commands: Commands<'_>) -> Entity {
-    let template = world.root_scope().query(query!(&Spawned)).count();
+    let template = world.root_scope().query::<&Spawned>().count();
     commands.spawn(bundle!(Marker(template as u32), Spawned))
 }
 
@@ -35,11 +35,16 @@ fn a_queued_spawn_does_nothing_until_apply() {
     world.apply();
     assert!(world.root_scope().contains(child));
     assert_eq!(
-        world.root_scope().get::<Marker>(child).unwrap().0,
+        world.root_scope().query_one::<&Marker>(child).unwrap().0,
         0,
         "the behaviour read the world before the spawn existed"
     );
-    assert!(world.root_scope().has::<Spawned>(child));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<Spawned>>(child)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -54,7 +59,10 @@ fn a_queued_handle_is_usable_before_apply() {
     world.apply();
 
     assert!(world.root_scope().contains(child));
-    assert_eq!(*world.root_scope().get::<Entity>(owner).unwrap(), child);
+    assert_eq!(
+        *world.root_scope().query_one::<&Entity>(owner).unwrap(),
+        child
+    );
 }
 
 #[test]
@@ -82,8 +90,11 @@ fn commands_apply_in_the_order_they_were_queued() {
 
     assert!(world.root_scope().contains(first));
     assert!(world.root_scope().contains(second));
-    assert_eq!(world.root_scope().get::<Marker>(first).unwrap().0, 1);
-    assert_eq!(world.root_scope().get::<Marker>(second).unwrap().0, 2);
+    assert_eq!(world.root_scope().query_one::<&Marker>(first).unwrap().0, 1);
+    assert_eq!(
+        world.root_scope().query_one::<&Marker>(second).unwrap().0,
+        2
+    );
 }
 
 #[test]
@@ -130,9 +141,9 @@ fn a_custom_command_can_be_queued() {
         fn apply(self: Box<Self>, world: &mut World) {
             let doomed: Vec<Entity> = world
                 .root_scope()
-                .query(query!(&Marker))
-                .filter(|(_, row)| row.read::<Marker>().0 < self.0)
-                .map(|(entity, _)| entity)
+                .query::<(&Marker, Entity)>()
+                .filter(|(marker, _)| marker.0 < self.0)
+                .map(|(_, entity)| entity)
                 .collect();
             for entity in doomed {
                 world.root_scope_mut().despawn(entity);
@@ -167,7 +178,7 @@ fn many_commands_apply_without_losing_any() {
     assert_eq!(world.root_scope().len(), 256);
     for (expected, entity) in (0..256u32).zip(&handles) {
         assert_eq!(
-            world.root_scope().get::<Marker>(*entity).unwrap().0,
+            world.root_scope().query_one::<&Marker>(*entity).unwrap().0,
             expected
         );
     }

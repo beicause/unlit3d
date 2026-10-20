@@ -54,7 +54,7 @@ scope 就是一个实体。每个实体都带一个指向父实体的 `ScopeOf`�
 一个场景是一棵子树，而调用者手里拿到的是 `Scope`，一个收窄到树中某个实体位置的访问器。
 
 ```rust
-use unlit_ecs::{World, bundle, query};
+use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
 let scene = world.root_scope_mut().spawn_empty();
@@ -67,7 +67,7 @@ assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
 assert_eq!(scope.children(scene).len(), 2);
-assert!(scope.query(query!(&u32)).any(|(entity, _)| entity == cube));
+assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
 
 // 根也是一个 scope，它看得见所有 scope。
 assert_eq!(world.root_scope().len(), 3);
@@ -128,16 +128,20 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 `World`、`Entity`、`Location`、`Bundle` / `ArchetypeBuilder`（以及写出 bundle 的
 `bundle!` 宏）、把 world 收窄到一个 scope 的 `ScopeOf` 与
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
-`Query` / `Row`（以及 `query!` 宏，过滤器写作 `With`、`Without`、`Or`）、用于延迟结构变更的
+`Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`，
+archetype 谓词写作 `QueryIter::by`）、用于延迟结构变更的
 `Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`、用于给
 只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`、用于把 world
 形态当作纯数据汇报的 `WorldInfo` / `ArchetypeInfo` / `EntityInfo`（实体字段反射时
 指名 `EntityProxy` 与 `EntityVecProxy`），以及
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。
 
-查询就是数据：一份 slot 清单加一个过滤器，由 `query!` 在 const 块里组装，调用者也可以
-在运行时构建。行在被请求时才到自己的 archetype 里查列，交出的借用与行同寿，所以同时读两行
-是允许的；同一组件写两次而不先 drop 第一个借用则会 panic。`Scope::location` 与
+查询是一个类型参数。`Scope::query` 与 `Scope::query_one` 指明要取什么，`Q` 可以是
+`&C`、`&mut C`、`Option<&C>`、`Option<&mut C>`、`Entity`、`Has<C>`，或者它们的元组，
+顺序即书写顺序。每个 archetype 只解析一次列，所以交出的行不再查找；借用与行同寿，
+所以同时读两行是允许的，同一组件写两次而不先 drop 第一个借用则会 panic。`Has<C>`
+只读存在性、不借用格子，`QueryIter::by` 则在借用任何格子之前用 `Archetype` 上的闭包
+收窄要访问的 archetype，`Without` 一类的谓词就写成它。`Scope::location` 与
 `Scope::archetype` 把同样的形态开放给持有大量实体的调用者——比如把场景剔除成
 一个列表的调用者——让它能按 archetype 分组，一次性解析每个 archetype 的列，
 而不必逐实体重新查找。
@@ -153,7 +157,7 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 ## 用法
 
 ```rust
-use unlit_ecs::{World, Without, bundle, query};
+use unlit_ecs::{Entity, Has, World, bundle};
 
 struct Spin {
     radians_per_second: f32,
@@ -165,25 +169,30 @@ let cube = world.root_scope_mut().spawn(bundle!(Spin { radians_per_second: 1.0, 
 let clock = world.root_scope_mut().spawn(bundle!(0.016f32));
 
 // 驱动每一个 `Spin`。由调用者决定碰哪些实体、按什么顺序；库内没有场景图的概念。
-let delta = *world.root_scope().get::<f32>(clock).unwrap();
-for (_, row) in world.root_scope().query(query!(&mut Spin)) {
-    let mut spin = row.write::<Spin>();
+let delta = *world.root_scope().query_one::<&f32>(clock).unwrap();
+for mut spin in world.root_scope().query::<&mut Spin>() {
     spin.angle += spin.radians_per_second * delta;
 }
-assert_ne!(world.root_scope().get::<Spin>(cube).unwrap().angle, 0.0);
+assert_ne!(world.root_scope().query_one::<&Spin>(cube).unwrap().angle, 0.0);
 
-// 过滤器收窄查询访问的 archetype，本身不取任何组件。
+// 谓词在借用任何格子之前收窄要访问的 archetype：这里取「没有时钟」的那些。
 let _ = world
     .root_scope()
-    .query(query!(&Spin; Without<f32>))
-    .map(|(_, row)| row.read::<Spin>().angle)
+    .query::<&Spin>()
+    .by(|archetype: &unlit_ecs::Archetype| !archetype.has::<f32>())
     .count();
+
+// `Entity` 与 `Has<C>` 也可以是查询项：存在性读取不借用。
+for (entity, has_spin) in world.root_scope().query::<(&Entity, Has<Spin>)>() {
+    let _ = (entity, has_spin);
+}
 ```
 
-查询是数据而不是类型参数：`query!` 是简写，`Query::new` 配合 `Query::read` 与
-`Query::write` 在运行时构建出同样的值。行按名字交出组件，且每个借用与行同寿，所以
-一个行可以跨语句读写，而不必挤在 `for` 的模式里。向查询没要过的组件取值会 panic，
-并报出是哪一个。
+查询是类型而不是值：`&C` 读组件，`&mut C` 写组件，`Option<&C>` 与 `Option<&mut C>`
+表示可选，`Entity` 交出实体本身，`Has<C>` 交出 `C` 在不在。项不可嵌套——`&(a, b)`
+是一个元组组件，`(&a, &b)` 才是两个——而组件数超出元组 impl 覆盖面时，由调用者自己
+`impl Query`。`Scope::query_one` 在单个实体上跑同一个查询，于是按句柄查找与遍历 scope
+共用同一套词汇。
 
 spawn 与 despawn 需要 `&mut` scope，或者排入队列的命令：
 
@@ -208,15 +217,17 @@ bundle 是 `bundle!` 写出的或 `ArchetypeBuilder` 收集的那份清单；元
 `#![recursion_limit]`：
 
 ```rust
-use unlit_ecs::{World, bundle};
+use unlit_ecs::{Has, World, bundle};
 
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
 
-// 两个组件：一个元组，一个空元组。
-assert!(world.root_scope().has::<(u32, f32)>(entity));
-assert!(world.root_scope().has::<(bool, ())>(entity));
-assert!(!world.root_scope().has::<u32>(entity));
+// 两个组件：一个元组，一个嵌套的元组。
+let scope = world.root_scope();
+assert_eq!(scope.query::<Has<(u32, f32)>>().count(), 1);
+assert_eq!(scope.query_one::<Has<(u32, f32)>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<bool>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<u32>>(entity), None);
 ```
 
 用 `..value` 写下的 bundle 会被展开成它自己的组件，于是别处建好的 bundle 可以原样
@@ -224,7 +235,7 @@ assert!(!world.root_scope().has::<u32>(entity));
 裸写的话 bundle 会被当成一个组件：
 
 ```rust
-use unlit_ecs::{ArchetypeBuilder, World, bundle};
+use unlit_ecs::{ArchetypeBuilder, Has, World, bundle};
 
 let mut gathered = ArchetypeBuilder::new();
 gathered.push_component(1u32);
@@ -232,8 +243,9 @@ gathered.push_component(1u32);
 let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle!(..gathered, 2.0f32));
 
-assert!(world.root_scope().has::<u32>(entity));
-assert!(world.root_scope().has::<f32>(entity));
+let scope = world.root_scope();
+assert_eq!(scope.query_one::<Has<u32>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<f32>>(entity), Some(true));
 ```
 
 ## MCP 服务器

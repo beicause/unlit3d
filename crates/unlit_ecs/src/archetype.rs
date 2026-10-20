@@ -165,6 +165,17 @@ impl Archetype {
             .position(|&candidate| candidate == type_id)
     }
 
+    /// Whether this archetype carries component `C`.
+    ///
+    /// Only the component set is consulted, so no cell is borrowed and this
+    /// answers the same during a borrow that would block reading the component
+    /// itself.
+    #[inline]
+    #[must_use]
+    pub fn has<C: 'static>(&self) -> bool {
+        self.column_index(TypeId::of::<C>()).is_some()
+    }
+
     /// The storage cell of component `C` at `row`.
     #[inline]
     pub(crate) fn cell<C: 'static>(&self, row: usize) -> Option<&core::cell::RefCell<C>> {
@@ -174,8 +185,7 @@ impl Archetype {
     /// The column of component `C`.
     ///
     /// A query resolves this once per archetype instead of doing the lookup per
-    /// row; a [`Row`](crate::Row) resolves it again on every component it hands
-    /// out, from the archetype it was made for.
+    /// row.
     #[inline]
     pub(crate) fn column<C: 'static>(&self) -> Option<&Column<C>> {
         let index = self.column_index(TypeId::of::<C>())?;

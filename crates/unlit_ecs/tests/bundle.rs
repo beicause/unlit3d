@@ -1,6 +1,6 @@
 //! The bundle! macro: every item is one component, and ..value spreads a bundle.
 
-use unlit_ecs::{ArchetypeBuilder, Bundle, Commands, Entity, World, bundle};
+use unlit_ecs::{ArchetypeBuilder, Bundle, Commands, Entity, Has, World, bundle};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -33,8 +33,18 @@ fn a_flat_list_spawns_every_component() {
         Velocity { dx: 3.0, dy: 4.0 }
     ));
 
-    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().x, 1.0);
-    assert_eq!(world.root_scope().get::<Velocity>(entity).unwrap().dy, 4.0);
+    assert_eq!(
+        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        1.0
+    );
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&Velocity>(entity)
+            .unwrap()
+            .dy,
+        4.0
+    );
 }
 
 #[test]
@@ -45,14 +55,25 @@ fn a_parenthesised_group_is_one_component() {
         (Velocity { dx: 3.0, dy: 4.0 }, 7u32)
     ));
 
-    let nested = world.root_scope().get::<(Velocity, u32)>(entity).unwrap();
+    let nested = world
+        .root_scope()
+        .query_one::<&(Velocity, u32)>(entity)
+        .unwrap();
     assert_eq!(nested.0.dy, 4.0);
     assert_eq!(nested.1, 7);
     assert!(
-        !world.root_scope().has::<u32>(entity),
+        !world
+            .root_scope()
+            .query_one::<Has<u32>>(entity)
+            .unwrap_or(false),
         "the group is one component, so its leaves are not components"
     );
-    assert!(!world.root_scope().has::<Velocity>(entity));
+    assert!(
+        !world
+            .root_scope()
+            .query_one::<Has<Velocity>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -64,14 +85,25 @@ fn a_tuple_pushed_whole_is_one_component() {
     let entity = world.root_scope_mut().spawn(builder);
 
     assert!(
-        world.root_scope().has::<(u32, f32)>(entity),
+        world
+            .root_scope()
+            .query_one::<Has<(u32, f32)>>(entity)
+            .unwrap_or(false),
         "the tuple itself is a component"
     );
     assert!(
-        !world.root_scope().has::<u32>(entity),
+        !world
+            .root_scope()
+            .query_one::<Has<u32>>(entity)
+            .unwrap_or(false),
         "a builder never takes a component apart"
     );
-    assert!(world.root_scope().has::<bool>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<bool>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -80,10 +112,13 @@ fn an_empty_tuple_is_a_component() {
     let entity = world.root_scope_mut().spawn(bundle!((), 1u32));
 
     assert!(
-        world.root_scope().has::<()>(entity),
+        world
+            .root_scope()
+            .query_one::<Has<()>>(entity)
+            .unwrap_or(false),
         "the empty tuple is written, so it is a component"
     );
-    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
+    assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 1);
 }
 
 #[test]
@@ -93,7 +128,10 @@ fn the_macro_returns_a_bundle_that_spawns_nothing() {
 
     assert!(world.root_scope().contains(entity));
     assert!(
-        !world.root_scope().has::<()>(entity),
+        !world
+            .root_scope()
+            .query_one::<Has<()>>(entity)
+            .unwrap_or(false),
         "an empty list contributes no component at all"
     );
 }
@@ -107,11 +145,24 @@ fn a_group_holding_one_expression_is_that_expression_as_a_component() {
         .spawn(bundle!((value,), (value as u64,)));
 
     assert!(
-        world.root_scope().has::<(u32,)>(entity),
+        world
+            .root_scope()
+            .query_one::<Has<(u32,)>>(entity)
+            .unwrap_or(false),
         "a one-element tuple stays a tuple"
     );
-    assert!(world.root_scope().has::<(u64,)>(entity));
-    assert!(!world.root_scope().has::<u32>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<(u64,)>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        !world
+            .root_scope()
+            .query_one::<Has<u32>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 /// Distinct components for the width test: a plain tuple runs out at sixteen.
@@ -155,10 +206,18 @@ fn more_than_sixteen_components() {
     let archetype = world.root_scope().archetype(location.archetype()).unwrap();
     assert_eq!(archetype.types().len(), 24, "23 components plus ScopeOf");
     assert!(
-        world.root_scope().has::<M08>(entity),
+        world
+            .root_scope()
+            .query_one::<Has<M08>>(entity)
+            .unwrap_or(false),
         "a leaf past the tuple limit landed"
     );
-    assert!(world.root_scope().has::<Position>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<Position>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -199,9 +258,24 @@ fn a_queued_spawn_applies() {
     assert!(!world.root_scope().contains(entity), "queued, not spawned");
     world.apply();
 
-    assert!(world.root_scope().has::<(u32, f32)>(entity));
-    assert!(world.root_scope().has::<bool>(entity));
-    assert!(!world.root_scope().has::<u32>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<(u32, f32)>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<bool>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        !world
+            .root_scope()
+            .query_one::<Has<u32>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -213,8 +287,18 @@ fn a_built_bundle_is_a_bundle() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(builder);
 
-    assert!(world.root_scope().has::<u32>(entity));
-    assert!(world.root_scope().has::<f32>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<u32>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<f32>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -229,9 +313,24 @@ fn into_builder_returns_exactly_the_bundles_components() {
         3,
         "2 components plus ScopeOf"
     );
-    assert!(world.root_scope().has::<(u32, f32)>(entity));
-    assert!(world.root_scope().has::<bool>(entity));
-    assert!(!world.root_scope().has::<u32>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<(u32, f32)>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<bool>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        !world
+            .root_scope()
+            .query_one::<Has<u32>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -245,11 +344,24 @@ fn a_builder_is_spread_with_a_dot_dot() {
         .root_scope_mut()
         .spawn(bundle!(..gathered, Velocity { dx: 3.0, dy: 4.0 }));
 
-    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().y, 2.0);
-    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 7);
-    assert_eq!(world.root_scope().get::<Velocity>(entity).unwrap().dy, 4.0);
+    assert_eq!(
+        world.root_scope().query_one::<&Position>(entity).unwrap().y,
+        2.0
+    );
+    assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 7);
+    assert_eq!(
+        world
+            .root_scope()
+            .query_one::<&Velocity>(entity)
+            .unwrap()
+            .dy,
+        4.0
+    );
     assert!(
-        !world.root_scope().has::<ArchetypeBuilder>(entity),
+        !world
+            .root_scope()
+            .query_one::<Has<ArchetypeBuilder>>(entity)
+            .unwrap_or(false),
         "the builder is not stored as a component"
     );
 }
@@ -272,10 +384,21 @@ fn a_custom_bundle_is_spread_with_a_dot_dot() {
         .root_scope_mut()
         .spawn(bundle!(..Pose(Position { x: 5.0, y: 6.0 }), true));
 
-    assert_eq!(world.root_scope().get::<Position>(entity).unwrap().x, 5.0);
-    assert!(world.root_scope().has::<bool>(entity));
+    assert_eq!(
+        world.root_scope().query_one::<&Position>(entity).unwrap().x,
+        5.0
+    );
     assert!(
-        !world.root_scope().has::<Pose>(entity),
+        world
+            .root_scope()
+            .query_one::<Has<bool>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        !world
+            .root_scope()
+            .query_one::<Has<Pose>>(entity)
+            .unwrap_or(false),
         "the bundle is not stored as a component"
     );
 }
@@ -289,9 +412,19 @@ fn a_bundle_spread_keeps_a_tuple_component_whole() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(bundle!(..builder));
 
-    assert!(world.root_scope().has::<(f32, bool)>(entity));
-    assert_eq!(*world.root_scope().get::<u32>(entity).unwrap(), 1);
-    assert!(!world.root_scope().has::<f32>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<(f32, bool)>>(entity)
+            .unwrap_or(false)
+    );
+    assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 1);
+    assert!(
+        !world
+            .root_scope()
+            .query_one::<Has<f32>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]
@@ -308,8 +441,18 @@ fn a_queued_spread_bundle_applies() {
     assert!(!world.root_scope().contains(entity), "queued, not spawned");
     world.apply();
 
-    assert!(world.root_scope().has::<u32>(entity));
-    assert!(world.root_scope().has::<f32>(entity));
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<u32>>(entity)
+            .unwrap_or(false)
+    );
+    assert!(
+        world
+            .root_scope()
+            .query_one::<Has<f32>>(entity)
+            .unwrap_or(false)
+    );
 }
 
 #[test]

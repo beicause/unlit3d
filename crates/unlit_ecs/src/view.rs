@@ -11,11 +11,12 @@
 
 use crate::archetype::{Archetype, ScopeSummary};
 use crate::bundle::{ArchetypeBuilder, Bundle};
-use crate::column::{CellRef, CellRefMut};
 use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
-use crate::query::{Query, QueryIter, Row};
+#[cfg(debug_assertions)]
+use crate::query::assert_no_duplicates;
+use crate::query::{Query, QueryIter};
 use crate::world::World;
 
 /// A read-only scope: one entity and everything below it.
@@ -56,52 +57,6 @@ impl<'w> Scope<'w> {
         self.world.visible(self.scope, entity)
     }
 
-    /// Whether `entity` is visible and carries component `C`.
-    #[must_use]
-    pub fn has<C: 'static>(&self, entity: Entity) -> bool {
-        self.get::<C>(entity).is_some()
-    }
-
-    /// The component of `entity`, or `None` when it is missing or invisible.
-    ///
-    /// Panics when the component is already exclusively borrowed.
-    #[must_use]
-    #[inline]
-    pub fn get<C: 'static>(&self, entity: Entity) -> Option<CellRef<'w, C>> {
-        if !self.contains(entity) {
-            return None;
-        }
-        self.world.get::<C>(entity)
-    }
-
-    /// The component of `entity`, exclusively.
-    ///
-    /// Panics when the component is already borrowed, shared or exclusive.
-    #[must_use]
-    #[inline]
-    pub fn get_mut<C: 'static>(&self, entity: Entity) -> Option<CellRefMut<'w, C>> {
-        if !self.contains(entity) {
-            return None;
-        }
-        self.world.get_mut::<C>(entity)
-    }
-
-    /// Run `f` on the component of `entity`.
-    ///
-    /// This is the scoped form of [`Scope::get_mut`]: the borrow ends
-    /// with the closure, so nothing else can trip over it. It is also how a
-    /// behaviour component is driven: the closure is the behaviour, and the
-    /// caller decides which entities to run it on.
-    #[must_use]
-    pub fn with_mut<C: 'static, R>(
-        &self,
-        entity: Entity,
-        f: impl FnOnce(&mut C) -> R,
-    ) -> Option<R> {
-        let mut guard = self.get_mut::<C>(entity)?;
-        Some(f(&mut guard))
-    }
-
     /// Where a visible entity's components live.
     #[must_use]
     pub fn location(&self, entity: Entity) -> Option<Location> {
@@ -113,34 +68,53 @@ impl<'w> Scope<'w> {
 
     // -- queries -----------------------------------------------------------
 
-    /// Iterate the visible entities `query` matches.
+    /// Iterate the visible entities that match `Q`.
     ///
-    /// The query is a value, so it can be built at run time or written as a
-    /// constant by the [`crate::query!`] macro.
-    pub fn query<'q>(&self, query: &'q Query) -> QueryIter<'w, 'q>
-    where
-        'w: 'q,
-    {
-        QueryIter::new(self.world, self.scope, query)
+    /// The query is a type, so which components to hand out and which
+    /// archetypes to visit are written in the turbofish. See [`crate::query`]
+    /// for the items a query is made of.
+    ///
+    /// ````rust
+    /// # use unlit_ecs::{Entity, World, bundle};
+    /// let mut world = World::new();
+    /// world.root_scope_mut().spawn(bundle!(1u32));
+    ///
+    /// for (entity, value) in world.root_scope().query::<(Entity, &u32)>() {
+    ///     println!("{entity:?} carries {value}");
+    /// }
+    /// ````
+    pub fn query<Q: Query>(&self) -> QueryIter<'w, Q> {
+        QueryIter::new(self.world, self.scope)
     }
 
-    /// The row of `entity`, when it is visible here and `query` matches it.
+    /// What `Q` yields for `entity`, when it is visible here and its archetype
+    /// matches.
     ///
-    /// Iterating [`Scope::query`] is the usual way to reach rows. This is for
-    /// a caller that already has the entity, such as one walking a list culled
-    /// from elsewhere, and wants the same components the iterator would hand
-    /// out. `None` means the entity is out of this scope's reach or its
-    /// archetype does not satisfy the query.
+    /// This is the one-entity form of [`Scope::query`]: the row the entity is
+    /// stored at is looked up directly instead of the archetypes being walked.
+    /// `None` means the entity is out of this scope's reach or its archetype
+    /// does not satisfy the query.
+    ///
+    /// ````rust
+    /// # use unlit_ecs::{Has, World, bundle};
+    /// let mut world = World::new();
+    /// let entity = world.root_scope_mut().spawn(bundle!(1u32));
+    ///
+    /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 1);
+    /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap());
+    /// assert!(world.root_scope().query_one::<&bool>(entity).is_none());
+    /// ````
     #[must_use]
-    pub fn row<'q>(&self, entity: Entity, query: &'q Query) -> Option<Row<'q>>
-    where
-        'w: 'q,
-    {
+    pub fn query_one<Q: Query>(&self, entity: Entity) -> Option<Q::Item<'w>> {
+        #[cfg(debug_assertions)]
+        assert_no_duplicates::<Q>(core::panic::Location::caller());
         let location = self.location(entity)?;
-        let archetype = self.archetype(location.archetype())?;
-        query
-            .matches_archetype(archetype)
-            .then(|| Row::new(archetype, query, location.row()))
+        let archetype = self.world.archetype_at(location.archetype())?;
+        if !self.row_visible(archetype, location.row()) || !Q::matches(archetype) {
+            return None;
+        }
+        let state = Q::fetch_state(archetype);
+        Some(Q::fetch(&state, location.row()))
     }
 
     /// The archetype with this id, when this scope sees every row of it.
@@ -213,7 +187,7 @@ impl<'w> Scope<'w> {
         // The query already skips the scaffolding and applies the visibility
         // rules, so counting this way keeps the number and the iteration in
         // agreement for every scope, the root included.
-        self.query(&Query::new()).count()
+        self.query::<Entity>().count()
     }
 
     /// Whether nothing is visible.

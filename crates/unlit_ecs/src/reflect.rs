@@ -173,7 +173,9 @@ fn encode_component<C: Facet<'static>>(
     scope: &Scope<'_>,
     entity: Entity,
 ) -> Result<String, String> {
-    let component = scope.get::<C>(entity).ok_or_else(|| missing::<C>(entity))?;
+    let component = scope
+        .query_one::<&C>(entity)
+        .ok_or_else(|| missing::<C>(entity))?;
     to_json(&*component)
 }
 
@@ -186,12 +188,13 @@ fn set_component<C: Facet<'static> + Clone>(
     // overwrite the fields it names: a patch that names some fields keeps the
     // rest, which is what setting one property at a time means.
     let current = scope
-        .get::<C>(entity)
+        .query_one::<&C>(entity)
         .map(|component| (*component).clone())
         .ok_or_else(|| missing::<C>(entity))?;
     let value: C = apply(current, patch)?;
     scope
-        .with_mut::<C, _>(entity, |component| *component = value)
+        .query_one::<&mut C>(entity)
+        .map(|mut component| *component = value)
         .ok_or_else(|| missing::<C>(entity))
 }
 

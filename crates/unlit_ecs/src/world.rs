@@ -540,24 +540,6 @@ impl World {
         self.archetypes.as_slice()
     }
 
-    /// The component of `entity`, or `None` when it is missing or the entity is
-    /// not alive.
-    ///
-    /// Panics when the component is already exclusively borrowed.
-    #[must_use]
-    #[inline]
-    pub(crate) fn get<C: 'static>(&self, entity: Entity) -> Option<Ref<'_, C>> {
-        let location = self.entities_read().location(entity)?;
-        let cell = self
-            .archetypes
-            .get(location.archetype())
-            .cell::<C>(location.row())?;
-        Some(
-            cell.try_borrow()
-                .unwrap_or_else(|_| borrow_conflict::<C>("read")),
-        )
-    }
-
     /// The component of `entity`, exclusively.
     ///
     /// Panics when the component is already borrowed, shared or exclusive.
