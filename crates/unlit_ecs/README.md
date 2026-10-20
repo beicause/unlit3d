@@ -71,6 +71,8 @@ It is at an **early stage of development** and its API changes freely.
   scope whose `ScopeOf` is itself, and the one the root scope opens — and
   [`World::shared`], whose subtree every scope sees. Both can carry components
   and be opened as scopes; neither is counted, queried, despawned or relinked.
+  They keep the first two rows of their archetype, so a query steps over them
+  once per archetype instead of testing the identity of every row.
 
 ## Scopes
 

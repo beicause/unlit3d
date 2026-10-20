@@ -47,7 +47,7 @@ impl<'w, Q: Query> QueryIter<'w, Q, ()> {
             scope,
             filter: (),
             archetype: 0,
-            row: 0,
+            row: world.content_start(0),
             state: None,
             resolved: false,
             uniform_visible: None,
@@ -109,9 +109,10 @@ impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
             let archetype = archetypes.get(self.archetype)?;
             if self.row >= archetype.len() {
                 // Done with this archetype; move to the next and decide it
-                // lazily.
+                // lazily. Its scaffolding, if any, is skipped the same way: by
+                // starting the scan past it rather than testing every row.
                 self.archetype += 1;
-                self.row = 0;
+                self.row = self.world.content_start(self.archetype as u32);
                 self.state = None;
                 self.resolved = false;
                 self.uniform_visible = None;
@@ -137,12 +138,6 @@ impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
             let row = self.row;
             self.row += 1;
             if !self.row_matches(archetype, row) {
-                continue;
-            }
-            let entity = archetype.entities()[row];
-            if self.world.is_scaffolding(entity) {
-                // The tree's two roots are addressable but not content; what
-                // a caller spawns under the shared one is content.
                 continue;
             }
             let state = self.state.as_ref()?;

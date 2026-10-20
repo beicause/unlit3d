@@ -53,6 +53,42 @@ fn a_single_component_query_visits_every_holder() {
 }
 
 #[test]
+fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
+    let mut world = World::new();
+    // Bare entities land in the same archetype as the two scaffolding roots, so
+    // a query that visits it has to step over them without a per-row test.
+    let first = world.root_scope_mut().spawn_empty();
+    let second = world
+        .root_scope_mut()
+        .spawn(bundle!(Position { x: 1.0, y: 2.0 }));
+    let third = world.root_scope_mut().spawn_empty();
+
+    let mut found: Vec<Entity> = world.root_scope().query::<Entity>().collect();
+    found.sort();
+    let mut expected = vec![first, second, third];
+    expected.sort();
+    assert_eq!(found, expected);
+    assert_eq!(world.root_scope().len(), 3);
+
+    // The same archetype keeps the roots at the front while its content churns.
+    assert!(world.root_scope_mut().despawn(first));
+    assert_eq!(world.root_scope().query::<Entity>().count(), 2);
+    assert_eq!(world.root_scope().len(), 2);
+
+    // A query that names a component skips the archetype whole, so the bare
+    // entities are neither visited nor reported as carrying it.
+    assert_eq!(world.root_scope().query::<&Position>().count(), 1);
+    assert_eq!(
+        world
+            .root_scope()
+            .query::<Has<Position>>()
+            .filter(|&has| has)
+            .count(),
+        1,
+    );
+}
+
+#[test]
 fn a_two_component_query_requires_every_component() {
     let (world, mover, hidden, _) = scene();
 

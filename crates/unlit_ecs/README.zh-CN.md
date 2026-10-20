@@ -47,6 +47,7 @@
 - **有两个实体是脚手架。** `World::new` 创建 `World::root`——它的 `ScopeOf` 指向自己，
   根 scope 打开的就是它——和 `World::shared`，后者的子树每个 scope 都看得见。两者都能
   携带组件、都能被当作 scope 打开；但它们都不被计数、不被查询、不可 despawn、不可重挂。
+  它们占据所在 archetype 的最前两行，于是查询每个 archetype 只跨过一次，不必逐行判断身份。
 
 ## scope
 

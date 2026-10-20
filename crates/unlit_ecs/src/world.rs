@@ -59,7 +59,8 @@ pub struct World {
     /// The archetype holding the two scaffolding entities.
     ///
     /// They are the only entities that exist without being content, so a scope
-    /// that counts rows has to know where they are.
+    /// that counts rows has to know where they are. They take the first
+    /// [`World::SCAFFOLDING_ROWS`] rows of it.
     scaffolding: u32,
 }
 
@@ -73,6 +74,13 @@ impl Default for World {
 }
 
 impl World {
+    /// How many rows the two scaffolding entities take.
+    ///
+    /// [`World::new`] pushes both before any caller can spawn, and a removal only
+    /// ever moves the last row of an archetype into the hole it leaves, so the
+    /// pair stays at the front for the world's whole life.
+    const SCAFFOLDING_ROWS: usize = 2;
+
     /// A world holding its root and shared scope, and nothing else.
     ///
     /// Both are ordinary entities: they appear in the root scope's count and
@@ -100,6 +108,11 @@ impl World {
             .location(root)
             .expect("the root has a row")
             .archetype();
+        debug_assert_eq!(
+            world.archetypes_slice()[world.scaffolding as usize].entities(),
+            &[root, shared][..],
+            "the scaffolding takes the first rows of its archetype",
+        );
         world
     }
 
@@ -200,10 +213,21 @@ impl World {
         self.tree_read().children(entity).to_vec()
     }
 
-    /// Whether `archetype` holds the tree's two scaffolding entities.
+    /// The first row of `archetype` that holds content rather than scaffolding.
+    ///
+    /// This is where a query starts scanning an archetype, and what a count
+    /// leaves out. It is a row boundary rather than a per-row test so that
+    /// walking a row costs no identity check: the two roots share their
+    /// archetype with every entity spawned bare, which would otherwise need one
+    /// comparison per row.
+    #[inline]
     #[must_use]
-    pub(crate) fn is_scaffolding_archetype(&self, archetype: u32) -> bool {
-        archetype == self.scaffolding
+    pub(crate) fn content_start(&self, archetype: u32) -> usize {
+        if archetype == self.scaffolding {
+            Self::SCAFFOLDING_ROWS
+        } else {
+            0
+        }
     }
 
     // -- scopes -------------------------------------------------------------

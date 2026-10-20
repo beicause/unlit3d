@@ -280,8 +280,10 @@ impl<'w> Scope<'w> {
                 .iter()
                 .filter_map(|&type_id| self.world.type_name(type_id))
                 .collect();
-            for (row, &entity) in archetype.entities().iter().enumerate() {
-                if !self.row_visible(archetype, row) || self.world.is_scaffolding(entity) {
+            let start = self.world.content_start(index as u32);
+            for (row, &entity) in archetype.entities()[start..].iter().enumerate() {
+                let row = start + row;
+                if !self.row_visible(archetype, row) {
                     continue;
                 }
                 if infos.len() == limit {
@@ -336,18 +338,11 @@ impl<'w> Scope<'w> {
     /// The number of rows of `archetype` this scope can see, its own content
     /// only: the scaffolding is never counted.
     fn visible_len(&self, index: u32, archetype: &Archetype) -> usize {
-        // The scaffolding shares an archetype with every ScopeOf-only entity,
-        // so its rows are removed by identity rather than by skipping the
-        // whole archetype: a caller's own bare entity may sit in it too.
-        let scaffold = if self.world.is_scaffolding_archetype(index) {
-            archetype
-                .entities()
-                .iter()
-                .filter(|entity| self.world.is_scaffolding(**entity))
-                .count()
-        } else {
-            0
-        };
+        // The scaffolding shares an archetype with every bare entity, so its
+        // rows are removed rather than the whole archetype: a caller's own bare
+        // entity may sit in it too. It takes the first rows of that archetype,
+        // which is what makes the subtraction a boundary rather than a filter.
+        let scaffold = self.world.content_start(index);
         match archetype.scope_summary() {
             ScopeSummary::Empty => 0,
             ScopeSummary::Uniform(_) => {
@@ -361,14 +356,13 @@ impl<'w> Scope<'w> {
                     // only row of that archetype it can see is its own -- and
                     // the scaffolding's own row is not content.
                     usize::from(
-                        archetype.entities().contains(&self.scope)
+                        archetype.entities()[scaffold..].contains(&self.scope)
                             && !self.world.is_scaffolding(self.scope),
                     )
                 }
             }
-            ScopeSummary::Mixed => (0..archetype.len())
+            ScopeSummary::Mixed => (scaffold..archetype.len())
                 .filter(|&row| self.row_visible(archetype, row))
-                .filter(|&row| !self.world.is_scaffolding(archetype.entities()[row]))
                 .count(),
         }
     }
