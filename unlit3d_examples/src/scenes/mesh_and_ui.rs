@@ -24,6 +24,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a cube with the rich egui panel over it, one pass",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
+    clear: Some(CLEAR_COLOR),
     frames: 2,
     step_seconds: None,
     samples: 1,
@@ -37,6 +38,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
+    pass: Entity,
     ui: Option<Entity>,
     size: (u32, u32),
     options: SceneOptions,
@@ -44,7 +46,10 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass is alive")
+        .spawn(bundle!(Source::new(source),));
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();
@@ -74,15 +79,6 @@ fn build(
             mesh,
             UnlitPipeline::new(key),
         ),
-    );
-
-    // The pass opens with this world's load ops.
-    super::spawn_shared(
-        world,
-        bundle!(RenderLoadOps {
-            color: wgpu::LoadOp::Clear(CLEAR_COLOR),
-            ..RenderLoadOps::default()
-        }),
     );
 
     if options.ui {

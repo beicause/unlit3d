@@ -87,8 +87,8 @@ pub mod prelude {
     };
     #[cfg(feature = "render")]
     pub use crate::present::{
-        Presenter, bind_offscreen, draw_presented, pump_presented, resize_presented,
-        setup_presenter,
+        BLIT_PASS_ORDER, OffscreenTarget, Presenter, SCENE_PASS_ORDER, bind_offscreen,
+        draw_presented, pump_presented, resize_presented, setup_presenter,
     };
     #[cfg(feature = "synth")]
     pub use crate::synth::{

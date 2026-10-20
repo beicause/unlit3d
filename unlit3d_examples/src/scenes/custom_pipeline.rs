@@ -25,11 +25,11 @@
 //! hard-edged sun rather than any attempt at a photographic sky.
 
 use std::sync::Arc;
+use unlit_ecs::bundle;
 
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_FORMAT, TEST_SIZE, camera_looking_at,
 };
-use unlit_ecs::bundle;
 use unlit_wgpu::pipeline::{GlobalBindings, global_bind_group_layout, supports_storage_buffers};
 use unlit_wgpu::resources::{ResHandle, Resource, TextureExt, TextureView};
 use unlit_wgpu::specialize::{
@@ -117,6 +117,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a caller-registered sky family and particle family",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
+    clear: None,
     frames: FRAMES,
     // The motion is parametric, so the window runs it from the frame delta
     // rather than holding each frozen frame for a step; the capture still walks
@@ -1020,6 +1021,7 @@ fn hash3(x: i32, y: i32, z: i32) -> f32 {
 fn build(
     world: &mut World,
     context: RenderContext,
+    pass: Entity,
     _ui: Option<Entity>,
     size: (u32, u32),
     options: SceneOptions,
@@ -1147,7 +1149,10 @@ fn build(
 
     // No family of the built-in unlit pipeline is registered: every draw in this
     // scene goes through a pipeline the example compiled itself.
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass is alive")
+        .spawn(bundle!(Source::new(source),));
     let camera_entity = super::spawn_in(
         world,
         source_entity,

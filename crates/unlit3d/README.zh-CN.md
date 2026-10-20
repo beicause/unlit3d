@@ -73,11 +73,51 @@ Godot 的场景树轻松可以拆分和组合；API 可以非常高层（如 God
 
 ## 帧模型
 
-一帧**不是**「一个主场景加若干附加物」。`Renderer` 自身不绘制任何东西：它持有该帧
-的渲染目标，并按各帧源通过 `FrameSourceOrder` 声明的顺序录制它们。
+一帧**不是**「一个主场景加若干附加物」，也不是一个 pass：它是一串 pass。
+`Renderer` 自身不绘制任何东西：它按 `FramePassOrder` 遍历 world 里的 `FramePass`
+实体，在每个 pass 内按各帧源通过 `FrameSourceOrder` 声明的顺序录制其下的源。
 
-- 每个源在 `build_scene` 中构建自己的 `Scene`，随后渲染器按序把所有场景录制进一个
-  在目标附件之上开启的 pass。因此一帧就是一个 encoder、一次提交。
+渲染 world 就是一棵普通的实体树，而树本身**就是**帧的形状：一个 scope 看得见它扎根
+的实体、其下的一切，以及 shared 子树，但看不见祖先，也看不见兄弟。
+
+```text
+world root                              根 scope 看得见所有实体
+├── shared                              每个 scope 都看得见这棵子树
+│   ├── wgpu::Device        + RenderContext
+│   ├── wgpu::Queue         + RenderContext
+│   ├── ResourceGraph       + RenderContext    所有纹理、缓冲、bind group
+│   ├── DeviceCapabilities  + RenderContext
+│   ├── OpenUrls
+│   └── ... 面板读写的应用状态
+├── FramePass(FramePassOrder(0)) + RenderLoadOps
+│   ├── Source(MeshSource)                    源自身也是一个 scope
+│   │   ├── Camera
+│   │   ├── Transform + GpuMesh + GpuMaterial + UnlitPipeline
+│   │   └── ...
+│   └── Source(UiSource)
+│       └── UiPanel
+├── FramePass(FramePassOrder(1)) + RenderLoadOps
+│   └── Source(BlitSource)                    采样上面那个 pass 的离屏目标
+└── Renderer                                  自身不绘制，只遍历各个 pass
+```
+
+把树当成帧来读：渲染器遍历 root 下的 `FramePass`，对每个 pass 再遍历**它自己那个
+scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个 pass，同一个 pass 下的
+两个源各画各的，谁也不必看见另一个。GPU 状态放在 `shared` 而不是渲染器身上，于是
+任何源都能从自己的 scope 读到它，不用往上爬树。pass 是源的**祖先**，而 scope 够不到
+祖先，这正是 `PassInfo` 存在的原因：由 pass 告诉它的源画进什么目标。附件则完全不是
+树节点——pass 只是在 `ResourceGraph` 里指名 view，所以它每帧都能换一张新的交换链
+图像而树不变。
+
+- pass 就是普通实体：它携带自己绘入的附件、开启时使用的 `RenderLoadOps`，以及场景
+  被裁剪到的视口。其下的源就是它录制的源，因此一个 world 可以按帧的需要放任意多个
+  pass——一个画进离屏目标的 pass 与一个把该目标贴到交换链的 pass 是同一个 world 里的
+  两个实体，而不是两个 world。
+- pass 只指名 view，不拥有它们。附件来自 `FrameAttachments` 或 `WindowSurface`，两者
+  都在同一个 world 里，且句柄保持稳定，因此一个 pass 可以每帧换一个新的颜色 view
+  而不触发其下源的重建。
+- 每个源在 `build_scene` 中构建自己的 `Scene`，随后渲染器把每个场景录制进以该 pass
+  自身附件开启的那趟 pass。因此无论一帧有多少个 pass，它仍是一个 encoder、一次提交。
 - 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：内置
   unlit 家族通过与调用者家族相同的 `MeshSource::register_family` 注册，一切专属于它的
   东西——它的 key、实例记录、mesh 与材质辅助方法——都住在 `unlit` 模块里。
@@ -488,12 +528,18 @@ let ctx = spawn_context(
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
 mesh_source.register_unlit_family(&world.root_scope());
 let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_scope())));
-let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx)));
+let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx),));
 
-// 2. Mount the mesh source as a source. A source is its own scope: a frame
-//    hands it its own scope, so everything it draws lives under this
-//    entity.
-let source = world.root_scope_mut().spawn(bundle!(Source::new(mesh_source)));
+// 2. Spawn the frame's pass and mount the mesh source under it. A pass is a
+//    scope: it records the sources below it, and each source in turn is a
+//    scope of its own, so everything a source draws lives under its entity.
+let pass = world
+    .root_scope_mut()
+    .spawn(bundle!(FramePass::new(FramePassOrder(0)), RenderLoadOps::default()));
+let source = world
+    .scope_mut(pass)
+    .unwrap()
+    .spawn(bundle!(Source::new(mesh_source),));
 let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
@@ -539,16 +585,11 @@ let (mesh, material) = scope
 world
     .scope_mut(source)
     .unwrap()
-    .spawn(bundle!(
-        Transform::default(),
-        mesh,
-        material,
-        UnlitPipeline::new(key)
-    ));
+    .spawn(bundle!(Transform::default(), mesh, material, UnlitPipeline::new(key)));
 
-// 4. Bind a render target and render one frame (uses the noop device, so it
-//    produces a valid command buffer without touching a GPU). The frame's
-//    depth and multisample attachments are allocated and kept by
+// 4. Give the pass a render target and render one frame (uses the noop
+//    device, so it produces a valid command buffer without touching a GPU).
+//    The frame's depth and multisample attachments are allocated and kept by
 //    `FrameAttachments`; the color attachment is this example's own.
 let color = create_color_target(
     &world.root_scope().query_one::<&wgpu::Device>(ctx.device).unwrap(),
@@ -576,11 +617,15 @@ let color_view = scope
     .unwrap();
 world
     .root_scope()
-    .query_one::<&mut Renderer>(renderer)
-    .map(|mut renderer| {
-        attachments.bind(&world, &mut renderer, color_view);
-        renderer.render(&world);
+    .query_one::<&mut FramePass>(pass)
+    .map(|mut pass| {
+        pass.set_attachments(&attachments, color_view);
     })
+    .unwrap();
+world
+    .root_scope()
+    .query_one::<&mut Renderer>(renderer)
+    .map(|mut r| r.render(&world))
     .unwrap();
 ```
 

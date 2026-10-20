@@ -7,7 +7,6 @@
 //! frame — the first only warms egui's font atlas up.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE};
-use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 use unlit3d::ui::egui;
 
@@ -26,6 +25,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a rich egui panel, no mesh source and no camera",
     size: TEST_SIZE,
     baseline: None,
+    clear: Some(CLEAR_COLOR),
     frames: 2,
     step_seconds: None,
     samples: 1,
@@ -39,20 +39,11 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     _context: RenderContext,
+    _pass: Entity,
     ui: Option<Entity>,
     _size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    // The pass opens with this world's load ops: a dark clear the panels paint
-    // over. The UI source reads them from the shared subtree.
-    super::spawn_shared(
-        world,
-        bundle!(RenderLoadOps {
-            color: wgpu::LoadOp::Clear(CLEAR_COLOR),
-            ..RenderLoadOps::default()
-        }),
-    );
-
     if options.ui {
         super::spawn_in(
             world,

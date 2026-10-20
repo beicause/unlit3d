@@ -7,7 +7,7 @@
 //! color image registered in the frame's resource graph, and hands it back from
 //! [`WindowSurface::acquire`]. The depth and multisample attachments belong to
 //! the caller — see [`FrameAttachments`](crate::attachments::FrameAttachments)
-//! — so a frame loop is acquire, bind, render, present.
+//! — so a frame loop is acquire, attach, render, present.
 //!
 //! The caller creates the `wgpu::Surface` itself, because the adapter has to
 //! be requested with it as the compatible surface. That request is async —
@@ -34,11 +34,17 @@
 //! let window_surface = world
 //!     .root_scope()
 //!     .query_one::<&mut Renderer>(renderer)
-//!     .map(|mut r| WindowSurface::new(world, &mut r, instance, adapter, window, surface))
+//!     .map(|mut r| {
+//!         WindowSurface::new(world, &mut r, instance, adapter, window, surface)
+//!     })
 //!     .unwrap();
 //! // The depth and multisample attachments the frame draws with; `true` asks
 //! // for a depth-stencil one, which a frame of depth-tested geometry needs.
-//! let context = world.root_scope().query_one::<&Renderer>(renderer).unwrap().context();
+//! let context = world
+//!     .root_scope()
+//!     .query_one::<&Renderer>(renderer)
+//!     .unwrap()
+//!     .context();
 //! let attachments = FrameAttachments::new(
 //!     world,
 //!     context,
@@ -51,7 +57,8 @@
 //! # }
 //! ```
 //!
-//! and the frame loop then only has to bind, render and present:
+//! and the frame loop then only has to attach the swap chain image to the pass
+//! that draws into it, render and present:
 //!
 //! ```rust
 //! # use unlit3d::attachments::FrameAttachments;
@@ -61,21 +68,21 @@
 //! #     world: &World,
 //! #     queue: &wgpu::Queue,
 //! #     renderer_entity: Entity,
+//! #     pass: Entity,
 //! #     window_surface: &mut WindowSurface,
 //! #     attachments: &FrameAttachments,
 //! # ) {
 //! let root = world.root_scope();
 //! let Some(frame) = root
 //!     .query_one::<&mut Renderer>(renderer_entity)
-//!     .map(|mut r| window_surface.acquire(world, &mut r))
-//!     .unwrap()
+//!     .and_then(|mut r| window_surface.acquire(world, &mut r))
 //! else {
 //!     return;
 //! };
 //! root
-//!     .query_one::<&mut Renderer>(renderer_entity)
-//!     .map(|mut r| {
-//!         attachments.bind(world, &mut r, frame.color_view().clone());
+//!     .query_one::<&mut FramePass>(pass)
+//!     .map(|mut pass| {
+//!         pass.set_attachments(attachments, frame.color_view().clone());
 //!     })
 //!     .unwrap();
 //! root

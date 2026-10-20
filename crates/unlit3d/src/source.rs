@@ -1,18 +1,22 @@
 //! Frame sources: the things a frame is made of.
 //!
 //! A [`Renderer`](crate::renderer::Renderer) draws nothing itself. It assembles a frame
-//! out of [`FrameSource`]s, each of which builds its own [`Scene`] from the
-//! world and states where in the frame it belongs. The built-in mesh rendering
-//! is one such source ([`MeshSource`](crate::mesh_source::MeshSource)) and a
-//! UI overlay is another; a caller's own pass over the frame is a third, with
-//! no more privilege than the built-in ones.
+//! out of [`FramePass`](crate::pass::FramePass)es, and each pass out of the
+//! [`FrameSource`]s below it: every source builds its own [`Scene`] from the
+//! world, and the pass records it. A source's place in the entity tree is
+//! therefore what chooses its pass. The built-in mesh rendering is one such
+//! source ([`MeshSource`](crate::mesh_source::MeshSource)) and a UI overlay is
+//! another; a caller's own pass over the frame is a third, with no more
+//! privilege than the built-in ones.
 //!
 //! A source is an ordinary component holding a boxed [`AnySource`], so one
 //! query drives every concrete source type: build all of them, then record
 //! their scenes in [`FrameSourceOrder`]. The GPU state a source needs — the device,
 //! the queue and the resource graph — lives in the world too, addressed by the
 //! [`RenderContext`] the sources are handed; that is what lets a source fetch
-//! the graph while the driver only holds a shared borrow of the world.
+//! the graph while the driver only holds a shared borrow of the world. What the
+//! pass draws into, and where in it the source belongs, reaches the source as
+//! [`PassInfo`].
 //!
 //! [`Scene`]: unlit_wgpu::scene::Scene
 
@@ -22,8 +26,10 @@ use unlit_ecs::bundle;
 use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
-use unlit_wgpu::scene::{Scene, ViewportRect};
-use unlit_wgpu::specialize::SurfaceKey;
+use unlit_wgpu::scene::Scene;
+
+use crate::order::OrderKey;
+use crate::pass::PassInfo;
 
 /// Where a source records, relative to every other source.
 ///
@@ -40,12 +46,21 @@ impl FrameSourceOrder {
     pub const UI: Self = Self(100);
 }
 
+impl OrderKey for FrameSourceOrder {
+    const ORDER: &'static str = "FrameSourceOrder";
+    const SUBJECT: &'static str = "sources";
+
+    fn value(self) -> i32 {
+        self.0
+    }
+}
+
 /// The GPU state a frame is drawn with, as world addresses.
 ///
 /// It holds [`Entity`] handles rather than borrows, so it is `Copy` and never
 /// conflicts with a source's own borrow of the world. A source fetches what it
 /// needs from the components those entities carry:
-/// `world.root_scope().query_one::<&mut ResourceGraph>(ctx.graph)`.
+/// `world.root_scope().get_mut::<ResourceGraph>(ctx.graph)`.
 ///
 /// The handles are spawned once by [`spawn_context`] and stay valid for the
 /// world's life; a resource entity is never despawned while frames are drawn.
@@ -130,59 +145,6 @@ impl Drop for MaintainScope<'_> {
     }
 }
 
-/// The render target the frame currently draws into.
-///
-/// A source specializes every pipeline on the frame's target, but
-/// [`RenderContext`] is spawned once and must stay `Copy`, so the target is a
-/// separate resource the frame loop writes before it renders — see
-/// [`set_frame_target`]. It is deliberately not a field on [`RenderContext`]:
-/// putting a per-frame value there would mean writing the context every frame,
-/// and a source reading it could not tell a stale value from this frame's.
-///
-/// A source that runs before any target was written reads `None` from
-/// [`frame_target`] and must refuse to draw rather than fall back to the
-/// previous frame's target.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FrameTarget {
-    /// The target's pipeline specialization key.
-    pub surface: SurfaceKey,
-    /// The target's width, in physical pixels.
-    pub width: u32,
-    /// The target's height, in physical pixels.
-    pub height: u32,
-}
-
-/// The world resource holding the frame's current [`FrameTarget`].
-///
-/// Internal: the frame loop writes it through [`set_frame_target`] and sources
-/// read it through [`frame_target`], so the `Option` never has to be handled
-/// twice.
-#[derive(Clone, Copy, Debug, Default)]
-struct FrameTargetSlot(Option<FrameTarget>);
-
-/// The region of the frame's target that scene-like sources draw into, or
-/// `None` for the whole of it.
-///
-/// This is how a frame loop letterboxes content whose own aspect differs from
-/// its target's: it states the rectangle once per frame, and every source that
-/// draws 3D content records into it — so the content is scaled uniformly and
-/// the same picture appears on any target shape. A source that composes over
-/// the content rather than being part of it, a UI overlay for instance, ignores
-/// this and covers the whole target.
-///
-/// It is a per-frame value rather than a field on [`RenderContext`] for the
-/// same reason [`FrameTarget`] is: the context is spawned once and stays `Copy`,
-/// while this changes with every resize.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FrameViewport(pub ViewportRect);
-
-/// The world resource holding the frame's current [`FrameViewport`].
-///
-/// Internal: the frame loop writes it through [`set_frame_viewport`] and
-/// sources read it through [`frame_viewport`].
-#[derive(Clone, Copy, Debug, Default)]
-struct FrameViewportSlot(Option<FrameViewport>);
-
 /// A URL a frame source asked the host to open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenUrl {
@@ -233,9 +195,9 @@ impl OpenUrls {
 pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
     let Some(entity) = world
         .root_scope()
-        .query::<(&OpenUrls, Entity)>()
+        .query::<(Entity, &OpenUrls)>()
         .next()
-        .map(|(_open_urls, e)| e)
+        .map(|(e, _)| e)
     else {
         return Vec::new();
     };
@@ -246,106 +208,6 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
         .unwrap_or_default()
 }
 
-/// The frame's target, or `None` before any frame loop wrote one.
-///
-/// A source calls this in
-/// [`build_scene`](FrameSource::build_scene). `None` means the frame loop never
-/// stated what the frame draws into, which is a programming error on its part —
-/// a source cannot invent a target — so a source that needs it should refuse to
-/// draw rather than fall back.
-pub fn frame_target(scope: &Scope<'_>) -> Option<FrameTarget> {
-    scope
-        .query::<&FrameTargetSlot>()
-        .next()
-        .and_then(|frame_target_slot| frame_target_slot.0)
-}
-
-/// State the target the frame draws into.
-///
-/// The frame loop calls this before it renders — [`Renderer::set_render_target`](crate::renderer::Renderer::set_render_target)
-/// does it for the built-in path. Returns whether a slot existed to write; a
-/// world only gets one from [`spawn_context`].
-pub fn set_frame_target(scope: &Scope<'_>, target: FrameTarget) -> bool {
-    let Some(entity) = scope
-        .query::<(&FrameTargetSlot, Entity)>()
-        .next()
-        .map(|(_frame_target_slot, e)| e)
-    else {
-        return false;
-    };
-    scope
-        .query_one::<&mut FrameTargetSlot>(entity)
-        .map(|mut slot| slot.0 = Some(target))
-        .is_some()
-}
-
-/// Unset the target the frame draws into.
-///
-/// The inverse of [`set_frame_target`]: sources then read no target and refuse
-/// to draw instead of drawing into one that is gone. Returns whether a slot
-/// existed to write; a world only gets one from [`spawn_context`].
-///
-/// Internal: this is how [`Renderer::unset_render_target`](crate::renderer::Renderer::unset_render_target)
-/// stops the world claiming a target whose attachments it released, so a
-/// caller states a target again by setting one rather than by unsetting one.
-pub(crate) fn unset_frame_target(world: &World) -> bool {
-    let Some(entity) = world
-        .root_scope()
-        .query::<(&FrameTargetSlot, Entity)>()
-        .next()
-        .map(|(_frame_target_slot, e)| e)
-    else {
-        return false;
-    };
-    world
-        .root_scope()
-        .query_one::<&mut FrameTargetSlot>(entity)
-        .map(|mut slot| slot.0 = None)
-        .is_some()
-}
-
-/// The region of the frame's target that 3D sources draw into.
-///
-/// A source calls this in [`FrameSource::build_scene`] to learn where the
-/// content it is part of belongs, and passes it to
-/// [`Scene::set_viewport`] so its draws land inside it.
-///
-/// `None` means the frame loop stated no letterbox, so the whole target is the
-/// region — the ordinary case, and the one every caller that never letterboxes
-/// leaves the world in.
-pub fn frame_viewport(scope: &Scope<'_>) -> Option<FrameViewport> {
-    scope
-        .query::<&FrameViewportSlot>()
-        .next()
-        .and_then(|frame_viewport_slot| frame_viewport_slot.0)
-}
-
-/// State the region of the frame's target that 3D sources draw into.
-///
-/// The frame loop calls this before it renders, next to
-/// [`set_frame_target`](crate::renderer::Renderer::set_render_target). A frame
-/// loop that never calls it leaves the whole target as the region, which is
-/// what every caller that does not letterbox wants.
-///
-/// A letterbox is a property of the target, not of a source, so it is stated
-/// here rather than by each source: see [`FrameViewport`]. Returns whether a
-/// slot existed to write; a world only gets one from [`spawn_context`].
-pub fn set_frame_viewport(world: &World, viewport: Option<FrameViewport>) -> bool {
-    let Some(entity) = world
-        .root_scope()
-        .query::<(&FrameViewportSlot, Entity)>()
-        .next()
-        .map(|(_frame_viewport_slot, e)| e)
-    else {
-        return false;
-    };
-    world
-        .root_scope()
-        .query_one::<&mut FrameViewportSlot>(entity)
-        .map(|mut slot| slot.0 = viewport)
-        .is_some()
-}
-
 /// A source of one frame's draws.
 ///
 /// A source owns whatever state it draws from and the [`Scene`] it fills each
@@ -354,11 +216,16 @@ pub fn set_frame_viewport(world: &World, viewport: Option<FrameViewport>) -> boo
 pub trait FrameSource: 'static {
     /// Assemble this frame's [`Scene`], fetching what it needs from `world`.
     ///
+    /// `info` states the pass the source is recorded by: what its target looks
+    /// like, how large it is, and the region the pass letterboxes to. It is the
+    /// only way a source learns where it draws, because the pass is an ancestor
+    /// entity it cannot reach from its own scope.
+    ///
     /// `ctx` carries only entity ids, so it never conflicts with the source's
     /// own borrow of `world`. `encoder` is the frame's one encoder, and a
-    /// source stages its uploads through it: the pass is opened only after
-    /// every source has built, so the uploads and the draws that read them
-    /// share one submission.
+    /// source stages its uploads through it: passes are opened only after every
+    /// source has built, so the uploads and the draws that read them share one
+    /// submission.
     ///
     /// A source that has nothing to draw clears its scene and returns: the
     /// frame still records, and still applies its load ops.
@@ -366,6 +233,7 @@ pub trait FrameSource: 'static {
         &mut self,
         scope: &Scope<'_>,
         ctx: RenderContext,
+        info: PassInfo,
         encoder: &mut wgpu::CommandEncoder,
     );
 
@@ -451,9 +319,10 @@ impl Source {
         &mut self,
         scope: &Scope<'_>,
         ctx: RenderContext,
+        info: PassInfo,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        self.source.build_scene(scope, ctx, encoder);
+        self.source.build_scene(scope, ctx, info, encoder);
     }
 
     /// The scene this source built for the frame.
@@ -504,136 +373,33 @@ pub fn spawn_context(
     shared_view.spawn_at(context.queue, bundle!(queue, context));
     shared_view.spawn_at(context.capabilities, bundle!(capabilities, context));
     shared_view.spawn_at(graph, bundle!(graph_component, context));
-    // The frame loop writes the target here every frame; until it does, no
-    // source may draw.
-    shared_view.spawn(bundle!(FrameTargetSlot::default(),));
-    // Where in that target the frame's 3D content belongs; the whole of it
-    // until a frame loop states a letterbox.
-    shared_view.spawn(bundle!(FrameViewportSlot::default(),));
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
     shared_view.spawn(bundle!(OpenUrls::default(),));
     context
 }
 
-/// One group of sources that declared the same [`FrameSourceOrder`].
-pub type AmbiguousGroup = (FrameSourceOrder, Vec<Entity>);
-
-/// The frame's sources in record order, and the ambiguous groups among them.
-///
-/// Resolved once per frame, so it is kept as a reusable buffer rather than
-/// handed back as fresh `Vec`s: a steady scene then resolves its order without
-/// allocating. [`Self::resolve`] clears and refills every buffer in place, so
-/// the capacity survives from one frame to the next.
-#[derive(Debug, Default)]
-pub struct SourceOrder {
-    /// `(order, entity)` for every source, sorted by both. Scratch: the
-    /// entities are copied into [`Self::order`] once the run boundaries have
-    /// been found.
-    keys: Vec<(FrameSourceOrder, Entity)>,
-    /// The sources to record, in the order they record.
-    order: Vec<Entity>,
-    /// The runs of equal orders among them, in order.
-    ambiguous: Vec<AmbiguousGroup>,
-}
-
-impl SourceOrder {
-    /// Resolve `world`'s sources, reusing whatever this already holds.
-    ///
-    /// Sorted by `(order, entity)`, so the entity breaks a tie between equal
-    /// orders; every run of more than one equal order is an ambiguity.
-    pub fn resolve(&mut self, world: &World) {
-        self.keys.clear();
-        self.keys.extend(
-            world
-                .root_scope()
-                .query::<(&Source, Entity)>()
-                .map(|(source, entity)| (source.order(), entity)),
-        );
-        self.keys
-            .sort_unstable_by_key(|(order, entity)| (*order, *entity));
-
-        self.order.clear();
-        self.ambiguous.clear();
-        let mut start = 0;
-        while start < self.keys.len() {
-            let order = self.keys[start].0;
-            let mut end = start + 1;
-            while end < self.keys.len() && self.keys[end].0 == order {
-                end += 1;
-            }
-            if end - start > 1 {
-                // A run of equal orders: an ambiguity. Its entities are in
-                // entity order already, because that is what the sort used as
-                // the tie-break.
-                let group = self.keys[start..end]
-                    .iter()
-                    .map(|(_, entity)| *entity)
-                    .collect();
-                self.ambiguous.push((order, group));
-            }
-            start = end;
-        }
-        self.order
-            .extend(self.keys.iter().map(|(_, entity)| *entity));
-    }
-
-    /// The sources to record, in the order they record.
-    pub fn entities(&self) -> &[Entity] {
-        &self.order
-    }
-
-    /// The groups of sources that declared the same [`FrameSourceOrder`], in order.
-    ///
-    /// Equal orders are not an error — two sources that really are
-    /// interchangeable may share one — but they are worth reporting; see
-    /// [`OrderWarnings`].
-    pub fn ambiguous(&self) -> &[AmbiguousGroup] {
-        &self.ambiguous
-    }
-}
-
-/// Reports sources that declared the same [`FrameSourceOrder`], without repeating
-/// itself.
-///
-/// Equal orders are not an error — two sources that really are
-/// interchangeable may share one — so this warns rather than panicking. What it
-/// must not do is warn on every frame: a steady scene would flood the log. It
-/// therefore remembers the groups it last reported and speaks up again only
-/// when they change, which is exactly when sources were added, removed or
-/// reordered.
-#[derive(Debug, Default)]
-pub struct OrderWarnings {
-    reported: Vec<AmbiguousGroup>,
-}
-
-impl OrderWarnings {
-    /// Warn about `ambiguous` unless it is what was already reported.
-    ///
-    /// Returns whether anything was reported, which is what the tests assert
-    /// on; the log line names the group's size, its order and its entities.
-    pub fn check(&mut self, ambiguous: &[AmbiguousGroup]) -> bool {
-        if self.reported == ambiguous {
-            return false;
-        }
-        for (order, group) in ambiguous {
-            log::warn!(
-                "{} sources declared the same FrameSourceOrder({}): entities {:?}; \
-                 recording them in an unspecified order — give them distinct orders \
-                 to choose explicitly",
-                group.len(),
-                order.0,
-                group,
-            );
-        }
-        self.reported = ambiguous.to_vec();
-        !ambiguous.is_empty()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use unlit_wgpu::specialize::SurfaceKey;
+
+    use crate::order::{AmbiguousGroup, OrderWarnings, Ordering};
+
+    /// A pass's target, as a source is told about one: nothing here draws, so
+    /// only the ordering bookkeeping is exercised.
+    fn test_info() -> PassInfo {
+        PassInfo {
+            surface: SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: None,
+                sample_count: 1,
+            },
+            width: 128,
+            height: 96,
+            viewport: None,
+        }
+    }
 
     /// A noop device and queue, enough to spawn a context: the tests here
     /// exercise the ordering bookkeeping, which never touches the GPU.
@@ -670,6 +436,7 @@ mod tests {
             &mut self,
             _view: &Scope<'_>,
             _ctx: RenderContext,
+            _info: PassInfo,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             self.built.set(self.built.get() + 1);
@@ -690,9 +457,14 @@ mod tests {
     /// Resolve `world`'s order in one shot, as the tests want it: the entities
     /// and the ambiguous groups, both owned so an assertion can hold them while
     /// the world changes.
-    fn record_order(world: &World) -> (Vec<Entity>, Vec<AmbiguousGroup>) {
-        let mut resolved = SourceOrder::default();
-        resolved.resolve(world);
+    fn record_order(world: &World) -> (Vec<Entity>, Vec<AmbiguousGroup<FrameSourceOrder>>) {
+        let mut resolved = Ordering::<FrameSourceOrder>::default();
+        resolved.resolve(
+            world
+                .root_scope()
+                .query::<(Entity, &Source)>()
+                .map(|(entity, source)| (source.order(), entity)),
+        );
         (resolved.entities().to_vec(), resolved.ambiguous().to_vec())
     }
 
@@ -803,6 +575,7 @@ mod tests {
                 &mut self,
                 _view: &Scope<'_>,
                 _ctx: RenderContext,
+                _info: PassInfo,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
             }
@@ -867,6 +640,7 @@ mod tests {
                 &mut self,
                 _view: &Scope<'_>,
                 _ctx: RenderContext,
+                _info: PassInfo,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
                 self.0 += 1;
@@ -895,8 +669,8 @@ mod tests {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let entities: Vec<Entity> = world
             .root_scope()
-            .query::<(&Source, Entity)>()
-            .map(|(_source, e)| e)
+            .query::<(Entity, &Source)>()
+            .map(|(e, _)| e)
             .collect();
         assert_eq!(entities.len(), 2, "both sources are seen by one query type");
         for entity in entities {
@@ -907,7 +681,7 @@ mod tests {
                     let scope = world
                         .scope(entity)
                         .expect("a source entity is its own scope");
-                    source.build_scene(&scope, ctx, &mut encoder)
+                    source.build_scene(&scope, ctx, test_info(), &mut encoder)
                 })
                 .unwrap();
         }
@@ -931,6 +705,7 @@ mod tests {
                 &mut self,
                 _view: &Scope<'_>,
                 _ctx: RenderContext,
+                _info: PassInfo,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
                 self.log.borrow_mut().push(format!("build {}", self.name));
@@ -958,8 +733,8 @@ mod tests {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         let entities: Vec<Entity> = world
             .root_scope()
-            .query::<(&Source, Entity)>()
-            .map(|(_source, e)| e)
+            .query::<(Entity, &Source)>()
+            .map(|(e, _)| e)
             .collect();
         for entity in &entities {
             world
@@ -969,7 +744,7 @@ mod tests {
                     let scope = world
                         .scope(*entity)
                         .expect("a source entity is its own scope");
-                    source.build_scene(&scope, ctx, &mut encoder)
+                    source.build_scene(&scope, ctx, test_info(), &mut encoder)
                 })
                 .unwrap();
         }
@@ -1020,7 +795,7 @@ mod tests {
         assert_eq!(ambiguous[0].0, FrameSourceOrder::MESH);
         assert_eq!(ambiguous[0].1, vec![a, b], "in entity order");
 
-        let mut warnings = OrderWarnings::default();
+        let mut warnings = OrderWarnings::<FrameSourceOrder>::default();
         assert!(warnings.check(&ambiguous), "the first frame reports it");
         assert!(!warnings.check(&ambiguous), "a steady frame stays quiet");
 
@@ -1066,8 +841,13 @@ mod tests {
                 FrameSourceOrder::UI
             )),));
 
-        let mut resolved = SourceOrder::default();
-        resolved.resolve(&world);
+        let mut resolved = Ordering::<FrameSourceOrder>::default();
+        resolved.resolve(
+            world
+                .root_scope()
+                .query::<(Entity, &Source)>()
+                .map(|(entity, source)| (source.order(), entity)),
+        );
         let order_capacity = resolved.order.capacity();
         let ambiguous_capacity = resolved.ambiguous.capacity();
         assert_eq!(resolved.entities().len(), 5);
@@ -1076,12 +856,17 @@ mod tests {
         // A later frame with fewer sources keeps both allocations.
         let first = world
             .root_scope()
-            .query::<(&Source, Entity)>()
+            .query::<(Entity, &Source)>()
             .next()
             .expect("a source")
-            .1;
+            .0;
         world.root_scope_mut().despawn(first);
-        resolved.resolve(&world);
+        resolved.resolve(
+            world
+                .root_scope()
+                .query::<(Entity, &Source)>()
+                .map(|(entity, source)| (source.order(), entity)),
+        );
         assert_eq!(resolved.entities().len(), 4);
         assert_eq!(
             resolved.order.capacity(),
@@ -1114,7 +899,7 @@ mod tests {
         let (order, ambiguous) = record_order(&world);
         assert_eq!(order.len(), 2);
         assert!(ambiguous.is_empty());
-        assert!(!OrderWarnings::default().check(&ambiguous));
+        assert!(!OrderWarnings::<FrameSourceOrder>::default().check(&ambiguous));
     }
 
     /// A logger that keeps what was logged, so a test can assert on the
@@ -1174,7 +959,7 @@ mod tests {
 
         let messages = capture_logs(|| {
             let (_, ambiguous) = record_order(&world);
-            let mut warnings = OrderWarnings::default();
+            let mut warnings = OrderWarnings::<FrameSourceOrder>::default();
             assert!(warnings.check(&ambiguous), "the group is reported");
         });
 
@@ -1212,7 +997,7 @@ mod tests {
 
         let messages = capture_logs(|| {
             let (_, ambiguous) = record_order(&world);
-            assert!(!OrderWarnings::default().check(&ambiguous));
+            assert!(!OrderWarnings::<FrameSourceOrder>::default().check(&ambiguous));
         });
         assert!(messages.is_empty(), "nothing to warn about: {messages:?}");
     }
@@ -1233,7 +1018,7 @@ mod tests {
             .spawn(bundle!(Source::new(RecordingSource::new(
                 FrameSourceOrder::MESH
             )),));
-        let mut warnings = OrderWarnings::default();
+        let mut warnings = OrderWarnings::<FrameSourceOrder>::default();
 
         let messages = capture_logs(|| {
             for _ in 0..5 {
@@ -1275,7 +1060,7 @@ mod tests {
             .spawn(bundle!(Source::new(RecordingSource::new(
                 FrameSourceOrder::MESH
             )),));
-        let mut warnings = OrderWarnings::default();
+        let mut warnings = OrderWarnings::<FrameSourceOrder>::default();
 
         let messages = capture_logs(|| {
             for _ in 0..3 {
@@ -1346,6 +1131,20 @@ mod release_tests {
     use super::*;
     use unlit_wgpu::resources::{ResHandle, Resource as GraphResource};
 
+    /// A pass's target; these tests never draw, so only the graph matters.
+    fn test_info() -> PassInfo {
+        PassInfo {
+            surface: unlit_wgpu::specialize::SurfaceKey {
+                color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                depth_stencil_format: None,
+                sample_count: 1,
+            },
+            width: 128,
+            height: 96,
+            viewport: None,
+        }
+    }
+
     /// A source that registers a node, so dropping it has something to give up.
     ///
     /// It holds the id in its own state, as a real source does: the node stays
@@ -1361,6 +1160,7 @@ mod release_tests {
             &mut self,
             scope: &Scope<'_>,
             ctx: RenderContext,
+            _info: PassInfo,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             // Register once, on the first frame: a node the source owns and
@@ -1398,6 +1198,7 @@ mod release_tests {
             &mut self,
             scope: &Scope<'_>,
             ctx: RenderContext,
+            _info: PassInfo,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             // The scope is the whole of the build's graph handling: this source
@@ -1453,7 +1254,7 @@ mod release_tests {
                 let scope = world
                     .scope(entity)
                     .expect("a source entity is its own scope");
-                source.build_scene(&scope, ctx, &mut encoder)
+                source.build_scene(&scope, ctx, test_info(), &mut encoder)
             })
             .expect("the source entity exists");
     }

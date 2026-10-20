@@ -31,6 +31,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "three cubes sharing one mesh, deformed per instance",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
+    clear: None,
     frames: FRAMES as u32,
     step_seconds: Some(SEQUENCE_STEP),
     samples: 1,
@@ -44,6 +45,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
+    pass: Entity,
     _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
@@ -52,7 +54,10 @@ fn build(
     source.register_unlit_family(&world.root_scope());
     // The variant that reads both the joint stream and the morph bindings.
     let key = UnlitPipelineKey::new(unlit_options(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass is alive")
+        .spawn(bundle!(Source::new(source),));
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, 0.0);

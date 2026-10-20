@@ -123,6 +123,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "every primitive topology, indexed and non-indexed",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
+    clear: None,
     frames: 1,
     step_seconds: None,
     samples: 1,
@@ -189,6 +190,7 @@ fn index_buffer() -> Vec<u32> {
 fn build(
     world: &mut World,
     context: RenderContext,
+    pass: Entity,
     _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
@@ -196,7 +198,10 @@ fn build(
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let device = source.device(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass is alive")
+        .spawn(bundle!(Source::new(source),));
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot

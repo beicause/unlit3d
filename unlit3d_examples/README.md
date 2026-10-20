@@ -189,11 +189,12 @@ as a [Model Context Protocol](https://modelcontextprotocol.io) server. The
 chosen scene is built first — `--scene` still selects it — and the client then
 reads and drives it through the tools. The example's own event loop serves it,
 on the thread that owns it, so the window goes on drawing and input still
-reaches the scene: the scene world renders offscreen and a second world blits
-that frame into the swap chain, so the picture follows the client. The blit
-declares no depth state and samples the offscreen frame's resolved colour
-texture, so its frames carry neither a depth nor a multisample attachment. Both
-worlds are components of one host `World`, and a tool names the one it means.
+reaches the scene: the scene's pass renders offscreen and a second pass in the
+same world copies that frame into the swap chain, so the picture follows the
+client. The copying pass declares no depth state and samples the offscreen
+frame's resolved colour texture, so its frames carry neither a depth nor a
+multisample attachment. The world is one component of the host `World`, and a
+tool names it.
 See [`unlit_ecs`](../crates/unlit_ecs/README.md) for the server, the tools
 each crate registers, and the transport.
 

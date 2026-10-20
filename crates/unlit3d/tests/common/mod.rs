@@ -32,6 +32,8 @@ pub struct TestGpu {
     pub context: RenderContext,
     /// The [`Renderer`] resource entity, driven by [`Self::render`].
     pub renderer: Entity,
+    /// The frame's only pass, which every source of the harness hangs under.
+    pass: Entity,
     /// The built-in mesh source, or `None` in a UI-only world.
     source: Option<Entity>,
     /// The built-in unlit family's key; every renderable entity carries an
@@ -46,8 +48,24 @@ impl TestGpu {
         let mut test = Self::frame_only(world, ctx);
         let mut source = MeshSource::new(&world.root_scope(), test.context);
         source.register_unlit_family(&world.root_scope());
-        test.source = Some(world.root_scope_mut().spawn(bundle!(Source::new(source),)));
+        test.source = Some(test.spawn_source(world, source));
         test
+    }
+
+    /// Spawn `source` as a source of the frame's pass.
+    ///
+    /// A source draws into the pass it hangs under, so the harness's sources
+    /// are spawned into the pass's subtree rather than at the root.
+    pub fn spawn_source(&self, world: &mut World, source: impl FrameSource) -> Entity {
+        world
+            .scope_mut(self.pass)
+            .expect("the pass entity is its own scope")
+            .spawn(bundle!(Source::new(source),))
+    }
+
+    /// The frame's pass entity.
+    pub fn pass(&self) -> Entity {
+        self.pass
     }
 
     /// Spawn only the frame's context and driver, with no mesh source.
@@ -67,11 +85,18 @@ impl TestGpu {
         // entities, and a variant that read no instance stream would draw them
         // all in their mesh colour.
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
+        // One pass, cleared every frame: what every test that states no
+        // load ops of its own gets.
+        let pass = world.root_scope_mut().spawn(bundle!(
+            FramePass::new(FramePassOrder(0)),
+            RenderLoadOps::default()
+        ));
         let renderer = world
             .root_scope_mut()
             .spawn(bundle!(Renderer::new(context),));
         Self {
             context,
+            pass,
             renderer,
             source: None,
             key,
@@ -340,8 +365,8 @@ impl TestGpu {
     }
 
     /// Allocate an offscreen colour target and a matching depth-stencil target,
-    /// register their views in the frame's resource graph, and bind them as the
-    /// renderer's render target. Returns the colour texture (for readback).
+    /// register their views in the frame's resource graph, and bind them as what
+    /// the harness's pass draws into. Returns the colour texture (for readback).
     pub fn bind_offscreen_target(&self, world: &World, _label: &str) -> wgpu::Texture {
         self.bind_offscreen_target_with(world, 1, true)
     }
@@ -374,9 +399,13 @@ impl TestGpu {
             samples,
             with_depth,
         );
-        self.with_renderer(world, |renderer, world| {
-            attachments.bind(world, renderer, color_view);
-        });
+        world
+            .root_scope()
+            .query_one::<&mut FramePass>(self.pass)
+            .map(|mut pass| {
+                pass.set_attachments(&attachments, color_view);
+            })
+            .expect("the pass entity exists");
         color
     }
 
@@ -401,9 +430,13 @@ impl TestGpu {
         let (_, color_view) = self.register_texture(world, color.clone());
         let attachments =
             FrameAttachments::new(world, self.context, COLOR_FORMAT, size, samples, with_depth);
-        self.with_renderer(world, |renderer, world| {
-            attachments.bind(world, renderer, color_view);
-        });
+        world
+            .root_scope()
+            .query_one::<&mut FramePass>(self.pass)
+            .map(|mut pass| {
+                pass.set_attachments(&attachments, color_view);
+            })
+            .expect("the pass entity exists");
         color
     }
 

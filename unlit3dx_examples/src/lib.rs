@@ -43,6 +43,7 @@ pub mod android;
 
 use argh::FromArgs;
 use std::process::ExitCode;
+use unlit_ecs::bundle;
 
 use crate::scene::*;
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
@@ -177,7 +178,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
         // a screenshot reads back. A plain window draws into the swap chain.
         let offscreen = mcp;
         move |world, gpu| {
-            let renderer = setup_render_world(
+            let (renderer, pass) = setup_render_world(
                 world,
                 render.entity(),
                 &gpu.device,
@@ -189,11 +190,12 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             // set up to draw as jobs. The panels themselves never leave the
             // world that holds them; what crosses is the slots they publish
             // into.
-            mount_scene_content(&render, Some(panels.clone()));
+            mount_scene_content(&render, pass, Some(panels.clone()));
             let outcome = setup_presenter(
                 world,
                 render.entity(),
                 renderer,
+                pass,
                 gpu,
                 WINDOW_SIZE,
                 offscreen,
@@ -226,7 +228,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             if key.key == Key::Space {
                 request_drop(&gameplay_sender);
             }
-        }),));
+        },),));
     // The frame's input: the host dispatches its own key behaviours before
     // the draw. Nothing clears anything afterwards — each world and the
     // render world's UI source read their own copy of the stream.

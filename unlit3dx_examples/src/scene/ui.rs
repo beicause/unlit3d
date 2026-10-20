@@ -16,13 +16,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use unlit_ecs::World;
+use unlit_ecs::bundle;
 use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
 
 use super::music::sequence_midi;
 use super::{BGM_TRACK, PanelSlots, SEQUENCE_TRACK, request_clear_in, request_drop_in};
-use unlit_ecs::bundle;
 
 /// The panel, living on its own entity in the gameplay world.
 ///
@@ -45,9 +45,9 @@ fn track_ends_job(track: &str) -> Job<u64> {
     Box::new(move |world: &mut World| {
         world
             .root_scope()
-            .query::<&MidiPlayer>()
-            .find(|midi_player| midi_player.name() == track.as_str())
-            .map_or(0, |midi_player| midi_player.ends())
+            .query::<(Entity, &MidiPlayer)>()
+            .find(|(_, player)| player.name() == track.as_str())
+            .map_or(0, |(_, player)| player.ends())
     })
 }
 
@@ -384,11 +384,17 @@ impl Controls {
 /// The panel itself is not here: it lives in the gameplay world, which lays it
 /// out and publishes it. This world draws whatever the slots hold, so the two
 /// worlds share the slots and nothing else.
-pub fn control_panel_job(panels: PanelSlots) -> Job<()> {
+///
+/// `pass` is the pass the source draws into: a pass records the sources below
+/// it, so a source spawned anywhere else would never reach the frame.
+pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job<()> {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
         source.draw_published(panels.frames, panels.screen);
-        world.root_scope_mut().spawn(bundle!(Source::new(source),));
+        world
+            .scope_mut(pass)
+            .expect("the scene's pass is alive")
+            .spawn(bundle!(Source::new(source),));
     })
 }
 

@@ -1,10 +1,12 @@
-//! The frame driver: assembling one frame out of its sources.
+//! The frame driver: assembling one frame out of its passes and sources.
 //!
-//! A [`Renderer`] draws nothing itself. It owns the frame's render target and
-//! drives the frame's [`FrameSource`](crate::source::FrameSource)s: every source builds its own
-//! [`Scene`](unlit_wgpu::scene::Scene) from the world, then the driver records those scenes in
-//! [`FrameSourceOrder`](crate::source::FrameSourceOrder) into one pass, opened over the target's attachments. That is
-//! the whole of it — the built-in mesh rendering is one source
+//! A [`Renderer`] draws nothing itself. It drives the frame's [`FramePass`]es:
+//! each pass states what it draws into, every
+//! [`FrameSource`](crate::source::FrameSource) under it builds its own
+//! [`Scene`](unlit_wgpu::scene::Scene) from the world, and the driver records
+//! those scenes in [`FrameSourceOrder`] into that pass. The passes themselves
+//! record in [`FramePassOrder`]. That is the whole of it —
+//! the built-in mesh rendering is one source
 //! ([`MeshSource`](crate::mesh_source::MeshSource)) and has no more privilege
 //! than a caller's own.
 //!
@@ -14,26 +16,19 @@
 //! [`spawn_context`](crate::source::spawn_context); the renderer keeps the
 //! context's entity ids so it can reach the device and queue every frame.
 
-use unlit_ecs::World;
-use unlit_wgpu::render_attachments::RenderAttachments;
-use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureView};
+use unlit_ecs::{Entity, World};
 use unlit_wgpu::scene::full_viewport;
-use unlit_wgpu::specialize::SurfaceKey;
 
 use crate::components::RenderLoadOps;
-use crate::source::{
-    FrameTarget, OrderWarnings, RenderContext, Source, SourceOrder, set_frame_target,
-    unset_frame_target,
-};
-use unlit_ecs::Entity;
+use crate::order::{OrderWarnings, Ordering};
+use crate::pass::{FramePass, FramePassOrder, PassInfo};
+use crate::source::{FrameSourceOrder, RenderContext, Source};
 
 /// The top-level frame driver.
 ///
 /// Spawn it once — as a component on a resource entity — and call
-/// [`Renderer::render`] every frame. It owns the render target binding and the
-/// order bookkeeping; everything else a frame draws comes from its
-/// [`FrameSource`](crate::source::FrameSource) components, which are spawned
-/// with [`ScopeMut::spawn`](unlit_ecs::ScopeMut::spawn) and are ordinary ECS entities.
+/// [`Renderer::render`] every frame. It drives the [`FramePass`]es in the
+/// world: each pass records the [`Source`]s under it.
 ///
 /// ```rust
 /// # use unlit3d::prelude::*;
@@ -49,7 +44,14 @@ use unlit_ecs::Entity;
 ///     DeviceCapabilities::default(),
 /// );
 /// let source = MeshSource::new(&world.root_scope(), ctx);
-/// let mesh = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+/// // One pass, drawing the mesh source under it.
+/// let pass = world
+///     .root_scope_mut()
+///     .spawn(bundle!(FramePass::new(FramePassOrder(0)), RenderLoadOps::default()));
+/// world
+///     .scope_mut(pass)
+///     .expect("the pass entity is spawned")
+///     .spawn(bundle!(Source::new(source),));
 /// let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx),));
 /// ```
 pub struct Renderer {
@@ -58,35 +60,20 @@ pub struct Renderer {
     /// Kept so [`Renderer::render`] can reach the queue to submit through;
     /// everything else a frame needs the world hands out itself.
     context: RenderContext,
-
-    /// The color attachment the frame renders into, as a texture-view resource
-    /// in the context's graph, or `None` until [`Self::set_render_target`] binds
-    /// one.
-    color_view: Option<ResHandle<TextureView>>,
-    /// The depth-stencil attachment the frame renders into, as a texture-view
-    /// resource in the context's graph, or `None` until
-    /// [`Self::set_render_target`] binds one.
-    depth_view: Option<ResHandle<TextureView>>,
-    /// The multisample attachment, if any, as a texture-view resource in the
-    /// context's graph; `None` for a non-multisampled pass or before
-    /// [`Self::set_render_target`] binds one.
-    msaa_view: Option<ResHandle<TextureView>>,
-    /// The [`SurfaceKey`] of the currently bound attachments, cached so the
-    /// surface does not have to be re-derived every draw. `None` until
-    /// [`Self::set_render_target`] is called.
-    surface: Option<SurfaceKey>,
-    /// The physical size of the currently bound attachments, cached alongside
-    /// [`Self::surface`] so the per-frame [`FrameTarget`] costs no graph access.
-    /// `None` until [`Self::set_render_target`] is called.
-    bound_size: Option<(u32, u32)>,
-
-    /// Reports sources that declared the same
-    /// [`FrameSourceOrder`](crate::source::FrameSourceOrder), without repeating itself
-    /// every frame.
-    warnings: OrderWarnings,
-    /// The frame's sources in record order, reused every frame so resolving the
-    /// order allocates nothing.
-    order: SourceOrder,
+    /// The frame's passes in record order, reused every frame so resolving
+    /// the order allocates nothing.
+    passes: Ordering<FramePassOrder>,
+    /// Reports passes that declared the same [`FramePassOrder`], without
+    /// repeating itself every frame.
+    pass_warnings: OrderWarnings<FramePassOrder>,
+    /// The sources of the pass being recorded, in record order.
+    ///
+    /// One buffer serves every pass in turn, because a pass's sources are
+    /// recorded before the next pass is looked at.
+    sources: Ordering<FrameSourceOrder>,
+    /// Reports sources that declared the same [`FrameSourceOrder`], without
+    /// repeating itself every frame.
+    source_warnings: OrderWarnings<FrameSourceOrder>,
 }
 
 impl Renderer {
@@ -95,18 +82,16 @@ impl Renderer {
     /// This creates no GPU resources: `ctx` names the device, the queue and the
     /// resource graph the frame is drawn with, all of which
     /// [`spawn_context`](crate::source::spawn_context) already put in the
-    /// world. The renderer starts with no render target: bind one with
-    /// [`Self::set_render_target`] before the first [`Self::render`].
+    /// world. What the frame draws into is not the renderer's to hold — the
+    /// world states it per pass with a [`FramePass`] — so a renderer needs no
+    /// binding step before its first [`Self::render`].
     pub fn new(ctx: RenderContext) -> Self {
         Self {
             context: ctx,
-            color_view: None,
-            depth_view: None,
-            msaa_view: None,
-            surface: None,
-            bound_size: None,
-            warnings: OrderWarnings::default(),
-            order: SourceOrder::default(),
+            passes: Ordering::default(),
+            pass_warnings: OrderWarnings::default(),
+            sources: Ordering::default(),
+            source_warnings: OrderWarnings::default(),
         }
     }
 
@@ -115,137 +100,25 @@ impl Renderer {
         self.context
     }
 
-    /// Bind the render target the next frames draw into.
-    ///
-    /// `color_view`, `depth_view` and `msaa_view` are texture-view resources
-    /// already registered in the context's resource graph. Any may be `None`: a
-    /// depth-only pass omits the color view, a color-only pass omits the depth
-    /// view, and a non-multisampled pass omits the MSAA view. At least one of
-    /// the color and depth views must be present — a pass with neither cannot
-    /// exist — and the MSAA view is only valid alongside a color view it
-    /// resolves into.
-    ///
-    /// The renderer reads the views from the graph each frame, so replacing a
-    /// view's texture (and re-binding it here, or relying on the graph's dirty
-    /// propagation) is how a swapchain resize reaches the renderer.
-    ///
-    /// # Panics
-    ///
-    /// If a given id is not a texture view in the graph, if neither the color
-    /// nor the depth view is present, or if an MSAA view is given without a
-    /// color view.
-    pub fn set_render_target(
-        &mut self,
-        world: &World,
-        color_view: Option<ResHandle<TextureView>>,
-        depth_view: Option<ResHandle<TextureView>>,
-        msaa_view: Option<ResHandle<TextureView>>,
-    ) {
-        // Resolve every view up front so a bad id panics before any field is
-        // touched. The handles are cloned out only to derive the surface key;
-        // the ids are what the frame path keeps.
-        let graph = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(self.context.graph)
-            .expect("the context's resource graph exists");
-        // The views are cloned out together with the formats they were
-        // created with, which wgpu itself cannot report: a view that
-        // reinterprets its texture — an sRGB view over a non-sRGB swap-chain
-        // image — is what a pipeline has to match, so its format wins over the
-        // texture's own.
-        let color = color_view.as_ref().map(|id| {
-            graph
-                .get(id)
-                .expect("color_view is a texture view in the graph")
-                .clone()
-        });
-        let depth = depth_view.as_ref().map(|id| {
-            graph
-                .get(id)
-                .expect("depth_view is a texture view in the graph")
-                .clone()
-        });
-        let msaa = msaa_view.as_ref().map(|id| {
-            graph
-                .get(id)
-                .expect("msaa_view is a texture view in the graph")
-                .clone()
-        });
-        let attachments = RenderAttachments::from_views(color, depth, msaa);
-        self.surface = Some(attachments.surface_key());
-        self.bound_size = Some((attachments.width(), attachments.height()));
-        self.color_view = color_view;
-        self.depth_view = depth_view;
-        self.msaa_view = msaa_view;
-        drop(graph);
-
-        // Sources read the frame's target from the world, so binding one here
-        // is also what states it for the frame; see [`FrameTarget`].
-        set_frame_target(&world.root_scope(), self.frame_target());
-    }
-
-    /// Unbind the render target, leaving the renderer with none.
-    ///
-    /// The inverse of [`Self::set_render_target`]: the renderer then has no
-    /// target and [`Self::render`] panics like any renderer that was never
-    /// bound one. A frame loop calls this when the target's attachments are
-    /// released — a swap chain dropped on suspension — and sets a new target
-    /// before rendering again.
-    ///
-    /// The attachments themselves are not touched: this only forgets them, so
-    /// the caller removes them from the graph. It is named for the setter it
-    /// inverts rather than for *releasing* anything, which the caller does.
-    pub fn unset_render_target(&mut self, world: &World) {
-        self.color_view = None;
-        self.depth_view = None;
-        self.msaa_view = None;
-        self.surface = None;
-        self.bound_size = None;
-
-        // Sources read the frame's target from the world, so unbinding here is
-        // also what unsets it for the frame; see [`FrameTarget`].
-        unset_frame_target(world);
-    }
-
-    /// The frame's target, as the bound attachments describe it.
-    ///
-    /// # Panics
-    ///
-    /// If no render target is bound.
-    pub fn frame_target(&self) -> FrameTarget {
-        let surface = self
-            .surface
-            .expect("set_render_target binds the target before rendering");
-        let (width, height) = self
-            .bound_size
-            .expect("set_render_target binds the target before rendering");
-        FrameTarget {
-            surface,
-            width,
-            height,
-        }
-    }
-
     /// Render one frame from the ECS `world`.
     ///
-    /// The frame is assembled in two phases: every [`Source`] component builds
-    /// its scene from the world, then the scenes are recorded in
-    /// [`FrameSourceOrder`](crate::source::FrameSourceOrder) into one pass, opened over the target bound with
-    /// [`Self::set_render_target`]. The frame's [`RenderLoadOps`] — the first
-    /// one any entity carries, or the defaults — decide what the pass loads and
-    /// clears. The frame always records, so a world with no camera, no visible
-    /// mesh or no source at all still applies its clears.
+    /// The frame is assembled in two phases. First every source of every pass
+    /// builds its scene, taking its own short-lived borrow of the world; then
+    /// the passes are recorded in [`FramePassOrder`], and within each pass its
+    /// sources in [`FrameSourceOrder`]. A source draws into whichever pass it
+    /// hangs under, so its place in the entity tree is what chooses its pass.
     ///
-    /// There is no implicit target: a renderer that has not been bound one
-    /// panics here.
+    /// The [`RenderLoadOps`] on each pass entity decide what that pass loads
+    /// and clears, so two passes may disagree about it — the usual way to draw
+    /// an overlay over what an earlier pass left. A pass with no attachment to
+    /// draw into is skipped, so a frame always records, and a world with no
+    /// camera, no visible mesh or no source at all still applies its clears.
     ///
     /// # Panics
     ///
-    /// If no render target is bound, or if the context's device, queue or graph
-    /// resource is gone.
+    /// If the context's device, queue or graph resource is gone.
     pub fn render(&mut self, world: &World) {
         profiling::scope!("renderer.frame");
-        let load_ops = frame_load_ops(world);
 
         let device = world
             .root_scope()
@@ -258,7 +131,7 @@ impl Renderer {
             .expect("the context's queue resource exists")
             .clone();
 
-        // One encoder carries the frame's staged uploads and its pass, so
+        // One encoder carries the frame's staged uploads and its passes, so
         // whatever a source stages reaches the GPU in this frame's own
         // submission.
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -278,50 +151,82 @@ impl Renderer {
         // of the world stays shared for `build_scene` to read.
         {
             profiling::scope!("renderer.frame.build_sources");
-            // Each source builds against its own subtree: the source entity is
-            // the scope, so what it draws is what hangs below it, and two
-            // sources in one world draw different sets without either one
-            // seeing the other's. The resources a source needs — the device,
-            // the graph, the frame's target — live in the shared subtree, which
-            // every scope sees.
             let root = world.root_scope();
-            for (mut source, entity) in root.query::<(&mut Source, Entity)>() {
-                let scope = world.scope(entity).unwrap_or(root);
-                source.build_scene(&scope, self.context, &mut encoder);
+            for (pass_entity, pass) in root.query::<(Entity, &FramePass)>() {
+                let Some(info) = self.pass_info(world, &pass) else {
+                    continue;
+                };
+                // Each source builds against its own subtree: the source
+                // entity is the scope, so what it draws is what hangs below
+                // it, and two sources under one pass draw different sets
+                // without either one seeing the other's. The resources a
+                // source needs — the device, the graph, the frame's target —
+                // live in the shared subtree, which every scope sees.
+                let pass_scope = world.scope(pass_entity).unwrap_or(root);
+                for (entity, mut source) in pass_scope.query::<(Entity, &mut Source)>() {
+                    let scope = world.scope(entity).unwrap_or(pass_scope);
+                    source.build_scene(&scope, self.context, info, &mut encoder);
+                }
             }
         }
 
-        // Record phase: the scenes, in declared order. The order is resolved
-        // into a buffer the renderer keeps, so a steady scene reorders nothing.
+        // Record phase: the passes in declared order, and within each pass its
+        // sources in theirs. Both orders are resolved into buffers the
+        // renderer keeps, so a steady scene reorders nothing.
         {
-            profiling::scope!("renderer.frame.resolve_order");
-            self.order.resolve(world);
-            self.warnings.check(self.order.ambiguous());
-        }
-
-        let attachments = self.attachments(world);
-        {
-            profiling::scope!("renderer.frame.record_passes");
-            let mut pass = attachments.begin_pass(
-                &mut encoder,
-                load_ops.color,
-                load_ops.depth,
-                load_ops.stencil,
-            );
-            // The viewport is pass state with no reset call, so a scene that
-            // states none has to be given the whole target explicitly —
-            // otherwise it would inherit the region an earlier scene set and
-            // draw inside another scene's letterbox.
-            let (width, height) = self
-                .bound_size
-                .expect("set_render_target binds the target before rendering");
-            let whole = full_viewport(width, height);
-            for &entity in self.order.entities() {
+            profiling::scope!("renderer.frame.resolve_passes");
+            self.passes.resolve(
                 world
                     .root_scope()
-                    .query_one::<&mut Source>(entity)
-                    .map(|source| source.scene().record_with_viewport(&mut pass, whole))
-                    .expect("the source entity exists");
+                    .query::<(Entity, &FramePass)>()
+                    .map(|(entity, pass)| (pass.order(), entity)),
+            );
+            self.pass_warnings.check(self.passes.ambiguous());
+        }
+
+        for index in 0..self.passes.entities().len() {
+            let pass_entity = self.passes.entities()[index];
+            let root = world.root_scope();
+            let Some(pass) = root.query_one::<&FramePass>(pass_entity) else {
+                continue;
+            };
+            // A pass with no attachment cannot be opened; the world parks one
+            // that way while its target is gone.
+            let Some(attachments) = pass.attachments(world, self.context) else {
+                continue;
+            };
+            let pass_scope = world.scope(pass_entity).unwrap_or(root);
+            {
+                profiling::scope!("renderer.frame.resolve_sources");
+                self.sources.resolve(
+                    pass_scope
+                        .query::<(Entity, &Source)>()
+                        .map(|(entity, source)| (source.order(), entity)),
+                );
+                self.source_warnings.check(self.sources.ambiguous());
+            }
+            {
+                profiling::scope!("renderer.frame.record_pass");
+                // The viewport is pass state with no reset call, so a scene
+                // that states none has to be given the whole target explicitly
+                // — otherwise it would inherit the region an earlier scene
+                // set and draw inside another scene's letterbox. The pass's own
+                // region reaches its sources through PassInfo: one that is part
+                // of the content states it on its scene, and one that composes
+                // over the content covers the whole target.
+                let whole = full_viewport(attachments.width(), attachments.height());
+                let load = root
+                    .query_one::<&RenderLoadOps>(pass_entity)
+                    .map_or_else(RenderLoadOps::default, |load| *load);
+                let mut render_pass =
+                    attachments.begin_pass(&mut encoder, load.color, load.depth, load.stencil);
+                for index in 0..self.sources.entities().len() {
+                    let entity = self.sources.entities()[index];
+                    pass_scope
+                        .query_one::<&mut Source>(entity)
+                        .map(|source| source.scene().record_with_viewport(&mut render_pass, whole))
+                        .expect("the source entity exists");
+                }
             }
         }
 
@@ -331,89 +236,20 @@ impl Renderer {
         }
     }
 
-    /// Build the one-frame attachment set from the views bound with
-    /// [`Self::set_render_target`].
+    /// What a pass tells its sources, or `None` when it has no attachment to
+    /// draw into and so never records them.
     ///
-    /// The views are cloned out of the graph, so the returned set borrows
-    /// nothing from the renderer. No texture is allocated here: the caller owns
-    /// every attachment through the graph.
-    fn attachments(&self, world: &World) -> RenderAttachments {
-        let graph = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(self.context.graph)
-            .expect("the context's resource graph exists");
-        let color = self
-            .color_view
-            .as_ref()
-            .map(|id| graph.get(id).expect("bound color view").clone());
-        let depth = self
-            .depth_view
-            .as_ref()
-            .map(|id| graph.get(id).expect("bound depth view").clone());
-        let msaa = self
-            .msaa_view
-            .as_ref()
-            .map(|id| graph.get(id).expect("bound msaa view").clone());
-        RenderAttachments::from_views(color, depth, msaa)
-    }
-}
-
-/// The load ops a frame is opened with: the first [RenderLoadOps] in `world`,
-/// or the defaults when no entity carries one.
-///
-/// Load ops are their own component, so they need no particular entity: any
-/// one may carry them, and the renderer reads only the first.
-fn frame_load_ops(world: &World) -> RenderLoadOps {
-    world
-        .root_scope()
-        .query::<&RenderLoadOps>()
-        .next()
-        .map_or_else(RenderLoadOps::default, |render_load_ops| *render_load_ops)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use unlit_ecs::bundle;
-
-    #[test]
-    fn a_world_without_load_ops_clears_with_the_defaults() {
-        let world = World::new();
-
-        assert_eq!(frame_load_ops(&world), RenderLoadOps::default());
-    }
-
-    #[test]
-    fn load_ops_are_read_from_any_entity() {
-        let mut world = World::new();
-        // The entity carries load ops and nothing else: the component needs
-        // no camera, no transform and no mesh to take effect.
-        world.root_scope_mut().spawn(bundle!(RenderLoadOps {
-            color: wgpu::LoadOp::Load,
-            ..Default::default()
-        },));
-
-        assert_eq!(frame_load_ops(&world).color, wgpu::LoadOp::Load);
-    }
-
-    #[test]
-    fn the_first_load_ops_entity_wins() {
-        let mut world = World::new();
-        let first = world.root_scope_mut().spawn(bundle!(RenderLoadOps {
-            depth: wgpu::LoadOp::Load,
-            ..Default::default()
-        },));
-        world.root_scope_mut().spawn(bundle!(RenderLoadOps {
-            depth: wgpu::LoadOp::Clear(1.0),
-            ..Default::default()
-        },));
-
-        assert_eq!(frame_load_ops(&world).depth, wgpu::LoadOp::Load);
-        assert!(
-            world
-                .root_scope()
-                .query_one::<&RenderLoadOps>(first)
-                .is_some()
-        );
+    /// # Panics
+    ///
+    /// If one of the pass's views is gone from the graph, or if it is not a
+    /// texture view.
+    fn pass_info(&self, world: &World, pass: &FramePass) -> Option<PassInfo> {
+        let attachments = pass.attachments(world, self.context)?;
+        Some(PassInfo {
+            surface: attachments.surface_key(),
+            width: attachments.width(),
+            height: attachments.height(),
+            viewport: pass.viewport(),
+        })
     }
 }

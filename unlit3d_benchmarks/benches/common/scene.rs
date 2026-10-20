@@ -30,6 +30,7 @@ pub struct Frame {
     world: World,
     context: RenderContext,
     source: MeshSource,
+    info: PassInfo,
 }
 
 impl Frame {
@@ -123,19 +124,21 @@ impl Frame {
             active: true,
         },));
 
-        set_frame_target(
-            &world.root_scope(),
-            FrameTarget {
-                surface: SURFACE,
-                width: 256,
-                height: 192,
-            },
-        );
+        // What a pass tells its sources: the target it draws into. The
+        // benchmark drives the source directly, so it states this itself
+        // rather than spawning a pass for a renderer to find.
+        let info = PassInfo {
+            surface: SURFACE,
+            width: 256,
+            height: 192,
+            viewport: None,
+        };
 
         Self {
             world,
             context,
             source,
+            info,
         }
     }
 
@@ -149,8 +152,12 @@ impl Frame {
             .expect("the context's device")
             .clone();
         let mut encoder = device.create_command_encoder(&Default::default());
-        self.source
-            .build_scene(&self.world.root_scope(), self.context, &mut encoder);
+        self.source.build_scene(
+            &self.world.root_scope(),
+            self.context,
+            self.info,
+            &mut encoder,
+        );
         self.source.scene().draws.len()
     }
 }

@@ -102,14 +102,65 @@ mode). The bad:
 
 ## The frame model
 
-A frame is **not** "one main scene plus extras". [`Renderer`](renderer::Renderer) draws nothing
-itself: it owns the frame's render target and records the frame sources it is
-given, in the order each source declares through
+A frame is **not** "one main scene plus extras", and not one pass either: it is a
+sequence of passes. [`Renderer`](renderer::Renderer) draws nothing itself: it walks the
+world's [`FramePass`](pass::FramePass) entities in
+[`FramePassOrder`](pass::FramePassOrder), and within each pass records the frame
+sources below it, in the order each declares through
 [`FrameSourceOrder`](source::FrameSourceOrder).
 
+A render world is an ordinary entity tree, and the tree *is* the frame's shape:
+a scope sees the entity it is rooted at, everything below it, and the shared
+subtree, but never its ancestors or its siblings.
+
+```text
+world root                              the root scope sees every entity
+├── shared                              every scope sees this subtree
+│   ├── wgpu::Device        + RenderContext
+│   ├── wgpu::Queue         + RenderContext
+│   ├── ResourceGraph       + RenderContext    every texture, buffer, bind group
+│   ├── DeviceCapabilities  + RenderContext
+│   ├── OpenUrls
+│   └── ... application state a panel reads and writes
+├── FramePass(FramePassOrder(0)) + RenderLoadOps
+│   ├── Source(MeshSource)                    a source is a scope of its own
+│   │   ├── Camera
+│   │   ├── Transform + GpuMesh + GpuMaterial + UnlitPipeline
+│   │   └── ...
+│   └── Source(UiSource)
+│       └── UiPanel
+├── FramePass(FramePassOrder(1)) + RenderLoadOps
+│   └── Source(BlitSource)                    samples the pass above's offscreen target
+└── Renderer                                  draws nothing; it walks the passes
+```
+
+Read the tree as the frame: the renderer walks the root's
+[`FramePass`](pass::FramePass) children and, within each pass, that pass's own
+[`Source`](source::Source) children — so a source's place in the tree is what
+chooses its pass, and two sources under one pass draw different sets without
+either seeing the other's. The GPU state sits in `shared` rather than beside the
+renderer, so any source reads it from its own scope without reaching up. A pass
+is an *ancestor* of its sources, which a scope cannot reach, which is why
+[`PassInfo`](pass::PassInfo) exists: it is the pass telling its sources what
+they draw into. Attachments are not tree nodes at all — a pass names views in
+the `ResourceGraph`, which is why it can take a new swap-chain view every frame
+without the tree changing.
+
+- A pass is an ordinary entity: it carries the attachments it draws into, the
+  [`RenderLoadOps`](components::RenderLoadOps) it is opened with, and the viewport its
+  scenes are clipped to. The sources under it are the ones it records, so a
+  world holds as many passes as the frame needs — a pass drawing into an
+  offscreen target and a pass copying that target onto the swap chain are two
+  entities in one world, not two worlds.
+- A pass names views; it does not own them. Attachments come from a
+  [`FrameAttachments`](attachments::FrameAttachments) or a
+  [`WindowSurface`](winit::WindowSurface), both of which live in the same world and keep
+  their handles stable, so a pass can take a new color view every frame
+  without the sources below it being rebuilt.
 - Each source builds its own [`Scene`](unlit_wgpu::scene::Scene) in `build_scene`, then the
-  renderer records every scene in order into one pass opened over the target's
-  attachments. A frame is therefore one encoder and one submission.
+  renderer records every scene into the pass opened over that pass's
+  attachments. A frame is therefore still one encoder and one submission, no
+  matter how many passes it has.
 
 - The built-in mesh rendering is one source, [`MeshSource`](mesh_source::MeshSource), and it has no more
   privilege than a caller's own. There is no mesh-specific field or draw path in
@@ -720,12 +771,18 @@ let ctx = spawn_context(
 let mut mesh_source = MeshSource::new(&world.root_scope(), ctx);
 mesh_source.register_unlit_family(&world.root_scope());
 let key = UnlitPipelineKey::new(UnlitOptions::standard(&mesh_source.device(&world.root_scope())));
-let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx)));
+let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx),));
 
-// 2. Mount the mesh source as a source. A source is its own scope: a frame
-//    hands it its own scope, so everything it draws lives under this
-//    entity.
-let source = world.root_scope_mut().spawn(bundle!(Source::new(mesh_source)));
+// 2. Spawn the frame's pass and mount the mesh source under it. A pass is a
+//    scope: it records the sources below it, and each source in turn is a
+//    scope of its own, so everything a source draws lives under its entity.
+let pass = world
+    .root_scope_mut()
+    .spawn(bundle!(FramePass::new(FramePassOrder(0)), RenderLoadOps::default()));
+let source = world
+    .scope_mut(pass)
+    .unwrap()
+    .spawn(bundle!(Source::new(mesh_source),));
 let scope = world.scope(source).unwrap();
 
 // 3. Allocate geometry and a material through the mesh source, and spawn the
@@ -771,16 +828,11 @@ let (mesh, material) = scope
 world
     .scope_mut(source)
     .unwrap()
-    .spawn(bundle!(
-        Transform::default(),
-        mesh,
-        material,
-        UnlitPipeline::new(key)
-    ));
+    .spawn(bundle!(Transform::default(), mesh, material, UnlitPipeline::new(key)));
 
-// 4. Bind a render target and render one frame (uses the noop device, so it
-//    produces a valid command buffer without touching a GPU). The frame's
-//    depth and multisample attachments are allocated and kept by
+// 4. Give the pass a render target and render one frame (uses the noop
+//    device, so it produces a valid command buffer without touching a GPU).
+//    The frame's depth and multisample attachments are allocated and kept by
 //    `FrameAttachments`; the color attachment is this example's own.
 let color = create_color_target(
     &world.root_scope().query_one::<&wgpu::Device>(ctx.device).unwrap(),
@@ -808,11 +860,15 @@ let color_view = scope
     .unwrap();
 world
     .root_scope()
-    .query_one::<&mut Renderer>(renderer)
-    .map(|mut renderer| {
-        attachments.bind(&world, &mut renderer, color_view);
-        renderer.render(&world);
+    .query_one::<&mut FramePass>(pass)
+    .map(|mut pass| {
+        pass.set_attachments(&attachments, color_view);
     })
+    .unwrap();
+world
+    .root_scope()
+    .query_one::<&mut Renderer>(renderer)
+    .map(|mut r| r.render(&world))
     .unwrap();
 ```
 

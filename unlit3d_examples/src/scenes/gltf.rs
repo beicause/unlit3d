@@ -78,6 +78,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a skinned fox and a morph-target cube playing their glTF clips",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
+    clear: None,
     frames: FRAMES as u32,
     // The window plays each clip continuously from the frame delta; only the
     // snapshot capture walks the fixed sequence below.
@@ -93,6 +94,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
+    pass: Entity,
     _ui: Option<Entity>,
     size: (u32, u32),
     options: SceneOptions,
@@ -102,7 +104,10 @@ fn build(
 
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass is alive")
+        .spawn(bundle!(Source::new(source),));
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so

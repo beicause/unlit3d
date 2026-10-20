@@ -7,11 +7,15 @@
 //! resource graph, and rebuilds them when the target changes size.
 //!
 //! The caller pairs them with the color view it holds — a swap chain image, or
-//! a persistent offscreen texture — through [`FrameAttachments::bind`], or
-//! reads [`FrameAttachments::depth_view`] and
-//! [`FrameAttachments::msaa_view`] and calls
-//! [`Renderer::set_render_target`](crate::renderer::Renderer::set_render_target)
-//! itself.
+//! a persistent offscreen texture — by stating a
+//! [`FramePass`](crate::pass::FramePass) with
+//! [`FramePass::with_attachments`](crate::pass::FramePass::with_attachments),
+//! or retargeted every frame with
+//! [`FramePass::set_attachments`](crate::pass::FramePass::set_attachments). A
+//! caller that owns its own attachment set reads [`FrameAttachments::depth_view`]
+//! and [`FrameAttachments::msaa_view`] and states the pass's attachments itself.
+//! The pass is also what owns the frame's letterbox, so a caller that scales
+//! content states it there rather than on the target.
 //!
 //! A frame whose sources declare no depth state must have no depth attachment:
 //! wgpu requires a pipeline's depth state to match the pass's attachments
@@ -24,7 +28,6 @@ use unlit_ecs::World;
 use unlit_wgpu::render_attachments::{create_depth_target, create_msaa_target};
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 
-use crate::renderer::Renderer;
 use crate::source::RenderContext;
 
 /// The device the frame's context was created with, cloned out of `world`.
@@ -60,7 +63,8 @@ fn context_graph<'w>(
 ///
 /// They are created for a target of a given size, format and sample count and
 /// rebuilt by [`Self::resize`] when the target changes size. The color
-/// attachment is the caller's; [`Self::bind`] pairs the two.
+/// attachment is the caller's; a pass pairs the two with
+/// [`FramePass::with_attachments`](crate::pass::FramePass::with_attachments).
 pub struct FrameAttachments {
     /// The frame's context, whose device allocates the textures and whose graph
     /// holds their views.
@@ -170,18 +174,5 @@ impl FrameAttachments {
                 .expect("the multisample view is in the graph");
         }
         graph.maintain();
-    }
-
-    /// Bind `color_view` and the attachments as the renderer's render target.
-    ///
-    /// The color view is the caller's — a swap chain image, or a persistent
-    /// offscreen texture — and must be in the frame's graph.
-    pub fn bind(&self, world: &World, renderer: &mut Renderer, color_view: ResHandle<TextureView>) {
-        renderer.set_render_target(
-            world,
-            Some(color_view),
-            self.depth_view.clone(),
-            self.msaa_view.clone(),
-        );
     }
 }

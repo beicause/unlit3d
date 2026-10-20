@@ -1,20 +1,20 @@
-//! A frame source that copies a texture over the target.
+//! A frame source that copies a texture over the pass's target.
 //!
-//! [`BlitSource`] draws one screen-covering triangle, sampling the
-//! [`BlitTexture`] component it finds in the world. It is the source a
-//! two-world setup presents with: a world renders into an offscreen texture,
-//! and a second world blits that texture into its own target.
+//! [`BlitSource`] draws one screen-covering triangle, sampling a texture view
+//! it is handed. It is how a frame presents what an earlier pass drew: a first
+//! pass renders into an offscreen texture, and a blit source in a later pass
+//! copies that texture into the target.
 //!
-//! The texture is an ordinary component, so the world that blits it decides
-//! what to hand over and may replace it between frames. Its view and sampler
-//! live in the frame's [`ResourceGraph`], and the bind group is a node there
-//! that a replace of either rebuilds; the pipeline stays the source's own,
-//! specialized on the frame's target like any other source's, so the same
+//! The view is the source's own input, so a world decides what to hand it and
+//! may swap it between frames with [`BlitSource::set_view`]. It lives in the
+//! frame's [`ResourceGraph`], and the bind group is a node there that a
+//! replace of the view rebuilds; the pipeline stays the source's own,
+//! specialized on the pass's target like any other source's, so the same
 //! source presents into a swap chain or into another offscreen target.
 
 use core::ops::DerefMut;
 
-use unlit_ecs::{Scope, World};
+use unlit_ecs::Scope;
 use unlit_wgpu::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureView};
 use unlit_wgpu::scene::{DrawEntry, DrawRange, Scene};
 use unlit_wgpu::specialize::{
@@ -22,7 +22,8 @@ use unlit_wgpu::specialize::{
     VertexStateDesc,
 };
 
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
+use crate::pass::PassInfo;
+use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 
 /// The WESL module whose fullscreen vertex the blit draws.
 const VERTEX_MODULE: &str = "fullscreen_vertex";
@@ -47,76 +48,22 @@ fn resource_graph<'w>(
         .expect("the context's resource graph exists")
 }
 
-/// The texture a [`BlitSource`] copies to the frame's target.
+/// A frame source that blits one texture view over its pass's target.
 ///
-/// Spawn it as a component on any entity of a world holding a [`BlitSource`];
-/// the source finds the first one each frame and draws it over the whole
-/// target. Its view and its sampler are registered in the frame's
-/// [`ResourceGraph`], so replacing either of them there is what changes what
-/// the next frame samples; replacing the component is how a world hands over a
-/// different texture.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BlitTexture {
-    view: ResHandle<TextureView>,
-    sampler: ResHandle<wgpu::Sampler>,
-}
-
-impl BlitTexture {
-    /// Register `view` in the frame's graph, sampled with a linear,
-    /// clamp-to-edge sampler.
-    ///
-    /// This is the sampler a blit of a same-sized target wants: one texel of
-    /// the source lands on one fragment of the target, and the clamp keeps a
-    /// fractional edge sample inside the texture.
-    pub fn new(world: &World, ctx: RenderContext, view: TextureView) -> Self {
-        let root = world.root_scope();
-        let sampler = {
-            let device = root
-                .query_one::<&wgpu::Device>(ctx.device)
-                .expect("the context's device resource exists");
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("unlit3d::blit::sampler"),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-                ..Default::default()
-            })
-        };
-        Self::with_sampler(world, ctx, view, sampler)
-    }
-
-    /// Register `view` in the frame's graph, read with the caller's own
-    /// sampler.
-    pub fn with_sampler(
-        world: &World,
-        ctx: RenderContext,
-        view: TextureView,
-        sampler: wgpu::Sampler,
-    ) -> Self {
-        let mut graph = resource_graph(&world.root_scope(), ctx);
-        let view = graph.insert(view, None);
-        let sampler = graph.insert(sampler, None);
-        Self { view, sampler }
-    }
-}
-
-/// A frame source that blits one world texture over the target.
-///
-/// The source owns its [`Scene`] and the pipeline it draws with; the texture
-/// comes from the world on every frame, so a world may swap it without
-/// touching the source. The pipeline is built on the first frame that knows
-/// its target, and rebuilt only when that target changes, the way
-/// [`UiSource`](crate::ui::UiSource) specializes its own.
+/// The source owns its [`Scene`] and the pipeline it draws with; the view it
+/// samples is the caller's, registered in the frame's [`ResourceGraph`], so a
+/// world may hand over a different one with [`BlitSource::set_view`]. The
+/// pipeline is built on the first frame that knows its target, and rebuilt only
+/// when that target changes, the way [`UiSource`](crate::ui::UiSource)
+/// specializes its own.
 ///
 /// The blit covers the whole target, so it records at
-/// [`FrameSourceOrder::MESH`] - before any overlay a world draws on top of it.
-#[derive(Default)]
+/// [`FrameSourceOrder::MESH`].
 pub struct BlitSource {
     /// The draws assembled for the current frame.
     scene: Scene,
+    /// The view the source copies, in the frame's resource graph.
+    view: ResHandle<TextureView>,
     /// The GPU state, built on the first frame that knows its target.
     gpu: Option<Gpu>,
     /// The target the current pipeline is specialized for.
@@ -129,50 +76,90 @@ struct Gpu {
     pipeline: wgpu::RenderPipeline,
     /// The layout its bind group is built against.
     layout: wgpu::BindGroupLayout,
-    /// The texture ids the current bind group reads.
-    texture: BlitTexture,
-    /// The graph node binding the texture and its sampler.
+    /// The sampler the view is read with, in the frame's graph.
+    sampler: ResHandle<wgpu::Sampler>,
+    /// The view the current bind group reads.
+    view: ResHandle<TextureView>,
+    /// The graph node binding the view and its sampler.
     bind_group: ResHandle<wgpu::BindGroup>,
 }
 
 impl BlitSource {
-    /// Create a blit source.
+    /// Blit `view` over the pass's target.
     ///
-    /// No GPU state is built here: the pipeline is specialized on the frame's
-    /// target, which is not known until the first frame.
-    pub fn new() -> Self {
-        Self::default()
+    /// `view` must already be registered in the frame's resource graph — the
+    /// one the frame's [`RenderContext`] addresses — like the view it is
+    /// blitted into.
+    pub fn new(view: ResHandle<TextureView>) -> Self {
+        Self {
+            scene: Scene::new(),
+            view,
+            gpu: None,
+            surface: None,
+        }
     }
 
-    /// Build the pipeline and bind group for `surface`, replacing any earlier
-    /// ones.
-    fn build_gpu(
-        &mut self,
-        scope: &Scope<'_>,
-        ctx: RenderContext,
-        texture: &BlitTexture,
-        surface: SurfaceKey,
-    ) {
+    /// Blit `view` from the next frame on.
+    pub fn set_view(&mut self, view: ResHandle<TextureView>) {
+        self.view = view;
+    }
+
+    /// The view the source copies.
+    pub fn view(&self) -> ResHandle<TextureView> {
+        self.view.clone()
+    }
+
+    /// Build the pipeline, the sampler and the bind group for `surface`,
+    /// replacing any earlier ones.
+    fn build_gpu(&mut self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) {
         let device = wgpu::Device::clone(
             &scope
                 .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists"),
         );
+        let sampler = resource_graph(scope, ctx).insert(sampler(&device), None);
         let layout = bind_group_layout(&device);
         let pipeline = pipeline(&device, &layout, surface);
-        let bind_group = allocate_bind_group(scope, ctx, &device, &layout, texture);
+        let bind_group = allocate_bind_group(
+            scope,
+            ctx,
+            &device,
+            &layout,
+            sampler.clone(),
+            self.view.clone(),
+        );
         self.gpu = Some(Gpu {
             pipeline,
             layout,
-            texture: texture.clone(),
+            sampler,
+            view: self.view.clone(),
             bind_group,
         });
         self.surface = Some(surface);
     }
 }
 
-/// Register a bind group reading `texture`'s view and sampler into the
-/// frame's graph, rebuilding it whenever either is replaced.
+/// The sampler a blit reads its view with: linear filtering, clamped at the
+/// edges.
+///
+/// This is what a blit of a same-sized target wants: one texel of the source
+/// lands on one fragment of the target, and the clamp keeps a fractional edge
+/// sample inside the texture.
+fn sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("unlit3d::blit::sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    })
+}
+
+/// Register a bind group reading `view` with `sampler` into the frame's
+/// graph, rebuilding it whenever either is replaced.
 ///
 /// The group is a node the graph owns, so the view and the sampler have to
 /// stay registered for as long as the group reads them; `add_dependency`
@@ -182,20 +169,21 @@ fn allocate_bind_group(
     ctx: RenderContext,
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    texture: &BlitTexture,
+    sampler: ResHandle<wgpu::Sampler>,
+    view: ResHandle<TextureView>,
 ) -> ResHandle<wgpu::BindGroup> {
     let recipe = bind_group_recipe(
         device.clone(),
         layout.clone(),
-        texture.view.clone(),
-        texture.sampler.clone(),
+        view.clone(),
+        sampler.clone(),
     );
     let mut graph = resource_graph(scope, ctx);
     let bind_group = recipe(&graph);
     let rebuild = Rebuild::new(move |graph| Resource::BindGroup(recipe(graph)));
     let bind_group = graph.insert(bind_group, Some(rebuild));
-    graph.add_dependency(&bind_group, &texture.view);
-    graph.add_dependency(&bind_group, &texture.sampler);
+    graph.add_dependency(&bind_group, &view);
+    graph.add_dependency(&bind_group, &sampler);
     bind_group
 }
 
@@ -204,46 +192,40 @@ impl FrameSource for BlitSource {
         &mut self,
         scope: &Scope<'_>,
         ctx: RenderContext,
+        info: PassInfo,
         _encoder: &mut wgpu::CommandEncoder,
     ) {
-        // The graph settles on every path out of this function, so a texture
-        // registered by `BlitTexture::new` this frame is realised when the
-        // scope drops, whatever this frame does.
+        // The graph settles on every path out of this function, so a sampler
+        // or bind group this build registers is realised when the scope drops,
+        // whatever this frame does.
         let maintain = ctx.maintain_scope(*scope);
 
         // Cleared on every path: a frame that records this source must never
         // replay the previous frame's blit.
         self.scene.clear();
 
-        let Some(target) = frame_target(scope) else {
-            log::warn!(
-                "BlitSource::build_scene: no FrameTarget in the world, so nothing is blitted"
-            );
-            return;
-        };
-        let Some(blit_texture) = scope.query::<&BlitTexture>().next() else {
-            log::warn!(
-                "BlitSource::build_scene: no BlitTexture component, so there is no texture to blit"
-            );
-            return;
-        };
-
-        if self.gpu.is_none() || self.surface != Some(target.surface) {
-            // The first frame, or a new target: the bind-group layout
-            // changes with the pipeline, so the bind group is rebuilt with
-            // it.
-            self.build_gpu(scope, ctx, &blit_texture, target.surface);
+        if self.gpu.is_none() || self.surface != Some(info.surface) {
+            // The first frame, or a new target: the bind-group layout changes
+            // with the pipeline, so the bind group and the sampler are rebuilt
+            // with it.
+            self.build_gpu(scope, ctx, info.surface);
         } else if let Some(gpu) = &mut self.gpu
-            && gpu.texture != *blit_texture
+            && gpu.view != self.view
         {
-            // The same target, a different texture: the layout and the
-            // pipeline stay, and the texture's new ids get their own group.
-            let layout = gpu.layout.clone();
+            // The same target, a different view: the layout, the pipeline and
+            // the sampler stay, and the view's new id gets its own group.
             let device = scope
                 .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
-            gpu.bind_group = allocate_bind_group(scope, ctx, &device, &layout, &blit_texture);
-            gpu.texture = (*blit_texture).clone();
+            gpu.bind_group = allocate_bind_group(
+                scope,
+                ctx,
+                &device,
+                &gpu.layout,
+                gpu.sampler.clone(),
+                self.view.clone(),
+            );
+            gpu.view = self.view.clone();
         }
 
         // Drop the scope so the graph maintains before the group is read back

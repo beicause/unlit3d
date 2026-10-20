@@ -1,12 +1,11 @@
 //! End-to-end GPU tests for fitting a scene to a render target whose shape
 //! differs from the scene's own.
 //!
-//! A scene declares the region of the target it draws into — see
-//! [`Scene::set_viewport`], which a frame loop states through `FrameViewport` —
-//! and a frame loop that keeps content's aspect uses it to letterbox. These
-//! tests draw one camera into targets of different shapes and check where the
-//! content lands, which is the property no unit test of the arithmetic can
-//! show: that the region actually reaches the rasterizer.
+//! A pass declares the region of its target that it draws into — see
+//! [`FramePass::with_viewport`] — and a frame loop that keeps content's aspect
+//! uses it to letterbox. These tests draw one camera into targets of different
+//! shapes and check where the content lands, which is the property no unit test
+//! of the arithmetic can show: that the region actually reaches the rasterizer.
 //!
 //! The frame is cleared to black by the renderer's default load ops, which is
 //! what "no content here" looks like in these frames; the cube is drawn in its
@@ -122,7 +121,11 @@ fn cube_world(ctx: &Ctx, size: (u32, u32), viewport: Option<ViewportRect>) -> (W
         ),
     );
 
-    set_frame_viewport(&world, viewport.map(FrameViewport));
+    world
+        .root_scope()
+        .query_one::<&mut FramePass>(gpu.pass())
+        .map(|mut pass| pass.set_viewport(viewport))
+        .expect("the pass entity exists");
     (world, gpu)
 }
 

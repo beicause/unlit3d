@@ -18,6 +18,7 @@
 pub mod common;
 
 use common::*;
+use unlit_ecs::bundle;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
@@ -284,16 +285,14 @@ fn count_in(frame: &Frame, x0: u32, x1: u32, color: egui::Color32, tolerance: u8
 /// `MeshSource` and no camera.
 fn ui_only_world(world: &mut World, ctx: &Ctx) -> (TestGpu, Entity) {
     let gpu = TestGpu::frame_only(world, ctx);
-    let ui = mount_ui_source(world);
+    let ui = mount_ui_source(world, &gpu);
     (gpu, ui)
 }
 
 /// Mount a `UiSource` and answer its entity: a panel spawned under it is what
 /// the source runs.
-fn mount_ui_source(world: &mut World) -> Entity {
-    world
-        .root_scope_mut()
-        .spawn(bundle!(Source::new(UiSource::new()),))
+fn mount_ui_source(world: &mut World, gpu: &TestGpu) -> Entity {
+    gpu.spawn_source(world, UiSource::new())
 }
 
 /// Spawn `panel` under the UI source, which is the scope it runs.
@@ -323,17 +322,17 @@ fn spawn_input(world: &mut World, scale_factor: f32) {
     events.refresh();
 }
 
-/// Spawn the load ops every UI test opens its pass with.
-fn spawn_load_ops(world: &mut World) {
-    // One pass opens the target once, so the load ops are shared by every
-    // source rather than owned by any one of them.
+/// State the load ops every UI test opens its pass with.
+fn spawn_load_ops(world: &World, gpu: &TestGpu) {
+    // The load ops belong to the pass that opens the target, not to any one of
+    // the sources recorded into it.
     world
-        .scope_mut(world.shared())
-        .expect("the shared scope exists")
-        .spawn(bundle!(RenderLoadOps {
-            color: wgpu::LoadOp::Clear(CLEAR_COLOR),
-            ..RenderLoadOps::default()
-        },));
+        .root_scope()
+        .query_one::<&mut RenderLoadOps>(gpu.pass())
+        .map(|mut ops| {
+            ops.color = wgpu::LoadOp::Clear(CLEAR_COLOR);
+        })
+        .expect("the pass entity carries load ops");
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +347,7 @@ async fn ui_only_with_two_panels() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let (gpu, ui) = ui_only_world(&mut world, &ctx);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
 
     let left = Rect::new(16.0, 40.0, 72.0, 72.0);
     let right = Rect::new(160.0, 40.0, 72.0, 72.0);
@@ -395,7 +394,7 @@ async fn ui_only_clears_to_load_ops() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let (gpu, ui) = ui_only_world(&mut world, &ctx);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
 
     let rect = Rect::new(40.0, 40.0, 80.0, 60.0);
     spawn_panel(&mut world, ui, paint(rect, RED));
@@ -428,7 +427,7 @@ async fn ui_only_multisampled_and_srgb() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let (gpu, ui) = ui_only_world(&mut world, &ctx);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
 
     let rect = Rect::new(40.0, 40.0, 80.0, 60.0);
     spawn_panel(&mut world, ui, paint(rect, RED));
@@ -463,7 +462,7 @@ async fn ui_only_at_high_pixel_density() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let (gpu, ui) = ui_only_world(&mut world, &ctx);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
     spawn_input(&mut world, PPP);
 
     // Comfortably inside the target at 2x: 60 x 40 points is 120 x 80 pixels.
@@ -536,9 +535,9 @@ fn mesh_world(ctx: &Ctx, world: &mut World) -> TestGpu {
 /// or after the mesh.
 fn mesh_and_ui_frame(ctx: &Ctx, world: &mut World, ui_first: bool, panel: UiPanel) -> Frame {
     let gpu = mesh_world(ctx, world);
-    spawn_load_ops(world);
+    spawn_load_ops(world, &gpu);
 
-    let ui = mount_ui_source(world);
+    let ui = mount_ui_source(world, &gpu);
     spawn_panel(world, ui, panel);
     if ui_first {
         let _ = world
@@ -620,7 +619,7 @@ async fn ui_does_not_clip_the_mesh() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = mesh_world(&ctx, &mut world);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
 
     world
         .root_scope_mut()
@@ -632,9 +631,7 @@ async fn ui_does_not_clip_the_mesh() {
                 RED,
             );
         }),));
-    world
-        .root_scope_mut()
-        .spawn(bundle!(Source::new(UiSource::new()),));
+    gpu.spawn_source(&mut world, UiSource::new());
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     gpu.render_frames(&world, 2);
@@ -670,12 +667,10 @@ async fn mesh_and_ui_survive_a_second_frame() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let gpu = mesh_world(&ctx, &mut world);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
 
+    gpu.spawn_source(&mut world, UiSource::new());
     world.root_scope_mut().spawn(bundle!(rich_panel(),));
-    world
-        .root_scope_mut()
-        .spawn(bundle!(Source::new(UiSource::new()),));
 
     let target = gpu.bind_offscreen_target_with(&world, 1, true);
     // One frame warms egui up, then two are compared.
@@ -732,7 +727,7 @@ fn burst_panel(extra: Entity) -> UiPanel {
 fn frame_after_burst(ctx: &Ctx, burst: usize) -> Frame {
     let mut world = World::new();
     let (gpu, ui) = ui_only_world(&mut world, ctx);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
 
     let extra = world.root_scope_mut().spawn(bundle!(Burst(burst),));
     spawn_panel(&mut world, ui, burst_panel(extra));
@@ -848,7 +843,7 @@ async fn a_patched_texture_shows_the_patch() {
     let ctx = Ctx::headless().await;
     let mut world = World::new();
     let (gpu, ui) = ui_only_world(&mut world, &ctx);
-    spawn_load_ops(&mut world);
+    spawn_load_ops(&world, &gpu);
 
     spawn_panel(&mut world, ui, patched_texture());
 

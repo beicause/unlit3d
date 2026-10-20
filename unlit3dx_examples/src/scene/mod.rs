@@ -29,6 +29,7 @@
 use std::time::Duration;
 
 use glam::{Quat, Vec3};
+use unlit_ecs::bundle;
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::components::Transform;
@@ -170,8 +171,9 @@ pub const ORBIT_TARGET: Vec3 = Vec3::new(0.0, 0.6, 0.0);
 /// Where the camera's orbit starts, in radians.
 pub const ORBIT_START: f32 = 0.65;
 
-/// Set up the render sub-world: the resource graph, the renderer and the
-/// asset-server source. Answers the renderer resource entity.
+/// Set up the render sub-world: the resource graph, the renderer, the pass
+/// its sources draw into, and the asset-server source. Answers the renderer
+/// resource entity and the pass entity.
 ///
 /// This is the whole of what a render world needs before it can draw, and
 /// none of it is this scene's: no camera, no shape, no panel. Everything
@@ -184,7 +186,7 @@ pub fn setup_render_world(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
-) -> Entity {
+) -> (Entity, Entity) {
     let Some(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
@@ -198,10 +200,19 @@ pub fn setup_render_world(
     let renderer = nested
         .root_scope_mut()
         .spawn(bundle!(Renderer::new(context),));
+    // The pass draws every source below it, so the scene's sources belong to
+    // it rather than to the world's root.
+    let pass = nested.root_scope_mut().spawn(bundle!(
+        FramePass::new(SCENE_PASS_ORDER),
+        RenderLoadOps::default()
+    ));
     let mut source = MeshSource::new(&nested.root_scope(), context);
     source.register_unlit_family(&nested.root_scope());
-    nested.root_scope_mut().spawn(bundle!(Source::new(source),));
-    renderer
+    nested
+        .scope_mut(pass)
+        .expect("the scene's pass is alive")
+        .spawn(bundle!(Source::new(source),));
+    (renderer, pass)
 }
 
 /// A job that gives the render world this scene's camera: one entity
@@ -256,16 +267,19 @@ pub fn camera_job() -> Job<()> {
 /// Queue this scene's own content on the render world: its camera, and —
 /// where there is a panel to draw — the UI source that draws it.
 ///
+/// `pass` is the pass returned by [`setup_render_world`], where the panel's
+/// source belongs.
+///
 /// Both are jobs, so a world that was set up to draw can be given a scene
 /// without its setup ever hearing of one. The panel itself lives in the
 /// gameplay world and nothing here reaches it: the source draws whatever the
 /// slots hold, and the world holding the panel fills them.
-pub fn mount_scene_content(render: &WorldHandle, panels: Option<PanelSlots>) {
+pub fn mount_scene_content(render: &WorldHandle, pass: Entity, panels: Option<PanelSlots>) {
     if let Err(error) = render.send(camera_job()) {
         log::error!("the render world refused its camera ({error:?})");
     }
     if let Some(panels) = panels
-        && let Err(error) = render.send(control_panel_job(panels))
+        && let Err(error) = render.send(control_panel_job(panels, pass))
     {
         log::error!("the render world refused its control panel ({error:?})");
     }
@@ -329,8 +343,8 @@ fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
     sender
         .subscribe(move |world: &World| {
             let mut transforms = Vec::new();
-            if let Some(physics) = world.root_scope().query::<&PhysicsWorld>().next() {
-                for (handle, body) in physics.bodies.iter() {
+            if let Some(physics) = world.root_scope().query::<(Entity, &PhysicsWorld)>().next() {
+                for (handle, body) in physics.1.bodies.iter() {
                     if body.is_dynamic() || body.is_kinematic() {
                         transforms.push((handle, body.translation(), *body.rotation()));
                     }
@@ -459,9 +473,9 @@ pub fn spawn_scene<R: WorldRunner>(
                 .subscribe(|world: &World| {
                     world
                         .root_scope()
-                        .query::<&AudioFormat>()
+                        .query::<(Entity, &AudioFormat)>()
                         .next()
-                        .map(|audio_format| *audio_format)
+                        .map(|(_, format)| *format)
                 })
                 .expect("the audio world accepts a subscription");
             (Some(format), true)
@@ -579,7 +593,11 @@ pub fn spawn_scene<R: WorldRunner>(
 /// The events the panel reads are this world's own, from the buffer its tick
 /// filled, so what the user clicked on is what this tick dispatched.
 fn publish_panels(world: &World) {
-    if let Some(mut host) = world.root_scope().query::<&mut UiPanelHost>().next() {
+    if let Some((_, mut host)) = world
+        .root_scope()
+        .query::<(Entity, &mut UiPanelHost)>()
+        .next()
+    {
         host.publish(world);
     }
 }
@@ -676,7 +694,7 @@ pub fn request_drop(sender: &JobSender) {
 
 /// Ask the shapes to drop the next one, from inside the gameplay world.
 pub fn request_drop_in(world: &Scope<'_>) {
-    if let Some(mut balls) = world.query::<&mut Balls>().next() {
+    if let Some((_, mut balls)) = world.query::<(Entity, &mut Balls)>().next() {
         balls.request_drop();
     }
 }
@@ -685,7 +703,7 @@ pub fn request_drop_in(world: &Scope<'_>) {
 ///
 /// The music keeps playing; the panel drives it.
 pub fn request_clear_in(world: &Scope<'_>) {
-    if let Some(mut balls) = world.query::<&mut Balls>().next() {
+    if let Some((_, mut balls)) = world.query::<(Entity, &mut Balls)>().next() {
         balls.request_clear();
     }
 }
@@ -722,7 +740,7 @@ mod tests {
                 world.root_scope_mut().spawn(bundle!(UiPanel::new(
                     move |_, _, _ui: &mut egui::Ui| {
                         counted.fetch_add(1, Ordering::Relaxed);
-                    }
+                    },
                 ),));
             }))
             .expect("the gameplay world accepts a job");
@@ -780,8 +798,8 @@ mod tests {
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle!(UiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
-                        if let Some(input_events) = world.query::<&InputEvents>().next() {
-                            input_events.with_batch(|batch| {
+                        if let Some((_, events)) = world.query::<(Entity, &InputEvents)>().next() {
+                            events.with_batch(|batch| {
                                 counted.fetch_add(batch.len(), Ordering::Relaxed);
                             });
                         }

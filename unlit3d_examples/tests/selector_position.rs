@@ -177,12 +177,14 @@ fn gpu_info_rect(world: &World) -> Option<egui::Rect> {
 
 /// The rectangle egui remembers for the window with `id`.
 fn panel_rect(world: &World, id: &str) -> Option<egui::Rect> {
-    world.root_scope().query::<&Source>().find_map(|source| {
-        let source = source;
-        let ui = source.as_ref::<UiSource>()?;
-        ui.context()
-            .memory(|memory| memory.area_rect(egui::Id::new(id)))
-    })
+    world
+        .root_scope()
+        .query::<(Entity, &Source)>()
+        .find_map(|(_, source)| {
+            let ui = source.as_ref::<UiSource>()?;
+            ui.context()
+                .memory(|memory| memory.area_rect(egui::Id::new(id)))
+        })
 }
 
 fn scene_at(
@@ -252,21 +254,20 @@ fn scene(ctx: &Ctx, size: (u32, u32), initial: Option<egui::Rect>) -> (World, Sc
 
 /// Bind an offscreen target the way the snapshot tests do, so `render` draws.
 fn bind(world: &mut World, scene: &mut Scene, ctx: &Ctx, size: (u32, u32)) {
-    let renderer = scene.renderer;
-    world
+    let context = world
         .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            unlit3d_examples::bind_offscreen_target(
-                world,
-                &mut renderer,
-                &ctx.device,
-                size,
-                1,
-                false,
-            )
-        })
-        .expect("the renderer is a resource entity");
+        .query_one::<&Renderer>(scene.renderer)
+        .expect("the renderer is a resource entity")
+        .context();
+    let _ = unlit3d_examples::bind_offscreen_target(
+        world,
+        context,
+        scene.pass,
+        &ctx.device,
+        size,
+        1,
+        false,
+    );
 }
 
 gpu_tests! {

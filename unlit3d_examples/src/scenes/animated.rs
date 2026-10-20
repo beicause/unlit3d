@@ -86,6 +86,7 @@ pub static SCENE: SceneDef = SceneDef {
     description: "a grid of cubes filling, moving and recycling over eight frames",
     size: TEST_SIZE,
     baseline: Some(TEST_SIZE),
+    clear: None,
     frames: STEPS.len() as u32,
     step_seconds: Some(SEQUENCE_STEP),
     samples: 1,
@@ -99,6 +100,7 @@ pub static SCENE: SceneDef = SceneDef {
 fn build(
     world: &mut World,
     context: RenderContext,
+    pass: Entity,
     _ui: Option<Entity>,
     size: (u32, u32),
     _options: SceneOptions,
@@ -107,7 +109,10 @@ fn build(
     source.register_unlit_family(&world.root_scope());
     // Every cell is tinted through its instance colour.
     let key = UnlitPipelineKey::new(super::unlit_options(&source.device(&world.root_scope())));
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass is alive")
+        .spawn(bundle!(Source::new(source),));
 
     let camera_entity = super::spawn_in(world, source_entity, bundle!(orbit_camera(0, size),));
 

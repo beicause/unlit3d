@@ -23,9 +23,9 @@ const SIZE: (u32, u32) = (960, 720);
 /// The offscreen target's multisample count.
 const SAMPLES: u32 = 4;
 
-/// Build an empty offscreen world: a render context, a renderer, a mesh source,
-/// an input state, a default camera, and a colour target both as a texture a
-/// screenshot can read back and as the view the renderer draws into.
+/// Build an empty offscreen world: a render context, a pass, a renderer, a mesh
+/// source, an input state, a default camera, and a colour target both as a
+/// texture a screenshot can read back and as the view the pass draws into.
 fn offscreen_world(ctx: &Ctx) -> World {
     let mut world = World::new();
     let context = spawn_context(
@@ -35,19 +35,27 @@ fn offscreen_world(ctx: &Ctx) -> World {
         ResourceGraph::new(),
         ctx.capabilities,
     );
-    let renderer = world
+    // The pass carries the load ops the frame is opened with, so the MCP
+    // client can patch them on the entity it finds them on.
+    let pass = world.root_scope_mut().spawn(bundle!(
+        FramePass::new(FramePassOrder(0)),
+        RenderLoadOps::default()
+    ));
+    world
         .root_scope_mut()
         .spawn(bundle!(Renderer::new(context),));
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass entity is its own scope")
+        .spawn(bundle!(Source::new(source),));
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.
     let input = InputWriter::new();
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn(bundle!(RenderLoadOps::default(),));
         shared_view.spawn(bundle!(input.subscribe(),));
         shared_view.spawn(bundle!(input,));
     }
@@ -69,12 +77,13 @@ fn offscreen_world(ctx: &Ctx) -> World {
         view
     };
     let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, SIZE, SAMPLES, true);
-    let _ = world
+    world
         .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            attachments.bind(&world, &mut renderer, color_view);
-        });
+        .query_one::<&mut FramePass>(pass)
+        .map(|mut pass| {
+            pass.set_attachments(&attachments, color_view);
+        })
+        .expect("the pass entity exists");
 
     let aspect = SIZE.0.max(1) as f32 / SIZE.1.max(1) as f32;
     // The camera sits in the source's own subtree, which is what it frames.

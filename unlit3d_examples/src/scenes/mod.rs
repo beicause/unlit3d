@@ -48,8 +48,11 @@ pub type Advance = Box<dyn FnMut(&mut World, u32, f32, (u32, u32))>;
 pub type Snapshot = Box<dyn Fn(u32) -> Option<String>>;
 
 /// Builds a scene's world content and returns its per-frame behaviour.
+///
+/// The pass is the frame pass the scene draws through: its sources hang in the
+/// pass's scope, so what they own is what the pass records.
 pub type Build =
-    fn(&mut World, RenderContext, Option<Entity>, (u32, u32), SceneOptions) -> SceneControl;
+    fn(&mut World, RenderContext, Entity, Option<Entity>, (u32, u32), SceneOptions) -> SceneControl;
 
 /// How the example's runner drives one scene.
 ///
@@ -96,6 +99,11 @@ pub struct SceneDef {
     /// and letterboxing it would put bars around a panel that has no aspect of
     /// its own.
     pub baseline: Option<(u32, u32)>,
+    /// The colour the scene's pass clears to, or `None` to clear to the default.
+    ///
+    /// A scene whose picture is painted over a particular backdrop declares
+    /// one; every other scene leaves its pass at the default clear.
+    pub clear: Option<wgpu::Color>,
     /// How many frames the snapshot tests draw before finishing.
     pub frames: u32,
     /// How long each frame stays on screen in the windowed loop, in seconds,
@@ -124,8 +132,9 @@ pub struct SceneDef {
     pub reproducible_ui: bool,
     /// Build the scene's world content and return its per-frame behaviour.
     ///
-    /// The world already holds the frame's context and the renderer resource
-    /// entity; the scene spawns its sources, meshes, camera and entities.
+    /// The world already holds the frame's context, the renderer resource
+    /// entity and the pass the scene draws through; the scene spawns its
+    /// sources, meshes, camera and entities, sources inside the pass.
     ///
     /// The entity is the UI source the shell mounted for the scene, when the
     /// run has one: a panel the scene draws hangs in that source's scope, so
@@ -502,9 +511,9 @@ pub fn spawn_in<B: unlit_ecs::Bundle>(world: &mut World, scope: Entity, bundle: 
 
 /// Spawn `bundle` into the world's shared subtree.
 ///
-/// State every source of a scene reads — the pass's load ops, the input
-/// batches — belongs here: a source's own scope holds what it draws, and one
-/// beside it would hold what the other cannot see.
+/// State every source of a scene reads — the input batches — belongs here: a
+/// source's own scope holds what it draws, and one beside it would hold what
+/// the other cannot see.
 pub fn spawn_shared<B: unlit_ecs::Bundle>(world: &mut World, bundle: B) -> Entity {
     let shared = world.shared();
     world

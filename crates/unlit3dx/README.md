@@ -15,7 +15,7 @@ The core is three moves: spawn a world, send it jobs, read its snapshots.
 use std::time::Duration;
 
 use unlit3dx::prelude::*;
-use unlit_ecs::{World, bundle, query};
+use unlit_ecs::World;
 
 let mut host = World::new();
 
@@ -32,8 +32,8 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 
 // Jobs run on the remote thread between ticks; a request brings its
 // answer back whenever it arrives.
-simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle!(0u8)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle!(0u8))));
+simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,))));
 // `spawned.poll()` is `Some(entity)` once the job has run.
 
 // Snapshots are the only data that flows back, and they are opt-in: the
@@ -42,7 +42,7 @@ let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_m
 // library defines none — so the collector is where a scene decides what it
 // wants to see.
 let reader = simulation.sender().subscribe(|world: &World| {
-    let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|body| *body).collect();
+    let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
 if let Some(latest) = reader.latest() {
@@ -56,7 +56,7 @@ keeps its owner on the main thread but takes jobs like a remote world:
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 queued jobs
-let mut nested = host.root_scope().query_one::<&mut World>(render.entity()).expect("the nested world");
+let mut nested = host.root_scope_mut().get_mut::<World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // run the jobs other threads posted
 ```
 
@@ -205,10 +205,12 @@ The bridges:
   caller that steps it inline with `step_once`.
 - **audio** (on by default): `spawn_audio_world_with::<R>` opens the output
   device and owns its stream on the audio thread. Its `OnAudioFill` components are
-  the sources:
-  `dispatch_audio_fill` runs them once per chunk of a ring buffer sized by
-  `AudioConfig`, mixing their samples and scaling the sum by the world's
-  `AudioGain`; the device callback drains the ring and underruns to silence.
+  the sources, and one entity may hold several layers in one component, each
+  with an `AudioFillOrder` of its own:
+  `dispatch_audio_fill` runs every callback once per chunk of a ring buffer sized by
+  `AudioConfig`, in that order, mixing their samples and scaling the sum by the
+  world's `AudioGain`; the device callback drains the ring and underruns to
+  silence.
   A world that carries no source plays nothing.
   Gameplay never touches audio directly — it sends jobs. The world spawns an
   `AudioFormat` component the moment its stream opens — a source that renders
@@ -324,18 +326,18 @@ frame, and runs `ready` as a queued command once the answer lands — nothing
 blocks, wasm-safe:
 
 ```rust,ignore
-world.root_scope_mut().spawn(bundle!(request_gpu(app, |world, gpu| {
+world.root_scope_mut().spawn((request_gpu(app, |world, gpu| {
     // ... build the scene where the request started ...
-})));
+}),));
 ```
 
 `Gpu::headless` is the same request without a window, for tests and
 tools. The **present** module owns the plumbing from a sub-world to a
-window: `setup_presenter` by default has the scene draw straight into the
-swap chain, and with its offscreen path on renders each frame into a
-persistent target that a second world blits over the surface — which keeps
-the frame long enough to read back, so screenshots and snapshot tests ask
-for it. `draw_presented`
+window: `setup_presenter` by default has the scene's pass draw straight into
+the swap chain, and with its offscreen path on adds a second pass to the same
+world that copies a persistent target over the surface — which keeps the
+frame long enough to read back, so screenshots and snapshot tests ask for
+it. `draw_presented`
 is the per-frame behaviour that drains the sub-world, dispatches the
 frame and presents it, `pump_presented` keeps frames coming while the
 window lives, and `resize_presented` follows the window around. The render

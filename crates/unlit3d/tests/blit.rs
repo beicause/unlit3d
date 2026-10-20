@@ -3,14 +3,12 @@
 //!
 //! The blit reads its view and sampler out of the frame's resource graph, so
 //! these tests exercise the property the graph wiring exists for: that a
-//! texture registered in the graph reaches the rasterizer, and that swapping
-//! the component for another texture swaps what the frame shows.
+//! texture registered in the graph reaches the rasterizer, and that pointing
+//! the source at another view swaps what the frame shows.
 
 pub mod common;
 
 use common::*;
-use unlit_ecs::bundle;
-use unlit_wgpu::resources::TextureExt;
 use unlit_wgpu_test_util::{gpu_test_main, gpu_tests};
 use unlit3d::prelude::*;
 
@@ -78,15 +76,8 @@ fn blit_world(ctx: &Ctx, rgba: [u8; 4]) -> (World, TestGpu, wgpu::Texture, Entit
     let mut world = World::new();
     let gpu = TestGpu::frame_only(&mut world, ctx);
     let texture = solid_texture(&ctx.device, &ctx.queue, rgba);
-    let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-    let blit = BlitTexture::new(&world, gpu.context, view);
-    let source = world
-        .root_scope_mut()
-        .spawn(bundle!(Source::new(BlitSource::new()),));
-    world
-        .scope_mut(source)
-        .expect("a source entity is its own scope")
-        .spawn(bundle!(blit,));
+    let (_, view) = gpu.register_texture(&world, texture);
+    let source = gpu.spawn_source(&mut world, BlitSource::new(view));
     let target = gpu.bind_offscreen_target_with(&world, 1, false);
     (world, gpu, target, source)
 }
@@ -109,13 +100,13 @@ async fn blit_copies_the_source_texture() {
     );
 }
 
-/// A texture swapped into the world through its component re-samples the frame,
-/// which is what makes the graph ids the component carries the blit's input.
-async fn a_new_texture_component_changes_what_the_frame_shows() {
+/// Pointing the source at another view re-samples the frame, which is what
+/// makes the graph id the source carries its input.
+async fn a_new_view_changes_what_the_frame_shows() {
     let ctx = Ctx::headless().await;
     const FIRST: [u8; 4] = [220, 40, 40, 255];
     const SECOND: [u8; 4] = [40, 220, 40, 255];
-    let (mut world, gpu, target, source) = blit_world(&ctx, FIRST);
+    let (world, gpu, target, source) = blit_world(&ctx, FIRST);
 
     gpu.render(&world);
     assert_eq!(
@@ -124,22 +115,20 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
         "the first texture should reach the frame"
     );
 
-    // Replace the component with a blit of the second texture. The source
-    // keeps its pipeline and layout; the new graph ids get their own group.
+    // Point the source at the second texture. It keeps its pipeline and layout;
+    // only the view the bind group samples changes.
     let texture = solid_texture(&ctx.device, &ctx.queue, SECOND);
-    let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-    let blit = BlitTexture::new(&world, gpu.context, view);
-    let entity = world
-        .root_scope()
-        .query::<(&BlitTexture, Entity)>()
-        .next()
-        .map(|(_blit_texture, entity)| entity)
-        .expect("the world has a blit texture");
-    world.root_scope_mut().despawn(entity);
+    let (_, view) = gpu.register_texture(&world, texture);
     world
-        .scope_mut(source)
-        .expect("a source entity is its own scope")
-        .spawn(bundle!(blit,));
+        .root_scope()
+        .query_one::<&mut Source>(source)
+        .map(|mut source| {
+            source
+                .as_mut::<BlitSource>()
+                .expect("the source is a BlitSource")
+                .set_view(view);
+        })
+        .expect("the source entity exists");
     gpu.render(&world);
 
     assert_eq!(
@@ -153,7 +142,7 @@ async fn a_new_texture_component_changes_what_the_frame_shows() {
 // browser through the wasm export `gpu_test_main!` adds.
 gpu_tests! {
     blit_copies_the_source_texture,
-    a_new_texture_component_changes_what_the_frame_shows,
+    a_new_view_changes_what_the_frame_shows,
 }
 
 gpu_test_main!(all_tests());

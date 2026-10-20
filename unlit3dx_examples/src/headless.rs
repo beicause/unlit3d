@@ -106,23 +106,23 @@ pub fn run(
         PanelSlots::default(),
         &input,
     );
-    let renderer = setup_render_world(&mut host, render.entity(), device, queue, capabilities);
+    let (renderer, pass) =
+        setup_render_world(&mut host, render.entity(), device, queue, capabilities);
     // No control panel headless: nothing is there to click. The camera is
     // still the scene's, so it arrives as a job like the meshes do.
-    mount_scene_content(&render, None);
-    let mut offscreen = None;
-    {
+    mount_scene_content(&render, pass, None);
+    let offscreen = {
         let nested = host
             .root_scope()
             .query_one::<&mut World>(render.entity())
             .expect("the render sub-world exists");
-        let _ = nested
+        let context = nested
             .root_scope()
-            .query_one::<&mut Renderer>(renderer)
-            .map(|mut r| {
-                offscreen = bind_offscreen(&nested, &mut r, device, config.size);
-            });
-    }
+            .query_one::<&Renderer>(renderer)
+            .expect("the renderer is a resource entity")
+            .context();
+        bind_offscreen(&nested, context, pass, device, config.size)
+    };
 
     let mut output = HeadlessOutput {
         frames: Vec::new(),
@@ -187,8 +187,10 @@ pub fn run(
                     r.render(&nested);
                 });
             if config.capture.contains(&index) {
-                let color = offscreen.as_ref().expect("the offscreen target exists");
-                output.frames.push(readback_texture(device, queue, color));
+                let target = offscreen.as_ref().expect("the offscreen target exists");
+                output
+                    .frames
+                    .push(readback_texture(device, queue, &target.texture));
             }
         }
     }

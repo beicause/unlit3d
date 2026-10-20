@@ -50,7 +50,8 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 - **桌面端需要 `DISPLAY` 或 `WAYLAND_DISPLAY`**。winit 没有无窗口模式，缺了会 panic：
   `neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.`
 - **`--mcp` 会改变渲染路径**：`unlit3dx_examples` 里 `let offscreen = mcp;`，即带 `--mcp`
-  时离屏渲染 + 一个 blit world 把结果贴到交换链，所以会多出一个子 world。
+  时场景自己的 pass 离屏渲染，同一个 world 里再加一个 pass 把结果贴到交换链。world
+  数量不变，只是多一个 `FramePass` 实体。
 - `unlit3dx_examples` 的 `--stepped` 让桌面端走浏览器那条单线程路径（world 由帧循环步进，
   而不是各自开线程）。
 - `unlit3d_examples` 的 MCP 只在桌面可用，命令经 winit 用户事件队列投递，不是
@@ -72,7 +73,7 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 宿主携带但不带 `WorldName` 的 world 不会出现在结果里。例如
 `unlit3dx_examples --mcp` 的 `list_worlds` 返回
 `[{"world":"Host","name":"host"},{"world":{"Handle":5},"name":"render"},…]`，
-依次是渲染、blit，以及物理、音频、玩法五个 world。
+依次是渲染，以及物理、音频、玩法四个 world。
 
 ## 工具清单
 

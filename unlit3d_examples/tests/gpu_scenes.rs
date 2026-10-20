@@ -165,22 +165,25 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         PanelRects::default(),
     );
 
-    let renderer = scene.renderer;
-    let target = world
+    let context = world
         .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            unlit3d_examples::bind_offscreen_target(
-                &world,
-                &mut renderer,
-                &ctx.device,
-                size,
-                def.samples,
-                def.depth,
-            )
-        })
-        .expect("the renderer is a resource entity");
-    set_frame_viewport(&world, scene.viewport.map(FrameViewport));
+        .query_one::<&Renderer>(scene.renderer)
+        .expect("the renderer is a resource entity")
+        .context();
+    let target = unlit3d_examples::bind_offscreen_target(
+        &world,
+        context,
+        scene.pass,
+        &ctx.device,
+        size,
+        def.samples,
+        def.depth,
+    );
+    world
+        .root_scope()
+        .query_one::<&mut FramePass>(scene.pass)
+        .map(|mut pass| pass.set_viewport(scene.viewport))
+        .expect("the scene's pass exists");
 
     let mut compared = 0;
     for frame in 0..def.frames {
@@ -204,7 +207,8 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
             def.id
         );
 
-        let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+        let bytes =
+            unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);
         assert_image_snapshot_with_tolerance(*snapshot, &bytes, size.0, size.1, tolerance);
         compared += 1;
     }
@@ -245,22 +249,25 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         PanelRects::default(),
     );
 
-    let renderer = scene.renderer;
-    let target = world
+    let context = world
         .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            unlit3d_examples::bind_offscreen_target(
-                &world,
-                &mut renderer,
-                &ctx.device,
-                size,
-                def.samples,
-                def.depth,
-            )
-        })
-        .expect("the renderer is a resource entity");
-    set_frame_viewport(&world, scene.viewport.map(FrameViewport));
+        .query_one::<&Renderer>(scene.renderer)
+        .expect("the renderer is a resource entity")
+        .context();
+    let target = unlit3d_examples::bind_offscreen_target(
+        &world,
+        context,
+        scene.pass,
+        &ctx.device,
+        size,
+        def.samples,
+        def.depth,
+    );
+    world
+        .root_scope()
+        .query_one::<&mut FramePass>(scene.pass)
+        .map(|mut pass| pass.set_viewport(scene.viewport))
+        .expect("the scene's pass exists");
 
     for _ in 0..def.frames {
         scene.advance(&mut world, FIXED_STEP);
@@ -268,7 +275,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         scene.end_frame(&mut world);
     }
 
-    let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
+    let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);
     assert_image_snapshot_with_tolerance(snapshot, &bytes, size.0, size.1, LETTERBOX_TOLERANCE);
 }
 
@@ -468,9 +475,9 @@ async fn custom_pipeline_animates_between_frames() {
 
 /// The eye position of the scene's camera.
 fn camera_eye(world: &World) -> glam::Vec3 {
-    let camera = world
+    let (_, camera) = world
         .root_scope()
-        .query::<&Camera>()
+        .query::<(Entity, &Camera)>()
         .next()
         .expect("the scene has a camera");
     camera.position()

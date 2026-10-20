@@ -58,7 +58,8 @@ pub use crate::source::{OpenUrl, OpenUrls};
 
 use crate::input::InputEvents;
 
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target};
+use crate::pass::PassInfo;
+use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 /// egui, re-exported because a [`UiPanel`] is written against its types.
 ///
 /// A panel's callback takes an `&mut egui::Ui` and draws with egui's own
@@ -325,6 +326,7 @@ impl FrameSource for UiSource {
         &mut self,
         scope: &Scope<'_>,
         ctx: RenderContext,
+        info: PassInfo,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         // Settle the graph on every way out of this build, the early return
@@ -335,17 +337,10 @@ impl FrameSource for UiSource {
         // replay the previous frame's UI.
         self.scene.clear();
 
-        // The target the frame is specialized for, written by the frame loop
-        // before it renders. Without it the pipeline cannot be specialized, and
-        // a stale one is worse than none.
-        let Some(target) = frame_target(scope) else {
-            log::warn!(
-                "UiSource::build_scene: no FrameTarget in the world, so the \
-                 frame's render target is unknown and no UI is drawn; write \
-                 one by binding a render target before rendering"
-            );
-            return;
-        };
+        // The pass states the target the frame is specialized for, so nothing
+        // has to be read back out of the world: the driver builds a source only
+        // for a pass that has attachments.
+        let target = info;
 
         let device = scope
             .query_one::<&wgpu::Device>(ctx.device)
@@ -846,7 +841,8 @@ mod tests {
     use unlit_wgpu::capabilities::DeviceCapabilities;
 
     use crate::input::{InputEvent, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent};
-    use crate::source::{FrameTarget, set_frame_target, spawn_context};
+    use crate::pass::PassInfo;
+    use crate::source::spawn_context;
 
     /// How many times a panel's closure ran, in a sibling component: a panel
     /// cannot keep state in itself.
@@ -869,8 +865,8 @@ mod tests {
         }
     }
 
-    fn test_target() -> FrameTarget {
-        FrameTarget {
+    fn test_target() -> PassInfo {
+        PassInfo {
             surface: SurfaceKey {
                 color_format: wgpu::TextureFormat::Rgba8UnormSrgb,
                 depth_stencil_format: None,
@@ -878,6 +874,7 @@ mod tests {
             },
             width: 128,
             height: 96,
+            viewport: None,
         }
     }
 
@@ -969,7 +966,7 @@ mod tests {
     #[test]
     fn a_panel_is_driven_by_the_source() {
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world.root_scope(), test_target()));
+        let target = test_target();
         world
             .root_scope_mut()
             .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
@@ -987,31 +984,12 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
 
         assert!(
             !source.scene().is_empty(),
             "the panel's rectangle became a draw"
         );
-    }
-
-    /// Without a frame target the source warns and draws nothing, rather than
-    /// specializing on a target it cannot know.
-    #[test]
-    fn a_missing_frame_target_draws_nothing() {
-        let (mut world, ctx) = test_world();
-        world
-            .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
-                ui.label("not drawn");
-            }),));
-
-        let mut source = UiSource::new();
-        let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
-
-        assert!(source.scene().is_empty());
-        assert!(source.gpu.is_none(), "no target was specialized for");
     }
 
     /// The source is constructed with no arguments and records over the meshes.
@@ -1170,7 +1148,7 @@ mod tests {
     #[test]
     fn the_frame_events_reach_the_panels() {
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world.root_scope(), test_target()));
+        let target = test_target();
 
         let seen: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
         let recorded = Rc::clone(&seen);
@@ -1207,10 +1185,10 @@ mod tests {
         let mut encoder = encoder(&world, ctx);
         // egui only lays a text field out once it knows its fonts, so the
         // first frame establishes them; the text is then this tick's batch.
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
         input.push(InputEvent::Text(TextEvent("hi".to_string())));
         events.refresh();
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
 
         assert_eq!(
             &*seen.borrow(),
@@ -1232,7 +1210,7 @@ mod tests {
         let clicked = Rc::new(Cell::new(false));
 
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world.root_scope(), test_target()));
+        let target = test_target();
         let flag = Rc::clone(&clicked);
         world
             .root_scope_mut()
@@ -1257,7 +1235,7 @@ mod tests {
         let mut encoder = encoder(&world, ctx);
         // The first frame lays the widget out and knows its fonts; nothing is
         // clicked yet because no input has arrived.
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
         assert!(!clicked.get(), "nothing is clicked before any input");
 
         // The pointer arrives over the button and presses and releases there,
@@ -1284,7 +1262,7 @@ mod tests {
         }
         // The tick's batch: what the pointer did since the last frame.
         events.refresh();
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
 
         assert!(
             clicked.get(),
@@ -1298,7 +1276,7 @@ mod tests {
     #[test]
     fn a_published_frame_is_drawn_until_a_newer_one_arrives() {
         let (world, ctx) = test_world();
-        assert!(set_frame_target(&world.root_scope(), test_target()));
+        let info = test_target();
         // Laid out in a context of its own, the way a publishing world would:
         // its texture ids start where every context's do.
         let mut other = World::new();
@@ -1324,7 +1302,7 @@ mod tests {
         source.external.publish(0, frame);
         let mut encoder = encoder(&world, ctx);
 
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, info, &mut encoder);
         assert!(
             !source.scene().is_empty(),
             "the published frame is drawn when it arrives"
@@ -1332,7 +1310,7 @@ mod tests {
 
         // The publisher has nothing new, and the frame it published must not
         // have been emptied by drawing it.
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, info, &mut encoder);
         assert!(
             !source.scene().is_empty(),
             "the same frame is drawn again while no newer one arrives"
@@ -1343,8 +1321,6 @@ mod tests {
     /// publisher's atlas and the drawing world's own do not collide.
     #[test]
     fn two_contexts_keep_their_textures_apart() {
-        let (world, _ctx) = test_world();
-        assert!(set_frame_target(&world.root_scope(), test_target()));
         let target = test_ui_target();
 
         // A separate world, with a context whose ids start at zero like any
@@ -1398,7 +1374,7 @@ mod tests {
     #[test]
     fn a_world_without_input_state_draws_an_idle_frame() {
         let (mut world, ctx) = test_world();
-        assert!(set_frame_target(&world.root_scope(), test_target()));
+        let target = test_target();
         world
             .root_scope_mut()
             .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
@@ -1411,7 +1387,7 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world.root_scope(), ctx, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
         assert!(
             !source.scene().is_empty(),
             "a panel draws with no input in the world"

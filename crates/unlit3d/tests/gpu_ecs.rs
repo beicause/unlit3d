@@ -363,12 +363,10 @@ async fn a_source_draws_only_its_own_subtree() {
     let gpu = TestGpu::new(&mut world, &ctx);
     let first = gpu.mesh_source();
 
-    // A second source beside the first, both children of the root.
+    // A second source beside the first, both children of the frame's pass.
     let mut second_source = MeshSource::new(&world.root_scope(), gpu.context);
     second_source.register_unlit_family(&world.root_scope());
-    let second = world
-        .root_scope_mut()
-        .spawn(bundle!(Source::new(second_source),));
+    let second = gpu.spawn_source(&mut world, second_source);
 
     // One cube per source, each with the camera that frames it.
     let near = gpu.allocate_cube_mesh(&world);
@@ -389,14 +387,14 @@ async fn a_source_draws_only_its_own_subtree() {
         let owned = world
             .scope(scope)
             .expect("the source is a scope")
-            .query::<&GpuMesh>()
+            .query::<(Entity, &GpuMesh)>()
             .count();
         assert_eq!(owned, 1, "a source draws only the instances it owns");
     }
 
     // The root sees both, which is what makes the two frames one scene.
     assert_eq!(
-        world.root_scope().query::<&GpuMesh>().count(),
+        world.root_scope().query::<(Entity, &GpuMesh)>().count(),
         2,
         "the root sees every source's instances"
     );
@@ -418,7 +416,7 @@ async fn a_source_draws_only_its_own_subtree() {
                 .as_mut::<MeshSource>()
                 .expect("the source is a mesh source");
             // The count the renderer would hand this source.
-            source_scope.query::<&GpuMesh>().count()
+            source_scope.query::<(Entity, &GpuMesh)>().count()
         };
         assert_eq!(drawn, 1, "{label} draws exactly its own instance");
     }

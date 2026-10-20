@@ -18,7 +18,7 @@ use core::ops::DerefMut;
 use hashbrown::HashMap;
 use std::rc::Rc;
 
-use unlit_ecs::{Scope, TypeIdHashMap};
+use unlit_ecs::{Entity, Scope, TypeIdHashMap};
 use unlit_wgpu::array_pool::ArrayPool;
 use unlit_wgpu::buffer_pool::BufferPool;
 use unlit_wgpu::globals::{Globals, View};
@@ -35,6 +35,7 @@ use zerocopy::IntoBytes;
 use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts};
 use crate::culling::VisibleMesh;
 use crate::mesh::MeshDesc;
+use crate::pass::PassInfo;
 use crate::pipeline::{
     GlobalResources, InstanceContext, InstanceData, Rebuild, RegisteredGlobal,
     RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineId, RenderPipelineKey,
@@ -43,7 +44,7 @@ use crate::scene::{
     AnyFamily, DrawHandlesKey, EntryHandles, Family, FamilyId, RenderPipelineHandles, SceneFrame,
     VisibleEntry, assemble_scene, collect_and_sort_visible,
 };
-use crate::source::{FrameSource, FrameSourceOrder, RenderContext, frame_target, frame_viewport};
+use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 
 /// The capacity that covers `needed` after growing from `current`.
@@ -404,7 +405,7 @@ impl MeshSource {
     /// The world addresses this source draws through.
     ///
     /// Setup-time code that needs the resource graph reaches it with
-    /// `view.query_one::<&mut ResourceGraph>(source.context().graph)`, which is an
+    /// `view.get_mut::<ResourceGraph>(source.context().graph)`, which is an
     /// ordinary ECS access: the graph and the source live in different cells.
     pub fn context(&self) -> RenderContext {
         self.context
@@ -1286,9 +1287,9 @@ impl MeshSource {
 /// active camera, and the source draws nothing.
 fn frame_camera(scope: &Scope<'_>) -> Option<Camera> {
     scope
-        .query::<&Camera>()
-        .find(|camera| camera.active)
-        .map(|camera| Camera {
+        .query::<(Entity, &Camera)>()
+        .find(|(_, camera)| camera.active)
+        .map(|(_, camera)| Camera {
             view_from_world: camera.view_from_world,
             clip_from_view: camera.clip_from_view,
             active: camera.active,
@@ -1300,6 +1301,7 @@ impl FrameSource for MeshSource {
         &mut self,
         world: &Scope<'_>,
         ctx: RenderContext,
+        info: PassInfo,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         // Settle the graph on every way out of this build, the early returns
@@ -1339,22 +1341,13 @@ impl FrameSource for MeshSource {
         // loop built it for the region's aspect, so the frustum this source
         // culls with follows the same shape and nothing is culled at the edges
         // the letterbox would have hidden.
-        self.scene
-            .set_viewport(frame_viewport(world).map(|viewport| viewport.0));
+        self.scene.set_viewport(info.viewport);
 
-        // The target the frame is specialized for, written by the frame loop
-        // before it renders. Without it no pipeline can be resolved, and a
-        // stale one is worse than none: reading the previous frame's target
-        // would silently specialize for the wrong attachments.
-        let Some(target) = frame_target(world) else {
-            log::warn!(
-                "MeshSource::build_scene: no FrameTarget in the world, so the \
-                 frame's render target is unknown and nothing is drawn; write \
-                 one by binding a render target before rendering"
-            );
-            return;
-        };
-        let surface = target.surface;
+        // The pass states the target the frame is specialized for, so nothing
+        // has to be read back out of the world and a stale target can never be
+        // picked up: the driver builds a source only for a pass that has
+        // attachments.
+        let surface = info.surface;
 
         // Update global uniforms.
         {
@@ -1430,8 +1423,9 @@ mod tests {
     use super::*;
     use crate::components::{Transform, ZSortedDrawing};
     use crate::mesh::MorphDeltas;
+    use crate::pass::PassInfo;
     use crate::scene::DrawShape;
-    use crate::source::{FrameTarget, set_frame_target, spawn_context};
+    use crate::source::spawn_context;
     use crate::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
     use unlit_ecs::bundle;
     use unlit_ecs::{Entity, World};
@@ -1457,7 +1451,7 @@ mod tests {
         world: World,
         source: MeshSource,
         key: UnlitPipelineKey,
-        target: FrameTarget,
+        target: PassInfo,
     }
 
     impl Harness {
@@ -1554,8 +1548,8 @@ mod tests {
     }
 
     /// Register a color texture and a matching depth texture in the context's
-    /// graph and state them as the frame's target.
-    fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> FrameTarget {
+    /// graph and describe them as the pass the tests drive the source with.
+    fn bind_test_target(scope: &Scope<'_>, ctx: RenderContext) -> PassInfo {
         let device = scope
             .query_one::<&wgpu::Device>(ctx.device)
             .expect("the context's device")
@@ -1567,34 +1561,28 @@ mod tests {
             TEST_SIZE,
             1,
         );
-        let target = {
-            let mut graph = scope
-                .query_one::<&mut ResourceGraph>(ctx.graph)
-                .expect("the context's graph");
-            let color = graph.insert(
-                TextureExt::create_view(&ft.color, &wgpu::TextureViewDescriptor::default()),
-                None,
-            );
-            let depth = graph.insert(
-                TextureExt::create_view(&ft.depth, &wgpu::TextureViewDescriptor::default()),
-                None,
-            );
-            let attachments = RenderAttachments::from_views(
-                graph.get(&color).cloned(),
-                graph.get(&depth).cloned(),
-                None,
-            );
-            FrameTarget {
-                surface: attachments.surface_key(),
-                width: TEST_SIZE,
-                height: TEST_SIZE,
-            }
-        };
-        assert!(
-            set_frame_target(scope, target),
-            "the context spawned a slot"
+        let mut graph = scope
+            .query_one::<&mut ResourceGraph>(ctx.graph)
+            .expect("the context's graph");
+        let color = graph.insert(
+            TextureExt::create_view(&ft.color, &wgpu::TextureViewDescriptor::default()),
+            None,
         );
-        target
+        let depth = graph.insert(
+            TextureExt::create_view(&ft.depth, &wgpu::TextureViewDescriptor::default()),
+            None,
+        );
+        let attachments = RenderAttachments::from_views(
+            graph.get(&color).cloned(),
+            graph.get(&depth).cloned(),
+            None,
+        );
+        PassInfo {
+            surface: attachments.surface_key(),
+            width: TEST_SIZE,
+            height: TEST_SIZE,
+            viewport: None,
+        }
     }
 
     /// A camera at `eye` looking at the origin, with a frustum wide enough
@@ -2899,7 +2887,7 @@ mod tests {
         let mut encoder = h.encoder();
         let ctx = h.source.context();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
         assert!(h.source.visible_cache.is_empty(), "nothing was drawn");
         assert!(h.source.scene().draws.is_empty(), "the scene is empty");
     }
@@ -2935,7 +2923,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
         let drawn_first = drawn(&h.source);
         assert_eq!(drawn_first.len(), 1, "the entity was drawn");
         let capacities = (
@@ -2947,7 +2935,7 @@ mod tests {
 
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
         assert_eq!(drawn(&h.source), drawn_first, "the same draws, in order");
         assert_eq!(
             (
@@ -3013,7 +3001,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
         let shapes: Vec<DrawShape> = h
             .source
             .visible_cache
@@ -3057,7 +3045,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
 
         assert_eq!(h.source.scene().draws.len(), 1, "one draw for all three");
         let range = &h.source.scene().draws[0].range;
@@ -3098,7 +3086,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
 
         assert_eq!(h.source.visible_cache.len(), 3, "all three are visible");
         assert_eq!(
@@ -3140,7 +3128,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
 
         assert_eq!(
             h.source.scene().draws.len(),
@@ -3183,7 +3171,7 @@ mod tests {
         let ctx = h.source.context();
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
 
         assert_eq!(
             h.source.scene().draws.len(),
@@ -3211,7 +3199,7 @@ mod tests {
         ));
         let mut encoder = h.encoder();
         h.source
-            .build_scene(&h.world.root_scope(), ctx, &mut encoder);
+            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
 
         let before = MeshSource::graph(&h.world.root_scope(), ctx).len();
         // Read the ids out before the source goes: once it is dropped there is

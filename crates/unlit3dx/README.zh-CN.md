@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use unlit3dx::prelude::*;
-use unlit_ecs::{World, bundle, query};
+use unlit_ecs::World;
 
 let mut host = World::new();
 
@@ -30,15 +30,15 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 });
 
 // job 在远程线程的 tick 之间运行；request 会在答案就绪时把它带回来。
-simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle!(0u8)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle!(0u8))));
+simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,))));
 // job 一旦运行过，`spawned.poll()` 就是 `Some(entity)`。
 
 // 快照是唯一回传的数据，而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
 let reader = simulation.sender().subscribe(|world: &World| {
-    let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|body| *body).collect();
+    let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
 if let Some(latest) = reader.latest() {
@@ -52,7 +52,7 @@ if let Some(latest) = reader.latest() {
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 个排队 job
-let mut nested = host.root_scope().query_one::<&mut World>(render.entity()).expect("the nested world");
+let mut nested = host.root_scope_mut().get_mut::<World>(render.entity()).expect("the nested world");
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 
@@ -167,8 +167,10 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
   `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
 - **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
-  持有其流。它的 `OnAudioFill` 组件就是音源：`dispatch_audio_fill` 每块运行一次它们，把各自叠加的
-  样本混进由 `AudioConfig` 定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
+  持有其流。它的 `OnAudioFill` 组件就是音源，一个实体可以在一个组件里叠加多层，
+  每层带着自己的 `AudioFillOrder`：
+  `dispatch_audio_fill` 按该顺序每块运行每个回调，把各自叠加的样本混进由 `AudioConfig`
+  定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
   设备回调消费这个缓冲，欠载时静音。没有任何音源的 world 不出声。
   玩法从不直接触碰音频——它发送 job。world 在流打开的那一刻生成 `AudioFormat`
   组件——按固定速率渲染的音源必须按设备实际采用的速率构建，而这一点在流打开之前
@@ -245,15 +247,15 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 驱动，答案落地后把 `ready` 作为排队的 command 运行——什么都不阻塞，wasm 安全：
 
 ```rust,ignore
-world.root_scope_mut().spawn(bundle!(request_gpu(app, |world, gpu| {
+world.root_scope_mut().spawn((request_gpu(app, |world, gpu| {
     // ... 在请求发起处搭建场景 ...
-})));
+}),));
 ```
 
 `Gpu::headless` 是同一个请求的免窗口版本，供测试与工具使用。**present** 模块
-持有从子 world 到窗口的全部管线：`setup_presenter` 默认让场景直接画进交换链；
-打开离屏路径后，每帧渲染进一个常驻目标，再由第二个 world blit 到表面——这让帧
-存活得足够久、可以读回，截图与快照测试就走这条路。`draw_presented` 是每帧排空
+持有从子 world 到窗口的全部管线：`setup_presenter` 默认让场景自己的 pass 直接
+画进交换链；打开离屏路径后，在同一个 world 里再加一个 pass，把常驻目标拷到表面
+——这让帧存活得足够久、可以读回，截图与快照测试就走这条路。`draw_presented` 是每帧排空
 子 world、分发帧并呈现的行为，`pump_presented` 在窗口
 存活期间让帧持续到来，`resize_presented` 跟随窗口变化。绘制 world 所需的 render
 桥——资源服务器及其周围的网格与相机辅助——由调用方自己构建；`unlit3dx_examples`

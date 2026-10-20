@@ -126,18 +126,18 @@ impl Camera {
     }
 }
 
-/// The load ops a frame's pass is opened with.
+/// The load ops a [`FramePass`](crate::pass::FramePass) is opened with.
 ///
-/// The renderer opens one pass per frame over its attachments; this component
-/// decides what that pass loads and clears. It may sit on any entity — the
-/// renderer draws with the first one it finds — and a frame whose world has
-/// none is opened with [`RenderLoadOps::default`].
+/// Spawn it beside the pass — on the same entity — and it decides what that
+/// pass loads and clears. A pass with no load ops of its own is opened with
+/// [`RenderLoadOps::default`], so stating them is only needed to draw over
+/// what an earlier pass left rather than clear it.
 ///
-/// A load op only applies to an attachment the pass actually has. A frame
-/// that draws into the caller's own target gets both a color and a depth
-/// attachment; the frame's internal attachment set may be depth-only.
-/// Clearing an attachment the pass does not have is therefore not an error —
-/// the op is simply unused — so one component fits either target.
+/// A load op only applies to an attachment the pass actually has. A pass that
+/// draws into the caller's own target gets both a color and a depth
+/// attachment; a pass over a depth-only set has none to clear. Clearing an
+/// attachment the pass does not have is therefore not an error — the op is
+/// simply unused — so one component fits either shape.
 ///
 /// ```rust
 /// use unlit3d::components::RenderLoadOps;

@@ -27,9 +27,9 @@ treat every crate as work in progress.
   friendly to AI agents. A streamlined ECS paradigm borrowing from OOP, using
   behavior components more than systems and putting the focus on objects.
 - **Mobile and web optimized.** Transient MSAA and depth textures by default,
-  compressed vertex attributes, unlit materials by default, a single pass for
-  rendering. None of the prepass, PBR lighting or shadows that are expensive on
-  mobile, and no compute shaders.
+  compressed vertex attributes, unlit materials by default, and a short,
+  explicit list of render passes. None of the prepass, PBR lighting or shadows
+  that are expensive on mobile, and no compute shaders.
 - **Low-level.** `wgpu` resources used directly, buffers manipulated directly.
   Render resources persist across frames, and a resource graph rebuilds them only
   when necessary.
@@ -42,9 +42,10 @@ Not supported: lighting and shadows, and post-processing.
 
 ## Features
 
-- **Mobile-first, and cross-platform.** One pass per frame, transient depth and
-  multisample textures, compressed vertices, and no pre-pass, compute shader,
-  lighting or shadow path. The same frame loop drives a window, a headless
+- **Mobile-first, and cross-platform.** Render passes are explicit — usually
+  one, more when a frame composites — with transient depth and multisample
+  textures, compressed vertices, and no pre-pass, compute shader, lighting or
+  shadow path. The same frame loop drives a window, a headless
   offscreen target, the web examples and the Android APK.
 - **Runs on WebGL2 and on WebGPU-baseline devices.** The adapter is picked at
   runtime, WebGPU first and WebGL2 when that is all the platform has. WebGL2
@@ -54,10 +55,11 @@ Not supported: lighting and shadows, and post-processing.
   storage buffers and the whole-buffer bindings, which cost no extra pass state.
   Which path is taken follows the adapter's own downlevel capabilities, not a
   build feature.
-- **A scene the caller composes.** A frame is assembled from frame sources that
-  contribute their own draws and state where in the frame they belong. The
-  built-in mesh rendering, the egui overlay and a caller's own pass have exactly
-  the same standing.
+- **A scene the caller composes.** A frame is a sequence of passes, each an
+  ordinary entity holding the views it draws into, and each pass records the
+  frame sources below it, which contribute their own draws and state where in
+  that pass they belong. The built-in mesh rendering, the egui overlay and a
+  caller's own source have exactly the same standing.
 - **A small ECS.** Borrowing OOP's focus on object state, an entity's archetype
   is immutable, systems are driven externally rather than built in, and a
   behaviour is a component holding a closure rather than a system — see

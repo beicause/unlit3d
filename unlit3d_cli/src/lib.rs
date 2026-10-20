@@ -1,9 +1,9 @@
 #![doc = include_str!("../README.md")]
 
 use std::path::Path;
+use unlit_ecs::bundle;
 
 use glam::Mat4;
-use unlit_ecs::bundle;
 use unlit_wgpu::resources::{ResourceGraph, TextureExt};
 use unlit3d::gltf::UnlitGltf;
 use unlit3d::prelude::*;
@@ -189,8 +189,8 @@ pub async fn request_device() -> Result<(wgpu::Device, wgpu::Queue, DeviceCapabi
 /// Build the world a render draws, and the target it draws into.
 ///
 /// Returns the world, the output-sized colour target, and the renderer entity.
-/// The world holds the render context, the renderer, a mesh source, the clear
-/// state, the configured documents and camera, and the viewport.
+/// The world holds the render context, the renderer, the frame's one pass, a
+/// mesh source, the configured documents and camera, and the pass's viewport.
 ///
 /// # Errors
 ///
@@ -215,28 +215,12 @@ pub fn build_world(
         .root_scope_mut()
         .spawn(bundle!(Renderer::new(context),));
 
-    let target = world
-        .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            bind_target(
-                &world,
-                &mut renderer,
-                device,
-                output_size,
-                config.output.samples,
-                config.output.depth,
-            )
-        })
-        .expect("the renderer entity exists");
-
     let clear = config.output.clear;
-    // The frame's load ops are shared by every source, so they live in the
-    // subtree every scope sees.
-    {
-        let shared = world.shared();
-        let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn(bundle!(RenderLoadOps {
+    // The frame is one pass: it states what it clears and where it draws, and
+    // the mesh source hangs under it, which is what records the source into it.
+    let pass = world.root_scope_mut().spawn(bundle!(
+        FramePass::new(FramePassOrder(0)),
+        RenderLoadOps {
             color: wgpu::LoadOp::Clear(wgpu::Color {
                 r: clear[0],
                 g: clear[1],
@@ -245,12 +229,25 @@ pub fn build_world(
             }),
             depth: depth_clear(),
             stencil: stencil_clear(),
-        },));
-    }
+        },
+    ));
+
+    let target = bind_target(
+        &world,
+        context,
+        pass,
+        device,
+        output_size,
+        config.output.samples,
+        config.output.depth,
+    );
 
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass entity is its own scope")
+        .spawn(bundle!(Source::new(source),));
 
     for document in &config.documents {
         let gltf = UnlitGltf::load(&document.path)?;
@@ -290,12 +287,15 @@ pub fn build_world(
     let viewport_height = render_size.1 as f32 * config.output.scale.1;
     let viewport_x = (output_size.0 as f32 - viewport_width) * 0.5;
     let viewport_y = (output_size.1 as f32 - viewport_height) * 0.5;
-    set_frame_viewport(
-        &world,
-        Some(FrameViewport(
-            ViewportRect::new(viewport_width, viewport_height).at(viewport_x, viewport_y),
-        )),
-    );
+    world
+        .root_scope()
+        .query_one::<&mut FramePass>(pass)
+        .map(|mut pass| {
+            pass.set_viewport(Some(
+                ViewportRect::new(viewport_width, viewport_height).at(viewport_x, viewport_y),
+            ));
+        })
+        .expect("the pass entity exists");
 
     Ok((world, target, renderer))
 }
@@ -326,42 +326,28 @@ pub fn offscreen_world(
     let renderer = world
         .root_scope_mut()
         .spawn(bundle!(Renderer::new(context),));
+    // The frame is one pass, drawing into the offscreen target and clearing
+    // with the defaults; the mesh source hangs under it.
+    let pass = world.root_scope_mut().spawn(bundle!(
+        FramePass::new(FramePassOrder(0)),
+        RenderLoadOps::default()
+    ));
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
-    let source_entity = world.root_scope_mut().spawn(bundle!(Source::new(source),));
-    // The frame's load ops and input are shared by every source, so they live
-    // in the subtree every scope sees.
+    let source_entity = world
+        .scope_mut(pass)
+        .expect("the pass entity is its own scope")
+        .spawn(bundle!(Source::new(source),));
+    // The input is shared by every source, so it lives in the subtree every
+    // scope sees.
     let input = InputWriter::new();
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn(bundle!(RenderLoadOps::default(),));
         shared_view.spawn(bundle!(input.clone(), input.subscribe()));
     }
 
-    let color = create_color_target(&device, COLOR_FORMAT, size.0, size.1);
-    let color_view = {
-        let mut graph = world
-            .root_scope()
-            .query_one::<&mut ResourceGraph>(context.graph)
-            .expect("spawn_context spawned the graph");
-        // The texture is registered in its own right so a screenshot can name
-        // it, and the view depends on it so the graph keeps it alive.
-        let texture = graph.insert(color.clone(), None);
-        let view = graph.insert(
-            TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
-            None,
-        );
-        graph.add_dependency(&view, &texture);
-        view
-    };
-    let attachments = FrameAttachments::new(&world, context, COLOR_FORMAT, size, samples, depth);
-    let _ = world
-        .root_scope()
-        .query_one::<&mut Renderer>(renderer)
-        .map(|mut renderer| {
-            attachments.bind(&world, &mut renderer, color_view);
-        });
+    bind_target(&world, context, pass, &device, size, samples, depth);
     // The camera sits in the source's own subtree, which is what it frames.
     world
         .scope_mut(source_entity)
@@ -496,38 +482,44 @@ fn output_size(config: &Config) -> Result<(u32, u32), Error> {
     Ok(size)
 }
 
-/// Bind an output-sized colour target, and its optional depth and multisample
-/// attachments, to the renderer.
+/// Give `pass` an output-sized colour target, and its optional depth and
+/// multisample attachments, and return the colour texture.
 ///
-/// The attachments live in the frame's resource graph for as long as the
-/// renderer's bound target names their views, so the attachments this builds
-/// can be dropped once they are bound.
+/// The texture is registered in the graph in its own right, so a screenshot can
+/// name it and read it back, and the view depends on it so the graph keeps it
+/// alive.
 fn bind_target(
     world: &World,
-    renderer: &mut Renderer,
+    context: RenderContext,
+    pass: Entity,
     device: &wgpu::Device,
     size: (u32, u32),
     samples: u32,
     with_depth: bool,
 ) -> wgpu::Texture {
     let color = create_color_target(device, COLOR_FORMAT, size.0, size.1);
-    let color_view = world
-        .root_scope()
-        .query_one::<&mut ResourceGraph>(renderer.context().graph)
-        .expect("the context's resource graph exists")
-        .insert(
+    let color_view = {
+        let mut graph = world
+            .root_scope()
+            .query_one::<&mut ResourceGraph>(context.graph)
+            .expect("the context's resource graph exists");
+        let texture = graph.insert(color.clone(), None);
+        let view = graph.insert(
             TextureExt::create_view(&color, &wgpu::TextureViewDescriptor::default()),
             None,
         );
-    let attachments = FrameAttachments::new(
-        world,
-        renderer.context(),
-        COLOR_FORMAT,
-        size,
-        samples,
-        with_depth,
-    );
-    attachments.bind(world, renderer, color_view);
+        graph.add_dependency(&view, &texture);
+        view
+    };
+    let attachments =
+        FrameAttachments::new(world, context, COLOR_FORMAT, size, samples, with_depth);
+    world
+        .root_scope()
+        .query_one::<&mut FramePass>(pass)
+        .map(|mut pass| {
+            pass.set_attachments(&attachments, color_view);
+        })
+        .expect("the pass entity exists");
     color
 }
 

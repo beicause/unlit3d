@@ -140,10 +140,10 @@ cargo xtask run-wasm --app unlit3d
 `--mcp` 会把示例原本要渲染的那个场景经 stdio 服务出去，作为
 [Model Context Protocol](https://modelcontextprotocol.io) 服务器。所选场景会先被构建——
 `--scene` 仍然生效——随后客户端通过各工具读取并驱动它。示例自己的事件循环在持有它的线程上
-服务它，因此窗口照旧绘制，输入也照旧到达场景：场景 world 离屏渲染，第二个 world 把这一帧
-blit 进交换链，画面便随客户端更新。该 blit 不声明深度状态，采样的是离屏帧 resolve 后的
-颜色纹理，因此它的帧既不带深度附件也不带多重采样附件。两个 world 都是同一个宿主 `World`
-的组件，工具会指名它作用于哪一个。
+服务它，因此窗口照旧绘制，输入也照旧到达场景：场景自己的 pass 离屏渲染，同一个
+world 里的第二个 pass 把这一帧拷进交换链，画面便随客户端更新。该拷贝 pass 不声明深度
+状态，采样的是离屏帧 resolve 后的颜色纹理，因此它的帧既不带深度附件也不带多重采样附件。
+该 world 是同一个宿主 `World` 的组件，工具会指名它。
 服务器、各 crate 注册的工具与传输见
 [`unlit_ecs`](../crates/unlit_ecs/README.zh-CN.md)。
 

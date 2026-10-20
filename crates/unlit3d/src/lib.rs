@@ -18,6 +18,8 @@ pub mod input;
 pub mod mcp;
 pub mod mesh;
 pub mod mesh_source;
+mod order;
+pub mod pass;
 pub mod pipeline;
 /// Reflection support for the components that cross a JSON boundary.
 ///
@@ -44,7 +46,7 @@ pub mod prelude {
     };
     pub use crate::{
         attachments::FrameAttachments,
-        blit::{BlitSource, BlitTexture},
+        blit::BlitSource,
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
             Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MeshParts, MorphBinding, MorphWeights,
@@ -61,15 +63,15 @@ pub mod prelude {
         },
         mesh::{JointMatrix, MeshDesc, MorphDeltas, VertexBufferDesc},
         mesh_source::MeshSource,
+        pass::{FramePass, FramePassOrder, PassInfo},
         pipeline::{
             FamilyContext, GlobalResources, InstanceContext, InstanceData, InstanceStreamDesc,
             Rebuild, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
         },
         renderer::Renderer,
         source::{
-            FrameSource, FrameSourceOrder, FrameTarget, FrameViewport, MaintainScope, OpenUrl,
-            OpenUrls, RenderContext, Source, drain_open_urls, frame_target, frame_viewport,
-            set_frame_target, set_frame_viewport, spawn_context,
+            FrameSource, FrameSourceOrder, MaintainScope, OpenUrl, OpenUrls, RenderContext, Source,
+            drain_open_urls, spawn_context,
         },
     };
     pub use unlit_ecs::prelude::*;
