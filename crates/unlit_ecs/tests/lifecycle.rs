@@ -1,4 +1,4 @@
-//! Lifecycle behaviour components: the callbacks a spawn and a despawn run.
+//! Lifecycle behaviour components: the callback a spawn and a despawn run.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -20,23 +20,11 @@ fn a_spawn_callback_runs_once() {
     let sink = Rc::clone(&seen);
     let entity = world.root_scope_mut().spawn((
         Marker(1),
-        OnSpawn::new().with(move |_view, spawned| {
+        OnSpawn::new(move |_view, spawned| {
             sink.borrow_mut().push(format!("spawn {}", spawned.index()));
         }),
     ));
     assert_eq!(*seen.borrow(), [format!("spawn {}", entity.index())]);
-}
-
-#[test]
-fn several_spawn_callbacks_run_in_registration_order() {
-    let seen = log();
-    let mut world = World::new();
-    let a = Rc::clone(&seen);
-    let b = Rc::clone(&seen);
-    world.root_scope_mut().spawn((OnSpawn::new()
-        .with(move |_view, _| a.borrow_mut().push("first".to_owned()))
-        .with(move |_view, _| b.borrow_mut().push("second".to_owned())),));
-    assert_eq!(*seen.borrow(), ["first", "second"]);
 }
 
 #[test]
@@ -46,7 +34,7 @@ fn a_despawn_callback_runs_before_the_row_is_removed() {
     let sink = Rc::clone(&seen);
     let entity = world.root_scope_mut().spawn((
         Marker(7),
-        OnDespawn::new().with(move |scope, doomed| {
+        OnDespawn::new(move |scope, doomed| {
             // The entity still has its components, which is the whole reason
             // a despawn callback cannot be deferred.
             let marker = scope.get::<Marker>(doomed).expect("still alive").0;
@@ -64,12 +52,12 @@ fn a_cascade_runs_children_before_their_parent() {
     let outer = Rc::clone(&seen);
     let scene = world.root_scope_mut().spawn((
         Marker(1),
-        OnDespawn::new().with(move |_view, _| outer.borrow_mut().push("scene".to_owned())),
+        OnDespawn::new(move |_view, _| outer.borrow_mut().push("scene".to_owned())),
     ));
     let inner = Rc::clone(&seen);
     world.scope_mut(scene).unwrap().spawn((
         Marker(2),
-        OnDespawn::new().with(move |_view, _| inner.borrow_mut().push("child".to_owned())),
+        OnDespawn::new(move |_view, _| inner.borrow_mut().push("child".to_owned())),
     ));
     world.root_scope_mut().despawn(scene);
     assert_eq!(*seen.borrow(), ["child", "scene"]);
@@ -82,7 +70,7 @@ fn a_spawn_callback_sees_its_own_components() {
     let sink = Rc::clone(&observed);
     world.root_scope_mut().spawn((
         Marker(42),
-        OnSpawn::new().with(move |scope, spawned| {
+        OnSpawn::new(move |scope, spawned| {
             *sink.borrow_mut() = scope.get::<Marker>(spawned).map(|marker| marker.0);
         }),
     ));
@@ -94,17 +82,15 @@ fn a_callback_can_queue_a_spawn_that_runs_on_apply() {
     let seen = log();
     let mut world = World::new();
     let sink = Rc::clone(&seen);
-    world
-        .root_scope_mut()
-        .spawn((OnSpawn::new().with(move |scope, _| {
-            scope.queue().spawn((
-                Marker(9),
-                OnSpawn::new().with({
-                    let nested = Rc::clone(&sink);
-                    move |_view, _| nested.borrow_mut().push("nested".to_owned())
-                }),
-            ));
-        }),));
+    world.root_scope_mut().spawn((OnSpawn::new(move |scope, _| {
+        scope.queue().spawn((
+            Marker(9),
+            OnSpawn::new({
+                let nested = Rc::clone(&sink);
+                move |_view, _| nested.borrow_mut().push("nested".to_owned())
+            }),
+        ));
+    }),));
     assert!(seen.borrow().is_empty(), "queued, not spawned");
     world.apply();
     assert_eq!(*seen.borrow(), ["nested"]);
@@ -125,7 +111,7 @@ fn link_does_not_trigger_a_lifecycle_callback() {
     let scene = world.root_scope_mut().spawn((Marker(1),));
     let child = world.root_scope_mut().spawn((
         Marker(2),
-        OnSpawn::new().with(move |_view, _| sink.borrow_mut().push("spawn".to_owned())),
+        OnSpawn::new(move |_view, _| sink.borrow_mut().push("spawn".to_owned())),
     ));
     seen.borrow_mut().clear();
     world.scope_mut(scene).unwrap().link(child, scene);
@@ -133,14 +119,14 @@ fn link_does_not_trigger_a_lifecycle_callback() {
 }
 
 #[test]
-fn a_callback_gets_the_view_of_the_entity_s_own_scope() {
+fn a_callback_gets_the_scope_of_the_entity_s_own_scope() {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn((Marker(1),));
     let observed = Rc::new(RefCell::new(None));
     let sink = Rc::clone(&observed);
     world.scope_mut(scene).unwrap().spawn((
         Marker(2),
-        OnSpawn::new().with(move |scope, _| {
+        OnSpawn::new(move |scope, _| {
             *sink.borrow_mut() = Some(scope.entity());
         }),
     ));
@@ -154,7 +140,7 @@ fn a_callback_can_descend_into_the_entity_it_sits_on() {
     let sink = Rc::clone(&observed);
     let _scene = world.root_scope_mut().spawn((
         Marker(1),
-        OnSpawn::new().with(move |scope, spawned| {
+        OnSpawn::new(move |scope, spawned| {
             // The entity's own scope is its parent, so its subtree is one
             // level down.
             *sink.borrow_mut() = scope.scope(spawned).map(|scene| scene.len());
@@ -176,7 +162,7 @@ fn a_queued_despawn_runs_the_callback_on_apply() {
     let sink = Rc::clone(&seen);
     let entity = world.root_scope_mut().spawn((
         Marker(1),
-        OnDespawn::new().with(move |_view, _| sink.borrow_mut().push("gone".to_owned())),
+        OnDespawn::new(move |_view, _| sink.borrow_mut().push("gone".to_owned())),
     ));
     world.root_scope().queue().despawn(entity);
     assert!(seen.borrow().is_empty(), "queued, not despawned");
@@ -192,7 +178,7 @@ fn a_queued_spawn_runs_the_callback_on_apply() {
     let sink = Rc::clone(&seen);
     let queued = world.root_scope().queue().spawn((
         Marker(1),
-        OnSpawn::new().with(move |_view, _| sink.borrow_mut().push("born".to_owned())),
+        OnSpawn::new(move |_view, _| sink.borrow_mut().push("born".to_owned())),
     ));
     assert!(seen.borrow().is_empty());
     world.apply();
@@ -201,66 +187,20 @@ fn a_queued_spawn_runs_the_callback_on_apply() {
 }
 
 #[test]
-fn a_callback_may_touch_its_own_lifecycle_component() {
+#[should_panic(expected = "already borrowed")]
+fn a_callback_cannot_reborrow_its_own_lifecycle_component() {
     let mut world = World::new();
-    let observed = Rc::new(RefCell::new(None));
-    let sink = Rc::clone(&observed);
-    world.root_scope_mut().spawn((
-        Marker(1),
-        OnSpawn::new().with(move |scope, spawned| {
-            // The runner holds no borrow while the callbacks run, so reading
-            // the component the callback sits on is not a conflict.
-            *sink.borrow_mut() = scope.has::<OnSpawn>(spawned).then_some(());
-        }),
-    ));
-    assert_eq!(*observed.borrow(), Some(()));
-}
-
-#[test]
-fn a_callback_may_register_another_callback() {
-    let mut world = World::new();
-    let entity = world
+    world
         .root_scope_mut()
-        .spawn((OnSpawn::new().with(|scope, spawned| {
-            if let Some(mut hooks) = scope.get_mut::<OnSpawn>(spawned) {
-                hooks.push(|_: &unlit_ecs::Scope<'_>, _: unlit_ecs::Entity| {});
-            }
+        .spawn((OnSpawn::new(|scope, spawned| {
+            // The runner holds the component for the whole run, the same way every
+            // other behaviour component is held while it runs.
+            let _ = scope.get_mut::<OnSpawn>(spawned);
         }),));
-    let hooks = world.root_scope().get::<OnSpawn>(entity).unwrap();
-    assert_eq!(hooks.0.len(), 2, "the registered callback was kept");
 }
 
 #[test]
-fn a_callback_registered_during_a_run_goes_last_and_waits_its_turn() {
-    let seen = log();
-    let mut world = World::new();
-    let first = Rc::clone(&seen);
-    let second = Rc::clone(&seen);
-    let late = Rc::clone(&seen);
-    let entity = world.root_scope_mut().spawn((OnSpawn::new()
-        .with(move |scope, spawned| {
-            first.borrow_mut().push("first".to_owned());
-            let late = Rc::clone(&late);
-            if let Some(mut hooks) = scope.get_mut::<OnSpawn>(spawned) {
-                hooks.push(move |_, _| late.borrow_mut().push("late".to_owned()));
-            }
-        })
-        .with(move |_, _| second.borrow_mut().push("second".to_owned())),));
-    assert_eq!(
-        *seen.borrow(),
-        ["first", "second"],
-        "the run stays as long as it was when it started"
-    );
-    let hooks = world.root_scope().get::<OnSpawn>(entity).unwrap();
-    assert_eq!(
-        hooks.0.len(),
-        3,
-        "the new callback is kept for the next run"
-    );
-}
-
-#[test]
-fn a_panicking_callback_leaves_the_ones_behind_it_registered() {
+fn a_panicking_callback_leaves_the_component_registered() {
     let mut world = World::new();
     let entity = world.reserve_entity();
     let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -268,20 +208,13 @@ fn a_panicking_callback_leaves_the_ones_behind_it_registered() {
             entity,
             (
                 Marker(1),
-                OnSpawn::new()
-                    .with(|_, _| panic!("this callback fails"))
-                    .with(|_, _| {}),
+                OnSpawn::new(|_, _| panic!("this callback fails")),
             ),
         );
     }));
     assert!(spawned.is_err(), "the panic reaches the caller");
-    let hooks = world
-        .root_scope()
-        .get::<OnSpawn>(entity)
-        .expect("the row is in place");
-    assert_eq!(
-        hooks.0.len(),
-        1,
-        "the callback behind the one that panicked is still registered"
+    assert!(
+        world.root_scope().get::<OnSpawn>(entity).is_some(),
+        "the callback is still on the row it was spawned with"
     );
 }

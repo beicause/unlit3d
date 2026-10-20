@@ -415,46 +415,24 @@ impl World {
         self.run_lifecycle::<crate::OnSpawn>(entity);
     }
 
-    /// Run every callback of the lifecycle component `C` the entity carries.
+    /// Run the callback of the lifecycle component `C` the entity carries.
     ///
-    /// The callbacks run in the order they were registered. The scope handed to
-    /// them is the one the entity lives in, that of its parent: a callback that
-    /// wants the entity's own subtree descends into the entity itself.
+    /// The scope handed to it is the one the entity lives in, that of its
+    /// parent: a callback that wants the entity's own subtree descends into the
+    /// entity itself.
     fn run_lifecycle<C: 'static + Lifecycle>(&mut self, entity: Entity) {
         let Some(scope) = self.parent_scope(entity) else {
             return;
         };
-        if self.location(entity).is_none() {
-            return;
-        }
-        let scope = Scope::new(self, scope);
-        let Some(total) = self
-            .get_mut::<C>(entity)
-            .map(|mut hooks| hooks.callbacks().len())
-        else {
+        // Borrowed for the whole run, like every other behaviour component: a
+        // callback that reaches for its own lifecycle component panics on the
+        // borrow rather than silently missing its own registration.
+        let Some(mut hooks) = self.get_mut::<C>(entity) else {
             return;
         };
-        for index in 0..total {
-            // One callback at a time is off the component while it runs, so a
-            // callback that touches its own lifecycle component does not hit a
-            // borrow the run would otherwise hold. A callback that panics then
-            // takes only itself down: the ones behind it are still on the
-            // component rather than in a dropped list.
-            let Some(mut callback) = self.get_mut::<C>(entity).and_then(|mut hooks| {
-                let callbacks = hooks.callbacks();
-                (index < callbacks.len()).then(|| callbacks.remove(index))
-            }) else {
-                break;
-            };
-            callback(&scope, entity);
-            // Back where it was, so the next callback is the one that followed
-            // it and anything registered during the run stays behind everything
-            // that has already run.
-            if let Some(mut hooks) = self.get_mut::<C>(entity) {
-                let callbacks = hooks.callbacks();
-                callbacks.insert(index.min(callbacks.len()), callback);
-            }
-        }
+        let scope = Scope::new(self, scope);
+        let callback = hooks.callback();
+        callback(&scope, entity);
     }
 
     // -- queries and diagnostics -------------------------------------------

@@ -149,9 +149,9 @@ driver applies them with [`World::apply`].
 **Where callbacks land.** A lifecycle callback receives the scope of the
 entity's parent, so an `OnSpawn` on a scene's child sees the scene. It cannot
 change the tree either — it queues that, the same way a read-only scope does.
-A callback registered during a run runs in a later one, behind the callbacks
-that were already there, and a callback that panics leaves the ones behind it
-registered.
+The component is borrowed while its callback runs, so a callback that reaches
+for its own lifecycle component panics on the borrow; a callback that panics
+stays on the row it was spawned with.
 
 **Cost.** Visibility is decided on every access by walking the parent chain, and
 the walk is bounded by the number of nodes, so a malformed tree cannot hang it.
@@ -170,7 +170,7 @@ visible length of each.
 [`World`], [`Entity`], [`Location`], [`Bundle`] / [`ArchetypeBuilder`] (and the
 [`bundle!`] macro for flattening nested tuples), [`ScopeOf`] and the
 [`Scope`] / [`ScopeMut`] that narrow the world to one scope,
-[`OnSpawn`] / [`OnDespawn`] for the callbacks a spawn and a despawn run,
+[`OnSpawn`] / [`OnDespawn`] for the callback a spawn and a despawn run,
 [`Query`] and [`QueryFilter`] ([`With`], [`Without`], [`Or`], tuples),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
 [`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
@@ -354,7 +354,7 @@ answers `list_worlds` itself, because only it knows which entities carry one.
   because visibility is decided on every access. Anything else stays a plain
   entity in a component.
 - **Lifecycle callbacks run on the entity, not on the world.** `OnSpawn` and
-  `OnDespawn` are ordinary components holding callbacks, so a world with no
+  `OnDespawn` are ordinary components holding a callback, so a world with no
   lifecycle components pays nothing for the feature and a caller can write its own
   runner instead.
 - **No events or observers.** As a substitute, call a component's method
