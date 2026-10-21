@@ -419,11 +419,7 @@ impl World {
                 .or_insert(component.name);
         }
 
-        let types: Box<[TypeId]> = components
-            .iter()
-            .map(|component| component.type_id)
-            .collect();
-        let archetype = self.archetype_for_types(types);
+        let archetype = self.archetype_for_components(&components);
         let target = self.archetypes.get_mut(archetype);
         for component in components {
             target.push_erased(component.type_id, component.value);
@@ -540,12 +536,30 @@ impl World {
         self.commands_write().push_back(command);
     }
 
-    /// The archetype with exactly `types` (sorted), creating it when it is
-    /// new. Every type must have a registered column constructor.
-    fn archetype_for_types(&mut self, types: Box<[TypeId]>) -> u32 {
-        if let Some(id) = self.archetypes.find(&types) {
+    /// The archetype with exactly the types of `components`, creating it when
+    /// it is new. Every type must have a registered column constructor.
+    ///
+    /// A hit allocates nothing: the types are hashed as the components are
+    /// walked and compared in place, so the type sequence is only materialised
+    /// when a new archetype has to be registered.
+    fn archetype_for_components(&mut self, components: &[BundleComponent]) -> u32 {
+        let found = self.archetypes.find_with(
+            components.iter().map(|component| component.type_id),
+            |stored| {
+                stored.len() == components.len()
+                    && stored
+                        .iter()
+                        .zip(components)
+                        .all(|(type_id, component)| *type_id == component.type_id)
+            },
+        );
+        if let Some(id) = found {
             return id;
         }
+        let types: Box<[TypeId]> = components
+            .iter()
+            .map(|component| component.type_id)
+            .collect();
         let columns: Box<[Box<dyn AnyColumn>]> = types
             .iter()
             .map(|type_id| {

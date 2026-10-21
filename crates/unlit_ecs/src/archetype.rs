@@ -296,9 +296,36 @@ impl Archetypes {
         pool
     }
 
-    /// The id of the archetype with exactly `types` (which must be sorted).
-    pub(crate) fn find(&self, types: &[TypeId]) -> Option<u32> {
-        self.by_types.get(types).copied()
+    /// The id of the archetype whose types are `types` as `is_match` reads
+    /// them, or `None` when no such archetype is registered.
+    ///
+    /// This is the allocation-free lookup: the type sequence is hashed as it is
+    /// iterated and compared in place, so a caller that holds the types apart
+    /// rather than in one slice builds no key for a hit. The hash comes from
+    /// the map's own hasher, so it always agrees with how the stored keys were
+    /// hashed.
+    ///
+    /// Relies on hashbrown's `raw-entry` feature: without it this does not
+    /// compile rather than silently missing every lookup.
+    pub(crate) fn find_with<T>(
+        &self,
+        types: T,
+        mut is_match: impl FnMut(&[TypeId]) -> bool,
+    ) -> Option<u32>
+    where
+        T: ExactSizeIterator<Item = TypeId>,
+    {
+        use core::hash::{BuildHasher, Hash, Hasher};
+        let mut hasher = self.by_types.hasher().build_hasher();
+        types.len().hash(&mut hasher);
+        for type_id in types {
+            type_id.hash(&mut hasher);
+        }
+        let hash = hasher.finish();
+        self.by_types
+            .raw_entry()
+            .from_hash(hash, |stored| is_match(stored))
+            .map(|(_, &id)| id)
     }
 
     /// Register a freshly built archetype and return its id.
@@ -359,7 +386,14 @@ mod tests {
             .collect();
         let mut archetypes: Archetypes = Archetypes::new();
         let id = archetypes.register(Archetype::new(types.into(), columns.into_boxed_slice()));
-        assert_eq!(archetypes.find(&types), Some(id));
+        let found = archetypes.find_with(types.iter().copied(), |stored| stored == types);
+        assert_eq!(found, Some(id));
+        let other = [TypeId::of::<u32>()];
+        assert_eq!(
+            archetypes.find_with(other.iter().copied(), |stored| stored == other),
+            None,
+            "a shorter type sequence is another archetype",
+        );
         assert_eq!(archetypes.len(), 2);
         assert_eq!(archetypes.get(id).types(), types);
     }
