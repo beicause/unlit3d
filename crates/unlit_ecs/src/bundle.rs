@@ -3,7 +3,7 @@
 //! A bundle is built by the [`crate::bundle!`] macro or by an [`ArchetypeBuilder`]. It is
 //! not a tuple: every `'static` type is a component, tuples included, so a bare
 //! `(a, b)` handed to `spawn` names one component rather than two. Writing
-//! `bundle!(a, b)` is what names two.
+//! `bundle![a, b]` is what names two.
 //!
 //! The macro takes its items one at a time and each item is one component, so a
 //! parenthesised item is a tuple component rather than a list to unpack: a
@@ -109,7 +109,7 @@ impl ArchetypeBuilder {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a bundle",
     label = "build it with `bundle!` or an `ArchetypeBuilder`",
-    note = "`(a, b)` is a single component here: every `'static` type is one, tuples included. Write `bundle!(a, b)` for two components."
+    note = "`(a, b)` is a single component here: every `'static` type is one, tuples included. Write `bundle![a, b]` for two components."
 )]
 pub trait Bundle {
     /// The builder holding exactly this bundle's components.
@@ -127,23 +127,29 @@ impl Bundle for ArchetypeBuilder {
     }
 }
 
-/// Builds a bundle from the components written between the parentheses.
+/// Builds a bundle from the components written between the brackets.
 ///
-/// The items are components, separated by commas: `bundle!(a, b)` is two
-/// components. An item is one component however it is written, because every
-/// `'static` type is one: `bundle!((a, b))` names a single tuple component, and
-/// `bundle!(())` a single empty-tuple one.
+/// The items are components, separated by commas: `bundle![a, b]` is two
+/// components. A list of one needs no comma, so `bundle![a]` is the single
+/// component `a`. An item is one component however it is written, because every
+/// `'static` type is one: `bundle![(a, b)]` names a single tuple component, and
+/// `bundle![()]` a single empty-tuple one.
+///
+/// The macro is written with brackets, `bundle![a, b]`, throughout this crate
+/// and its dependents. Rust accepts any of the three delimiters after the `!`,
+/// so the brackets are a convention that keeps a bundle's items, which are not
+/// call arguments, visibly distinct.
 ///
 /// ````rust
 /// # use unlit_ecs::{Has, World, bundle};
 /// let mut world = World::new();
-/// let entity = world.root_scope_mut().spawn(bundle!(1u32, 2.0f32, true));
+/// let entity = world.root_scope_mut().spawn(bundle![1u32, 2.0f32, true]);
 /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap_or(false));
 /// assert!(world.root_scope().query_one::<Has<f32>>(entity).unwrap_or(false));
 /// assert!(world.root_scope().query_one::<Has<bool>>(entity).unwrap_or(false));
 ///
 /// // A tuple is one component.
-/// let entity = world.root_scope_mut().spawn(bundle!((1u8, 2u8)));
+/// let entity = world.root_scope_mut().spawn(bundle![(1u8, 2u8)]);
 /// assert!(world.root_scope().query_one::<Has<(u8, u8)>>(entity).unwrap_or(false));
 /// assert!(!world.root_scope().query_one::<Has<u8>>(entity).unwrap_or(false));
 /// ````
@@ -158,7 +164,7 @@ impl Bundle for ArchetypeBuilder {
 /// let mut gathered = ArchetypeBuilder::new();
 /// gathered.push_component(1u32);
 /// let mut world = World::new();
-/// let entity = world.root_scope_mut().spawn(bundle!(..gathered, true));
+/// let entity = world.root_scope_mut().spawn(bundle![..gathered, true]);
 /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap_or(false));
 /// assert!(world.root_scope().query_one::<Has<bool>>(entity).unwrap_or(false));
 /// ````
@@ -172,26 +178,26 @@ impl Bundle for ArchetypeBuilder {
 /// A type that appears twice panics when the bundle is spawned.
 #[macro_export]
 macro_rules! bundle {
-    () => { $crate::ArchetypeBuilder::new() };
+    [] => { $crate::ArchetypeBuilder::new() };
     // A bundle written as `..value`, unwrapped into its own components. It is
     // matched before the `$leaf:expr` arms because `..value` is not an
     // expression.
-    (@list $builder:ident, ..$bundle:expr, $($rest:tt)*) => {
+    [@list $builder:ident, ..$bundle:expr, $($rest:tt)*] => {
         $builder.push_bundle($bundle);
-        $crate::bundle!(@list $builder, $($rest)*);
+        $crate::bundle![@list $builder, $($rest)*];
     };
-    (@list $builder:ident, ..$bundle:expr) => { $builder.push_bundle($bundle) };
+    [@list $builder:ident, ..$bundle:expr] => { $builder.push_bundle($bundle) };
     // One component. It is matched opaquely, so a tuple is one component and a
     // group is never taken apart.
-    (@list $builder:ident, $leaf:expr, $($rest:tt)*) => {
+    [@list $builder:ident, $leaf:expr, $($rest:tt)*] => {
         $builder.push_component($leaf);
-        $crate::bundle!(@list $builder, $($rest)*);
+        $crate::bundle![@list $builder, $($rest)*];
     };
-    (@list $builder:ident,) => {};
-    (@list $builder:ident, $leaf:expr) => { $builder.push_component($leaf) };
-    ($($item:tt)+) => {{
+    [@list $builder:ident,] => {};
+    [@list $builder:ident, $leaf:expr] => { $builder.push_component($leaf) };
+    [$($item:tt)+] => {{
         let mut builder = $crate::ArchetypeBuilder::new();
-        $crate::bundle!(@list builder, $($item)+);
+        $crate::bundle![@list builder, $($item)+];
         builder
     }};
 }
@@ -209,7 +215,7 @@ mod tests {
         let mut world = World::new();
         let mut builder = ArchetypeBuilder::new();
         builder.push_component(1u32);
-        builder.push_bundle(crate::bundle!(2.0f32, true));
+        builder.push_bundle(crate::bundle![2.0f32, true]);
         builder.push_component((7u8, 8u8));
         let entity = world.root_scope_mut().spawn(builder);
         assert_eq!(
@@ -251,7 +257,7 @@ mod tests {
     fn a_duplicate_panics_when_the_bundle_is_finished() {
         let mut builder = ArchetypeBuilder::new();
         builder.push_component(1u32);
-        builder.push_bundle(crate::bundle!(2u32));
+        builder.push_bundle(crate::bundle![2u32]);
         builder.finish();
     }
 }

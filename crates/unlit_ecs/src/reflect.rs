@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn a_reflected_component_round_trips_through_its_own_fields() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn(bundle!(Position::default(),));
+        let entity = world.root_scope_mut().spawn(bundle![Position::default()]);
 
         set(&world.root_scope(), entity, "Position", r#"{"x":1.0}"#)
             .expect("a partial value is accepted");

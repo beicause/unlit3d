@@ -105,7 +105,7 @@ impl Frame {
             let y = (index / side) % side;
             let z = index / (side * side);
             let cell = Vec3::new(x as f32, y as f32, z as f32) - Vec3::splat(side as f32 * 0.5);
-            world.root_scope_mut().spawn(bundle!(
+            world.root_scope_mut().spawn(bundle![
                 Transform {
                     translation: cell * spread,
                     rotation: Quat::IDENTITY,
@@ -113,18 +113,18 @@ impl Frame {
                 },
                 mesh.clone(),
                 UnlitPipeline::new(key.clone()),
-            ));
+            ]);
         }
 
         // A camera that sees the whole grid, with a far plane past any spread
         // the benchmarks use.
         let eye = Vec3::new(0.0, 0.0, side as f32 * 1.5 + 20.0);
         let view = glam::camera::rh::view::look_at_mat4(eye, Vec3::ZERO, Vec3::Y);
-        world.root_scope_mut().spawn(bundle!(Camera {
+        world.root_scope_mut().spawn(bundle![Camera {
             view_from_world: view,
             clip_from_view: glam::camera::rh::proj::opengl::perspective(1.0, 1.0, 0.1, 100_000.0),
             active: true,
-        },));
+        },]);
 
         // What a pass tells its sources: the target it draws into. The
         // benchmark drives the source directly, so it states this itself

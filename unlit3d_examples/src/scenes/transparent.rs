@@ -123,7 +123,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
 
@@ -162,13 +162,13 @@ fn build(
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        bundle!(camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
+        bundle![camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)],
     );
 
     super::spawn_in(
         world,
         source_entity,
-        bundle!(
+        bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, -1.6),
                 scale: glam::Vec3::splat(1.1),
@@ -177,7 +177,7 @@ fn build(
             InstanceColor::new(BACKDROP_TINT),
             backdrop,
             UnlitPipeline::new(opaque_key),
-        ),
+        ],
     );
 
     // Spawned nearest-first on purpose: registration order is not draw order
@@ -187,7 +187,7 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            bundle!(
+            bundle![
                 Transform {
                     translation: glam::Vec3::new(*x, 0.0, *z),
                     rotation: glam::Quat::from_rotation_y(0.35),
@@ -197,7 +197,7 @@ fn build(
                 pane_mesh.clone(),
                 UnlitPipeline::new(translucent_key.clone()),
                 ZSortedDrawing,
-            ),
+            ],
         );
     }
 

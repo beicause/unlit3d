@@ -57,16 +57,16 @@ async fn mismatched_morph_weight_count_panics() {
     let deltas = morph_deltas(&positions);
     // Two targets, one weight: the shader would loop past the end of the pose.
     let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
-    let weights_entity = gpu.spawn(&mut world, bundle!(MorphWeights::new(vec![0.5]),));
+    let weights_entity = gpu.spawn(&mut world, bundle![MorphWeights::new(vec![0.5])]);
 
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
     gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             mesh,
             UnlitPipeline::new(key),
             MorphBinding::new(weights_entity),
-        ),
+        ],
     );
     gpu.bind_offscreen_target(&world, "test::ecs_morphed_mismatch");
     gpu.render(&world);
@@ -83,8 +83,8 @@ async fn morphing_without_a_weight_binding_panics() {
     let deltas = morph_deltas(&positions);
     let mesh = gpu.allocate_deformed_cube_mesh(&world, &key, None, None, Some(deltas));
 
-    gpu.spawn(&mut world, bundle!(camera(),));
-    gpu.spawn(&mut world, bundle!(mesh, UnlitPipeline::new(key)));
+    gpu.spawn(&mut world, bundle![camera()]);
+    gpu.spawn(&mut world, bundle![mesh, UnlitPipeline::new(key)]);
     gpu.bind_offscreen_target(&world, "test::ecs_morphed_unbound");
     gpu.render(&world);
 }
@@ -102,12 +102,12 @@ async fn meshes_can_share_one_morph_weights() {
 
     // One weight entity, named by both meshes: a crowd of copies of one mesh
     // shares one blended pose instead of holding a copy each.
-    let weights_entity = gpu.spawn(&mut world, bundle!(MorphWeights::new(vec![0.0, 0.0]),));
-    gpu.spawn(&mut world, bundle!(camera(),));
+    let weights_entity = gpu.spawn(&mut world, bundle![MorphWeights::new(vec![0.0, 0.0])]);
+    gpu.spawn(&mut world, bundle![camera()]);
     for (mesh, x) in [(first, -0.7), (second, 0.7)] {
         gpu.spawn(
             &mut world,
-            bundle!(
+            bundle![
                 Transform {
                     translation: glam::Vec3::new(x, 0.0, 0.0),
                     ..Default::default()
@@ -115,7 +115,7 @@ async fn meshes_can_share_one_morph_weights() {
                 mesh,
                 UnlitPipeline::new(key.clone()),
                 MorphBinding::new(weights_entity),
-            ),
+            ],
         );
     }
     let target = gpu.bind_offscreen_target(&world, "test::ecs_morphed_shared");

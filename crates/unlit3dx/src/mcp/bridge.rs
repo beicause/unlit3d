@@ -37,12 +37,12 @@ pub fn serve_mcp(world: &mut World) {
         });
     match started {
         Ok(_) => {
-            world.root_scope_mut().spawn(bundle!(
+            world.root_scope_mut().spawn(bundle![
                 McpInbox {
                     receiver: Arc::new(receiver),
                 },
                 drain_mcp(),
-            ));
+            ]);
         }
         Err(error) => log::error!("the MCP transport thread failed to start: {error}"),
     }
@@ -202,12 +202,12 @@ mod tests {
     fn host_with_inbox() -> (World, async_channel::Sender<McpCommand>) {
         let mut host = World::new();
         let (sender, receiver) = unbounded::<McpCommand>();
-        host.root_scope_mut().spawn(bundle!(
+        host.root_scope_mut().spawn(bundle![
             McpInbox {
                 receiver: Arc::new(receiver),
             },
             drain_mcp(),
-        ));
+        ]);
         (host, sender)
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let (mut host, transport) = host_with_inbox();
         let nested = host
             .root_scope_mut()
-            .spawn(bundle!(World::new(), WorldName("nested")));
+            .spawn(bundle![World::new(), WorldName("nested")]);
 
         let (command, reply) = McpCommand::list_worlds();
         transport.try_send(command).expect("the inbox takes it");
@@ -252,7 +252,7 @@ mod tests {
     #[test]
     fn list_worlds_leaves_out_a_world_it_cannot_name() {
         let (mut host, transport) = host_with_inbox();
-        let unnamed = host.root_scope_mut().spawn(bundle!(World::new(),));
+        let unnamed = host.root_scope_mut().spawn(bundle![World::new()]);
 
         let (command, reply) = McpCommand::list_worlds();
         transport.try_send(command).expect("the inbox takes it");
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn a_command_for_a_worldless_entity_fails_readably() {
         let (mut host, transport) = host_with_inbox();
-        let bare = host.root_scope_mut().spawn(bundle!(Marker,));
+        let bare = host.root_scope_mut().spawn(bundle![Marker]);
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
         let command = command.with_world(WorldId::handle(bare));
@@ -297,8 +297,8 @@ mod tests {
     fn a_command_runs_against_the_nested_world_it_names() {
         let (mut host, transport) = host_with_inbox();
         let mut nested = World::new();
-        nested.root_scope_mut().spawn(bundle!(Marker,));
-        let nested_world = host.root_scope_mut().spawn(bundle!(nested,));
+        nested.root_scope_mut().spawn(bundle![Marker]);
+        let nested_world = host.root_scope_mut().spawn(bundle![nested]);
 
         let (command, reply) = McpCommand::new(|world| {
             let count = world.root_scope().query::<&Marker>().count();
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn a_host_command_runs_against_the_host_world() {
         let (mut host, transport) = host_with_inbox();
-        host.root_scope_mut().spawn(bundle!(Marker,));
+        host.root_scope_mut().spawn(bundle![Marker]);
 
         let (command, reply) = McpCommand::new(|world| {
             let count = world.root_scope().query::<&Marker>().count();
@@ -369,7 +369,7 @@ mod tests {
             true
         });
         let seeded = threaded.request(Box::new(|world: &mut World| {
-            world.root_scope_mut().spawn(bundle!(Marker,));
+            world.root_scope_mut().spawn(bundle![Marker]);
         }));
         let deadline = Instant::now() + Duration::from_secs(2);
         while !seeded.answered() && !seeded.dropped() && Instant::now() < deadline {
@@ -402,7 +402,7 @@ mod tests {
             "stepped",
             8,
             |world: &mut World| {
-                world.root_scope_mut().spawn(bundle!(Marker,));
+                world.root_scope_mut().spawn(bundle![Marker]);
             },
             |_, _: &ThreadControl, ()| true,
         );

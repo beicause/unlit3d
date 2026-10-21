@@ -114,10 +114,10 @@ fn spawn_pass(world: &mut World, parent: Entity, order: i32) -> Entity {
     world
         .scope_mut(parent)
         .expect("the parent entity is its own scope")
-        .spawn(bundle!(
+        .spawn(bundle![
             FramePass::new(FramePassOrder(order)),
-            RenderLoadOps::default()
-        ))
+            RenderLoadOps::default(),
+        ])
 }
 
 /// A source that draws nothing and counts how many times it was built.
@@ -170,7 +170,7 @@ async fn two_passes_draw_their_own_sources() {
     world
         .scope_mut(second_pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle!(Source::new(BlitSource::new(view)),));
+        .spawn(bundle![Source::new(BlitSource::new(view))]);
 
     gpu.render(&world);
 
@@ -201,17 +201,17 @@ async fn a_nested_source_is_built_by_every_pass_above_it() {
     world
         .scope_mut(nested_pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle!(Source::new(CountingSource {
+        .spawn(bundle![Source::new(CountingSource {
             builds: nested_builds.clone(),
-        }),));
+        }),]);
 
     let sibling_builds = Rc::new(Cell::new(0));
     world
         .scope_mut(outer_pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle!(Source::new(CountingSource {
+        .spawn(bundle![Source::new(CountingSource {
             builds: sibling_builds.clone(),
-        }),));
+        }),]);
 
     gpu.render(&world);
 
@@ -237,9 +237,9 @@ async fn a_source_no_pass_reaches_draws_nowhere() {
     let builds = Rc::new(Cell::new(0));
     world
         .root_scope_mut()
-        .spawn(bundle!(Source::new(CountingSource {
+        .spawn(bundle![Source::new(CountingSource {
             builds: builds.clone(),
-        }),));
+        }),]);
 
     gpu.render(&world);
 
@@ -292,7 +292,7 @@ async fn a_parked_pass_draws_nothing() {
     world
         .scope_mut(pass_b)
         .expect("the pass entity is its own scope")
-        .spawn(bundle!(Source::new(BlitSource::new(view)),));
+        .spawn(bundle![Source::new(BlitSource::new(view))]);
 
     world
         .root_scope()
@@ -330,7 +330,7 @@ async fn a_shared_source_draws_into_every_pass() {
     world
         .scope_mut(shared)
         .expect("the shared subtree is its own scope")
-        .spawn(bundle!(Source::new(BlitSource::new(view)),));
+        .spawn(bundle![Source::new(BlitSource::new(view))]);
 
     gpu.render(&world);
 

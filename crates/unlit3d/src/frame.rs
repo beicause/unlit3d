@@ -301,8 +301,8 @@ mod tests {
                 log.borrow_mut().push(1)
             })
         };
-        world.root_scope_mut().spawn(bundle!(later,));
-        world.root_scope_mut().spawn(bundle!(earlier,));
+        world.root_scope_mut().spawn(bundle![later]);
+        world.root_scope_mut().spawn(bundle![earlier]);
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec![1, 2]);
     }
@@ -313,12 +313,12 @@ mod tests {
         let log: Rc<RefCell<Vec<i32>>> = Rc::new(RefCell::new(Vec::new()));
         for value in [1, 2, 3] {
             let log = log.clone();
-            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
                 UPDATE,
                 move |_world, _entity, _frame| {
                     log.borrow_mut().push(value);
                 }
-            ),));
+            ),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec![1, 2, 3]);
@@ -330,12 +330,12 @@ mod tests {
         let seen: Rc<RefCell<Option<Frame>>> = Rc::new(RefCell::new(None));
         {
             let seen = seen.clone();
-            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
                 UPDATE,
                 move |_world, _entity, frame| {
                     *seen.borrow_mut() = Some(*frame);
                 }
-            ),));
+            ),]);
         }
         let mut frame = Frame {
             delta_time: 0.5,
@@ -358,9 +358,9 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn(bundle!(OnFrame::new(UPDATE, |_world, _entity, frame| {
+            .spawn(bundle![OnFrame::new(UPDATE, |_world, _entity, frame| {
                 frame.index += 1;
-            }),));
+            }),]);
         let mut frame = frame();
         dispatch_frame(&mut world, &mut frame);
         assert_eq!(frame.index, 1);
@@ -372,9 +372,9 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn(bundle!(OnFrame::new(UPDATE, |world, _entity, _frame| {
-                let _ = world.root_scope().queue().spawn(bundle!(Marker,));
-            }),));
+            .spawn(bundle![OnFrame::new(UPDATE, |world, _entity, _frame| {
+                let _ = world.root_scope().queue().spawn(bundle![Marker]);
+            }),]);
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(world.root_scope().query::<&Marker>().count(), 1);
     }
@@ -386,21 +386,21 @@ mod tests {
         let log: Rc<RefCell<Vec<&'static str>>> = Rc::new(RefCell::new(Vec::new()));
         {
             let log = log.clone();
-            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
                 END,
                 move |_world, _entity, _frame| {
                     log.borrow_mut().push("end");
                 }
-            ),));
+            ),]);
         }
         {
             let log = log.clone();
-            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
                 UPDATE,
                 move |_world, _entity, _frame| {
                     log.borrow_mut().push("update");
                 }
-            ),));
+            ),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(*log.borrow(), vec!["update", "end"]);
@@ -409,7 +409,7 @@ mod tests {
     #[test]
     fn skip_marks_the_frame_and_is_skipped_reads_it() {
         let mut world = World::new();
-        world.root_scope_mut().spawn(bundle!(FrameSkip::default(),));
+        world.root_scope_mut().spawn(bundle![FrameSkip::default()]);
         assert!(!FrameSkip::is_skipped(&world));
         FrameSkip::skip(&world);
         assert!(FrameSkip::is_skipped(&world));
@@ -428,10 +428,10 @@ mod tests {
     fn dispatch_clears_a_skip_left_by_the_previous_frame() {
         let mut world = World::new();
         let first = Rc::new(Cell::new(true));
-        world.root_scope_mut().spawn(bundle!(FrameSkip::default(),));
+        world.root_scope_mut().spawn(bundle![FrameSkip::default()]);
         {
             let first = first.clone();
-            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
                 UPDATE,
                 move |world, _entity, _frame| {
                     assert!(!FrameSkip::is_skipped(world), "the flag starts whole");
@@ -439,7 +439,7 @@ mod tests {
                         FrameSkip::skip(world);
                     }
                 }
-            ),));
+            ),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert!(FrameSkip::is_skipped(&world));
@@ -453,13 +453,11 @@ mod tests {
     #[test]
     fn the_clock_follows_the_frame_it_is_dispatched_with() {
         let mut world = World::new();
-        let clock = world
-            .root_scope_mut()
-            .spawn(bundle!(FrameClock::default(),));
+        let clock = world.root_scope_mut().spawn(bundle![FrameClock::default()]);
         let seen: Rc<RefCell<Vec<FrameClock>>> = Rc::new(RefCell::new(Vec::new()));
         {
             let seen = seen.clone();
-            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
                 UPDATE,
                 move |world, _entity, _frame| {
                     let clock = *world
@@ -468,7 +466,7 @@ mod tests {
                         .expect("the clock is spawned");
                     seen.borrow_mut().push(clock);
                 }
-            ),));
+            ),]);
         }
 
         let mut frame = Frame {
@@ -510,12 +508,12 @@ mod tests {
         let ran = Rc::new(Cell::new(0));
         {
             let ran = ran.clone();
-            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            world.root_scope_mut().spawn(bundle![OnFrame::new(
                 UPDATE,
                 move |_world, _entity, _frame| {
                     ran.set(ran.get() + 1);
                 }
-            ),));
+            ),]);
         }
         dispatch_frame(&mut world, &mut frame());
         assert_eq!(ran.get(), 1);

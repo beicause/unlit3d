@@ -1675,21 +1675,21 @@ mod tests {
         let mut world = World::new();
         // Spawned first, so a selection that ignored `active` would pick this
         // one instead of the active camera below.
-        let inactive = world.root_scope_mut().spawn(bundle!(Camera {
+        let inactive = world.root_scope_mut().spawn(bundle![Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-1.0, 0.0, 0.0)),
             clip_from_view: glam::Mat4::IDENTITY,
             active: true,
-        },));
+        },]);
         world
             .root_scope()
             .query_one::<&mut Camera>(inactive)
             .map(|mut camera| camera.active = false)
             .expect("the entity carries a camera");
-        let active = world.root_scope_mut().spawn(bundle!(Camera {
+        let active = world.root_scope_mut().spawn(bundle![Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
             clip_from_view: glam::Mat4::IDENTITY,
             active: true,
-        },));
+        },]);
 
         let camera = frame_camera(&world.root_scope()).expect("a camera is active");
         assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
@@ -1707,14 +1707,14 @@ mod tests {
     #[test]
     fn each_scope_frames_through_its_own_camera() {
         let mut world = World::new();
-        let scene = world.root_scope_mut().spawn(bundle!(Transform::default(),));
-        world.scope_mut(scene).unwrap().spawn(bundle!(Camera {
+        let scene = world.root_scope_mut().spawn(bundle![Transform::default()]);
+        world.scope_mut(scene).unwrap().spawn(bundle![Camera {
             view_from_world: glam::Mat4::from_translation(glam::Vec3::new(-2.0, 0.0, 0.0)),
             clip_from_view: glam::Mat4::IDENTITY,
             active: true,
-        },));
+        },]);
         // A second scene, with no camera of its own.
-        let sibling = world.root_scope_mut().spawn(bundle!(Transform::default(),));
+        let sibling = world.root_scope_mut().spawn(bundle![Transform::default()]);
 
         let camera = frame_camera(&world.scope(scene).unwrap()).expect("the scene has a camera");
         assert_eq!(camera.position(), glam::Vec3::new(2.0, 0.0, 0.0));
@@ -1844,11 +1844,11 @@ mod tests {
             color_format: wgpu::TextureFormat::Bgra8Unorm,
             ..a
         };
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         resolve_draw(&mut h.source, &h.world.root_scope(), a);
         resolve_draw(&mut h.source, &h.world.root_scope(), b);
         assert_eq!(h.source.pipelines.len(), 2);
@@ -1886,11 +1886,11 @@ mod tests {
         // A family has no concrete pipeline until a draw asks for a variant.
         let mesh = h.tri_mesh();
         let surface = h.target.surface;
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         assert_eq!(h.source.pipelines.len(), 1);
@@ -2269,7 +2269,7 @@ mod tests {
 
         // The z-sorted entity is the nearer of the two, so depth alone would
         // put it first: it is drawn second because it carries the marker.
-        let z_sorted = h.world.root_scope_mut().spawn(bundle!(
+        let z_sorted = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 4.0),
                 ..Default::default()
@@ -2277,12 +2277,12 @@ mod tests {
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
-        let opaque = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let opaque = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
@@ -2297,7 +2297,7 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
 
-        let near = h.world.root_scope_mut().spawn(bundle!(
+        let near = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 4.0),
                 ..Default::default()
@@ -2305,14 +2305,14 @@ mod tests {
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
-        let middle = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let middle = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
-        let far = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let far = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, -4.0),
                 ..Default::default()
@@ -2320,7 +2320,7 @@ mod tests {
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
+        ]);
         // Spawned out of order on purpose: registration order is not draw
         // order for z-sorted entities.
         assert_ne!(drawn(&h.source), vec![far, middle, near]);
@@ -2344,7 +2344,7 @@ mod tests {
 
         // Both entity origins are at the same depth; only the geometry differs.
         let translation = glam::Vec3::new(0.0, 0.0, 2.0);
-        let near_entity = h.world.root_scope_mut().spawn(bundle!(
+        let near_entity = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation,
                 ..Default::default()
@@ -2352,8 +2352,8 @@ mod tests {
             near,
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
-        let far_entity = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let far_entity = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation,
                 ..Default::default()
@@ -2361,7 +2361,7 @@ mod tests {
             far,
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
+        ]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
@@ -2382,7 +2382,7 @@ mod tests {
         let mesh = h.tri_mesh();
         let aabb = mesh.aabb;
         let translation = glam::Vec3::ZERO;
-        let entity = h.world.root_scope_mut().spawn(bundle!(
+        let entity = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation,
                 ..Default::default()
@@ -2390,7 +2390,7 @@ mod tests {
             mesh,
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
+        ]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
@@ -2448,7 +2448,7 @@ mod tests {
 
         // Both entity origins are at the same depth; only the geometry differs.
         let translation = glam::Vec3::new(0.0, 0.0, 2.0);
-        let near_entity = h.world.root_scope_mut().spawn(bundle!(
+        let near_entity = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation,
                 ..Default::default()
@@ -2456,8 +2456,8 @@ mod tests {
             near,
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
-        let far_entity = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let far_entity = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation,
                 ..Default::default()
@@ -2465,7 +2465,7 @@ mod tests {
             far,
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
+        ]);
 
         let camera = test_orthographic_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
@@ -2499,16 +2499,16 @@ mod tests {
         );
         let surface = h.target.surface;
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
-        let warm_standard = h.world.root_scope_mut().spawn(bundle!(
+        let warm_standard = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             standard_mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
-        let warm_alternative = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let warm_alternative = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             alternative_mesh.clone(),
             UnlitPipeline::new(alternative_key.clone()),
-        ));
+        ]);
         h.source
             .collect_and_sort_visible(&h.world.root_scope(), &camera, surface);
         let first_id = h
@@ -2531,16 +2531,16 @@ mod tests {
 
         // Spawn the later-drawn entity first: draw order is the pipeline id,
         // not the spawn order.
-        let second = h.world.root_scope_mut().spawn(bundle!(
+        let second = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             alternative_mesh,
             UnlitPipeline::new(alternative_key),
-        ));
-        let first = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let first = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             standard_mesh,
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
 
         h.source
             .collect_and_sort_visible(&h.world.root_scope(), &camera, surface);
@@ -2568,26 +2568,26 @@ mod tests {
         );
         assert_ne!(shared.sort_key(), other.sort_key());
 
-        let a = h.world.root_scope_mut().spawn(bundle!(
+        let a = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             shared.clone(),
-        ));
+        ]);
         // The odd one out: sharing no material with the other two, so it is
         // the draw that has to sit on the other side of the pair.
-        let _other_material = h.world.root_scope_mut().spawn(bundle!(
+        let _other_material = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
             other.clone(),
-        ));
-        let c = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let c = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
             shared.clone(),
-        ));
+        ]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
@@ -2608,17 +2608,17 @@ mod tests {
     fn sorting_survives_a_second_frame_on_the_reused_cache() {
         let mut h = harness();
         let mesh = h.tri_mesh();
-        let opaque = h.world.root_scope_mut().spawn(bundle!(
+        let opaque = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
-        let z_sorted = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let z_sorted = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
+        ]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
@@ -2641,11 +2641,11 @@ mod tests {
         let mesh = h.tri_mesh();
 
         let internal = h.target.surface;
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         let first = resolve_draw(&mut h.source, &h.world.root_scope(), internal);
         // The same key twice reuses one compiled pipeline.
         assert_eq!(
@@ -2669,11 +2669,11 @@ mod tests {
         let mut h = harness();
         let surface = h.target.surface;
         let standard = h.tri_mesh();
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             standard.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         let first = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         // A second mesh whose layout declares fewer channels implies a
@@ -2696,11 +2696,11 @@ mod tests {
         other.vertex_layout = VertexLayout::new(layout);
         assert_ne!(other.vertex_layout, standard.vertex_layout);
 
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             other.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         let second = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         assert_ne!(second, first);
@@ -2712,11 +2712,11 @@ mod tests {
         let mut h = harness();
         let surface = h.target.surface;
         let base = h.tri_mesh();
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             base.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         let first = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
 
         // A layout the flags cannot tell from `base`: the attribute is at the
@@ -2739,11 +2739,11 @@ mod tests {
         twin.vertex_layout = VertexLayout::new(layout);
         assert_ne!(twin.vertex_layout, base.vertex_layout);
 
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             twin.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         let second = resolve_draw(&mut h.source, &h.world.root_scope(), surface);
         assert_eq!(second, first);
         assert_eq!(h.source.pipelines.len(), 1);
@@ -2757,12 +2757,12 @@ mod tests {
         let _unpipelined = h
             .world
             .root_scope_mut()
-            .spawn(bundle!(Transform::default(), mesh.clone()));
-        let drawn_entity = h.world.root_scope_mut().spawn(bundle!(
+            .spawn(bundle![Transform::default(), mesh.clone()]);
+        let drawn_entity = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 5.0));
         h.source
@@ -2874,11 +2874,11 @@ mod tests {
         let mut h = harness();
         let mesh = h.tri_mesh();
         // A drawable entity, but nothing the source can view it from.
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
 
         // The source builds nothing, so the driver's pass draws nothing while
         // still applying the frame's clears.
@@ -2916,13 +2916,13 @@ mod tests {
         );
         h.world
             .root_scope_mut()
-            .spawn(bundle!(test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
-        h.world.root_scope_mut().spawn(bundle!(
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(key),
             ZSortedDrawing,
-        ));
+        ]);
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
@@ -3004,17 +3004,17 @@ mod tests {
 
         h.world
             .root_scope_mut()
-            .spawn(bundle!(test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
-        h.world.root_scope_mut().spawn(bundle!(
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             first,
             UnlitPipeline::new(key.clone()),
-        ));
-        h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             second,
-            UnlitPipeline::new(key)
-        ));
+            UnlitPipeline::new(key),
+        ]);
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
@@ -3054,16 +3054,16 @@ mod tests {
         let mesh = h.tri_mesh();
         h.world
             .root_scope_mut()
-            .spawn(bundle!(test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
         for i in 0..3 {
-            h.world.root_scope_mut().spawn(bundle!(
+            h.world.root_scope_mut().spawn(bundle![
                 Transform {
                     translation: glam::Vec3::new(i as f32, 0.0, 0.0),
                     ..Default::default()
                 },
                 mesh.clone(),
                 UnlitPipeline::new(h.key.clone()),
-            ));
+            ]);
         }
 
         let ctx = h.source.context();
@@ -3101,16 +3101,16 @@ mod tests {
         let mesh = h.tri_mesh();
         h.world
             .root_scope_mut()
-            .spawn(bundle!(test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
         for i in 0..3 {
-            h.world.root_scope_mut().spawn(bundle!(
+            h.world.root_scope_mut().spawn(bundle![
                 Transform {
                     translation: glam::Vec3::new(i as f32, 0.0, 0.0),
                     ..Default::default()
                 },
                 mesh.clone(),
                 UnlitPipeline::new(h.key.clone()),
-            ));
+            ]);
         }
 
         let ctx = h.source.context();
@@ -3148,18 +3148,18 @@ mod tests {
         assert_ne!(first.first, second.first, "the meshes own different slices");
         h.world
             .root_scope_mut()
-            .spawn(bundle!(test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
         let key = h.key.clone();
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             first,
             UnlitPipeline::new(key.clone()),
-        ));
-        h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             second,
-            UnlitPipeline::new(key)
-        ));
+            UnlitPipeline::new(key),
+        ]);
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
@@ -3184,10 +3184,10 @@ mod tests {
         let mesh = h.tri_mesh();
         h.world
             .root_scope_mut()
-            .spawn(bundle!(test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
         // Two translucent copies of the same mesh, drawn back to front.
         let key = h.key.clone();
-        h.world.root_scope_mut().spawn(bundle!(
+        h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 1.0),
                 ..Default::default()
@@ -3195,8 +3195,8 @@ mod tests {
             mesh.clone(),
             UnlitPipeline::new(key.clone()),
             ZSortedDrawing,
-        ));
-        h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 2.0),
                 ..Default::default()
@@ -3204,7 +3204,7 @@ mod tests {
             mesh,
             UnlitPipeline::new(key),
             ZSortedDrawing,
-        ));
+        ]);
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
@@ -3235,12 +3235,12 @@ mod tests {
         let mesh = h.tri_mesh();
         h.world
             .root_scope_mut()
-            .spawn(bundle!(test_camera(glam::Vec3::new(0.0, 0.0, 5.0)),));
-        let drawn = h.world.root_scope_mut().spawn(bundle!(
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
+        let drawn = h.world.root_scope_mut().spawn(bundle![
             Transform::default(),
             mesh.clone(),
             UnlitPipeline::new(h.key.clone()),
-        ));
+        ]);
         let mut encoder = h.encoder();
         let mut scene = Scene::new();
         h.source.build_scene(
@@ -3335,7 +3335,7 @@ mod tests {
             },
         );
 
-        let near = h.world.root_scope_mut().spawn(bundle!(
+        let near = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, 4.0),
                 ..Default::default()
@@ -3343,8 +3343,8 @@ mod tests {
             plain,
             UnlitPipeline::new(h.key.clone()),
             ZSortedDrawing,
-        ));
-        let far = h.world.root_scope_mut().spawn(bundle!(
+        ]);
+        let far = h.world.root_scope_mut().spawn(bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.0, -4.0),
                 ..Default::default()
@@ -3352,7 +3352,7 @@ mod tests {
             other,
             UnlitPipeline::new(other_key),
             ZSortedDrawing,
-        ));
+        ]);
 
         let camera = test_camera(glam::Vec3::new(0.0, 0.0, 40.0));
         h.source

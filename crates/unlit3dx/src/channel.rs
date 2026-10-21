@@ -165,9 +165,9 @@ fn install(world: &mut World, entry: Box<dyn Entry>) {
             .entries
             .push(entry),
         None => {
-            world.root_scope_mut().spawn(bundle!(SnapshotOutlet {
+            world.root_scope_mut().spawn(bundle![SnapshotOutlet {
                 entries: vec![entry],
-            },));
+            },]);
         }
     }
 }

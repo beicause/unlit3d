@@ -90,7 +90,7 @@ fn remote_world_state_persists_between_jobs() {
     let (_host, remote) = idle_host();
 
     let _ = remote.send(Box::new(|world: &mut World| {
-        world.root_scope_mut().spawn(bundle!(Count(0),));
+        world.root_scope_mut().spawn(bundle![Count(0)]);
     }));
     for _ in 0..5 {
         let _ = remote.send(Box::new(|world: &mut World| {

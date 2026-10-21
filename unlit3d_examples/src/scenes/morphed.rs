@@ -50,7 +50,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
     let deltas = morph_deltas(&positions);
@@ -69,19 +69,16 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle!(camera(size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle![camera(size)]);
     // The weights are an entity of their own: the mesh names it rather than
     // owning it, so blending a pose is one component write and nothing on the
     // mesh changes.
-    let weights_entity = super::spawn_in(
-        world,
-        source_entity,
-        bundle!(MorphWeights::new(weights(0)),),
-    );
+    let weights_entity =
+        super::spawn_in(world, source_entity, bundle![MorphWeights::new(weights(0))]);
     super::spawn_in(
         world,
         source_entity,
-        bundle!(
+        bundle![
             Transform {
                 scale: glam::Vec3::splat(0.9),
                 ..Default::default()
@@ -90,7 +87,7 @@ fn build(
             mesh,
             UnlitPipeline::new(key),
             MorphBinding::new(weights_entity),
-        ),
+        ],
     );
 
     SceneControl {

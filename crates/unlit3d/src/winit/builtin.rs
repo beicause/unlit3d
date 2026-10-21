@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn exit_on_close_requested_asks_the_host_to_exit() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn(bundle!(ExitRequest(false),));
+        let entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
         world.apply();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::CloseRequested));
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn exit_on_close_requested_ignores_other_events() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn(bundle!(ExitRequest(false),));
+        let entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
         world.apply();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::Focused(true)));
@@ -215,11 +215,11 @@ mod tests {
     fn create_window_on_resume_copies_the_spec_into_the_request() {
         let mut world = World::new();
         let spec = WindowSpec(Window::default_attributes().with_title("unlit3d"));
-        let entity = world.root_scope_mut().spawn(bundle!(
+        let entity = world.root_scope_mut().spawn(bundle![
             spec,
             CreateWindowRequest(None),
             create_window_on_resume(),
-        ));
+        ]);
         world.apply();
         let mut behaviour = world
             .root_scope()
@@ -239,7 +239,7 @@ mod tests {
         let mut world = World::new();
         let entity = world
             .root_scope_mut()
-            .spawn(bundle!(Resumed(false), request_redraw_while_foreground()));
+            .spawn(bundle![Resumed(false), request_redraw_while_foreground()]);
         world.apply();
         let mut behaviour = world
             .root_scope()

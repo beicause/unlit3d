@@ -25,21 +25,21 @@ struct Hidden;
 fn scene() -> (World, Entity, Entity, Entity) {
     let mut world = World::new();
     // Moving and visible.
-    let mover = world.root_scope_mut().spawn(bundle!(
+    let mover = world.root_scope_mut().spawn(bundle![
         Position { x: 0.0, y: 0.0 },
         Velocity { dx: 1.0, dy: 0.0 },
         Visible,
-    ));
+    ]);
     // Moving but hidden.
-    let hidden = world.root_scope_mut().spawn(bundle!(
+    let hidden = world.root_scope_mut().spawn(bundle![
         Position { x: 10.0, y: 0.0 },
         Velocity { dx: 2.0, dy: 0.0 },
         Hidden,
-    ));
+    ]);
     // Visible but still.
     let still = world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 20.0, y: 0.0 }, Visible));
+        .spawn(bundle![Position { x: 20.0, y: 0.0 }, Visible]);
     (world, mover, hidden, still)
 }
 
@@ -60,7 +60,7 @@ fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
     let first = world.root_scope_mut().spawn_empty();
     let second = world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 1.0, y: 2.0 }));
+        .spawn(bundle![Position { x: 1.0, y: 2.0 }]);
     let third = world.root_scope_mut().spawn_empty();
 
     let mut found: Vec<Entity> = world.root_scope().query::<Entity>().collect();
@@ -349,14 +349,14 @@ fn iteration_is_deterministic_between_runs() {
 fn a_query_skips_an_empty_archetype() {
     let mut world = World::new();
     // Creating and emptying an archetype must not confuse iteration.
-    let entity = world.root_scope_mut().spawn(bundle!(
+    let entity = world.root_scope_mut().spawn(bundle![
         Position { x: 0.0, y: 0.0 },
-        Velocity { dx: 1.0, dy: 1.0 }
-    ));
+        Velocity { dx: 1.0, dy: 1.0 },
+    ]);
     world.root_scope_mut().despawn(entity);
     world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 5.0, y: 5.0 },));
+        .spawn(bundle![Position { x: 5.0, y: 5.0 }]);
 
     let mut found = world.root_scope().query::<(&Position, &Velocity)>();
     assert!(found.next().is_none());
@@ -463,12 +463,12 @@ fn query_one_yields_the_row_of_one_entity() {
 #[test]
 fn query_one_answers_none_for_an_entity_out_of_reach() {
     let mut world = World::new();
-    let parent = world.root_scope_mut().spawn(bundle!(1u32));
+    let parent = world.root_scope_mut().spawn(bundle![1u32]);
     let child = world
         .root_scope_mut()
         .scope_mut(parent)
         .unwrap()
-        .spawn(bundle!(2u32));
+        .spawn(bundle![2u32]);
 
     let child_scope = world.root_scope().scope(child).unwrap();
     assert!(child_scope.query_one::<&u32>(child).is_some());
@@ -487,7 +487,7 @@ fn an_optional_component_that_cannot_be_borrowed_panics() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
+        .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
     let _writing = world
         .root_scope()
@@ -502,7 +502,7 @@ fn an_optional_mutable_component_that_cannot_be_borrowed_panics() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
+        .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
     let _reading = world.root_scope().query_one::<&Position>(entity).unwrap();
     for _ in world.root_scope().query::<Option<&mut Position>>() {}
@@ -516,7 +516,7 @@ fn asking_for_the_same_component_twice_panics() {
     let mut world = World::new();
     world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
+        .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
     for _ in world.root_scope().query::<(&Position, &Position)>() {}
 }
@@ -527,7 +527,7 @@ fn mixing_a_shared_and_an_exclusive_fetch_panics() {
     let mut world = World::new();
     world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
+        .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
     for _ in world.root_scope().query::<(&Position, &mut Position)>() {}
 }
@@ -538,7 +538,7 @@ fn reading_a_component_while_it_is_written_panics() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn(bundle!(Position { x: 0.0, y: 0.0 },));
+        .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
 
     let _writing = world
         .root_scope()

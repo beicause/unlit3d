@@ -29,8 +29,8 @@ async fn ecs_cube_covers_the_frame() {
     // its own AABB now, so no bounding component is needed.
     world
         .root_scope_mut()
-        .spawn(bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),));
-    world.root_scope_mut().spawn(bundle!(
+        .spawn(bundle![camera_view(WIDTH as f32 / HEIGHT as f32)]);
+    world.root_scope_mut().spawn(bundle![
         Transform {
             translation: glam::Vec3::new(0.0, 0.2, 0.0),
             rotation: glam::Quat::from_rotation_y(0.6),
@@ -38,7 +38,7 @@ async fn ecs_cube_covers_the_frame() {
         },
         mesh,
         UnlitPipeline::new(key),
-    ));
+    ]);
 
     // Render offscreen.
     let target = gpu.render_to_offscreen(&world, "test::ecs_cube");
@@ -74,13 +74,13 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
     // the scope the frame draws from.
     gpu.spawn(
         &mut world,
-        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+        bundle![camera_view(WIDTH as f32 / HEIGHT as f32)],
     );
 
     // Far cube, red.
     gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, -0.6),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -89,13 +89,13 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
             InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
             mesh_far,
             UnlitPipeline::new(key.clone()),
-        ),
+        ],
     );
 
     // Near cube, green.
     gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.6),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -104,7 +104,7 @@ async fn ecs_depth_ordering_hides_the_far_instance() {
             InstanceColor::new(glam::Vec4::new(0.0, 1.0, 0.0, 1.0)),
             mesh_near,
             UnlitPipeline::new(key.clone()),
-        ),
+        ],
     );
 
     let target = gpu.render_to_offscreen(&world, "test::depth");
@@ -183,7 +183,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let key = gpu.key.clone();
     gpu.spawn(
         &mut world,
-        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+        bundle![camera_view(WIDTH as f32 / HEIGHT as f32)],
     );
 
     // A cube fills a roughly square block of the frame, and the replacement
@@ -198,7 +198,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let cube = gpu.allocate_cube_mesh(&world);
     let cube_entity = gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -206,7 +206,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
             },
             cube,
             UnlitPipeline::new(key.clone()),
-        ),
+        ],
     );
 
     let target = gpu.render_to_offscreen(&world, "test::reused_range::before");
@@ -234,7 +234,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
     let replacement = gpu.allocate_cube_mesh(&world);
     gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -243,7 +243,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
             InstanceColor::new(glam::Vec4::new(1.0, 0.0, 0.0, 1.0)),
             replacement,
             UnlitPipeline::new(key),
-        ),
+        ],
     );
 
     let target = gpu.render_to_offscreen(&world, "test::reused_range::after");
@@ -294,7 +294,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     let key = gpu.key.clone();
     gpu.spawn(
         &mut world,
-        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+        bundle![camera_view(WIDTH as f32 / HEIGHT as f32)],
     );
 
     // The first mesh draws at the centre of the frame and never moves, so the
@@ -302,7 +302,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     let first = gpu.allocate_cube_mesh(&world);
     gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -310,7 +310,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
             },
             first,
             UnlitPipeline::new(key.clone()),
-        ),
+        ],
     );
 
     // A grid cube apiece: the first is small enough for the pools as created,
@@ -319,7 +319,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
     for (frame_index, mesh) in grids.into_iter().enumerate() {
         gpu.spawn(
             &mut world,
-            bundle!(
+            bundle![
                 Transform {
                     translation: glam::Vec3::new(-3.0 + 2.4 * frame_index as f32, -1.4, -2.0),
                     rotation: glam::Quat::from_rotation_y(0.3),
@@ -327,7 +327,7 @@ async fn meshes_allocated_across_frames_survive_pool_growth() {
                 },
                 mesh,
                 UnlitPipeline::new(key.clone()),
-            ),
+            ],
         );
 
         let target = gpu.render_to_offscreen(&world, "test::pool_growth");
@@ -373,12 +373,12 @@ async fn a_source_draws_only_its_own_subtree() {
     let far = gpu.allocate_cube_mesh(&world);
     for (scope, mesh) in [(first, near), (second, far)] {
         let mut scope = world.scope_mut(scope).expect("the source is a scope");
-        scope.spawn(bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),));
-        scope.spawn(bundle!(
+        scope.spawn(bundle![camera_view(WIDTH as f32 / HEIGHT as f32)]);
+        scope.spawn(bundle![
             Transform::default(),
             mesh,
             UnlitPipeline::new(gpu.key.clone()),
-        ));
+        ]);
     }
 
     // Each source owns one instance, and neither sees the other's: a sibling's

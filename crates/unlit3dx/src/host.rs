@@ -47,11 +47,11 @@ pub fn spawn_sub_world(
     LocalTasks::install(&mut nested);
     nested
         .root_scope_mut()
-        .spawn(bundle!(SubWorldInbox(receiver),));
+        .spawn(bundle![SubWorldInbox(receiver)]);
     let commands = JobSender::new(commands);
     let entity = host
         .root_scope_mut()
-        .spawn(bundle!(nested, WorldName(name)));
+        .spawn(bundle![nested, WorldName(name)]);
     WorldHandle::new(entity, commands, None)
 }
 

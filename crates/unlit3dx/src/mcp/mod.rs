@@ -95,7 +95,7 @@ fn start(world: &mut World, duration_seconds: Option<f32>) -> Result<Value, Stri
     };
     world
         .root_scope_mut()
-        .spawn(bundle!(ActiveRecording(handle),));
+        .spawn(bundle![ActiveRecording(handle)]);
     serde_json::to_value(report).map_err(|error| error.to_string())
 }
 
@@ -247,11 +247,11 @@ mod tests {
     /// its fills carry.
     fn audio_world(level: f32) -> (World, AudioFormat) {
         let mut world = World::new();
-        world.root_scope_mut().spawn(bundle!(GlobalAudioGain(1.0),));
-        world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
+        world.root_scope_mut().spawn(bundle![GlobalAudioGain(1.0)]);
+        world.root_scope_mut().spawn(bundle![OnAudioFill::new(
             AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),
-        ),));
+        ),]);
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,

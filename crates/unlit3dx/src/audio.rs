@@ -320,10 +320,10 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                         // Spawned once, before the first fill: whoever
                         // waits on it builds their sources at the rate the
                         // device really uses.
-                        world.root_scope_mut().spawn(bundle!(AudioFormat {
+                        world.root_scope_mut().spawn(bundle![AudioFormat {
                             sample_rate: opened.sample_rate,
                             channels: opened.channels,
-                        },));
+                        },]);
                         // Half a chunk of pacing: the ring stays ahead of
                         // the callback without the filler spinning.
                         let pace = AUDIO_FILL_FRAMES as f64 / f64::from(opened.sample_rate) * 0.5;
@@ -352,7 +352,7 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                     .next()
                     .is_none()
             {
-                world.root_scope_mut().spawn(bundle!(AudioOutputOpen,));
+                world.root_scope_mut().spawn(bundle![AudioOutputOpen]);
             }
             let sounding = open && world.root_scope().query::<&OnAudioFill>().next().is_some();
             if sounding != ready {

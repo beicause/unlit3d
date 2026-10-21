@@ -1152,18 +1152,18 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        bundle!(camera_looking_at(
+        bundle![camera_looking_at(
             orbit_eye(ORBIT_START),
             CAMERA_TARGET,
             size,
-        ),),
+        ),],
     );
 
-    super::spawn_in(world, source_entity, bundle!(sky_mesh, sky_pipeline));
+    super::spawn_in(world, source_entity, bundle![sky_mesh, sky_pipeline]);
     // One mesh, one pipeline and one material for the whole cloud, so the
     // renderer folds the particles into a single instanced draw and every
     // sprite's placement comes from its own record.
@@ -1171,12 +1171,12 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            bundle!(
+            bundle![
                 particle_mesh.clone(),
                 particle_pipeline.clone(),
                 particle_material.clone(),
                 particle,
-            ),
+            ],
         );
     }
 

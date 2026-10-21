@@ -156,26 +156,26 @@ fn start_tracks(world: &Scope<'_>, audio: &JobSender, voice: Entity) {
     let commands = world.queue();
     let mut background = MidiSequencer::new(bgm_midi());
     background.loop_play = true;
-    let background = commands.spawn(bundle!(
+    let background = commands.spawn(bundle![
         Track {
             midi: background,
             voice,
             audio: audio.clone(),
         },
         tick_behaviour::<Track>(TICK_AUDIO),
-    ));
+    ]);
     let mut sequence = MidiSequencer::new(sequence_midi());
     sequence.paused = true;
-    let sequence = commands.spawn(bundle!(
+    let sequence = commands.spawn(bundle![
         Track {
             midi: sequence,
             voice,
             audio: audio.clone(),
         },
         tick_behaviour::<Track>(TICK_AUDIO),
-    ));
-    commands.spawn(bundle!(SceneTracks {
+    ]);
+    commands.spawn(bundle![SceneTracks {
         background,
         sequence,
-    }));
+    },]);
 }

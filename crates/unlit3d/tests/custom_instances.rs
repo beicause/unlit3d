@@ -380,29 +380,29 @@ async fn a_custom_family_owns_its_instance_stream() {
     // shader reads none of them.
     gpu.spawn(
         &mut world,
-        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+        bundle![camera_view(WIDTH as f32 / HEIGHT as f32)],
     );
     gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             mesh.clone(),
             pipeline.clone(),
             CustomInstance {
                 offset: [-0.35, 0.0, 0.0],
                 tint: [1.0, 0.0, 0.0, 1.0],
             },
-        ),
+        ],
     );
     gpu.spawn(
         &mut world,
-        bundle!(
+        bundle![
             mesh,
             pipeline,
             CustomInstance {
                 offset: [0.35, 0.0, 0.0],
                 tint: [0.0, 1.0, 0.0, 1.0],
             },
-        ),
+        ],
     );
 
     let target = gpu.render_to_offscreen(&world, "test::custom_instances");

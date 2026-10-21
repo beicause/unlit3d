@@ -88,7 +88,7 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
         max_seconds: max_seconds.max(0.0),
     }));
     let recorder = Arc::clone(&state);
-    let entity = world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
+    let entity = world.root_scope_mut().spawn(bundle![OnAudioFill::new(
         AudioFillOrder(i32::MAX),
         move |world: &World, _entity: Entity, chunk: &mut AudioChunk| {
             let mut state = lock(&recorder);
@@ -115,7 +115,7 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
                 state.samples.push((sample * gain).clamp(-1.0, 1.0));
             }
         },
-    ),));
+    ),]);
     RecordingHandle { entity, state }
 }
 
@@ -216,19 +216,19 @@ mod tests {
     use crate::audio::dispatch_audio_fill;
 
     fn constant_source(world: &mut World, level: f32) -> Entity {
-        world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
+        world.root_scope_mut().spawn(bundle![OnAudioFill::new(
             AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| {
                 chunk.out.fill(level);
             },
-        ),))
+        ),])
     }
 
     #[test]
     fn a_recording_captures_the_mixed_samples() {
         let mut world = World::new();
         constant_source(&mut world, 0.75);
-        world.root_scope_mut().spawn(bundle!(GlobalAudioGain(2.0),));
+        world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,

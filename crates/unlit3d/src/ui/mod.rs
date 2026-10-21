@@ -23,12 +23,12 @@
 //! // The source, and one interface held as a behaviour component. More
 //! // panels are more entities under the same source, each with its own
 //! // sibling state.
-//! let ui = world.root_scope_mut().spawn(bundle!(Source::new(UiSource::new()),));
-//! world.scope_mut(ui).unwrap().spawn(bundle!(
+//! let ui = world.root_scope_mut().spawn(bundle![Source::new(UiSource::new())]);
+//! world.scope_mut(ui).unwrap().spawn(bundle![
 //!     UiPanel::new(|_world, _entity, ui| {
 //!         ui.label("hello");
 //!     }),
-//! ));
+//! ]);
 //! ```
 //!
 //! The UI draws with the same built-in unlit pipeline as everything else, but
@@ -906,7 +906,7 @@ mod tests {
         let runs = Rc::new(Cell::new(0u32));
         for _ in 0..2 {
             let runs = Rc::clone(&runs);
-            world.root_scope_mut().spawn(bundle!(
+            world.root_scope_mut().spawn(bundle![
                 Runs(0),
                 UiPanel::new(move |world, entity, ui| {
                     runs.set(runs.get() + 1);
@@ -920,7 +920,7 @@ mod tests {
                         .map(|mut runs| runs.0 = seen + 1);
                     ui.label("panel");
                 }),
-            ));
+            ]);
         }
 
         let source = UiSource::new();
@@ -964,7 +964,7 @@ mod tests {
         let target = test_target();
         world
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
+            .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
                 // A plain rectangle, so the frame's contents do not depend on the
                 // font atlas being ready on the first pass.
                 ui.painter().rect_filled(
@@ -975,7 +975,7 @@ mod tests {
                     0.0,
                     egui::Color32::from_rgb(0, 255, 0),
                 );
-            }),));
+            }),]);
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -1009,12 +1009,12 @@ mod tests {
             world
                 .borrow_mut()
                 .root_scope_mut()
-                .spawn(bundle!(UiPanel::new(move |world, _entity, ui| {
+                .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
                     if world.query::<&Spawned>().next().is_none() {
-                        world.queue().spawn(bundle!(Spawned,));
+                        world.queue().spawn(bundle![Spawned]);
                     }
                     ui.label("once");
-                }),));
+                }),]);
         }
 
         let input = egui::RawInput {
@@ -1067,9 +1067,9 @@ mod tests {
             let runs = Rc::clone(&runs);
             world
                 .root_scope_mut()
-                .spawn(bundle!(UiPanel::new(move |_world, _entity, _ui| {
+                .spawn(bundle![UiPanel::new(move |_world, _entity, _ui| {
                     runs.set(runs.get() + 1);
-                }),));
+                }),]);
         }
 
         let source = UiSource::new();
@@ -1110,10 +1110,10 @@ mod tests {
         let mut world = World::new();
         world
             .root_scope_mut()
-            .spawn(bundle!(Foreground, UiPanel::new(|_world, _entity, _ui| {})));
+            .spawn(bundle![Foreground, UiPanel::new(|_world, _entity, _ui| {})]);
         world
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(|_world, _entity, _ui| {}),));
+            .spawn(bundle![UiPanel::new(|_world, _entity, _ui| {})]);
 
         let foreground: Vec<Entity> = world
             .root_scope()
@@ -1147,7 +1147,7 @@ mod tests {
         let recorded = Rc::clone(&seen);
         world
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(move |_world, _entity, ui| {
+            .spawn(bundle![UiPanel::new(move |_world, _entity, ui| {
                 // egui's own input state is what a widget reads; the raw events are
                 // not exposed to a panel, so this asserts on the effect instead: a
                 // typed character must land in the text a focused field sees.
@@ -1163,14 +1163,14 @@ mod tests {
                         .collect::<Vec<_>>()
                 });
                 recorded.borrow_mut().extend(pressed);
-            }),));
+            }),]);
 
         // The pointer and a typed key arrive in the world's own event types.
         let input = InputWriter::new();
         let events = input.subscribe();
         world
             .root_scope_mut()
-            .spawn(bundle!(input.clone(), events.clone()));
+            .spawn(bundle![input.clone(), events.clone()]);
         input.push(InputEvent::Resized { size_px: (128, 96) });
         events.refresh();
 
@@ -1208,20 +1208,20 @@ mod tests {
         let flag = Rc::clone(&clicked);
         world
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(move |_world, _entity, ui| {
+            .spawn(bundle![UiPanel::new(move |_world, _entity, ui| {
                 // A real widget, so the click has to come through egui's own hit
                 // testing rather than a hand-rolled rectangle test.
                 let response = ui.allocate_rect(button(), egui::Sense::click());
                 if response.clicked() {
                     flag.set(true);
                 }
-            }),));
+            }),]);
 
         let input = InputWriter::new();
         let events = input.subscribe();
         world
             .root_scope_mut()
-            .spawn(bundle!(input.clone(), events.clone()));
+            .spawn(bundle![input.clone(), events.clone()]);
         input.push(InputEvent::Resized { size_px: (128, 96) });
         events.refresh();
 
@@ -1277,13 +1277,13 @@ mod tests {
         let mut other = World::new();
         other
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
+            .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                     0.0,
                     egui::Color32::RED,
                 );
-            }),));
+            }),]);
         let target = test_ui_target();
         let frame = lay_out(
             &other,
@@ -1324,13 +1324,13 @@ mod tests {
         let mut other = World::new();
         other
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
+            .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                     0.0,
                     egui::Color32::RED,
                 );
-            }),));
+            }),]);
         let frame = lay_out(
             &other,
             &egui::Context::default(),
@@ -1373,13 +1373,13 @@ mod tests {
         let target = test_target();
         world
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
+            .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
                 ui.painter().rect_filled(
                     egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(16.0)),
                     0.0,
                     egui::Color32::RED,
                 );
-            }),));
+            }),]);
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);

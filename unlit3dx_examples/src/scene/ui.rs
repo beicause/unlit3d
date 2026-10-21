@@ -8,10 +8,10 @@
 //!
 //! Everything the panel decides is decided here, beside the objects it acts
 //! on: the drop and clear buttons call the scene's own request helpers, and the
-//! transport buttons write the [`MidiSequencer`](unlit3dx::prelude::MidiSequencer)
-//! of the track they belong to. The sequences live in this world, so a button
-//! is a field write rather than a message to another world, and a row reads the
-//! transport state it shows instead of remembering it.
+//! transport buttons write the [`MidiSequencer`] of the track they belong to.
+//! The sequences live in this world, so a button is a field write rather than a
+//! message to another world, and a row reads the transport state it shows
+//! instead of remembering it.
 
 use unlit_ecs::World;
 use unlit_ecs::bundle;
@@ -137,7 +137,7 @@ fn track_controls(ui: &mut egui::Ui, label: &str, sequencer: &mut MidiSequencer)
 pub fn mount_controls(world: &mut World) {
     world
         .root_scope_mut()
-        .spawn(bundle!(UiPanel::new(|world, _entity, ui| {
+        .spawn(bundle![UiPanel::new(|world, _entity, ui| {
             egui::Window::new("Controls").show(ui.ctx(), |ui| {
                 // The tracks are spawned once the audio world has answered
                 // with its voice, so a scene whose soundfont failed to load
@@ -162,7 +162,7 @@ pub fn mount_controls(world: &mut World) {
                     }
                 });
             });
-        })));
+        }),]);
 }
 
 /// A job that gives the render world the source drawing this scene's panel.
@@ -180,7 +180,7 @@ pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job<()> {
         world
             .scope_mut(pass)
             .expect("the scene's pass is alive")
-            .spawn(bundle!(Source::new(source),));
+            .spawn(bundle![Source::new(source)]);
     })
 }
 

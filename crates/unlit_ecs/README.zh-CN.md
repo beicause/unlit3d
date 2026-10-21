@@ -31,7 +31,7 @@
 - **任何 `'static` 类型都是组件。** 不需要 derive，也不需要注册；元组同样是组件。
   因此 *bundle* 不是「组件的元组」，而是 `bundle!` 写出的、或 `ArchetypeBuilder`
   收集的那份组件清单；直接交给 spawn 的 `(a, b)` 是一个组件，即那个二元组。宏在展开期
-  遍历语法，所以 `bundle!(a, b)` 是两个组件，而带括号的项是一个组件，元组也不例外。
+  遍历语法，所以 `bundle![a, b]` 是两个组件，而带括号的项是一个组件，元组也不例外。
 - **没有系统（system）。** 驱动行为意味着调用者自己读取 world 并调用它想要的方法或
   闭包——或者运行一个*行为组件*，即持有闭包、由调用者自写的驱动器调用的组件。需要
   等待的行为返回 future，由调用者决定何时 poll；库内不内置执行器。
@@ -59,8 +59,8 @@ use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
 let scene = world.root_scope_mut().spawn_empty();
-let cube = world.scope_mut(scene).unwrap().spawn(bundle!(0u32));
-let camera = world.scope_mut(scene).unwrap().spawn(bundle!(0f32));
+let cube = world.scope_mut(scene).unwrap().spawn(bundle![0u32]);
+let camera = world.scope_mut(scene).unwrap().spawn(bundle![0f32]);
 
 // 场景的 scope 看得见场景及其下的一切，看不见旁边的东西。
 let scope = world.scope(scene).unwrap();
@@ -166,8 +166,8 @@ struct Spin {
 }
 
 let mut world = World::new();
-let cube = world.root_scope_mut().spawn(bundle!(Spin { radians_per_second: 1.0, angle: 0.0 }));
-let clock = world.root_scope_mut().spawn(bundle!(0.016f32));
+let cube = world.root_scope_mut().spawn(bundle![Spin { radians_per_second: 1.0, angle: 0.0 }]);
+let clock = world.root_scope_mut().spawn(bundle![0.016f32]);
 
 // 驱动每一个 `Spin`。由调用者决定碰哪些实体、按什么顺序；库内没有场景图的概念。
 let delta = *world.root_scope().query_one::<&f32>(clock).unwrap();
@@ -205,7 +205,7 @@ use unlit_ecs::{World, bundle};
 let mut world = World::new();
 let entity = {
     let commands = world.root_scope().queue();
-    commands.spawn(bundle!("entity"))
+    commands.spawn(bundle!["entity"])
 };
 // 此时还什么都没发生。
 assert!(!world.root_scope().contains(entity));
@@ -215,15 +215,16 @@ assert!(world.root_scope().contains(entity));
 
 bundle 是 `bundle!` 写出的或 `ArchetypeBuilder` 收集的那份清单；元组不是 bundle，因为
 元组本身就是组件。清单里每一项都是一个组件——带括号的元组仍然是元组，所以
-`bundle!((a, b), c)` 是一个元组组件加一个 `c`，`bundle!(())` 则是一个空元组组件。宽度
-受编译器递归上限约束，默认上限下约一百个组件；更宽的需要在调用方 crate 里提高
-`#![recursion_limit]`：
+`bundle![(a, b), c]` 是一个元组组件加一个 `c`，`bundle![()]` 则是一个空元组组件。宏在本
+crate 与其下游里一律用方括号书写，`bundle![a, b]`，以便与函数调用的实参区分；只有一项
+时不需要逗号，`bundle![a]` 就是那唯一的组件 `a`。宽度受编译器递归上限约束，默认上限下
+约一百个组件；更宽的需要在调用方 crate 里提高 `#![recursion_limit]`：
 
 ```rust
 use unlit_ecs::{Has, World, bundle};
 
 let mut world = World::new();
-let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
+let entity = world.root_scope_mut().spawn(bundle![(1u32, 2.0f32), (true, ())]);
 
 // 两个组件：一个元组，一个嵌套的元组。
 let scope = world.root_scope();
@@ -243,7 +244,7 @@ let mut gathered = ArchetypeBuilder::new();
 gathered.push_component(1u32);
 
 let mut world = World::new();
-let entity = world.root_scope_mut().spawn(bundle!(..gathered, 2.0f32));
+let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
 assert_eq!(scope.query_one::<Has<u32>>(entity), Some(true));

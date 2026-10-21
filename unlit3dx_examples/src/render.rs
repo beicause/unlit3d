@@ -109,7 +109,7 @@ pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
         world
             .scope_mut(source_entity)
             .expect("the mesh source entity exists")
-            .spawn(bundle!(mesh,))
+            .spawn(bundle![mesh])
     })
 }
 
@@ -170,7 +170,7 @@ fn allocate_material(
     world
         .scope_mut(source_entity)
         .expect("the mesh source entity exists")
-        .spawn(bundle!(material,))
+        .spawn(bundle![material])
 }
 
 /// A job that spawns one render entity from asset entities: a [`GpuMesh`]
@@ -200,7 +200,7 @@ pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> J
         world
             .scope_mut(source_entity)
             .expect("the mesh source entity exists")
-            .spawn(bundle!(transform, mesh, material, UnlitPipeline::new(key)))
+            .spawn(bundle![transform, mesh, material, UnlitPipeline::new(key)])
     })
 }
 

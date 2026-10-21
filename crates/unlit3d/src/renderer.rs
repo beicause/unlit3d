@@ -53,12 +53,12 @@ use crate::source::{FrameSourceOrder, RenderContext, Source};
 /// // One pass, drawing the mesh source under it.
 /// let pass = world
 ///     .root_scope_mut()
-///     .spawn(bundle!(FramePass::new(FramePassOrder(0)), RenderLoadOps::default()));
+///     .spawn(bundle![FramePass::new(FramePassOrder(0)), RenderLoadOps::default()]);
 /// world
 ///     .scope_mut(pass)
 ///     .expect("the pass entity is spawned")
-///     .spawn(bundle!(Source::new(source),));
-/// let renderer = world.root_scope_mut().spawn(bundle!(Renderer::new(ctx),));
+///     .spawn(bundle![Source::new(source)]);
+/// let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 /// ```
 pub struct Renderer {
     /// The world addresses of the frame's GPU state.
@@ -440,7 +440,7 @@ mod tests {
         );
         let pass = world
             .root_scope_mut()
-            .spawn(bundle!(FramePass::new(FramePassOrder(0))));
+            .spawn(bundle![FramePass::new(FramePassOrder(0))]);
         (world, Renderer::new(ctx), pass)
     }
 
@@ -452,10 +452,10 @@ mod tests {
         let under = world
             .scope_mut(pass)
             .expect("the pass is spawned")
-            .spawn(unlit_ecs::bundle!(Source::new(Nowhere),));
+            .spawn(unlit_ecs::bundle![Source::new(Nowhere)]);
         let beside = world
             .root_scope_mut()
-            .spawn(unlit_ecs::bundle!(Source::new(Nowhere),));
+            .spawn(unlit_ecs::bundle![Source::new(Nowhere)]);
 
         world
             .root_scope()

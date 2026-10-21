@@ -60,7 +60,7 @@ impl TestGpu {
         world
             .scope_mut(self.pass)
             .expect("the pass entity is its own scope")
-            .spawn(bundle!(Source::new(source),))
+            .spawn(bundle![Source::new(source)])
     }
 
     /// The frame's pass entity.
@@ -87,13 +87,13 @@ impl TestGpu {
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
         // One pass, cleared every frame: what every test that states no
         // load ops of its own gets.
-        let pass = world.root_scope_mut().spawn(bundle!(
+        let pass = world.root_scope_mut().spawn(bundle![
             FramePass::new(FramePassOrder(0)),
-            RenderLoadOps::default()
-        ));
+            RenderLoadOps::default(),
+        ]);
         let renderer = world
             .root_scope_mut()
-            .spawn(bundle!(Renderer::new(context),));
+            .spawn(bundle![Renderer::new(context)]);
         Self {
             context,
             pass,

@@ -192,19 +192,19 @@ pub fn setup_render_world(
     );
     let renderer = nested
         .root_scope_mut()
-        .spawn(bundle!(Renderer::new(context),));
+        .spawn(bundle![Renderer::new(context)]);
     // The pass draws every source below it, so the scene's sources belong to
     // it rather than to the world's root.
-    let pass = nested.root_scope_mut().spawn(bundle!(
+    let pass = nested.root_scope_mut().spawn(bundle![
         FramePass::new(SCENE_PASS_ORDER),
-        RenderLoadOps::default()
-    ));
+        RenderLoadOps::default(),
+    ]);
     let mut source = MeshSource::new(&nested.root_scope(), context);
     source.register_unlit_family(&nested.root_scope());
     nested
         .scope_mut(pass)
         .expect("the scene's pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
     (renderer, pass)
 }
 
@@ -228,14 +228,14 @@ pub fn camera_job() -> Job<()> {
         let camera_entity = world
             .scope_mut(source)
             .expect("the mesh source entity exists")
-            .spawn(bundle!(camera_looking_at(
+            .spawn(bundle![camera_looking_at(
                 WINDOW_SIZE,
                 orbit_eye(azimuth),
                 ORBIT_TARGET,
                 60f32.to_radians(),
                 0.1,
-            ),));
-        world.root_scope_mut().spawn(bundle!(OnFrame::new(
+            ),]);
+        world.root_scope_mut().spawn(bundle![OnFrame::new(
             FrameBehaviourOrder(RENDER_CAMERA),
             move |world, _entity, frame| {
                 azimuth += ORBIT_SPEED * frame.delta_time;
@@ -253,7 +253,7 @@ pub fn camera_job() -> Job<()> {
                         *current = camera;
                     });
             },
-        ),));
+        ),]);
     })
 }
 
@@ -462,30 +462,30 @@ pub fn spawn_scene<R: WorldRunner>(
                 // This world is a sibling of the host, not a world nested in
                 // it, so the host's fan-out never reaches it: it takes its own
                 // buffer, once, before the first tick reads one.
-                world.root_scope_mut().spawn(bundle!(input.subscribe(),));
-                world.root_scope_mut().spawn(bundle!(OnFrame::new(
+                world.root_scope_mut().spawn(bundle![input.subscribe()]);
+                world.root_scope_mut().spawn(bundle![OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
                     |world, _entity, _frame| {
                         dispatch_input(world);
                     },
-                ),));
+                ),]);
                 let state = SceneState::new(world, render.clone());
                 world
                     .root_scope_mut()
-                    .spawn(bundle!(state, tick_behaviour::<SceneState>(TICK_SCENE)));
+                    .spawn(bundle![state, tick_behaviour::<SceneState>(TICK_SCENE)]);
                 let floor = Floor::new(&wiring, render.clone());
                 world
                     .root_scope_mut()
-                    .spawn(bundle!(floor, tick_behaviour::<Floor>(TICK_FLOOR)));
+                    .spawn(bundle![floor, tick_behaviour::<Floor>(TICK_FLOOR)]);
                 let balls = Balls::new(&wiring);
                 world
                     .root_scope_mut()
-                    .spawn(bundle!(balls, tick_behaviour::<Balls>(TICK_BALLS)));
+                    .spawn(bundle![balls, tick_behaviour::<Balls>(TICK_BALLS)]);
                 if let Some(soundfont) = soundfont {
                     let audio = SceneAudio::new(&wiring, soundfont);
                     world
                         .root_scope_mut()
-                        .spawn(bundle!(audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
+                        .spawn(bundle![audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)]);
                 }
                 // The panel is the fifth object, and lives here with the rest.
                 // The host that lays it out is an entity of its own, so the
@@ -494,16 +494,16 @@ pub fn spawn_scene<R: WorldRunner>(
                 // frame, after everything that could change what the panel
                 // shows has ticked, and the render world draws whatever is
                 // there.
-                world.root_scope_mut().spawn(bundle!(UiPanelHost::new(
+                world.root_scope_mut().spawn(bundle![UiPanelHost::new(
                     panels.frames.clone(),
                     panels.screen.clone(),
                     PANEL_SLOT,
-                ),));
+                ),]);
                 mount_controls(world);
-                world.root_scope_mut().spawn(bundle!(OnFrame::new(
+                world.root_scope_mut().spawn(bundle![OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
                     |world, _entity, _frame| publish_panels(world),
-                ),));
+                ),]);
             }
         },
         {
@@ -689,11 +689,11 @@ mod tests {
             .gameplay
             .sender()
             .send(Box::new(move |world: &mut World| {
-                world.root_scope_mut().spawn(bundle!(UiPanel::new(
+                world.root_scope_mut().spawn(bundle![UiPanel::new(
                     move |_, _, _ui: &mut egui::Ui| {
                         counted.fetch_add(1, Ordering::Relaxed);
                     },
-                ),));
+                ),]);
             }))
             .expect("the gameplay world accepts a job");
 
@@ -748,7 +748,7 @@ mod tests {
             .gameplay
             .sender()
             .send(Box::new(move |world: &mut World| {
-                world.root_scope_mut().spawn(bundle!(UiPanel::new(
+                world.root_scope_mut().spawn(bundle![UiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {
                         if let Some((_, events)) = world.query::<(Entity, &InputEvents)>().next() {
                             events.with_batch(|batch| {
@@ -756,7 +756,7 @@ mod tests {
                             });
                         }
                     },
-                ),));
+                ),]);
             }))
             .expect("the gameplay world accepts a job");
 

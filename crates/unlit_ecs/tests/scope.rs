@@ -12,9 +12,9 @@ struct Name(&'static str);
 /// A world with a scene, a child of that scene, and a sibling scene.
 fn fixture() -> (World, Entity, Entity, Entity) {
     let mut world = World::new();
-    let scene = world.root_scope_mut().spawn(bundle!(Name("scene"),));
-    let child = world.scope_mut(scene).unwrap().spawn(bundle!(Marker(1),));
-    let sibling = world.root_scope_mut().spawn(bundle!(Name("other"),));
+    let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+    let child = world.scope_mut(scene).unwrap().spawn(bundle![Marker(1)]);
+    let sibling = world.root_scope_mut().spawn(bundle![Name("other")]);
     (world, scene, child, sibling)
 }
 
@@ -63,7 +63,7 @@ fn a_scene_sees_its_subtree_and_nothing_beside_it() {
 fn the_shared_subtree_reaches_every_view() {
     let (mut world, scene, _, _) = fixture();
     let shared = world.shared();
-    let global = world.scope_mut(shared).unwrap().spawn(bundle!(Marker(9),));
+    let global = world.scope_mut(shared).unwrap().spawn(bundle![Marker(9)]);
     assert!(world.root_scope().contains(global));
     assert!(
         world.scope(scene).unwrap().contains(global),
@@ -102,7 +102,7 @@ fn a_sibling_scene_cannot_read_the_other_scenes_entities() {
 #[test]
 fn two_scopes_share_an_archetype_and_still_do_not_mix() {
     let (mut world, scene, child, sibling) = fixture();
-    let other = world.scope_mut(sibling).unwrap().spawn(bundle!(Marker(2),));
+    let other = world.scope_mut(sibling).unwrap().spawn(bundle![Marker(2)]);
     // Both rows are `(Marker, ScopeOf)`, so they share one archetype.
     assert_eq!(
         world.root_scope().location(child).unwrap().archetype(),
@@ -120,8 +120,8 @@ fn two_scopes_share_an_archetype_and_still_do_not_mix() {
 #[test]
 fn a_scene_can_be_spawned_before_its_content_and_used_as_a_scope() {
     let mut world = World::new();
-    let scene = world.root_scope_mut().spawn(bundle!(Name("late"),));
-    let child = world.scope_mut(scene).unwrap().spawn(bundle!(Marker(1),));
+    let scene = world.root_scope_mut().spawn(bundle![Name("late")]);
+    let child = world.scope_mut(scene).unwrap().spawn(bundle![Marker(1)]);
     assert_eq!(world.parent_scope(child), Some(scene));
     assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 1);
 }
@@ -180,7 +180,7 @@ fn link_refuses_to_move_a_scope_into_its_own_descendant() {
 #[test]
 fn link_refuses_an_entity_the_view_does_not_own() {
     let (mut world, _, _, sibling) = fixture();
-    let other = world.root_scope_mut().spawn(bundle!(Name("third"),));
+    let other = world.root_scope_mut().spawn(bundle![Name("third")]);
     // `sibling` does not own `other`, so it cannot pull it in.
     assert!(!world.scope_mut(sibling).unwrap().link(other, sibling));
     assert_eq!(world.parent_scope(other), Some(world.root()));
@@ -200,7 +200,7 @@ fn the_roots_cannot_be_despawned_or_relinked() {
 #[test]
 fn despawning_a_scene_takes_its_whole_subtree() {
     let (mut world, scene, child, sibling) = fixture();
-    let grandchild = world.scope_mut(child).unwrap().spawn(bundle!(Marker(2),));
+    let grandchild = world.scope_mut(child).unwrap().spawn(bundle![Marker(2)]);
     assert!(world.root_scope_mut().despawn(scene));
     assert!(!world.root_scope().contains(scene));
     assert!(!world.root_scope().contains(child));
@@ -212,7 +212,7 @@ fn despawning_a_scene_takes_its_whole_subtree() {
 fn a_scene_cannot_despawn_its_ancestor() {
     let (mut world, scene, _, _) = fixture();
     let root = world.root();
-    let sibling = world.root_scope_mut().spawn(bundle!(Name("sib"),));
+    let sibling = world.root_scope_mut().spawn(bundle![Name("sib")]);
     assert!(!world.scope_mut(scene).unwrap().despawn(root));
     assert!(!world.scope_mut(scene).unwrap().despawn(sibling));
 }
@@ -266,7 +266,7 @@ fn entity_infos_only_lists_what_the_view_sees() {
 #[test]
 fn the_tree_agrees_with_the_scope_components() {
     let (mut world, scene, child, sibling) = fixture();
-    let extra = world.scope_mut(scene).unwrap().spawn(bundle!(Marker(2),));
+    let extra = world.scope_mut(scene).unwrap().spawn(bundle![Marker(2)]);
     world.scope_mut(sibling).unwrap().link(child, extra);
     assert_invariants(&world);
 
@@ -281,7 +281,7 @@ fn a_queued_spawn_lands_in_the_queue_s_scope() {
         .scope(scene)
         .unwrap()
         .queue()
-        .spawn(bundle!(Marker(3),));
+        .spawn(bundle![Marker(3)]);
     world.apply();
     assert_eq!(world.parent_scope(queued), Some(scene));
 }
@@ -324,9 +324,9 @@ fn the_shared_subtree_is_content_that_every_view_sees() {
     // A resource spawned in the shared subtree reaches every scope, and a
     // scope counts it: only the two scaffolding entities themselves are
     // excluded, not what a caller puts under them.
-    let resource = world.scope_mut(shared).unwrap().spawn(bundle!(Marker(1),));
-    let scene = world.root_scope_mut().spawn(bundle!(Name("scene"),));
-    world.scope_mut(scene).unwrap().spawn(bundle!(Marker(2),));
+    let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(1)]);
+    let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+    world.scope_mut(scene).unwrap().spawn(bundle![Marker(2)]);
 
     let scope = world.scope(scene).unwrap();
     assert!(
@@ -438,8 +438,8 @@ fn unlinking_a_scope_into_itself_is_refused() {
 fn a_shared_resource_is_the_root_s_to_despawn() {
     let mut world = World::new();
     let shared = world.shared();
-    let scene = world.root_scope_mut().spawn(bundle!(Name("scene"),));
-    let resource = world.scope_mut(shared).unwrap().spawn(bundle!(Marker(1),));
+    let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+    let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(1)]);
     assert!(
         !world.scope_mut(scene).unwrap().despawn(resource),
         "a scene cannot remove what the shared subtree lends it"
@@ -459,8 +459,8 @@ fn a_shared_resource_is_the_root_s_to_move() {
     let mut world = World::new();
     let root = world.root();
     let shared = world.shared();
-    let scene = world.root_scope_mut().spawn(bundle!(Name("scene"),));
-    let resource = world.scope_mut(shared).unwrap().spawn(bundle!(Marker(1),));
+    let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+    let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(1)]);
     assert!(
         !world.scope_mut(scene).unwrap().link(resource, scene),
         "a scene cannot move what the shared subtree lends it"
@@ -502,7 +502,7 @@ fn spawning_at_a_dead_handle_panics() {
     world
         .scope_mut(scene)
         .unwrap()
-        .spawn_at(child, bundle!(Marker(9),));
+        .spawn_at(child, bundle![Marker(9)]);
 }
 
 #[test]
@@ -510,7 +510,7 @@ fn spawning_at_a_dead_handle_panics() {
 fn an_exclusive_scope_borrow_during_a_query_panics() {
     let (mut world, _, child, sibling) = fixture();
     // Two scopes in one archetype: the query has to read each row's scope.
-    let other = world.scope_mut(sibling).unwrap().spawn(bundle!(Marker(2),));
+    let other = world.scope_mut(sibling).unwrap().spawn(bundle![Marker(2)]);
     let held = world.root_scope().query_one::<&mut ScopeOf>(other).unwrap();
     let _: Vec<_> = world.root_scope().query::<&Marker>().collect();
     drop(held);
@@ -521,9 +521,9 @@ fn an_exclusive_scope_borrow_during_a_query_panics() {
 fn a_shared_resource_is_counted_but_the_scaffolding_is_not() {
     let mut world = World::new();
     let shared = world.shared();
-    world.scope_mut(shared).unwrap().spawn(bundle!(Marker(1),));
-    let scene = world.root_scope_mut().spawn(bundle!(Name("scene"),));
-    world.scope_mut(scene).unwrap().spawn(bundle!(Marker(2),));
+    world.scope_mut(shared).unwrap().spawn(bundle![Marker(1)]);
+    let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+    world.scope_mut(scene).unwrap().spawn(bundle![Marker(2)]);
 
     assert_eq!(
         world.root_scope().len(),

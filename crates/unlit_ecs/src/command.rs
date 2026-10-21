@@ -33,7 +33,7 @@
 //! let entity = {
 //!     let scope = world.root_scope();
 //!     let commands = scope.queue();
-//!     commands.spawn(bundle!("entity",))
+//!     commands.spawn(bundle!["entity"])
 //! };
 //! // Nothing has happened yet.
 //! assert!(!world.root_scope().contains(entity));

@@ -142,15 +142,15 @@ mod tests {
         };
         let near = world
             .root_scope_mut()
-            .spawn(bundle!(mesh.clone(), Transform::default()));
-        let far = world.root_scope_mut().spawn(bundle!(
+            .spawn(bundle![mesh.clone(), Transform::default()]);
+        let far = world.root_scope_mut().spawn(bundle![
             mesh,
             Transform {
                 translation: Vec3::new(0.0, 0.0, 20.0),
                 rotation: glam::Quat::IDENTITY,
                 scale: Vec3::ONE,
             },
-        ));
+        ]);
         let frustum = frustum_at(Vec3::new(0.0, 0.0, 5.0));
         let mut out = Vec::new();
         collect_visible(&world.root_scope(), &frustum, &mut out);

@@ -616,6 +616,6 @@ mod tests {
         // crate's own code.
         world
             .root_scope_mut()
-            .spawn(crate::bundle!(ScopeOf::new(root),));
+            .spawn(crate::bundle![ScopeOf::new(root)]);
     }
 }

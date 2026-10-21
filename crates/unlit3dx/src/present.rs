@@ -337,14 +337,14 @@ pub fn setup_presenter(
         if offscreen {
             let target = bind_offscreen(&nested, context, scene_pass, &gpu.device, size)
                 .ok_or("failed to bind the offscreen target: the resource graph was gone")?;
-            let blit_pass = nested.root_scope_mut().spawn(bundle!(
+            let blit_pass = nested.root_scope_mut().spawn(bundle![
                 FramePass::new(BLIT_PASS_ORDER),
-                RenderLoadOps::default()
-            ));
+                RenderLoadOps::default(),
+            ]);
             let blit_source = nested
                 .scope_mut(blit_pass)
                 .expect("the blit pass is alive")
-                .spawn(bundle!(Source::new(BlitSource::new(target.view)),));
+                .spawn(bundle![Source::new(BlitSource::new(target.view))]);
             // The presenting pass takes each frame's swap chain image in
             // [`Presenter::present`], which is the only place that knows it.
             let (surface, attachments) =
@@ -365,7 +365,7 @@ pub fn setup_presenter(
             (None, surface, attachments)
         }
     };
-    world.root_scope_mut().spawn(bundle!(Presenter {
+    world.root_scope_mut().spawn(bundle![Presenter {
         render,
         renderer,
         scene_pass,
@@ -374,7 +374,7 @@ pub fn setup_presenter(
         surface,
         attachments,
         fallback_size,
-    },));
+    },]);
     Ok(())
 }
 

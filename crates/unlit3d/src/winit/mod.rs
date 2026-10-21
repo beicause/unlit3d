@@ -30,11 +30,11 @@
 //! # fn main() -> Result<(), winit::error::EventLoopError> {
 //! let event_loop = EventLoop::new()?;
 //! let mut host = WinitHost::new();
-//! host.world_mut().root_scope_mut().spawn(bundle!(
+//! host.world_mut().root_scope_mut().spawn(bundle![
 //!     WindowSpec(Window::default_attributes().with_title("unlit3d")),
 //!     create_window_on_resume(),
 //!     exit_on_close_requested(),
-//! ));
+//! ]);
 //! host.run(event_loop)
 //! # }
 //! ```

@@ -291,11 +291,11 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
     let mut physics = PhysicsWorld::new();
     physics.gravity = config.gravity;
-    world.root_scope_mut().spawn(bundle!(
+    world.root_scope_mut().spawn(bundle![
         physics,
         PhysicsEvents::new(),
-        PhysicsContacts::default()
-    ));
+        PhysicsContacts::default(),
+    ]);
 }
 
 /// Step the rapier world once, draining its contacts into

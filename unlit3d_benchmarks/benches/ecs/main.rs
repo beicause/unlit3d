@@ -93,15 +93,15 @@ impl Fixture {
         let with_material = count - count / 8;
         for index in 0..count {
             if index < with_material {
-                world.root_scope_mut().spawn(bundle!(
+                world.root_scope_mut().spawn(bundle![
                     Pipeline(index),
                     Mesh(index),
                     Material(u64::from(index)),
-                ));
+                ]);
             } else {
                 world
                     .root_scope_mut()
-                    .spawn(bundle!(Pipeline(index), Mesh(index)));
+                    .spawn(bundle![Pipeline(index), Mesh(index)]);
             }
         }
 

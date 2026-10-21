@@ -201,7 +201,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     // One key per topology, reused by that topology's two cells: an indexed
     // and a non-indexed draw share a pipeline wherever the topology cannot
@@ -216,11 +216,11 @@ fn build(
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        bundle!(camera_looking_at(
+        bundle![camera_looking_at(
             glam::Vec3::new(0.0, 0.0, CAMERA_DISTANCE),
             glam::Vec3::ZERO,
             size,
-        ),),
+        ),],
     );
 
     let mut entities = Vec::new();
@@ -258,7 +258,7 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            bundle!(mesh, UnlitPipeline::new(keys[column].clone())),
+            bundle![mesh, UnlitPipeline::new(keys[column].clone())],
         );
     }
 

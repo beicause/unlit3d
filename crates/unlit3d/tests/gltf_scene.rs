@@ -296,7 +296,7 @@ async fn a_morphed_quad_follows_its_weights() {
         "the spawn starts at the document's weights"
     );
 
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_morphed");
 
     let read = |gpu: &TestGpu| {
@@ -418,7 +418,7 @@ async fn an_animation_moves_the_drawn_mesh() {
     let resources =
         gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     let nodes = spawn_scene(&gpu, &mut world, &gltf, &resources);
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_animated");
 
     let read = |gpu: &TestGpu, time: f32| {
@@ -494,7 +494,7 @@ async fn a_skinned_quad_follows_its_joint() {
         rest[0]
     );
 
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_skinned");
 
     let read = |gpu: &TestGpu| {
@@ -547,7 +547,7 @@ async fn textured_quad_renders_four_colours() {
     let resources =
         gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     let _entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_textured_quad");
     gpu.render(&world);
@@ -655,7 +655,7 @@ async fn a_double_sided_material_draws_back_faces() {
             let resources =
                 gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
             spawn_scene(&gpu, &mut world, &gltf, &resources);
-            gpu.spawn(&mut world, bundle!(camera(),));
+            gpu.spawn(&mut world, bundle![camera()]);
 
             let target = gpu.bind_offscreen_target(&world, "test::gltf_double_sided");
             gpu.render(&world);
@@ -702,7 +702,7 @@ async fn node_hierarchy_translates_the_quad() {
             gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
         let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_translated_quad");
         let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
-        gpu.spawn(&mut world, bundle!(camera(),));
+        gpu.spawn(&mut world, bundle![camera()]);
         gpu.render(&world);
         let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle);
         // Drop what the document added and despawn its entities, so the next
@@ -754,7 +754,7 @@ async fn untextured_material_draws_flat() {
     );
 
     let _entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_flat_quad");
     gpu.render(&world);
     let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
@@ -817,7 +817,7 @@ async fn a_blended_material_composites_over_the_frame() {
         "a blended primitive spawns with ZSortedDrawing"
     );
 
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
     let target = gpu.bind_offscreen_target(&world, "test::gltf_blended_quad");
     gpu.render(&world);
     let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target);
@@ -884,7 +884,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
         );
 
         let target_handle = gpu.bind_offscreen_target(&world, "test::gltf_masked_quad");
-        gpu.spawn(&mut world, bundle!(camera(),));
+        gpu.spawn(&mut world, bundle![camera()]);
         gpu.render(&world);
         let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle);
         for node in entities {
@@ -933,7 +933,7 @@ async fn unload_empties_the_frame() {
     let resources =
         gpu.with_mesh_source(&world, |source, world| gltf.insert_resources(source, world));
     let entities = spawn_scene(&gpu, &mut world, &gltf, &resources);
-    gpu.spawn(&mut world, bundle!(camera(),));
+    gpu.spawn(&mut world, bundle![camera()]);
 
     let target = gpu.bind_offscreen_target(&world, "test::gltf_unload_before");
     gpu.render(&world);

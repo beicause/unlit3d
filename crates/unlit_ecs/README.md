@@ -44,7 +44,7 @@ It is at an **early stage of development** and its API changes freely.
   is a component too. A *bundle* is therefore not a tuple of components but the
   list [`bundle!`] builds or an [`ArchetypeBuilder`] gathers, and a plain
   `(a, b)` handed to a spawn is one component, the pair. The macro walks the
-  syntax while expanding, so `bundle!(a, b)` is two components and a
+  syntax while expanding, so `bundle![a, b]` is two components and a
   parenthesised item is one component, tuples included.
 - **There are no systems.** Driving behaviour means the caller reading the
   world and calling the method or closure it wants — or running a *behaviour
@@ -85,8 +85,8 @@ use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
 let scene = world.root_scope_mut().spawn_empty();
-let cube = world.scope_mut(scene).unwrap().spawn(bundle!(0u32));
-let camera = world.scope_mut(scene).unwrap().spawn(bundle!(0f32));
+let cube = world.scope_mut(scene).unwrap().spawn(bundle![0u32]);
+let camera = world.scope_mut(scene).unwrap().spawn(bundle![0f32]);
 
 // The scene's scope sees the scene and everything below it, and nothing beside.
 let scope = world.scope(scene).unwrap();
@@ -218,8 +218,8 @@ struct Spin {
 }
 
 let mut world = World::new();
-let cube = world.root_scope_mut().spawn(bundle!(Spin { radians_per_second: 1.0, angle: 0.0 }));
-let clock = world.root_scope_mut().spawn(bundle!(0.016f32));
+let cube = world.root_scope_mut().spawn(bundle![Spin { radians_per_second: 1.0, angle: 0.0 }]);
+let clock = world.root_scope_mut().spawn(bundle![0.016f32]);
 
 // Drive every `Spin`. The caller picks which entities to touch and in what
 // order; the library has no built-in notion of a scene graph.
@@ -262,7 +262,7 @@ use unlit_ecs::{World, bundle};
 let mut world = World::new();
 let entity = {
     let commands = world.root_scope().queue();
-    commands.spawn(bundle!("entity"))
+    commands.spawn(bundle!["entity"])
 };
 // Nothing has happened yet.
 assert!(!world.root_scope().contains(entity));
@@ -272,16 +272,19 @@ assert!(world.root_scope().contains(entity));
 
 A bundle is what [`bundle!`] writes or what an [`ArchetypeBuilder`] gathers; a
 tuple is not one, because a tuple is itself a component. Every item of the list
-is one component — a parenthesised tuple stays a tuple, so `bundle!((a, b), c)`
-is a tuple component and `c`, and `bundle!(())` is an empty tuple component. Its
-width is limited by the compiler's recursion limit, about a hundred components
-at the default, and a wider one is built by raising `#![recursion_limit]`:
+is one component — a parenthesised tuple stays a tuple, so `bundle![(a, b), c]`
+is a tuple component and `c`, and `bundle![()]` is an empty tuple component. The
+macro is written with brackets throughout, `bundle![a, b]`, which keeps its
+items apart from the arguments of a call; a list of one needs no comma, so
+`bundle![a]` is the single component `a`. Its width is limited by the compiler's
+recursion limit, about a hundred components at the default, and a wider one is
+built by raising `#![recursion_limit]`:
 
 ```rust
 use unlit_ecs::{Has, World, bundle};
 
 let mut world = World::new();
-let entity = world.root_scope_mut().spawn(bundle!((1u32, 2.0f32), (true, ())));
+let entity = world.root_scope_mut().spawn(bundle![(1u32, 2.0f32), (true, ())]);
 
 // Two components: one tuple, and a nested one.
 let scope = world.root_scope();
@@ -302,7 +305,7 @@ let mut gathered = ArchetypeBuilder::new();
 gathered.push_component(1u32);
 
 let mut world = World::new();
-let entity = world.root_scope_mut().spawn(bundle!(..gathered, 2.0f32));
+let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
 assert_eq!(scope.query_one::<Has<u32>>(entity), Some(true));

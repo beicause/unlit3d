@@ -14,7 +14,7 @@ struct Marker(u32);
 /// applies the queue afterwards.
 fn run_behaviour(world: &World, commands: Commands<'_>) -> Entity {
     let template = world.root_scope().query::<&Spawned>().count();
-    commands.spawn(bundle!(Marker(template as u32), Spawned))
+    commands.spawn(bundle![Marker(template as u32), Spawned])
 }
 
 #[test]
@@ -53,8 +53,8 @@ fn a_queued_handle_is_usable_before_apply() {
 
     // The handle comes back immediately, so it can be stored in a component
     // on another entity before the queue is applied.
-    let child = world.root_scope().queue().spawn(bundle!(Marker(7),));
-    let owner = world.root_scope_mut().spawn(bundle!(Marker(0), child));
+    let child = world.root_scope().queue().spawn(bundle![Marker(7)]);
+    let owner = world.root_scope_mut().spawn(bundle![Marker(0), child]);
 
     world.apply();
 
@@ -68,7 +68,7 @@ fn a_queued_handle_is_usable_before_apply() {
 #[test]
 fn a_queued_despawn_only_takes_effect_on_apply() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn(bundle!(Marker(1),));
+    let entity = world.root_scope_mut().spawn(bundle![Marker(1)]);
 
     world.root_scope().queue().despawn(entity);
     assert!(
@@ -83,8 +83,8 @@ fn a_queued_despawn_only_takes_effect_on_apply() {
 #[test]
 fn commands_apply_in_the_order_they_were_queued() {
     let mut world = World::new();
-    let first = world.root_scope().queue().spawn(bundle!(Marker(1),));
-    let second = world.root_scope().queue().spawn(bundle!(Marker(2),));
+    let first = world.root_scope().queue().spawn(bundle![Marker(1)]);
+    let second = world.root_scope().queue().spawn(bundle![Marker(2)]);
 
     world.apply();
 
@@ -103,8 +103,8 @@ fn commands_queued_while_applying_are_applied_too() {
 
     let seed = {
         let commands = world.root_scope().queue();
-        let seed = commands.spawn(bundle!(Marker(1),));
-        commands.spawn(bundle!(Marker(2),));
+        let seed = commands.spawn(bundle![Marker(1)]);
+        commands.spawn(bundle![Marker(2)]);
         seed
     };
     world.apply();
@@ -112,7 +112,7 @@ fn commands_queued_while_applying_are_applied_too() {
     assert_eq!(world.root_scope().len(), 2);
 
     // A later batch is a fresh queue and applies on its own `apply`.
-    let third = world.root_scope().queue().spawn(bundle!(Marker(3),));
+    let third = world.root_scope().queue().spawn(bundle![Marker(3)]);
     world.apply();
     assert!(world.root_scope().contains(third));
     assert_eq!(world.root_scope().len(), 3);
@@ -124,7 +124,7 @@ fn applying_an_empty_queue_changes_nothing() {
     world.apply();
     assert!(world.root_scope().is_empty());
 
-    world.root_scope_mut().spawn(bundle!(Marker(1),));
+    world.root_scope_mut().spawn(bundle![Marker(1)]);
     let before = world.root_scope().len();
     world.apply();
     assert_eq!(world.root_scope().len(), before);
@@ -152,8 +152,8 @@ fn a_custom_command_can_be_queued() {
     }
 
     let mut world = World::new();
-    let low = world.root_scope_mut().spawn(bundle!(Marker(1),));
-    let high = world.root_scope_mut().spawn(bundle!(Marker(9),));
+    let low = world.root_scope_mut().spawn(bundle![Marker(1)]);
+    let high = world.root_scope_mut().spawn(bundle![Marker(9)]);
 
     world.root_scope().queue().push(DespawnBelow(5));
     assert!(world.root_scope().contains(low), "not applied yet");
@@ -169,7 +169,7 @@ fn many_commands_apply_without_losing_any() {
     let handles: Vec<Entity> = {
         let commands = world.root_scope().queue();
         (0..256u32)
-            .map(|value| commands.spawn(bundle!(Marker(value),)))
+            .map(|value| commands.spawn(bundle![Marker(value)]))
             .collect()
     };
 

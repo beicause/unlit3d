@@ -241,14 +241,14 @@ pub fn bind_offscreen_target(
 /// carries the frame. It is given the default load ops, clearing the surface
 /// before the fullscreen triangle covers it.
 fn mount_blit(world: &mut World, view: ResHandle<TextureView>) -> Blit {
-    let pass = world.root_scope_mut().spawn(bundle!(
+    let pass = world.root_scope_mut().spawn(bundle![
         FramePass::new(BLIT_ORDER),
-        RenderLoadOps::default()
-    ));
+        RenderLoadOps::default(),
+    ]);
     let source = world
         .scope_mut(pass)
         .expect("the pass was just spawned")
-        .spawn(bundle!(Source::new(BlitSource::new(view)),));
+        .spawn(bundle![Source::new(BlitSource::new(view))]);
     Blit { pass, source }
 }
 
@@ -349,10 +349,10 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     world
         .scope_mut(shared)
         .expect("the shared scope exists")
-        .spawn(bundle!(input.clone(),));
+        .spawn(bundle![input.clone()]);
     world
         .root_scope_mut()
-        .spawn(bundle!(winit_input_behaviour(WinitInput::new(input)),));
+        .spawn(bundle![winit_input_behaviour(WinitInput::new(input))]);
 
     // The window is requested at the first resume, not created here: a
     // platform may not allow a window before then.
@@ -369,26 +369,26 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         use winit::platform::web::WindowAttributesExtWebSys;
         attributes = attributes.with_append(true);
     }
-    world.root_scope_mut().spawn(bundle!(
+    world.root_scope_mut().spawn(bundle![
         WindowSpec(attributes),
         CreateWindowRequest(None),
         create_window_on_resume(),
-    ));
+    ]);
 
     world
         .root_scope_mut()
-        .spawn(bundle!(ExitRequest(false), exit_on_close_requested()));
+        .spawn(bundle![ExitRequest(false), exit_on_close_requested()]);
     world
         .root_scope_mut()
-        .spawn(bundle!(ExitRequest(false), exit_on_escape()));
+        .spawn(bundle![ExitRequest(false), exit_on_escape()]);
     world
         .root_scope_mut()
-        .spawn(bundle!(request_redraw_while_foreground(),));
+        .spawn(bundle![request_redraw_while_foreground()]);
 
     // The application's state and its per-callback behaviours share one
     // entity: every component is its own cell, so a callback writing a sibling
     // state component never conflicts with the behaviour being run.
-    let app = world.root_scope_mut().spawn(bundle!(
+    let app = world.root_scope_mut().spawn(bundle![
         GpuState::Idle,
         SceneEntity(None),
         Offscreen(None),
@@ -403,30 +403,28 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         WinitProxy(proxy),
         FrameSkip::default(),
         draw_on_redraw(),
-    ));
+    ]);
     // The frame's own behaviours, in order: request the GPU, build the scene
     // and its surface, serve the controls, advance the scene, present it.
-    world.root_scope_mut().spawn(bundle!(request_gpu(app),));
+    world.root_scope_mut().spawn(bundle![request_gpu(app)]);
+    world.root_scope_mut().spawn(bundle![ensure_presented(app)]);
     world
         .root_scope_mut()
-        .spawn(bundle!(ensure_presented(app),));
-    world
-        .root_scope_mut()
-        .spawn(bundle!(serve_scene_controls(app),));
-    world.root_scope_mut().spawn(bundle!(advance_scene(app),));
-    world.root_scope_mut().spawn(bundle!(present_frame(app),));
+        .spawn(bundle![serve_scene_controls(app)]);
+    world.root_scope_mut().spawn(bundle![advance_scene(app)]);
+    world.root_scope_mut().spawn(bundle![present_frame(app)]);
     // A resize is a second `OnWindowEvent` behaviour, so it sits on its own
     // entity: two of one family on an entity would be two borrows of one cell.
-    world.root_scope_mut().spawn(bundle!(resize_scene(app),));
+    world.root_scope_mut().spawn(bundle![resize_scene(app)]);
     // Serving a user event needs the proxy and the app's state, so it captures
     // the app entity; it is a family of its own, so it sits on its own entity.
     world
         .root_scope_mut()
-        .spawn(bundle!(handle_user_event(app),));
+        .spawn(bundle![handle_user_event(app)]);
     #[cfg(target_os = "android")]
     world
         .root_scope_mut()
-        .spawn(bundle!(release_on_suspend(app),));
+        .spawn(bundle![release_on_suspend(app)]);
 
     host.run(event_loop).expect("the event loop runs");
 }
@@ -923,7 +921,7 @@ fn present(world: &World, app: Entity) {
                 world
                     .root_scope()
                     .queue()
-                    .spawn(bundle!(scene_world, scene, WorldName("render")));
+                    .spawn(bundle![scene_world, scene, WorldName("render")]);
             let _ = world
                 .root_scope()
                 .query_one::<&mut SceneEntity>(app)
@@ -1769,7 +1767,7 @@ impl Scene {
         );
         let renderer = world
             .root_scope_mut()
-            .spawn(bundle!(Renderer::new(context),));
+            .spawn(bundle![Renderer::new(context)]);
         // The pass the scene draws in. Everything the scene builds hangs under
         // it — its sources, and the UI source mounted below — because a pass
         // records the sources in its own scope: the pass a source sits under is
@@ -1784,7 +1782,7 @@ impl Scene {
         };
         let pass = world
             .root_scope_mut()
-            .spawn(bundle!(FramePass::new(SCENE_ORDER), load));
+            .spawn(bundle![FramePass::new(SCENE_ORDER), load]);
         // The scene's content is built for the region it will be drawn into,
         // not for the whole target: a camera built for the target's aspect
         // would be sheared back out to it by the viewport. A run that does not
@@ -1819,7 +1817,7 @@ impl Scene {
             world
                 .scope_mut(pass)
                 .expect("the pass was just spawned")
-                .spawn(bundle!(Source::new(source_ui),))
+                .spawn(bundle![Source::new(source_ui)])
         });
         let control = (def.build)(&mut world, context, pass, ui, content, options);
         let SceneControl { advance, snapshot } = control;
@@ -1832,37 +1830,37 @@ impl Scene {
         let (switch, fullscreen, fullscreen_active, frame_rate) = {
             let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
             (
-                shared_view.spawn(bundle!(SceneSwitch(None),)),
-                shared_view.spawn(bundle!(FullscreenRequest(false),)),
-                shared_view.spawn(bundle!(FullscreenActive(false),)),
-                shared_view.spawn(bundle!(FrameRate::default(),)),
+                shared_view.spawn(bundle![SceneSwitch(None)]),
+                shared_view.spawn(bundle![FullscreenRequest(false)]),
+                shared_view.spawn(bundle![FullscreenActive(false)]),
+                shared_view.spawn(bundle![FrameRate::default()]),
             )
         };
         // The scene's per-frame state and its own behaviour, as components: the
         // frame's behaviours advance them without `&mut Scene`. One entity
         // carries them so the behaviour that advances the scene and the state
         // it reads are reached together.
-        let frame_entity = world.root_scope_mut().spawn(bundle!(
+        let frame_entity = world.root_scope_mut().spawn(bundle![
             SceneAdvance(Some(advance)),
             SequenceStep(options.sequence_step),
             SequenceClock(0.0),
             SequenceStepped(true),
-        ));
+        ]);
         // The frame's own dispatch, in order: run the frame's input, step the
         // index a fixed sequence holds each frame for, then advance the scene
         // by the frame the index names.
         world
             .root_scope_mut()
-            .spawn(bundle!(dispatch_input_on_frame(),));
+            .spawn(bundle![dispatch_input_on_frame()]);
         world
             .root_scope_mut()
-            .spawn(bundle!(step_sequence(frame_entity),));
+            .spawn(bundle![step_sequence(frame_entity)]);
         world
             .root_scope_mut()
-            .spawn(bundle!(run_scene_advance(frame_entity),));
+            .spawn(bundle![run_scene_advance(frame_entity)]);
         // A scene world has no window: it starts whole and nothing short-
         // circuits it. Spawning the flag lets a scene behaviour do so.
-        world.root_scope_mut().spawn(bundle!(FrameSkip::default(),));
+        world.root_scope_mut().spawn(bundle![FrameSkip::default()]);
 
         if let Some(ui) = ui
             && options.selector
@@ -2107,7 +2105,7 @@ fn mount_selector(
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn(bundle!(UiPanel::new(move |world, _entity, ui| {
+        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
             // The id is set explicitly: `Window::new` derives it from the title's
             // `Atoms` text, whose hash differs from a plain string id, so the
             // shell's read of the remembered rect would never match.
@@ -2149,7 +2147,7 @@ fn mount_selector(
                     }
                 }
             });
-        },),));
+        },),]);
 }
 
 /// The frame rate the windowed shell reports, as a component so the panel that
@@ -2305,13 +2303,13 @@ fn mount_frame_rate(world: &mut World, ui: Entity, rate: Entity) {
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn(bundle!(UiPanel::new(move |world, _entity, ui| {
+        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
             let text = world
                 .query_one::<&FrameRate>(rate)
                 .map(|rate| rate.text())
                 .expect("the frame-rate component exists");
             frame_rate_readout(ui, &text);
-        },),));
+        },),]);
 }
 
 /// Draw the frame-rate readout, showing `text`, centred along the top edge of
@@ -2485,9 +2483,9 @@ fn mount_gpu_info(world: &mut World, ui: Entity, device: Entity, initial: Option
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn(bundle!(UiPanel::new(move |_world, _entity, ui| {
+        .spawn(bundle![UiPanel::new(move |_world, _entity, ui| {
             gpu_info_panel(ui, &info, initial);
-        },),));
+        },),]);
 }
 
 /// One line of the GPU-info panel.
@@ -2698,7 +2696,7 @@ fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entit
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn(bundle!(UiPanel::new(move |world, _entity, ui| {
+        .spawn(bundle![UiPanel::new(move |world, _entity, ui| {
             let active = world
                 .query_one::<&FullscreenActive>(state)
                 .is_some_and(|state| state.0);
@@ -2707,7 +2705,7 @@ fn mount_fullscreen(world: &mut World, ui: Entity, request: Entity, state: Entit
                     .query_one::<&mut FullscreenRequest>(request)
                     .map(|mut request| request.0 = true);
             }
-        },),));
+        },),]);
 }
 
 /// Mount the link to the API docs in the window's top-right corner.
@@ -2726,9 +2724,9 @@ fn mount_api_docs(world: &mut World, ui: Entity) {
     world
         .scope_mut(ui)
         .expect("the UI source is alive")
-        .spawn(bundle!(UiPanel::new(|_world, _entity, ui| {
+        .spawn(bundle![UiPanel::new(|_world, _entity, ui| {
             api_docs_button(ui);
-        }),));
+        }),]);
 }
 
 /// The vertical offset a corner button's anchor is drawn at, given the area
@@ -2918,11 +2916,11 @@ mod tests {
             TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default()),
             None,
         );
-        let app = world.root_scope_mut().spawn(bundle!(
+        let app = world.root_scope_mut().spawn(bundle![
             InitialScene(scenes::default()),
             Offscreen(Some(OffscreenTarget { texture, view })),
             SceneEntity(Some(old_scene)),
-        ));
+        ]);
 
         let next = scenes::by_id("ui_only").expect("the example ships a UI-only scene");
         switch_scene(&world, app, next);

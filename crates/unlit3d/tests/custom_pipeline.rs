@@ -404,9 +404,9 @@ async fn a_custom_pipeline_draws_through_the_ecs() {
     // exists.
     gpu.spawn(
         &mut world,
-        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+        bundle![camera_view(WIDTH as f32 / HEIGHT as f32)],
     );
-    gpu.spawn(&mut world, bundle!(Transform::default(), mesh, pipeline));
+    gpu.spawn(&mut world, bundle![Transform::default(), mesh, pipeline]);
 
     // A draw the pipeline is built for must be valid, so the draw is left to
     // wgpu's default error handling: anything it reports panics the test.
@@ -520,16 +520,16 @@ async fn one_pipeline_draws_many_meshes() {
     // The same handle is spawned twice: it is cloned, not owned by a mesh.
     gpu.spawn(
         &mut world,
-        bundle!(camera_view(WIDTH as f32 / HEIGHT as f32),),
+        bundle![camera_view(WIDTH as f32 / HEIGHT as f32)],
     );
     // The mesh is uploaded in clip space and the vertex stage ignores the
     // instance matrix, so the two draws land on top of each other; only the
     // tint they were bound with distinguishes them.
     gpu.spawn(
         &mut world,
-        bundle!(Transform::default(), red, pipeline.clone()),
+        bundle![Transform::default(), red, pipeline.clone()],
     );
-    gpu.spawn(&mut world, bundle!(Transform::default(), green, pipeline));
+    gpu.spawn(&mut world, bundle![Transform::default(), green, pipeline]);
 
     let target = gpu.render_to_offscreen(&world, "test::custom::shared");
 

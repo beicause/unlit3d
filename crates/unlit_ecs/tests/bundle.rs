@@ -28,10 +28,10 @@ fn types_of(world: &World, entity: Entity) -> Vec<core::any::TypeId> {
 #[test]
 fn a_flat_list_spawns_every_component() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn(bundle!(
+    let entity = world.root_scope_mut().spawn(bundle![
         Position { x: 1.0, y: 2.0 },
-        Velocity { dx: 3.0, dy: 4.0 }
-    ));
+        Velocity { dx: 3.0, dy: 4.0 },
+    ]);
 
     assert_eq!(
         world.root_scope().query_one::<&Position>(entity).unwrap().x,
@@ -50,10 +50,10 @@ fn a_flat_list_spawns_every_component() {
 #[test]
 fn a_parenthesised_group_is_one_component() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn(bundle!(
+    let entity = world.root_scope_mut().spawn(bundle![
         Position { x: 1.0, y: 2.0 },
-        (Velocity { dx: 3.0, dy: 4.0 }, 7u32)
-    ));
+        (Velocity { dx: 3.0, dy: 4.0 }, 7u32),
+    ]);
 
     let nested = world
         .root_scope()
@@ -109,7 +109,7 @@ fn a_tuple_pushed_whole_is_one_component() {
 #[test]
 fn an_empty_tuple_is_a_component() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn(bundle!((), 1u32));
+    let entity = world.root_scope_mut().spawn(bundle![(), 1u32]);
 
     assert!(
         world
@@ -124,7 +124,7 @@ fn an_empty_tuple_is_a_component() {
 #[test]
 fn the_macro_returns_a_bundle_that_spawns_nothing() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn(bundle!());
+    let entity = world.root_scope_mut().spawn(bundle![]);
 
     assert!(world.root_scope().contains(entity));
     assert!(
@@ -142,7 +142,7 @@ fn a_group_holding_one_expression_is_that_expression_as_a_component() {
     let value = 4u32;
     let entity = world
         .root_scope_mut()
-        .spawn(bundle!((value,), (value as u64,)));
+        .spawn(bundle![(value,), (value as u64,)]);
 
     assert!(
         world
@@ -176,7 +176,7 @@ fn more_than_sixteen_components() {
     let mut world = World::new();
     // Twenty-three distinct components, wider than any tuple the query items
     // cover, which the macro is not bound by.
-    let entity = world.root_scope_mut().spawn(bundle!(
+    let entity = world.root_scope_mut().spawn(bundle![
         1u8,
         2u16,
         3u32,
@@ -200,7 +200,7 @@ fn more_than_sixteen_components() {
         M06,
         M07,
         M08,
-    ));
+    ]);
 
     let location = world.root_scope().location(entity).unwrap();
     let archetype = world.root_scope().archetype(location.archetype()).unwrap();
@@ -225,7 +225,7 @@ fn a_parenthesised_bundle_matches_the_equivalent_composite() {
     let mut written_world = World::new();
     let written = written_world
         .root_scope_mut()
-        .spawn(bundle!((1u32, 2.0f32), (true,)));
+        .spawn(bundle![(1u32, 2.0f32), (true,)]);
 
     let mut pushed_world = World::new();
     let mut builder = ArchetypeBuilder::new();
@@ -244,7 +244,7 @@ fn a_parenthesised_bundle_matches_the_equivalent_composite() {
 #[should_panic(expected = "same component twice")]
 fn a_duplicate_panics() {
     let mut world = World::new();
-    world.root_scope_mut().spawn(bundle!(1u32, 1u32));
+    world.root_scope_mut().spawn(bundle![1u32, 1u32]);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn a_queued_spawn_applies() {
     let mut world = World::new();
     let entity = {
         let commands: Commands<'_> = world.root_scope().queue();
-        commands.spawn(bundle!((1u32, 2.0f32), true))
+        commands.spawn(bundle![(1u32, 2.0f32), true])
     };
 
     assert!(!world.root_scope().contains(entity), "queued, not spawned");
@@ -303,7 +303,7 @@ fn a_built_bundle_is_a_bundle() {
 
 #[test]
 fn into_builder_returns_exactly_the_bundles_components() {
-    let builder = bundle!((1u32, 2.0f32), true).into_builder();
+    let builder = bundle![(1u32, 2.0f32), true].into_builder();
 
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(builder);
@@ -342,7 +342,7 @@ fn a_builder_is_spread_with_a_dot_dot() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn(bundle!(..gathered, Velocity { dx: 3.0, dy: 4.0 }));
+        .spawn(bundle![..gathered, Velocity { dx: 3.0, dy: 4.0 }]);
 
     assert_eq!(
         world.root_scope().query_one::<&Position>(entity).unwrap().y,
@@ -382,7 +382,7 @@ fn a_custom_bundle_is_spread_with_a_dot_dot() {
     let mut world = World::new();
     let entity = world
         .root_scope_mut()
-        .spawn(bundle!(..Pose(Position { x: 5.0, y: 6.0 }), true));
+        .spawn(bundle![..Pose(Position { x: 5.0, y: 6.0 }), true]);
 
     assert_eq!(
         world.root_scope().query_one::<&Position>(entity).unwrap().x,
@@ -410,7 +410,7 @@ fn a_bundle_spread_keeps_a_tuple_component_whole() {
     builder.push_component((2.0f32, true));
 
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn(bundle!(..builder));
+    let entity = world.root_scope_mut().spawn(bundle![..builder]);
 
     assert!(
         world
@@ -435,7 +435,7 @@ fn a_queued_spread_bundle_applies() {
     let mut world = World::new();
     let entity = {
         let commands: Commands<'_> = world.root_scope().queue();
-        commands.spawn(bundle!(..builder, 2.0f32))
+        commands.spawn(bundle![..builder, 2.0f32])
     };
 
     assert!(!world.root_scope().contains(entity), "queued, not spawned");
@@ -462,7 +462,7 @@ fn a_duplicate_across_a_spread_panics() {
     builder.push_component(1u32);
 
     let mut world = World::new();
-    world.root_scope_mut().spawn(bundle!(1u32, ..builder));
+    world.root_scope_mut().spawn(bundle![1u32, ..builder]);
 }
 
 #[test]

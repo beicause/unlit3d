@@ -213,12 +213,12 @@ pub fn build_world(
     );
     let renderer = world
         .root_scope_mut()
-        .spawn(bundle!(Renderer::new(context),));
+        .spawn(bundle![Renderer::new(context)]);
 
     let clear = config.output.clear;
     // The frame is one pass: it states what it clears and where it draws, and
     // the mesh source hangs under it, which is what records the source into it.
-    let pass = world.root_scope_mut().spawn(bundle!(
+    let pass = world.root_scope_mut().spawn(bundle![
         FramePass::new(FramePassOrder(0)),
         RenderLoadOps {
             color: wgpu::LoadOp::Clear(wgpu::Color {
@@ -230,7 +230,7 @@ pub fn build_world(
             depth: depth_clear(),
             stencil: stencil_clear(),
         },
-    ));
+    ]);
 
     let target = bind_target(
         &world,
@@ -247,7 +247,7 @@ pub fn build_world(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     for document in &config.documents {
         let gltf = UnlitGltf::load(&document.path)?;
@@ -281,7 +281,7 @@ pub fn build_world(
     world
         .scope_mut(source_entity)
         .expect("the source entity is its own scope")
-        .spawn(bundle!(camera(&config.camera, render_size),));
+        .spawn(bundle![camera(&config.camera, render_size)]);
 
     let viewport_width = render_size.0 as f32 * config.output.scale.0;
     let viewport_height = render_size.1 as f32 * config.output.scale.1;
@@ -324,26 +324,26 @@ pub fn offscreen_world(
     );
     let renderer = world
         .root_scope_mut()
-        .spawn(bundle!(Renderer::new(context),));
+        .spawn(bundle![Renderer::new(context)]);
     // The frame is one pass, drawing into the offscreen target and clearing
     // with the defaults; the mesh source hangs under it.
-    let pass = world.root_scope_mut().spawn(bundle!(
+    let pass = world.root_scope_mut().spawn(bundle![
         FramePass::new(FramePassOrder(0)),
-        RenderLoadOps::default()
-    ));
+        RenderLoadOps::default(),
+    ]);
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
     // The input is shared by every source, so it lives in the subtree every
     // scope sees.
     let input = InputWriter::new();
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn(bundle!(input.clone(), input.subscribe()));
+        shared_view.spawn(bundle![input.clone(), input.subscribe()]);
     }
 
     bind_target(&world, context, pass, &device, size, samples, depth);
@@ -351,7 +351,7 @@ pub fn offscreen_world(
     world
         .scope_mut(source_entity)
         .expect("the source entity is its own scope")
-        .spawn(bundle!(default_camera(size),));
+        .spawn(bundle![default_camera(size)]);
     (world, renderer)
 }
 

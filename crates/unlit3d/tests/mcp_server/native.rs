@@ -37,27 +37,27 @@ fn offscreen_world(ctx: &Ctx) -> World {
     );
     // The pass carries the load ops the frame is opened with, so the MCP
     // client can patch them on the entity it finds them on.
-    let pass = world.root_scope_mut().spawn(bundle!(
+    let pass = world.root_scope_mut().spawn(bundle![
         FramePass::new(FramePassOrder(0)),
-        RenderLoadOps::default()
-    ));
+        RenderLoadOps::default(),
+    ]);
     world
         .root_scope_mut()
-        .spawn(bundle!(Renderer::new(context),));
+        .spawn(bundle![Renderer::new(context)]);
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass entity is its own scope")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
     // The world dispatches its own input, so it holds a buffer of its own and
     // the writer that feeds it.
     let input = InputWriter::new();
     {
         let shared = world.shared();
         let mut shared_view = world.scope_mut(shared).expect("the shared scope exists");
-        shared_view.spawn(bundle!(input.subscribe(),));
-        shared_view.spawn(bundle!(input,));
+        shared_view.spawn(bundle![input.subscribe()]);
+        shared_view.spawn(bundle![input]);
     }
 
     let color = create_color_target(&ctx.device, COLOR_FORMAT, SIZE.0, SIZE.1);
@@ -90,7 +90,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     world
         .scope_mut(source_entity)
         .expect("the source entity is its own scope")
-        .spawn(bundle!(Camera {
+        .spawn(bundle![Camera {
             view_from_world: glam::camera::rh::view::look_at_mat4(
                 glam::Vec3::new(0.0, 1.0, 3.0),
                 glam::Vec3::ZERO,
@@ -102,7 +102,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
                 0.1,
             ),
             active: true,
-        },));
+        },]);
 
     world
 }

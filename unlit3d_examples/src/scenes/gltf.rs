@@ -102,7 +102,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     // Both documents' resources go into the one source the scene draws
     // through: a mesh allocated by one source cannot be drawn by another, so
@@ -156,7 +156,7 @@ fn build(
     let camera_entity = super::spawn_in(
         world,
         source_entity,
-        bundle!(super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size),),
+        bundle![super::camera_looking_at(CAMERA_EYE, CAMERA_TARGET, size)],
     );
 
     let fox_animation = animation_index(&fox, FOX_ANIMATION);

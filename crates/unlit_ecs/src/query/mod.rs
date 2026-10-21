@@ -20,8 +20,8 @@
 //! ```rust
 //! # use unlit_ecs::{Entity, Has, World, bundle};
 //! let mut world = World::new();
-//! world.root_scope_mut().spawn(bundle!(1u32, 10.0f32));
-//! world.root_scope_mut().spawn(bundle!(2u32, true));
+//! world.root_scope_mut().spawn(bundle![1u32, 10.0f32]);
+//! world.root_scope_mut().spawn(bundle![2u32, true]);
 //!
 //! let sum: u32 = world.root_scope().query::<&u32>().map(|value| *value).sum();
 //! assert_eq!(sum, 3);
@@ -366,8 +366,8 @@ impl_tuple!(
 /// ```rust
 /// # use unlit_ecs::{Archetype, World, bundle};
 /// let mut world = World::new();
-/// world.root_scope_mut().spawn(bundle!(1u32, true));
-/// world.root_scope_mut().spawn(bundle!(2u32));
+/// world.root_scope_mut().spawn(bundle![1u32, true]);
+/// world.root_scope_mut().spawn(bundle![2u32]);
 ///
 /// let sum: u32 = world
 ///     .root_scope()

@@ -49,7 +49,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     let mesh = super::with_mesh_source(world, source_entity, |source, world| {
         let (positions, uvs, colors, indices) = cube();
@@ -66,11 +66,11 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle!(camera_view(size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle![camera_view(size)]);
     super::spawn_in(
         world,
         source_entity,
-        bundle!(
+        bundle![
             Transform {
                 translation: glam::Vec3::new(0.0, 0.2, 0.0),
                 rotation: glam::Quat::from_rotation_y(0.6),
@@ -78,14 +78,14 @@ fn build(
             },
             mesh,
             UnlitPipeline::new(key),
-        ),
+        ],
     );
 
     if options.ui {
         super::spawn_in(
             world,
             ui.expect("the UI source was mounted"),
-            bundle!(super::ui_only::rich_panel(),),
+            bundle![super::ui_only::rich_panel()],
         );
     }
 

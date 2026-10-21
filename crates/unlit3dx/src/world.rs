@@ -389,7 +389,7 @@ mod tests {
         });
         handle
             .send(Box::new(|world: &mut World| {
-                world.root_scope_mut().spawn(bundle!(Count(0),));
+                world.root_scope_mut().spawn(bundle![Count(0)]);
             }))
             .expect("the world accepts jobs");
         let request = handle.request(Box::new(|world: &mut World| {
@@ -426,7 +426,7 @@ mod tests {
             "test",
             8,
             |world: &mut World| {
-                world.root_scope_mut().spawn(bundle!(Count(0),));
+                world.root_scope_mut().spawn(bundle![Count(0)]);
             },
             |_, control, ()| {
                 control.wait_timeout(Duration::from_millis(1));
@@ -471,7 +471,7 @@ mod tests {
             "stepped",
             8,
             |world: &mut World| {
-                world.root_scope_mut().spawn(bundle!(Count(0),));
+                world.root_scope_mut().spawn(bundle![Count(0)]);
             },
             |world: &mut World, _control: &ThreadControl, ()| {
                 world
@@ -546,7 +546,7 @@ mod tests {
     #[test]
     fn stepping_a_foreign_entity_does_nothing() {
         let mut host = World::new();
-        let plain = host.root_scope_mut().spawn(bundle!(Count(0),));
+        let plain = host.root_scope_mut().spawn(bundle![Count(0)]);
         step_stepped_world(&host, plain);
     }
 

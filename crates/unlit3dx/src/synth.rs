@@ -283,7 +283,7 @@ impl SynthVoice {
             gave_up: false,
         };
         let fill = OnAudioFill::new(AudioFillOrder::default(), fill_voice);
-        world.root_scope_mut().spawn(bundle!(voice, fill))
+        world.root_scope_mut().spawn(bundle![voice, fill])
     }
 
     /// Parses `bytes` as a soundfont and spawns a voice playing it.
@@ -681,7 +681,7 @@ mod tests {
             right: Vec::new(),
             gave_up: false,
         };
-        world.root_scope_mut().spawn(bundle!(voice))
+        world.root_scope_mut().spawn(bundle![voice])
     }
 
     /// The sending half of a command channel whose jobs this test drains by

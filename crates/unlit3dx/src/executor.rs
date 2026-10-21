@@ -60,7 +60,7 @@ impl LocalTasks {
     /// before its setup runs, so the setup can spawn a task of its own.
     pub fn install(world: &mut World) {
         if world.root_scope().query::<&LocalTasks>().next().is_none() {
-            world.root_scope_mut().spawn(bundle!(Self::new(),));
+            world.root_scope_mut().spawn(bundle![Self::new()]);
         }
     }
 

@@ -238,10 +238,10 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(move |_, _, ui: &mut egui::Ui| {
+            .spawn(bundle![UiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.label("hello");
-            }),));
+            }),]);
         (world, runs)
     }
 
@@ -298,7 +298,7 @@ mod tests {
         let (mut world, runs) = counting_world();
         let (_, mut host) = test_host();
         let writer = InputWriter::new();
-        world.root_scope_mut().spawn(bundle!(writer.subscribe(),));
+        world.root_scope_mut().spawn(bundle![writer.subscribe()]);
         settle(&mut host, &world);
 
         let settled = runs.get();
@@ -368,11 +368,11 @@ mod tests {
         let counted = Rc::clone(&runs);
         world
             .root_scope_mut()
-            .spawn(bundle!(UiPanel::new(move |_, _, ui: &mut egui::Ui| {
+            .spawn(bundle![UiPanel::new(move |_, _, ui: &mut egui::Ui| {
                 counted.set(counted.get() + 1);
                 ui.ctx()
                     .request_repaint_after(core::time::Duration::from_millis(50));
-            }),));
+            }),]);
         let (_, mut host) = test_host();
 
         // egui answers a request for the next possible pass with a second

@@ -34,9 +34,7 @@ fn wait_for(probe: impl Fn() -> bool) -> bool {
 /// A caller queues this as a job to the audio world once it has a soundfont;
 /// these tests drive worlds themselves, so they call it directly.
 fn install_synth(world: &mut World, bytes: &[u8], gain: f32) -> Option<Entity> {
-    world
-        .root_scope_mut()
-        .spawn(bundle!(GlobalAudioGain(gain),));
+    world.root_scope_mut().spawn(bundle![GlobalAudioGain(gain)]);
     load_soundfont(bytes)
         .ok()
         .map(|font| SynthVoice::from_font(world, &font))
@@ -46,7 +44,7 @@ fn install_synth(world: &mut World, bytes: &[u8], gain: f32) -> Option<Entity> {
 /// sample, the way a synthesizer adds its block to the chunk.
 fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
     let counted = Arc::clone(counts);
-    world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
+    world.root_scope_mut().spawn(bundle![OnAudioFill::new(
         AudioFillOrder::default(),
         move |_world, _entity, chunk| {
             counted.fetch_add(1, Ordering::SeqCst);
@@ -54,7 +52,7 @@ fn counting_source(world: &mut World, level: f32, counts: &Arc<AtomicUsize>) {
                 *sample += level;
             }
         },
-    ),));
+    ),]);
 }
 
 /// A world with no sources fills with silence; a source adds to the chunk
@@ -85,7 +83,7 @@ fn the_dispatcher_mixes_the_worlds_sources() {
 #[test]
 fn the_worlds_gain_scales_the_mix() {
     let mut world = World::new();
-    world.root_scope_mut().spawn(bundle!(GlobalAudioGain(2.0),));
+    world.root_scope_mut().spawn(bundle![GlobalAudioGain(2.0)]);
     let counts = Arc::new(AtomicUsize::new(0));
     counting_source(&mut world, 0.4, &counts);
     let mut out = vec![0.0f32; 8];
@@ -107,7 +105,7 @@ fn equal_orders_run_in_entity_order() {
     let ran: Arc<Mutex<Vec<&'static str>>> = Arc::default();
     for (name, level) in [("first", 0.1), ("second", 0.2)] {
         let ran = Arc::clone(&ran);
-        world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
+        world.root_scope_mut().spawn(bundle![OnAudioFill::new(
             AudioFillOrder::default(),
             move |_world, _entity, chunk| {
                 ran.lock().unwrap().push(name);
@@ -115,16 +113,16 @@ fn equal_orders_run_in_entity_order() {
                     *sample += level;
                 }
             },
-        ),));
+        ),]);
     }
     // A later order runs after every earlier one.
     let late = Arc::clone(&ran);
-    world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
+    world.root_scope_mut().spawn(bundle![OnAudioFill::new(
         AudioFillOrder(1),
         move |_world, _entity, _chunk| {
             late.lock().unwrap().push("late");
         },
-    ),));
+    ),]);
     let mut out = vec![0.0f32; 2];
     dispatch_audio_fill(&world, &mut out, 48_000, 2);
     assert_eq!(*ran.lock().unwrap(), vec!["first", "second", "late"]);
@@ -148,7 +146,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
         .expect("the audio world takes its source");
     // A marker job and a probe that waits for it.
     let _ = world.send(Box::new(|world: &mut World| {
-        world.root_scope_mut().spawn(bundle!(Marker,));
+        world.root_scope_mut().spawn(bundle![Marker]);
     }));
     let marked = world.request(Box::new(|world: &mut World| {
         world.root_scope().query::<&Marker>().next().is_some()

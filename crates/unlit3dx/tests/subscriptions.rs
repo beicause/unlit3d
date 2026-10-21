@@ -19,7 +19,7 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
         "subscribed",
         capacity,
         |world: &mut World| {
-            world.root_scope_mut().spawn(bundle!(Marker(0),));
+            world.root_scope_mut().spawn(bundle![Marker(0)]);
         },
         |world: &mut World, _control: &ThreadControl, ()| {
             publish_subscribed(world);

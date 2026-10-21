@@ -42,7 +42,7 @@ mod tests {
     #[test]
     fn a_reflected_component_round_trips_through_its_own_fields() {
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn(bundle!(Transform::default(),));
+        let entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
 
         set(
             &world.root_scope(),
@@ -70,7 +70,7 @@ mod tests {
         assert!(contains("unlit3d::components::Transform"));
         assert!(!contains("unlit3d::other::Transform"));
         let mut world = World::new();
-        let entity = world.root_scope_mut().spawn(bundle!(Transform::default(),));
+        let entity = world.root_scope_mut().spawn(bundle![Transform::default()]);
         assert!(
             encode(
                 &world.root_scope(),
@@ -146,7 +146,7 @@ mod tests {
             morph_targets: 0,
             skinned: false,
         };
-        let entity = world.root_scope_mut().spawn(bundle!(mesh,));
+        let entity = world.root_scope_mut().spawn(bundle![mesh]);
         let error =
             set(&world.root_scope(), entity, "GpuMesh", "{}").expect_err("GpuMesh is read-only");
         assert!(error.contains("read-only"), "{error}");
@@ -174,7 +174,7 @@ mod tests {
         let mut world = World::new();
         let entity = world
             .root_scope_mut()
-            .spawn(bundle!(RenderLoadOps::default(),));
+            .spawn(bundle![RenderLoadOps::default()]);
         set(
             &world.root_scope(),
             entity,

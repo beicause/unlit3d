@@ -77,7 +77,7 @@ impl<'w> Scope<'w> {
     /// ````rust
     /// # use unlit_ecs::{Entity, World, bundle};
     /// let mut world = World::new();
-    /// world.root_scope_mut().spawn(bundle!(1u32));
+    /// world.root_scope_mut().spawn(bundle![1u32]);
     ///
     /// for (entity, value) in world.root_scope().query::<(Entity, &u32)>() {
     ///     println!("{entity:?} carries {value}");
@@ -103,7 +103,7 @@ impl<'w> Scope<'w> {
     /// ````rust
     /// # use unlit_ecs::{Has, World, bundle};
     /// let mut world = World::new();
-    /// let entity = world.root_scope_mut().spawn(bundle!(1u32));
+    /// let entity = world.root_scope_mut().spawn(bundle![1u32]);
     ///
     /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 1);
     /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap());

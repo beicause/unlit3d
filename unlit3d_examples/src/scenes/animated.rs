@@ -112,9 +112,9 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle!(orbit_camera(0, size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle![orbit_camera(0, size)]);
 
     // One entry per cell, holding the entity and the mesh while it is
     // occupied. Counts allocations, not cells: a cell that is filled twice
@@ -166,12 +166,12 @@ fn build(
                 let entity = super::spawn_in(
                     world,
                     source_entity,
-                    bundle!(
+                    bundle![
                         cell_transform(cell, step_index),
                         InstanceColor::new(TINTS[allocated % TINTS.len()]),
                         mesh.clone(),
                         UnlitPipeline::new(key.clone()),
-                    ),
+                    ],
                 );
                 cells[cell] = Some((entity, mesh));
                 allocated += 1;

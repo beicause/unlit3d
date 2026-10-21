@@ -146,11 +146,11 @@ pub struct WinitDeviceEvent {
 /// # fn main() -> Result<(), winit::error::EventLoopError> {
 /// let event_loop = EventLoop::new()?;
 /// let mut host = WinitHost::new();
-/// host.world_mut().root_scope_mut().spawn(bundle!(
+/// host.world_mut().root_scope_mut().spawn(bundle![
 ///     WindowSpec(Window::default_attributes().with_title("unlit3d")),
 ///     create_window_on_resume(),
 ///     exit_on_close_requested(),
-/// ));
+/// ]);
 /// host.run(event_loop)
 /// # }
 /// ```
@@ -213,7 +213,7 @@ impl<U: 'static> WinitHost<U> {
         let display = event_loop.owned_display_handle();
         self.world
             .root_scope_mut()
-            .spawn(bundle!(Resumed(false), DisplayHandle(display)));
+            .spawn(bundle![Resumed(false), DisplayHandle(display)]);
     }
 
     /// Set the host's [`Resumed`] state.
@@ -279,7 +279,7 @@ impl<U: 'static> WinitHost<U> {
                     }
                     self.world
                         .root_scope_mut()
-                        .spawn(bundle!(WinitWindow(Arc::new(window)),));
+                        .spawn(bundle![WinitWindow(Arc::new(window))]);
                 }
                 Err(error) => {
                     log::error!("could not create the window: {error}");
@@ -437,7 +437,7 @@ mod tests {
         let mut host = WinitHost::<()>::new();
         host.world_mut()
             .root_scope_mut()
-            .spawn(bundle!(Resumed(false),));
+            .spawn(bundle![Resumed(false)]);
         host.set_resumed(true);
         assert_eq!(
             host.world()

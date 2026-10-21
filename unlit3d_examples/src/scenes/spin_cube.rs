@@ -61,7 +61,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     // Geometry, its base-color texture and its material, all allocated
     // through the mesh source so they live in the frame's resource graph.
@@ -110,7 +110,7 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        bundle!(orbit_camera(size, 0.6, ORBIT_ELEVATION),),
+        bundle![orbit_camera(size, 0.6, ORBIT_ELEVATION)],
     );
     // The panel is drawn by the UI source and the cube by the mesh source, and
     // one source's scope reaches nothing of the other's. The state both of them
@@ -122,7 +122,7 @@ fn build(
             .scope_mut(world.shared())
             .expect("the shared scope exists");
         (
-            shared.spawn(bundle!(
+            shared.spawn(bundle![
                 Spin {
                     radians_per_second: SPIN,
                     spinning: true,
@@ -131,11 +131,11 @@ fn build(
                 SpinReset(false),
                 DragFrom(None),
                 FrameCount(0),
-            )),
-            shared.spawn(bundle!(CameraOrbit {
+            ]),
+            shared.spawn(bundle![CameraOrbit {
                 azimuth: 0.6,
                 elevation: ORBIT_ELEVATION,
-            },)),
+            },]),
         )
     };
     // The cube is drawn by the mesh source, so it hangs in that source's scope
@@ -143,12 +143,12 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        bundle!(
+        bundle![
             Transform::default(),
             mesh,
             material,
             UnlitPipeline::new(key),
-        ),
+        ],
     );
 
     if panels {
@@ -216,7 +216,7 @@ fn build(
         super::spawn_in(
             world,
             ui.expect("the UI source was mounted"),
-            bundle!(panel,),
+            bundle![panel],
         );
     }
     // The second panel shows the world's input state, which is what makes the
@@ -225,21 +225,21 @@ fn build(
     // panel's checkbox also writes.
     world
         .root_scope_mut()
-        .spawn(bundle!(OnKey::new(move |world, _entity, key| {
+        .spawn(bundle![OnKey::new(move |world, _entity, key| {
             if key.pressed && !key.repeat && key.key == Key::Space {
                 let _ = world
                     .root_scope()
                     .query_one::<&mut Spin>(spin)
                     .map(|mut state| state.spinning = !state.spinning);
             }
-        }),));
+        }),]);
 
     // A pointer behaviour: dragging orbits the camera. It is mounted on
     // `OnPointer` rather than `OnMouse`, so the same drag works with a mouse
     // and with a finger on a touch screen.
     world
         .root_scope_mut()
-        .spawn(bundle!(OnPointer::new(move |world, _entity, event| {
+        .spawn(bundle![OnPointer::new(move |world, _entity, event| {
             let Some(position) = event.position else {
                 if matches!(
                     event.action,
@@ -324,7 +324,7 @@ fn build(
                 }
                 PointerAction::Zoom(_) | PointerAction::Rotate(_) => {}
             }
-        },),));
+        },),]);
 
     SceneControl {
         advance: Box::new(move |world, _frame, delta_time, frame_size| {

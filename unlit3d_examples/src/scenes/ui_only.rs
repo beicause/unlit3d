@@ -48,7 +48,7 @@ fn build(
         super::spawn_in(
             world,
             ui.expect("the UI source was mounted"),
-            bundle!(rich_panel(),),
+            bundle![rich_panel()],
         );
     }
 

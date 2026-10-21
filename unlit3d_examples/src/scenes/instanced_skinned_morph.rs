@@ -57,7 +57,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, 0.0);
@@ -78,7 +78,7 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle!(camera(size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle![camera(size)]);
 
     // One pose entity and one weights entity per instance, all naming the
     // same shared mesh: the instances merge into a single draw whose instance
@@ -87,11 +87,11 @@ fn build(
     let mut weight_entities = Vec::new();
     for instance in 0..INSTANCES {
         let pose_entity =
-            super::spawn_in(world, source_entity, bundle!(SkinPose::new(rest_pose(2)),));
+            super::spawn_in(world, source_entity, bundle![SkinPose::new(rest_pose(2))]);
         let weight_entity = super::spawn_in(
             world,
             source_entity,
-            bundle!(MorphWeights::new(instance_weights(0, instance)),),
+            bundle![MorphWeights::new(instance_weights(0, instance))],
         );
         let color = match instance {
             0 => glam::Vec4::new(1.0, 0.75, 0.55, 1.0),
@@ -101,7 +101,7 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            bundle!(
+            bundle![
                 Transform {
                     translation: glam::Vec3::new((instance as f32 - 1.0) * 1.3, 0.0, 0.0),
                     scale: glam::Vec3::splat(0.8),
@@ -112,7 +112,7 @@ fn build(
                 UnlitPipeline::new(key.clone()),
                 SkinBinding::new(pose_entity),
                 MorphBinding::new(weight_entity),
-            ),
+            ],
         );
         pose_entities.push(pose_entity);
         weight_entities.push(weight_entity);

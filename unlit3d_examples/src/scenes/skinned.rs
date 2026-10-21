@@ -51,7 +51,7 @@ fn build(
     let source_entity = world
         .scope_mut(pass)
         .expect("the pass is alive")
-        .spawn(bundle!(Source::new(source),));
+        .spawn(bundle![Source::new(source)]);
 
     let (positions, uvs, colors, indices) = super::cube();
     let skin = BendSkin::new(&positions, bend_angle(0));
@@ -71,15 +71,15 @@ fn build(
         )
     });
 
-    let camera_entity = super::spawn_in(world, source_entity, bundle!(camera(size),));
+    let camera_entity = super::spawn_in(world, source_entity, bundle![camera(size)]);
     // The pose is an entity of its own: the mesh names it rather than owning
     // it, so animating the skeleton is one component write and nothing on the
     // mesh changes.
-    let pose_entity = super::spawn_in(world, source_entity, bundle!(skin.pose(),));
+    let pose_entity = super::spawn_in(world, source_entity, bundle![skin.pose()]);
     super::spawn_in(
         world,
         source_entity,
-        bundle!(
+        bundle![
             Transform {
                 scale: glam::Vec3::splat(0.9),
                 ..Default::default()
@@ -88,7 +88,7 @@ fn build(
             mesh,
             UnlitPipeline::new(key),
             SkinBinding::new(pose_entity),
-        ),
+        ],
     );
 
     let mut skin = skin;
