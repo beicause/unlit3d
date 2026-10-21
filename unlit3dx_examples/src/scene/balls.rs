@@ -314,8 +314,13 @@ impl Balls {
         // The poses travel as a job: what the render world shows is its
         // own to hold, so the shapes send the state rather than leaving it
         // in a mailbox for the world to apply.
-        if let Err(error) = self.render.send(pose_job(frame)) {
-            log::warn!("the render world refused a pose job ({error:?})");
+        match self.render.send(pose_job(frame)) {
+            Ok(()) => {}
+            // A closed queue is the scene going away, not a fault: the render
+            // world stops before the gameplay world's last tick, and a pose
+            // sent after it has nothing left to draw.
+            Err(SendError::Closed) => {}
+            Err(error) => log::warn!("the render world refused a pose job ({error:?})"),
         }
     }
 }
