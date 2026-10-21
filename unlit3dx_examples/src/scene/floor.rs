@@ -8,6 +8,7 @@
 use glam::Vec3;
 use unlit_ecs::World;
 use unlit3d::components::Transform;
+use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
 use super::SceneWiring;
@@ -131,7 +132,7 @@ impl Floor {
 }
 
 impl Tick for Floor {
-    fn tick(&mut self, world: &World) {
+    fn tick(&mut self, world: &World, _frame: &Frame) {
         if !self.spawned {
             self.spawn(world);
         }

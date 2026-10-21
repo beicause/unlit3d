@@ -11,6 +11,7 @@
 //! build its sources at the rate the device really uses, the marker to know
 //! when the world can sound at all.
 
+use std::cell::RefCell;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -137,6 +138,11 @@ impl OnAudioFill {
     }
 }
 
+thread_local! {
+    /// The source list [`dispatch_audio_fill`] reuses across fills.
+    static SOURCES: RefCell<Vec<(AudioFillOrder, Entity)>> = const { RefCell::new(Vec::new()) };
+}
+
 /// The factor the mixed samples scale by, read from the audio world.
 ///
 /// The gain belongs to the output rather than to one source:
@@ -147,42 +153,48 @@ impl OnAudioFill {
 /// overdriven mix distorts rather than wraps. A world carrying no gain
 /// passes its mix through unchanged.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct AudioGain(pub f32);
+pub struct GlobalAudioGain(pub f32);
 
 /// Run every [`OnAudioFill`] in `world` once, mixing their samples into `out`.
 ///
 /// `out` is interleaved frames and is zeroed first; each source adds its
-/// contribution in [`AudioFillOrder`] order, then the world's [`AudioGain`] —
-/// one when it carries none — scales the sum, which clamps to the unit
-/// range. This is the whole of the audio thread's per-chunk work, and a
-/// caller stepping a world inline calls it the same way.
+/// contribution in [`AudioFillOrder`] order, then the world's
+/// [`GlobalAudioGain`] — one when it carries none — scales the sum, which
+/// clamps to the unit range. This is the whole of the audio thread's
+/// per-chunk work, and a caller stepping a world inline calls it the same
+/// way.
 ///
 /// A source must not change the world's set of sources while it runs: it
 /// has a shared `&World`, so structural work goes through
 /// [`unlit_ecs::Scope::queue`] and is applied by the world's own driver between fills.
 pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, channels: u16) {
     out.fill(0.0);
-    let mut sources: Vec<(AudioFillOrder, Entity)> = world
-        .root_scope()
-        .query::<(&OnAudioFill, Entity)>()
-        .map(|(on_audio_fill, entity)| (on_audio_fill.order(), entity))
-        .collect();
+    // The list has the same shape every fill, so it is handed out and taken
+    // back rather than allocated per chunk on the audio thread. Taking it also
+    // keeps the slot free while a source runs.
+    let mut sources = SOURCES.with_borrow_mut(std::mem::take);
+    sources.clear();
+    sources.extend(
+        world
+            .root_scope()
+            .query::<(&OnAudioFill, Entity)>()
+            .map(|(on_audio_fill, entity)| (on_audio_fill.order(), entity)),
+    );
     sources.sort_unstable_by_key(|(order, entity)| (*order, *entity));
     let mut chunk = AudioChunk {
         out,
         sample_rate,
         channels,
     };
-    for (_, entity) in sources {
-        world
-            .root_scope()
-            .query_one::<&mut OnAudioFill>(entity)
-            .map(|mut fill| fill.run(world, entity, &mut chunk))
-            .expect("the source entity exists");
+    for (_, entity) in &sources {
+        if let Some(mut fill) = world.root_scope().query_one::<&mut OnAudioFill>(*entity) {
+            fill.run(world, *entity, &mut chunk);
+        }
     }
+    SOURCES.with_borrow_mut(|slot| *slot = sources);
     let gain = world
         .root_scope()
-        .query::<&AudioGain>()
+        .query::<&GlobalAudioGain>()
         .next()
         .map(|audio_gain| audio_gain.0)
         .unwrap_or(1.0);

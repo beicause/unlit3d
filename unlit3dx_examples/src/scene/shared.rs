@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 use unlit_ecs::{Entity, World};
 use unlit3d::components::Transform;
+use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
 use super::HIDDEN_POSITION;
@@ -179,7 +180,7 @@ impl SceneState {
 }
 
 impl Tick for SceneState {
-    fn tick(&mut self, _world: &World) {
+    fn tick(&mut self, _world: &World, _frame: &Frame) {
         self.poll_build();
     }
 }

@@ -209,7 +209,7 @@ The bridges:
   with an `AudioFillOrder` of its own:
   `dispatch_audio_fill` runs every callback once per chunk of a ring buffer sized by
   `AudioConfig`, in that order, mixing their samples and scaling the sum by the
-  world's `AudioGain`; the device callback drains the ring and underruns to
+  world's `GlobalAudioGain`; the device callback drains the ring and underruns to
   silence.
   A world that carries no source plays nothing.
   Gameplay never touches audio directly — it sends jobs. The world spawns an
@@ -232,27 +232,28 @@ The bridges:
 
 - **synth** (on by default, implies audio): the pieces to install, built on
   [rustysynth-ext](https://docs.rs/rustysynth-ext) — `load_soundfont` parses
-  the bytes (typically an `include_bytes!`, so no filesystem is involved),
-  `SynthVoice::from_font` spawns a live voice and `MidiPlayer::from_font`
-  one sequenced track, each with the `OnAudioFill` source that renders it; the
-  caller spawns the world's `AudioGain`, for the headroom soundfont presets
-  leave. `note_on_job`/`note_off_job` are ready-made jobs against the voice.
-  The transport jobs address a track by name —
-  `play_track_job` starts a file, looping or not, `pause_track_job` holds
-  its sequencer clock so the resume continues where the pause stopped,
-  `rewind_track_job` returns it to the start, `stop_track_job` puts the
-  file down. Tracks are independent, so a background loop and a one-shot
-  sequence coexist on one audio world and pause separately. Files come from
-  `load_midi_file` (an SMF file) or `midi_file` (a list of timed
-  messages). The demo's `install_synth` shows the whole install as one
-  function, queued to the audio world as a job. `MidiPlayer::ends` counts
-  how many times a track has played to its end: a looping play never
-  counts, and a reader that remembers the count it last saw sees every
-  end, even when it polled nothing in between. The count is a plain fact
-  about a player, so whoever needs it asks the audio world for it — a
-  mailbox would only hold the newest value and drop an end that came and
-  went between two frames, and an event that must not be missed belongs in
-  a queue the collector fills.
+  the bytes (typically an `include_bytes!`, so no filesystem is involved), and
+  `SynthVoice::from_font` spawns a voice with the `OnAudioFill` source that
+  renders it. The voice builds its synthesizer on the first fill, from the
+  sample rate that fill names, so a voice can be spawned before the output
+  device has said which rate it runs at; messages sent before then wait in the
+  voice and are played by that first fill. `midi_job` sends one
+  `MidiEventKind` to the voice it names, optionally after a delay in seconds.
+  The voices are the whole of the audio world's synth surface.
+
+  Sequencing belongs to the gameplay world, which owns the clock:
+  `MidiSequencer` holds a file, the time reached, the index of the next event
+  and its loop point, and `MidiSequencer::advance` sends the events a frame
+  made due as `midi_job`s to a voice. Playing, pausing, rewinding and looping
+  are fields of that component, read and written where it lives — no job and
+  no mailbox stand between a panel and its transport, and the end of a play is
+  a count on the same component. Files come from `load_midi_file` (an SMF
+  file, with the loop convention named by `load_midi_file_with_loop_type`) or
+  `midi_file` (timed `MidiEventKind`s, sorted here so a caller's list need not
+  be). A file's loop markers set the loop point; a passage a file never marked
+  can still repeat by writing `loop_point` by hand. The demo's
+  `install_synth` shows the whole install as one function, queued to the audio
+  world as a job that answers the voice's entity.
 - **ui** (on with `render`): [`ui::UiPanelHost`] lays a world's
   `unlit3d::ui::UiPanel`s out for a `unlit3d::ui::UiSource` in another
   world. A panel can only be built where its egui context runs — its callback
@@ -284,7 +285,7 @@ The bridges:
   `audio_recording_status` — which drive a recording in the named world and
   write the mix out as a WAV file. A recording source mounts at the end of
   the fill order, so it captures the mix after every other source and the
-  world's `AudioGain`, and the samples become a RIFF/WAVE file with no extra
+  world's `GlobalAudioGain`, and the samples become a RIFF/WAVE file with no extra
   dependency. The recorder is compiled only for these tools, so `mcp` turns
   `audio` on itself.
 

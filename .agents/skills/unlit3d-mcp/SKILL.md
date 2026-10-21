@@ -151,7 +151,7 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 | `cancel_audio_recording` | 停止录音并丢弃已捕获的内容 | 无 |
 | `audio_recording_status` | 报告当前录到的帧数与秒数 | 无 |
 
-录音器排在填充顺序的最末，录到的是所有音源与 world 的 `AudioGain` 之后的混音；格式
+录音器排在填充顺序的最末，录到的是所有音源与 world 的 `GlobalAudioGain` 之后的混音；格式
 （采样率与声道数）在第一次填充时学到，所以 `--stepped` 或设备尚未打开时也能录。同一
 个 world 同时只允许一段录音，第二段会被拒绝。
 

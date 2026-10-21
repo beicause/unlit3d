@@ -72,7 +72,7 @@ pub mod world;
 pub mod prelude {
     #[cfg(feature = "audio")]
     pub use crate::audio::{
-        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioGain, AudioOutputOpen,
+        AudioChunk, AudioConfig, AudioFillOrder, AudioFormat, AudioOutputOpen, GlobalAudioGain,
         OnAudioFill, dispatch_audio_fill, spawn_audio_world_with,
     };
     #[cfg(feature = "render")]
@@ -92,9 +92,9 @@ pub mod prelude {
     };
     #[cfg(feature = "synth")]
     pub use crate::synth::{
-        MidiEvent, MidiFile, MidiMessage, MidiPlayer, SynthVoice, VoiceError, load_midi_file,
-        load_soundfont, midi_file, note_off_job, note_on_job, pause_track_job, play_track_job,
-        program_change_job, rewind_track_job, stop_track_job,
+        MidiEvent, MidiEventKind, MidiFile, MidiFileLoopType, MidiMessage, MidiSequencer,
+        SoundFont, SynthVoice, Synthesizer, VoiceError, load_midi_file,
+        load_midi_file_with_loop_type, load_soundfont, midi_file, midi_job,
     };
     pub use crate::{
         channel::{SnapshotReader, publish_subscribed},

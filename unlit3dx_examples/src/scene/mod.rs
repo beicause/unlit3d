@@ -13,10 +13,12 @@
 //!   world.
 //! - [`Balls`] drops the shapes, maps physics bodies onto pool slots, and
 //!   publishes their poses.
-//! - [`SceneAudio`] installs the synthesizer's sources and starts the music.
-//! - [`Controls`] is the panel. It lives here with the rest, and the render
-//!   world draws it: the panel's egui context runs in this world, which lays it
-//!   out, and the render world's `UiSource` draws whatever the slots it
+//! - [`SceneAudio`] installs the synthesizer's voice and starts the music: the
+//!   [`Track`]s it spawns own their clocks here, and each tick sends the audio
+//!   world the messages that came due.
+//! - [`mount_controls`] is the panel. It lives here with the rest, and the
+//!   render world draws it: the panel's egui context runs in this world, which
+//!   lays it out, and the render world's `UiSource` draws whatever the slots it
 //!   publishes into hold.
 //!
 //! The panel is the one object whose drawing happens in another world: it
@@ -42,10 +44,7 @@ use unlit3dx::ui::UiPanelHost;
 
 use crate::render::{camera_looking_at, mesh_source};
 
-pub use audio::{
-    AudioSetup, BGM_TRACK, SEQUENCE_TRACK, SYNTH_GAIN, SceneAudio, install_audio_job_with,
-    install_synth, subscribe_audio,
-};
+pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_audio_job, install_synth};
 pub use balls::{
     Balls, PENDING_TIMEOUT_TICKS, SPAWN_HEIGHT, SPAWN_SPREAD, SPAWN_TICKS, scene_frame,
 };
@@ -62,7 +61,7 @@ pub use shared::{
     POOL_SIZE, SceneState, pool_from_instances, request_pool_instances, request_shape_assets,
 };
 pub use tick::{TICK_AUDIO, TICK_BALLS, TICK_FLOOR, TICK_SCENE, Tick, tick_behaviour};
-pub use ui::{Controls, control_panel_job};
+pub use ui::{control_panel_job, mount_controls};
 
 mod audio;
 mod balls;
@@ -302,8 +301,8 @@ pub struct GamePhysics {
 
 /// The channels between the scene's worlds, wired the same way in both
 /// run modes: transforms flow to the render world, body commands to
-/// physics, transport jobs to audio, and the objects of the gameplay world
-/// tie them to the render server. Each subscription belongs to the world it
+/// physics, synthesizer messages to audio, and the objects of the gameplay
+/// world tie them to the render server. Each subscription belongs to the world it
 /// reads, so a run that never asks for a snapshot pays nothing for it.
 ///
 /// Each mode builds the struct from the worlds it has — remote worlds on
@@ -321,8 +320,6 @@ pub struct SceneWiring {
     pub physics_reader: SnapshotReader<GamePhysics>,
     /// Commands into the audio world.
     pub audio_sender: JobSender,
-    /// The audio world's readiness mailbox.
-    pub audio_ready: SnapshotReader<()>,
 }
 
 /// Subscribe the shapes to the physics world's body poses.
@@ -371,17 +368,6 @@ pub struct SceneWorlds {
     /// The world the scene's objects live in; its sender is the control
     /// panel's handle on them.
     pub gameplay: WorldHandle,
-    /// Whether the audio world carries sources to transport.
-    audio_sources: bool,
-}
-
-impl SceneWorlds {
-    /// The sender for the audio world's transport jobs, when the scene
-    /// gave it a synthesizer: the control panel's handle on the tracks.
-    #[must_use]
-    pub fn audio_tracks(&self) -> Option<JobSender> {
-        self.audio_sources.then(|| self.wiring.audio_sender.clone())
-    }
 }
 
 /// The slot a panel publishes its frames into.
@@ -406,7 +392,7 @@ pub struct PanelSlots {
 /// stepped by the host.
 ///
 /// The worlds are spawned in the order they depend on each other — physics
-/// and audio first, so the wiring can subscribe to their state, then the
+/// first, so the wiring can subscribe to its state, then audio, then the
 /// gameplay world with its objects.
 ///
 /// `input` is the writer the host feeds. The gameplay world is a sibling of
@@ -430,50 +416,25 @@ pub fn spawn_scene<R: WorldRunner>(
     // between that world's steps whatever drives it.
     let physics_reader = subscribe_physics(&physics_sender);
 
-    // The audio world: a synthesizer voice plus one MIDI player per track,
-    // all fed by the soundfont, mixed into the output stream. Only the
-    // setup that opens a device asks a stepped world for one; a world the
-    // host pulls the fills of opens nothing.
+    // The audio world: one synthesizer voice, mixed into the output stream.
+    // The voice builds its synthesizer on the first fill it renders, so it
+    // needs no rate here: whatever opens the stream says what that rate is.
+    // Only the setup that opens a device asks a stepped world for one; a
+    // world the host pulls the fills of opens nothing.
     let config = AudioConfig {
         stepped_device: matches!(audio_setup, AudioSetup::Device),
         ..AudioConfig::default()
     };
     let audio = spawn_audio_world_with::<R>(host, config);
     let audio_sender = audio.sender();
-    let audio_ready = subscribe_audio(&audio_sender);
-    let (audio_format, audio_sources) = match audio_setup {
-        AudioSetup::Silent => (None, false),
-        AudioSetup::Pulled {
-            soundfont,
-            sample_rate,
-        } => {
-            // The sources travel as a job, exactly as the windowed mode
-            // queues them once its device reports a rate; a world that
-            // opens no device has no rate to wait for, so one step
-            // installs them before the first gameplay tick reads the
-            // readiness mailbox.
-            let install = install_audio_job_with(soundfont, sample_rate);
-            if let Err(error) = audio_sender.send(install) {
-                log::error!("the audio world refused its sources ({error:?})");
-            }
-            step_stepped_world(host, audio.entity());
-            (None, true)
-        }
-        AudioSetup::Device => {
-            // The format is a component the audio world spawns on the tick
-            // its stream opens, so the subscription is made before that
-            // tick and answers the rate the device really uses.
-            let format = audio_sender
-                .subscribe(|world: &World| {
-                    world
-                        .root_scope()
-                        .query::<(Entity, &AudioFormat)>()
-                        .next()
-                        .map(|(_, format)| *format)
-                })
-                .expect("the audio world accepts a subscription");
-            (Some(format), true)
-        }
+    // The voice is installed from the gameplay world, as a job whose answer
+    // is the entity the scenes' sequences address. The soundfont is kept for
+    // that job rather than loaded here, so the decode runs where the job
+    // runs instead of stalling the host's setup.
+    let soundfont = match audio_setup {
+        AudioSetup::Silent => None,
+        AudioSetup::Pulled { soundfont } => Some(soundfont),
+        AudioSetup::Device => Some(unlit3dx_asset_bytes::soundfont().into()),
     };
 
     let wiring = SceneWiring {
@@ -481,7 +442,6 @@ pub fn spawn_scene<R: WorldRunner>(
         physics_sender,
         physics_reader,
         audio_sender,
-        audio_ready,
     };
 
     // The gameplay world: one entity per object, each ticking itself as the
@@ -495,8 +455,7 @@ pub fn spawn_scene<R: WorldRunner>(
         {
             let render = render.clone();
             let wiring = wiring.clone();
-            let audio_format = audio_format.clone();
-            let panel_audio = audio_sources.then(|| wiring.audio_sender.clone());
+            let soundfont = soundfont.clone();
             let panels = panels.clone();
             let input = input.clone();
             move |world: &mut World| {
@@ -522,8 +481,8 @@ pub fn spawn_scene<R: WorldRunner>(
                 world
                     .root_scope_mut()
                     .spawn(bundle!(balls, tick_behaviour::<Balls>(TICK_BALLS)));
-                if audio_sources {
-                    let audio = SceneAudio::new(&wiring, audio_format);
+                if let Some(soundfont) = soundfont {
+                    let audio = SceneAudio::new(&wiring, soundfont);
                     world
                         .root_scope_mut()
                         .spawn(bundle!(audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)));
@@ -540,7 +499,7 @@ pub fn spawn_scene<R: WorldRunner>(
                     panels.screen.clone(),
                     PANEL_SLOT,
                 ),));
-                Controls::new(panel_audio).mount(world);
+                mount_controls(world);
                 world.root_scope_mut().spawn(bundle!(OnFrame::new(
                     FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
                     |world, _entity, _frame| publish_panels(world),
@@ -577,7 +536,6 @@ pub fn spawn_scene<R: WorldRunner>(
         physics,
         audio,
         gameplay,
-        audio_sources,
     }
 }
 

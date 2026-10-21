@@ -240,14 +240,14 @@ struct Recorded {
 mod tests {
     use super::*;
     use crate::audio::{
-        AudioChunk, AudioFillOrder, AudioFormat, AudioGain, OnAudioFill, dispatch_audio_fill,
+        AudioChunk, AudioFillOrder, AudioFormat, GlobalAudioGain, OnAudioFill, dispatch_audio_fill,
     };
 
     /// A world with one source that fills a constant level, plus the format
     /// its fills carry.
     fn audio_world(level: f32) -> (World, AudioFormat) {
         let mut world = World::new();
-        world.root_scope_mut().spawn(bundle!(AudioGain(1.0),));
+        world.root_scope_mut().spawn(bundle!(GlobalAudioGain(1.0),));
         world.root_scope_mut().spawn(bundle!(OnAudioFill::new(
             AudioFillOrder(0),
             move |_world, _entity, chunk: &mut AudioChunk| chunk.out.fill(level),

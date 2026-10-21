@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use unlit3dx::prelude::{MidiEvent, MidiFile, midi_file};
+use unlit3dx::prelude::{MidiEvent, MidiEventKind, MidiFile, midi_file};
 
 /// The General MIDI music box, as a zero-based program number: a bell
 /// like plucked timbre that stays smooth where a piano turns brash.
@@ -24,20 +24,38 @@ pub const SCALE: [i32; 10] = [48, 50, 52, 55, 57, 60, 62, 64, 67, 69];
 /// Push one note onto an event list: a press at `start`, a release
 /// `hold` seconds later, both on `channel`.
 fn note(events: &mut Vec<MidiEvent>, channel: u8, key: i32, start: f64, hold: f64, velocity: u8) {
-    events.push((start, 0x90 | channel, key as u8, velocity));
-    events.push((start + hold, 0x80 | channel, key as u8, 0));
+    events.push((
+        start,
+        MidiEventKind::NoteOn {
+            channel,
+            key: key as u8,
+            velocity,
+        },
+    ));
+    events.push((
+        start + hold,
+        MidiEventKind::NoteOff {
+            channel,
+            key: key as u8,
+        },
+    ));
 }
 
 /// The demo's MIDI sequence: the scale walked up and back down, one note
 /// every 0.28 seconds, each held for 0.25 of them, on the music box.
 pub fn sequence_midi() -> Arc<MidiFile> {
-    let mut events = vec![(0.0, 0xC0, MUSIC_BOX_PROGRAM, 0u8)];
+    let mut events = vec![(
+        0.0,
+        MidiEventKind::ProgramChange {
+            channel: 0,
+            program: MUSIC_BOX_PROGRAM,
+        },
+    )];
     for (index, &key) in SCALE.iter().chain(SCALE.iter().rev().skip(1)).enumerate() {
         let start = index as f64 * 0.28;
         note(&mut events, 0, key, start, 0.25, 96);
     }
-    events.sort_by(|(one, ..), (other, ..)| one.total_cmp(other));
-    midi_file(&events).expect("the demo sequence is well formed")
+    midi_file(events).expect("the demo sequence is well formed")
 }
 
 /// The bars of the background loop, as chords: three keys each, root
@@ -91,9 +109,27 @@ pub fn bgm_midi() -> Arc<MidiFile> {
     // Three channels, one instrument each: the bass, the arpeggio and the
     // melody, so the loop reads as three parts instead of one chord wall.
     let mut events = vec![
-        (0.0, 0xC0, ELECTRIC_PIANO_PROGRAM, 0u8),
-        (0.0, 0xC1, ELECTRIC_PIANO_PROGRAM, 0u8),
-        (0.0, 0xC2, MUSIC_BOX_PROGRAM, 0u8),
+        (
+            0.0,
+            MidiEventKind::ProgramChange {
+                channel: 0,
+                program: ELECTRIC_PIANO_PROGRAM,
+            },
+        ),
+        (
+            0.0,
+            MidiEventKind::ProgramChange {
+                channel: 1,
+                program: ELECTRIC_PIANO_PROGRAM,
+            },
+        ),
+        (
+            0.0,
+            MidiEventKind::ProgramChange {
+                channel: 2,
+                program: MUSIC_BOX_PROGRAM,
+            },
+        ),
     ];
     for (bar, chord) in BGM_CHORDS.iter().enumerate() {
         let start = bar as f64 * BGM_BAR_SECONDS;
@@ -127,8 +163,7 @@ pub fn bgm_midi() -> Arc<MidiFile> {
             );
         }
     }
-    events.sort_by(|(one, ..), (other, ..)| one.total_cmp(other));
-    midi_file(&events).expect("the background loop is well formed")
+    midi_file(events).expect("the background loop is well formed")
 }
 
 #[cfg(test)]

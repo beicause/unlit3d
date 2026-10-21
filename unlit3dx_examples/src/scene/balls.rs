@@ -13,6 +13,7 @@ use glam::Vec3;
 use hashbrown::HashMap;
 use unlit_ecs::{Entity, World};
 use unlit3d::components::Transform;
+use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
 use super::shapes::{ShapeKind, shape_body};
@@ -320,7 +321,7 @@ impl Balls {
 }
 
 impl Tick for Balls {
-    fn tick(&mut self, world: &World) {
+    fn tick(&mut self, world: &World, _frame: &Frame) {
         self.ticks += 1;
         let Some((state, ready)) = world
             .root_scope()

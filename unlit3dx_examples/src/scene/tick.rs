@@ -6,7 +6,7 @@
 //! editing a list.
 
 use unlit_ecs::World;
-use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
+use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame};
 
 /// A scene object that advances once per gameplay tick.
 ///
@@ -14,8 +14,8 @@ use unlit3d::frame::{FrameBehaviourOrder, OnFrame};
 /// neighbours through [`unlit_ecs::Scope::query_one`]. It must not touch a
 /// component of its own type: the driver already holds that one.
 pub trait Tick {
-    /// Advance the object by one tick.
-    fn tick(&mut self, world: &World);
+    /// Advance the object by one tick, whose duration is `frame`'s.
+    fn tick(&mut self, world: &World, frame: &Frame);
 }
 
 /// The order the floor's tick runs at: before anything that lands on it.
@@ -38,10 +38,10 @@ pub const TICK_AUDIO: i32 = 300;
 /// an [`OnFrame`] like any other: the object declares where it runs, and the
 /// scene never sorts its objects itself.
 pub fn tick_behaviour<T: Tick + 'static>(order: i32) -> OnFrame {
-    OnFrame::new(FrameBehaviourOrder(order), |world, entity, _frame| {
+    OnFrame::new(FrameBehaviourOrder(order), |world, entity, frame| {
         let _ = world
             .root_scope()
             .query_one::<&mut T>(entity)
-            .map(|mut state| state.tick(world));
+            .map(|mut state| state.tick(world, frame));
     })
 }

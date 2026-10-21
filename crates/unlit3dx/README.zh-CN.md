@@ -170,7 +170,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   持有其流。它的 `OnAudioFill` 组件就是音源，一个实体可以在一个组件里叠加多层，
   每层带着自己的 `AudioFillOrder`：
   `dispatch_audio_fill` 按该顺序每块运行每个回调，把各自叠加的样本混进由 `AudioConfig`
-  定长的环形缓冲，并按 world 的 `AudioGain` 缩放混音；
+  定长的环形缓冲，并按 world 的 `GlobalAudioGain` 缩放混音；
   设备回调消费这个缓冲，欠载时静音。没有任何音源的 world 不出声。
   玩法从不直接触碰音频——它发送 job。world 在流打开的那一刻生成 `AudioFormat`
   组件——按固定速率渲染的音源必须按设备实际采用的速率构建，而这一点在流打开之前
@@ -185,17 +185,19 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 
 - **synth**（默认开启，蕴含 audio）：安装所需的构件，构建在
   [rustysynth-ext](https://docs.rs/rustysynth-ext) 之上——`load_soundfont` 解析字节
-  （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台实时音色，
-  `MidiPlayer::from_font` 生成一条按序列播放的音轨，各自带着渲染它的 `OnAudioFill` 音源；
-  world 的 `AudioGain` 由调用方生成，补上音色库预设预留的余量。`note_on_job`/`note_off_job`
-  是作用于合成器的现成 job。传送 job 按名字寻址音轨——`play_track_job` 播放一个文件（可选循环），
-  `pause_track_job` 冻结它的音序器时钟，于是恢复时正好接在暂停处，`rewind_track_job` 回到开头，
-  `stop_track_job` 放下文件。音轨彼此独立，故一段背景音乐循环与一段单次序列可共存于同一个音频 world 并各自暂停。
-  文件来自 `load_midi_file`（SMF 文件）或 `midi_file`（一列定时消息）。示例里的 `install_synth`
-  把整个安装收进一个函数，作为 job 排给音频 world。`MidiPlayer::ends` 数的是音轨播完的次数：
-  循环播放永不计入，而记住上次计数的读者不会漏掉任何一次结束，即使中间一次都没查过。这个计数
-  只是播放器的一个普通事实，需要它的人自己向音频 world 查询——快照只保留最新值，会丢掉两次
-  帧之间来了又走的结束。
+  （通常是 `include_bytes!`，不经过文件系统），`SynthVoice::from_font` 生成一台音色，带着
+  渲染它的 `OnAudioFill` 音源。合成器在第一次填充时按那次填充给出的采样率建立，因此音色
+  可以在输出设备还没报出采样率之前就生成；在那之前发出的消息会留在音色里，由第一次填充补放。
+  `midi_job` 把一条 `MidiEventKind` 发给它指定的音色，可以带一段以秒计的延迟。音色就是音频 world
+  在合成方面的全部接口。
+
+  序列播放归玩法 world，时钟也在那里：`MidiSequencer` 持有一个文件、已走到的时刻、下一条事件的
+  下标与循环点，`MidiSequencer::advance` 把这一帧到期的事件作为 `midi_job` 发给某台音色。
+  播放、暂停、回卷、循环都是这个组件的字段，就在它所在的地方读写——面板与它的传送之间没有 job。
+  文件来自 `load_midi_file`（SMF 文件，循环约定由 `load_midi_file_with_loop_type` 指定）或
+  `midi_file`（定时的 `MidiEventKind`，在这里排序，故调用方不必先排好）。文件自带的循环标记
+  会设定循环点；文件从未标记过的段落，也可以直接写 `loop_point` 让它重复。示例里的
+  `install_synth` 把整个安装收进一个函数，作为 job 排给音频 world，并回传音色的实体。
 - **ui**（随 `render` 开启）：把 `ui::UiPanelHost` 生成在面板旁边，它把一个 world 的
   `UiPanel` 布局给另一个 world 里的 `UiSource` 绘制。面板只能在它自己的 egui context
   所运行的地方构建——回调拿到的是正在构建它的那一趟 pass 的 `&mut egui::Ui`——所以面板
@@ -216,7 +218,7 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
   `start_audio_recording`、`stop_audio_recording`、`cancel_audio_recording`
   与 `audio_recording_status`——在指名的 world 上驱动一次录音，并把混音写成
   WAV 文件。录音音源挂在填充顺序的最末，因此它捕获到的是所有其他音源与 world 的
-  `AudioGain` 之后的混音，样本写成一个 RIFF/WAVE 文件，无需额外依赖。录音器只为这
+  `GlobalAudioGain` 之后的混音，样本写成一个 RIFF/WAVE 文件，无需额外依赖。录音器只为这
   些工具编译，故 `mcp` 自身蕴含 `audio`。
 
 ## 最佳实践

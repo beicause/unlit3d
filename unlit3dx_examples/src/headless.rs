@@ -82,8 +82,8 @@ pub fn run(
     // mailboxes the windowed mode builds on threads, so both modes share
     // one scene graph. The synthesizer is the same factory the audio thread
     // builds, so the headless run's samples match the windowed one's by
-    // construction; a stepped world has no device, so its sources are
-    // installed up front at the rate the run mixes at.
+    // construction; a stepped world has no device, so its voice builds on the
+    // first fill this run pulls, at the rate those fills name.
     // An empty soundfont — the build embeds a stub when the asset is absent —
     // is not a synthesizer to build: the world stays silent instead of
     // failing to load it on the first tick.
@@ -92,7 +92,6 @@ pub fn run(
     } else {
         AudioSetup::Pulled {
             soundfont: config.soundfont.clone(),
-            sample_rate: config.audio_sample_rate,
         }
     };
     // Nothing feeds input to a run with no window, but the gameplay world

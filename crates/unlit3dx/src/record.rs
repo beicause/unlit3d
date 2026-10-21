@@ -2,7 +2,7 @@
 //!
 //! A recording is an [`OnAudioFill`] source ordered after every other one, so it
 //! sees the samples the whole world contributed. The samples it keeps are the
-//! ones the output stream would receive: the world's [`AudioGain`] scales the
+//! ones the output stream would receive: the world's [`GlobalAudioGain`] scales the
 //! sum and it clamps to the unit range, exactly as [`dispatch_audio_fill`] finishes a
 //! fill.
 //!
@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use unlit_ecs::{Entity, World, bundle};
 
-use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, AudioGain, OnAudioFill};
+use crate::audio::{AudioChunk, AudioFillOrder, AudioFormat, GlobalAudioGain, OnAudioFill};
 use crate::sync::lock;
 
 /// A recording in progress on a world.
@@ -72,7 +72,7 @@ impl RecordedAudio {
 /// Start recording everything `world` fills, for at most `max_seconds`.
 ///
 /// The recorder runs after every other [`OnAudioFill`] source and keeps the mix after
-/// the world's [`AudioGain`] and the unit-range clamp, so the result is what
+/// the world's [`GlobalAudioGain`] and the unit-range clamp, so the result is what
 /// the output stream receives. No call fills the world: whichever driver
 /// usually does (the audio thread, [`dispatch_audio_fill`] directly, a stepped world)
 /// keeps doing it, and the recording grows as it goes.
@@ -104,7 +104,7 @@ pub(crate) fn start_recording(world: &mut World, max_seconds: f32) -> RecordingH
             }
             let gain = world
                 .root_scope()
-                .query::<&AudioGain>()
+                .query::<&GlobalAudioGain>()
                 .next()
                 .map(|audio_gain| audio_gain.0)
                 .unwrap_or(1.0);
@@ -228,7 +228,7 @@ mod tests {
     fn a_recording_captures_the_mixed_samples() {
         let mut world = World::new();
         constant_source(&mut world, 0.75);
-        world.root_scope_mut().spawn(bundle!(AudioGain(2.0),));
+        world.root_scope_mut().spawn(bundle!(GlobalAudioGain(2.0),));
         let format = AudioFormat {
             sample_rate: 8,
             channels: 1,
