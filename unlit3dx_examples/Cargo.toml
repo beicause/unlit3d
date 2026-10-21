@@ -39,6 +39,10 @@ unlit_ecs = { path = "../crates/unlit_ecs", version = "0.1.0-dev.2" }
 unlit_wgpu = { path = "../crates/unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
 unlit3d = { path = "../crates/unlit3d", version = "0.1.0-dev.2", default-features = false, features = ["ui", "winit"] }
 unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2" }
+# The soundfont the demo embeds. Its own crate because the bytes are fourteen
+# megabytes: a constant holding them would copy them into this crate's own
+# metadata and slow every downstream rebuild.
+unlit3dx_asset_bytes = { path = "asset_bytes", version = "0.1.0-dev.2" }
 web-time.workspace = true
 wgpu.workspace = true
 winit.workspace = true

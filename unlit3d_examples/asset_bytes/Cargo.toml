@@ -1,0 +1,13 @@
+[package]
+name = "unlit3d_asset_bytes"
+version = "0.1.0-dev.2"
+edition.workspace = true
+description = "The glTF documents unlit3d_examples embeds, in a crate of their own."
+repository.workspace = true
+license.workspace = true
+# The documents come from the asset submodule: they belong to no registry, and
+# no crate outside the example links against these bytes.
+publish = false
+
+[lints]
+workspace = true

@@ -33,12 +33,15 @@ music depends on the shapes: clearing the scene leaves the tracks playing.
 cargo run -p unlit3dx_examples
 ```
 
-The synthesizer plays a soundfont embedded into the binary at build time:
+The synthesizer plays a soundfont embedded into the binary at build time. It
+lives in [`asset_bytes`](asset_bytes/README.md), the crate that carries it:
 `build.rs` reads `assets/FluidR3Mono_GM.sf3`, which the repository keeps out
-of version control, and `include_bytes!` carries it in, so the same bytes
-run everywhere, wasm included. When the file is missing the build warns and
-the demo runs silent. Drop any SF3 soundfont at that path and rebuild — for
-example
+of version control, and `include_bytes!` in that crate's `soundfont()` carries
+it in, so the same bytes run everywhere, wasm included. The bytes sit outside
+this crate because a constant holding them would copy fourteen megabytes into
+this crate's metadata and slow every rebuild. When the file is missing the
+build warns and the demo runs silent. Drop any SF3 soundfont at that path and
+rebuild — for example
 [FluidR3Mono_GM.sf3](https://github.com/beicause/soundfont/blob/main/FluidR3Mono_GM.sf3).
 
 The `--mcp` switch serves the worlds over the [Model Context

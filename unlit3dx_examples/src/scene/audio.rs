@@ -183,7 +183,10 @@ impl Tick for SceneAudio {
             // it cannot see them before this job has run: the world reports
             // ready a tick after the install, and the music starts then.
             self.installed = true;
-            let install = install_audio_job_with(super::SOUNDFONT.into(), format.sample_rate);
+            let install = install_audio_job_with(
+                unlit3dx_asset_bytes::soundfont().into(),
+                format.sample_rate,
+            );
             if let Err(error) = self.audio.send(install) {
                 log::error!("the audio world refused its sources ({error:?})");
             }

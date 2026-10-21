@@ -43,7 +43,10 @@ indexed and non-indexed, and overlapping translucent draws whose composite
 depends on both the z-sort and the blend state. `gltf` is the other exception:
 it draws the glTF documents in `unlit3d_asset_files/assets` through
 `UnlitGltf`, so the loader's skinning and morph-target animation are checked
-against real assets rather than the hand-written ones the unit tests use.
+against real assets rather than the hand-written ones the unit tests use. The
+example reaches those documents through
+[`asset_bytes`](asset_bytes/README.md), the crate that embeds them, so the
+binary carries the models it draws and needs no file at run time.
 
 `custom_pipeline` is the third: it registers two families of its own rather than
 drawing through the built-in unlit one. A sky family reconstructs a view ray

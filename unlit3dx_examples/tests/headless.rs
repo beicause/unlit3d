@@ -20,8 +20,9 @@ use std::sync::Arc;
 use unlit_wgpu_test_util::{
     Ctx, Tolerance, assert_image_snapshot_with_tolerance, gpu_test_main, gpu_tests, snapshots,
 };
+use unlit3dx_asset_bytes::soundfont as embedded_soundfont;
 use unlit3dx_examples::headless::{AUDIO_SAMPLE_RATE, HeadlessConfig, run};
-use unlit3dx_examples::scene::{SOUNDFONT, WINDOW_SIZE};
+use unlit3dx_examples::scene::WINDOW_SIZE;
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 use std::path::Path;
@@ -150,7 +151,7 @@ async fn frames_match_the_baselines() {
     // the same either way, and the build's silent stub keeps the run
     // compiling where the asset is absent. The audio check is the one that
     // insists on the real font.
-    let soundfont = soundfont().unwrap_or_else(|| Arc::from(SOUNDFONT));
+    let soundfont = soundfont().unwrap_or_else(|| Arc::from(embedded_soundfont()));
     let ctx = Ctx::headless().await;
     let output = run(
         &config(soundfont, FRAMES, CAPTURE.to_vec()),

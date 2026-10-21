@@ -18,13 +18,6 @@ use unlit3d::prelude::*;
 /// The frames a snapshot capture freezes, one snapshot each.
 const FRAMES: usize = 6;
 
-/// The fox asset, carried in the binary so the scene needs no file at run
-/// time.
-const FOX: &[u8] = include_bytes!("../../../unlit3d_asset_files/assets/Fox.glb");
-
-/// The morph stress test asset, carried the same way.
-const MORPH: &[u8] = include_bytes!("../../../unlit3d_asset_files/assets/MorphStressTest.glb");
-
 /// The animation each document plays, by the name the document gives it.
 ///
 /// The fox walks; the morph cube pulses, which is the animation that drives
@@ -99,8 +92,10 @@ fn build(
     size: (u32, u32),
     options: SceneOptions,
 ) -> SceneControl {
-    let fox = UnlitGltf::from_bytes(FOX).expect("the fox asset is a valid glTF document");
-    let morph = UnlitGltf::from_bytes(MORPH).expect("the morph asset is a valid glTF document");
+    let fox = UnlitGltf::from_bytes(unlit3d_asset_bytes::fox())
+        .expect("the fox asset is a valid glTF document");
+    let morph = UnlitGltf::from_bytes(unlit3d_asset_bytes::morph_stress_test())
+        .expect("the morph asset is a valid glTF document");
 
     let mut source = MeshSource::new(&world.root_scope(), context);
     source.register_unlit_family(&world.root_scope());

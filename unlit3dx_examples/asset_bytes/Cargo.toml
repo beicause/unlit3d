@@ -1,0 +1,15 @@
+[package]
+name = "unlit3dx_asset_bytes"
+version = "0.1.0-dev.2"
+edition.workspace = true
+description = "The soundfont unlit3dx_examples embeds, in a crate of its own."
+repository.workspace = true
+license.workspace = true
+# The soundfont is fourteen megabytes: it must not reach crates.io, and no
+# crate outside the example links against these bytes.
+publish = false
+
+# A build script is implicit here: it resolves the gitignored soundfont and
+# exports its path, which `src/lib.rs` then embeds.
+[lints]
+workspace = true

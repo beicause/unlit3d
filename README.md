@@ -109,6 +109,8 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit_ecs`](crates/unlit_ecs/README.md) | The small archetype ECS the high-level layer uses: no change detection, events, relations or scheduler. It also carries the MCP server that exposes a running world over stdio, which each crate extends with its own tools. |
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | The headless GPU test harness: device setup, buffer and texture readback, SSIMULACRA2 snapshots. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | A windowed example with selectable scenes, whose `tests/gpu_scenes.rs` compares them against snapshots; it is also one of the two examples the Android APK packages. |
+| [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.md) | The models `unlit3d_examples` draws, carried in the binary: `include_bytes!` sits in an `#[inline(never)]` function body, so those bytes stay out of every dependent's metadata. |
+| [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.md) | The soundfont `unlit3dx_examples` plays, carried the same way; its `build.rs` substitutes an empty stub when the file is absent. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
 | [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: jobs and snapshot mailboxes joining a render sub-world with physics, audio and gameplay worlds, each on a thread of its own or stepped by the host's frames. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
@@ -329,9 +331,11 @@ crates/unlit_wgpu_test_util/ the shared GPU test harness
 crates/unlit3dx/             the multi-world runtime: jobs, snapshots, threaded
                              and stepped worlds
 unlit3d_examples/            the windowed example, its scenes and their snapshot tests
+  asset_bytes/               the glTF models it embeds, in a crate of their own
 unlit3d_examples_android/    the shared library an Android activity loads
 unlit3dx_examples/           the multi-world demo: five worlds, one window, a web
                              page and an Android activity
+  asset_bytes/               the soundfont it embeds, in a crate of its own
 unlit3dx_examples_android/   that demo's shared library for its own activity
 unlit3d_cli/                 the glTF-to-image command-line tool and its end-to-end test
 unlit3d_benchmarks/          the frame-path benchmarks and the profiling runs

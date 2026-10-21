@@ -73,12 +73,6 @@ mod shared;
 mod tick;
 mod ui;
 
-/// The soundfont the demo plays, embedded at build time by `build.rs`.
-///
-/// When the soundfont file is missing the build writes an empty stub, so
-/// the demo starts and runs silent rather than failing to compile.
-pub const SOUNDFONT: &[u8] = include_bytes!(env!("SOUNDFONT_FILE"));
-
 /// The window opens at this size, in logical pixels.
 pub const WINDOW_SIZE: (u32, u32) = (1024, 720);
 

@@ -394,7 +394,7 @@ fn run_headless(args: &Args) -> ExitCode {
         frames: args.frames,
         capture: vec![args.frames - 1],
         audio_sample_rate: headless::AUDIO_SAMPLE_RATE,
-        soundfont: SOUNDFONT.into(),
+        soundfont: unlit3dx_asset_bytes::soundfont().into(),
     };
     let output = headless::run(&config, &gpu.device, &gpu.queue, gpu.capabilities);
     let out = std::path::Path::new(&args.out);
