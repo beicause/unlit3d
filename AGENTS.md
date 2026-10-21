@@ -1,7 +1,7 @@
 
 ## 编码约定
 
-- **项目依然在极早期开发阶段，不用担心兼容性破坏**，注重架构和API设计，不要怕改动已有API，并且没用的API要及时删掉。
+- **项目依然在极早期开发阶段，不怕兼容性破坏**，注重架构和API设计，不怕影响全仓库的大重构，不怕破坏已有API，没用的API要及时删掉。
 - **对于公开 API，慎重考虑添加简短的包装函数/帮助函数/getter、setter 函数**。倾向于不添加的情况：
   1. 用户能通过公开的结构体字段或其他更广义的函数实现同等功能。
   2. 该函数或功能不常用。
@@ -22,7 +22,7 @@
 
 提交信息需满足以下格式：
 ```
-<type>[optional scope]: <description>
+<type>[(optional scope)]: <description>
 
 [optional body]
 
@@ -43,7 +43,8 @@
 | `chore`    | Maintenance/misc               |
 | `revert`   | Revert commit                  |
 
-对于仅文档的任何改动（包括错别字、`cargo doc`修复），总是使用`docs`，不用`fix`。
+- 对于仅文档的任何改动（包括错别字、`cargo doc`修复），一律使用`docs`，不用`fix`。
+- 冒号前一律不使用`!`，即 Conventional Commits 里的「破坏性变更」标记。原因：项目处于早期，完全不管兼容性破坏。
 
 ## 常用命令
 
