@@ -489,7 +489,6 @@ fn a_loop_marker_repeats_the_pass() {
         }
         assert!(peak > 0.05, "pass {pass} made no sound of its own");
         assert!(!sequencer.finished, "a looping file never finishes");
-        assert_eq!(sequencer.ends, 0, "a marker's wrap is not an end of file");
     }
     // The cursor never left the loop body: whatever step the passes ended on,
     // the clock is still inside the half second between the two markers.

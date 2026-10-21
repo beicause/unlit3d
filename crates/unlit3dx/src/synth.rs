@@ -267,6 +267,8 @@ pub struct SynthVoice {
     left: Vec<f32>,
     /// The right channel's block, reused across fills.
     right: Vec<f32>,
+    /// Whether building gave up, so no queue is kept for it any more.
+    gave_up: bool,
 }
 
 impl SynthVoice {
@@ -278,6 +280,7 @@ impl SynthVoice {
             queued: Vec::new(),
             left: Vec::new(),
             right: Vec::new(),
+            gave_up: false,
         };
         let fill = OnAudioFill::new(AudioFillOrder::default(), fill_voice);
         world.root_scope_mut().spawn(bundle!(voice, fill))
@@ -319,6 +322,7 @@ impl SynthVoice {
         }
         self.synthesizer = None;
         self.queued.clear();
+        self.gave_up = true;
     }
 }
 
@@ -326,9 +330,13 @@ impl SynthVoice {
 ///
 /// The gameplay world owns it as a component and advances it once a frame, so
 /// playback state is ordinary data in the world that asks for it: pausing is a
-/// field, and how often the sequence has ended is a field. Nothing here
-/// touches the audio thread; [`MidiSequencer::advance`] sends it
-/// [`midi_job`]s.
+/// field. Nothing here touches the audio thread; [`MidiSequencer::advance`]
+/// sends it [`midi_job`]s.
+///
+/// The voice a sequence plays into is shared with every other sequence in the
+/// scene, so anything that cuts a pass short — a rewind, a pause, a loop back
+/// to the marker — releases the notes this sequence pressed and leaves the
+/// rest alone, instead of letting them ring into the next pass.
 pub struct MidiSequencer {
     /// The sequence being played.
     pub file: Arc<MidiFile>,
@@ -347,11 +355,16 @@ pub struct MidiSequencer {
     pub loop_play: bool,
     /// Whether the clock stands still.
     pub paused: bool,
-    /// How many times the sequence has reached its end. A looping sequence
-    /// counts every pass.
-    pub ends: u64,
     /// Whether the sequence reached its end and stayed there.
     pub finished: bool,
+    /// The notes this sequence pressed and has not released, by channel and
+    /// key. A shared voice is why the exact notes are remembered rather than
+    /// silenced wholesale: an all-notes-off would cut another sequence's
+    /// music too.
+    held: Vec<(u8, u8)>,
+    /// Whether the next advance has to release those notes before it plays
+    /// anything, because a rewind cut a pass short since the last one.
+    silent: bool,
 }
 
 impl MidiSequencer {
@@ -364,19 +377,23 @@ impl MidiSequencer {
             loop_point: None,
             loop_play: false,
             paused: false,
-            ends: 0,
             finished: false,
+            held: Vec::new(),
+            silent: false,
         }
     }
 
     /// Puts the sequence back at its start, playing.
     ///
     /// `loop_point` is left alone, because a hand-written one has no marker to
-    /// be restored from; `ends` is a tally of passes and stays too.
+    /// be restored from. The notes the pass left sounding are released on the
+    /// next [`MidiSequencer::advance`]: a rewind has no sender to reach the
+    /// voice with, and they must not ring into the new pass.
     pub fn rewind(&mut self) {
         self.time = 0.0;
         self.index = 0;
         self.finished = false;
+        self.silent |= !self.held.is_empty();
     }
 
     /// Sends every event that came due in the last `delta` seconds to `voice`,
@@ -388,40 +405,41 @@ impl MidiSequencer {
     /// it renders, so an event lands closer to its moment than one frame but
     /// not exactly on it.
     ///
-    /// Looping sends an all-notes-off through the loop point first: a note held
-    /// across the seam would otherwise ring for the rest of the pass.
+    /// The voice is shared with every other sequence in the scene, so a note
+    /// held across the end of a pass would ring into the next one, and a note
+    /// held when the clock stops would ring through the pause. Reaching the
+    /// end, looping, pausing and rewinding all release the notes this sequence
+    /// pressed, and leave the other sequences' notes sounding.
     pub fn advance(&mut self, delta: f64, voice: Entity, audio: &JobSender) {
         if self.paused || self.finished {
+            // A pause leaves the notes of the pass sounding on the shared
+            // voice, so the first frame that finds the clock stopped releases
+            // them; a finished sequence has already done so.
+            self.release(voice, audio);
             return;
         }
+        if self.silent {
+            self.release(voice, audio);
+        }
         self.time += delta;
-        let times = self.file.get_times();
-        let messages = self.file.get_messages();
         let mut wraps = 0;
-        while self.index < messages.len() && times[self.index] <= self.time {
-            match messages[self.index] {
+        while let Some((time, message)) = self.due() {
+            match message {
                 MidiMessage::Normal { .. } => {
-                    if let Some(kind) = MidiEventKind::from_message(messages[self.index]) {
-                        let delay = (times[self.index] - (self.time - delta)).max(0.0);
+                    if let Some(kind) = MidiEventKind::from_message(message) {
+                        self.pressed(kind);
+                        let delay = (time - (self.time - delta)).max(0.0);
                         let _ = audio.send(midi_job(voice, kind, delay));
                     }
                 }
                 MidiMessage::LoopStart => {
-                    self.loop_point = Some((times[self.index], self.index));
+                    self.loop_point = Some((time, self.index));
                 }
                 MidiMessage::LoopEnd if self.loop_play => {
+                    self.release(voice, audio);
                     let (time, index) = self.loop_point.unwrap_or((0.0, 0));
                     self.time = time;
                     self.index = index;
-                    let _ = audio.send(midi_job(
-                        voice,
-                        MidiEventKind::ControlChange {
-                            channel: 0,
-                            controller: 123,
-                            value: 0,
-                        },
-                        0.0,
-                    ));
                     // A loop body of no length would keep coming due at the
                     // same instant; one wrap per frame is all a real file
                     // asks for.
@@ -434,8 +452,8 @@ impl MidiSequencer {
             }
             self.index += 1;
         }
-        if self.index == messages.len() {
-            self.ends += 1;
+        if self.index == self.file.get_messages().len() {
+            self.release(voice, audio);
             if !self.loop_play {
                 self.finished = true;
                 return;
@@ -443,6 +461,54 @@ impl MidiSequencer {
             let (time, index) = self.loop_point.unwrap_or((0.0, 0));
             self.time = time;
             self.index = index;
+        }
+    }
+
+    /// The event at the cursor, once the clock has reached it.
+    ///
+    /// Read through a borrow that ends with the call, so the advance is free
+    /// to change the sequence between two events.
+    fn due(&self) -> Option<(f64, MidiMessage)> {
+        let times = self.file.get_times();
+        let messages = self.file.get_messages();
+        if self.index >= messages.len() || times[self.index] > self.time {
+            return None;
+        }
+        Some((times[self.index], messages[self.index]))
+    }
+
+    /// Records what `kind` does to the notes this sequence holds sounding.
+    fn pressed(&mut self, kind: MidiEventKind) {
+        match kind {
+            MidiEventKind::NoteOn {
+                channel,
+                key,
+                velocity,
+            } if velocity > 0 => {
+                if !self.held.contains(&(channel, key)) {
+                    self.held.push((channel, key));
+                }
+            }
+            MidiEventKind::NoteOn { channel, key, .. }
+            | MidiEventKind::NoteOff { channel, key } => {
+                self.held.retain(|held| *held != (channel, key));
+            }
+            MidiEventKind::ControlChange {
+                channel,
+                controller: 120 | 123,
+                ..
+            } => self.held.retain(|held| held.0 != channel),
+            _ => {}
+        }
+    }
+
+    /// Releases the notes this sequence pressed, and only those: the voice is
+    /// shared, and an all-notes-off would cut another sequence's music.
+    fn release(&mut self, voice: Entity, audio: &JobSender) {
+        self.silent = false;
+        for (channel, key) in std::mem::take(&mut self.held) {
+            let kind = MidiEventKind::NoteOff { channel, key };
+            let _ = audio.send(midi_job(voice, kind, 0.0));
         }
     }
 }
@@ -482,13 +548,18 @@ impl From<MidiFileError> for VoiceError {
 /// A job that sends `kind` to `voice`, `delay` seconds from the next fill's
 /// start. A negative delay is treated as zero.
 ///
-/// A voice that is gone ignores the job.
+/// A voice that is gone ignores the job, and so does one that gave up on
+/// sounding: nothing would ever drain its queue.
 pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job<()> {
     Box::new(move |world| {
         let Some(mut guard) = world.root_scope().query_one::<&mut SynthVoice>(voice) else {
             return;
         };
         let voice = &mut *guard;
+        // A queue a voice that gave up can never drain only grows.
+        if voice.gave_up {
+            return;
+        }
         voice.queued.push((delay.max(0.0), kind.into_message()));
     })
 }
@@ -608,6 +679,7 @@ mod tests {
             queued: Vec::new(),
             left: Vec::new(),
             right: Vec::new(),
+            gave_up: false,
         };
         world.root_scope_mut().spawn(bundle!(voice))
     }
@@ -636,6 +708,14 @@ mod tests {
             .query_one::<&SynthVoice>(voice)
             .map(|voice| voice.queued.clone())
             .unwrap_or_default()
+    }
+
+    /// The kinds a voice has been handed, in arrival order.
+    fn kinds(world: &World, voice: Entity) -> Vec<MidiEventKind> {
+        queued(world, voice)
+            .into_iter()
+            .filter_map(|(_, message)| MidiEventKind::from_message(message))
+            .collect()
     }
 
     /// A file built straight from messages, so a loop marker can be written
@@ -768,7 +848,11 @@ mod tests {
             "an event that already came due is not sent again"
         );
         sequencer.advance(1.0, source, &audio);
-        assert_eq!(drain(&mut world, &receiver), 1, "the release came due");
+        assert_eq!(
+            drain(&mut world, &receiver),
+            1,
+            "the release came due, and the pass had nothing left sounding"
+        );
         assert!(sequencer.finished, "a one-shot sequence finishes");
         assert_eq!(queued(&world, source).len(), 2);
     }
@@ -786,6 +870,46 @@ mod tests {
         assert_eq!(sequencer.time, 0.0);
     }
 
+    /// Pausing releases the notes the pass left sounding, so a long note does
+    /// not ring through the pause, and the release happens once.
+    #[test]
+    fn a_paused_sequencer_lets_its_notes_go() {
+        let mut world = World::new();
+        let source = voice(&mut world);
+        let (audio, receiver) = channel();
+        // A second note far enough away that the pass is still running when
+        // the first one has sounded.
+        let mut sequencer = MidiSequencer::new(
+            midi_file([note_at(0.0, 60), note_at(10.0, 62)]).expect("well formed"),
+        );
+        sequencer.advance(0.5, source, &audio);
+        assert_eq!(drain(&mut world, &receiver), 1, "the note started");
+        sequencer.paused = true;
+        sequencer.advance(0.5, source, &audio);
+        assert_eq!(drain(&mut world, &receiver), 1, "the note was let go");
+        assert_eq!(
+            kinds(&world, source),
+            vec![
+                MidiEventKind::NoteOn {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                },
+                MidiEventKind::NoteOff {
+                    channel: 0,
+                    key: 60
+                },
+            ],
+            "the note is released by name, not by a channel-wide all-notes-off"
+        );
+        sequencer.advance(0.5, source, &audio);
+        assert_eq!(
+            drain(&mut world, &receiver),
+            0,
+            "a silence is sent once, not on every frame of the pause"
+        );
+    }
+
     /// A looping file with no marker of its own repeats from its start, which
     /// is time zero, rather than from whenever its first event happens to be.
     #[test]
@@ -797,8 +921,11 @@ mod tests {
             MidiSequencer::new(midi_file([note_at(2.0, 60)]).expect("the sequence is well formed"));
         sequencer.loop_play = true;
         sequencer.advance(3.0, source, &audio);
-        assert_eq!(drain(&mut world, &receiver), 1);
-        assert_eq!(sequencer.ends, 1);
+        assert_eq!(
+            drain(&mut world, &receiver),
+            2,
+            "the note and its release at the seam"
+        );
         assert_eq!(sequencer.time, 0.0, "the pass is measured from zero");
         assert_eq!(sequencer.index, 0);
         assert!(!sequencer.finished, "a looping sequence never finishes");
@@ -820,7 +947,11 @@ mod tests {
         sequencer.loop_play = true;
         sequencer.advance(5.0, source, &audio);
         assert_eq!(sequencer.time, 0.0, "the pass restarted at the marker");
-        assert_eq!(drain(&mut world, &receiver), 2, "the note and the reset");
+        assert_eq!(
+            drain(&mut world, &receiver),
+            2,
+            "the note and the reset at the seam"
+        );
     }
 
     /// A loop body of no length would come due at the same instant forever;
@@ -838,13 +969,12 @@ mod tests {
         sequencer.advance(1.0, source, &audio);
         assert_eq!(
             drain(&mut world, &receiver),
-            2,
-            "one wrap, then the frame ends"
+            0,
+            "one wrap with nothing sounding, then the frame ends"
         );
     }
 
-    /// A sequence that played out stays put however far its clock is moved,
-    /// and its end is counted once.
+    /// A sequence that played out stays put however far its clock is moved.
     #[test]
     fn a_finished_sequencer_stops_advancing() {
         let mut world = World::new();
@@ -853,13 +983,17 @@ mod tests {
         let mut sequencer =
             MidiSequencer::new(midi_file([note_at(0.5, 60)]).expect("the sequence is well formed"));
         sequencer.advance(1.0, source, &audio);
-        assert_eq!(drain(&mut world, &receiver), 1);
+        assert_eq!(
+            drain(&mut world, &receiver),
+            2,
+            "the note and its release at the end"
+        );
         sequencer.advance(10.0, source, &audio);
         assert_eq!(drain(&mut world, &receiver), 0);
-        assert_eq!(sequencer.ends, 1);
+        assert!(sequencer.finished);
     }
 
-    /// A looping sequence counts each pass it makes and never finishes.
+    /// A looping sequence never finishes, however many passes it makes.
     #[test]
     fn a_looping_sequencer_never_finishes() {
         let mut world = World::new();
@@ -872,7 +1006,6 @@ mod tests {
             sequencer.advance(1.0, source, &audio);
         }
         let _ = drain(&mut world, &receiver);
-        assert_eq!(sequencer.ends, 3);
         assert!(!sequencer.finished);
     }
 
@@ -891,7 +1024,6 @@ mod tests {
         sequencer.loop_point = Some((1.0, 1));
         sequencer.advance(5.0, source, &audio);
         let _ = drain(&mut world, &receiver);
-        assert_eq!(sequencer.ends, 1);
         assert_eq!(
             sequencer.time, 1.0,
             "the pass restarted where it was told to"
@@ -920,6 +1052,25 @@ mod tests {
         midi_job(Entity::from_raw(9_999, 0), kind, 0.0)(&mut world);
     }
 
+    /// A voice that gave up on sounding keeps no queue: nothing would drain it.
+    #[test]
+    fn a_voice_that_gave_up_keeps_no_queue() {
+        let mut world = World::new();
+        let source = voice(&mut world);
+        let kind = MidiEventKind::NoteOn {
+            channel: 0,
+            key: 60,
+            velocity: 100,
+        };
+        world
+            .root_scope()
+            .query_one::<&mut SynthVoice>(source)
+            .expect("the voice was spawned")
+            .give_up("no soundfont");
+        midi_job(source, kind, 0.0)(&mut world);
+        assert!(queued(&world, source).is_empty(), "a dead voice queued");
+    }
+
     /// A mono stream keeps both of a voice's channels by averaging them.
     #[test]
     fn a_mono_stream_keeps_both_channels() {
@@ -933,8 +1084,8 @@ mod tests {
         assert!((out[0] - 0.375).abs() < 1e-6, "a channel was dropped");
     }
 
-    /// Rewinding returns to the start and leaves the loop point and the tally
-    /// of ends alone: neither is something a rewind has an opinion about.
+    /// Rewinding returns to the start and leaves the loop point alone: it is
+    /// not something a rewind has an opinion about.
     #[test]
     fn rewind_keeps_the_loop_point() {
         let mut sequencer = MidiSequencer::new(
@@ -944,12 +1095,86 @@ mod tests {
         sequencer.loop_point = Some((1.0, 1));
         sequencer.time = 0.5;
         sequencer.index = 1;
-        sequencer.ends = 4;
         sequencer.rewind();
         assert_eq!(sequencer.time, 0.0);
         assert_eq!(sequencer.index, 0);
         assert_eq!(sequencer.loop_point, Some((1.0, 1)));
-        assert_eq!(sequencer.ends, 4);
         assert!(!sequencer.finished);
+    }
+
+    /// A rewind cuts the pass short, so the advance after it releases the notes
+    /// the pass left sounding before it plays anything of the new one.
+    #[test]
+    fn a_rewind_lets_the_old_pass_go() {
+        let mut world = World::new();
+        let source = voice(&mut world);
+        let (audio, receiver) = channel();
+        let mut sequencer = MidiSequencer::new(
+            midi_file([note_at(0.0, 60), note_at(1.0, 62)]).expect("the sequence is well formed"),
+        );
+        sequencer.advance(0.5, source, &audio);
+        assert_eq!(drain(&mut world, &receiver), 1, "the first note started");
+        sequencer.rewind();
+        sequencer.advance(0.5, source, &audio);
+        assert_eq!(
+            drain(&mut world, &receiver),
+            2,
+            "the old note was let go, then the first note started again"
+        );
+    }
+
+    /// Sequences in a scene play into one voice, so cutting one pass short
+    /// must leave the notes of the other sounding.
+    #[test]
+    fn a_rewind_leaves_the_other_sequences_notes_alone() {
+        let mut world = World::new();
+        let source = voice(&mut world);
+        let (audio, receiver) = channel();
+        let mut first = MidiSequencer::new(
+            midi_file([note_at(0.0, 60), note_at(10.0, 62)]).expect("well formed"),
+        );
+        let mut second = MidiSequencer::new(
+            midi_file([note_at(0.0, 67), note_at(10.0, 69)]).expect("well formed"),
+        );
+        first.advance(0.5, source, &audio);
+        second.advance(0.5, source, &audio);
+        assert_eq!(drain(&mut world, &receiver), 2, "both notes started");
+        first.rewind();
+        first.advance(0.5, source, &audio);
+        assert_eq!(
+            drain(&mut world, &receiver),
+            2,
+            "the first note was let go, then the first note started again"
+        );
+        assert_eq!(
+            kinds(&world, source),
+            vec![
+                MidiEventKind::NoteOn {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                },
+                MidiEventKind::NoteOn {
+                    channel: 0,
+                    key: 67,
+                    velocity: 100,
+                },
+                MidiEventKind::NoteOff {
+                    channel: 0,
+                    key: 60
+                },
+                MidiEventKind::NoteOn {
+                    channel: 0,
+                    key: 60,
+                    velocity: 100,
+                },
+            ],
+            "only the rewound sequence's note was released"
+        );
+        assert_eq!(
+            second.held,
+            vec![(0, 67)],
+            "the other sequence still holds its note"
+        );
     }
 }

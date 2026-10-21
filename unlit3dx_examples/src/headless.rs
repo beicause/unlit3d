@@ -47,7 +47,8 @@ pub struct HeadlessConfig {
     /// audio-only: the render world still drains its commands, but no
     /// frame is dispatched or drawn.
     pub capture: Vec<u32>,
-    /// The audio sample rate the synthesizer renders at.
+    /// The rate the mix is pulled at, and the rate the recorded audio is
+    /// written at. The synthesizer takes it from the stream it renders into.
     pub audio_sample_rate: u32,
     /// The soundfont the synthesizer plays, as raw bytes: the demo
     /// passes the same embedded bytes the windowed mode builds with.
@@ -145,9 +146,9 @@ pub fn run(
     for index in 0..config.frames {
         frame.index = index;
 
-        // The worlds step once for this frame: gameplay first, so its
-        // requests reach the others before they step, then physics as its
-        // rate comes due and audio for the transport jobs booked.
+        // The worlds step once for this frame: gameplay first, so the notes
+        // its sequences play reach the audio world before it steps, then
+        // physics as its rate comes due and audio for the jobs booked.
         stepper.step(&host, &worlds, 1.0 / RENDER_HZ);
 
         // Audio: render whatever samples the frame's duration asks for.

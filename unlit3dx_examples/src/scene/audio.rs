@@ -100,6 +100,9 @@ pub struct SceneAudio {
     soundfont: Arc<[u8]>,
     /// The install round trip, until it answers.
     install: Option<Request<Option<Entity>>>,
+    /// Whether the install has answered, so the round trip is not asked for
+    /// again once it has.
+    installed: bool,
 }
 
 impl SceneAudio {
@@ -110,12 +113,16 @@ impl SceneAudio {
             audio: wiring.audio_sender.clone(),
             soundfont,
             install: None,
+            installed: false,
         }
     }
 }
 
 impl Tick for SceneAudio {
     fn tick(&mut self, world: &World, _frame: &Frame) {
+        if self.installed {
+            return;
+        }
         if self.install.is_none() {
             self.install = Some(
                 self.audio
@@ -127,11 +134,13 @@ impl Tick for SceneAudio {
         };
         match install.poll() {
             Some(Some(voice)) => {
+                self.installed = true;
                 start_tracks(&world.root_scope(), &self.audio, voice);
                 log::info!("the background music is playing");
             }
-            Some(None) => {}
+            Some(None) => self.installed = true,
             None if install.dropped() => {
+                self.installed = true;
                 log::error!("the audio world dropped the synthesizer install");
             }
             None => self.install = Some(install),

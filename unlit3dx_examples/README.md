@@ -112,13 +112,13 @@ it is paced differs.
   collector answers nothing while the poses are unchanged, so a scene whose
   bodies are asleep publishes no snapshot at all. The ground is its first job.
 - The **audio world** owns the output stream and mixes whatever sources it
-  carries, underrunning to silence. Its own sample rate is not known until
-  the stream opens, so it spawns an `AudioFormat` component then and the demo
-  answers with a job that spawns one synthesizer and one MIDI player per
-  track at that rate. Its readiness — the `AudioOutputOpen` marker plus the
-  sources the collector sees — is what the music waits on, since a transport
-  job sent before the players exist would find no track to
-  address.
+  carries, underrunning to silence. It holds one synthesizer, whose voice is
+  installed by a job that answers with its entity; the voice builds its
+  synthesizer on the first fill it renders, at the rate that fill names, so it
+  can be installed before the stream names a rate at all. Every note the music
+  plays is a job addressed to that entity. What the world reports is its
+  `AudioFormat`, which the demo reads to answer the install, and the
+  `AudioOutputOpen` marker its stream carries.
 - The **gameplay world** is the only place that knows about all three, and it
   is a set of objects rather than one state blob. Each object is a component
   carrying what it owns plus a `Tick` that advances it, and each ticks itself
@@ -132,22 +132,23 @@ it is paced differs.
   - `Balls` (tick 200) asks the pool for a slot, asks physics for a body,
     maps the handles the snapshot names onto its slots, and sends their poses
     back as a job.
-  - `SceneAudio` (tick 300) installs the synthesizer's sources once the audio
-    world reports an output, then starts the background loop once it reports
-    it can sound. The panel starts the sequence and drives both tracks
-    afterwards, without going through the gameplay world.
+  - `SceneAudio` (tick 300) sends the install job once, and on the answer
+    spawns the scene's two tracks in this world: each is a `MidiSequencer`
+    with a clock, the voice it plays into, and the sender that voice takes
+    messages through. The background loop starts playing at once; the demo
+    sequence waits, paused, for the panel.
 
   The world ticks at a fixed 68 Hz, independent of the frame rate.
 
-`Controls` is the fifth object, and it lives in the **gameplay world** with the
-rest. A panel can only be built where its egui context runs, so this world
-lays it out and publishes the frame, and the render world draws whatever the
-slots hold: the panel's entity carries the `UiPanel` and the rows it shows,
-while the `UiPanelHost` spawned beside it holds the context they are built in
-and publishes for it. It has a tick of its own, late enough in the frame that
-everything which could change what it shows has already run. The render world
-holds only a `UiSource` with those slots attached, which uploads and records
-what it finds there.
+The control panel is the fifth object, and it lives in the **gameplay world**
+with the rest. A panel can only be built where its egui context runs, so this
+world lays it out and publishes the frame, and the render world draws whatever
+the slots hold: the panel's entity carries the `UiPanel`, while the
+`UiPanelHost` spawned beside it holds the context they are built in and
+publishes for it. Its transport buttons write the sequences this world owns —
+a play, a pause, a rewind is a field write on the `MidiSequencer` of the row
+that was clicked. The render world holds only a `UiSource` with those slots
+attached, which uploads and records what it finds there.
 
 The two sides keep separate egui contexts. Sharing one would have both worlds
 writing the same memory and font atlas, and egui treats one `run_ui` call as

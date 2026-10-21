@@ -25,7 +25,7 @@
 ## 用法
 
 ```rust,ignore
-let install = install_audio_job_with(unlit3dx_asset_bytes::soundfont().into(), sample_rate);
+let install = install_audio_job(unlit3dx_asset_bytes::soundfont().into());
 ```
 
 ## 音色库缺失时

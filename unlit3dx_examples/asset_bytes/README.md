@@ -32,7 +32,7 @@ nothing parses.
 ## Usage
 
 ```rust,ignore
-let install = install_audio_job_with(unlit3dx_asset_bytes::soundfont().into(), sample_rate);
+let install = install_audio_job(unlit3dx_asset_bytes::soundfont().into());
 ```
 
 ## The missing soundfont

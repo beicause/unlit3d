@@ -595,8 +595,8 @@ impl SceneStepper {
     }
 
     /// Step the scene once for `delta_seconds`: gameplay ticks, physics
-    /// steps as its rate comes due, and the audio world drains the
-    /// transport jobs those ticks booked.
+    /// steps as its rate comes due, and the audio world drains the note jobs
+    /// those ticks sent.
     ///
     /// The render world is not stepped here: it is a sub-world the draw
     /// drains, not one with a rate of its own.

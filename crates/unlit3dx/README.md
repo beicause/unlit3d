@@ -246,8 +246,12 @@ The bridges:
   and its loop point, and `MidiSequencer::advance` sends the events a frame
   made due as `midi_job`s to a voice. Playing, pausing, rewinding and looping
   are fields of that component, read and written where it lives — no job and
-  no mailbox stand between a panel and its transport, and the end of a play is
-  a count on the same component. Files come from `load_midi_file` (an SMF
+  no mailbox stand between a panel and its transport. A voice is shared, so
+  whatever cuts a pass short — a pause, a rewind, a loop back to the marker —
+  releases the notes that pass left sounding instead of letting them ring into
+  the next one, and only those: a sequence keeps the notes it pressed and
+  releases them by name, never with a channel-wide all-notes-off that would cut
+  another sequence's music. Files come from `load_midi_file` (an SMF
   file, with the loop convention named by `load_midi_file_with_loop_type`) or
   `midi_file` (timed `MidiEventKind`s, sorted here so a caller's list need not
   be). A file's loop markers set the loop point; a passage a file never marked
@@ -307,9 +311,9 @@ headless, because no mode ever reaches into another world's data.
    fills it later.
 2. **Every game-specific change to a world arrives as a job.** Meshes,
    materials and instances are requested from the render bridge; bodies are
-   spawned and despawned through the physics queue; sources and transport go
-   to the audio world as jobs, and a whole install — see the demo's
-   `install_synth` — is one function wrapped in one job. A snapshot carries
+   spawned and despawned through the physics queue; notes go to the audio
+   world as jobs, and a whole install — see the demo's `install_synth` — is
+   one function wrapped in one job. A snapshot carries
    state *out* of a world, and the world that reads it decides what
    that means; what another world's content *becomes* is a job, so a pose
    gameplay derived from a physics snapshot is sent to the render world
