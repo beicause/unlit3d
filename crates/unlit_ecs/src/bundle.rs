@@ -16,20 +16,25 @@ use core::any::{Any, TypeId};
 
 use crate::column::{AnyColumn, Column};
 
-/// One component of a bundle, erased into the value box the archetype takes.
-pub(crate) type ErasedValue = (TypeId, Box<dyn Any>);
+/// One component of a bundle: its type, the name and column constructor the
+/// world registers it under, and the value box the archetype takes.
+///
+/// The type-keyed facts sit in one entry rather than in parallel arrays, so a
+/// component's type is written once and the arrays cannot fall out of step
+/// when they are sorted.
+pub(crate) struct BundleComponent {
+    pub(crate) type_id: TypeId,
+    pub(crate) name: &'static str,
+    pub(crate) column: fn() -> Box<dyn AnyColumn>,
+    pub(crate) value: Box<dyn Any>,
+}
 
-/// A column constructor, keyed by the component type it builds for, together
-/// with that type's name.
-pub(crate) type ColumnCtor = (TypeId, &'static str, fn() -> Box<dyn AnyColumn>);
-
-/// The component types, values and column constructors of one completed bundle.
-pub(crate) type FinishedColumns = (Box<[TypeId]>, Vec<ErasedValue>, Vec<ColumnCtor>);
+/// The components of one bundle, sorted by type.
+pub(crate) type Components = Vec<BundleComponent>;
 
 /// Builds the components of one spawn; only [`Bundle`] implementations use it.
 pub struct ArchetypeBuilder {
-    values: Vec<ErasedValue>,
-    ctors: Vec<ColumnCtor>,
+    components: Components,
 }
 
 impl Default for ArchetypeBuilder {
@@ -42,8 +47,7 @@ impl ArchetypeBuilder {
     /// An empty builder.
     pub fn new() -> Self {
         Self {
-            values: Vec::new(),
-            ctors: Vec::new(),
+            components: Vec::new(),
         }
     }
 
@@ -52,12 +56,12 @@ impl ArchetypeBuilder {
     /// The value is stored under its own type, so a tuple pushed here stays one
     /// component.
     pub fn push_component<C: 'static>(&mut self, value: C) {
-        self.values.push((TypeId::of::<C>(), Box::new(value)));
-        self.ctors.push((
-            TypeId::of::<C>(),
-            core::any::type_name::<C>(),
-            Column::<C>::eraser(),
-        ));
+        self.components.push(BundleComponent {
+            type_id: TypeId::of::<C>(),
+            name: core::any::type_name::<C>(),
+            column: Column::<C>::eraser(),
+            value: Box::new(value),
+        });
     }
 
     /// Add every component of `bundle` to this builder.
@@ -67,13 +71,10 @@ impl ArchetypeBuilder {
     /// contributes that tuple as a single component, exactly as spawning it
     /// alone would.
     pub fn push_bundle<B: Bundle>(&mut self, bundle: B) {
-        let (_types, values, ctors) = bundle.into_builder().finish();
-        self.values.extend(values);
-        self.ctors.extend(ctors);
+        self.components.extend(bundle.into_builder().components);
     }
 
-    /// Sorted component types, the component values in the same order, and one
-    /// column constructor per type.
+    /// The components in type order.
     ///
     /// # Panics
     ///
@@ -81,21 +82,27 @@ impl ArchetypeBuilder {
     /// rather than at spawn so that every path into an archetype, queued or
     /// immediate, reports it from the call that wrote the bundle.
     #[track_caller]
-    pub(crate) fn finish(self) -> FinishedColumns {
-        let Self {
-            mut values,
-            mut ctors,
-        } = self;
-        values.sort_unstable_by_key(|(type_id, _)| *type_id);
-        ctors.sort_unstable_by_key(|(type_id, _, _)| *type_id);
-        for pair in values.windows(2) {
-            assert_ne!(
-                pair[0].0, pair[1].0,
-                "a bundle cannot contain the same component twice",
-            );
-        }
-        let types: Box<[TypeId]> = values.iter().map(|(type_id, _)| *type_id).collect();
-        (types, values, ctors)
+    pub(crate) fn finish(self) -> Components {
+        let mut components = self.components;
+        sort_components(&mut components);
+        components
+    }
+}
+
+/// Put a bundle's components in type order, which is the order an archetype
+/// stores its columns in.
+///
+/// # Panics
+///
+/// When the same component appears twice.
+#[track_caller]
+fn sort_components(components: &mut [BundleComponent]) {
+    components.sort_unstable_by_key(|component| component.type_id);
+    for pair in components.windows(2) {
+        assert_ne!(
+            pair[0].type_id, pair[1].type_id,
+            "a bundle cannot contain the same component twice",
+        );
     }
 }
 
@@ -259,5 +266,29 @@ mod tests {
         builder.push_component(1u32);
         builder.push_bundle(crate::bundle![2u32]);
         builder.finish();
+    }
+
+    /// A wide bundle still finishes in type order, each component whole.
+    #[test]
+    fn a_wide_bundle_finishes_in_type_order() {
+        let mut builder = ArchetypeBuilder::new();
+        builder.push_component(1u8);
+        builder.push_component(2u16);
+        builder.push_component(3u32);
+        builder.push_component(4u64);
+        builder.push_component(5i8);
+        builder.push_component(6i16);
+        builder.push_component(7i32);
+        builder.push_component(8i64);
+        builder.push_component(9.0f32);
+        builder.push_component(10.0f64);
+        let finished = builder.finish();
+        assert_eq!(finished.len(), 10);
+        assert!(
+            finished
+                .windows(2)
+                .all(|pair| pair[0].type_id < pair[1].type_id),
+            "the components come out in type order",
+        );
     }
 }

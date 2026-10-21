@@ -32,7 +32,7 @@ use core::cell::{Ref, RefCell, RefMut};
 use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
-use crate::bundle::Bundle;
+use crate::bundle::{Bundle, BundleComponent};
 use crate::column::{AnyColumn, borrow_conflict};
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
@@ -390,33 +390,43 @@ impl World {
     /// Insert a row for `entity` in `scope`, with the [`ScopeOf`] component the
     /// world writes and the ones `bundle` carries.
     fn insert_row<B: Bundle>(&mut self, entity: Entity, scope: Entity, bundle: B) {
-        let (types, mut values, ctors) = bundle.into_builder().finish();
-        for (type_id, name, ctor) in ctors {
-            self.ctors.entry(type_id).or_insert(ctor);
-            self.names.entry(type_id).or_insert(name);
-        }
+        let mut components = bundle.into_builder().finish();
         // The scope is the world's to write, so a bundle that names it is a
         // programming error rather than a second source for the same fact.
         assert!(
-            !types.contains(&TypeId::of::<ScopeOf>()),
+            !components
+                .iter()
+                .any(|component| component.type_id == TypeId::of::<ScopeOf>()),
             "a bundle cannot carry ScopeOf; spawn in a scope instead",
         );
-        self.ctors
-            .entry(TypeId::of::<ScopeOf>())
-            .or_insert_with(crate::column::Column::<ScopeOf>::eraser);
-        self.names
-            .entry(TypeId::of::<ScopeOf>())
-            .or_insert(core::any::type_name::<ScopeOf>());
-        values.push((TypeId::of::<ScopeOf>(), Box::new(ScopeOf::new(scope))));
-        let mut types: Vec<TypeId> = types.into_vec();
-        types.push(TypeId::of::<ScopeOf>());
-        types.sort_unstable();
-        values.sort_unstable_by_key(|(type_id, _)| *type_id);
+        let scope_component = BundleComponent {
+            type_id: TypeId::of::<ScopeOf>(),
+            name: core::any::type_name::<ScopeOf>(),
+            column: crate::column::Column::<ScopeOf>::eraser(),
+            value: Box::new(ScopeOf::new(scope)),
+        };
+        // The bundle is already in type order, so the scope component slots
+        // into its place rather than the bundle being sorted again.
+        let index =
+            components.partition_point(|component| component.type_id < scope_component.type_id);
+        components.insert(index, scope_component);
+        for component in &components {
+            self.ctors
+                .entry(component.type_id)
+                .or_insert(component.column);
+            self.names
+                .entry(component.type_id)
+                .or_insert(component.name);
+        }
 
-        let archetype = self.archetype_for_types(&types);
+        let types: Box<[TypeId]> = components
+            .iter()
+            .map(|component| component.type_id)
+            .collect();
+        let archetype = self.archetype_for_types(types);
         let target = self.archetypes.get_mut(archetype);
-        for (type_id, value) in values {
-            target.push_erased(type_id, value);
+        for component in components {
+            target.push_erased(component.type_id, component.value);
         }
         target.push_entity(entity, scope);
         let row = (target.len() - 1) as u32;
@@ -532,11 +542,11 @@ impl World {
 
     /// The archetype with exactly `types` (sorted), creating it when it is
     /// new. Every type must have a registered column constructor.
-    fn archetype_for_types(&mut self, types: &[TypeId]) -> u32 {
-        if let Some(id) = self.archetypes.find(types) {
+    fn archetype_for_types(&mut self, types: Box<[TypeId]>) -> u32 {
+        if let Some(id) = self.archetypes.find(&types) {
             return id;
         }
-        let columns: Vec<Box<dyn AnyColumn>> = types
+        let columns: Box<[Box<dyn AnyColumn>]> = types
             .iter()
             .map(|type_id| {
                 let ctor = self
@@ -546,8 +556,7 @@ impl World {
                 ctor()
             })
             .collect();
-        self.archetypes
-            .register(Archetype::new(types.into(), columns.into_boxed_slice()))
+        self.archetypes.register(Archetype::new(types, columns))
     }
 
     /// The archetype with this id, or `None` when there is no such archetype.
