@@ -1135,7 +1135,7 @@ fn release(world: &World, app: Entity) {
     // The pass that drew into the swap chain still names a view of it, and that
     // id is what keeps the view alive. Parking the pass drops it, so the view
     // goes with the surface the release collects.
-    if let Some(presenting) = presenting_pass(scene, mcp) {
+    if let Some(presenting) = presenting_pass(&scene, mcp) {
         let _ = nested
             .root_scope()
             .query_one::<&mut FramePass>(presenting)
