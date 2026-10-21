@@ -20,6 +20,8 @@
 //! [`spawn_context`](crate::source::spawn_context); the renderer keeps the
 //! context's entity ids so it can reach the device and queue every frame.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::scene::{Scene, full_viewport};
 
@@ -78,29 +80,27 @@ pub struct Renderer {
     /// Reports sources that declared the same [`FrameSourceOrder`], without
     /// repeating itself every frame.
     source_warnings: OrderWarnings<FrameSourceOrder>,
-    /// The scene each (pass, source) pair built this frame.
+    /// The scene each (pass, source) pair built this frame, keyed by the pair.
     ///
     /// A scene is the frame's temporary product rather than the source's
     /// state: a source several passes see is built once per pass, and each
     /// pass needs the draws for its own target. The slots outlive the frame so
-    /// a steady scene reuses their allocations; a pair the world no longer
-    /// reaches gives its buffers back at the end of the frame.
-    scenes: Vec<SceneSlot>,
+    /// a steady scene reuses their allocations and a lookup finds one without
+    /// a scan; a pair the world no longer reaches gives its buffers back at the
+    /// end of the frame.
+    scenes: BTreeMap<(Entity, Entity), SceneSlot>,
     /// Reports sources no pass reaches, without repeating itself every frame.
     placement_warnings: PlacementWarnings,
     /// The sources some pass reached this frame, reused to sort out the ones
     /// no pass reached.
-    reached: Vec<Entity>,
+    reached: BTreeSet<Entity>,
     /// The sources no pass reached this frame, reused between frames.
     unreached: Vec<Entity>,
 }
 
 /// The scene of one (pass, source) pair, kept between frames.
+#[derive(Default)]
 struct SceneSlot {
-    /// The pass that records the scene.
-    pass: Entity,
-    /// The source that fills it.
-    source: Entity,
     /// The draws of the last frame the pair was built in.
     scene: Scene,
     /// Whether the pair was built this frame; a slot left unbuilt is dropped.
@@ -154,9 +154,9 @@ impl Renderer {
             pass_warnings: OrderWarnings::default(),
             sources: Ordering::default(),
             source_warnings: OrderWarnings::default(),
-            scenes: Vec::new(),
+            scenes: BTreeMap::new(),
             placement_warnings: PlacementWarnings::default(),
-            reached: Vec::new(),
+            reached: BTreeSet::new(),
             unreached: Vec::new(),
         }
     }
@@ -182,6 +182,8 @@ impl Renderer {
     /// an overlay over what an earlier pass left. A pass with no attachment to
     /// draw into is skipped, so a frame always records, and a world with no
     /// camera, no visible mesh or no source at all still applies its clears.
+    /// Parking a pass that way leaves the sources under it where they are: a
+    /// pass still reaches them, so they are not reported as misplaced.
     ///
     /// # Panics
     ///
@@ -209,7 +211,7 @@ impl Renderer {
 
         // Every scene of the last frame is stale until this frame builds it
         // again, and the two placement lists are this frame's.
-        for slot in &mut self.scenes {
+        for slot in self.scenes.values_mut() {
             slot.used = false;
         }
         self.reached.clear();
@@ -251,16 +253,11 @@ impl Renderer {
 
         // A source the root reaches but no pass does draws nowhere, which
         // would otherwise be silent: it is in the tree, it is asked to build
-        // nothing, and the frame simply does not show it.
+        // nothing, and the frame simply does not show it. Whether a pass can
+        // draw is not part of that question — see `note_placement`.
         {
             profiling::scope!("renderer.frame.check_placement");
-            let root = world.root_scope();
-            for (entity, _) in root.query::<(Entity, &Source)>() {
-                if !self.reached.contains(&entity) {
-                    self.unreached.push(entity);
-                }
-            }
-            self.placement_warnings.check(&self.unreached);
+            self.note_placement(world);
         }
 
         // Record phase: the passes in declared order, and within each pass its
@@ -329,7 +326,7 @@ impl Renderer {
         // The frame is over: a (pass, source) pair the world no longer reaches
         // keeps neither its draws nor the report of an ambiguity that no
         // longer exists.
-        self.scenes.retain(|slot| slot.used);
+        self.scenes.retain(|_, slot| slot.used);
         self.source_warnings.retain_owners(self.passes.entities());
 
         {
@@ -344,26 +341,7 @@ impl Renderer {
     /// nothing; the scene is cleared here rather than by the source, so a
     /// source that returns early leaves no draws of the last frame behind.
     fn scene_for(&mut self, pass: Entity, source: Entity) -> &mut Scene {
-        if !self.reached.contains(&source) {
-            self.reached.push(source);
-        }
-        let slot = match self
-            .scenes
-            .iter()
-            .position(|slot| slot.pass == pass && slot.source == source)
-        {
-            Some(index) => &mut self.scenes[index],
-            None => {
-                self.scenes.push(SceneSlot {
-                    pass,
-                    source,
-                    scene: Scene::default(),
-                    used: true,
-                });
-                let index = self.scenes.len() - 1;
-                &mut self.scenes[index]
-            }
-        };
+        let slot = self.scenes.entry((pass, source)).or_default();
         slot.used = true;
         slot.scene.clear();
         &mut slot.scene
@@ -372,9 +350,33 @@ impl Renderer {
     /// The scene `source` built for `pass` this frame, if it built one.
     fn scene_slot(&self, pass: Entity, source: Entity) -> Option<&Scene> {
         self.scenes
-            .iter()
-            .find(|slot| slot.used && slot.pass == pass && slot.source == source)
+            .get(&(pass, source))
+            .filter(|slot| slot.used)
             .map(|slot| &slot.scene)
+    }
+
+    /// Collect the sources the passes reach this frame, and report the ones
+    /// none of them reaches.
+    ///
+    /// Every pass counts whether or not it has an attachment to draw into: a
+    /// parked pass still owns the sources under it, so parking is a frame loop
+    /// waiting for its target rather than the sources being misplaced. What
+    /// stays unreached is a source only the root sees — it is in the tree, no
+    /// pass asks it to build anything, and the frame does not show it.
+    fn note_placement(&mut self, world: &World) {
+        let root = world.root_scope();
+        for (pass_entity, _) in root.query::<(Entity, &FramePass)>() {
+            let pass_scope = world.scope(pass_entity).unwrap_or(root);
+            for (entity, _) in pass_scope.query::<(Entity, &Source)>() {
+                self.reached.insert(entity);
+            }
+        }
+        for (entity, _) in root.query::<(Entity, &Source)>() {
+            if !self.reached.contains(&entity) {
+                self.unreached.push(entity);
+            }
+        }
+        self.placement_warnings.check(&self.unreached);
     }
 
     /// What a pass tells its sources, or `None` when it has no attachment to
@@ -392,5 +394,86 @@ impl Renderer {
             height: attachments.height(),
             viewport: pass.viewport,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unlit_ecs::Scope;
+    use unlit_ecs::bundle;
+
+    use crate::pass::FramePassOrder;
+    use crate::source::{FrameSource, spawn_context};
+
+    use unlit_wgpu::capabilities::DeviceCapabilities;
+
+    /// A source that draws nothing: placement is decided from the tree alone.
+    struct Nowhere;
+
+    impl FrameSource for Nowhere {
+        fn build_scene(
+            &mut self,
+            _scope: &Scope<'_>,
+            _ctx: RenderContext,
+            _info: PassInfo,
+            _scene: &mut Scene,
+            _encoder: &mut wgpu::CommandEncoder,
+        ) {
+        }
+
+        fn order(&self) -> FrameSourceOrder {
+            FrameSourceOrder::MESH
+        }
+    }
+
+    /// A world holding a renderer and one pass, ready to be given sources.
+    fn world_with_a_pass() -> (World, Renderer, Entity) {
+        let mut world = World::new();
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let ctx = spawn_context(
+            &mut world,
+            device,
+            queue,
+            unlit_wgpu::resources::ResourceGraph::new(),
+            DeviceCapabilities::default(),
+        );
+        let pass = world
+            .root_scope_mut()
+            .spawn(bundle!(FramePass::new(FramePassOrder(0))));
+        (world, Renderer::new(ctx), pass)
+    }
+
+    /// A parked pass still owns the sources under it; a source beside every
+    /// pass belongs to none of them.
+    #[test]
+    fn a_parked_pass_reaches_the_sources_under_it() {
+        let (mut world, mut renderer, pass) = world_with_a_pass();
+        let under = world
+            .scope_mut(pass)
+            .expect("the pass is spawned")
+            .spawn(unlit_ecs::bundle!(Source::new(Nowhere),));
+        let beside = world
+            .root_scope_mut()
+            .spawn(unlit_ecs::bundle!(Source::new(Nowhere),));
+
+        world
+            .root_scope()
+            .query_one::<&mut FramePass>(pass)
+            .map(|mut pass| pass.park())
+            .expect("the pass is spawned");
+
+        renderer.note_placement(&world);
+        assert!(
+            !renderer.reached.contains(&beside),
+            "a source beside the passes is reached by none of them"
+        );
+        assert_eq!(
+            renderer.unreached,
+            vec![beside],
+            "a parked pass still reaches the source under it, so only the \
+             misplaced one is reported"
+        );
+        assert!(renderer.reached.contains(&under));
     }
 }

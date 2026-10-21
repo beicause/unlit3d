@@ -2,7 +2,7 @@
 //! differs from the scene's own.
 //!
 //! A pass declares the region of its target that it draws into — see
-//! [`FramePass::set_viewport`] — and a frame loop that keeps content's aspect
+//! [`FramePass::viewport`] — and a frame loop that keeps content's aspect
 //! uses it to letterbox. These tests draw one camera into targets of different
 //! shapes and check where the content lands, which is the property no unit test
 //! of the arithmetic can show: that the region actually reaches the rasterizer.
@@ -124,7 +124,7 @@ fn cube_world(ctx: &Ctx, size: (u32, u32), viewport: Option<ViewportRect>) -> (W
     world
         .root_scope()
         .query_one::<&mut FramePass>(gpu.pass())
-        .map(|mut pass| pass.set_viewport(viewport))
+        .map(|mut pass| pass.viewport = viewport)
         .expect("the pass entity exists");
     (world, gpu)
 }

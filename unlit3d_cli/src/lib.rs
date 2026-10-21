@@ -291,9 +291,8 @@ pub fn build_world(
         .root_scope()
         .query_one::<&mut FramePass>(pass)
         .map(|mut pass| {
-            pass.set_viewport(Some(
-                ViewportRect::new(viewport_width, viewport_height).at(viewport_x, viewport_y),
-            ));
+            pass.viewport =
+                Some(ViewportRect::new(viewport_width, viewport_height).at(viewport_x, viewport_y));
         })
         .expect("the pass entity exists");
 

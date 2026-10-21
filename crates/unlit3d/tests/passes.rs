@@ -268,6 +268,51 @@ async fn a_source_no_pass_reaches_draws_nowhere() {
     assert_eq!(builds.get(), 0, "a world with no pass reaches no source");
 }
 
+/// A parked pass records nothing, and neither does anything under it.
+async fn a_parked_pass_draws_nothing() {
+    let ctx = Ctx::headless().await;
+    const COLOR: [u8; 4] = [40, 200, 90, 255];
+    let mut world = World::new();
+    let gpu = TestGpu::frame_only(&mut world, &ctx);
+    let target_a = gpu.bind_offscreen_target_with(&world, 1, false);
+    let root = world.root_scope().entity();
+    let pass_b = spawn_pass(&mut world, root, 1);
+    let target_b = bind_target(&gpu, &world, pass_b, 1, false);
+    // A load op of its own, so opening the pass at all would be visible: the
+    // target is zeroed when it is created, so a parked pass leaves it black
+    // while a recorded one would clear it to this red.
+    world
+        .root_scope()
+        .query_one::<&mut RenderLoadOps>(pass_b)
+        .map(|mut load| load.color = wgpu::LoadOp::Clear(wgpu::Color::RED))
+        .expect("the pass carries its load ops");
+
+    let texture = solid_texture(&ctx.device, &ctx.queue, COLOR);
+    let (_, view) = gpu.register_texture(&world, texture);
+    world
+        .scope_mut(pass_b)
+        .expect("the pass entity is its own scope")
+        .spawn(bundle!(Source::new(BlitSource::new(view)),));
+
+    world
+        .root_scope()
+        .query_one::<&mut FramePass>(pass_b)
+        .map(|mut pass| pass.park())
+        .expect("the pass entity exists");
+    gpu.render(&world);
+
+    let untouched = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_b);
+    assert!(
+        untouched.iter().all(|&channel| channel == 0),
+        "a parked pass should not be opened, so it neither draws nor clears"
+    );
+    assert_eq!(
+        centre_pixel(&ctx.device, &ctx.queue, &target_a),
+        [0, 0, 0, 255],
+        "the other pass still records, and has no source to draw"
+    );
+}
+
 /// A source in the shared subtree is drawn into every pass.
 async fn a_shared_source_draws_into_every_pass() {
     let ctx = Ctx::headless().await;
@@ -307,6 +352,7 @@ gpu_tests! {
     two_passes_draw_their_own_sources,
     a_nested_source_is_built_by_every_pass_above_it,
     a_source_no_pass_reaches_draws_nowhere,
+    a_parked_pass_draws_nothing,
     a_shared_source_draws_into_every_pass,
 }
 

@@ -952,7 +952,7 @@ fn present(world: &World, app: Entity) {
     let _ = world
         .root_scope()
         .query_one::<&mut Scene>(scene_entity)
-        .map(|mut scene| scene.resize(world, size, def.baseline));
+        .map(|mut scene| scene.resize(size, def.baseline));
 
     // Phase two, MCP mode only: the offscreen target the scene's own pass
     // renders into, and the pass that blits it into the swap chain.
@@ -1466,7 +1466,7 @@ fn present_frame(app: Entity) -> OnFrame {
             .root_scope()
             .query_one::<&McpEnabled>(app)
             .is_some_and(|mcp| mcp.0);
-        let (renderer, presenting) = {
+        let (renderer, presenting, scene_pass, viewport) = {
             let scene = world
                 .root_scope()
                 .query_one::<&Scene>(scene_entity)
@@ -1476,7 +1476,7 @@ fn present_frame(app: Entity) -> OnFrame {
             let Some(presenting) = presenting_pass(&scene, mcp) else {
                 return;
             };
-            (scene.renderer, presenting)
+            (scene.renderer, presenting, scene.pass, scene.viewport)
         };
 
         let Some(mut slot) = world.root_scope().query_one::<&mut SurfaceSlot>(app) else {
@@ -1507,6 +1507,16 @@ fn present_frame(app: Entity) -> OnFrame {
                         })
                         .expect("the presenting pass exists");
                 }
+                // The region the content is drawn into belongs to the scene's
+                // own pass, which a resize re-letterboxes: the pass that
+                // presents an offscreen frame covers the whole target and keeps
+                // its own. Restating it here keeps the scene's state and the
+                // pass's in step whatever changed the window.
+                nested_world
+                    .root_scope()
+                    .query_one::<&mut FramePass>(scene_pass)
+                    .map(|mut pass| pass.viewport = viewport)
+                    .expect("the scene's own pass exists");
                 renderer.render(nested_world);
                 let queue = nested_world
                     .root_scope()
@@ -1653,7 +1663,7 @@ fn resize_scene(app: Entity) -> OnWindowEvent {
         let _ = world
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
-            .map(|mut scene| scene.resize(world, size, baseline));
+            .map(|mut scene| scene.resize(size, baseline));
         if world
             .root_scope()
             .query_one::<&McpEnabled>(app)
@@ -1788,7 +1798,7 @@ impl Scene {
         world
             .root_scope()
             .query_one::<&mut FramePass>(pass)
-            .map(|mut pass| pass.set_viewport(viewport))
+            .map(|mut pass| pass.viewport = viewport)
             .expect("the pass was just spawned");
 
         // The UI source is mounted before the scene is built, so a scene's own
@@ -1893,20 +1903,14 @@ impl Scene {
     /// Re-state the target's size, re-letterboxing the content for its shape.
     ///
     /// Called on every resize and on the first frame that knows the window's
-    /// size, so the projection, the region the content is drawn into and the
-    /// size the scene's behaviour is handed all follow the target together.
-    ///
-    /// The region reaches the driver through the scene's own pass; the pass that
-    /// presents an offscreen frame covers the whole target and keeps its own.
-    fn resize(&mut self, world: &World, target: (u32, u32), baseline: Option<(u32, u32)>) {
+    /// size, so the projection and the size the scene's behaviour is handed
+    /// follow the target together. The region is the scene's own state here and
+    /// reaches the pass that draws it from [`present_frame`], which is the one
+    /// place holding both that pass and this scene.
+    fn resize(&mut self, target: (u32, u32), baseline: Option<(u32, u32)>) {
         let (viewport, content) = letterbox(baseline, target, true);
         self.size = content;
         self.viewport = viewport;
-        world
-            .root_scope()
-            .query_one::<&mut FramePass>(self.pass)
-            .map(|mut pass| pass.set_viewport(viewport))
-            .expect("the scene's pass exists");
     }
 
     /// Advance the scene by `delta_time` seconds.

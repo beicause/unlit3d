@@ -133,13 +133,6 @@ impl FramePass {
         self.msaa = None;
     }
 
-    /// Letterbox the pass's sources into `viewport`, or the whole target.
-    ///
-    /// See [`FramePass::viewport`].
-    pub fn set_viewport(&mut self, viewport: Option<ViewportRect>) {
-        self.viewport = viewport;
-    }
-
     /// The attachments this pass records into, read out of the frame's graph.
     ///
     /// `None` when the pass has none to draw into. The views are cloned out of
