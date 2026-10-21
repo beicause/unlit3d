@@ -2,13 +2,17 @@
 //!
 //! A [`Renderer`] draws nothing itself. It drives the frame's [`FramePass`]es:
 //! each pass states what it draws into, every
-//! [`FrameSource`](crate::source::FrameSource) under it builds its own
-//! [`Scene`](unlit_wgpu::scene::Scene) from the world, and the driver records
-//! those scenes in [`FrameSourceOrder`] into that pass. The passes themselves
-//! record in [`FramePassOrder`]. That is the whole of it —
+//! [`FrameSource`](crate::source::FrameSource) whose scope reaches the pass
+//! fills the pass's [`Scene`] from the world, and the
+//! driver records that scene in [`FrameSourceOrder`] into the pass. The passes
+//! themselves record in [`FramePassOrder`]. That is the whole of it —
 //! the built-in mesh rendering is one source
 //! ([`MeshSource`](crate::mesh_source::MeshSource)) and has no more privilege
 //! than a caller's own.
+//!
+//! A scene belongs to a (pass, source) pair rather than to the source: a
+//! source several passes see is built once per pass, into that pass's own
+//! scene, so each pass records exactly the draws its own target asked for.
 //!
 //! The GPU state the frame is drawn with — the device, the queue and the
 //! resource graph — lives in the world as resource components, addressed by a
@@ -17,7 +21,7 @@
 //! context's entity ids so it can reach the device and queue every frame.
 
 use unlit_ecs::{Entity, World};
-use unlit_wgpu::scene::full_viewport;
+use unlit_wgpu::scene::{Scene, full_viewport};
 
 use crate::components::RenderLoadOps;
 use crate::order::{OrderWarnings, Ordering};
@@ -74,6 +78,64 @@ pub struct Renderer {
     /// Reports sources that declared the same [`FrameSourceOrder`], without
     /// repeating itself every frame.
     source_warnings: OrderWarnings<FrameSourceOrder>,
+    /// The scene each (pass, source) pair built this frame.
+    ///
+    /// A scene is the frame's temporary product rather than the source's
+    /// state: a source several passes see is built once per pass, and each
+    /// pass needs the draws for its own target. The slots outlive the frame so
+    /// a steady scene reuses their allocations; a pair the world no longer
+    /// reaches gives its buffers back at the end of the frame.
+    scenes: Vec<SceneSlot>,
+    /// Reports sources no pass reaches, without repeating itself every frame.
+    placement_warnings: PlacementWarnings,
+    /// The sources some pass reached this frame, reused to sort out the ones
+    /// no pass reached.
+    reached: Vec<Entity>,
+    /// The sources no pass reached this frame, reused between frames.
+    unreached: Vec<Entity>,
+}
+
+/// The scene of one (pass, source) pair, kept between frames.
+struct SceneSlot {
+    /// The pass that records the scene.
+    pass: Entity,
+    /// The source that fills it.
+    source: Entity,
+    /// The draws of the last frame the pair was built in.
+    scene: Scene,
+    /// Whether the pair was built this frame; a slot left unbuilt is dropped.
+    used: bool,
+}
+
+/// Reports sources that no pass reaches, and so never draws.
+///
+/// A source is drawn by the passes whose scope contains it: one under a pass
+/// draws into that pass, one in the shared subtree draws into every pass. A
+/// source that only the root reaches is drawn by none of them, which is silent
+/// otherwise, so it is reported once and again only when the set changes.
+#[derive(Default)]
+struct PlacementWarnings {
+    reported: Vec<Entity>,
+}
+
+impl PlacementWarnings {
+    /// Report `unreached` unless it is the set reported last time, and return
+    /// whether there was anything to report.
+    fn check(&mut self, unreached: &[Entity]) -> bool {
+        if self.reported == unreached {
+            return false;
+        }
+        if !unreached.is_empty() {
+            log::warn!(
+                "{} sources are reached by no pass, so nothing draws them: entities {:?}; move each one under the pass it belongs to, or into the shared subtree to draw it into every pass",
+                unreached.len(),
+                unreached
+            );
+        }
+        self.reported.clear();
+        self.reported.extend_from_slice(unreached);
+        !unreached.is_empty()
+    }
 }
 
 impl Renderer {
@@ -92,6 +154,10 @@ impl Renderer {
             pass_warnings: OrderWarnings::default(),
             sources: Ordering::default(),
             source_warnings: OrderWarnings::default(),
+            scenes: Vec::new(),
+            placement_warnings: PlacementWarnings::default(),
+            reached: Vec::new(),
+            unreached: Vec::new(),
         }
     }
 
@@ -103,10 +169,13 @@ impl Renderer {
     /// Render one frame from the ECS `world`.
     ///
     /// The frame is assembled in two phases. First every source of every pass
-    /// builds its scene, taking its own short-lived borrow of the world; then
-    /// the passes are recorded in [`FramePassOrder`], and within each pass its
-    /// sources in [`FrameSourceOrder`]. A source draws into whichever pass it
-    /// hangs under, so its place in the entity tree is what chooses its pass.
+    /// fills that pass's scene, taking its own short-lived borrow of the world;
+    /// then the passes are recorded in [`FramePassOrder`], and within each pass
+    /// its sources in [`FrameSourceOrder`]. A source draws into the passes whose
+    /// scope reaches it, so its place in the entity tree is what chooses its
+    /// pass — and a source the scopes of several passes reach is built once per
+    /// pass, each time into that pass's own scene. A source no pass reaches
+    /// draws nowhere, and is reported once.
     ///
     /// The [`RenderLoadOps`] on each pass entity decide what that pass loads
     /// and clears, so two passes may disagree about it — the usual way to draw
@@ -138,9 +207,17 @@ impl Renderer {
             label: Some("unlit3d::encoder"),
         });
 
-        // Build phase: each source assembles its own scene, taking its own
-        // short-lived borrow of the world for the GPU state it needs. Nothing
-        // of the graph or the encoder outlives this loop's body.
+        // Every scene of the last frame is stale until this frame builds it
+        // again, and the two placement lists are this frame's.
+        for slot in &mut self.scenes {
+            slot.used = false;
+        }
+        self.reached.clear();
+        self.unreached.clear();
+
+        // Build phase: each source fills the scene of the pass it is built for,
+        // taking its own short-lived borrow of the world for the GPU state it
+        // needs. Nothing of the graph or the encoder outlives this loop's body.
         //
         // The sources are visited by row order, which is *not* draw order: the
         // order they record in is resolved below, from the `order` each one
@@ -151,6 +228,7 @@ impl Renderer {
         // of the world stays shared for `build_scene` to read.
         {
             profiling::scope!("renderer.frame.build_sources");
+            let context = self.context;
             let root = world.root_scope();
             for (pass_entity, pass) in root.query::<(Entity, &FramePass)>() {
                 let Some(info) = self.pass_info(world, &pass) else {
@@ -165,9 +243,24 @@ impl Renderer {
                 let pass_scope = world.scope(pass_entity).unwrap_or(root);
                 for (entity, mut source) in pass_scope.query::<(Entity, &mut Source)>() {
                     let scope = world.scope(entity).unwrap_or(pass_scope);
-                    source.build_scene(&scope, self.context, info, &mut encoder);
+                    let scene = self.scene_for(pass_entity, entity);
+                    source.build_scene(&scope, context, info, scene, &mut encoder);
                 }
             }
+        }
+
+        // A source the root reaches but no pass does draws nowhere, which
+        // would otherwise be silent: it is in the tree, it is asked to build
+        // nothing, and the frame simply does not show it.
+        {
+            profiling::scope!("renderer.frame.check_placement");
+            let root = world.root_scope();
+            for (entity, _) in root.query::<(Entity, &Source)>() {
+                if !self.reached.contains(&entity) {
+                    self.unreached.push(entity);
+                }
+            }
+            self.placement_warnings.check(&self.unreached);
         }
 
         // Record phase: the passes in declared order, and within each pass its
@@ -179,7 +272,7 @@ impl Renderer {
                 world
                     .root_scope()
                     .query::<(Entity, &FramePass)>()
-                    .map(|(entity, pass)| (pass.order(), entity)),
+                    .map(|(entity, pass)| (pass.order, entity)),
             );
             self.pass_warnings.check(self.passes.ambiguous());
         }
@@ -203,7 +296,11 @@ impl Renderer {
                         .query::<(Entity, &Source)>()
                         .map(|(entity, source)| (source.order(), entity)),
                 );
-                self.source_warnings.check(self.sources.ambiguous());
+                // Ambiguities are remembered per pass, so two passes with
+                // their own tied sources do not keep overwriting each other's
+                // report and warn every frame.
+                self.source_warnings
+                    .check_for(pass_entity, self.sources.ambiguous());
             }
             {
                 profiling::scope!("renderer.frame.record_pass");
@@ -222,18 +319,62 @@ impl Renderer {
                     attachments.begin_pass(&mut encoder, load.color, load.depth, load.stencil);
                 for index in 0..self.sources.entities().len() {
                     let entity = self.sources.entities()[index];
-                    pass_scope
-                        .query_one::<&mut Source>(entity)
-                        .map(|source| source.scene().record_with_viewport(&mut render_pass, whole))
-                        .expect("the source entity exists");
+                    if let Some(scene) = self.scene_slot(pass_entity, entity) {
+                        scene.record_with_viewport(&mut render_pass, whole);
+                    }
                 }
             }
         }
+
+        // The frame is over: a (pass, source) pair the world no longer reaches
+        // keeps neither its draws nor the report of an ambiguity that no
+        // longer exists.
+        self.scenes.retain(|slot| slot.used);
+        self.source_warnings.retain_owners(self.passes.entities());
 
         {
             profiling::scope!("renderer.frame.submit");
             queue.submit([encoder.finish()]);
         }
+    }
+
+    /// The scene `source` fills for `pass` this frame, cleared and ready.
+    ///
+    /// The pair's slot is reused when it exists, so a steady frame reallocates
+    /// nothing; the scene is cleared here rather than by the source, so a
+    /// source that returns early leaves no draws of the last frame behind.
+    fn scene_for(&mut self, pass: Entity, source: Entity) -> &mut Scene {
+        if !self.reached.contains(&source) {
+            self.reached.push(source);
+        }
+        let slot = match self
+            .scenes
+            .iter()
+            .position(|slot| slot.pass == pass && slot.source == source)
+        {
+            Some(index) => &mut self.scenes[index],
+            None => {
+                self.scenes.push(SceneSlot {
+                    pass,
+                    source,
+                    scene: Scene::default(),
+                    used: true,
+                });
+                let index = self.scenes.len() - 1;
+                &mut self.scenes[index]
+            }
+        };
+        slot.used = true;
+        slot.scene.clear();
+        &mut slot.scene
+    }
+
+    /// The scene `source` built for `pass` this frame, if it built one.
+    fn scene_slot(&self, pass: Entity, source: Entity) -> Option<&Scene> {
+        self.scenes
+            .iter()
+            .find(|slot| slot.used && slot.pass == pass && slot.source == source)
+            .map(|slot| &slot.scene)
     }
 
     /// What a pass tells its sources, or `None` when it has no attachment to
@@ -249,7 +390,7 @@ impl Renderer {
             surface: attachments.surface_key(),
             width: attachments.width(),
             height: attachments.height(),
-            viewport: pass.viewport(),
+            viewport: pass.viewport,
         })
     }
 }

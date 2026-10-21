@@ -40,11 +40,11 @@ pub(crate) struct Ordering<K: OrderKey> {
     /// `(order, entity)` for every entity, sorted by both. Scratch: the
     /// entities are copied into [`Ordering::order`] once the run boundaries
     /// have been found.
-    pub(crate) keys: Vec<(K, Entity)>,
+    keys: Vec<(K, Entity)>,
     /// The entities to record, in the order they record.
-    pub(crate) order: Vec<Entity>,
+    order: Vec<Entity>,
     /// The runs of equal orders among them, in order.
-    pub(crate) ambiguous: Vec<AmbiguousGroup<K>>,
+    ambiguous: Vec<AmbiguousGroup<K>>,
 }
 
 impl<K: OrderKey> Default for Ordering<K> {
@@ -94,6 +94,19 @@ impl<K: OrderKey> Ordering<K> {
     }
 
     /// The entities to record, in the order they record.
+    /// Room the entity buffer holds, so a test can show it is reused rather
+    /// than reallocated when the order changes size.
+    #[cfg(test)]
+    pub(crate) fn order_capacity(&self) -> usize {
+        self.order.capacity()
+    }
+
+    /// Room the ambiguity buffer holds, for the same reason.
+    #[cfg(test)]
+    pub(crate) fn ambiguous_capacity(&self) -> usize {
+        self.ambiguous.capacity()
+    }
+
     pub(crate) fn entities(&self) -> &[Entity] {
         &self.order
     }
@@ -118,7 +131,14 @@ impl<K: OrderKey> Ordering<K> {
 /// reordered.
 #[derive(Debug)]
 pub(crate) struct OrderWarnings<K: OrderKey> {
-    reported: Vec<AmbiguousGroup<K>>,
+    /// What was last reported, per owner.
+    ///
+    /// The owner is whoever the groups belong to — the pass whose sources
+    /// were ordered — and `None` for a caller that orders one set for a whole
+    /// frame. Keeping them apart matters once a frame has several passes: one
+    /// shared record would see each pass's ambiguity as a change from the
+    /// previous pass's, and report all of them again on every frame.
+    reported: Vec<(Option<Entity>, Vec<AmbiguousGroup<K>>)>,
 }
 
 impl<K: OrderKey> Default for OrderWarnings<K> {
@@ -135,7 +155,38 @@ impl<K: OrderKey> OrderWarnings<K> {
     /// Returns whether anything was reported, which is what the tests assert
     /// on; the log line names the group's size, its order and its entities.
     pub(crate) fn check(&mut self, ambiguous: &[AmbiguousGroup<K>]) -> bool {
-        if self.reported == ambiguous {
+        self.report(None, ambiguous)
+    }
+
+    /// Warn about `ambiguous` unless it is what was already reported for
+    /// `owner`.
+    ///
+    /// A frame with several passes orders each pass's sources separately and
+    /// reports them under that pass, so one pass's ambiguity is not mistaken
+    /// for a change to another's.
+    pub(crate) fn check_for(&mut self, owner: Entity, ambiguous: &[AmbiguousGroup<K>]) -> bool {
+        self.report(Some(owner), ambiguous)
+    }
+
+    /// Forget every owner `live` rejects, so a despawned pass leaves nothing
+    /// behind.
+    pub(crate) fn retain_owners(&mut self, live: &[Entity]) {
+        self.reported.retain(|(owner, _)| match owner {
+            None => true,
+            Some(owner) => live.contains(owner),
+        });
+    }
+
+    fn report(&mut self, owner: Option<Entity>, ambiguous: &[AmbiguousGroup<K>]) -> bool {
+        let index = match self.reported.iter().position(|(held, _)| *held == owner) {
+            Some(index) => index,
+            None => {
+                self.reported.push((owner, Vec::new()));
+                self.reported.len() - 1
+            }
+        };
+        let reported = &mut self.reported[index].1;
+        if reported.as_slice() == ambiguous {
             return false;
         }
         for (order, group) in ambiguous {
@@ -148,7 +199,8 @@ impl<K: OrderKey> OrderWarnings<K> {
                 group,
             );
         }
-        self.reported = ambiguous.to_vec();
+        reported.clear();
+        reported.extend_from_slice(ambiguous);
         !ambiguous.is_empty()
     }
 }

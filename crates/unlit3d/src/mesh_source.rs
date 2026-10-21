@@ -34,6 +34,7 @@ use zerocopy::IntoBytes;
 
 use crate::components::{Camera, GpuMaterial, GpuMesh, MeshParts};
 use crate::culling::VisibleMesh;
+use crate::frame::FrameClock;
 use crate::mesh::MeshDesc;
 use crate::pass::PassInfo;
 use crate::pipeline::{
@@ -235,9 +236,6 @@ pub struct MeshSource {
     /// [`DrawHandlesKey`] the visible set named. Reused between frames, so a
     /// steady scene allocates nothing.
     entry_handle_cache: HashMap<DrawHandlesKey, EntryHandles>,
-    /// The scene this source built for the frame, whose allocation survives
-    /// between frames.
-    scene: Scene,
 }
 
 impl MeshSource {
@@ -398,7 +396,6 @@ impl MeshSource {
             family_instance_cache: Vec::new(),
             pipeline_handle_cache: Vec::new(),
             entry_handle_cache: HashMap::new(),
-            scene: Scene::new(),
         }
     }
 
@@ -1174,7 +1171,7 @@ impl MeshSource {
     /// [`DrawHandlesKey`] by value rather than the handles themselves, and the
     /// expensive part — reading the mesh component and cloning its buffers out
     /// of the graph — happens once per distinct key instead of once per entity.
-    fn assemble_frame(&mut self, world: &Scope<'_>) {
+    fn assemble_frame(&mut self, world: &Scope<'_>, scene: &mut Scene) {
         let mut handles = std::mem::take(&mut self.entry_handle_cache);
         handles.clear();
         {
@@ -1257,12 +1254,11 @@ impl MeshSource {
         family_instances.clear();
         family_instances.extend(self.families.iter().map(|family| family.instance_binding()));
 
-        // The scene keeps its allocation across frames: `clear` drops the
-        // draws but not the buffer behind them.
-        self.scene.clear();
+        // The driver cleared the scene for this (pass, source) pair, so the
+        // draws below are the whole of it.
         profiling::scope!("mesh_source.assemble.draws");
         assemble_scene(
-            &mut self.scene,
+            scene,
             &self.visible_cache,
             &pipeline_handles,
             &handles,
@@ -1302,6 +1298,7 @@ impl FrameSource for MeshSource {
         world: &Scope<'_>,
         ctx: RenderContext,
         info: PassInfo,
+        scene: &mut Scene,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         // Settle the graph on every way out of this build, the early returns
@@ -1310,10 +1307,9 @@ impl FrameSource for MeshSource {
         // is assembled — and on any return in between.
         let maintain = ctx.maintain_scope(*world);
         profiling::scope!("mesh_source.build");
-        // The scene is cleared on every path: a frame that records it must
-        // never replay the previous frame's draws, and a source with nothing
-        // to draw leaves it empty rather than absent.
-        self.scene.clear();
+        // `scene` arrives cleared: the driver owns it, so a frame that records
+        // it never replays the previous frame's draws, and an early return
+        // below leaves it empty rather than stale.
 
         // A frame that draws still has to publish a changed metadata array, but
         // one that does not draw can leave it for the next frame.
@@ -1341,7 +1337,7 @@ impl FrameSource for MeshSource {
         // loop built it for the region's aspect, so the frustum this source
         // culls with follows the same shape and nothing is culled at the edges
         // the letterbox would have hidden.
-        self.scene.set_viewport(info.viewport);
+        scene.set_viewport(info.viewport);
 
         // The pass states the target the frame is specialized for, so nothing
         // has to be read back out of the world and a stale target can never be
@@ -1349,11 +1345,17 @@ impl FrameSource for MeshSource {
         // attachments.
         let surface = info.surface;
 
-        // Update global uniforms.
+        // Update global uniforms. The clock belongs to the frame, not to this
+        // source: a source may be built once per pass, and time must not run
+        // faster because a frame has more passes.
         {
             profiling::scope!("mesh_source.uniforms.upload");
-            self.globals.time += self.globals.delta_time;
-            self.globals.frame_count += 1;
+            if let Some(clock) = world.query_one::<&FrameClock>(ctx.clock) {
+                let clock = *clock;
+                self.globals.time = clock.time;
+                self.globals.delta_time = clock.delta_time;
+                self.globals.frame_count = clock.index;
+            }
             self.upload_globals(world, encoder);
 
             let view = View::new(
@@ -1405,12 +1407,8 @@ impl FrameSource for MeshSource {
 
         {
             profiling::scope!("mesh_source.assemble");
-            self.assemble_frame(world);
+            self.assemble_frame(world, scene);
         }
-    }
-
-    fn scene(&self) -> &Scene {
-        &self.scene
     }
 
     fn order(&self) -> FrameSourceOrder {
@@ -2886,10 +2884,16 @@ mod tests {
         // still applying the frame's clears.
         let mut encoder = h.encoder();
         let ctx = h.source.context();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
         assert!(h.source.visible_cache.is_empty(), "nothing was drawn");
-        assert!(h.source.scene().draws.is_empty(), "the scene is empty");
+        assert!(scene.draws.is_empty(), "the scene is empty");
     }
 
     #[test]
@@ -2922,27 +2926,41 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        // The driver owns the scene and clears it before every build, so the
+        // same one stands in for two frames here.
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
         let drawn_first = drawn(&h.source);
         assert_eq!(drawn_first.len(), 1, "the entity was drawn");
         let capacities = (
             h.source.visible_cache.capacity(),
             h.source.entry_handle_cache.capacity(),
             h.source.pipeline_handle_cache.capacity(),
-            h.source.scene.draws.capacity(),
+            scene.draws.capacity(),
         );
 
+        scene.clear();
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
         assert_eq!(drawn(&h.source), drawn_first, "the same draws, in order");
         assert_eq!(
             (
                 h.source.visible_cache.capacity(),
                 h.source.entry_handle_cache.capacity(),
                 h.source.pipeline_handle_cache.capacity(),
-                h.source.scene.draws.capacity(),
+                scene.draws.capacity(),
             ),
             capacities,
             "a second frame allocates nothing"
@@ -3000,8 +3018,14 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
         let shapes: Vec<DrawShape> = h
             .source
             .visible_cache
@@ -3044,11 +3068,17 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
 
-        assert_eq!(h.source.scene().draws.len(), 1, "one draw for all three");
-        let range = &h.source.scene().draws[0].range;
+        assert_eq!(scene.draws.len(), 1, "one draw for all three");
+        let range = &scene.draws[0].range;
         let instances = match range {
             DrawRange::Indexed { instances, .. } | DrawRange::Vertices { instances, .. } => {
                 instances
@@ -3085,8 +3115,14 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
 
         assert_eq!(h.source.visible_cache.len(), 3, "all three are visible");
         assert_eq!(
@@ -3095,7 +3131,7 @@ mod tests {
             "one mesh, one draw state, one handle set"
         );
         assert_eq!(
-            h.source.scene().draws.len(),
+            scene.draws.len(),
             1,
             "and therefore one merged instanced draw"
         );
@@ -3127,14 +3163,16 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
-
-        assert_eq!(
-            h.source.scene().draws.len(),
-            2,
-            "different meshes stay one draw each"
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
         );
+
+        assert_eq!(scene.draws.len(), 2, "different meshes stay one draw each");
     }
 
     /// A translucent entry never merges, with another translucent entry or with
@@ -3170,11 +3208,17 @@ mod tests {
 
         let ctx = h.source.context();
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
 
         assert_eq!(
-            h.source.scene().draws.len(),
+            scene.draws.len(),
             2,
             "translucent entries keep their own draw order"
         );
@@ -3198,8 +3242,14 @@ mod tests {
             UnlitPipeline::new(h.key.clone()),
         ));
         let mut encoder = h.encoder();
-        h.source
-            .build_scene(&h.world.root_scope(), ctx, h.target, &mut encoder);
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
 
         let before = MeshSource::graph(&h.world.root_scope(), ctx).len();
         // Read the ids out before the source goes: once it is dropped there is

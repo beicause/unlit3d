@@ -46,6 +46,10 @@ name = "morphed_scene"
 
 [[test]]
 harness = false
+name = "passes"
+
+[[test]]
+harness = false
 name = "skinned_scene"
 
 [[test]]

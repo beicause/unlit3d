@@ -43,7 +43,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::globals::{Globals, View};
 use unlit_wgpu::pipeline::{CAMERA_BINDING, FRAME_BINDING, SpecializedUnlitPipeline};
-use unlit_wgpu::resources::{ResHandle, ResourceGraph};
+use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SpecializedPipeline;
 use unlit_wgpu::specialize::SurfaceKey;
@@ -113,21 +113,35 @@ impl UiPanel {
 
 /// The GPU state of a [`UiSource`], built for one [`SurfaceKey`].
 ///
-/// The uniform buffers outlive a target change — nothing about them depends on
-/// the target — so only the integration (which holds the specialized pipeline)
-/// is rebuilt in place when the target's key changes.
+/// One entry per target the source has been asked to draw into: a source may be
+/// recorded by several passes, and the passes of one frame need not share a
+/// key — a multisampled offscreen pass and a single-sampled swap chain differ in
+/// sample count. Each entry has uniforms and an integration of its own, because
+/// the integration holds the pipeline specialized for that target and the
+/// texture atlases uploaded for it.
 struct Gpu {
     /// The camera uniform `screen_view` is written into.
     camera: wgpu::Buffer,
     /// The frame-globals uniform.
     globals: wgpu::Buffer,
-    /// Graph node of the bind group binding the two uniforms.
-    ///
-    /// Holding it is what keeps the two uniforms alive: the group depends on
-    /// them, and dropping the whole [`Gpu`] gives up the group with it.
-    global_group: ResHandle<wgpu::BindGroup>,
     /// Uploads egui's textures and geometry and records its draws.
+    ///
+    /// It holds the bind group binding the two uniforms, which is what keeps
+    /// them alive: the group depends on them, and dropping the whole [`Gpu`]
+    /// gives up the group with it.
     integration: EguiIntegration,
+}
+
+/// One target's [`Gpu`] state.
+///
+/// Entries are kept for the world's life: a key changes with a target's format
+/// or sample count, not with its size, so a windowed frame loop settles on one
+/// or two of them and never rebuilds as the passes alternate.
+struct Target {
+    /// The target's specialization key.
+    key: SurfaceKey,
+    /// The state built for it.
+    gpu: Gpu,
 }
 
 /// A frame source that draws the world's egui interfaces as an overlay.
@@ -153,15 +167,11 @@ pub struct UiSource {
     ctx: egui::Context,
     /// When the source was created, the origin of egui's frame clock.
     start: Instant,
-    /// This frame's UI draws, reused across frames.
-    scene: Scene,
-    /// The GPU state, built on the first frame that knows its target.
-    gpu: Option<Gpu>,
+    /// The GPU state, one entry per target the source has drawn into.
+    targets: Vec<Target>,
     /// The events translated for the frame being laid out, reclaimed from egui
     /// once its pass is over so the next frame reuses the allocation.
     event_scratch: Vec<egui::Event>,
-    /// The target the current pipeline is specialized for.
-    surface: Option<SurfaceKey>,
     /// The slots other worlds publish their frames into, still drawn until a
     /// newer frame arrives.
     external: ExternalFrames,
@@ -183,10 +193,8 @@ impl UiSource {
         Self {
             ctx: egui::Context::default(),
             start: Instant::now(),
-            scene: Scene::new(),
-            gpu: None,
+            targets: Vec::new(),
             event_scratch: Vec::new(),
-            surface: None,
             external: ExternalFrames::new(),
             screen: UiScreen::new(),
             url_scratch: Vec::new(),
@@ -259,59 +267,55 @@ impl UiSource {
         })
     }
 
-    /// Build the UI's pipeline and bind group for `surface`, or rebuild the
-    /// target-dependent part in place.
+    /// The index of the entry for `surface`, building it on first use.
     ///
-    /// The uniforms are created once; a later target only changes the pipeline,
-    /// so its bind group is replaced behind the same graph node and the node's
-    /// id stays valid for the [`EguiIntegration`] built around it.
-    fn build_gpu(&mut self, device: &wgpu::Device, graph: &mut ResourceGraph, surface: SurfaceKey) {
+    /// A source may be recorded by several passes, and the passes of one frame
+    /// need not share a key — a multisampled offscreen pass and a single-
+    /// sampled swap chain differ in sample count — so the state is kept per key
+    /// rather than rebuilt when the key changes: alternating passes would
+    /// otherwise specialize the pipeline, and drop the material table with it,
+    /// twice per frame.
+    fn target_index(
+        &mut self,
+        device: &wgpu::Device,
+        graph: &mut ResourceGraph,
+        surface: SurfaceKey,
+    ) -> usize {
+        if let Some(index) = self.targets.iter().position(|target| target.key == surface) {
+            return index;
+        }
         // A UI drawn into an sRGB target encodes its own output in gamma space,
         // so the fragment converts to linear; the same call the winit path
         // makes for its swap chain.
         let variant = ui_variant(device, surface.color_format.is_srgb(), surface);
         let pipeline = SpecializedPipeline::create(device, variant);
-
-        match &mut self.gpu {
-            Some(gpu) => {
-                let group = global_group(device, &pipeline, &gpu.camera, &gpu.globals);
-                graph
-                    .replace(&gpu.global_group, group)
-                    .expect("the global group is registered in the graph");
-                // Same uniforms, same group node, same integration state; the
-                // new pipeline is all that actually changed.
-                gpu.integration.retarget(pipeline);
-            }
-            None => {
-                let camera = uniform_buffer(
-                    device,
-                    "unlit3d::ui::camera",
-                    <View as const_shader_layout::ShaderLayout>::SIZE.get(),
-                );
-                let globals = uniform_buffer(
-                    device,
-                    "unlit3d::ui::globals",
-                    <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
-                );
-                let camera_id = graph.insert(camera.clone(), None);
-                let globals_id = graph.insert(globals.clone(), None);
-                // The two uniforms are written into every frame rather than
-                // replaced, so the group has nothing to rebuild from: the only
-                // change that reaches it is the pipeline swap above, which
-                // replaces it outright.
-                let group = global_group(device, &pipeline, &camera, &globals);
-                let group_id = graph.insert(group, None);
-                graph.add_dependency(&group_id, &camera_id);
-                graph.add_dependency(&group_id, &globals_id);
-                self.gpu = Some(Gpu {
-                    camera,
-                    globals,
-                    global_group: group_id.clone(),
-                    integration: EguiIntegration::new(device, group_id, pipeline),
-                });
-            }
-        }
-        self.surface = Some(surface);
+        let camera = uniform_buffer(
+            device,
+            "unlit3d::ui::camera",
+            <View as const_shader_layout::ShaderLayout>::SIZE.get(),
+        );
+        let globals = uniform_buffer(
+            device,
+            "unlit3d::ui::globals",
+            <Globals as const_shader_layout::ShaderLayout>::SIZE.get(),
+        );
+        let camera_id = graph.insert(camera.clone(), None);
+        let globals_id = graph.insert(globals.clone(), None);
+        // The two uniforms are written into every frame rather than replaced,
+        // so the group has nothing to rebuild from.
+        let group = global_group(device, &pipeline, &camera, &globals);
+        let group_id = graph.insert(group, None);
+        graph.add_dependency(&group_id, &camera_id);
+        graph.add_dependency(&group_id, &globals_id);
+        self.targets.push(Target {
+            key: surface,
+            gpu: Gpu {
+                camera,
+                globals,
+                integration: EguiIntegration::new(device, group_id, pipeline),
+            },
+        });
+        self.targets.len() - 1
     }
 }
 
@@ -327,15 +331,13 @@ impl FrameSource for UiSource {
         scope: &Scope<'_>,
         ctx: RenderContext,
         info: PassInfo,
+        scene: &mut Scene,
         encoder: &mut wgpu::CommandEncoder,
     ) {
         // Settle the graph on every way out of this build, the early return
         // below included. The pass runs where this scope ends, once the
         // integration has uploaded and before the scene reads a group.
         let maintain = ctx.maintain_scope(*scope);
-        // Cleared on every path: a frame that records this source must never
-        // replay the previous frame's UI.
-        self.scene.clear();
 
         // The pass states the target the frame is specialized for, so nothing
         // has to be read back out of the world: the driver builds a source only
@@ -402,9 +404,7 @@ impl FrameSource for UiSource {
         self.screen.publish(target_screen);
 
         let mut graph = Self::graph(scope, ctx);
-        if self.gpu.is_none() || self.surface != Some(target.surface) {
-            self.build_gpu(&device, &mut graph, target.surface);
-        }
+        let index = self.target_index(&device, &mut graph, target.surface);
 
         // The events reached egui's own types while the world's `InputEvents`
         // were read, and they stay in the world afterwards: the UI reads them,
@@ -467,7 +467,7 @@ impl FrameSource for UiSource {
         // inside it.
         let own = self.ctx.tessellate(output.shapes, screen.pixels_per_point);
         let own_textures = core::mem::take(&mut output.textures_delta);
-        let gpu = self.gpu.as_mut().expect("built above");
+        let gpu = &mut self.targets[index].gpu;
         self.external.with_frames(|slots| {
             let mut sources = Vec::with_capacity(slots.len() + 1);
             sources.push(UiFrame {
@@ -517,12 +517,7 @@ impl FrameSource for UiSource {
         let graph = Self::graph(scope, ctx);
 
         let mut ui_scene = gpu.integration.scene(&graph);
-        self.scene.extend(&mut ui_scene);
-        self.surface = Some(target.surface);
-    }
-
-    fn scene(&self) -> &Scene {
-        &self.scene
+        scene.extend(&mut ui_scene);
     }
 
     fn order(&self) -> FrameSourceOrder {
@@ -984,12 +979,10 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
+        let mut scene = Scene::new();
+        source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
 
-        assert!(
-            !source.scene().is_empty(),
-            "the panel's rectangle became a draw"
-        );
+        assert!(!scene.is_empty(), "the panel's rectangle became a draw");
     }
 
     /// The source is constructed with no arguments and records over the meshes.
@@ -1183,12 +1176,13 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
+        let mut scene = Scene::new();
         // egui only lays a text field out once it knows its fonts, so the
         // first frame establishes them; the text is then this tick's batch.
-        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
         input.push(InputEvent::Text(TextEvent("hi".to_string())));
         events.refresh();
-        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
 
         assert_eq!(
             &*seen.borrow(),
@@ -1233,9 +1227,10 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
+        let mut scene = Scene::new();
         // The first frame lays the widget out and knows its fonts; nothing is
         // clicked yet because no input has arrived.
-        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
         assert!(!clicked.get(), "nothing is clicked before any input");
 
         // The pointer arrives over the button and presses and releases there,
@@ -1262,7 +1257,7 @@ mod tests {
         }
         // The tick's batch: what the pointer did since the last frame.
         events.refresh();
-        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
 
         assert!(
             clicked.get(),
@@ -1301,18 +1296,19 @@ mod tests {
         source.draw_published(ExternalFrames::new(), UiScreen::new());
         source.external.publish(0, frame);
         let mut encoder = encoder(&world, ctx);
+        let mut scene = Scene::new();
 
-        source.build_scene(&world.root_scope(), ctx, info, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, info, &mut scene, &mut encoder);
         assert!(
-            !source.scene().is_empty(),
+            !scene.is_empty(),
             "the published frame is drawn when it arrives"
         );
 
         // The publisher has nothing new, and the frame it published must not
         // have been emptied by drawing it.
-        source.build_scene(&world.root_scope(), ctx, info, &mut encoder);
+        source.build_scene(&world.root_scope(), ctx, info, &mut scene, &mut encoder);
         assert!(
-            !source.scene().is_empty(),
+            !scene.is_empty(),
             "the same frame is drawn again while no newer one arrives"
         );
     }
@@ -1387,9 +1383,10 @@ mod tests {
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
-        source.build_scene(&world.root_scope(), ctx, target, &mut encoder);
+        let mut scene = Scene::new();
+        source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
         assert!(
-            !source.scene().is_empty(),
+            !scene.is_empty(),
             "a panel draws with no input in the world"
         );
     }

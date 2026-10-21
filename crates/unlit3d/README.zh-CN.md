@@ -87,6 +87,7 @@ world root                              根 scope 看得见所有实体
 │   ├── wgpu::Queue         + RenderContext
 │   ├── ResourceGraph       + RenderContext    所有纹理、缓冲、bind group
 │   ├── DeviceCapabilities  + RenderContext
+│   ├── FrameClock                             每帧推进一次，先于任何行为
 │   ├── OpenUrls
 │   └── ... 面板读写的应用状态
 ├── FramePass(FramePassOrder(0)) + RenderLoadOps
@@ -101,11 +102,15 @@ world root                              根 scope 看得见所有实体
 └── Renderer                                  自身不绘制，只遍历各个 pass
 ```
 
-把树当成帧来读：渲染器遍历 root 下的 `FramePass`，对每个 pass 再遍历**它自己那个
+把树当成帧来读：渲染器按顺序遍历世界里的 `FramePass`，对每个 pass 再录制**它自己那个
 scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个 pass，同一个 pass 下的
-两个源各画各的，谁也不必看见另一个。GPU 状态放在 `shared` 而不是渲染器身上，于是
-任何源都能从自己的 scope 读到它，不用往上爬树。pass 是源的**祖先**，而 scope 够不到
-祖先，这正是 `PassInfo` 存在的原因：由 pass 告诉它的源画进什么目标。附件则完全不是
+两个源各画各的，谁也不必看见另一个。pass 的 scope 够得到其下的一切，嵌套的 pass 也
+在内，因此嵌套 pass 里的源会被两个 pass 都够到：它按 pass 各构建一次，填进各自那份
+场景。挂在 shared 子树里的源会被每个 pass 够到，这正是把一个覆盖层或全屏效果画进
+每个目标、而不必在树里重复一遍的做法。没有被任何 pass 够到的源会被报告出来，且什么
+也不画。GPU 状态放在 `shared` 而不是渲染器身上，于是任何源都能从自己的 scope 读到
+它，不用往上爬树。pass 是源的**祖先**，而 scope 够不到祖先，这正是 `PassInfo` 存在
+的原因：由 pass 告诉它的源画进什么目标。附件则完全不是
 树节点——pass 只是在 `ResourceGraph` 里指名 view，所以它每帧都能换一张新的交换链
 图像而树不变。
 
@@ -116,7 +121,7 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
 - pass 只指名 view，不拥有它们。附件来自 `FrameAttachments` 或 `WindowSurface`，两者
   都在同一个 world 里，且句柄保持稳定，因此一个 pass 可以每帧换一个新的颜色 view
   而不触发其下源的重建。
-- 每个源在 `build_scene` 中构建自己的 `Scene`，随后渲染器把每个场景录制进以该 pass
+- 每个源在 `build_scene` 中填充一个 `Scene`，随后渲染器把该场景录制进以这个 pass
   自身附件开启的那趟 pass。因此无论一帧有多少个 pass，它仍是一个 encoder、一次提交。
 - 内置的 mesh 渲染就是其中一个源 `MeshSource`，它不比调用者自己的源享有更多特权：内置
   unlit 家族通过与调用者家族相同的 `MeshSource::register_family` 注册，一切专属于它的
@@ -138,9 +143,14 @@ scope** 下的 `Source`——因此源在树里的位置就决定了它进哪个
 - 源的 GPU 资源恰好在还有句柄指名它时存活，因此销毁源实体即丢弃其句柄，下一次
   `maintain` 回收余下部分。无需记住任何释放调用。
 
-**每个源自带状态与其可跨帧复用的 `Scene`。** egui 的 `Context`、字体图集、UI 自己的
-UBO 都归 UI 源所有；3D 的管线、网格池、元数据、剔除缓存都归 mesh 源所有。「3D 主场景」
-只是第一个被录制的源产出的场景，而不是渲染器的特例。
+**源自带状态，场景归帧所有。** egui 的 `Context`、字体图集、UI 自己的 UBO 都归 UI 源
+所有；3D 的管线、网格池、元数据、剔除缓存都归 mesh 源所有。`Scene` 则属于某个
+*(pass, source)* 对，由渲染器持有：它是本帧的临时产物，而不是源的状态。一个被多个 pass
+看见的源会按 pass 各构建一次，各自填进那个 pass 自己的场景，于是每个 pass 只录制自己
+目标所要求的绘制。这些槽位跨帧保留以便稳定场景复用分配，而世界已够不到的配对会在帧末
+交还缓冲。按目标保留 GPU 状态的源——UI 源的管线与材质表、blit 源的绑定组——以
+`SurfaceKey` 为键，于是交替的 pass 各自复用条目，而不是每帧重建。「3D 主场景」只是
+第一个被录制的源产出的场景，而不是渲染器的特例。
 
 <details>
 <summary>为什么上下文与源是 world 的成员，而不是渲染器的字段</summary>

@@ -15,6 +15,7 @@ use unlit_ecs::bundle;
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::ResourceGraph;
+use unlit_wgpu::scene::Scene;
 use unlit_wgpu::specialize::SurfaceKey;
 use unlit3d::prelude::*;
 
@@ -31,6 +32,7 @@ pub struct Frame {
     context: RenderContext,
     source: MeshSource,
     info: PassInfo,
+    scene: Scene,
 }
 
 impl Frame {
@@ -139,6 +141,7 @@ impl Frame {
             context,
             source,
             info,
+            scene: Scene::new(),
         }
     }
 
@@ -152,12 +155,16 @@ impl Frame {
             .expect("the context's device")
             .clone();
         let mut encoder = device.create_command_encoder(&Default::default());
+        // The driver clears the scene before every build and hands it back to
+        // the source, which is what this harness stands in for.
+        self.scene.clear();
         self.source.build_scene(
             &self.world.root_scope(),
             self.context,
             self.info,
+            &mut self.scene,
             &mut encoder,
         );
-        self.source.scene().draws.len()
+        self.scene.draws.len()
     }
 }

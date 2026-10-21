@@ -35,6 +35,37 @@ pub struct Frame {
     pub size: (u32, u32),
 }
 
+/// How much time has passed, as the frame loop counts it.
+///
+/// [`spawn_context`](crate::source::spawn_context) puts one in the world's
+/// shared subtree, so every source reads the same clock, and
+/// [`dispatch_frame`] advances it once per frame, before any behaviour runs.
+/// A source that draws with time — an animation, a shader's clock — reads this
+/// rather than counting its own builds: a source may be built once per pass,
+/// and time must not run faster because a frame has more passes.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameClock {
+    /// The seconds since the first frame.
+    pub time: f32,
+    /// The seconds the current frame took.
+    pub delta_time: f32,
+    /// The current frame's index, counting from zero.
+    pub index: u32,
+}
+
+impl FrameClock {
+    /// Move the clock on to `frame`.
+    ///
+    /// The clock follows the frame loop's own count rather than counting
+    /// builds: `index` and `delta_time` are what the loop states, and `time`
+    /// is the sum of the deltas it has stated.
+    pub fn advance(&mut self, delta_time: f32, index: u32) {
+        self.time += delta_time;
+        self.delta_time = delta_time;
+        self.index = index;
+    }
+}
+
 /// When a frame behaviour runs, relative to the others.
 ///
 /// Lower runs first. Deliberately has no `Default`: a behaviour states its
@@ -198,9 +229,14 @@ frame_behaviour!(
 /// queued.
 ///
 /// Any [FrameSkip] is cleared first, so a frame that was short-circuited does
-/// not stay short-circuited for the next one.
+/// not stay short-circuited for the next one. Every [`FrameClock`] then moves
+/// on to this frame, before the first behaviour reads it.
 pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     FrameSkip::reset(world);
+    world
+        .root_scope()
+        .query::<&mut FrameClock>()
+        .for_each(|mut clock| clock.advance(frame.delta_time, frame.index));
     dispatch::<OnFrame>(world, frame);
     world.apply();
 }
@@ -409,5 +445,79 @@ mod tests {
         assert!(FrameSkip::is_skipped(&world));
         dispatch_frame(&mut world, &mut frame());
         assert!(!FrameSkip::is_skipped(&world));
+    }
+
+    /// The clock follows the frame the loop states, so a frame that takes
+    /// longer moves the clock further, and a frame index the loop skips over is
+    /// not counted twice.
+    #[test]
+    fn the_clock_follows_the_frame_it_is_dispatched_with() {
+        let mut world = World::new();
+        let clock = world
+            .root_scope_mut()
+            .spawn(bundle!(FrameClock::default(),));
+        let seen: Rc<RefCell<Vec<FrameClock>>> = Rc::new(RefCell::new(Vec::new()));
+        {
+            let seen = seen.clone();
+            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+                UPDATE,
+                move |world, _entity, _frame| {
+                    let clock = *world
+                        .root_scope()
+                        .query_one::<&FrameClock>(clock)
+                        .expect("the clock is spawned");
+                    seen.borrow_mut().push(clock);
+                }
+            ),));
+        }
+
+        let mut frame = Frame {
+            delta_time: 0.25,
+            index: 3,
+            size: (0, 0),
+        };
+        dispatch_frame(&mut world, &mut frame);
+        frame.delta_time = 0.5;
+        frame.index = 4;
+        dispatch_frame(&mut world, &mut frame);
+
+        let seen = seen.borrow();
+        assert_eq!(
+            seen[0],
+            FrameClock {
+                time: 0.25,
+                delta_time: 0.25,
+                index: 3,
+            },
+            "the first frame's clock starts from zero"
+        );
+        assert_eq!(
+            seen[1],
+            FrameClock {
+                time: 0.75,
+                delta_time: 0.5,
+                index: 4,
+            },
+            "time accumulates the deltas the loop states"
+        );
+    }
+
+    /// A world with no clock still dispatches: the clock is the application's to
+    /// spawn, and nothing in the dispatch requires one.
+    #[test]
+    fn dispatch_without_a_clock_still_runs_every_behaviour() {
+        let mut world = World::new();
+        let ran = Rc::new(Cell::new(0));
+        {
+            let ran = ran.clone();
+            world.root_scope_mut().spawn(bundle!(OnFrame::new(
+                UPDATE,
+                move |_world, _entity, _frame| {
+                    ran.set(ran.get() + 1);
+                }
+            ),));
+        }
+        dispatch_frame(&mut world, &mut frame());
+        assert_eq!(ran.get(), 1);
     }
 }

@@ -9,9 +9,8 @@
 //! The caller pairs them with the color view it holds — a swap chain image, or
 //! a persistent offscreen texture — by stating a
 //! [`FramePass`](crate::pass::FramePass) with
-//! [`FramePass::with_attachments`](crate::pass::FramePass::with_attachments),
-//! or retargeted every frame with
-//! [`FramePass::set_attachments`](crate::pass::FramePass::set_attachments). A
+//! [`FramePass::set_attachments`](crate::pass::FramePass::set_attachments),
+//! which it calls again whenever the target changes. A
 //! caller that owns its own attachment set reads [`FrameAttachments::depth_view`]
 //! and [`FrameAttachments::msaa_view`] and states the pass's attachments itself.
 //! The pass is also what owns the frame's letterbox, so a caller that scales
@@ -64,7 +63,7 @@ fn context_graph<'w>(
 /// They are created for a target of a given size, format and sample count and
 /// rebuilt by [`Self::resize`] when the target changes size. The color
 /// attachment is the caller's; a pass pairs the two with
-/// [`FramePass::with_attachments`](crate::pass::FramePass::with_attachments).
+/// [`FramePass::set_attachments`](crate::pass::FramePass::set_attachments).
 pub struct FrameAttachments {
     /// The frame's context, whose device allocates the textures and whose graph
     /// holds their views.

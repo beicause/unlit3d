@@ -120,6 +120,7 @@ world root                              the root scope sees every entity
 │   ├── wgpu::Queue         + RenderContext
 │   ├── ResourceGraph       + RenderContext    every texture, buffer, bind group
 │   ├── DeviceCapabilities  + RenderContext
+│   ├── FrameClock                             advanced once per frame, before any behaviour
 │   ├── OpenUrls
 │   └── ... application state a panel reads and writes
 ├── FramePass(FramePassOrder(0)) + RenderLoadOps
@@ -134,15 +135,20 @@ world root                              the root scope sees every entity
 └── Renderer                                  draws nothing; it walks the passes
 ```
 
-Read the tree as the frame: the renderer walks the root's
-[`FramePass`](pass::FramePass) children and, within each pass, that pass's own
-[`Source`](source::Source) children — so a source's place in the tree is what
-chooses its pass, and two sources under one pass draw different sets without
-either seeing the other's. The GPU state sits in `shared` rather than beside the
-renderer, so any source reads it from its own scope without reaching up. A pass
-is an *ancestor* of its sources, which a scope cannot reach, which is why
-[`PassInfo`](pass::PassInfo) exists: it is the pass telling its sources what
-they draw into. Attachments are not tree nodes at all — a pass names views in
+Read the tree as the frame: the renderer walks the world's
+[`FramePass`](pass::FramePass) entities in order and, within each pass, records
+the [`Source`](source::Source) entities in that pass's scope — so a source's
+place in the tree is what chooses its pass, and two sources under one pass draw
+different sets without either seeing the other's. A pass's scope reaches
+everything below it, nested passes included, so a source under a nested pass is
+reached by both passes: it is built once per pass, into that pass's own scene.
+A source in the shared subtree is reached by every pass, which is how an overlay
+or a full-screen effect is drawn into each target without being repeated in the
+tree. A source no pass reaches is reported and draws nothing. The GPU state sits
+in `shared` rather than beside the renderer, so any source reads it from its own
+scope without reaching up. A pass is an *ancestor* of its sources, which a scope
+cannot reach, which is why [`PassInfo`](pass::PassInfo) exists: it is the pass
+telling its sources what they draw into. Attachments are not tree nodes at all — a pass names views in
 the `ResourceGraph`, which is why it can take a new swap-chain view every frame
 without the tree changing.
 
@@ -157,8 +163,8 @@ without the tree changing.
   [`WindowSurface`](winit::WindowSurface), both of which live in the same world and keep
   their handles stable, so a pass can take a new color view every frame
   without the sources below it being rebuilt.
-- Each source builds its own [`Scene`](unlit_wgpu::scene::Scene) in `build_scene`, then the
-  renderer records every scene into the pass opened over that pass's
+- Each source fills a [`Scene`](unlit_wgpu::scene::Scene) in `build_scene`, and the
+  renderer records that scene into the pass opened over the pass's
   attachments. A frame is therefore still one encoder and one submission, no
   matter how many passes it has.
 
@@ -197,11 +203,21 @@ without the tree changing.
   despawning a source's entity drops its handles and the next `maintain`
   collects what that leaves. There is no release call to remember.
 
-**Each source carries its own state and its own `Scene`, reusable across
-frames.** egui's `Context`, font atlas and the UI's own UBO belong to the UI
-source; the 3D pipelines, mesh pools, metadata and culling caches belong to the
-mesh source. The "main 3D scene" is just the scene the first recorded source
-produced, not a special case of the renderer.
+**A source carries its own state; the frame carries the scenes.** egui's
+`Context`, font atlas and the UI's own UBO belong to the UI source; the 3D
+pipelines, mesh pools, metadata and culling caches belong to the mesh source. A
+`Scene`, by contrast, belongs to a *(pass, source)* pair and is held by the
+renderer, because it is the frame's temporary product rather than the source's
+state: a source several passes see is built once per pass, into that pass's own
+scene, so each pass records exactly the draws its own target asked for. The
+slots outlive the frame so a steady scene reuses their allocations, and a pair
+the world no longer reaches gives its buffers back at the end of the frame. A
+source that keeps GPU state per target — the UI source's pipeline and material
+table, the blit source's bind group — keys it on
+[`SurfaceKey`](unlit_wgpu::specialize::SurfaceKey), so alternating passes reuse
+their own entry instead of rebuilding it every frame. The "main 3D scene" is
+just the scene the first recorded source produced, not a special case of the
+renderer.
 
 <details>
 <summary>Why the context and the sources are world members rather than renderer fields</summary>

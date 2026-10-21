@@ -2,7 +2,7 @@
 //! differs from the scene's own.
 //!
 //! A pass declares the region of its target that it draws into — see
-//! [`FramePass::with_viewport`] — and a frame loop that keeps content's aspect
+//! [`FramePass::set_viewport`] — and a frame loop that keeps content's aspect
 //! uses it to letterbox. These tests draw one camera into targets of different
 //! shapes and check where the content lands, which is the property no unit test
 //! of the arithmetic can show: that the region actually reaches the rasterizer.

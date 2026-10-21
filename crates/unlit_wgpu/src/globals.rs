@@ -95,15 +95,6 @@ pub struct Globals {
     pub pad0: u32,
 }
 
-impl Globals {
-    /// Advance the clock by `delta_time` and return the new value.
-    pub fn advance(&mut self, delta_time: f32) {
-        self.time += delta_time;
-        self.delta_time = delta_time;
-        self.frame_count += 1;
-    }
-}
-
 impl Default for Globals {
     fn default() -> Self {
         Self {

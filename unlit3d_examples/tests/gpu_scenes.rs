@@ -179,11 +179,6 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
         def.samples,
         def.depth,
     );
-    world
-        .root_scope()
-        .query_one::<&mut FramePass>(scene.pass)
-        .map(|mut pass| pass.set_viewport(scene.viewport))
-        .expect("the scene's pass exists");
 
     let mut compared = 0;
     for frame in 0..def.frames {
@@ -263,11 +258,6 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
         def.samples,
         def.depth,
     );
-    world
-        .root_scope()
-        .query_one::<&mut FramePass>(scene.pass)
-        .map(|mut pass| pass.set_viewport(scene.viewport))
-        .expect("the scene's pass exists");
 
     for _ in 0..def.frames {
         scene.advance(&mut world, FIXED_STEP);

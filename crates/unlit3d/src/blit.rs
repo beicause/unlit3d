@@ -50,24 +50,27 @@ fn resource_graph<'w>(
 
 /// A frame source that blits one texture view over its pass's target.
 ///
-/// The source owns its [`Scene`] and the pipeline it draws with; the view it
-/// samples is the caller's, registered in the frame's [`ResourceGraph`], so a
-/// world may hand over a different one with [`BlitSource::set_view`]. The
-/// pipeline is built on the first frame that knows its target, and rebuilt only
-/// when that target changes, the way [`UiSource`](crate::ui::UiSource)
-/// specializes its own.
+/// The view the source samples is the caller's, registered in the frame's
+/// [`ResourceGraph`], so a world may hand over a different one with
+/// [`BlitSource::set_view`]. The pipeline is built on the first frame that
+/// knows its target, the way [`UiSource`](crate::ui::UiSource) specializes its
+/// own.
 ///
 /// The blit covers the whole target, so it records at
 /// [`FrameSourceOrder::MESH`].
 pub struct BlitSource {
-    /// The draws assembled for the current frame.
-    scene: Scene,
     /// The view the source copies, in the frame's resource graph.
     view: ResHandle<TextureView>,
-    /// The GPU state, built on the first frame that knows its target.
-    gpu: Option<Gpu>,
-    /// The target the current pipeline is specialized for.
-    surface: Option<SurfaceKey>,
+    /// The GPU state, one entry per target the source has been asked to draw
+    /// into.
+    ///
+    /// A source may be recorded by several passes, and the passes of one frame
+    /// need not share a specialization key — a multisampled offscreen pass and
+    /// a single-sampled swap chain differ in sample count. Keying by the key
+    /// keeps each pass's pipeline and bind group rather than rebuilding them
+    /// as the passes alternate. Entries are kept for the world's life: the key
+    /// changes with a target's format or sample count, not with its size.
+    gpus: Vec<(SurfaceKey, Gpu)>,
 }
 
 /// The built pipeline and the graph node its bind group lives in.
@@ -92,10 +95,8 @@ impl BlitSource {
     /// blitted into.
     pub fn new(view: ResHandle<TextureView>) -> Self {
         Self {
-            scene: Scene::new(),
             view,
-            gpu: None,
-            surface: None,
+            gpus: Vec::new(),
         }
     }
 
@@ -109,9 +110,8 @@ impl BlitSource {
         self.view.clone()
     }
 
-    /// Build the pipeline, the sampler and the bind group for `surface`,
-    /// replacing any earlier ones.
-    fn build_gpu(&mut self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) {
+    /// Build the pipeline, the sampler and the bind group for `surface`.
+    fn build_gpu(&self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) -> Gpu {
         let device = wgpu::Device::clone(
             &scope
                 .query_one::<&wgpu::Device>(ctx.device)
@@ -128,14 +128,13 @@ impl BlitSource {
             sampler.clone(),
             self.view.clone(),
         );
-        self.gpu = Some(Gpu {
+        Gpu {
             pipeline,
             layout,
             sampler,
             view: self.view.clone(),
             bind_group,
-        });
-        self.surface = Some(surface);
+        }
     }
 }
 
@@ -193,6 +192,7 @@ impl FrameSource for BlitSource {
         scope: &Scope<'_>,
         ctx: RenderContext,
         info: PassInfo,
+        scene: &mut Scene,
         _encoder: &mut wgpu::CommandEncoder,
     ) {
         // The graph settles on every path out of this function, so a sampler
@@ -200,20 +200,23 @@ impl FrameSource for BlitSource {
         // whatever this frame does.
         let maintain = ctx.maintain_scope(*scope);
 
-        // Cleared on every path: a frame that records this source must never
-        // replay the previous frame's blit.
-        self.scene.clear();
+        // The pass's target picks the entry, and only the entry: the passes of
+        // one frame need not share a key, and rebuilding as they alternate
+        // would compile a pipeline per pass per frame.
+        let index = self.gpus.iter().position(|(key, _)| *key == info.surface);
+        let index = match index {
+            Some(index) => index,
+            None => {
+                let gpu = self.build_gpu(scope, ctx, info.surface);
+                self.gpus.push((info.surface, gpu));
+                self.gpus.len() - 1
+            }
+        };
 
-        if self.gpu.is_none() || self.surface != Some(info.surface) {
-            // The first frame, or a new target: the bind-group layout changes
-            // with the pipeline, so the bind group and the sampler are rebuilt
-            // with it.
-            self.build_gpu(scope, ctx, info.surface);
-        } else if let Some(gpu) = &mut self.gpu
-            && gpu.view != self.view
-        {
-            // The same target, a different view: the layout, the pipeline and
-            // the sampler stay, and the view's new id gets its own group.
+        // The same target, a different view: the layout, the pipeline and the
+        // sampler stay, and the view's new id gets its own group.
+        if self.gpus[index].1.view != self.view {
+            let gpu = &mut self.gpus[index].1;
             let device = scope
                 .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists");
@@ -232,17 +235,13 @@ impl FrameSource for BlitSource {
         // out: a replace this build made must be visible to the draw.
         drop(maintain);
         let graph = resource_graph(scope, ctx);
-        let gpu = self.gpu.as_ref().expect("the pipeline was just built");
+        let gpu = &self.gpus[index].1;
         let bind_group = graph
             .get(&gpu.bind_group)
             .expect("the bind group is registered in the graph");
-        self.scene.push(
+        scene.push(
             DrawEntry::new(&gpu.pipeline, DrawRange::vertices(0..3)).with_bind_group(0, bind_group),
         );
-    }
-
-    fn scene(&self) -> &Scene {
-        &self.scene
     }
 
     fn order(&self) -> FrameSourceOrder {

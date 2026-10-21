@@ -11,9 +11,9 @@
 //! A pass names its attachments as texture-view resources in the frame's
 //! resource graph. It owns none of them: the color attachment is the caller's
 //! — a swap chain image, or a persistent offscreen texture — and the depth and
-//! multisample ones come from a [`FrameAttachments`]. A pass with no
-//! attachment at all draws nothing, which is how a caller parks one while its
-//! target is gone.
+//! multisample ones come from a [`FrameAttachments`], which a caller states
+//! with [`FramePass::set_attachments`]. A pass with no attachment at all draws
+//! nothing, which is how a caller parks one while its target is gone.
 //!
 //! What a pass loads and clears is a
 //! [`RenderLoadOps`](crate::components::RenderLoadOps) on the same entity
@@ -59,8 +59,8 @@ impl OrderKey for FramePassOrder {
 /// themselves record in [`FramePassOrder`], then by entity.
 ///
 /// The depth and multisample attachments are taken from a
-/// [`FrameAttachments`] with [`Self::with_attachments`]; the color attachment
-/// is the caller's, and [`Self::with_color`] states it alone.
+/// [`FrameAttachments`] with [`Self::set_attachments`]; the color attachment
+/// is the caller's.
 ///
 /// The load ops are a
 /// [`RenderLoadOps`](crate::components::RenderLoadOps) on the same entity, so
@@ -72,11 +72,22 @@ impl OrderKey for FramePassOrder {
 /// ```
 #[derive(Debug)]
 pub struct FramePass {
-    order: FramePassOrder,
+    /// The pass's order among the frame's passes; see [`FramePassOrder`].
+    pub order: FramePassOrder,
+    /// The region the pass's sources are recorded into, or the whole target
+    /// when `None`.
+    ///
+    /// This is how a frame letterboxes content whose own aspect differs from
+    /// its target's: the pass states the rectangle, and every source that
+    /// records into it is told about it through [`PassInfo::viewport`] — so
+    /// the content is scaled uniformly and the same picture appears on any
+    /// target shape. A source that composes over the content rather than being
+    /// part of it, a UI overlay for instance, ignores it and covers the whole
+    /// target.
+    pub viewport: Option<ViewportRect>,
     color: Option<ResHandle<TextureView>>,
     depth: Option<ResHandle<TextureView>>,
     msaa: Option<ResHandle<TextureView>>,
-    viewport: Option<ViewportRect>,
 }
 
 impl FramePass {
@@ -87,73 +98,20 @@ impl FramePass {
     pub fn new(order: FramePassOrder) -> Self {
         Self {
             order,
+            viewport: None,
             color: None,
             depth: None,
             msaa: None,
-            viewport: None,
         }
-    }
-
-    /// Draw into `color_view`.
-    pub fn with_color(mut self, color_view: ResHandle<TextureView>) -> Self {
-        self.color = Some(color_view);
-        self
-    }
-
-    /// Draw with `depth_view` as the pass's depth-stencil attachment.
-    pub fn with_depth(mut self, depth_view: ResHandle<TextureView>) -> Self {
-        self.depth = Some(depth_view);
-        self
-    }
-
-    /// Draw multisampled, resolving `msaa_view` into the color attachment.
-    pub fn with_msaa(mut self, msaa_view: ResHandle<TextureView>) -> Self {
-        self.msaa = Some(msaa_view);
-        self
-    }
-
-    /// Take the depth and multisample attachments from `attachments`, and draw
-    /// into `color_view`.
-    ///
-    /// `color_view` must be in the frame's resource graph, like the
-    /// attachments' own views.
-    pub fn with_attachments(
-        mut self,
-        attachments: &FrameAttachments,
-        color_view: ResHandle<TextureView>,
-    ) -> Self {
-        self.color = Some(color_view);
-        self.depth = attachments.depth_view().cloned();
-        self.msaa = attachments.msaa_view().cloned();
-        self
-    }
-
-    /// Letterbox the pass's sources into `viewport`.
-    ///
-    /// This is how a frame letterboxes content whose own aspect differs from
-    /// its target's: the pass states the rectangle, and every source that
-    /// records into it is told about it through [`PassInfo::viewport`] — so
-    /// the content is scaled uniformly and the same picture appears on any
-    /// target shape. A source that composes over the content rather than
-    /// being part of it, a UI overlay for instance, ignores it and covers the
-    /// whole target.
-    pub fn with_viewport(mut self, viewport: ViewportRect) -> Self {
-        self.viewport = Some(viewport);
-        self
-    }
-
-    /// Draw into `color_view` from the next frame on, replacing whatever the
-    /// pass drew into before.
-    ///
-    /// This is how a frame loop follows a swap chain: the image it draws into
-    /// changes every frame, while the pass it states it with stays the same
-    /// entity.
-    pub fn set_color(&mut self, color_view: Option<ResHandle<TextureView>>) {
-        self.color = color_view;
     }
 
     /// Take the depth and multisample attachments from `attachments` and draw
     /// into `color_view` from the next frame on.
+    ///
+    /// This is how a frame loop follows a swap chain: the image it draws into
+    /// changes every frame, while the pass it states it with stays the same
+    /// entity. `color_view` must be in the frame's resource graph, like the
+    /// attachments' own views.
     pub fn set_attachments(
         &mut self,
         attachments: &FrameAttachments,
@@ -164,30 +122,22 @@ impl FramePass {
         self.msaa = attachments.msaa_view().cloned();
     }
 
-    /// Park the pass: draw nowhere until it is given an attachment again.
+    /// Draw nowhere until an attachment is stated again.
     ///
     /// A parked pass records nothing, which is what a frame loop states while
     /// its target is gone — a minimized window, say — without disturbing the
     /// sources under it.
-    pub fn unbind(&mut self) {
+    pub fn park(&mut self) {
         self.color = None;
         self.depth = None;
         self.msaa = None;
     }
 
     /// Letterbox the pass's sources into `viewport`, or the whole target.
+    ///
+    /// See [`FramePass::viewport`].
     pub fn set_viewport(&mut self, viewport: Option<ViewportRect>) {
         self.viewport = viewport;
-    }
-
-    /// The pass's order among the frame's passes.
-    pub fn order(&self) -> FramePassOrder {
-        self.order
-    }
-
-    /// The region the pass's sources are recorded into, or the whole target.
-    pub fn viewport(&self) -> Option<ViewportRect> {
-        self.viewport
     }
 
     /// The attachments this pass records into, read out of the frame's graph.
@@ -214,7 +164,10 @@ impl FramePass {
                 .map(|id| graph.get(id).expect("pass attachment view").clone())
         };
         let (color, depth, msaa) = (view(&self.color), view(&self.depth), view(&self.msaa));
-        (color.is_some() || depth.is_some())
+        // Any stated view means the pass is bound: a multisample view without a
+        // color one is a mistake, and `from_views` says so rather than the pass
+        // silently parking itself.
+        (color.is_some() || depth.is_some() || msaa.is_some())
             .then(|| RenderAttachments::from_views(color, depth, msaa))
     }
 }

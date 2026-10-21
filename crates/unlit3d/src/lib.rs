@@ -53,7 +53,9 @@ pub mod prelude {
             RenderLoadOps, SkinBinding, SkinPose, Transform, ZSortedDrawing,
         },
         culling::is_culled,
-        frame::{FrameBehaviour, FrameBehaviourOrder, FrameSkip, OnFrame, dispatch_frame},
+        frame::{
+            FrameBehaviour, FrameBehaviourOrder, FrameClock, FrameSkip, OnFrame, dispatch_frame,
+        },
         input::{
             ImeEvent, ImeKind, InputEvent, InputEvents, InputState, InputWriter, Key, KeyEvent,
             Modifiers, MouseButton, MouseButtons, MouseEvent, OnIme, OnInput, OnKey, OnMouse,

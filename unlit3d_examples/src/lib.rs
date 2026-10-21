@@ -952,7 +952,7 @@ fn present(world: &World, app: Entity) {
     let _ = world
         .root_scope()
         .query_one::<&mut Scene>(scene_entity)
-        .map(|mut scene| scene.resize(size, def.baseline));
+        .map(|mut scene| scene.resize(world, size, def.baseline));
 
     // Phase two, MCP mode only: the offscreen target the scene's own pass
     // renders into, and the pass that blits it into the swap chain.
@@ -1123,11 +1123,24 @@ fn release(world: &World, app: Entity) {
     let Some(nested) = world.root_scope().query_one::<&World>(scene_entity) else {
         return;
     };
-    let renderer = world
+    let scene = world
         .root_scope()
         .query_one::<&Scene>(scene_entity)
-        .expect("the scene entity carries a scene")
-        .renderer;
+        .expect("the scene entity carries a scene");
+    let renderer = scene.renderer;
+    let mcp = world
+        .root_scope()
+        .query_one::<&McpEnabled>(app)
+        .is_some_and(|mcp| mcp.0);
+    // The pass that drew into the swap chain still names a view of it, and that
+    // id is what keeps the view alive. Parking the pass drops it, so the view
+    // goes with the surface the release collects.
+    if let Some(presenting) = presenting_pass(scene, mcp) {
+        let _ = nested
+            .root_scope()
+            .query_one::<&mut FramePass>(presenting)
+            .map(|mut pass| pass.park());
+    }
     nested
         .root_scope()
         .query_one::<&mut Renderer>(renderer)
@@ -1415,6 +1428,19 @@ fn advance_scene(app: Entity) -> OnFrame {
     })
 }
 
+/// The pass the frame presents through: the blit pass in MCP mode, the scene's
+/// own pass otherwise.
+///
+/// `None` once an MCP scene has lost its blit pass, which leaves nothing to
+/// present.
+fn presenting_pass(scene: &Scene, mcp: bool) -> Option<Entity> {
+    if mcp {
+        scene.blit.map(|blit| blit.pass)
+    } else {
+        Some(scene.pass)
+    }
+}
+
 /// Present the advanced scene into the swap chain.
 ///
 /// In MCP mode the swap chain's image is drawn by the blit pass, which samples
@@ -1445,13 +1471,10 @@ fn present_frame(app: Entity) -> OnFrame {
                 .root_scope()
                 .query_one::<&Scene>(scene_entity)
                 .expect("the scene entity carries a scene");
-            let presenting = if mcp {
-                scene
-                    .blit
-                    .expect("the blit pass is mounted in MCP mode")
-                    .pass
-            } else {
-                scene.pass
+            // A world that lost its blit pass has nothing to present: the frame
+            // is skipped rather than taken down.
+            let Some(presenting) = presenting_pass(&scene, mcp) else {
+                return;
             };
             (scene.renderer, presenting)
         };
@@ -1630,7 +1653,7 @@ fn resize_scene(app: Entity) -> OnWindowEvent {
         let _ = world
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
-            .map(|mut scene| scene.resize(size, baseline));
+            .map(|mut scene| scene.resize(world, size, baseline));
         if world
             .root_scope()
             .query_one::<&McpEnabled>(app)
@@ -1758,6 +1781,15 @@ impl Scene {
         // letterbox — every capture — draws into the whole target, so its
         // content size is the target's own and nothing about it changes.
         let (viewport, content) = letterbox(def.baseline, size, options.letterbox);
+        // The pass carries the region as well as the scene: the driver asks the
+        // pass where its sources draw, so a viewport kept only on this struct
+        // would never reach the renderer and the content would stretch to the
+        // whole target.
+        world
+            .root_scope()
+            .query_one::<&mut FramePass>(pass)
+            .map(|mut pass| pass.set_viewport(viewport))
+            .expect("the pass was just spawned");
 
         // The UI source is mounted before the scene is built, so a scene's own
         // panels hang in the scope it draws: a source renders its own subtree,
@@ -1863,10 +1895,18 @@ impl Scene {
     /// Called on every resize and on the first frame that knows the window's
     /// size, so the projection, the region the content is drawn into and the
     /// size the scene's behaviour is handed all follow the target together.
-    fn resize(&mut self, target: (u32, u32), baseline: Option<(u32, u32)>) {
+    ///
+    /// The region reaches the driver through the scene's own pass; the pass that
+    /// presents an offscreen frame covers the whole target and keeps its own.
+    fn resize(&mut self, world: &World, target: (u32, u32), baseline: Option<(u32, u32)>) {
         let (viewport, content) = letterbox(baseline, target, true);
         self.size = content;
         self.viewport = viewport;
+        world
+            .root_scope()
+            .query_one::<&mut FramePass>(self.pass)
+            .map(|mut pass| pass.set_viewport(viewport))
+            .expect("the scene's pass exists");
     }
 
     /// Advance the scene by `delta_time` seconds.

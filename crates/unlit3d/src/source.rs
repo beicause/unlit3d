@@ -28,6 +28,7 @@ use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
 
+use crate::frame::FrameClock;
 use crate::order::OrderKey;
 use crate::pass::PassInfo;
 
@@ -67,7 +68,7 @@ impl OrderKey for FrameSourceOrder {
 ///
 /// The context is itself a component: [`spawn_context`] stores a copy on the
 /// entity carrying the [`ResourceGraph`], so a reader that was handed one of
-/// the four addresses can query its way back to the whole context instead of
+/// the addresses can query its way back to the whole context instead of
 /// assuming the world holds exactly one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderContext {
@@ -86,6 +87,12 @@ pub struct RenderContext {
     /// once and carried here. See
     /// [`DeviceCapabilities`].
     pub capabilities: Entity,
+    /// The frame's [`FrameClock`], as a resource entity.
+    ///
+    /// The clock belongs to the world rather than to each source: a source may
+    /// be built once per pass, and a clock every source counted for itself
+    /// would run faster on a frame with more passes.
+    pub clock: Entity,
 }
 
 impl RenderContext {
@@ -109,10 +116,10 @@ impl RenderContext {
 impl RenderContext {
     /// The context the world holds, found from any one of its addresses.
     ///
-    /// The four resource entities and the graph entity all carry the whole
-    /// [`RenderContext`], so a caller that was handed a device, queue, graph
-    /// or capabilities address gets the rest without assuming the world holds
-    /// exactly one context. `None` when `anchor` carries no context.
+    /// The resource entities all carry the whole [`RenderContext`], so a
+    /// caller that was handed a device, queue, graph, capabilities or clock
+    /// address gets the rest without assuming the world holds exactly one
+    /// context. `None` when `anchor` carries no context.
     #[must_use]
     pub fn of(world: &World, anchor: Entity) -> Option<Self> {
         world
@@ -210,16 +217,25 @@ pub fn drain_open_urls(world: &World) -> Vec<OpenUrl> {
 
 /// A source of one frame's draws.
 ///
-/// A source owns whatever state it draws from and the [`Scene`] it fills each
-/// frame. The driver calls [`FrameSource::build_scene`] on every source, then
-/// records the scenes in [`FrameSource::order`].
+/// A source owns whatever state it draws from, and fills a [`Scene`] with the
+/// draws of one frame each time the driver calls
+/// [`FrameSource::build_scene`]. The scene is the driver's, not the source's:
+/// a source in the scope of several passes is built once per pass, each time
+/// into that pass's own scene.
 pub trait FrameSource: 'static {
-    /// Assemble this frame's [`Scene`], fetching what it needs from `world`.
+    /// Fill `scene` with this frame's draws, fetching what it needs from
+    /// `world`.
     ///
     /// `info` states the pass the source is recorded by: what its target looks
     /// like, how large it is, and the region the pass letterboxes to. It is the
     /// only way a source learns where it draws, because the pass is an ancestor
     /// entity it cannot reach from its own scope.
+    ///
+    /// `scene` arrives empty and belongs to the pass for this frame: write the
+    /// draws of what `info` describes into it, and the driver records it into
+    /// that pass. A source the scope of several passes reaches is called once
+    /// per pass, so per-pass state must be keyed by [`PassInfo::surface`]
+    /// rather than kept in one field.
     ///
     /// `ctx` carries only entity ids, so it never conflicts with the source's
     /// own borrow of `world`. `encoder` is the frame's one encoder, and a
@@ -227,18 +243,16 @@ pub trait FrameSource: 'static {
     /// source has built, so the uploads and the draws that read them share one
     /// submission.
     ///
-    /// A source that has nothing to draw clears its scene and returns: the
+    /// A source that has nothing to draw returns with `scene` still empty: the
     /// frame still records, and still applies its load ops.
     fn build_scene(
         &mut self,
         scope: &Scope<'_>,
         ctx: RenderContext,
         info: PassInfo,
+        scene: &mut Scene,
         encoder: &mut wgpu::CommandEncoder,
     );
-
-    /// The scene built by the last [`FrameSource::build_scene`].
-    fn scene(&self) -> &Scene;
 
     /// Where this source records, relative to the others.
     ///
@@ -265,8 +279,8 @@ impl<T: FrameSource> AnySource for T {}
 /// A frame source as an ECS component.
 ///
 /// The trait API is reachable directly (`source.order()`,
-/// `source.build_scene(..)`, `source.scene()`); typed access upcasts to
-/// `dyn Any` and downcasts, which is what [`Source::as_mut`] wraps.
+/// `source.build_scene(..)`); typed access upcasts to `dyn Any` and
+/// downcasts, which is what [`Source::as_mut`] wraps.
 pub struct Source {
     source: Box<dyn AnySource>,
     /// An explicit order that overrides the source's own.
@@ -314,20 +328,16 @@ impl Source {
         erased.downcast_ref::<T>()
     }
 
-    /// Assemble this source's scene for the frame.
+    /// Fill `scene` with this source's draws for the frame.
     pub fn build_scene(
         &mut self,
         scope: &Scope<'_>,
         ctx: RenderContext,
         info: PassInfo,
+        scene: &mut Scene,
         encoder: &mut wgpu::CommandEncoder,
     ) {
-        self.source.build_scene(scope, ctx, info, encoder);
-    }
-
-    /// The scene this source built for the frame.
-    pub fn scene(&self) -> &Scene {
-        self.source.scene()
+        self.source.build_scene(scope, ctx, info, scene, encoder);
     }
 }
 
@@ -361,6 +371,7 @@ pub fn spawn_context(
         queue: world.reserve_entity(),
         graph,
         capabilities: world.reserve_entity(),
+        clock: world.reserve_entity(),
     };
     // Every one of these belongs to the shared subtree: a source reads the GPU
     // state from its own scope, and no scope may remove what every other scope
@@ -376,6 +387,11 @@ pub fn spawn_context(
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
     shared_view.spawn(bundle!(OpenUrls::default(),));
+    // How much time has passed, advanced once per frame by the frame loop. It
+    // belongs to the world rather than to a source because a source may be
+    // built once per pass: a clock each source counted for itself would run
+    // faster on a frame with more passes.
+    shared_view.spawn_at(context.clock, bundle!(FrameClock::default(), context));
     context
 }
 
@@ -418,7 +434,6 @@ mod tests {
     struct RecordingSource {
         order: FrameSourceOrder,
         built: Rc<Cell<u32>>,
-        scene: Scene,
     }
 
     impl RecordingSource {
@@ -426,7 +441,6 @@ mod tests {
             Self {
                 order,
                 built: Rc::new(Cell::new(0)),
-                scene: Scene::new(),
             }
         }
     }
@@ -437,13 +451,10 @@ mod tests {
             _view: &Scope<'_>,
             _ctx: RenderContext,
             _info: PassInfo,
+            _scene: &mut Scene,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             self.built.set(self.built.get() + 1);
-        }
-
-        fn scene(&self) -> &Scene {
-            &self.scene
         }
 
         fn order(&self) -> FrameSourceOrder {
@@ -568,7 +579,7 @@ mod tests {
     /// rather than panicking.
     #[test]
     fn typed_access_downcasts_and_rejects_the_wrong_type() {
-        struct OtherSource(Scene);
+        struct OtherSource;
 
         impl FrameSource for OtherSource {
             fn build_scene(
@@ -576,11 +587,9 @@ mod tests {
                 _view: &Scope<'_>,
                 _ctx: RenderContext,
                 _info: PassInfo,
+                _scene: &mut Scene,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
-            }
-            fn scene(&self) -> &Scene {
-                &self.0
             }
             fn order(&self) -> FrameSourceOrder {
                 FrameSourceOrder::MESH
@@ -597,7 +606,7 @@ mod tests {
             )),));
         let other = world
             .root_scope_mut()
-            .spawn(bundle!(Source::new(OtherSource(Scene::new())),));
+            .spawn(bundle!(Source::new(OtherSource),));
 
         assert!(
             world
@@ -633,7 +642,7 @@ mod tests {
     /// erased handle is for.
     #[test]
     fn one_query_builds_every_source_type() {
-        struct CountingSource(u32, Scene);
+        struct CountingSource(u32);
 
         impl FrameSource for CountingSource {
             fn build_scene(
@@ -641,12 +650,10 @@ mod tests {
                 _view: &Scope<'_>,
                 _ctx: RenderContext,
                 _info: PassInfo,
+                _scene: &mut Scene,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
                 self.0 += 1;
-            }
-            fn scene(&self) -> &Scene {
-                &self.1
             }
             fn order(&self) -> FrameSourceOrder {
                 FrameSourceOrder::UI
@@ -662,7 +669,7 @@ mod tests {
             )),));
         world
             .root_scope_mut()
-            .spawn(bundle!(Source::new(CountingSource(0, Scene::new())),));
+            .spawn(bundle!(Source::new(CountingSource(0)),));
 
         let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
             .0
@@ -673,6 +680,7 @@ mod tests {
             .map(|(e, _)| e)
             .collect();
         assert_eq!(entities.len(), 2, "both sources are seen by one query type");
+        let mut scene = Scene::new();
         for entity in entities {
             world
                 .root_scope()
@@ -681,7 +689,7 @@ mod tests {
                     let scope = world
                         .scope(entity)
                         .expect("a source entity is its own scope");
-                    source.build_scene(&scope, ctx, test_info(), &mut encoder)
+                    source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
                 })
                 .unwrap();
         }
@@ -698,7 +706,6 @@ mod tests {
         struct PhasedSource {
             name: &'static str,
             log: Rc<RefCell<Vec<String>>>,
-            scene: Scene,
         }
         impl FrameSource for PhasedSource {
             fn build_scene(
@@ -706,12 +713,10 @@ mod tests {
                 _view: &Scope<'_>,
                 _ctx: RenderContext,
                 _info: PassInfo,
+                _scene: &mut Scene,
                 _encoder: &mut wgpu::CommandEncoder,
             ) {
                 self.log.borrow_mut().push(format!("build {}", self.name));
-            }
-            fn scene(&self) -> &Scene {
-                &self.scene
             }
             fn order(&self) -> FrameSourceOrder {
                 FrameSourceOrder::MESH
@@ -724,7 +729,6 @@ mod tests {
                 .spawn(bundle!(Source::new(PhasedSource {
                     name,
                     log: Rc::clone(&order),
-                    scene: Scene::new(),
                 }),));
         }
 
@@ -736,6 +740,7 @@ mod tests {
             .query::<(Entity, &Source)>()
             .map(|(e, _)| e)
             .collect();
+        let mut scene = Scene::new();
         for entity in &entities {
             world
                 .root_scope()
@@ -744,7 +749,7 @@ mod tests {
                     let scope = world
                         .scope(*entity)
                         .expect("a source entity is its own scope");
-                    source.build_scene(&scope, ctx, test_info(), &mut encoder)
+                    source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
                 })
                 .unwrap();
         }
@@ -848,8 +853,8 @@ mod tests {
                 .query::<(Entity, &Source)>()
                 .map(|(entity, source)| (source.order(), entity)),
         );
-        let order_capacity = resolved.order.capacity();
-        let ambiguous_capacity = resolved.ambiguous.capacity();
+        let order_capacity = resolved.order_capacity();
+        let ambiguous_capacity = resolved.ambiguous_capacity();
         assert_eq!(resolved.entities().len(), 5);
         assert_eq!(resolved.ambiguous().len(), 1, "four share one order");
 
@@ -869,12 +874,12 @@ mod tests {
         );
         assert_eq!(resolved.entities().len(), 4);
         assert_eq!(
-            resolved.order.capacity(),
+            resolved.order_capacity(),
             order_capacity,
             "the order buffer is reused rather than reallocated"
         );
         assert_eq!(
-            resolved.ambiguous.capacity(),
+            resolved.ambiguous_capacity(),
             ambiguous_capacity,
             "the ambiguity buffer is reused rather than reallocated"
         );
@@ -1152,7 +1157,6 @@ mod release_tests {
     struct OwningSource {
         context: RenderContext,
         node: Option<ResHandle>,
-        scene: Scene,
     }
 
     impl FrameSource for OwningSource {
@@ -1161,6 +1165,7 @@ mod release_tests {
             scope: &Scope<'_>,
             ctx: RenderContext,
             _info: PassInfo,
+            _scene: &mut Scene,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             // Register once, on the first frame: a node the source owns and
@@ -1176,10 +1181,6 @@ mod release_tests {
             }
         }
 
-        fn scene(&self) -> &Scene {
-            &self.scene
-        }
-
         fn order(&self) -> FrameSourceOrder {
             FrameSourceOrder::UI
         }
@@ -1190,7 +1191,6 @@ mod release_tests {
     struct EarlyReturnSource {
         context: RenderContext,
         node: Option<ResHandle>,
-        scene: Scene,
     }
 
     impl FrameSource for EarlyReturnSource {
@@ -1199,6 +1199,7 @@ mod release_tests {
             scope: &Scope<'_>,
             ctx: RenderContext,
             _info: PassInfo,
+            _scene: &mut Scene,
             _encoder: &mut wgpu::CommandEncoder,
         ) {
             // The scope is the whole of the build's graph handling: this source
@@ -1217,10 +1218,6 @@ mod release_tests {
                 // returns, leaving the scope's drop to collect it.
                 self.node = None;
             }
-        }
-
-        fn scene(&self) -> &Scene {
-            &self.scene
         }
 
         fn order(&self) -> FrameSourceOrder {
@@ -1247,6 +1244,7 @@ mod release_tests {
         let mut encoder = wgpu::Device::noop(&wgpu::DeviceDescriptor::default())
             .0
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut scene = Scene::new();
         world
             .root_scope()
             .query_one::<&mut Source>(entity)
@@ -1254,7 +1252,7 @@ mod release_tests {
                 let scope = world
                     .scope(entity)
                     .expect("a source entity is its own scope");
-                source.build_scene(&scope, ctx, test_info(), &mut encoder)
+                source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
             })
             .expect("the source entity exists");
     }
@@ -1291,7 +1289,6 @@ mod release_tests {
             .spawn(bundle!(Source::new(OwningSource {
                 context: ctx,
                 node: None,
-                scene: Scene::new(),
             }),));
         build_once(&mut world, entity, ctx);
         assert_eq!(
@@ -1329,7 +1326,6 @@ mod release_tests {
             .spawn(bundle!(Source::new(OwningSource {
                 context: ctx,
                 node: None,
-                scene: Scene::new(),
             }),));
 
         world.root_scope_mut().despawn(entity);
@@ -1355,7 +1351,6 @@ mod release_tests {
                     .spawn(bundle!(Source::new(OwningSource {
                         context: ctx,
                         node: None,
-                        scene: Scene::new(),
                     }),)),
             );
         }
@@ -1398,7 +1393,6 @@ mod release_tests {
             .spawn(bundle!(Source::new(EarlyReturnSource {
                 context: ctx,
                 node: None,
-                scene: Scene::new(),
             }),));
 
         // The first build registers the node the source owns.
