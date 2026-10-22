@@ -171,15 +171,15 @@ fn despawning_the_proxy_stops_the_world() {
 /// A subscription hands a world's newest state to a reader on the host,
 /// which sees the updates the thread collects.
 ///
-/// The collector runs inside the world's own tick, so a world publishes only
-/// while the reader that asked for the snapshot is alive.
+/// The collector runs inside the world's own loop — the runner publishes at
+/// the end of every turn — so a world publishes only while the reader that
+/// asked for the snapshot is alive.
 #[test]
 fn subscriptions_flow_from_thread_to_host() {
     let mut host = World::new();
     // The world's own tick is what runs its subscribers: a world that never
     // publishes collects nothing, whatever it carries.
-    let world = spawn_threaded_world(&mut host, "test", 8, |world, control| {
-        publish_collected(world);
+    let world = spawn_threaded_world(&mut host, "test", 8, |_world, control| {
         control.wait_timeout(Duration::from_millis(1));
         true
     });

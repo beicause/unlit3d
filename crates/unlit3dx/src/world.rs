@@ -4,10 +4,16 @@
 //! Both leave the same proxy component on the host entity, so the host's
 //! world carries the same data either way. What differs is who drives the
 //! world: a thread of its own, or the host's own frames.
+//!
+//! Whoever drives a world publishes its subscriptions: a turn of the loop
+//! drains the queue, runs the tick, and then publishes what the world's
+//! collectors returned. A tick body therefore collects nothing by hand and
+//! cannot publish twice.
 
 use async_channel::{Receiver, bounded};
 use unlit_ecs::{ArchetypeBuilder, Entity, World};
 
+use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender, SendError};
@@ -170,7 +176,8 @@ impl WorldRunner for Stepped {
 /// Spawn a threaded world on a fresh thread, driven by `tick`.
 ///
 /// The thread's loop drains the jobs queued for the world, then runs
-/// `tick` once; a tick that returns `false` ends the thread. A job that
+/// `tick` once, then publishes what the world's subscriptions collected;
+/// a tick that returns `false` ends the thread. A job that
 /// panics is a tick panic: it is reported and ends the thread. The handle
 /// returned carries the handle every later job goes through, and
 /// dropping the host entity it names stops the thread.
@@ -223,7 +230,9 @@ where
         while let Ok(job) = receiver.try_recv() {
             job(world);
         }
-        tick(world, control, state)
+        let running = tick(world, control, state);
+        publish_collected(world);
+        running
     });
     let status: ThreadStatus = thread.status();
     let commands = JobSender::new(commands);
@@ -305,6 +314,9 @@ fn spawn_proxy(
 /// that world has already stopped. A tick that returns `false` stops the
 /// world; a panic is caught, logged and recorded the way a threaded world's
 /// thread panic is, and ends the world too.
+///
+/// The step publishes what the world's subscriptions collected, the same as
+/// a threaded world's loop does, so a tick body never publishes by hand.
 pub fn step_stepped_world(host: &World, entity: Entity) {
     let Some(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
         return;
@@ -343,16 +355,24 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
     } = &mut **stepped;
     LocalTasks::pump(world);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(world, control)));
-    match outcome {
-        Ok(true) => {}
-        Ok(false) => status.finish(),
+    let running = match outcome {
+        Ok(true) => true,
+        Ok(false) => {
+            status.finish();
+            false
+        }
         Err(payload) => {
             let message = panic_message(payload.as_ref());
             log::error!("the stepped world {name} panicked: {message}");
             status.record_panic(message);
             status.finish();
+            false
         }
-    }
+    };
+    // A tick that ended the world still publishes: the state it leaves is
+    // the last one its readers ever get.
+    publish_collected(world);
+    let _ = running;
 }
 
 /// Run `f` against a stepped world's world, if `entity` names one.

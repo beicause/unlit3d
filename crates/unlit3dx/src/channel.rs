@@ -135,8 +135,10 @@ impl JobSender {
 /// been dropped is pruned here: the world stops collecting for it on the next
 /// tick.
 ///
-/// Call this from the world's own tick, after the state a collector reads has
-/// been updated.
+/// A runner that drives a world — its thread, the host stepping it, or the
+/// host draining a sub-world — calls this itself at the end of every turn,
+/// after the state a collector reads has been updated. A tick body therefore
+/// publishes nothing by hand, and publishing twice in one turn is impossible.
 pub fn publish_collected(world: &World) -> usize {
     let Some(mut outlet) = world.root_scope().query::<&mut SnapshotOutlet>().next() else {
         return 0;

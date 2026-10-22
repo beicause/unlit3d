@@ -3,6 +3,7 @@
 use async_channel::{Receiver, bounded};
 use unlit_ecs::World;
 
+use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
@@ -62,6 +63,10 @@ pub fn spawn_sub_world(
 ///
 /// A job that panics is reported and the drain continues, so one broken job
 /// cannot take the host down with it.
+///
+/// Once the jobs have run the drain publishes what the world's subscriptions
+/// collected, so a sub-world publishes on the host's thread the way a
+/// threaded world publishes on its own.
 pub fn drain_sub_world(nested: &mut World) {
     // The jobs take the world while they run, so the inbox borrow must end
     // before the first one starts. Cloning the receiver is cheap and lets the
@@ -81,4 +86,5 @@ pub fn drain_sub_world(nested: &mut World) {
             );
         }
     }
+    publish_collected(nested);
 }

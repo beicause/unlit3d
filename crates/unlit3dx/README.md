@@ -24,8 +24,8 @@ let mut host = World::new();
 // the command queue and the thread's status in one value.
 let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, control| {
     // ... advance the simulation inside `world` ...
-    // The world publishes to its subscribers once its state is current.
-    publish_collected(world);
+    // Whoever drives the world publishes to its subscribers once the
+    // tick has run, so a tick body never publishes by hand.
     control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
     !control.stop_requested()
 });
@@ -117,9 +117,11 @@ way.
 ## Snapshots and streams
 
 Receiving is a subscription: `JobSender::watch` installs a collector in the
-target world and hands back a reader; the world runs every collector it
-carries once per tick, after its state is current. Which shape the collector
-fills is the caller's choice:
+target world and hands back a reader. Whoever drives that world — its thread,
+its host stepping it, or its host draining a sub-world — publishes at the end
+of every turn, once the tick has run, so a tick body publishes nothing itself
+and cannot publish twice. Which shape the collector fills is the caller's
+choice:
 
 - `watch` returns a `SnapshotReader<T>`: state, where only the newest value
   matters. The collector returns `Option<T>`.
@@ -214,9 +216,9 @@ The bridges:
 - **physics** (on by default): `spawn_physics_world_with::<R>` runs a rapier
   `PhysicsWorld` at a fixed rate (`PHYSICS_HZ`, 64). Each step drains rapier's
   contacts into a `PhysicsContacts` component — the collision pairs that
-  started, with the speed each pair was closing at, and those that stopped —
-  and then runs the world's subscribers. It publishes no payload of its own:
-  a caller subscribes with the collector that names the state it wants.
+  started, with the speed each pair was closing at, and those that stopped.
+  It publishes no payload of its own: a caller subscribes with the collector
+  that names the state it wants, and whoever drives the world publishes it.
   `spawn_body` (a `BodyDesc` with a `BodyShape`) and `spawn_fixed_cuboid` are
   the building blocks; `init_physics_world` builds the same world for a
   caller that steps it inline with `step_once`.

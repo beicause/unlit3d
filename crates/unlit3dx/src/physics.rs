@@ -22,7 +22,6 @@ use rapier3d::prelude::*;
 pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
 use unlit_ecs::World;
 
-use crate::channel::publish_collected;
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
 use crate::world::WorldRunner;
@@ -275,7 +274,6 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
                 return false;
             }
             step_once(world);
-            publish_collected(world);
             clock.wait(control);
             true
         },

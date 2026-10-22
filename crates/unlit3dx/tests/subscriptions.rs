@@ -8,11 +8,12 @@ use unlit_ecs::World;
 use unlit_ecs::bundle;
 use unlit3dx::prelude::*;
 
-/// A stepped world whose tick publishes whatever its subscriptions collect.
+/// A stepped world with no tick of its own.
 ///
 /// A stepped world is the deterministic one: nothing runs until the test
 /// steps it, so the order of a subscription and the tick that serves it is
-/// the test's to fix.
+/// the test's to fix. The step publishes the subscriptions itself, so a
+/// world whose tick does nothing still answers them.
 fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
     spawn_stepped_world_with_init(
         host,
@@ -21,10 +22,7 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
         |world: &mut World| {
             world.root_scope_mut().spawn(bundle![Marker(0)]);
         },
-        |world: &mut World, _control: &ThreadControl, ()| {
-            publish_collected(world);
-            true
-        },
+        |_world: &mut World, _control: &ThreadControl, ()| true,
     )
 }
 
@@ -142,6 +140,37 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
     step_stepped_world(&host, world.entity);
 
     assert_eq!(reader.latest().map(|value| *value), Some(1));
+}
+
+/// A sub-world publishes what it collects when its host drains it, so a
+/// world with no tick of its own still answers the subscriptions made of it.
+#[test]
+fn draining_a_sub_world_publishes_its_subscriptions() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 8);
+    let reader = proxy
+        .sender
+        .clone()
+        .watch(|world: &World| {
+            world
+                .root_scope()
+                .query::<&Marker>()
+                .next()
+                .map(|marker| marker.0)
+        })
+        .expect("the sub-world accepts a subscription");
+    assert_eq!(reader.latest(), None, "nothing ran before the drain");
+
+    let mut nested = host
+        .root_scope()
+        .query_one::<&mut World>(proxy.entity)
+        .expect("the nested world");
+    drain_sub_world(&mut nested);
+    assert_eq!(
+        reader.latest().map(|value| *value),
+        Some(0),
+        "the drain published what the collector collected"
+    );
 }
 
 /// A full command queue refuses the subscription instead of blocking, and

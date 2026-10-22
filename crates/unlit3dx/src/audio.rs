@@ -19,7 +19,6 @@ use ringbuf::traits::{Consumer, Observer, Producer, Split};
 use ringbuf::{HeapProd, HeapRb};
 use unlit_ecs::{Entity, World, bundle};
 
-use crate::channel::publish_collected;
 use crate::handle::WorldHandle;
 use crate::thread::{FixedClock, ThreadControl};
 use crate::world::WorldRunner;
@@ -363,7 +362,6 @@ pub fn spawn_audio_world_with<R: WorldRunner>(
                     log::warn!("the audio world cannot sound");
                 }
             }
-            publish_collected(world);
             if let Some(output) = output.as_mut() {
                 let chunk = AUDIO_FILL_FRAMES * usize::from(output.channels);
                 while output.producer.vacant_len() >= chunk {

@@ -23,8 +23,8 @@ let mut host = World::new();
 // 合于一身。
 let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, control| {
     // ... 在 `world` 里推进模拟 ...
-    // 状态更新完毕后，world 向订阅者发布快照。
-    publish_collected(world);
+    // 驱动 world 的一方在 tick 跑完后替它向订阅者发布快照，
+    // 因此 tick 体不需要自己发布。
     control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
     !control.stop_requested()
 });
@@ -101,7 +101,8 @@ world 而不属于发起它的那次调用；谁驱动 world，谁就每回合�
 ## 快照与流
 
 接收就是订阅：`JobSender::watch` 在目标 world 里装一个收集闭包并交回一个
-reader；world 每 tick 在自身状态更新完毕后运行它携带的每个收集闭包。收集闭包填充
+reader。驱动该 world 的一方——它的线程、步进它的宿主、或排空它的宿主——在每一轮
+tick 跑完后代为发布，因此 tick 体自己什么也不发布，也不可能发布两次。收集闭包填充
 哪种形状由调用方选择：
 
 - `watch` 返回 `SnapshotReader<T>`：状态，只关心最新的值。收集闭包返回
@@ -174,8 +175,8 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 
 - **physics**（默认开启）：`spawn_physics_world_with::<R>` 以固定步率（`PHYSICS_HZ`，64）
   驱动 rapier 的 `PhysicsWorld`。每一步把 rapier 的碰撞事件排空进 `PhysicsContacts`
-  组件——这一步开始的碰撞对（含每对相互接近的速度）与结束的碰撞对——然后运行该
-  world 的订阅者。它自己不发布任何载荷：调用方用收集闭包订阅，由闭包指名要什么状态。
+  组件——这一步开始的碰撞对（含每对相互接近的速度）与结束的碰撞对。它自己不发布
+  任何载荷：调用方用收集闭包订阅，由闭包指名要什么状态，再由驱动该 world 的一方发布。
   `spawn_body`（携带 `BodyShape` 的 `BodyDesc`）与 `spawn_fixed_cuboid` 是基本构件；
   `init_physics_world` 为自行用 `step_once` 内联步进的调用方构建同样的 world。
 - **audio**（默认开启）：`spawn_audio_world_with::<R>` 打开输出设备并在音频线程上
