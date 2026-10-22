@@ -325,7 +325,7 @@ impl Example {
                 depth_clear(),
                 stencil_clear(),
             );
-            scene.record(&mut pass);
+            scene.record(&mut pass, None);
         }
         self.queue.submit([encoder.finish()]);
     }
