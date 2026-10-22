@@ -95,8 +95,8 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 
   - `SceneState`（tick 100）用一个 job 搭出场景的资源——网格与带图案的材质。每次
     落球都向渲染 world 要一个自己的实例。
-  - `Floor`（tick 50）在第一次落球可能发生之前就排队地面这个固定刚体，随后搭建
-    绘制它的棋盘格实例。
+  - `spawn_floor` 在第一次落球可能发生之前排队地面这个固定刚体，并搭建绘制它的
+    棋盘格实例。
   - `Balls`（tick 200）向渲染 world 要为这次落球新建的实例、向物理要刚体、把快照里的
     句柄映射到自己的实例，再把姿态作为一个 job 发回去。镜头再也看不到的实例由渲染
     world despawn 并回报，刚体随之一起消失。

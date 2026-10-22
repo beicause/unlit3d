@@ -15,7 +15,8 @@
 //!   want: input, collisions, a sequence ending. A reader that ticks slower
 //!   than the producer still sees every value, in order.
 //!
-//! A third shape is a question: [`JobSender::ask`] sends one job that
+//! A third shape is a question: [`JobSender::ask`](crate::job::JobSender::ask)
+//! sends one job that
 //! publishes its answer once. That is the shape of something built on
 //! request rather than observed: an entity, a set of assets.
 //!

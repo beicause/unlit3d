@@ -127,8 +127,8 @@ it is paced differs.
   - `SceneState` (tick 100) builds the scene's assets — meshes and patterned
     materials — as one job of its own. Every drop asks the render world for an
     instance of its own.
-  - `Floor` (tick 50) queues the fixed ground body before the first drop can
-    happen, then builds the checker instance that draws it.
+  - `spawn_floor` queues the fixed ground body and builds the checker
+    instance that draws it, before the first drop can happen.
   - `Balls` (tick 200) asks the render world for the instance it drops, asks
     physics for a body, maps the handles the snapshot names onto its
     instances, and sends their poses back as a job. The render world despawns

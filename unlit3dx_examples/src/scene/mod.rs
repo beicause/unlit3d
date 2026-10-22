@@ -10,8 +10,8 @@
 //!
 //! - [`SceneState`] builds the scene's assets once; every drop asks the render
 //!   world for an instance of its own.
-//! - [`Floor`] puts the ground under the shapes, in physics and in the render
-//!   world.
+//! - [`spawn_floor`] puts the ground under the shapes, in physics and in the
+//!   render world.
 //! - [`Balls`] drops the shapes, maps physics bodies onto render instances,
 //!   and publishes their poses.
 //! - [`SceneAudio`] installs the synthesizer's voice and starts the music: the
@@ -45,11 +45,11 @@ use unlit3dx::ui::UiPanelHost;
 
 use crate::render::{camera_looking_at, mesh_source};
 
-pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_audio_job, install_synth};
+pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_synth};
 pub use balls::{Balls, PENDING_TIMEOUT_TICKS, SPAWN_HEIGHT, SPAWN_SPREAD, SPAWN_TICKS};
 pub use floor::{
-    Floor, GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
-    checker_ground,
+    GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
+    checker_ground, spawn_floor,
 };
 pub use music::{ELECTRIC_PIANO_PROGRAM, MUSIC_BOX_PROGRAM, SCALE, bgm_midi, sequence_midi};
 pub use shapes::{
@@ -57,7 +57,7 @@ pub use shapes::{
     shape_kind, shape_mesh,
 };
 pub use shared::{SceneAssets, SceneState};
-pub use tick::{TICK_AUDIO, TICK_BALLS, TICK_FLOOR, TICK_SCENE, Tick, tick_behaviour};
+pub use tick::{ScenePhase, TICK_AUDIO, TICK_BALLS, TICK_SCENE, Tick, tick_behaviour};
 pub use ui::{control_panel_job, mount_controls};
 
 mod audio;
@@ -134,15 +134,6 @@ pub const FRAME_DISPATCH_INPUT: i32 = 5;
 /// the input dispatch and before the draw, so the transforms they publish
 /// are the ones the frame draws.
 pub const FRAME_INLINE_STEP: i32 = 6;
-
-/// The gameplay frame's behaviour order: its input is dispatched here,
-/// before any object ticks, so every object sees the events of its own tick
-/// and the panel publishes a frame that already accounts for them.
-pub const GAMEPLAY_DISPATCH_INPUT: i32 = 10;
-
-/// The order the panel publishes at: after every object has ticked, so the
-/// frame it lays out shows what this tick settled on.
-pub const GAMEPLAY_PUBLISH_PANEL: i32 = 400;
 
 /// The render world's behaviour order: the camera orbit runs here, after
 /// the scene's pose jobs have landed on a frame's drain.
@@ -298,37 +289,39 @@ pub struct GamePhysics {
     pub transforms: Vec<(RigidBodyHandle, Vec3, Quat)>,
 }
 
-/// The channels between the scene's worlds, wired the same way in both
-/// run modes: transforms flow to the render world, body commands to
-/// physics, synthesizer messages to audio, and the objects of the gameplay
-/// world tie them to the render server. Each subscription belongs to the world it
-/// reads, so a run that never asks for a snapshot pays nothing for it.
+/// The other worlds, as the scene's objects reach them.
 ///
-/// Each mode builds the struct from the worlds it has — remote worlds on
-/// threads for the windowed show, inline worlds with unbounded queues for
-/// the headless capture — and both then spawn the same objects from it, so
-/// the wiring is written once.
+/// A tick hands one to every object, so an object names the world it wants
+/// instead of keeping a channel of its own. The ports are plain senders:
+/// what an object says to another world is a job, and what it learns back is
+/// a subscription — [`poses`](Self::poses) is the physics world's, collected
+/// between its steps. Each subscription belongs to the world it reads, so a
+/// run that never asks for a snapshot pays nothing for it.
+///
+/// Both run modes build one from the worlds they have — threaded worlds for
+/// the windowed show, stepped worlds for the headless capture — and both then
+/// spawn the same objects with it, so the wiring is written once.
 #[derive(Clone)]
-pub struct SceneWiring {
+pub struct Scene {
     /// Commands into the render world: the objects build their scene and
     /// move their instances through them.
-    pub render_sender: JobSender,
+    pub render: JobSender,
     /// Commands into the physics world.
-    pub physics_sender: JobSender,
-    /// The physics world's latest pose snapshot.
-    pub physics_reader: SnapshotReader<GamePhysics>,
+    pub physics: JobSender,
     /// Commands into the audio world.
-    pub audio_sender: JobSender,
+    pub audio: JobSender,
+    /// The physics world's latest pose snapshot.
+    pub poses: SnapshotReader<GamePhysics>,
 }
 
-/// Subscribe the shapes to the physics world's body poses.
+/// Watch the physics world's body poses.
 ///
 /// The collector walks the rapier world on the physics thread and copies the
 /// moving bodies' transforms; it answers nothing while they are unchanged, so
 /// a world whose bodies are all asleep publishes no snapshot at all. The
-/// mailbox carries state, not history: a body that moved twice between two
+/// snapshot carries state, not history: a body that moved twice between two
 /// reads is seen once, where it is now.
-fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
+fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
     let mut previous: Vec<(RigidBodyHandle, Vec3, Quat)> = Vec::new();
     sender
         .watch(move |world: &World| {
@@ -355,11 +348,10 @@ fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
 ///
 /// Every world is a host entity carrying the runner's proxy, so the host's
 /// data is the same whether the worlds run on threads or the host steps
-/// them; only who calls their ticks differs.
+/// them; only who calls their ticks differs. What the objects reach them
+/// through is a [`Scene`], built beside them and handed to every tick.
 #[derive(Clone)]
-pub struct SceneWorlds {
-    /// The channels between the worlds.
-    pub wiring: SceneWiring,
+pub struct SceneHandles {
     /// The rapier world.
     pub physics: WorldHandle,
     /// The synthesizer's world.
@@ -403,15 +395,14 @@ pub fn spawn_scene<R: WorldRunner>(
     audio_setup: AudioSetup,
     panels: PanelSlots,
     input: &InputWriter,
-) -> SceneWorlds {
+) -> SceneHandles {
     // The physics world: fixed step, default gravity. The ground is queued
     // by the floor object before the first ball drops.
     let physics = spawn_physics_world_with::<R>(host, PhysicsConfig::default());
-    let physics_sender = physics.sender.clone();
     // The demo asks for the poses it needs; the library collects nothing on
     // its own. The subscription lives in the physics world, so it runs
     // between that world's steps whatever drives it.
-    let physics_reader = subscribe_physics(&physics_sender);
+    let poses = watch_poses(&physics.sender);
 
     // The audio world: one synthesizer voice, mixed into the output stream.
     // The voice builds its synthesizer on the first fill it renders, so it
@@ -423,7 +414,6 @@ pub fn spawn_scene<R: WorldRunner>(
         ..AudioConfig::default()
     };
     let audio = spawn_audio_world_with::<R>(host, config);
-    let audio_sender = audio.sender.clone();
     // The voice is installed from the gameplay world, as a job whose answer
     // is the entity the scenes' sequences address. The soundfont is kept for
     // that job rather than loaded here, so the decode runs where the job
@@ -434,11 +424,11 @@ pub fn spawn_scene<R: WorldRunner>(
         AudioSetup::Device => Some(unlit3dx_asset_bytes::soundfont().into()),
     };
 
-    let wiring = SceneWiring {
-        render_sender: render.sender.clone(),
-        physics_sender,
-        physics_reader,
-        audio_sender,
+    let scene = Scene {
+        render: render.sender.clone(),
+        physics: physics.sender.clone(),
+        audio: audio.sender.clone(),
+        poses,
     };
 
     // The gameplay world: one entity per object, each ticking itself as the
@@ -450,8 +440,7 @@ pub fn spawn_scene<R: WorldRunner>(
         "gameplay",
         64,
         {
-            let render = render.clone();
-            let wiring = wiring.clone();
+            let scene = scene.clone();
             let soundfont = soundfont.clone();
             let panels = panels.clone();
             let input = input.clone();
@@ -461,28 +450,31 @@ pub fn spawn_scene<R: WorldRunner>(
                 // buffer, once, before the first tick reads one.
                 world.root_scope_mut().spawn(bundle![input.subscribe()]);
                 world.root_scope_mut().spawn(bundle![OnFrame::new(
-                    FrameBehaviourOrder(GAMEPLAY_DISPATCH_INPUT),
+                    ScenePhase::Input.at(0),
                     |world, _entity, _frame| {
                         dispatch_input(world);
                     },
                 ),]);
-                let state = SceneState::new(render.clone());
-                world
-                    .root_scope_mut()
-                    .spawn(bundle![state, tick_behaviour::<SceneState>(TICK_SCENE)]);
-                let floor = Floor::new(&wiring, render.clone());
-                world
-                    .root_scope_mut()
-                    .spawn(bundle![floor, tick_behaviour::<Floor>(TICK_FLOOR)]);
-                let balls = Balls::new(&wiring);
-                world
-                    .root_scope_mut()
-                    .spawn(bundle![balls, tick_behaviour::<Balls>(TICK_BALLS)]);
+                spawn_floor(&scene);
+                let state = SceneState::new(&scene);
+                world.root_scope_mut().spawn(bundle![
+                    state,
+                    tick_behaviour::<SceneState>(scene.clone(), ScenePhase::Objects.at(TICK_SCENE)),
+                ]);
+                let balls = Balls::new();
+                world.root_scope_mut().spawn(bundle![
+                    balls,
+                    tick_behaviour::<Balls>(scene.clone(), ScenePhase::Objects.at(TICK_BALLS)),
+                ]);
                 if let Some(soundfont) = soundfont {
-                    let audio = SceneAudio::new(&wiring, soundfont);
-                    world
-                        .root_scope_mut()
-                        .spawn(bundle![audio, tick_behaviour::<SceneAudio>(TICK_AUDIO)]);
+                    let audio = SceneAudio::new(soundfont);
+                    world.root_scope_mut().spawn(bundle![
+                        audio,
+                        tick_behaviour::<SceneAudio>(
+                            scene.clone(),
+                            ScenePhase::Objects.at(TICK_AUDIO)
+                        ),
+                    ]);
                 }
                 // The panel is the fifth object, and lives here with the rest.
                 // The host that lays it out is an entity of its own, so the
@@ -498,7 +490,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 ),]);
                 mount_controls(world);
                 world.root_scope_mut().spawn(bundle![OnFrame::new(
-                    FrameBehaviourOrder(GAMEPLAY_PUBLISH_PANEL),
+                    ScenePhase::Publish.at(0),
                     |world, _entity, _frame| publish_panels(world),
                 ),]);
             }
@@ -528,8 +520,7 @@ pub fn spawn_scene<R: WorldRunner>(
         },
     );
 
-    SceneWorlds {
-        wiring,
+    SceneHandles {
         physics,
         audio,
         gameplay,
@@ -597,7 +588,7 @@ impl SceneStepper {
     ///
     /// The render world is not stepped here: it is a sub-world the draw
     /// drains, not one with a rate of its own.
-    pub fn step(&mut self, host: &World, worlds: &SceneWorlds, delta_seconds: f64) {
+    pub fn step(&mut self, host: &World, worlds: &SceneHandles, delta_seconds: f64) {
         // Gameplay first: its requests reach the other worlds before they
         // step.
         self.gameplay_debt += delta_seconds;
@@ -632,28 +623,28 @@ impl SceneStepper {
 ///
 /// The host's keyboard behaviour lives outside the gameplay world, so it
 /// reaches the shapes through a job; the panel, which lives inside it, calls
-/// [`request_drop_in`] instead.
-pub fn request_drop(sender: &JobSender) {
+/// [`drop_ball_in`] instead.
+pub fn drop_ball(sender: &JobSender) {
     sender
         .send(Box::new(|world: &mut World| {
-            request_drop_in(&world.root_scope());
+            drop_ball_in(&world.root_scope());
         }))
         .ok();
 }
 
 /// Ask the shapes to drop the next one, from inside the gameplay world.
-pub fn request_drop_in(world: &Scope<'_>) {
+pub fn drop_ball_in(world: &Scope<'_>) {
     if let Some((_, mut balls)) = world.query::<(Entity, &mut Balls)>().next() {
-        balls.request_drop();
+        balls.queue_drop();
     }
 }
 
 /// Ask the shapes to go away, from inside the gameplay world.
 ///
 /// The music keeps playing; the panel drives it.
-pub fn request_clear_in(world: &Scope<'_>) {
+pub fn clear_balls_in(world: &Scope<'_>) {
     if let Some((_, mut balls)) = world.query::<(Entity, &mut Balls)>().next() {
-        balls.request_clear();
+        balls.queue_clear();
     }
 }
 
