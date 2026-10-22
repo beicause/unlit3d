@@ -22,11 +22,11 @@ pub trait Tick {
 pub const TICK_FLOOR: i32 = 50;
 
 /// The order the shared state's tick runs at: the build lands before the
-/// objects that need the slots it hands out.
+/// objects that need the instances it hands out.
 pub const TICK_SCENE: i32 = 100;
 
-/// The order the shapes' tick runs at: after the slots exist, before the
-/// music that answers them.
+/// The order the shapes' tick runs at: after the assets exist, before the
+/// music.
 pub const TICK_BALLS: i32 = 200;
 
 /// The order the audio object's tick runs at: last, once the shapes are out.

@@ -11,7 +11,7 @@ snapshot tests.
 
 ## What you see
 
-A checkered ground plane and a pool of falling shapes — balls, cubes,
+A checkered ground plane and a stream of falling shapes — balls, cubes,
 cylinders and cones, each wearing its own patterned material. Space drops a
 shape from above at a random position; shapes fall and bounce off the ground
 and each other. Shapes also drop on their own, about one every 0.7 seconds.
@@ -22,7 +22,7 @@ moment the world can sound. A second track holds a one-shot MIDI sequence —
 the pentatonic scale walked up and back down on a music box — which stays
 idle until its row's Play button starts it. That control panel — a small
 egui window — offers each track the buttons its state calls for, drops the
-next shape, and puts every live shape back in the pool: an idle sequence
+next shape, and puts every live shape away: an idle sequence
 shows Play alone, a started track shows Pause or Resume beside Rewind, and a
 sequence that plays to its end goes back to showing Play. Nothing about the
 music depends on the shapes: clearing the scene leaves the tracks playing.
@@ -124,14 +124,16 @@ it is paced differs.
   carrying what it owns plus a `Tick` that advances it, and each ticks itself
   as an `OnFrame` behaviour at an order of its own:
 
-  - `SceneState` (tick 100) builds the shape pool — meshes, patterned
-    materials and the forty-eight instances — as one async task of its own,
-    and hands slots out.
+  - `SceneState` (tick 100) builds the scene's assets — meshes and patterned
+    materials — as one job of its own. Every drop asks the render world for an
+    instance of its own.
   - `Floor` (tick 50) queues the fixed ground body before the first drop can
     happen, then builds the checker instance that draws it.
-  - `Balls` (tick 200) asks the pool for a slot, asks physics for a body,
-    maps the handles the snapshot names onto its slots, and sends their poses
-    back as a job.
+  - `Balls` (tick 200) asks the render world for the instance it drops, asks
+    physics for a body, maps the handles the snapshot names onto its
+    instances, and sends their poses back as a job. The render world despawns
+    an instance the camera can no longer see and reports it back, and the body
+    goes with it.
   - `SceneAudio` (tick 300) sends the install job once, and on the answer
     spawns the scene's two tracks in this world: each is a `MidiSequencer`
     with a clock, the voice it plays into, and the sender that voice takes

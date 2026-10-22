@@ -1,10 +1,9 @@
-//! The shape pool: the render instances the scene reuses, built once and
-//! handed out a slot at a time.
+//! The scene's assets, built once in the render world.
 //!
-//! Building it happens in the render world, in one job: meshes and materials,
-//! then the instances that name them, so nothing waits for an answer in
-//! between. The job publishes the instances it built, and the tick here takes
-//! them up when they land.
+//! The render world allocates the meshes and materials in one job and
+//! publishes them. Every shape a drop needs is its own render instance, asked
+//! for when the drop happens; an instance the camera can no longer see is
+//! despawned by the render world, so nothing is kept hidden for reuse.
 
 use unlit_ecs::{Entity, World};
 use unlit3d::components::Transform;
@@ -12,119 +11,89 @@ use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
 use super::HIDDEN_POSITION;
-use super::shapes::{
-    BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, ShapeKind, pattern_texture, shape_kind, shape_mesh,
-};
+use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
 use super::tick::Tick;
-use crate::render::{allocate_mesh, allocate_rgba_material, instance_of, linear_sampler};
+use crate::render::{allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler};
 
-/// How many balls the scene keeps around. The pool never grows: the build
-/// makes the instances once, and a spawned ball reuses the first free entity.
-pub const POOL_SIZE: usize = 48;
-
-/// The shape pool, living on its own entity in the gameplay world.
+/// The render entities a shape is built from, in kind-major order.
 ///
-/// It owns every render entity the scene drops as a shape, and which of them
-/// are free: an object that needs a shape asks for a slot and gives it back
-/// when its body is gone, so no other object has to know what the pool holds.
+/// The build job allocates them in the render world and publishes them here;
+/// the gameplay world names them when it asks for an instance.
+#[derive(Clone, Debug)]
+pub struct SceneAssets {
+    /// One mesh per [`SHAPE_KINDS`] entry, in that order.
+    pub meshes: Vec<Entity>,
+    /// One material per shape kind and color, kind-major:
+    /// `kind * BALL_COLORS.len() + color`.
+    pub materials: Vec<Entity>,
+}
+
+/// The scene's assets, on its own entity in the gameplay world.
+///
+/// It owns the render entities every shape is built from, and whether the
+/// build has landed. It does not own instances: a drop asks the render world
+/// for one, and the render world despawns it once the camera loses sight of
+/// it.
 pub struct SceneState {
-    /// The render world's command channel: the objects move their instances
-    /// through it.
-    render: JobSender,
-    /// The instances the build job published, read once they land.
-    instances: SnapshotReader<Vec<Entity>>,
-    /// Every render entity the pool owns, for a scene restart: the free
-    /// slots are [`SceneState::free`], this list is all of them.
-    slots: Vec<(Entity, ShapeKind)>,
-    /// Render entities not yet assigned to a body.
-    free: Vec<(Entity, ShapeKind)>,
-    /// Whether the build landed and the pool is live.
+    /// The assets the build job published, read once they land.
+    assets: SnapshotReader<SceneAssets>,
+    /// The assets once the build landed, for the jobs that name them.
+    pub loaded: Option<SceneAssets>,
+    /// Whether the build landed and the scene is live.
     ready: bool,
 }
 
 impl SceneState {
-    /// Ask the render world for the pool.
+    /// Ask the render world for the scene's assets.
     ///
-    /// The whole build is one job there: it allocates the meshes and
-    /// materials, then the instances that name them, and publishes the
-    /// instance entities in pool order. Until that lands the pool is empty
-    /// and every object that needs a shape stays unspawned.
+    /// The whole build is one job there: it allocates the meshes and the
+    /// materials, and publishes their entities. Until that lands the scene is
+    /// empty, and every object that needs a shape stays unspawned.
     pub fn new(server: WorldHandle) -> Self {
-        let instances = Snapshot::new();
-        let render = server.commands.clone();
+        let assets = Snapshot::new();
         log::info!("the gameplay world started; asking the render world for the scene");
         // The reader comes after the job is queued: a snapshot keeps the
         // published value, so the build cannot land where nobody will see it.
-        if let Err(error) = render.send(build_pool_job(instances.clone())) {
+        if let Err(error) = server
+            .commands
+            .clone()
+            .send(build_assets_job(assets.clone()))
+        {
             log::error!(
                 "the render world refused the scene build ({error:?}); the scene stays empty"
             );
         }
         Self {
-            render,
-            instances: instances.reader(),
-            slots: Vec::new(),
-            free: Vec::new(),
+            assets: assets.reader(),
+            loaded: None,
             ready: false,
         }
     }
 
-    /// Whether the build landed and the pool is live.
+    /// Whether the build landed and the scene is live.
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.ready
     }
 
-    /// Every render entity the pool owns, live or free.
-    #[must_use]
-    pub fn slots(&self) -> &[(Entity, ShapeKind)] {
-        &self.slots
-    }
-
-    /// The render world's command channel, for the objects that move the
-    /// instances.
-    #[must_use]
-    pub fn render(&self) -> &JobSender {
-        &self.render
-    }
-
-    /// How many slots are free right now.
-    #[must_use]
-    pub fn free_count(&self) -> usize {
-        self.free.len()
-    }
-
-    /// Take the first free slot, or none when every slot is out.
-    pub fn take_slot(&mut self) -> Option<(Entity, ShapeKind)> {
-        self.free.pop()
-    }
-
-    /// Put one slot back, ready to be taken again.
-    pub fn give(&mut self, slot: (Entity, ShapeKind)) {
-        self.free.push(slot);
-    }
-
-    /// Replace the free set, after a clear decided which slots are still
-    /// reserved by a request in flight.
-    pub fn restore_free(&mut self, free: Vec<(Entity, ShapeKind)>) {
-        self.free = free;
-    }
-
-    /// Take the pool once the build job has published it.
+    /// Take the assets once the build job has published them.
     ///
-    /// The pool stays empty if the render world refused the job.
+    /// The scene stays empty if the render world refused the job.
     fn poll_build(&mut self) {
         if self.ready {
             return;
         }
-        let Some(instances) = self.instances.latest() else {
+        let Some(assets) = self.assets.latest() else {
             return;
         };
-        let pool = pool_from_instances(instances.as_ref().clone());
-        self.slots = pool.clone();
-        self.free = pool;
+        let assets = assets.as_ref().clone();
+        log::info!(
+            "the scene is live: {} meshes, {} materials",
+            assets.meshes.len(),
+            assets.materials.len()
+        );
+        self.loaded = Some(assets);
         self.ready = true;
-        log::info!("the shape pool is live: {} bodies", self.free.len());
     }
 }
 
@@ -134,11 +103,12 @@ impl Tick for SceneState {
     }
 }
 
-/// The job that builds the whole pool in the render world.
+/// The job that allocates the scene's meshes and materials in the render
+/// world.
 ///
-/// One step, so the instances can name meshes and materials this same job
-/// spawned. The entities go back through `instances`, in pool order.
-pub fn build_pool_job(instances: Snapshot<Vec<Entity>>) -> Job<()> {
+/// One step, so nothing waits for an answer in between. The entities go back
+/// through `assets`.
+pub fn build_assets_job(assets: Snapshot<SceneAssets>) -> Job<()> {
     Box::new(move |world: &mut World| {
         let mut meshes = Vec::with_capacity(SHAPE_KINDS.len());
         for kind in SHAPE_KINDS {
@@ -156,70 +126,66 @@ pub fn build_pool_job(instances: Snapshot<Vec<Entity>>) -> Job<()> {
                 ));
             }
         }
-        let mut pool = Vec::with_capacity(POOL_SIZE);
-        // Pool slot i wears the shape and tint its index picks, matching the
-        // pool's (entity, kind) pairs.
-        for index in 0..POOL_SIZE {
-            let kind = index % SHAPE_KINDS.len();
-            // The tint walks a diagonal over the pool, so the slots a drop
-            // pops back to back — a run of one kind — still carry every color
-            // between them.
-            let color = (index + index / SHAPE_KINDS.len()) % BALL_COLORS.len();
-            pool.push(instance_of(
-                world,
-                meshes[kind],
-                materials[kind * BALL_COLORS.len() + color],
-                Transform {
-                    translation: HIDDEN_POSITION,
-                    ..Default::default()
-                },
-            ));
-        }
-        instances.publish(pool);
+        assets.publish(SceneAssets { meshes, materials });
     })
 }
 
-/// Read the instances the build published into the shape pool: one slot per
-/// instance, each remembering the kind its index draws.
-pub fn pool_from_instances(instances: Vec<Entity>) -> Vec<(Entity, ShapeKind)> {
-    instances
-        .into_iter()
-        .enumerate()
-        .map(|(index, slot)| (slot, shape_kind(index)))
-        .collect()
+/// The job that spawns one hidden instance wearing the assets it names, and
+/// pushes its entity back tagged with `id`.
+///
+/// It stays hidden until its body is ready and the show job puts it in place.
+pub fn create_instance_job(
+    id: u64,
+    mesh: Entity,
+    material: Entity,
+    created: Stream<(u64, Entity)>,
+) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        let instance = hidden_instance_of(
+            world,
+            mesh,
+            material,
+            Transform {
+                translation: HIDDEN_POSITION,
+                ..Default::default()
+            },
+        );
+        let _ = created.push((id, instance));
+    })
+}
+
+/// The kind and color a drop wears, as indices into [`SceneAssets`].
+///
+/// The palette of every shape kind and color runs from its last entry down,
+/// so a drop picks the last look first and cycles through the rest.
+#[must_use]
+pub fn look(index: usize) -> (usize, usize) {
+    let looks = SHAPE_KINDS.len() * BALL_COLORS.len();
+    let palette = looks - 1 - index % looks;
+    (
+        palette % SHAPE_KINDS.len(),
+        (palette + palette / SHAPE_KINDS.len()) % BALL_COLORS.len(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The build's instance answers map onto the pool in order: slot i wears
-    /// the kind its index picks, so the slot list and the shape list stay in
-    /// step.
+    /// One cycle of the palette covers every shape and color exactly once, so
+    /// a scene that keeps dropping shapes never runs out of looks.
     #[test]
-    fn instance_answers_map_onto_the_pool() {
-        let answers: Vec<Entity> = (0..POOL_SIZE as u32)
-            .map(|index| Entity::from_raw(index, 0))
-            .collect();
-        let pool = pool_from_instances(answers);
-        assert_eq!(pool.len(), POOL_SIZE);
-        for (index, (slot, kind)) in pool.iter().enumerate() {
-            assert_eq!(slot.index(), index as u32);
-            assert_eq!(*kind, shape_kind(index));
+    fn looks_cover_the_palette() {
+        let looks = SHAPE_KINDS.len() * BALL_COLORS.len();
+        let mut seen = vec![false; looks];
+        for index in 0..looks {
+            let (kind, color) = look(index);
+            assert!(kind < SHAPE_KINDS.len());
+            assert!(color < BALL_COLORS.len());
+            let at = kind * BALL_COLORS.len() + color;
+            assert!(!seen[at], "look {at} repeats at index {index}");
+            seen[at] = true;
         }
-    }
-
-    /// Every mesh a pool slot can wear is one of the shape kinds, so the
-    /// pool's kind lookup never falls off the end.
-    #[test]
-    fn pool_kinds_cover_the_shapes() {
-        let pool = pool_from_instances(
-            (0..POOL_SIZE as u32)
-                .map(|index| Entity::from_raw(index, 0))
-                .collect(),
-        );
-        for (_, kind) in &pool {
-            assert!(SHAPE_KINDS.contains(kind));
-        }
+        assert!(seen.iter().all(|seen| *seen));
     }
 }

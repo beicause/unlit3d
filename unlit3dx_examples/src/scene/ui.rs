@@ -3,8 +3,8 @@
 //! The panel lives in the gameplay world with the rest of the scene's objects,
 //! and the render world draws it. A [`UiPanel`] can only be built where its
 //! egui context runs, so the gameplay world lays the panel out on its own tick
-//! and publishes the frame; the render world's [`UiSource`] draws whatever the
-//! slots hold.
+//! and sends the frame to the render world, whose [`UiSource`] holds and draws
+//! it.
 //!
 //! Everything the panel decides is decided here, beside the objects it acts
 //! on: the drop and clear buttons call the scene's own request helpers, and the

@@ -16,16 +16,19 @@
 //! [`create_material_from_texture`] and names the answer in
 //! [`spawn_instance`].
 
-use glam::Vec3;
+use glam::{Affine3A, Vec3};
 use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::pipeline::UnlitOptions;
-use unlit3d::components::{Camera, GpuMaterial, GpuMesh, Transform};
+use unlit3d::bounds::FrustumPlanes;
+use unlit3d::components::{Camera, GpuMaterial, GpuMesh, InstanceVisibility, Transform};
+use unlit3d::culling::is_culled;
 use unlit3d::mesh_source::MeshSource;
 use unlit3d::source::Source;
 use unlit3d::unlit::{MeshSourceUnlitExt, UnlitMeshDesc, UnlitPipeline, UnlitPipelineKey};
 
 use unlit_ecs::bundle;
 use unlit3dx::job::Job;
+use unlit3dx::prelude::Stream;
 
 /// A mesh description that owns its vertex data, so it can cross a thread
 /// inside a job; [`UnlitMeshDesc`] is what the render world finally sees.
@@ -242,7 +245,150 @@ pub(crate) fn instance_of(
     world
         .scope_mut(source_entity)
         .expect("the mesh source entity exists")
-        .spawn(bundle![transform, mesh, material, UnlitPipeline::new(key)])
+        .spawn(bundle![
+            transform,
+            mesh,
+            material,
+            UnlitPipeline::new(key),
+            InstanceVisibility::default(),
+        ])
+}
+
+/// Spawn one rendered instance that starts hidden, until its body is ready.
+pub(crate) fn hidden_instance_of(
+    world: &mut World,
+    mesh: Entity,
+    material: Entity,
+    transform: Transform,
+) -> Entity {
+    let instance = instance_of(world, mesh, material, transform);
+    let Some((source, _)) = mesh_source(world) else {
+        return instance;
+    };
+    let Some(scope) = world.scope(source) else {
+        return instance;
+    };
+    let _ = scope
+        .query_one::<&mut InstanceVisibility>(instance)
+        .map(|mut visibility| visibility.visible = false);
+    instance
+}
+
+/// A job that despawns the instances the camera cannot see, reporting each
+/// one back over `retired`.
+///
+/// The render world owns the camera and the instances, so the visibility test
+/// happens here: the gameplay world only names the live instances and reacts
+/// to the answer by despawning their bodies. An instance that is already gone
+/// is skipped.
+pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity>) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        let Some(camera) = world
+            .root_scope()
+            .query::<&Camera>()
+            .find(|camera| camera.active)
+        else {
+            return;
+        };
+        let frustum = FrustumPlanes::from_clip_from_world(camera.clip_from_world());
+        drop(camera);
+        let Some((source, _)) = mesh_source(world) else {
+            return;
+        };
+        let mut outside = instances;
+        {
+            let Some(scope) = world.scope(source) else {
+                return;
+            };
+            // The list is reused as the outside set: every instance that is
+            // still in view is dropped from it.
+            outside.retain(|instance| {
+                let Some(mesh) = scope.query_one::<&GpuMesh>(*instance) else {
+                    return false;
+                };
+                let model = scope
+                    .query_one::<&Transform>(*instance)
+                    .map_or(Affine3A::IDENTITY, |transform| transform.compute_matrix());
+                is_culled(mesh.aabb, &model, &frustum)
+            });
+        }
+        if outside.is_empty() {
+            return;
+        }
+        if let Some(mut scope) = world.scope_mut(source) {
+            for instance in &outside {
+                let _ = scope.despawn(*instance);
+            }
+        }
+        for instance in outside {
+            let _ = retired.push(instance);
+        }
+    })
+}
+
+/// A job that despawns the instances it names.
+pub(crate) fn despawn_instances_job(instances: Vec<Entity>) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        let Some((source, _)) = mesh_source(world) else {
+            return;
+        };
+        let Some(mut scope) = world.scope_mut(source) else {
+            return;
+        };
+        for instance in instances {
+            let _ = scope.despawn(instance);
+        }
+    })
+}
+
+/// A job that points one instance at a mesh and material and shows it at
+/// `transform`.
+pub(crate) fn show_instance_job(
+    instance: Entity,
+    mesh: Entity,
+    material: Entity,
+    transform: Transform,
+) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        let Some((source, _)) = mesh_source(world) else {
+            return;
+        };
+        let Some(scope) = world.scope(source) else {
+            return;
+        };
+        let Some(mesh) = scope
+            .query_one::<&GpuMesh>(mesh)
+            .map(|mesh| (*mesh).clone())
+        else {
+            return;
+        };
+        let Some(material) = scope
+            .query_one::<&GpuMaterial>(material)
+            .map(|material| (*material).clone())
+        else {
+            return;
+        };
+        let _ = scope
+            .query_one::<(
+                &mut GpuMesh,
+                &mut GpuMaterial,
+                &mut Transform,
+                &mut InstanceVisibility,
+            )>(instance)
+            .map(
+                |(
+                    mut instance_mesh,
+                    mut instance_material,
+                    mut instance_transform,
+                    mut visibility,
+                )| {
+                    *instance_mesh = mesh;
+                    *instance_material = material;
+                    instance_transform.clone_from(&transform);
+                    visibility.visible = true;
+                },
+            );
+    })
 }
 
 /// A texture of `size.0` by `size.1` RGBA pixels.

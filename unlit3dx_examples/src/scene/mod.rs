@@ -8,25 +8,26 @@
 //! object is a component carrying what it owns, plus a [`Tick`] that advances
 //! it, so the scene grows by spawning an object and never by editing a tick:
 //!
-//! - [`SceneState`] builds the shape pool and hands its slots out.
+//! - [`SceneState`] builds the scene's assets once; every drop asks the render
+//!   world for an instance of its own.
 //! - [`Floor`] puts the ground under the shapes, in physics and in the render
 //!   world.
-//! - [`Balls`] drops the shapes, maps physics bodies onto pool slots, and
-//!   publishes their poses.
+//! - [`Balls`] drops the shapes, maps physics bodies onto render instances,
+//!   and publishes their poses.
 //! - [`SceneAudio`] installs the synthesizer's voice and starts the music: the
 //!   [`Track`]s it spawns own their clocks here, and each tick sends the audio
 //!   world the messages that came due.
 //! - [`mount_controls`] is the panel. It lives here with the rest, and the
 //!   render world draws it: the panel's egui context runs in this world, which
-//!   lays it out, and the render world's `UiSource` draws whatever the slots it
-//!   publishes into hold.
+//!   lays it out, and the render world's `UiSource` holds and draws every frame
+//!   it is sent.
 //!
 //! The panel is the one object whose drawing happens in another world: it
 //! carries a `UiPanel`, and the `UiPanelHost` spawned beside it holds the
-//! context its interface is built in, laying a frame out each tick and
-//! publishing it into the slots both worlds share. It reads input like any
-//! other object, from this world's own buffer, so the events that move it are
-//! the ones this world's tick dispatched.
+//! context its interface is built in, laying a frame out each tick and sending
+//! it to the render world as a job. It reads input like any other object, from
+//! this world's own buffer, so the events that move it are the ones this
+//! world's tick dispatched.
 
 use std::time::Duration;
 
@@ -45,9 +46,7 @@ use unlit3dx::ui::UiPanelHost;
 use crate::render::{camera_looking_at, mesh_source};
 
 pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_audio_job, install_synth};
-pub use balls::{
-    Balls, PENDING_TIMEOUT_TICKS, SPAWN_HEIGHT, SPAWN_SPREAD, SPAWN_TICKS, scene_frame,
-};
+pub use balls::{Balls, PENDING_TIMEOUT_TICKS, SPAWN_HEIGHT, SPAWN_SPREAD, SPAWN_TICKS};
 pub use floor::{
     Floor, GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
     checker_ground,
@@ -57,7 +56,7 @@ pub use shapes::{
     BALL_COLORS, BALL_RADIUS, PATTERN_SIZE, SHAPE_KINDS, ShapeKind, pattern_texture, shape_body,
     shape_kind, shape_mesh,
 };
-pub use shared::{POOL_SIZE, SceneState, pool_from_instances};
+pub use shared::{SceneAssets, SceneState};
 pub use tick::{TICK_AUDIO, TICK_BALLS, TICK_FLOOR, TICK_SCENE, Tick, tick_behaviour};
 pub use ui::{control_panel_job, mount_controls};
 
@@ -73,12 +72,13 @@ mod ui;
 /// The window opens at this size, in logical pixels.
 pub const WINDOW_SIZE: (u32, u32) = (1024, 720);
 
-/// The render sub-world's command queue depth. The pool's build queues
-/// forty-eight instance requests at once, and the ground adds its own three
-/// beside them, so the capacity keeps every request in flight.
+/// The render sub-world's command queue depth. A frame sends the scene
+/// build, the ground, one creation and one show per drop, one pose job and a
+/// periodic sweep, with the clears adding a batch despawn, so the capacity
+/// keeps every request in flight.
 pub const RENDER_COMMAND_CAPACITY: usize = 64;
 
-/// Where idle pool entities wait, far below everything the camera sees.
+/// Where a hidden instance waits, far below everything the camera sees.
 pub const HIDDEN_POSITION: Vec3 = Vec3::new(0.0, -1000.0, 0.0);
 
 /// The gameplay world's tick rate, in hertz: a little above the physics
@@ -90,10 +90,11 @@ pub const GAME_HZ: f64 = 68.0;
 /// compositor asks, but the headless run steps its frames at this rate.
 pub const RENDER_HZ: f64 = 60.0;
 
-/// The poses gameplay sends the render world every frame: one
-/// [`Transform`] per render entity it owns, a live body at its physics
-/// pose and a free slot parked at [`HIDDEN_POSITION`]. [`pose_job`] turns
-/// one into the job that writes them onto the entities they name.
+/// The poses gameplay sends the render world every frame: one [`Transform`]
+/// per live body, at its physics pose. An instance that is hidden or waiting
+/// for a body is not named: the show job already put it where it belongs.
+/// [`pose_job`] turns one into the job that writes them onto the entities
+/// they name.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScenePoses(pub Vec<(Entity, Transform)>);
 
@@ -647,7 +648,7 @@ pub fn request_drop_in(world: &Scope<'_>) {
     }
 }
 
-/// Ask the shapes to go back in the pool, from inside the gameplay world.
+/// Ask the shapes to go away, from inside the gameplay world.
 ///
 /// The music keeps playing; the panel drives it.
 pub fn request_clear_in(world: &Scope<'_>) {

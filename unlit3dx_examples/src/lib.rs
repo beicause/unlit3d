@@ -13,15 +13,15 @@
 //! through one runner, so the host carries the same entities and components
 //! whether they run on threads of their own or are stepped by the host's
 //! frames. The gameplay world holds the scene's objects: one entity each for
-//! the shape pool, the floor, the shapes and the music, every one of them
+//! the scene's assets, the floor, the shapes and the music, every one of them
 //! ticking itself. The panel is the fifth object, and lives in the gameplay
-//! world with the rest: it lays its frames out there and publishes them, and
-//! the render world draws whatever the slots hold.
+//! world with the rest: it lays its frames out there and sends them to the
+//! render world, which holds and draws them.
 //!
 //! Space drops a body. The render world's control panel drives two music
 //! tracks — a looping background piece and a one-shot MIDI sequence — each
 //! of which pauses, resumes and rewinds on its own, and it drops the next
-//! shape or puts every live shape back in the pool.
+//! shape or puts every live shape away.
 //! Bodies fall, bounce off the ground and each other while the music plays.
 //! The soundfont is embedded at
 //! build time: build.rs reads the FluidR3Mono_GM.sf3 file the repository
@@ -136,9 +136,8 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     // The worlds behind the scene: threads of their own by default,
     // stepped by the frame when the target has none to give them - a
     // browser - or when the run asked for the stepped path.
-    // The control panel lives in the gameplay world and publishes its frames
-    // into these slots; the render world draws whatever is there. Neither asks
-    // the other for anything.
+    // The control panel lives in the gameplay world and sends each frame to
+    // the render world, which draws it. Neither asks the other for anything.
     let panels = PanelSlots::default();
     let worlds = if stepped {
         spawn_scene::<Stepped>(

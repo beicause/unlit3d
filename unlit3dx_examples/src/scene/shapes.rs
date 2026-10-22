@@ -1,4 +1,4 @@
-//! The shapes the pool cycles through: their meshes, colliders and textures.
+//! The shapes the scene cycles through: their meshes, colliders and textures.
 //!
 //! A shape kind decides three things at once — what the render world draws,
 //! what physics simulates, and what pattern the material wears — so the three
@@ -25,7 +25,7 @@ pub const BALL_COLORS: [[u8; 4]; 4] = [
 /// small enough that sixteen of them stay cheap.
 pub const PATTERN_SIZE: u32 = 128;
 
-/// One body shape of the pool: the mesh it draws, the collider physics
+/// One body shape of the scene: the mesh it draws, the collider physics
 /// simulates, and the texture pattern its material wears.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShapeKind {
@@ -39,7 +39,7 @@ pub enum ShapeKind {
     Cone,
 }
 
-/// Every shape the pool cycles through, in spawn order.
+/// Every shape the scene cycles through, in spawn order.
 pub const SHAPE_KINDS: [ShapeKind; 4] = [
     ShapeKind::Ball,
     ShapeKind::Cube,
@@ -47,7 +47,7 @@ pub const SHAPE_KINDS: [ShapeKind; 4] = [
     ShapeKind::Cone,
 ];
 
-/// The shape kind a pool slot of the given index draws.
+/// The shape kind an index draws from the palette.
 pub fn shape_kind(index: usize) -> ShapeKind {
     SHAPE_KINDS[index % SHAPE_KINDS.len()]
 }
@@ -108,7 +108,7 @@ pub fn pattern_texture(kind: ShapeKind, color: [u8; 4]) -> Vec<[u8; 4]> {
 }
 
 /// The mesh one shape kind draws. Every kind is about [`BALL_RADIUS`]
-/// across, so the pool shares one visual weight.
+/// across, so every shape shares one visual weight.
 #[must_use]
 pub fn shape_mesh(kind: ShapeKind) -> OwnedUnlitMeshDesc {
     match kind {
