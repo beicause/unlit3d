@@ -1084,6 +1084,13 @@ fn build(
         },
         (),
     );
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "a wgpu handle is not `Send` on wasm32; one `Arc` type everywhere is simpler, and on wasm32 it costs nothing over `Rc`"
+        )
+    )]
     let sky_pipeline = GpuRenderPipeline::new(SkyKey {
         descriptor: Arc::new(sky_pipeline(&device, &sky_layout)),
     });
@@ -1112,6 +1119,13 @@ fn build(
         ParticleFactory,
         ParticleInstances,
     );
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "a wgpu handle is not `Send` on wasm32; one `Arc` type everywhere is simpler, and on wasm32 it costs nothing over `Rc`"
+        )
+    )]
     let particle_pipeline = GpuRenderPipeline::new(ParticleKey {
         descriptor: Arc::new(particle_pipeline(&device, &particle_layout)),
     });

@@ -108,6 +108,13 @@ struct CustomPipelineKey {
 }
 
 impl CustomPipelineKey {
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "a wgpu handle is not `Send` on wasm32; one `Arc` type everywhere is simpler, and on wasm32 it costs nothing over `Rc`"
+        )
+    )]
     fn new(descriptor: RenderPipelineDesc) -> Self {
         Self {
             descriptor: std::sync::Arc::new(descriptor),
