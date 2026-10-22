@@ -102,8 +102,8 @@ it is paced differs.
   poses its bodies carry are jobs too, drained before anything draws. The
   world's own setup is
   only the resource graph, the renderer and the mesh source. The server
-  itself — `create_mesh`, `create_material_from_texture`, `spawn_instance`
-  and the mesh and camera helpers — is this crate's own `src/render.rs`,
+  itself — the mesh, material and instance allocations, the sweep that
+  retires what the camera cannot see, and the camera helpers — is this crate's own
   built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
   render bridge.
 - The **physics world** steps rapier at 64 Hz and drains its contacts each
@@ -139,6 +139,11 @@ it is paced differs.
     with a clock, the voice it plays into, and the sender that voice takes
     messages through. The background loop starts playing at once; the demo
     sequence waits, paused, for the panel.
+
+  Each object reaches the others' worlds through one `Scene` value: the
+  render, physics and audio senders and the physics snapshot, handed to
+  every tick. An object that never talks to the audio world keeps no
+  sender for it.
 
   The world ticks at a fixed 68 Hz, independent of the frame rate.
 

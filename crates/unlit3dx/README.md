@@ -133,6 +133,15 @@ choice:
 reader it returns never goes stale twice, and a world that refuses the job
 leaves it empty.
 
+Which one to reach for follows from the answer the caller needs:
+
+- A value that is only ever *the newest* — the camera's pose, the playhead's
+  position, the target a panel drew into — is `watch`.
+- Every value, in order — a body that spawned, an instance the renderer
+  retired, a note that ended — is `subscribe`.
+- One value, once, from one job — the entity an install created, the assets
+  a build made — is `ask`.
+
 The payload is the caller's type — the library defines none — so a scene
 collects exactly the data it wants and pays for nothing else.
 
@@ -345,6 +354,15 @@ headless, because no mode ever reaches into another world's data.
 
 The test is whether a line of setup could belong to another scene: if it
 names something the game calls a thing, it belongs in a job.
+3. **A scene holds one port per world it talks to.** A world's address is a
+   `JobSender` and the subscriptions it made, so the scene keeps those in one
+   value of its own — the demo's `Scene` carries the render, physics and audio
+   senders and the physics snapshot — and passes it to whatever needs to reach
+   a world: a tick body, a spawn function, a control panel. What would
+   otherwise be a field per channel on every object is one argument, and an
+   object that never sends to the audio world never holds a sender for it.
+   The port stays in the caller's crate: the runtime has no scene to describe,
+   and a bridge of the caller's own gets the same treatment.
 
 ## The application skeleton
 
