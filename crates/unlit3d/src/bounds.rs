@@ -35,24 +35,6 @@ impl Aabb {
         }
     }
 
-    /// The box spanning `min` to `max`, inclusive.
-    pub fn from_min_max(min: Vec3, max: Vec3) -> Self {
-        Self {
-            center: (min + max) * 0.5,
-            half_extents: (max - min) * 0.5,
-        }
-    }
-
-    /// The corner with the smallest coordinate on every axis.
-    pub fn min(&self) -> Vec3 {
-        self.center - self.half_extents
-    }
-
-    /// The corner with the largest coordinate on every axis.
-    pub fn max(&self) -> Vec3 {
-        self.center + self.half_extents
-    }
-
     /// Place this box in world space with `world_from_local`.
     ///
     /// A non-uniform scale makes the result an oriented box: each local axis
@@ -94,13 +76,6 @@ pub struct Obb {
     /// local axis. Not unit length: its length is the half-extent along that
     /// axis, and it is zero for a degenerate axis.
     pub extents: [Vec3; 3],
-}
-
-impl Obb {
-    /// Place `aabb` in world space with `world_from_local`.
-    pub fn from_aabb(aabb: Aabb, world_from_local: &Affine3A) -> Self {
-        aabb.transformed(world_from_local)
-    }
 }
 
 /// Six frustum planes derived from a clip-space matrix.
@@ -165,15 +140,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn from_min_max_round_trips() {
-        let aabb = Aabb::from_min_max(Vec3::new(-1.0, -2.0, -3.0), Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(aabb.center, Vec3::ZERO);
-        assert_eq!(aabb.half_extents, Vec3::new(1.0, 2.0, 3.0));
-        assert_eq!(aabb.min(), Vec3::new(-1.0, -2.0, -3.0));
-        assert_eq!(aabb.max(), Vec3::new(1.0, 2.0, 3.0));
-    }
-
-    #[test]
     fn translation_moves_the_obb_center_only() {
         let aabb = Aabb::new(Vec3::ZERO, Vec3::splat(1.0));
         let obb = aabb.transformed(&Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0)));
@@ -214,7 +180,7 @@ mod tests {
 
     /// An axis-aligned unit box at the origin.
     fn unit_obb() -> Obb {
-        Obb::from_aabb(Aabb::new(Vec3::ZERO, Vec3::splat(0.5)), &Affine3A::IDENTITY)
+        Aabb::new(Vec3::ZERO, Vec3::splat(0.5)).transformed(&Affine3A::IDENTITY)
     }
 
     fn test_perspective() -> glam::Mat4 {
@@ -235,10 +201,7 @@ mod tests {
         let planes = FrustumPlanes::from_clip_from_world(clip_from_world);
         assert!(planes.test_obb(&unit_obb()));
         let far = |z| {
-            Obb::from_aabb(
-                Aabb::new(Vec3::new(0.0, 0.0, z), Vec3::splat(0.5)),
-                &Affine3A::IDENTITY,
-            )
+            Aabb::new(Vec3::new(0.0, 0.0, z), Vec3::splat(0.5)).transformed(&Affine3A::IDENTITY)
         };
         assert!(!planes.test_obb(&far(20.0)));
     }
@@ -249,10 +212,8 @@ mod tests {
             glam::camera::rh::view::look_at_mat4(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, Vec3::Y);
         let clip_from_world = test_perspective() * view;
         let planes = FrustumPlanes::from_clip_from_world(clip_from_world);
-        let left = Obb::from_aabb(
-            Aabb::new(Vec3::new(-10.0, 0.0, 0.0), Vec3::splat(0.1)),
-            &Affine3A::IDENTITY,
-        );
+        let left = Aabb::new(Vec3::new(-10.0, 0.0, 0.0), Vec3::splat(0.1))
+            .transformed(&Affine3A::IDENTITY);
         assert!(!planes.test_obb(&left));
     }
 }

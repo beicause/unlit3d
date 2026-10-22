@@ -59,8 +59,7 @@
 //! use unlit_wgpu::offset_allocator::{Allocator, min_allocator_size};
 //! use core::num::NonZeroU32;
 //!
-//! let alignment = NonZeroU32::new(4).unwrap();
-//! let mut allocator = Allocator::with_alignment(min_allocator_size(1000, alignment), alignment);
+//! let mut allocator = Allocator::new(min_allocator_size(1000, NonZeroU32::MIN));
 //! assert!(allocator.allocate(1000).is_some());
 //! ```
 
@@ -86,7 +85,7 @@ const LEAF_BINS_INDEX_MASK: u32 = 7;
 ///
 /// This matches the default of the original C++ `OffsetAllocator`; it costs
 /// roughly 3.5 MB of metadata, so an allocator that knows it holds fewer
-/// ranges should use [`Allocator::with_max_nodes`].
+/// ranges should use [`Allocator::with_max_nodes_and_alignment`].
 const DEFAULT_MAX_NODES: u32 = 128 * 1024;
 
 /// The smallest allocator size that can hold an allocation of `size` units at
@@ -214,12 +213,14 @@ impl NodeIndex {
     ///
     /// # Panics
     ///
-    /// Panics if `index` is `u32::MAX`, which [`Allocator::with_max_nodes`]
+    /// Panics if `index` is `u32::MAX`, which [`Allocator::with_max_nodes_and_alignment`]
     /// rules out.
     fn new(index: u32) -> Self {
         match NonZeroU32::new(index + 1) {
             Some(index) => Self(index),
-            None => unreachable!("node indices are bounded by `Allocator::with_max_nodes`"),
+            None => unreachable!(
+                "node indices are bounded by `Allocator::with_max_nodes_and_alignment`"
+            ),
         }
     }
 
@@ -239,23 +240,7 @@ impl Allocator {
     /// Creates an allocator over `size` units, with unit alignment and the
     /// default node limit.
     pub fn new(size: u32) -> Self {
-        Self::with_max_nodes(size, DEFAULT_MAX_NODES)
-    }
-
-    /// Creates an allocator over `size` units where every allocation starts at
-    /// a multiple of `alignment`, with the default node limit.
-    pub fn with_alignment(size: u32, alignment: NonZeroU32) -> Self {
-        Self::with_max_nodes_and_alignment(size, DEFAULT_MAX_NODES, alignment)
-    }
-
-    /// Creates an allocator over `size` units with unit alignment, tracking at
-    /// most `max_nodes` ranges.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `max_nodes` is zero or leaves no room for the node index bias.
-    pub fn with_max_nodes(size: u32, max_nodes: u32) -> Self {
-        Self::with_max_nodes_and_alignment(size, max_nodes, NonZeroU32::MIN)
+        Self::with_max_nodes_and_alignment(size, DEFAULT_MAX_NODES, NonZeroU32::MIN)
     }
 
     /// Creates an allocator over `size` units where every allocation starts at
@@ -1126,7 +1111,8 @@ mod tests {
 
     #[test]
     fn aligned_allocations_are_contiguous_and_aligned() {
-        let mut allocator = Allocator::with_alignment(1 << 20, COPY_ALIGNMENT);
+        let mut allocator =
+            Allocator::with_max_nodes_and_alignment(1 << 20, DEFAULT_MAX_NODES, COPY_ALIGNMENT);
 
         // Three units round up to four, so the second allocation starts right
         // after the padded first one, without a gap.
@@ -1168,7 +1154,11 @@ mod tests {
 
         for needed_object_size in TEST_OBJECT_SIZES {
             let allocator_size = min_allocator_size(needed_object_size, COPY_ALIGNMENT);
-            let mut allocator = Allocator::with_alignment(allocator_size, COPY_ALIGNMENT);
+            let mut allocator = Allocator::with_max_nodes_and_alignment(
+                allocator_size,
+                DEFAULT_MAX_NODES,
+                COPY_ALIGNMENT,
+            );
             let allocation = allocator.allocate(needed_object_size).unwrap_or_else(|| {
                 panic!("{needed_object_size} units must fit in {allocator_size}")
             });
@@ -1182,7 +1172,7 @@ mod tests {
         // Two nodes hold one one-unit allocation plus the free range left over.
         // (The port treated a free list with one node left as exhausted, which
         // wasted it.)
-        let mut allocator = Allocator::with_max_nodes(2, 2);
+        let mut allocator = Allocator::with_max_nodes_and_alignment(2, 2, NonZeroU32::MIN);
         let allocation = allocator.allocate(1).unwrap();
         assert_eq!(allocation.offset, 0);
         assert!(allocator.allocate(1).is_none());
@@ -1263,7 +1253,8 @@ mod tests {
 
     #[test]
     fn extend_keeps_existing_offsets_and_appends_at_the_end() {
-        let mut allocator = Allocator::with_alignment(1024, COPY_ALIGNMENT);
+        let mut allocator =
+            Allocator::with_max_nodes_and_alignment(1024, DEFAULT_MAX_NODES, COPY_ALIGNMENT);
         assert_eq!(allocator.size(), 1024);
 
         // Fill the chunk exactly, so the only way to satisfy the allocation
@@ -1300,7 +1291,8 @@ mod tests {
 
     #[test]
     fn extend_merges_into_a_free_tail() {
-        let mut allocator = Allocator::with_alignment(1024, COPY_ALIGNMENT);
+        let mut allocator =
+            Allocator::with_max_nodes_and_alignment(1024, DEFAULT_MAX_NODES, COPY_ALIGNMENT);
 
         // Leave the end of the chunk free, then grow it: the appended space is
         // contiguous with that free tail, so the two must end up as one range
@@ -1323,7 +1315,7 @@ mod tests {
 
     #[test]
     fn extend_appends_after_an_allocated_tail() {
-        let mut allocator = Allocator::with_max_nodes(2, 3);
+        let mut allocator = Allocator::with_max_nodes_and_alignment(2, 3, NonZeroU32::MIN);
 
         // The chunk ends in an allocation, so the appended space becomes a new
         // free range.

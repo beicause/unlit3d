@@ -48,8 +48,8 @@ impl<T> From<async_channel::TrySendError<T>> for SendError {
 /// A cloneable handle to a world's command queue.
 ///
 /// This is the sender half a [`WorldHandle`](crate::handle::WorldHandle)
-/// hands out. Sends never block: a full or stopped queue reports
-/// [`SendError`] and the job is dropped.
+/// carries in its `commands` field. Sends never block: a full or stopped
+/// queue reports [`SendError`] and the job is dropped.
 #[derive(Clone)]
 pub struct JobSender {
     commands: async_channel::Sender<Job<()>>,
@@ -65,18 +65,6 @@ impl JobSender {
     /// Queue a job. Never blocks.
     pub fn send(&self, job: Job<()>) -> Result<(), SendError> {
         self.commands.try_send(job).map_err(SendError::from)
-    }
-
-    /// Whether the world's queue is empty right now.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.commands.is_empty()
-    }
-
-    /// Whether the world has stopped.
-    #[must_use]
-    pub fn is_closed(&self) -> bool {
-        self.commands.is_closed()
     }
 }
 

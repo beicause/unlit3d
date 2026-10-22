@@ -170,16 +170,6 @@ impl ViewportRect {
     }
 }
 
-/// The largest viewport a target can hold: the whole of it.
-///
-/// A scene that states none is left with whatever the pass holds, and the
-/// frame driver in `unlit3d` sets this before such a scene records, so the
-/// default a scene comes out to is the whole target.
-#[must_use]
-pub fn full_viewport(width: u32, height: u32) -> ViewportRect {
-    ViewportRect::new(width as f32, height as f32)
-}
-
 /// What to draw for one mesh.
 #[derive(Clone, Debug)]
 pub enum DrawRange {
@@ -343,26 +333,9 @@ impl DrawEntry {
         self
     }
 
-    /// Test against stencil reference `reference`.
-    pub fn with_stencil_reference(mut self, reference: u32) -> Self {
-        self.stencil_reference = reference;
-        self
-    }
-
     /// Bind `buffer` as the index buffer, reading all of it.
     pub fn with_index_buffer(mut self, buffer: &wgpu::Buffer, format: wgpu::IndexFormat) -> Self {
         self.index_buffer = Some((buffer.clone(), 0..buffer.size(), format));
-        self
-    }
-
-    /// Bind `range` of `buffer` as the index buffer.
-    pub fn with_index_buffer_range(
-        mut self,
-        buffer: &wgpu::Buffer,
-        range: Range<u64>,
-        format: wgpu::IndexFormat,
-    ) -> Self {
-        self.index_buffer = Some((buffer.clone(), range, format));
         self
     }
 }
@@ -386,8 +359,8 @@ pub struct Scene {
     ///
     /// Whole-scene state rather than per-draw: wgpu's viewport has no reset
     /// call, so a scene that letterboxes itself states one here and a scene
-    /// that draws full-target states none — see [`Scene::viewport`].
-    viewport: Option<ViewportRect>,
+    /// that draws full-target states none.
+    pub viewport: Option<ViewportRect>,
 }
 
 impl Scene {
@@ -396,98 +369,25 @@ impl Scene {
         Self::default()
     }
 
-    /// Append `draw` to this scene.
-    pub fn push(&mut self, draw: DrawEntry) {
-        self.draws.push(draw);
-    }
-
-    /// Append `draw` to this scene and return it.
-    pub fn with_draw(mut self, draw: DrawEntry) -> Self {
-        self.draws.push(draw);
-        self
-    }
-
-    /// The region of the target this scene is recorded into, or `None` to leave
-    /// the pass's own viewport alone.
-    ///
-    /// Recording a scene with no viewport of its own leaves the pass's viewport
-    /// exactly as it was, which is *not* the same as "cover the whole target":
-    /// wgpu has no call that resets a viewport, so a region an earlier scene
-    /// set stays set for every scene after it. [`Renderer`] therefore sets the
-    /// whole target before recording a scene that states none, so one scene's
-    /// letterbox never crops the next one's draws.
-    ///
-    /// [`Renderer`]: https://docs.rs/unlit3d
-    pub fn viewport(&self) -> Option<ViewportRect> {
-        self.viewport
-    }
-
-    /// Record every draw into `viewport` instead of the pass's own region.
-    pub fn set_viewport(&mut self, viewport: Option<ViewportRect>) {
-        self.viewport = viewport;
-    }
-
-    /// Same scene, recorded into `viewport`.
-    #[must_use]
-    pub fn with_viewport(mut self, viewport: ViewportRect) -> Self {
-        self.viewport = Some(viewport);
-        self
-    }
-
-    /// Drop every draw, keeping the allocation for the next frame.
-    pub fn clear(&mut self) {
-        self.draws.clear();
-    }
-
-    /// Move every draw of `other` onto the end of this scene.
-    ///
-    /// `other` is left empty but keeps its own allocation.
-    pub fn extend(&mut self, other: &mut Scene) {
-        self.draws.append(&mut other.draws);
-    }
-
-    /// Whether the scene draws nothing.
-    pub fn is_empty(&self) -> bool {
-        self.draws.is_empty()
-    }
-
-    /// Record the scene into `pass`, skipping any `set_*` call whose target is
-    /// already bound from the previous draw.
-    ///
-    /// The pass state the recording tracks — the scissor rectangle, the
-    /// stencil reference and the scene's own viewport — starts from the pass's
-    /// defaults and ends with this scene, so recording a second scene into the
-    /// same pass does not inherit the first one's clips. A scene that states no
-    /// viewport leaves the pass's region exactly as it is; a caller that needs
-    /// a region for it uses [`Scene::record_with_viewport`].
-    pub fn record(&self, pass: &mut wgpu::RenderPass<'_>) {
-        self.record_in(pass, None);
-    }
-
-    /// Record the scene into `pass` as [`Scene::record`] does, drawing into
-    /// `fallback` when the scene states no viewport of its own.
-    ///
-    /// A caller recording several scenes into one pass needs this: wgpu has no
-    /// call that resets a viewport, so a scene that states none would otherwise
-    /// inherit the region the previous scene set. Passing the whole target as
-    /// the fallback gives each scene that does not letterbox the full target
-    /// back — which is what `unlit3d`'s frame driver does.
-    pub fn record_with_viewport(&self, pass: &mut wgpu::RenderPass<'_>, fallback: ViewportRect) {
-        self.record_in(pass, Some(fallback));
-    }
-
     /// The region the scene records into when `fallback` may stand in for the
     /// viewport the scene itself states.
     ///
-    /// Split out from [`Scene::record_in`] so the choice is testable without a
+    /// Split out from [`Scene::record`] so the choice is testable without a
     /// render pass: the recording needs a real one, and which region a scene
     /// ends up with is the rule that matters.
     fn resolved_viewport(&self, fallback: Option<ViewportRect>) -> Option<ViewportRect> {
         self.viewport.or(fallback)
     }
 
-    /// The shared body of [`Scene::record`] and [`Scene::record_with_viewport`].
-    fn record_in(&self, pass: &mut wgpu::RenderPass<'_>, fallback: Option<ViewportRect>) {
+    /// Record the scene into `pass`, drawing into `fallback` when the scene
+    /// states no viewport of its own.
+    ///
+    /// wgpu has no call that resets a viewport, so a caller recording several
+    /// scenes into one pass has to pass the whole target as `fallback`: a scene
+    /// that states none would otherwise inherit the region the previous scene
+    /// set. `None` leaves the pass's region exactly as it is, for a caller that
+    /// set one itself.
+    pub fn record(&self, pass: &mut wgpu::RenderPass<'_>, fallback: Option<ViewportRect>) {
         let mut state = PassState::default();
         if let Some(viewport) = self.resolved_viewport(fallback) {
             state.set_viewport(pass, viewport);
@@ -848,9 +748,6 @@ fn fs_main() -> @location(0) vec4<f32> {
                 max_depth: 1.0,
             }
         );
-        // The whole target, which is what the driver sets before a scene that
-        // states no viewport of its own.
-        assert_eq!(full_viewport(320, 240), ViewportRect::new(320.0, 240.0));
         assert_eq!(
             rect.with_depth(0.5, 1.0).min_depth,
             0.5,
@@ -910,13 +807,16 @@ fn fs_main() -> @location(0) vec4<f32> {
     #[test]
     fn a_scene_records_only_the_viewport_it_states() {
         let own = ViewportRect::new(320.0, 180.0).at(0.0, 20.0);
-        let scene = Scene::new().with_viewport(own);
-        assert_eq!(scene.viewport(), Some(own));
+        let scene = Scene {
+            viewport: Some(own),
+            ..Scene::default()
+        };
+        assert_eq!(scene.viewport, Some(own));
 
         // A scene that never states one issues no viewport call of its own: the
         // pass keeps whatever region it holds.
         let plain = Scene::new();
-        assert_eq!(plain.viewport(), None);
+        assert_eq!(plain.viewport, None);
         assert_eq!(plain.resolved_viewport(None), None);
     }
 
@@ -933,7 +833,10 @@ fn fs_main() -> @location(0) vec4<f32> {
 
         // The scene's own region wins over the fallback rather than the two
         // being combined.
-        let letterboxed = Scene::new().with_viewport(own);
+        let letterboxed = Scene {
+            viewport: Some(own),
+            ..Scene::default()
+        };
         assert_eq!(letterboxed.resolved_viewport(Some(whole)), Some(own));
 
         // With no fallback either, there is nothing to set.
@@ -987,9 +890,9 @@ fn fs_main() -> @location(0) vec4<f32> {
     fn stencil_reference_builder_composes() {
         let (device, _queue) = crate::util::test::noop_device();
         let pipeline = noop_pipeline(&device);
-        let draw = DrawEntry::new(&pipeline, DrawRange::indexed(0..6))
-            .with_stencil_reference(3)
+        let mut draw = DrawEntry::new(&pipeline, DrawRange::indexed(0..6))
             .with_scissor(ScissorRect::new(8, 8));
+        draw.stencil_reference = 3;
         assert_eq!(draw.stencil_reference, 3);
         assert_eq!(draw.scissor, Some(ScissorRect::new(8, 8)));
 
@@ -1146,67 +1049,6 @@ fn fs_main() -> @location(0) vec4<f32> {
                 wgpu::IndexFormat::Uint16,
                 wgpu::IndexFormat::Uint32
             ]
-        );
-    }
-
-    #[test]
-    fn empty_scene_reports_empty() {
-        let scene = Scene::new();
-        assert!(scene.is_empty());
-    }
-
-    /// Clearing a scene keeps its allocation, so a steady scene rebuilt each
-    /// frame does not allocate.
-    #[test]
-    fn clearing_a_scene_keeps_the_allocation() {
-        let (device, _queue) = crate::util::test::noop_device();
-        let pipeline = noop_pipeline(&device);
-
-        let mut scene = Scene::new();
-        scene.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..3)));
-        scene.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..6)));
-        let ptr = scene.draws.as_ptr();
-        let cap = scene.draws.capacity();
-
-        scene.clear();
-        assert!(scene.is_empty());
-        assert_eq!(scene.draws.as_ptr(), ptr);
-        assert_eq!(scene.draws.capacity(), cap);
-
-        scene.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..9)));
-        assert_eq!(scene.draws.as_ptr(), ptr, "the allocation was reused");
-    }
-
-    /// Extending one scene with another moves the draws across and leaves the
-    /// source empty but still holding its own allocation.
-    ///
-    /// The target reserves room up front so appending does not have to grow it;
-    /// what the test pins is that the draws move and that the source's
-    /// allocation survives to be refilled next frame.
-    #[test]
-    fn extending_moves_the_draws_and_keeps_both_allocations() {
-        let (device, _queue) = crate::util::test::noop_device();
-        let pipeline = noop_pipeline(&device);
-
-        let mut into = Scene::new();
-        into.draws.reserve_exact(3);
-        into.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..3)));
-        let into_ptr = into.draws.as_ptr();
-
-        let mut from = Scene::new();
-        from.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..6)));
-        from.push(DrawEntry::new(&pipeline, DrawRange::vertices(0..9)));
-        let from_cap = from.draws.capacity();
-
-        into.extend(&mut from);
-
-        assert_eq!(into.draws.len(), 3, "the source's draws moved across");
-        assert_eq!(into.draws.as_ptr(), into_ptr, "the target kept its own");
-        assert!(from.is_empty(), "the source was emptied");
-        assert_eq!(
-            from.draws.capacity(),
-            from_cap,
-            "the source kept its allocation for the next frame"
         );
     }
 

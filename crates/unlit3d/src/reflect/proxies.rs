@@ -272,7 +272,7 @@ impl From<&InputEvents> for InputEventsProxy {
             touches: state.touches.clone(),
         });
         Self {
-            events: events.to_vec(),
+            events: events.with_batch(|batch| batch.to_vec()),
             ..state
         }
     }

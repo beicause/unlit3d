@@ -210,7 +210,10 @@ where
                 continue;
             };
             let (sort_key, material_bg) = match &material {
-                Some(material) => (material.sort_key(), Some(material.bind_group_id.clone())),
+                Some(material) => (
+                    material.bind_group_id.index() as u64,
+                    Some(material.bind_group_id.clone()),
+                ),
                 None => (0, None),
             };
             self.push(
@@ -656,7 +659,7 @@ pub(crate) fn assemble_scene(
             draw = draw.with_vertex_buffer(*slot, buffer);
         }
 
-        scene.push(draw);
+        scene.draws.push(draw);
         start = end;
     }
 }

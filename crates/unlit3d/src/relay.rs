@@ -291,17 +291,6 @@ impl<T> StreamReader<T> {
     {
         self.with_batch(|batch| out.extend_from_slice(batch));
     }
-
-    /// This tick's values, as its own list.
-    #[must_use]
-    pub fn to_vec(&self) -> Vec<T>
-    where
-        T: Clone,
-    {
-        let mut values = Vec::new();
-        self.copy_into(&mut values);
-        values
-    }
 }
 
 impl<T> Clone for StreamReader<T> {
@@ -363,8 +352,8 @@ mod tests {
         assert!(stream.push(2));
         one.pump();
         other.pump();
-        assert_eq!(one.to_vec(), vec![1, 2]);
-        assert_eq!(other.to_vec(), vec![1, 2]);
+        assert_eq!(one.with_batch(|batch| batch.to_vec()), vec![1, 2]);
+        assert_eq!(other.with_batch(|batch| batch.to_vec()), vec![1, 2]);
     }
 
     #[test]
@@ -375,7 +364,7 @@ mod tests {
         reader.pump();
         stream.push(2);
         reader.pump();
-        assert_eq!(reader.to_vec(), vec![2]);
+        assert_eq!(reader.with_batch(|batch| batch.to_vec()), vec![2]);
     }
 
     #[test]
@@ -395,7 +384,7 @@ mod tests {
         let clone = reader.clone();
         stream.push(1);
         reader.pump();
-        assert_eq!(clone.to_vec(), vec![1]);
+        assert_eq!(clone.with_batch(|batch| batch.to_vec()), vec![1]);
         drop(reader);
         assert!(stream.has_readers());
     }

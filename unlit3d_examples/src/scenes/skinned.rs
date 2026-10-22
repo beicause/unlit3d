@@ -87,7 +87,7 @@ fn build(
             InstanceColor::new(glam::Vec4::new(1.0, 0.85, 0.6, 1.0)),
             mesh,
             UnlitPipeline::new(key),
-            SkinBinding::new(pose_entity),
+            SkinBinding { pose: pose_entity },
         ],
     );
 

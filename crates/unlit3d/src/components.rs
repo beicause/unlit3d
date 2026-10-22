@@ -91,12 +91,6 @@ impl Camera {
         self.clip_from_view * self.view_from_world
     }
 
-    /// The inverse view matrix (view to world).
-    #[must_use]
-    pub fn world_from_view(&self) -> glam::Mat4 {
-        self.view_from_world.inverse()
-    }
-
     /// The world-space eye position.
     ///
     /// The eye is the translation of the view-to-world matrix, so it is
@@ -104,7 +98,7 @@ impl Camera {
     /// source of truth for something the view matrix already says.
     #[must_use]
     pub fn position(&self) -> glam::Vec3 {
-        self.world_from_view().col(3).truncate()
+        self.view_from_world.inverse().col(3).truncate()
     }
 
     /// The depth of a world-space point along this camera's view axis.
@@ -370,15 +364,6 @@ pub struct SkinPose {
     pub matrices: Vec<JointMatrix>,
 }
 
-impl SkinPose {
-    /// A pose of `matrices`, one per joint.
-    pub fn new(matrices: impl Into<Vec<JointMatrix>>) -> Self {
-        Self {
-            matrices: matrices.into(),
-        }
-    }
-}
-
 /// The morph-target weights one pose blends with, as animating code updates
 /// them.
 ///
@@ -398,15 +383,6 @@ pub struct MorphWeights {
     pub weights: Vec<f32>,
 }
 
-impl MorphWeights {
-    /// A pose blending `weights`, one per target.
-    pub fn new(weights: impl Into<Vec<f32>>) -> Self {
-        Self {
-            weights: weights.into(),
-        }
-    }
-}
-
 /// Names the [`SkinPose`] entity a mesh is drawn with.
 ///
 /// Put this on the mesh's own entity, alongside its [`GpuMesh`] and
@@ -424,13 +400,6 @@ pub struct SkinBinding {
     pub pose: Entity,
 }
 
-impl SkinBinding {
-    /// Bind a mesh to the pose on `pose`.
-    pub const fn new(pose: Entity) -> Self {
-        Self { pose }
-    }
-}
-
 /// Names the [`MorphWeights`] entity a mesh is drawn with.
 ///
 /// The counterpart of [`SkinBinding`] for morph targets: the weights live on
@@ -443,13 +412,6 @@ pub struct MorphBinding {
     /// The entity carrying the [`MorphWeights`] this mesh is drawn with.
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = unlit_ecs::EntityProxy))]
     pub weights: Entity,
-}
-
-impl MorphBinding {
-    /// Bind a mesh to the weights on `weights`.
-    pub const fn new(weights: Entity) -> Self {
-        Self { weights }
-    }
 }
 
 /// The per-entity request for one family's variant.
@@ -507,17 +469,6 @@ pub struct GpuMaterial {
     ///
     /// [`MATERIAL_GROUP`]: unlit_wgpu::pipeline::MATERIAL_GROUP
     pub bind_group_id: ResHandle<wgpu::BindGroup>,
-}
-
-impl GpuMaterial {
-    /// A stable key that groups draws sharing this material.
-    ///
-    /// The renderer sorts by it so consecutive draws bind the same material
-    /// bind group. Equal keys mean the same material, so [`Ord`] on the
-    /// underlying graph index is all the ordering the sort needs.
-    pub fn sort_key(&self) -> u64 {
-        self.bind_group_id.index() as u64
-    }
 }
 
 /// Marker for entities whose draw order decides how they look.

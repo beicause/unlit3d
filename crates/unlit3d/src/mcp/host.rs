@@ -209,7 +209,11 @@ pub fn resource_dependencies(
     let handle = graph
         .resolve(id)
         .ok_or_else(|| format!("stale resource id {}", id.to_bits()))?;
-    to_value(&graph.dependency_ids(&handle))
+    let ids = graph
+        .dependencies(&handle)
+        .map(|dependency| dependency.id())
+        .collect::<Vec<_>>();
+    to_value(&ids)
 }
 
 /// Drop unreferenced resources and rebuild dirty ones.

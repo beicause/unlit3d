@@ -76,10 +76,10 @@ pub struct FrameAttachments {
     sample_count: u32,
     /// The depth-stencil view, in the frame's graph; `None` when the frame
     /// carries no depth attachment.
-    depth_view: Option<ResHandle<TextureView>>,
+    pub depth_view: Option<ResHandle<TextureView>>,
     /// The multisample view, in the frame's graph; `None` when the frame is
     /// not multisampled.
-    msaa_view: Option<ResHandle<TextureView>>,
+    pub msaa_view: Option<ResHandle<TextureView>>,
 }
 
 impl FrameAttachments {
@@ -121,23 +121,6 @@ impl FrameAttachments {
             depth_view,
             msaa_view,
         }
-    }
-
-    /// The size the attachments are allocated at, in physical pixels.
-    pub fn size(&self) -> (u32, u32) {
-        self.size
-    }
-
-    /// The depth-stencil view, in the frame's graph, or `None` when the frame
-    /// carries no depth attachment.
-    pub fn depth_view(&self) -> Option<&ResHandle<TextureView>> {
-        self.depth_view.as_ref()
-    }
-
-    /// The multisample view, in the frame's graph, or `None` when the frame is
-    /// not multisampled.
-    pub fn msaa_view(&self) -> Option<&ResHandle<TextureView>> {
-        self.msaa_view.as_ref()
     }
 
     /// Rebuild the attachments for a new target size.

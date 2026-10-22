@@ -107,14 +107,14 @@ pub fn run(
         &input,
     );
     let (renderer, pass) =
-        setup_render_world(&mut host, render.entity(), device, queue, capabilities);
+        setup_render_world(&mut host, render.entity, device, queue, capabilities);
     // No control panel headless: nothing is there to click. The camera is
     // still the scene's, so it arrives as a job like the meshes do.
     mount_scene_content(&render, pass, None);
     let offscreen = {
         let nested = host
             .root_scope()
-            .query_one::<&mut World>(render.entity())
+            .query_one::<&mut World>(render.entity)
             .expect("the render sub-world exists");
         let context = nested
             .root_scope()
@@ -156,7 +156,7 @@ pub fn run(
         if frames > 0 {
             samples_out.clear();
             samples_out.resize(frames * AUDIO_CHANNELS, 0.0);
-            let filled = with_stepped_world(&host, worlds.audio.entity(), |audio| {
+            let filled = with_stepped_world(&host, worlds.audio.entity, |audio| {
                 dispatch_audio_fill(
                     audio,
                     &mut samples_out,
@@ -175,7 +175,7 @@ pub fn run(
         // to the picture alone.
         let mut nested = host
             .root_scope()
-            .query_one::<&mut World>(render.entity())
+            .query_one::<&mut World>(render.entity)
             .expect("the render sub-world exists");
         drain_sub_world(&mut nested);
         if !config.capture.is_empty() {

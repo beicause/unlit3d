@@ -21,6 +21,7 @@
 //! [`Scene`]: unlit_wgpu::scene::Scene
 
 use core::any::Any;
+use core::ops::DerefMut;
 
 use unlit_ecs::bundle;
 use unlit_ecs::{Entity, Scope, World};
@@ -96,6 +97,21 @@ pub struct RenderContext {
 }
 
 impl RenderContext {
+    /// The frame's [`ResourceGraph`], borrowed from `scope`.
+    ///
+    /// A source builds the frame's resources through it: the graph is a
+    /// component like any other, so this is the query every build makes
+    /// before it starts.
+    ///
+    /// # Panics
+    ///
+    /// If the context's graph resource is gone.
+    pub fn graph<'w>(self, scope: &'w Scope<'w>) -> impl DerefMut<Target = ResourceGraph> + 'w {
+        scope
+            .query_one::<&mut ResourceGraph>(self.graph)
+            .expect("the context's resource graph exists")
+    }
+
     /// Maintain the frame's [`ResourceGraph`] when the returned scope drops.
     ///
     /// Call this at the top of [`FrameSource::build_scene`] and drop the scope

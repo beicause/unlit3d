@@ -36,7 +36,6 @@
 //! cannot borrow the 3D camera's. The source therefore owns a camera and a
 //! frame-globals buffer of its own, plus the bind group binding them.
 
-use core::ops::DerefMut;
 use core::time::Duration;
 
 use unlit_ecs::{Entity, Scope, World};
@@ -233,25 +232,6 @@ impl UiSource {
         &mut self.ctx
     }
 
-    /// The resource graph `ctx` addresses in `world`.
-    ///
-    /// An associated function rather than a method, matching
-    /// [`MeshSource::graph`](crate::mesh_source::MeshSource::graph), so the borrow it takes
-    /// is visibly disjoint from the `&mut self` fields a caller splits
-    /// alongside it.
-    ///
-    /// # Panics
-    ///
-    /// If the context's graph resource is gone.
-    fn graph<'w>(
-        scope: &'w Scope<'w>,
-        ctx: RenderContext,
-    ) -> impl DerefMut<Target = ResourceGraph> + 'w {
-        scope
-            .query_one::<&mut ResourceGraph>(ctx.graph)
-            .expect("the context's resource graph exists")
-    }
-
     /// Run every entity that carries a [`UiPanel`], in query order.
     ///
     /// The query is rebuilt from scratch on every pass egui runs, which is what
@@ -401,7 +381,7 @@ impl FrameSource for UiSource {
         // so its layout is built against the same target this one draws at.
         self.screen.publish(target_screen);
 
-        let mut graph = Self::graph(scope, ctx);
+        let mut graph = ctx.graph(scope);
         let index = self.target_index(&device, &mut graph, target.surface);
 
         // The events reached egui's own types while the world's `InputEvents`
@@ -511,10 +491,10 @@ impl FrameSource for UiSource {
         // up first, because the scope takes it again to run the pass.
         drop(graph);
         drop(maintain);
-        let graph = Self::graph(scope, ctx);
+        let graph = ctx.graph(scope);
 
         let mut ui_scene = gpu.integration.scene(&graph);
-        scene.extend(&mut ui_scene);
+        scene.draws.append(&mut ui_scene.draws);
     }
 
     fn order(&self) -> FrameSourceOrder {
@@ -943,7 +923,10 @@ mod tests {
         let mut scene = Scene::new();
         source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
 
-        assert!(!scene.is_empty(), "the panel's rectangle became a draw");
+        assert!(
+            !scene.draws.is_empty(),
+            "the panel's rectangle became a draw"
+        );
     }
 
     /// The source is constructed with no arguments and records over the meshes.
@@ -1260,7 +1243,7 @@ mod tests {
 
         source.build_scene(&world.root_scope(), ctx, info, &mut scene, &mut encoder);
         assert!(
-            !scene.is_empty(),
+            !scene.draws.is_empty(),
             "the published frame is drawn when it arrives"
         );
 
@@ -1268,7 +1251,7 @@ mod tests {
         // have been emptied by drawing it.
         source.build_scene(&world.root_scope(), ctx, info, &mut scene, &mut encoder);
         assert!(
-            !scene.is_empty(),
+            !scene.draws.is_empty(),
             "the same frame is drawn again while no newer one arrives"
         );
     }
@@ -1345,7 +1328,7 @@ mod tests {
         let mut scene = Scene::new();
         source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
         assert!(
-            !scene.is_empty(),
+            !scene.draws.is_empty(),
             "a panel draws with no input in the world"
         );
     }

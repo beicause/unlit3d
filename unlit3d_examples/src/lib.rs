@@ -322,7 +322,7 @@ fn resize_offscreen(world: &World, app: Entity, size: (u32, u32)) {
             source
                 .as_mut::<BlitSource>()
                 .expect("the blit pass's source is a blit")
-                .set_view(view);
+                .view = view;
         });
 }
 

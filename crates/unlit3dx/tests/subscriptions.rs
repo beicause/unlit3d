@@ -37,7 +37,7 @@ struct Marker(u32);
 fn several_subscribers_each_get_their_own_snapshot() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    let sender = world.sender();
+    let sender = world.commands.clone();
     let mut first = 0u32;
     let one = sender
         .subscribe(move |_| {
@@ -53,7 +53,7 @@ fn several_subscribers_each_get_their_own_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity());
+    step_stepped_world(&host, world.entity);
 
     assert_eq!(one.latest().map(|value| *value), Some(1));
     assert_eq!(two.latest().map(|value| *value), Some(10));
@@ -65,10 +65,11 @@ fn several_subscribers_each_get_their_own_snapshot() {
 fn a_late_subscriber_sees_the_state_of_the_next_tick() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    step_stepped_world(&host, world.entity());
+    step_stepped_world(&host, world.entity);
 
     let reader = world
-        .sender()
+        .commands
+        .clone()
         .subscribe(|world: &World| {
             world
                 .root_scope()
@@ -83,7 +84,7 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
         "nothing was collected before it asked"
     );
 
-    step_stepped_world(&host, world.entity());
+    step_stepped_world(&host, world.entity);
     assert_eq!(reader.latest().map(|value| *value), Some(0));
 }
 
@@ -96,26 +97,27 @@ fn dropping_the_reader_prunes_the_subscription() {
     let ran = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&ran);
     let reader = world
-        .sender()
+        .commands
+        .clone()
         .subscribe(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Some(1u32)
         })
         .expect("the world accepts a subscription");
-    step_stepped_world(&host, world.entity());
+    step_stepped_world(&host, world.entity);
     assert_eq!(ran.load(Ordering::SeqCst), 1, "the collector ran once");
 
     drop(reader);
-    step_stepped_world(&host, world.entity());
+    step_stepped_world(&host, world.entity);
     assert_eq!(
         ran.load(Ordering::SeqCst),
         1,
         "a dropped reader must stop its collector"
     );
 
-    step_stepped_world(&host, world.entity());
-    let live = with_stepped_world(&host, world.entity(), publish_subscribed)
-        .expect("the world is stepped");
+    step_stepped_world(&host, world.entity);
+    let live =
+        with_stepped_world(&host, world.entity, publish_subscribed).expect("the world is stepped");
     assert_eq!(live, 0, "the world carries no live subscription");
 }
 
@@ -127,7 +129,8 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
     let world = subscribed_world(&mut host, 8);
     let mut first = true;
     let reader = world
-        .sender()
+        .commands
+        .clone()
         .subscribe(move |_| {
             let value = if first { Some(1u32) } else { None };
             first = false;
@@ -135,8 +138,8 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
         })
         .expect("the world accepts a subscription");
 
-    step_stepped_world(&host, world.entity());
-    step_stepped_world(&host, world.entity());
+    step_stepped_world(&host, world.entity);
+    step_stepped_world(&host, world.entity);
 
     assert_eq!(reader.latest().map(|value| *value), Some(1));
 }
@@ -148,10 +151,11 @@ fn a_full_queue_refuses_a_subscription() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 1);
     world
+        .commands
         .send(Box::new(|_: &mut World| {}))
         .expect("the queue has room for one job");
 
-    let refused = world.sender().subscribe(|_| Some(1u32));
+    let refused = world.commands.clone().subscribe(|_| Some(1u32));
 
     assert_eq!(refused.err(), Some(SendError::Full));
 }

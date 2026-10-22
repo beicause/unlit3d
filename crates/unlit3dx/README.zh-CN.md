@@ -30,12 +30,12 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 });
 
 // job 在远程线程的 tick 之间运行，且不回答任何东西：要带回的值由快照或流送出。
-simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+simulation.commands.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
 
 // 快照是两种回传方式之一（另一种是承载事件的流），而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
-let reader = simulation.sender().subscribe(|world: &World| {
+let reader = simulation.commands.subscribe(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
@@ -50,7 +50,7 @@ if let Some(latest) = reader.latest() {
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 个排队 job
-let mut nested = host.root_scope_mut().get_mut::<World>(render.entity()).expect("the nested world");
+let mut nested = host.root_scope_mut().get_mut::<World>(render.entity).expect("the nested world");
 drain_sub_world(&mut nested); // 运行其他线程投递的 job
 ```
 
@@ -79,7 +79,7 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 
 ## Job
 
-`Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`WorldHandle::send` 把一个 job 排入
+`Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`WorldHandle::commands` 把一个 job 排入
 队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
 远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。

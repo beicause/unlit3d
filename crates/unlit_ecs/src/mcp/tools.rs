@@ -16,27 +16,27 @@ use crate::reflect;
 use crate::{ArchetypeBuilder, Entity, Scope, ScopeMut, World};
 
 /// A high-level description of a scope.
-pub fn summarize_world(scope: &Scope<'_>) -> Result<Value, String> {
+fn summarize_world(scope: &Scope<'_>) -> Result<Value, String> {
     to_value(&scope.info())
 }
 
 /// The component names the reflection table holds.
-pub fn component_names(_world: &World) -> Result<Value, String> {
+fn component_names(_world: &World) -> Result<Value, String> {
     to_value(&reflect::names().collect::<Vec<_>>())
 }
 
 /// Every archetype with the component names it stores.
-pub fn summarize_archetypes(scope: &Scope<'_>) -> Result<Value, String> {
+fn summarize_archetypes(scope: &Scope<'_>) -> Result<Value, String> {
     to_value(&scope.archetype_infos())
 }
 
 /// Every spawned entity with its component names.
-pub fn summarize_entities(scope: &Scope<'_>, limit: usize) -> Result<Value, String> {
+fn summarize_entities(scope: &Scope<'_>, limit: usize) -> Result<Value, String> {
     to_value(&scope.entity_infos(limit))
 }
 
 /// One entity's component names and location.
-pub fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, String> {
+fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, String> {
     let info = scope
         .entity_info(entity)
         .ok_or_else(|| format!("no entity with bits {}", entity.to_bits()))?;
@@ -44,7 +44,7 @@ pub fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, Stri
 }
 
 /// One component of one entity, encoded.
-pub fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<Value, String> {
+fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<Value, String> {
     if !scope.contains(entity) {
         return Err(format!("no entity with bits {}", entity.to_bits()));
     }
@@ -53,7 +53,7 @@ pub fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<V
 }
 
 /// Overwrite one component of one entity.
-pub fn write_component(
+fn write_component(
     scope: &Scope<'_>,
     entity: Entity,
     name: &str,
@@ -68,7 +68,7 @@ pub fn write_component(
 }
 
 /// Spawn an entity from a map of component name to value.
-pub fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Value, String> {
+fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Value, String> {
     let object = components
         .as_object()
         .ok_or_else(|| "components must be an object".to_string())?;
@@ -86,7 +86,7 @@ pub fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<
 }
 
 /// Despawn one entity and its subtree.
-pub fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
+fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
     let despawned = scope.despawn(entity);
     to_value(&Despawned { despawned })
 }

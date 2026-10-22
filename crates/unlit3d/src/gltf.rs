@@ -502,14 +502,14 @@ impl UnlitGltf {
         let sampler = source.register_sampler(world, Some(descriptor));
         let view = {
             let texture = {
-                let graph = MeshSource::graph(world, source.context());
+                let graph = source.context().graph(world);
                 graph
                     .get(&image.texture)
                     .expect("the image's texture is in the graph")
                     .clone()
             };
             let view = TextureExt::create_view(&texture, &wgpu::TextureViewDescriptor::default());
-            let mut graph = MeshSource::graph(world, source.context());
+            let mut graph = source.context().graph(world);
             let view = graph.insert(view, None);
             graph.add_dependency(&view, &image.texture);
             view
@@ -762,7 +762,7 @@ impl UnlitGltf {
                 world_to_mesh * joint_world * bind
             })
             .collect();
-        SkinPose::new(poses)
+        SkinPose { matrices: poses }
     }
 
     /// The number of joints a node's skin has.
@@ -1078,14 +1078,16 @@ impl UnlitGltf {
                 let binding = skinned.then(|| {
                     let pose = *pose
                         .get_or_insert_with(|| world.spawn(bundle![self.skin_pose(node.index())]));
-                    SkinBinding::new(pose)
+                    SkinBinding { pose }
                 });
                 let morphed = mesh_handle.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
                     let weights = *morphs.get_or_insert_with(|| {
-                        world.spawn(bundle![MorphWeights::new(self.morph_weights(node.index()))])
+                        world.spawn(bundle![MorphWeights {
+                            weights: self.morph_weights(node.index())
+                        }])
                     });
-                    MorphBinding::new(weights)
+                    MorphBinding { weights }
                 });
                 // The components a primitive carries vary by material,
                 // skin and blend mode, so the bundle is assembled rather than
@@ -2989,7 +2991,7 @@ mod tests {
         let mesh = world.root_scope_mut().spawn(bundle![Transform::default()]);
         let weights = world
             .root_scope_mut()
-            .spawn(bundle![MorphWeights::new(vec![0.0])]);
+            .spawn(bundle![MorphWeights { weights: vec![0.0] }]);
         let nodes = [GltfNode {
             node: 0,
             entities: vec![mesh],

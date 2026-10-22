@@ -672,7 +672,7 @@ impl MeshSourceUnlitExt for MeshSource {
             .vertex_pool
             .allocate(&device, &queue, &stream_layouts, vertex_count as u32)
             .expect("the vertex pool grows with the mesh");
-        let vertex_offset = vertices.offset();
+        let vertex_offset = vertices.allocation.offset;
         // Each stream is packed straight into the pool through a queue write,
         // so no CPU-side buffer is built first. The write view is the only
         // mutable borrow, so the two streams are packed one after the other.
@@ -685,7 +685,9 @@ impl MeshSourceUnlitExt for MeshSource {
             }
             let id = self.vertex_node(world, layout);
             self.sync_vertex_node(world, &id, layout);
-            let buffer = MeshSource::graph(world, self.context)
+            let buffer = self
+                .context
+                .graph(world)
                 .get(&id)
                 .expect("the stream's node exists")
                 .clone();
@@ -731,7 +733,7 @@ impl MeshSourceUnlitExt for MeshSource {
         // A draw's `base_vertex` is a signed 32-bit integer, so an offset the
         // draw has to carry must fit one. A baked offset is a `u32` index like
         // any other and has no such limit.
-        let supports_base_vertex = self.base_vertex(world);
+        let supports_base_vertex = self.capabilities(world).base_vertex();
         assert!(
             !supports_base_vertex || vertex_offset <= i32::MAX as u32,
             "a vertex offset has to fit the i32 a draw's base vertex is"
@@ -756,7 +758,7 @@ impl MeshSourceUnlitExt for MeshSource {
                     .allocate(&device, &queue, packed_len as u32)
                     .expect("the index pool grows with the mesh");
                 {
-                    let mut graph = MeshSource::graph(world, self.context);
+                    let mut graph = self.context.graph(world);
                     MeshSource::sync_pool_node(&self.index_pool, &self.index_pool_id, &mut graph);
                     let buffer = graph
                         .get(&self.index_pool_id)
@@ -765,19 +767,19 @@ impl MeshSourceUnlitExt for MeshSource {
                     let mut view = queue
                         .write_buffer_with(
                             &buffer,
-                            u64::from(range.offset()),
+                            u64::from(range.allocation.offset),
                             core::num::NonZeroU64::new(packed_len as u64)
                                 .expect("an empty index buffer is never allocated"),
                         )
                         .expect("the index range fits its buffer");
                     offset.write(indices, view.slice(..));
                 }
-                let first = range.offset() / index_format_size(format);
+                let first = range.allocation.offset / index_format_size(format);
                 (
                     Some((self.index_pool_id.clone(), format)),
                     index_count,
                     true,
-                    Some(range.allocation()),
+                    Some(range.allocation),
                     first,
                 )
             }
@@ -849,7 +851,7 @@ impl MeshSourceUnlitExt for MeshSource {
         // been allocated; the mesh's handle is replaced with the complete one.
         parts.index_buffer = index_buffer;
         parts.index_allocation = index_allocation;
-        parts.vertex_allocation = Some(vertices.allocation());
+        parts.vertex_allocation = Some(vertices.allocation);
         mesh.vertex_layout = VertexLayout::new(layouts);
         mesh.first = first;
         // Zero whenever the offset was baked into the indices instead, which is

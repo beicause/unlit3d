@@ -75,16 +75,13 @@ hashbrown.workspace = true
 inventory = { workspace = true, optional = true }
 log.workspace = true
 profiling.workspace = true
-smallvec.workspace = true
 unlit_ecs = { path = "../unlit_ecs", version = "0.1.0-dev.2" }
 unlit_wgpu = { path = "../unlit_wgpu", version = "0.1.0-dev.2", default-features = false, features = ["unlit"] }
 web-time = { workspace = true, optional = true }
 wesl.workspace = true
-wesl-core.workspace = true
 wgpu.workspace = true
 winit = { workspace = true, optional = true }
 zerocopy.workspace = true
-zerocopy-derive.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

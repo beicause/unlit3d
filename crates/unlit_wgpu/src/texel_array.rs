@@ -312,17 +312,17 @@ fn create_array_buffer(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TexelArrayLayout {
     /// The format the texture is created with.
-    texel_format: wgpu::TextureFormat,
+    pub texel_format: wgpu::TextureFormat,
     /// `f32` lanes per texel: 1 for `R32Float`, 4 for `Rgba32Float`.
-    lanes_per_texel: u32,
+    pub lanes_per_texel: u32,
     /// Bytes per element.
-    element_size: u64,
+    pub element_size: u64,
     /// How many elements one row holds.
-    elements_per_row: u32,
+    pub elements_per_row: u32,
     /// The texture's width in texels.
-    width: u32,
+    pub width: u32,
     /// The texture's height in texels.
-    height: u32,
+    pub height: u32,
 }
 
 impl TexelArrayLayout {
@@ -382,36 +382,6 @@ impl TexelArrayLayout {
             width,
             height,
         }
-    }
-
-    /// The format the texture is created with.
-    pub fn texel_format(&self) -> wgpu::TextureFormat {
-        self.texel_format
-    }
-
-    /// `f32` lanes one texel holds.
-    pub fn lanes_per_texel(&self) -> u32 {
-        self.lanes_per_texel
-    }
-
-    /// Bytes per element.
-    pub fn element_size(&self) -> u64 {
-        self.element_size
-    }
-
-    /// How many elements one row holds.
-    pub fn elements_per_row(&self) -> u32 {
-        self.elements_per_row
-    }
-
-    /// The texture's width in texels.
-    pub fn width(&self) -> u32 {
-        self.width
-    }
-
-    /// The texture's height in texels.
-    pub fn height(&self) -> u32 {
-        self.height
     }
 
     /// Bytes one row spans, padding included.
@@ -548,7 +518,7 @@ fn create_texture(
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: layout.texel_format(),
+        format: layout.texel_format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
@@ -708,23 +678,23 @@ mod tests {
     fn a_matrix_element_reads_as_four_texels_of_four_lanes() {
         let layout = TexelArrayLayout::new(MATRIX_ELEMENT, 8, ROOMY);
 
-        assert_eq!(layout.texel_format(), wgpu::TextureFormat::Rgba32Float);
-        assert_eq!(layout.lanes_per_texel(), 4);
-        assert_eq!(layout.elements_per_row(), 4, "a row is 256 bytes");
+        assert_eq!(layout.texel_format, wgpu::TextureFormat::Rgba32Float);
+        assert_eq!(layout.lanes_per_texel, 4);
+        assert_eq!(layout.elements_per_row, 4, "a row is 256 bytes");
         assert_eq!(layout.row_bytes(), 256);
-        assert_eq!(layout.width(), 16, "four elements of four texels each");
-        assert_eq!(layout.height(), 2);
+        assert_eq!(layout.width, 16, "four elements of four texels each");
+        assert_eq!(layout.height, 2);
     }
 
     #[test]
     fn a_scalar_element_reads_as_one_lane_per_texel() {
         let layout = TexelArrayLayout::new(SCALAR_ELEMENT, 128, ROOMY);
 
-        assert_eq!(layout.texel_format(), wgpu::TextureFormat::R32Float);
-        assert_eq!(layout.lanes_per_texel(), 1);
-        assert_eq!(layout.elements_per_row(), 64, "a row is 256 bytes");
-        assert_eq!(layout.width(), 64);
-        assert_eq!(layout.height(), 2);
+        assert_eq!(layout.texel_format, wgpu::TextureFormat::R32Float);
+        assert_eq!(layout.lanes_per_texel, 1);
+        assert_eq!(layout.elements_per_row, 64, "a row is 256 bytes");
+        assert_eq!(layout.width, 64);
+        assert_eq!(layout.height, 2);
     }
 
     #[test]
@@ -733,16 +703,16 @@ mod tests {
         // bytes, three alignment units — instead of the 6 that would fit in one.
         let layout = TexelArrayLayout::new(STRUCT_ELEMENT, 32, ROOMY);
 
-        assert_eq!(layout.texel_format(), wgpu::TextureFormat::Rgba32Float);
-        assert_eq!(layout.elements_per_row(), 16);
+        assert_eq!(layout.texel_format, wgpu::TextureFormat::Rgba32Float);
+        assert_eq!(layout.elements_per_row, 16);
         assert_eq!(layout.row_bytes(), 768);
         assert!(
             layout
                 .row_bytes()
                 .is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64)
         );
-        assert_eq!(layout.width(), 48, "sixteen elements of three texels each");
-        assert_eq!(layout.height(), 2);
+        assert_eq!(layout.width, 48, "sixteen elements of three texels each");
+        assert_eq!(layout.height, 2);
     }
 
     #[test]
@@ -757,7 +727,7 @@ mod tests {
                 layout.row_bytes()
             );
             assert_eq!(
-                layout.width() % layout.lanes_per_texel(),
+                layout.width % layout.lanes_per_texel,
                 0,
                 "a {element_size}-byte element's row holds whole texels"
             );
@@ -790,11 +760,7 @@ mod tests {
     fn an_empty_array_still_has_one_row() {
         let layout = TexelArrayLayout::new(SCALAR_ELEMENT, 0, ROOMY);
 
-        assert_eq!(
-            layout.height(),
-            1,
-            "a texture cannot have a zero-height axis"
-        );
+        assert_eq!(layout.height, 1, "a texture cannot have a zero-height axis");
         assert_eq!(layout.capacity(), 64);
     }
 
@@ -803,12 +769,11 @@ mod tests {
         let layout = TexelArrayLayout::new(SCALAR_ELEMENT, 64 * 8, ROOMY);
 
         assert_eq!(
-            layout.elements_per_row(),
-            64,
+            layout.elements_per_row, 64,
             "the row stays at one alignment"
         );
-        assert_eq!(layout.width(), 64);
-        assert_eq!(layout.height(), 8, "the rows carry the extra elements");
+        assert_eq!(layout.width, 64);
+        assert_eq!(layout.height, 8, "the rows carry the extra elements");
     }
 
     #[test]
@@ -817,10 +782,10 @@ mod tests {
         // row to widen instead of the height to grow past the limit.
         let layout = TexelArrayLayout::new(SCALAR_ELEMENT, 64 * u64::from(ROOMY) + 1, ROOMY);
 
-        assert_eq!(layout.elements_per_row(), 128, "the row doubled");
-        assert_eq!(layout.width(), 128);
-        assert_eq!(layout.height(), 1025, "and the elements now fit");
-        assert!(layout.height() <= ROOMY);
+        assert_eq!(layout.elements_per_row, 128, "the row doubled");
+        assert_eq!(layout.width, 128);
+        assert_eq!(layout.height, 1025, "and the elements now fit");
+        assert!(layout.height <= ROOMY);
     }
 
     #[test]

@@ -157,7 +157,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             &input,
         )
     };
-    let gameplay_sender = worlds.gameplay.sender();
+    let gameplay_sender = worlds.gameplay.commands.clone();
 
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.
@@ -180,7 +180,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
         move |world, gpu| {
             let (renderer, pass) = setup_render_world(
                 world,
-                render.entity(),
+                render.entity,
                 &gpu.device,
                 &gpu.queue,
                 gpu.capabilities,
@@ -193,7 +193,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             mount_scene_content(&render, pass, Some(panels.clone()));
             let outcome = setup_presenter(
                 world,
-                render.entity(),
+                render.entity,
                 renderer,
                 pass,
                 gpu,

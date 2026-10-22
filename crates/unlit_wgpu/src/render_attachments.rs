@@ -33,7 +33,7 @@
 //!     depth_clear(), // the reverse-z far plane
 //!     stencil_clear(),
 //! );
-//! scene.record(&mut pass);
+//! scene.record(&mut pass, None);
 //! # }
 //! ```
 
@@ -147,20 +147,9 @@ impl RenderAttachments {
         }
     }
 
-    /// The color texture the frame is rendered into, for copying or reading
-    /// the result back. `None` for a depth-only pass.
-    pub fn color_texture(&self) -> Option<&wgpu::Texture> {
-        self.color_view.as_ref().map(|view| view.texture())
-    }
-
     /// The color attachment, or `None` for a depth-only pass.
     pub fn color_view(&self) -> Option<&TextureView> {
         self.color_view.as_ref()
-    }
-
-    /// The depth attachment, if any.
-    pub fn depth_stencil_view(&self) -> Option<&TextureView> {
-        self.depth_stencil_view.as_ref()
     }
 
     /// The multisample attachment, if any.

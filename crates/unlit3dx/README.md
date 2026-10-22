@@ -33,14 +33,14 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
 // Jobs run on the remote thread between ticks and answer nothing. A job
 // that produces a value to keep hands it back through a snapshot or a
 // stream.
-simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+simulation.commands.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
 
 // A snapshot is one of the two ways data comes back (the other is a stream,
 // for events), and it is opt-in: the world runs the collector this
 // subscription carries once per tick and publishes whatever it returns. The payload is the caller's type — the
 // library defines none — so the collector is where a scene decides what it
 // wants to see.
-let reader = simulation.sender().subscribe(|world: &World| {
+let reader = simulation.commands.subscribe(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
@@ -55,7 +55,7 @@ keeps its owner on the main thread but takes jobs like a remote world:
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 queued jobs
-let mut nested = host.root_scope_mut().get_mut::<World>(render.entity()).expect("the nested world");
+let mut nested = host.root_scope_mut().get_mut::<World>(render.entity).expect("the nested world");
 drain_sub_world(&mut nested); // run the jobs other threads posted
 ```
 
@@ -89,7 +89,7 @@ whole protocol.
 
 ## Jobs
 
-`Job<R>` is a boxed `FnOnce(&mut World) -> R`. `WorldHandle::send` queues one
+`Job<R>` is a boxed `FnOnce(&mut World) -> R`. `WorldHandle::commands` queues one
 and never blocks: a full queue returns `Err(SendError::Full)` and a stopped
 world `Err(SendError::Closed)`, so a world thread that sends to its own queue
 cannot deadlock against itself. The remote thread drains its queue before

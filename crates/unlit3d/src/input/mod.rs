@@ -990,12 +990,6 @@ impl InputEvents {
         self.events.copy_into(out);
     }
 
-    /// What this tick has, as its own list.
-    #[must_use]
-    pub fn to_vec(&self) -> Vec<InputEvent> {
-        self.events.to_vec()
-    }
-
     /// Start this world's input tick: take everything queued as the batch, and
     /// fold it into the state.
     ///
@@ -1262,7 +1256,7 @@ pub fn dispatch_input(world: &World) -> bool {
         .root_scope()
         .query::<&InputEvents>()
         .next()
-        .map(|input_events| input_events.to_vec())
+        .map(|input_events| input_events.with_batch(|batch| batch.to_vec()))
     else {
         return false;
     };
@@ -2034,16 +2028,19 @@ mod tests {
         input.push(key_event(Key::A));
         buffer.refresh();
 
-        assert_eq!(buffer.to_vec(), [key_event(Key::A)]);
         assert_eq!(
-            buffer.to_vec(),
+            buffer.with_batch(|batch| batch.to_vec()),
+            [key_event(Key::A)]
+        );
+        assert_eq!(
+            buffer.with_batch(|batch| batch.to_vec()),
             [key_event(Key::A)],
             "reading leaves the batch for the next reader"
         );
 
         // The next tick replaces it, so an event is delivered exactly once.
         buffer.refresh();
-        assert!(buffer.to_vec().is_empty());
+        assert!(buffer.with_batch(|batch| batch.to_vec()).is_empty());
     }
 
     /// Two worlds fed by one writer build their own state: neither sees the
@@ -2090,7 +2087,11 @@ mod tests {
             !buffer.with_state(|state| state.modifiers.ctrl),
             "the later event is what the state ends up as"
         );
-        assert_eq!(buffer.to_vec().len(), 2, "both events are still delivered");
+        assert_eq!(
+            buffer.with_batch(|batch| batch.to_vec()).len(),
+            2,
+            "both events are still delivered"
+        );
     }
 
     #[test]

@@ -50,13 +50,6 @@ pub struct TestEntry {
     pub host_only: bool,
 }
 
-impl TestEntry {
-    /// The test's name qualified by its module.
-    pub fn full_name(&self) -> String {
-        format!("{}::{}", self.module, self.name)
-    }
-}
-
 /// Declares a file's GPU tests, and the registry the harness runs them from.
 ///
 /// The bodies are ordinary `async fn`s declared in the file; this macro lists

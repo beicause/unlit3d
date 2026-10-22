@@ -555,7 +555,10 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
     if let Some((buffer, _)) = &fixture.mesh.indices {
         draw = draw.with_index_buffer(buffer, wgpu::IndexFormat::Uint16);
     }
-    let scene = Scene::new().with_draw(draw);
+    let scene = Scene {
+        draws: vec![draw],
+        ..Scene::new()
+    };
 
     let mut encoder = ctx
         .device
@@ -571,7 +574,7 @@ fn render(ctx: &Ctx, fixture: &SceneFixture, instances: &[MeshInstance]) -> Fram
             depth_clear(),
             stencil_clear(),
         );
-        scene.record(&mut pass);
+        scene.record(&mut pass, None);
     }
     ctx.queue.submit([encoder.finish()]);
     ctx.device
@@ -1000,7 +1003,7 @@ async fn a_loaded_color_attachment_keeps_its_contents() {
             depth_clear(),
             stencil_clear(),
         );
-        Scene::new().record(&mut pass);
+        Scene::new().record(&mut pass, None);
     }
     // Pass two: load the color (the depth attachment is transient, so it
     // still clears) and draw nothing. If the color load were a clear to the
@@ -1012,7 +1015,7 @@ async fn a_loaded_color_attachment_keeps_its_contents() {
             depth_clear(),
             stencil_clear(),
         );
-        Scene::new().record(&mut pass);
+        Scene::new().record(&mut pass, None);
     }
     ctx.queue.submit([encoder.finish()]);
     ctx.device
@@ -1174,7 +1177,7 @@ async fn a_readback_handles_a_row_that_is_not_copy_aligned() {
             depth_clear(),
             stencil_clear(),
         );
-        Scene::new().record(&mut pass);
+        Scene::new().record(&mut pass, None);
     }
     ctx.queue.submit([encoder.finish()]);
 
@@ -1243,7 +1246,7 @@ async fn the_readback_module_returns_a_texture_as_tight_rows() {
             depth_clear(),
             stencil_clear(),
         );
-        Scene::new().record(&mut pass);
+        Scene::new().record(&mut pass, None);
     }
     ctx.queue.submit([encoder.finish()]);
 

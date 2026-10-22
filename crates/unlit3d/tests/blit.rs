@@ -126,7 +126,7 @@ async fn a_new_view_changes_what_the_frame_shows() {
             source
                 .as_mut::<BlitSource>()
                 .expect("the source is a BlitSource")
-                .set_view(view);
+                .view = view;
         })
         .expect("the source entity exists");
     gpu.render(&world);

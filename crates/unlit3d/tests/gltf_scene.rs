@@ -513,10 +513,11 @@ async fn a_skinned_quad_follows_its_joint() {
     *world
         .root_scope()
         .query_one::<&mut SkinPose>(pose)
-        .expect("the pose entity carries a `SkinPose`") =
-        SkinPose::new(vec![glam::Mat4::from_translation(glam::Vec3::new(
+        .expect("the pose entity carries a `SkinPose`") = SkinPose {
+        matrices: vec![glam::Mat4::from_translation(glam::Vec3::new(
             -5.0, 0.0, 0.0,
-        ))]);
+        ))],
+    };
     let after = read(&gpu);
     let red_after = count_colour(&after, [255, 0, 0], 4);
     assert!(

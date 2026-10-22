@@ -307,11 +307,14 @@ mod tests {
         publish_subscribed(&world);
         publish_subscribed(&world);
         reader.pump();
-        assert_eq!(reader.to_vec(), vec![1, 10, 2, 20]);
+        assert_eq!(
+            reader.with_batch(|batch| batch.to_vec()),
+            vec![1, 10, 2, 20]
+        );
 
         // A second pump with nothing new replaces the batch rather than
         // repeating the events of the previous tick.
         reader.pump();
-        assert!(reader.to_vec().is_empty());
+        assert!(reader.with_batch(|batch| batch.to_vec()).is_empty());
     }
 }

@@ -599,11 +599,6 @@ impl EguiIntegration {
         }
     }
 
-    /// The pipeline the UI draws with.
-    pub fn pipeline(&self) -> &SpecializedUnlitPipeline {
-        &self.pipeline
-    }
-
     /// The bind group behind a graph node that is known to be one.
     fn bind_group<'a>(
         &self,
@@ -744,22 +739,6 @@ impl EguiIntegration {
         self.draws.clear();
     }
 
-    /// Move the integration onto `pipeline`, keeping every node it registered.
-    ///
-    /// A different render target specializes the pipeline differently, and the
-    /// materials were created from the old pipeline's material layout, so their
-    /// ids are dropped here — but only they: the textures, views, samplers and
-    /// geometry buffers do not depend on the target, and egui will not resend
-    /// its font atlas after a rebuild, so discarding them would both leak the
-    /// old nodes and leave the new integration unable to draw text. The next
-    /// [`Self::update`] rebuilds each missing material from the new layout, and
-    /// the next [`ResourceGraph::maintain`] collects the old ones.
-    pub fn retarget(&mut self, pipeline: SpecializedUnlitPipeline) {
-        self.materials.clear();
-        self.draws.clear();
-        self.pipeline = pipeline;
-    }
-
     /// Pack `primitives` into the vertex and index buffers, staging the bytes
     /// through `encoder`, and fill [`Self::draws`] with where each one landed.
     ///
@@ -850,7 +829,7 @@ impl EguiIntegration {
                 )
                 .with_index_buffer(indices, wgpu::IndexFormat::Uint32)
                 .with_scissor(draw.scissor);
-            scene.push(entry);
+            scene.draws.push(entry);
         }
         scene
     }

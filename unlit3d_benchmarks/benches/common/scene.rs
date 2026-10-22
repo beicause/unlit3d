@@ -157,7 +157,7 @@ impl Frame {
         let mut encoder = device.create_command_encoder(&Default::default());
         // The driver clears the scene before every build and hands it back to
         // the source, which is what this harness stands in for.
-        self.scene.clear();
+        self.scene.draws.clear();
         self.source.build_scene(
             &self.world.root_scope(),
             self.context,

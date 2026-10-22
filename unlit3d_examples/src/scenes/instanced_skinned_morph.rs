@@ -86,12 +86,19 @@ fn build(
     let mut pose_entities = Vec::new();
     let mut weight_entities = Vec::new();
     for instance in 0..INSTANCES {
-        let pose_entity =
-            super::spawn_in(world, source_entity, bundle![SkinPose::new(rest_pose(2))]);
+        let pose_entity = super::spawn_in(
+            world,
+            source_entity,
+            bundle![SkinPose {
+                matrices: rest_pose(2)
+            }],
+        );
         let weight_entity = super::spawn_in(
             world,
             source_entity,
-            bundle![MorphWeights::new(instance_weights(0, instance))],
+            bundle![MorphWeights {
+                weights: instance_weights(0, instance).to_vec()
+            }],
         );
         let color = match instance {
             0 => glam::Vec4::new(1.0, 0.75, 0.55, 1.0),
@@ -110,8 +117,10 @@ fn build(
                 InstanceColor::new(color),
                 mesh.clone(),
                 UnlitPipeline::new(key.clone()),
-                SkinBinding::new(pose_entity),
-                MorphBinding::new(weight_entity),
+                SkinBinding { pose: pose_entity },
+                MorphBinding {
+                    weights: weight_entity
+                },
             ],
         );
         pose_entities.push(pose_entity);

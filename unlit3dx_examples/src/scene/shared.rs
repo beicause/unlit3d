@@ -51,7 +51,7 @@ impl SceneState {
     /// and every object that needs a shape stays unspawned.
     pub fn new(server: WorldHandle) -> Self {
         let instances = Snapshot::new();
-        let render = server.sender();
+        let render = server.commands.clone();
         log::info!("the gameplay world started; asking the render world for the scene");
         // The reader comes after the job is queued: a snapshot keeps the
         // published value, so the build cannot land where nobody will see it.

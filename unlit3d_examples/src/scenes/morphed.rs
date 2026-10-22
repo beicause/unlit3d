@@ -73,8 +73,13 @@ fn build(
     // The weights are an entity of their own: the mesh names it rather than
     // owning it, so blending a pose is one component write and nothing on the
     // mesh changes.
-    let weights_entity =
-        super::spawn_in(world, source_entity, bundle![MorphWeights::new(weights(0))]);
+    let weights_entity = super::spawn_in(
+        world,
+        source_entity,
+        bundle![MorphWeights {
+            weights: weights(0).to_vec()
+        }],
+    );
     super::spawn_in(
         world,
         source_entity,
@@ -86,7 +91,9 @@ fn build(
             InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
             mesh,
             UnlitPipeline::new(key),
-            MorphBinding::new(weights_entity),
+            MorphBinding {
+                weights: weights_entity
+            },
         ],
     );
 

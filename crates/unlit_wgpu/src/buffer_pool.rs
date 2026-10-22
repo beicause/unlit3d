@@ -41,8 +41,8 @@
 //! );
 //!
 //! let range = pool.allocate(&device, &queue, 64).expect("the pool has room");
-//! queue.write_buffer(pool.buffer(), range.offset() as u64, &[0u8; 64]);
-//! pool.release(range.allocation());
+//! queue.write_buffer(pool.buffer(), range.allocation.offset as u64, &[0u8; 64]);
+//! pool.release(range.allocation);
 //! ```
 
 use crate::offset_allocator::{Allocation, Allocator, min_allocator_size};
@@ -71,45 +71,19 @@ const MIN_SIZE: u64 = wgpu::COPY_BUFFER_ALIGNMENT;
 /// A byte range inside a [`BufferPool`]'s buffer.
 ///
 /// The range stays valid — and its data stays put — until its
-/// [`allocation`](Self::allocation) is handed back with
+/// [`allocation`](Self::allocation) field is handed back with
 /// [`BufferPool::release`]. Growing the pool replaces the buffer but keeps
 /// every offset, so read the buffer from [`BufferPool::buffer`] instead of
 /// holding one.
 #[derive(Clone, Copy, Debug)]
 pub struct BufferRange {
     /// The allocation that keeps the range reserved.
-    allocation: Allocation,
+    pub allocation: Allocation,
     /// The size reserved for the range, in bytes.
     ///
     /// Cached at allocation time so the handle stays self-contained: the
     /// allocator entry is the pool's, and the pool may grow behind it.
-    allocation_size: u32,
-}
-
-impl BufferRange {
-    /// The byte offset the range starts at.
-    ///
-    /// This is always a multiple of [`COPY_BUFFER_ALIGNMENT`](wgpu::COPY_BUFFER_ALIGNMENT).
-    pub fn offset(&self) -> u32 {
-        self.allocation.offset
-    }
-
-    /// The size reserved for the range, in bytes.
-    ///
-    /// This is the requested size rounded up to the alignment, so it is never
-    /// smaller than what was asked for.
-    pub fn size(&self) -> u32 {
-        // The allocation outlives the pool's allocator entry for it, and its
-        // size only changes when it is released, so reading it here is safe
-        // even after the pool has grown.
-        self.allocation_size
-    }
-
-    /// The allocation backing the range, to hand back to
-    /// [`BufferPool::release`].
-    pub fn allocation(&self) -> Allocation {
-        self.allocation
-    }
+    pub size: u32,
 }
 
 /// One GPU buffer sub-allocated into many ranges.
@@ -180,11 +154,6 @@ impl BufferPool {
         self.allocator.storage_report().total_free_space
     }
 
-    /// The largest range that can be allocated in one piece, in bytes.
-    pub fn largest_free_range(&self) -> u32 {
-        self.allocator.storage_report().largest_free_region
-    }
-
     /// The size reserved for `allocation`, in bytes.
     ///
     /// This is the requested size rounded up to the alignment.
@@ -237,7 +206,7 @@ impl BufferPool {
     fn range(&self, allocation: Allocation) -> BufferRange {
         BufferRange {
             allocation,
-            allocation_size: self.allocator.allocation_size(allocation),
+            size: self.allocator.allocation_size(allocation),
         }
     }
 
@@ -352,9 +321,9 @@ mod tests {
             let range = pool
                 .allocate(&device, &queue, size)
                 .expect("the pool has room");
-            assert_eq!(range.offset() % ALIGNMENT.get(), 0);
-            assert!(range.size() >= size);
-            ranges.push((range.offset(), range.size()));
+            assert_eq!(range.allocation.offset % ALIGNMENT.get(), 0);
+            assert!(range.size >= size);
+            ranges.push((range.allocation.offset, range.size));
         }
 
         ranges.sort_unstable();
@@ -377,28 +346,28 @@ mod tests {
         let first = pool
             .allocate(&device, &queue, 32)
             .expect("the pool has room");
-        assert_eq!(first.offset(), 0);
+        assert_eq!(first.allocation.offset, 0);
         let size_before = pool.size();
 
         // This does not fit in the remaining 32 bytes, so the pool grows.
         let second = pool.allocate(&device, &queue, 200).expect("the pool grows");
         assert!(pool.size() > size_before, "the pool grew");
-        assert_eq!(first.offset(), 0, "the first range did not move");
+        assert_eq!(first.allocation.offset, 0, "the first range did not move");
         assert!(
-            second.offset() + second.size() <= pool.size() as u32,
+            second.allocation.offset + second.size <= pool.size() as u32,
             "the new range fits in the pool"
         );
-        assert!(second.size() >= 200);
+        assert!(second.size >= 200);
         // The old range and the new one do not overlap.
         assert!(
-            second.offset() >= first.offset() + first.size()
-                || second.offset() + second.size() <= first.offset()
+            second.allocation.offset >= first.allocation.offset + first.size
+                || second.allocation.offset + second.size <= first.allocation.offset
         );
 
         // Both ranges are still reserved: releasing them returns the whole
         // pool to free space.
-        pool.release(first.allocation());
-        pool.release(second.allocation());
+        pool.release(first.allocation);
+        pool.release(second.allocation);
         assert_eq!(pool.free_space(), pool.size() as u32);
     }
 
@@ -418,7 +387,7 @@ mod tests {
 
         pool.allocate(&device, &queue, 200).expect("the pool grows");
         assert_ne!(pool.buffer(), &before, "growing replaces the buffer");
-        assert_eq!(first.offset(), 0, "the first range did not move");
+        assert_eq!(first.allocation.offset, 0, "the first range did not move");
     }
 
     #[test]
@@ -429,13 +398,16 @@ mod tests {
         let first = pool
             .allocate(&device, &queue, 512)
             .expect("the pool has room");
-        assert_eq!(first.offset(), 0);
-        pool.release(first.allocation());
+        assert_eq!(first.allocation.offset, 0);
+        pool.release(first.allocation);
 
         let second = pool
             .allocate(&device, &queue, 512)
             .expect("the pool has room");
-        assert_eq!(second.offset(), 0, "the freed range is handed out again");
+        assert_eq!(
+            second.allocation.offset, 0,
+            "the freed range is handed out again"
+        );
     }
 
     #[test]
@@ -446,12 +418,12 @@ mod tests {
         let range = pool
             .allocate(&device, &queue, 4096)
             .expect("the pool grows");
-        assert!(range.size() >= 4096);
+        assert!(range.size >= 4096);
         assert!(
             pool.size() >= 4096,
             "the pool grew enough for the range that did not fit"
         );
-        assert_eq!(range.offset(), 0);
+        assert_eq!(range.allocation.offset, 0);
     }
 
     #[test]
@@ -461,9 +433,9 @@ mod tests {
         let range = pool
             .allocate(&device, &queue, 16)
             .expect("the pool has room");
-        pool.release(range.allocation());
+        pool.release(range.allocation);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pool.release(range.allocation());
+            pool.release(range.allocation);
         }));
         assert!(result.is_err());
     }

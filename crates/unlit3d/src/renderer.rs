@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use unlit_ecs::{Entity, World};
-use unlit_wgpu::scene::{Scene, full_viewport};
+use unlit_wgpu::scene::{Scene, ViewportRect};
 
 use crate::components::RenderLoadOps;
 use crate::order::{OrderWarnings, Ordering};
@@ -308,7 +308,8 @@ impl Renderer {
                 // region reaches its sources through PassInfo: one that is part
                 // of the content states it on its scene, and one that composes
                 // over the content covers the whole target.
-                let whole = full_viewport(attachments.width(), attachments.height());
+                let whole =
+                    ViewportRect::new(attachments.width() as f32, attachments.height() as f32);
                 let load = root
                     .query_one::<&RenderLoadOps>(pass_entity)
                     .map_or_else(RenderLoadOps::default, |load| *load);
@@ -317,7 +318,7 @@ impl Renderer {
                 for index in 0..self.sources.entities().len() {
                     let entity = self.sources.entities()[index];
                     if let Some(scene) = self.scene_slot(pass_entity, entity) {
-                        scene.record_with_viewport(&mut render_pass, whole);
+                        scene.record(&mut render_pass, Some(whole));
                     }
                 }
             }
@@ -343,7 +344,7 @@ impl Renderer {
     fn scene_for(&mut self, pass: Entity, source: Entity) -> &mut Scene {
         let slot = self.scenes.entry((pass, source)).or_default();
         slot.used = true;
-        slot.scene.clear();
+        slot.scene.draws.clear();
         &mut slot.scene
     }
 

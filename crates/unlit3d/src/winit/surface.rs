@@ -219,14 +219,6 @@ impl WindowSurface {
         self.color_format
     }
 
-    /// The window the surface presents into.
-    ///
-    /// The surface owns a handle to it, so a caller that needs the window —
-    /// to request a redraw, or to read its size — can borrow it back here.
-    pub fn window(&self) -> &Arc<::winit::window::Window> {
-        &self.window
-    }
-
     /// Reconfigure the surface for a new size.
     ///
     /// A zero width or height — a minimized window — is ignored: a surface

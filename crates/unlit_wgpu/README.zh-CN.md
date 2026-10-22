@@ -311,7 +311,8 @@ impl Example {
         .with_vertex_buffer(INSTANCE_SLOT, &self.instances)
         .with_index_buffer(&self.indices, wgpu::IndexFormat::Uint16);
 
-        let scene = Scene::new().with_draw(draw);
+        let mut scene = Scene::new();
+        scene.draws.push(draw);
 
         let mut encoder = self
             .device

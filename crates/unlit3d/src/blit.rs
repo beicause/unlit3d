@@ -6,13 +6,11 @@
 //! copies that texture into the target.
 //!
 //! The view is the source's own input, so a world decides what to hand it and
-//! may swap it between frames with [`BlitSource::set_view`]. It lives in the
+//! may swap it between frames through its [`view`](BlitSource::view) field. It lives in the
 //! frame's [`ResourceGraph`], and the bind group is a node there that a
 //! replace of the view rebuilds; the pipeline stays the source's own,
 //! specialized on the pass's target like any other source's, so the same
 //! source presents into a swap chain or into another offscreen target.
-
-use core::ops::DerefMut;
 
 use unlit_ecs::Scope;
 use unlit_wgpu::resources::{Rebuild, ResHandle, Resource, ResourceGraph, TextureView};
@@ -34,25 +32,11 @@ const FRAGMENT_MODULE: &str = "blit";
 /// The entry point of the fragment module.
 const FRAGMENT_ENTRY: &str = "fs_main";
 
-/// The resource graph `ctx` addresses in `world`.
-///
-/// # Panics
-///
-/// If the context's graph resource is gone.
-fn resource_graph<'w>(
-    scope: &Scope<'w>,
-    ctx: RenderContext,
-) -> impl DerefMut<Target = ResourceGraph> + 'w {
-    scope
-        .query_one::<&mut ResourceGraph>(ctx.graph)
-        .expect("the context's resource graph exists")
-}
-
 /// A frame source that blits one texture view over its pass's target.
 ///
 /// The view the source samples is the caller's, registered in the frame's
-/// [`ResourceGraph`], so a world may hand over a different one with
-/// [`BlitSource::set_view`]. The pipeline is built on the first frame that
+/// [`ResourceGraph`], so a world may hand over a different one through the
+/// [`view`](BlitSource::view) field. The pipeline is built on the first frame that
 /// knows its target, the way [`UiSource`](crate::ui::UiSource) specializes its
 /// own.
 ///
@@ -60,7 +44,10 @@ fn resource_graph<'w>(
 /// [`FrameSourceOrder::MESH`].
 pub struct BlitSource {
     /// The view the source copies, in the frame's resource graph.
-    view: ResHandle<TextureView>,
+    ///
+    /// Assigning a different handle makes the next frame rebuild the bind
+    /// group; the pipeline and the sampler stay.
+    pub view: ResHandle<TextureView>,
     /// The GPU state, one entry per target the source has been asked to draw
     /// into.
     ///
@@ -100,16 +87,6 @@ impl BlitSource {
         }
     }
 
-    /// Blit `view` from the next frame on.
-    pub fn set_view(&mut self, view: ResHandle<TextureView>) {
-        self.view = view;
-    }
-
-    /// The view the source copies.
-    pub fn view(&self) -> ResHandle<TextureView> {
-        self.view.clone()
-    }
-
     /// Build the pipeline, the sampler and the bind group for `surface`.
     fn build_gpu(&self, scope: &Scope<'_>, ctx: RenderContext, surface: SurfaceKey) -> Gpu {
         let device = wgpu::Device::clone(
@@ -117,7 +94,7 @@ impl BlitSource {
                 .query_one::<&wgpu::Device>(ctx.device)
                 .expect("the context's device resource exists"),
         );
-        let sampler = resource_graph(scope, ctx).insert(sampler(&device), None);
+        let sampler = ctx.graph(scope).insert(sampler(&device), None);
         let layout = bind_group_layout(&device);
         let pipeline = pipeline(&device, &layout, surface);
         let bind_group = allocate_bind_group(
@@ -177,7 +154,7 @@ fn allocate_bind_group(
         view.clone(),
         sampler.clone(),
     );
-    let mut graph = resource_graph(scope, ctx);
+    let mut graph = ctx.graph(scope);
     let bind_group = recipe(&graph);
     let rebuild = Rebuild::new(move |graph| Resource::BindGroup(recipe(graph)));
     let bind_group = graph.insert(bind_group, Some(rebuild));
@@ -234,12 +211,12 @@ impl FrameSource for BlitSource {
         // Drop the scope so the graph maintains before the group is read back
         // out: a replace this build made must be visible to the draw.
         drop(maintain);
-        let graph = resource_graph(scope, ctx);
+        let graph = ctx.graph(scope);
         let gpu = &self.gpus[index].1;
         let bind_group = graph
             .get(&gpu.bind_group)
             .expect("the bind group is registered in the graph");
-        scene.push(
+        scene.draws.push(
             DrawEntry::new(&gpu.pipeline, DrawRange::vertices(0..3)).with_bind_group(0, bind_group),
         );
     }

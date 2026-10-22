@@ -44,7 +44,7 @@
 //!     label: Some("example"),
 //! });
 //! pool.upload(&device, &mut encoder);
-//! pool.release(range.allocation());
+//! pool.release(range.allocation);
 //! ```
 
 use crate::offset_allocator::{Allocation, Allocator, min_allocator_size};
@@ -72,35 +72,16 @@ const MIN_ELEMENTS: u32 = 1;
 /// A range of elements inside an [`ArrayPool`]'s array.
 ///
 /// The range stays valid — and its data stays put — until its
-/// [`allocation`](Self::allocation) is handed back with [`ArrayPool::release`].
+/// [`allocation`](Self::allocation) field is handed back with
+/// [`ArrayPool::release`].
 /// Growing the pool replaces the array but keeps every element offset, so read
 /// the handle from [`ArrayPool::handle`] instead of holding one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArrayRange {
     /// The allocation that keeps the range reserved.
-    allocation: Allocation,
+    pub allocation: Allocation,
     /// How many elements the range covers.
-    count: u32,
-}
-
-impl ArrayRange {
-    /// The first element index of the range.
-    ///
-    /// This is what a shader adds to its own base index to reach the slice.
-    pub fn offset(&self) -> u32 {
-        self.allocation.offset
-    }
-
-    /// How many elements the range covers.
-    pub fn count(&self) -> u32 {
-        self.count
-    }
-
-    /// The allocation backing the range, to hand back to
-    /// [`ArrayPool::release`].
-    pub fn allocation(&self) -> Allocation {
-        self.allocation
-    }
+    pub count: u32,
 }
 
 /// One array sub-allocated into element ranges, with a CPU mirror of its bytes.
@@ -248,7 +229,7 @@ impl ArrayPool {
             u64::from(range.count) * element_size,
             "the bytes must be exactly the range's elements"
         );
-        let start = u64::from(range.offset()) * element_size;
+        let start = u64::from(range.allocation.offset) * element_size;
         let end = start + bytes.len() as u64;
         assert!(
             end <= self.data.len() as u64,
@@ -359,14 +340,17 @@ mod tests {
         let first = pool.allocate(&device, 8).expect("the pool has room");
         let second = pool.allocate(&device, 8).expect("the pool has room");
         assert!(
-            first.offset() + first.count() <= second.offset()
-                || second.offset() + second.count() <= first.offset(),
+            first.allocation.offset + first.count <= second.allocation.offset
+                || second.allocation.offset + second.count <= first.allocation.offset,
             "the two ranges do not overlap"
         );
 
-        pool.release(first.allocation());
+        pool.release(first.allocation);
         let third = pool.allocate(&device, 8).expect("the pool has room");
-        assert_eq!(third.offset(), first.offset(), "the freed range comes back");
+        assert_eq!(
+            third.allocation.offset, first.allocation.offset,
+            "the freed range comes back"
+        );
     }
 
     #[test]
@@ -379,12 +363,12 @@ mod tests {
         pool.write(first, &[1, 2, 3, 4, 5, 6, 7, 8]);
         pool.write(second, &[9, 10, 11, 12, 13, 14, 15, 16]);
 
-        let first_start = first.offset() as usize * 4;
+        let first_start = first.allocation.offset as usize * 4;
         assert_eq!(
             &pool.data[first_start..first_start + 8],
             &[1, 2, 3, 4, 5, 6, 7, 8]
         );
-        let second_start = second.offset() as usize * 4;
+        let second_start = second.allocation.offset as usize * 4;
         assert_eq!(
             &pool.data[second_start..second_start + 8],
             &[9, 10, 11, 12, 13, 14, 15, 16]
@@ -409,9 +393,9 @@ mod tests {
 
         // This does not fit in the remaining elements, so the pool grows.
         let second = pool.allocate(&device, 32).expect("the pool grows");
-        assert_eq!(first.offset(), 0, "the first range did not move");
-        assert!(pool.capacity() >= u64::from(second.offset() + second.count()));
-        let start = first.offset() as usize * 4;
+        assert_eq!(first.allocation.offset, 0, "the first range did not move");
+        assert!(pool.capacity() >= u64::from(second.allocation.offset + second.count));
+        let start = first.allocation.offset as usize * 4;
         assert_eq!(
             &pool.data[start..start + 8],
             &[1, 2, 3, 4, 5, 6, 7, 8],

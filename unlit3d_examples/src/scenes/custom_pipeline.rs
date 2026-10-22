@@ -1051,7 +1051,8 @@ fn build(
         },
     );
     let (sky_view, sky_uniforms) = {
-        let mut graph = MeshSource::graph(&world.root_scope(), context);
+        let root = world.root_scope();
+        let mut graph = context.graph(&root);
         let sky_texture = graph.insert(sky_texture, None);
         let sky_view = graph.insert(sky_view, None);
         // The view keeps the texture alive, so the graph needs no other handle
@@ -1103,7 +1104,8 @@ fn build(
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    let particle_uniforms = MeshSource::graph(&world.root_scope(), context)
+    let particle_uniforms = context
+        .graph(&world.root_scope())
         .insert(particle_uniforms_buffer.clone(), None);
     source.register_family::<ParticleKey, _, _>(
         &world.root_scope(),

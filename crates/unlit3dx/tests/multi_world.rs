@@ -39,19 +39,19 @@ fn sub_world_jobs_drain_in_order() {
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     for step in 0..4 {
         let order = Arc::clone(&order);
-        let _ = proxy.send(Box::new(move |_: &mut World| {
+        let _ = proxy.commands.send(Box::new(move |_: &mut World| {
             order.lock().expect("the order lock").push(step);
         }));
     }
     let last = Arc::new(std::sync::Mutex::new(None));
     let seen = Arc::clone(&last);
-    let _ = proxy.send(Box::new(move |_: &mut World| {
+    let _ = proxy.commands.send(Box::new(move |_: &mut World| {
         *seen.lock().expect("the order lock") = Some("last");
     }));
 
     let mut nested = host
         .root_scope()
-        .query_one::<&mut World>(proxy.entity())
+        .query_one::<&mut World>(proxy.entity)
         .expect("the nested world");
     drain_sub_world(&mut nested);
 
@@ -66,18 +66,18 @@ fn a_panicking_job_does_not_stop_the_drain() {
     let mut host = World::new();
     let proxy = spawn_sub_world(&mut host, "nested", 16);
 
-    let _ = proxy.send(Box::new(|_: &mut World| {
+    let _ = proxy.commands.send(Box::new(|_: &mut World| {
         panic!("this job cannot run");
     }));
     let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen = Arc::clone(&ran);
-    let _ = proxy.send(Box::new(move |_: &mut World| {
+    let _ = proxy.commands.send(Box::new(move |_: &mut World| {
         seen.lock().expect("the order lock").push(7u64);
     }));
 
     let mut nested = host
         .root_scope()
-        .query_one::<&mut World>(proxy.entity())
+        .query_one::<&mut World>(proxy.entity)
         .expect("the nested world");
     drain_sub_world(&mut nested);
 
@@ -90,11 +90,11 @@ fn a_panicking_job_does_not_stop_the_drain() {
 fn remote_world_state_persists_between_jobs() {
     let (_host, remote) = idle_host();
 
-    let _ = remote.send(Box::new(|world: &mut World| {
+    let _ = remote.commands.send(Box::new(|world: &mut World| {
         world.root_scope_mut().spawn(bundle![Count(0)]);
     }));
     for _ in 0..5 {
-        let _ = remote.send(Box::new(|world: &mut World| {
+        let _ = remote.commands.send(Box::new(|world: &mut World| {
             world
                 .root_scope()
                 .query::<&mut Count>()
@@ -106,7 +106,7 @@ fn remote_world_state_persists_between_jobs() {
     let counted = Snapshot::new();
     let reader = counted.reader();
     let publish = counted.clone();
-    let _ = remote.send(Box::new(move |world: &mut World| {
+    let _ = remote.commands.send(Box::new(move |world: &mut World| {
         publish.publish(
             world
                 .root_scope()
@@ -139,7 +139,7 @@ fn a_finished_world_drops_jobs_quietly() {
     assert!(world.panic_message().is_none());
     // The channel's receiver dies with the thread, so the job is refused
     // instead of being queued for a world that will never run it.
-    let refused = world.send(Box::new(|_: &mut World| {
+    let refused = world.commands.send(Box::new(|_: &mut World| {
         panic!("a dropped job must not run");
     }));
     assert_eq!(refused, Err(SendError::Closed));
@@ -154,9 +154,9 @@ fn despawning_the_proxy_stops_the_world() {
         control.wait_timeout(Duration::from_millis(1));
         true
     });
-    let sender = world.sender();
+    let sender = world.commands.clone();
     assert!(
-        host.root_scope_mut().despawn(world.entity()),
+        host.root_scope_mut().despawn(world.entity),
         "the proxy entity despawns"
     );
 
@@ -187,7 +187,7 @@ fn subscriptions_flow_from_thread_to_host() {
     // so it sees a fresh value on every one.
     let mut tick: u32 = 0;
     let reader = world
-        .sender()
+        .commands
         .subscribe(move |_world: &World| {
             tick += 1;
             Some(tick)
@@ -198,7 +198,7 @@ fn subscriptions_flow_from_thread_to_host() {
         "the reader never saw the collected values"
     );
     assert!(
-        host.root_scope().contains(world.entity()),
+        host.root_scope().contains(world.entity),
         "the proxy lives on a host entity"
     );
 }

@@ -147,12 +147,6 @@ impl World {
         self.shared
     }
 
-    /// Whether `entity` is the root.
-    #[must_use]
-    pub fn is_root(&self, entity: Entity) -> bool {
-        entity == self.root
-    }
-
     /// Whether `entity` is in the shared subtree, itself included.
     #[must_use]
     pub fn is_shared(&self, entity: Entity) -> bool {

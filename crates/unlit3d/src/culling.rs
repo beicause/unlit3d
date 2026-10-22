@@ -10,7 +10,7 @@ use glam::Affine3A;
 use unlit_ecs::World;
 use unlit_ecs::{Entity, Scope};
 
-use crate::bounds::{Aabb, FrustumPlanes, Obb};
+use crate::bounds::{Aabb, FrustumPlanes};
 use crate::components::{GpuMesh, Transform};
 
 /// Whether a mesh whose local bounds are `aabb`, placed by
@@ -20,7 +20,7 @@ use crate::components::{GpuMesh, Transform};
 /// scaled entity is tested as the box it really is rather than as its
 /// axis-aligned envelope.
 pub fn is_culled(aabb: Aabb, world_from_local: &Affine3A, frustum: &FrustumPlanes) -> bool {
-    !frustum.test_obb(&Obb::from_aabb(aabb, world_from_local))
+    !frustum.test_obb(&aabb.transformed(world_from_local))
 }
 
 /// A mesh that passed culling, with its placement resolved.

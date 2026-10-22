@@ -389,6 +389,7 @@ mod tests {
             true
         });
         handle
+            .commands
             .send(Box::new(|world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Count(0)]);
             }))
@@ -397,6 +398,7 @@ mod tests {
         let reader = counted.reader();
         let publish = counted.clone();
         handle
+            .commands
             .send(Box::new(move |world: &mut World| {
                 world
                     .root_scope()
@@ -444,6 +446,7 @@ mod tests {
         let reader = seeded.reader();
         let publish = seeded.clone();
         handle
+            .commands
             .send(Box::new(move |world: &mut World| {
                 publish.publish(world.root_scope().query::<&Count>().next().is_some());
             }))
@@ -466,7 +469,7 @@ mod tests {
         let handle = spawn_remote_world(&mut host, "test", 1, |_, _| true);
         let mut results = Vec::new();
         for _ in 0..64 {
-            results.push(handle.send(Box::new(|_| {})));
+            results.push(handle.commands.send(Box::new(|_| {})));
         }
         assert!(
             results.contains(&Err(SendError::Full)),
@@ -496,7 +499,7 @@ mod tests {
             },
         );
         let count = |host: &World| {
-            with_stepped_world(host, handle.entity(), |world| {
+            with_stepped_world(host, handle.entity, |world| {
                 world
                     .root_scope()
                     .query::<&Count>()
@@ -507,9 +510,9 @@ mod tests {
         };
         // Nothing has run yet: the host has not stepped the world.
         assert_eq!(count(&host), Some(0));
-        step_stepped_world(&host, handle.entity());
+        step_stepped_world(&host, handle.entity);
         assert_eq!(count(&host), Some(1));
-        step_stepped_world(&host, handle.entity());
+        step_stepped_world(&host, handle.entity);
         assert_eq!(count(&host), Some(2));
     }
 
@@ -524,7 +527,7 @@ mod tests {
             |_| (),
             |_, _: &ThreadControl, ()| false,
         );
-        step_stepped_world(&host, handle.entity());
+        step_stepped_world(&host, handle.entity);
         assert!(handle.is_finished(), "a false tick ends a stepped world");
     }
 

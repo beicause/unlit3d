@@ -1034,18 +1034,6 @@ impl ResourceGraph {
             .map(|node| self.id_for(node))
     }
 
-    /// The [`ResId`]s of the immediate dependencies recorded for `id`.
-    ///
-    /// The plain form of [`Self::dependencies`], for a caller that reports or
-    /// transports the graph rather than using it: each id resolves back through
-    /// [`Self::resolve`] while the dependency lives.
-    pub fn dependency_ids<R>(&self, id: &ResHandle<R>) -> Vec<ResId> {
-        self.graph
-            .dependencies(id.node)
-            .map(ResId::from_node)
-            .collect()
-    }
-
     /// An id to `node`, taking one more strong reference to it.
     ///
     /// The caller asks about the dependency of a node it holds an id to, so the

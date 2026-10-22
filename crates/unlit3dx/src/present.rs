@@ -186,7 +186,7 @@ impl Presenter {
                 source
                     .as_mut::<BlitSource>()
                     .expect("the blit pass's source is a blit")
-                    .set_view(offscreen.view);
+                    .view = offscreen.view;
             });
     }
 }

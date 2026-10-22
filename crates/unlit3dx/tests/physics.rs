@@ -46,10 +46,12 @@ fn floored_host<R: WorldRunner>() -> (World, WorldHandle, SnapshotReader<Poses>)
     let mut host = World::new();
     let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default());
     let reader = world
-        .sender()
+        .commands
+        .clone()
         .subscribe(collect_poses)
         .expect("the physics world accepts a subscription");
     world
+        .commands
         .send(Box::new(move |world: &mut World| {
             spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
         }))
@@ -83,6 +85,7 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
 fn a_dropped_ball_settles_in_its_snapshots() {
     let (host, world, poses) = floored_host::<Stepped>();
     world
+        .commands
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
@@ -95,7 +98,7 @@ fn a_dropped_ball_settles_in_its_snapshots() {
     };
     let mut rested = false;
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity());
+        step_stepped_world(&host, world.entity);
         rested = poses.latest().is_some_and(|poses| settled(&poses));
         if rested {
             break;
@@ -120,6 +123,7 @@ fn a_dropped_ball_settles_in_its_snapshots() {
 fn a_threaded_world_steps_what_a_job_builds() {
     let (_host, world, poses) = floored_host::<Threaded>();
     world
+        .commands
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
@@ -163,7 +167,7 @@ fn ball_desc() -> BodyDesc {
 fn a_collector_sees_contacts_from_every_step() {
     let mut host = World::new();
     let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default());
-    let sender = world.sender();
+    let sender = world.commands.clone();
     let (queue, contacts) = std::sync::mpsc::channel();
     // The collector queues what it sees and publishes nothing: the
     // subscription's state is the queue, which is the app's to own. The
@@ -207,7 +211,7 @@ fn a_collector_sees_contacts_from_every_step() {
 
     let mut landed: Vec<RigidBodyHandle> = Vec::new();
     for _ in 0..STEPS {
-        step_stepped_world(&host, world.entity());
+        step_stepped_world(&host, world.entity);
         while let Ok((one, two, _speed)) = contacts.try_recv() {
             for body in [one, two] {
                 if !landed.contains(&body) {
@@ -324,7 +328,8 @@ fn an_empty_world_publishes_empty_contacts() {
     let mut host = World::new();
     let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
     let reader = world
-        .sender()
+        .commands
+        .clone()
         .subscribe(|world: &World| {
             let contacts = world.root_scope().query::<&PhysicsContacts>().next()?;
             Some((contacts.started.len(), contacts.stopped.len()))
@@ -358,6 +363,7 @@ fn the_configured_gravity_reaches_the_world() {
     let reader = probed.reader();
     let publish = probed.clone();
     world
+        .commands
         .send(Box::new(move |world: &mut World| {
             publish.publish(
                 world

@@ -354,7 +354,7 @@ mod tests {
         };
         let text = value.to_string();
         assert!(
-            text.contains("listed") && text.contains(&threaded.entity().to_bits().to_string()),
+            text.contains("listed") && text.contains(&threaded.entity.to_bits().to_string()),
             "the host names the threaded world: {text}"
         );
     }
@@ -372,6 +372,7 @@ mod tests {
         let reader = seeded.reader();
         let publish = seeded.clone();
         threaded
+            .commands
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Marker]);
                 publish.publish(());
@@ -387,7 +388,7 @@ mod tests {
             let count = world.root_scope().query::<&Marker>().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
-        let command = command.with_world(WorldId::handle(threaded.entity()));
+        let command = command.with_world(WorldId::handle(threaded.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -417,10 +418,10 @@ mod tests {
             let count = world.root_scope().query::<&Marker>().count();
             Ok(Output::Json(serde_json::Value::from(count as u64)))
         });
-        let command = command.with_world(WorldId::handle(stepped.entity()));
+        let command = command.with_world(WorldId::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
-        step_stepped_world(&host, stepped.entity());
+        step_stepped_world(&host, stepped.entity);
 
         let answer = reply.recv_blocking().expect("the command was answered");
         let Ok(Output::Json(value)) = answer else {
@@ -441,11 +442,11 @@ mod tests {
             |_: &mut World| (),
             |_, _: &ThreadControl, ()| false,
         );
-        step_stepped_world(&host, stepped.entity());
+        step_stepped_world(&host, stepped.entity);
         assert!(stepped.is_finished(), "the tick ended the world");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
-        let command = command.with_world(WorldId::handle(stepped.entity()));
+        let command = command.with_world(WorldId::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 
@@ -472,11 +473,12 @@ mod tests {
             |_, _: &ThreadControl, ()| true,
         );
         stepped
+            .commands
             .send(Box::new(|_: &mut World| {}))
             .expect("the first job fits");
 
         let (command, reply) = McpCommand::new(|_| Ok(Output::Json(serde_json::Value::Null)));
-        let command = command.with_world(WorldId::handle(stepped.entity()));
+        let command = command.with_world(WorldId::handle(stepped.entity));
         transport.try_send(command).expect("the inbox takes it");
         run_turn(&mut host);
 

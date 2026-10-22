@@ -29,9 +29,6 @@ name = "headless"
 
 [dependencies]
 argh.workspace = true
-# The headless run builds the same job queues the threaded worlds use,
-# without spawning the threads.
-async-channel.workspace = true
 glam.workspace = true
 hashbrown.workspace = true
 log.workspace = true
@@ -43,7 +40,6 @@ unlit3dx = { path = "../crates/unlit3dx", version = "0.1.0-dev.2" }
 # megabytes: a constant holding them would copy them into this crate's own
 # metadata and slow every downstream rebuild.
 unlit3dx_asset_bytes = { path = "asset_bytes", version = "0.1.0-dev.2" }
-web-time.workspace = true
 wgpu.workspace = true
 winit.workspace = true
 

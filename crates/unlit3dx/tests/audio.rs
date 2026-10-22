@@ -140,18 +140,20 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     // are answered whether or not a device exists, so a device-less world
     // runs silently but stays alive.
     world
+        .commands
         .send(Box::new(move |world: &mut World| {
             counting_source(world, 0.25, &counted);
         }))
         .expect("the audio world takes its source");
     // A marker job and a probe that waits for it.
-    let _ = world.send(Box::new(|world: &mut World| {
+    let _ = world.commands.send(Box::new(|world: &mut World| {
         world.root_scope_mut().spawn(bundle![Marker]);
     }));
     let marked = Snapshot::new();
     let reader = marked.reader();
     let publish = marked.clone();
     world
+        .commands
         .send(Box::new(move |world: &mut World| {
             publish.publish(world.root_scope().query::<&Marker>().next().is_some());
         }))
@@ -183,7 +185,7 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
 fn the_audio_world_reports_its_output_opening() {
     let mut host = World::new();
     let world = spawn_audio_world_with::<Threaded>(&mut host, AudioConfig::default());
-    let sender = world.sender();
+    let sender = world.commands.clone();
     // Both subscriptions are made the way a caller installs sources: the
     // format says which rate to build them at, the marker says the output
     // exists at all.

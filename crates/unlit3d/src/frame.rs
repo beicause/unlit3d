@@ -93,12 +93,7 @@ impl FrameSkip {
     ///
     /// A no-op in a world that never spawned a [FrameSkip].
     pub fn skip(world: &World) {
-        for entity in Self::entities(world) {
-            let _ = world
-                .root_scope()
-                .query_one::<&mut FrameSkip>(entity)
-                .map(|mut skip| skip.0 = true);
-        }
+        Self::set(world, true);
     }
 
     /// Whether the frame has been skipped.
@@ -112,11 +107,16 @@ impl FrameSkip {
 
     /// Clear the flag, readying the frame for its behaviours.
     fn reset(world: &World) {
+        Self::set(world, false);
+    }
+
+    /// Set the flag on every [FrameSkip] in the world.
+    fn set(world: &World, value: bool) {
         for entity in Self::entities(world) {
             let _ = world
                 .root_scope()
                 .query_one::<&mut FrameSkip>(entity)
-                .map(|mut skip| skip.0 = false);
+                .map(|mut skip| skip.0 = value);
         }
     }
 

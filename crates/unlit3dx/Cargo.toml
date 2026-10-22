@@ -8,7 +8,6 @@ license.workspace = true
 keywords = ["audio", "ecs", "gamedev", "multithreading", "physics"]
 
 [dependencies]
-arc-swap.workspace = true
 async-channel.workspace = true
 cpal = { workspace = true, optional = true }
 futures-executor.workspace = true

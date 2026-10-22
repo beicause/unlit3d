@@ -53,9 +53,9 @@
 //!     .allocate(&device, &queue, &[layout.clone()], 3)
 //!     .expect("the pool has room");
 //! let buffer = pool.buffer(&layout).expect("the layout has a buffer");
-//! let offset = VertexStreamPool::byte_offset(&layout, vertices.offset());
+//! let offset = VertexStreamPool::byte_offset(&layout, vertices.allocation.offset);
 //! queue.write_buffer(buffer, offset, &[0u8; 24]);
-//! pool.release(vertices.allocation());
+//! pool.release(vertices.allocation);
 //! ```
 
 use core::num::NonZeroU32;
@@ -92,30 +92,9 @@ const MIN_ELEMENTS: u32 = 1;
 #[derive(Clone, Copy, Debug)]
 pub struct VertexAllocation {
     /// The allocation that keeps the element range reserved.
-    allocation: Allocation,
+    pub allocation: Allocation,
     /// How many elements the range covers.
-    count: u32,
-}
-
-impl VertexAllocation {
-    /// The first element index of the range.
-    ///
-    /// This is what a draw's `firstVertex` — or, for an indexed draw, its
-    /// `baseVertex` — is set to.
-    pub fn offset(&self) -> u32 {
-        self.allocation.offset
-    }
-
-    /// How many elements the range covers.
-    pub fn count(&self) -> u32 {
-        self.count
-    }
-
-    /// The allocation backing the range, to hand back to
-    /// [`VertexStreamPool::release`].
-    pub fn allocation(&self) -> Allocation {
-        self.allocation
-    }
+    pub count: u32,
 }
 
 /// One large buffer per vertex layout, sub-allocated into element ranges.
@@ -390,8 +369,8 @@ mod tests {
             .allocate(&device, &queue, std::slice::from_ref(&eight), 4)
             .expect("the pool has room");
         assert!(pool.buffer(&eight).is_some());
-        assert_eq!(vertices.offset(), 0);
-        assert_eq!(vertices.count(), 4);
+        assert_eq!(vertices.allocation.offset, 0);
+        assert_eq!(vertices.count, 4);
     }
 
     #[test]
@@ -409,7 +388,7 @@ mod tests {
             .allocate(&device, &queue, std::slice::from_ref(&empty), 4)
             .expect("the pool has room");
         assert!(pool.buffer(&empty).is_none());
-        assert_eq!(vertices.count(), 4);
+        assert_eq!(vertices.count, 4);
     }
 
     #[test]
@@ -432,7 +411,10 @@ mod tests {
             // byte sizes differ but the element index does not.
             let size = pool.buffer(stream).expect("the layout has a buffer").size();
             assert!(
-                size >= VertexStreamPool::byte_offset(stream, vertices.offset() + vertices.count()),
+                size >= VertexStreamPool::byte_offset(
+                    stream,
+                    vertices.allocation.offset + vertices.count
+                ),
                 "the buffer covers the whole allocation"
             );
         }
@@ -456,16 +438,19 @@ mod tests {
             .allocate(&device, &queue, std::slice::from_ref(&eight), 8)
             .expect("the pool has room");
         assert!(
-            first.offset() + first.count() <= second.offset()
-                || second.offset() + second.count() <= first.offset(),
+            first.allocation.offset + first.count <= second.allocation.offset
+                || second.allocation.offset + second.count <= first.allocation.offset,
             "the two allocations do not overlap"
         );
 
-        pool.release(first.allocation());
+        pool.release(first.allocation);
         let third = pool
             .allocate(&device, &queue, std::slice::from_ref(&eight), 8)
             .expect("the pool has room");
-        assert_eq!(third.offset(), first.offset(), "the freed range comes back");
+        assert_eq!(
+            third.allocation.offset, first.allocation.offset,
+            "the freed range comes back"
+        );
     }
 
     #[test]
@@ -499,8 +484,11 @@ mod tests {
             &before,
             "growing replaces the buffer"
         );
-        assert_eq!(first.offset(), 0, "the first allocation did not move");
-        assert!(pool.element_capacity() >= first.count() + second.count());
+        assert_eq!(
+            first.allocation.offset, 0,
+            "the first allocation did not move"
+        );
+        assert!(pool.element_capacity() >= first.count + second.count);
     }
 
     #[test]
@@ -536,7 +524,7 @@ mod tests {
                 .wrapping_add(1442695040888963407);
             let free_one = state.is_multiple_of(2);
             if free_one && let Some(allocation) = live.pop() {
-                pool.release(allocation.allocation());
+                pool.release(allocation.allocation);
             }
             let count = 1 + (state >> 33) % 64;
             let count = u32::try_from(count).expect("the count fits in u32");
@@ -547,11 +535,11 @@ mod tests {
             // mesh reads the same vertex: there is nothing to compare here
             // beyond the allocation itself, and the assertion below is what
             // catches a design that gave each stream an index of its own.
-            assert_eq!(allocation.count(), count);
+            assert_eq!(allocation.count, count);
             if rolls == 0 {
                 live.push(allocation);
             } else {
-                pool.release(allocation.allocation());
+                pool.release(allocation.allocation);
             }
         }
     }

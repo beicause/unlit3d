@@ -598,7 +598,7 @@ impl BendSkin {
         matrices[1] = glam::Mat4::from_translation(glam::Vec3::Y * self.pivot)
             * glam::Mat4::from_rotation_z(self.angle)
             * glam::Mat4::from_translation(glam::Vec3::Y * -self.pivot);
-        SkinPose::new(matrices)
+        SkinPose { matrices }
     }
 }
 

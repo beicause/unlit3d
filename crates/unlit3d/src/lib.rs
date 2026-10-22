@@ -86,5 +86,5 @@ pub mod prelude {
         color_clear, create_color_target, create_depth_target, create_msaa_target,
         create_render_target, depth_clear, stencil_clear,
     };
-    pub use unlit_wgpu::scene::{ScissorRect, ViewportRect, full_viewport};
+    pub use unlit_wgpu::scene::{ScissorRect, ViewportRect};
 }

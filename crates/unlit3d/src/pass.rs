@@ -118,8 +118,8 @@ impl FramePass {
         color_view: ResHandle<TextureView>,
     ) {
         self.color = Some(color_view);
-        self.depth = attachments.depth_view().cloned();
-        self.msaa = attachments.msaa_view().cloned();
+        self.depth = attachments.depth_view.clone();
+        self.msaa = attachments.msaa_view.clone();
     }
 
     /// Draw nowhere until an attachment is stated again.

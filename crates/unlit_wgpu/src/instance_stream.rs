@@ -66,11 +66,6 @@ impl InstanceBuffer {
         }
     }
 
-    /// Where the stream binds and how wide one record is.
-    pub fn desc(&self) -> InstanceStreamDesc {
-        self.desc
-    }
-
     /// The buffer holding the last upload, or `None` before the first one.
     pub fn buffer(&self) -> Option<&wgpu::Buffer> {
         self.buffer.as_ref()

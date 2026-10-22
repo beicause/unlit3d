@@ -8,7 +8,7 @@
 
 use unlit_ecs::Entity;
 
-use crate::job::{Job, JobSender, SendError};
+use crate::job::JobSender;
 use crate::thread::ThreadStatus;
 
 /// A cloneable handle to a spawned world.
@@ -20,8 +20,12 @@ use crate::thread::ThreadStatus;
 /// the world lives on until the host drops the proxy entity.
 #[derive(Clone)]
 pub struct WorldHandle {
-    entity: Entity,
-    commands: JobSender,
+    /// The host entity the world's proxy component lives on.
+    pub entity: Entity,
+    /// The command queue. Queueing through [`send`](JobSender::send) never
+    /// blocks: a full or stopped queue reports
+    /// [`SendError`](crate::job::SendError) and hands the job back.
+    pub commands: JobSender,
     status: Option<ThreadStatus>,
 }
 
@@ -37,37 +41,6 @@ impl WorldHandle {
             commands,
             status,
         }
-    }
-
-    /// The host entity the world's proxy component lives on.
-    #[must_use]
-    pub fn entity(&self) -> Entity {
-        self.entity
-    }
-
-    /// Queue a job. Never blocks: a full or stopped queue reports
-    /// [`SendError`] and hands the job back.
-    pub fn send(&self, job: Job<()>) -> Result<(), SendError> {
-        self.commands.send(job)
-    }
-
-    /// A cloneable handle to the command channel, for worlds that queue
-    /// jobs without holding the handle.
-    #[must_use]
-    pub fn sender(&self) -> JobSender {
-        self.commands.clone()
-    }
-
-    /// Whether the world's queue is empty right now.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.commands.is_empty()
-    }
-
-    /// Whether the world has stopped.
-    #[must_use]
-    pub fn is_closed(&self) -> bool {
-        self.commands.is_closed()
     }
 
     /// Whether the world's thread has exited.
@@ -105,13 +78,14 @@ mod tests {
         let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen = std::sync::Arc::clone(&ran);
         handle
+            .commands
             .send(Box::new(move |_: &mut World| {
                 seen.store(true, std::sync::atomic::Ordering::SeqCst);
             }))
             .expect("the queue has room");
         let mut nested = host
             .root_scope()
-            .query_one::<&mut World>(handle.entity())
+            .query_one::<&mut World>(handle.entity)
             .expect("the nested world");
         crate::host::drain_sub_world(&mut nested);
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
