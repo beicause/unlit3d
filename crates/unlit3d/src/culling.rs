@@ -11,7 +11,7 @@ use unlit_ecs::World;
 use unlit_ecs::{Entity, Scope};
 
 use crate::bounds::{Aabb, FrustumPlanes};
-use crate::components::{GpuMesh, Transform};
+use crate::components::{GpuMesh, InstanceVisibility, Transform};
 
 /// Whether a mesh whose local bounds are `aabb`, placed by
 /// `world_from_local`, lies entirely outside `frustum` and can be skipped.
@@ -49,13 +49,28 @@ pub(crate) struct VisibleMesh {
 /// identity. The placement resolved here is the one the frame sorts by, and it
 /// is handed to the drawing family, so culling and drawing cannot disagree
 /// about where the mesh is.
+///
+/// An entity whose [InstanceVisibility] says it is hidden is dropped here
+/// rather than in a family: culling is the one pass every draw goes through, so
+/// a hidden entity costs this test and nothing else — no variant is
+/// specialized, no instance record is packed, no handle is interned. An entity
+/// without the component is drawn, which keeps the component out of every
+/// caller that never hides anything.
 pub(crate) fn collect_visible(
     scope: &Scope<'_>,
     frustum: &FrustumPlanes,
     out: &mut Vec<VisibleMesh>,
 ) {
     out.clear();
-    for (gpu_mesh, option, entity) in scope.query::<(&GpuMesh, Option<&Transform>, Entity)>() {
+    for (gpu_mesh, option, visibility, entity) in scope.query::<(
+        &GpuMesh,
+        Option<&Transform>,
+        Option<&InstanceVisibility>,
+        Entity,
+    )>() {
+        if visibility.is_some_and(|visibility| !visibility.visible) {
+            continue;
+        }
         let model = match option {
             Some(transform) => transform.compute_matrix(),
             None => Affine3A::IDENTITY,
@@ -157,5 +172,59 @@ mod tests {
         let found: Vec<_> = out.iter().map(|mesh| mesh.entity).collect();
         assert_eq!(found, [near]);
         assert_ne!(found, [far]);
+    }
+
+    /// Two entities at the same place, differing only in whether they are
+    /// visible: the hidden one is dropped before its bounds are ever tested, so
+    /// what it would have cost a family is never paid.
+    #[test]
+    fn a_hidden_entity_is_not_collected() {
+        let mut world = World::new();
+        let mut graph = ResourceGraph::new();
+        let root = graph.insert(Virtual, None);
+        let mesh = GpuMesh {
+            parts: Rc::new(MeshParts {
+                root,
+                vertex_buffers: ArrayVec::new(),
+                index_buffer: None,
+                bind_group_id: None,
+                vertex_allocation: None,
+                index_allocation: None,
+                morph_deltas_allocation: None,
+                metadata_index: 0,
+            }),
+            vertex_layout: VertexLayout::default(),
+            count: 0,
+            first: 0,
+            base_vertex: 0,
+            indexed: false,
+            aabb: Aabb::new(Vec3::ZERO, Vec3::splat(0.5)),
+            morph_targets: 0,
+            skinned: false,
+        };
+        let shown = world.root_scope_mut().spawn(bundle![
+            mesh.clone(),
+            Transform::default(),
+            InstanceVisibility::default(),
+        ]);
+        let hidden = world.root_scope_mut().spawn(bundle![
+            mesh,
+            Transform::default(),
+            InstanceVisibility { visible: false },
+        ]);
+        let frustum = frustum_at(Vec3::new(0.0, 0.0, 5.0));
+        let mut out = Vec::new();
+        collect_visible(&world.root_scope(), &frustum, &mut out);
+        let found: Vec<_> = out.iter().map(|mesh| mesh.entity).collect();
+        assert_eq!(found, [shown]);
+        assert_ne!(found, [hidden]);
+    }
+
+    /// The component states visibility explicitly, and its default is drawn:
+    /// a caller that adds it to switch hiding on must not hide everything it
+    /// already draws.
+    #[test]
+    fn the_default_visibility_is_drawn() {
+        assert!(InstanceVisibility::default().visible);
     }
 }

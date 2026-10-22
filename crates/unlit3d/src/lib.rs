@@ -51,8 +51,9 @@ pub mod prelude {
         blit::BlitSource,
         bounds::{Aabb, FrustumPlanes, Obb},
         components::{
-            Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MeshParts, MorphBinding, MorphWeights,
-            RenderLoadOps, SkinBinding, SkinPose, Transform, ZSortedDrawing,
+            Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceVisibility, MeshParts,
+            MorphBinding, MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform,
+            ZSortedDrawing,
         },
         culling::is_culled,
         frame::{

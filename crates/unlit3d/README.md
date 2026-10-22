@@ -305,8 +305,18 @@ to the per-instance vertex stream the family owns and declares (see
 [The unlit pipeline](#the-unlit-pipeline)). Other
 components: [`Transform`](components::Transform), [`Camera`](components::Camera),
 [`RenderLoadOps`](components::RenderLoadOps),
-[`InstanceColor`](unlit::InstanceColor) and the
+[`InstanceColor`](unlit::InstanceColor),
+[`InstanceVisibility`](components::InstanceVisibility) and the
 [`ZSortedDrawing`](components::ZSortedDrawing) marker.
+
+An entity carrying an [`InstanceVisibility`](components::InstanceVisibility) whose
+[`visible`](components::InstanceVisibility::visible) is `false` is skipped before
+culling, so nothing is specialized, packed or recorded for it; an entity without the
+component is drawn, and its [`Default`] is drawn too. The flag is per entity rather
+than per mesh because one [`GpuMesh`](components::GpuMesh) is usually drawn by many
+entities and hiding one must not hide the others, and it is a field rather than the
+absence of a component because an entity's component set is fixed when it is spawned —
+hiding by removal would mean despawning and spawning instead of flipping a flag.
 
 A [`ZSortedDrawing`](components::ZSortedDrawing) entity is drawn after the
 opaque ones and ordered back-to-front by the depth of its mesh's bounds centre

@@ -484,6 +484,36 @@ pub struct GpuMaterial {
 #[cfg_attr(feature = "reflect", derive(facet::Facet))]
 pub struct ZSortedDrawing;
 
+/// Whether the entity is drawn at all.
+///
+/// An entity without this component is drawn; one carrying it with
+/// [`Self::visible`] set to `false` is skipped before culling, so nothing is
+/// specialized, packed or recorded for it. The entity keeps its components and
+/// its handles, so the flag costs a field read per entity per frame where
+/// despawning costs the entity: turning it back on draws the entity again with
+/// the state it already had.
+///
+/// Visibility is per entity rather than per mesh. One [`GpuMesh`] is usually
+/// drawn by many entities, and hiding one of them must not hide the others,
+/// so the flag cannot live on the shared mesh. It also cannot be the absence of
+/// a component: an entity's component set is fixed when it is spawned, so
+/// hiding by removal would mean despawning and spawning instead of flipping a
+/// flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "reflect", derive(facet::Facet))]
+pub struct InstanceVisibility {
+    /// Whether the entity is drawn.
+    pub visible: bool,
+}
+
+impl Default for InstanceVisibility {
+    /// Drawn: adding the component states visibility explicitly, and an
+    /// accidental hide is worse than an accidental draw.
+    fn default() -> Self {
+        Self { visible: true }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

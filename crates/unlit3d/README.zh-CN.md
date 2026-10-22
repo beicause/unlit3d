@@ -207,8 +207,14 @@ spawn/despawn 一个实体，源在自己的构建阶段直接取用共享上下
 `MeshSourceUnlitExt::register_unlit_family` 注册内置的 unlit 家族；`MeshSource::register_family`
 注册调用者自己的家族，这与内置家族走的是同一条路——连家族自己拥有并声明的逐实例
 顶点流也不例外（见[自定义着色器与逐实例数据](#自定义着色器与逐实例数据)）。其他组件
-包括 `Transform`、`Camera`、`RenderLoadOps`、`unlit::InstanceColor`
-以及 `ZSortedDrawing` 标记。
+包括 `Transform`、`Camera`、`RenderLoadOps`、`unlit::InstanceColor`、
+`InstanceVisibility` 以及 `ZSortedDrawing` 标记。
+
+带 `InstanceVisibility` 且 `visible` 为 `false` 的实体在剔除之前就被跳过，因此不会为它
+特化变体、打包实例记录或登记句柄；不带该组件的实体照常绘制，其 `Default` 也是绘制。
+该标志是逐实体而非逐网格的：一份 `GpuMesh` 通常被多个实体绘制，隐藏其中一个不能连带隐藏
+其余；它是字段而不是「组件缺失」，因为实体的组件集合在生成时就已固定，靠移除组件来隐藏
+意味着要销毁重建，而不是翻转一个标志。
 
 带 `ZSortedDrawing` 的实体会在不透明实体之后绘制，并按「网格包围盒中心沿相机视线轴的
 深度」由远及近排序——见 `Camera::view_depth`——因此枢轴点偏离几何体的网格仍按它实际

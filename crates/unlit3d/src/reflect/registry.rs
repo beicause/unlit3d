@@ -9,8 +9,8 @@
 use unlit_ecs::reflect::ComponentEntry;
 
 use crate::components::{
-    Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, MorphBinding, MorphWeights, RenderLoadOps,
-    SkinBinding, SkinPose, Transform, ZSortedDrawing,
+    Camera, GpuMaterial, GpuMesh, GpuRenderPipeline, InstanceVisibility, MorphBinding,
+    MorphWeights, RenderLoadOps, SkinBinding, SkinPose, Transform, ZSortedDrawing,
 };
 use crate::input::InputEvents;
 use crate::unlit::{InstanceColor, InstanceCutoff, UnlitPipelineKey};
@@ -22,6 +22,7 @@ inventory::submit! { ComponentEntry::new::<GpuMesh>() }
 inventory::submit! { ComponentEntry::new::<GpuMaterial>() }
 inventory::submit! { ComponentEntry::new::<GpuRenderPipeline<UnlitPipelineKey>>() }
 inventory::submit! { ComponentEntry::default::<ZSortedDrawing>() }
+inventory::submit! { ComponentEntry::default::<InstanceVisibility>() }
 inventory::submit! { ComponentEntry::default::<SkinPose>() }
 inventory::submit! { ComponentEntry::default::<MorphWeights>() }
 inventory::submit! { ComponentEntry::new::<SkinBinding>() }
@@ -154,6 +155,33 @@ mod tests {
         let encoded =
             encode(&world.root_scope(), entity, "GpuMesh").expect("GpuMesh still encodes");
         assert!(encoded.contains("count"), "{encoded}");
+    }
+
+    /// Visibility is a plain field on a component the entity already carries,
+    /// so a reader flips it instead of respawning: the entity keeps its mesh,
+    /// its handles and its place in the scene.
+    #[test]
+    fn visibility_is_settable_through_its_own_field() {
+        use crate::components::InstanceVisibility;
+
+        let mut world = World::new();
+        let entity = world
+            .root_scope_mut()
+            .spawn(bundle![InstanceVisibility::default()]);
+
+        set(
+            &world.root_scope(),
+            entity,
+            "InstanceVisibility",
+            r#"{"visible":false}"#,
+        )
+        .expect("visibility is writable");
+
+        let encoded =
+            encode(&world.root_scope(), entity, "InstanceVisibility").expect("it encodes");
+        let value: InstanceVisibility =
+            facet_json::from_str(&encoded).expect("the encoding is JSON");
+        assert!(!value.visible, "the write did not reach the component");
     }
 
     /// A component the entity does not carry is reported rather than encoded as

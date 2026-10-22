@@ -1402,7 +1402,7 @@ impl FrameSource for MeshSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::{Transform, ZSortedDrawing};
+    use crate::components::{InstanceVisibility, Transform, ZSortedDrawing};
     use crate::mesh::MorphDeltas;
     use crate::pass::PassInfo;
     use crate::scene::DrawShape;
@@ -3110,6 +3110,70 @@ mod tests {
             scene.draws.len(),
             1,
             "and therefore one merged instanced draw"
+        );
+    }
+
+    /// A hidden entity keeps its components and its mesh handle but reaches no
+    /// draw: it is dropped while culling, before a family sees it, so nothing
+    /// is specialized, packed or bound for it.
+    #[test]
+    fn a_hidden_entity_is_not_drawn() {
+        let mut h = harness();
+        let mesh = h.tri_mesh();
+        h.world
+            .root_scope_mut()
+            .spawn(bundle![test_camera(glam::Vec3::new(0.0, 0.0, 5.0))]);
+        let shown = h.world.root_scope_mut().spawn(bundle![
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(h.key.clone()),
+        ]);
+        let hidden = h.world.root_scope_mut().spawn(bundle![
+            Transform::default(),
+            mesh.clone(),
+            UnlitPipeline::new(h.key.clone()),
+            InstanceVisibility { visible: false },
+        ]);
+
+        let ctx = h.source.context();
+        let mut encoder = h.encoder();
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
+
+        let drawn: Vec<_> = h
+            .source
+            .visible_cache
+            .iter()
+            .map(|entry| entry.mesh.entity)
+            .collect();
+        assert_eq!(drawn, [shown], "the hidden entity reached no family");
+        assert_ne!(drawn, [hidden]);
+
+        // Flipping the flag back draws it again with the components it already
+        // had: no respawn, no new mesh, no reallocated handles.
+        *h.world
+            .root_scope()
+            .query_one::<&mut InstanceVisibility>(hidden)
+            .expect("the hidden entity still carries its visibility") =
+            InstanceVisibility::default();
+        let mut scene = Scene::new();
+        h.source.build_scene(
+            &h.world.root_scope(),
+            ctx,
+            h.target,
+            &mut scene,
+            &mut encoder,
+        );
+        assert_eq!(
+            h.source.visible_cache.len(),
+            2,
+            "the entity is drawn again once the flag says so"
         );
     }
 

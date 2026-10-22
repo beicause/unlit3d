@@ -82,6 +82,10 @@ mod tests {
             "ZSortedDrawing"
         );
         assert_eq!(
+            crate::components::InstanceVisibility::SHAPE.type_identifier,
+            "InstanceVisibility"
+        );
+        assert_eq!(
             crate::unlit::InstanceColor::SHAPE.type_identifier,
             "InstanceColor"
         );
