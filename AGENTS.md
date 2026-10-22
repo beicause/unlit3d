@@ -52,7 +52,7 @@
 
 由于Rust编译较慢且占用磁盘，本地机器负担不起，要注意：
 - **本地只跑检查类命令**：`cargo fmt --all`、`cargo xtask check`（clippy，含逐包那一趟）、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --keep-going`、`tombi format`、`typos`。让这些通过（不一定要最后才运行，若之前运行后没改动，则不必重复运行），尽量一次运行多个命令，减少会话步次。
-- **编译与测试一律交给 CI**：`cargo build`、`cargo nextest`、`cargo test`、`cargo xtask test`、`cargo xtask test-wasm`、`cargo xtask build-android`、`cargo bench` 都不在本地跑。需要编译或测试时，把改动推到一个远程分支上即可，`.github/workflows/ci.yml` 会在该分支的每次推送后跑轻量档，不必先开 PR；本地只看它给出的日志。轻量档是 Linux 上的检查与 nextest，加上 wasm 与 Android 的 `check`（不编译二进制、不进浏览器、不打 APK）；全量（macOS/Windows、wasm 浏览器测试、APK）只在 `main` 与 merge queue 上跑，由 `.github/workflows/ci-main.yml` 调用轻量档并补上这些。
+- **编译与测试一律交给 CI**：`cargo build`、`cargo nextest`、`cargo test`、`cargo xtask test`、`cargo xtask test-wasm`、`cargo xtask build-android`、`cargo bench` 都不在本地跑。需要编译或测试时，把改动推到一个远程分支上即可，`.github/workflows/ci.yml` 会在该分支的每次推送后跑轻量档，不必先开 PR；本地只看它给出的日志。轻量档是 Linux 上的检查与 nextest，加上 wasm 与 Android 的 lint（不编译二进制、不进浏览器、不打 APK）；全量（macOS/Windows、wasm 浏览器测试、APK）只在 `main` 与 merge queue 上跑，由 `.github/workflows/ci-main.yml` 调用轻量档并补上这些。
 
 开发验证流程遵循以下步骤：
 1. 先完成尽可能多的改动。

@@ -230,7 +230,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 只是推上去的分支也算在内——推上去就够了，开 PR 并不是启动构建的那个动作。
 
 轻量档跑的是改动自己就能弄坏的东西，并且要落在审阅者读这一遍代码的时间里：只跑一个平台，
-web 与 Android 只跑到编译而不是它外围的浏览器或 APK。剩下的由 `main` 跑，那是证明一份
+web 与 Android 只跑到 lint 而不是它外围的浏览器或 APK。剩下的由 `main` 跑，那是证明一份
 发行物能出得去的那部分。
 
 `main` 以外的每个分支，无论是自己推上去的还是开成 pull request 的：
@@ -243,7 +243,7 @@ web 与 Android 只跑到编译而不是它外围的浏览器或 APK。剩下的
   一遍把所有离屏设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa
   以提供 `lavapipe`。
 - **check-wasm** —— 为 `wasm32-unknown-unknown` 对工作区与测试二进制各跑一遍
-  `cargo check`。它排除 `xtask`：那是只在宿主机上运行的任务运行器，其 HTTP 服务器
+  clippy。它排除 `xtask`：那是只在宿主机上运行的任务运行器，其 HTTP 服务器
   无法为该目标编译。
 - **check-android** —— 为 `aarch64-linux-android` 跑 clippy，这是唯一会编译
   `cfg(target_os = "android")` 后面代码的检查；`build` 里的宿主 clippy 到不了那里。
@@ -251,10 +251,12 @@ web 与 Android 只跑到编译而不是它外围的浏览器或 APK。剩下的
 `main` 上——每次推送到它、合并队列的一次运行，以及从它手动触发的运行，都是整份：
 
 - **build** 除 Linux 外还在 macOS 与 Windows 上跑。
-- **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建，然后把每个 wasm 测试
-  二进制 bindgen 成页面，在真实浏览器中驱动。
-- **build-android** —— `aarch64-linux-android` 交叉构建动态库，再在其外套上 Gradle
-  得到 APK。
+- **build-wasm** —— 对 `wasm32-unknown-unknown` 构建跑同样的两遍 clippy，然后把
+  每个 wasm 测试二进制 bindgen 成页面，在真实浏览器中驱动。既然这里已经 lint 了这两次
+  构建，`main` 上就不必再跑 `check-wasm`。
+- **build-android** —— 先跑 `aarch64-linux-android` 的 clippy，再交叉构建动态库，并在
+  其外套上 Gradle 得到 APK。它自己就跑了那道 clippy，所以 `main` 上同样不必再跑
+  `check-android`。
 
 两个 `check-*` 任务各自与 `main` 上做同一件事的任务共用一个缓存
 （Swatinem/rust-cache 的 `shared-key`），因此轻量档编译出来的东西，合并后是

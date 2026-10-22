@@ -51,14 +51,8 @@ jobs:
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add wasm32-unknown-unknown
 
-      # The Clippy step below builds for the host, where cpal links ALSA.
-      - name: Install ALSA headers
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes libasound2-dev
-
-      # One cache for the whole job: its two builds share this key, and the
-      # features they differ in are the only reason there are two.
+      # One cache for the whole job: its three builds share this key, and the
+      # features they differ in are the only reason there are more than one.
       - name: Caching
         uses: Swatinem/rust-cache@v2
         with:
@@ -67,10 +61,19 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
-      # Host-only, so it compiles the workspace for the machine the task runner
-      # itself runs on rather than for wasm.
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --no-default-features -- -Dwarnings
+      # The two builds `check-wasm` in `ci.yml` lints on a branch: the workspace
+      # under the default features and the test binaries under `--all-features`.
+      # A `main` run skips that job, so the target's lints have to be carried
+      # here, where the same two builds are made on the way to the browser. The
+      # host lints they are not are the `build` job's.
+      - name: Clippy (wasm target)
+        run: |
+          cargo clippy --workspace --exclude xtask \
+            --target wasm32-unknown-unknown \
+            --bins --tests --benches --examples -- -D warnings
+          cargo clippy \
+            -p unlit_wgpu -p unlit3d -p unlit3d_examples -p unlit3dx_examples \
+            --tests --all-features --target wasm32-unknown-unknown -- -D warnings
 
       # `cargo xtask test-wasm` checks this CLI against the `wasm-bindgen` the
       # workspace resolves, so the version is taken from the workspace rather
@@ -107,11 +110,12 @@ jobs:
           if-no-files-found: ignore
 
   # What the light tier checks about the Android build is that the code behind
-  # `cfg(target_os = "android")` compiles, which the host lint in `ci.yml`
-  # never reaches: the entry point is behind that `cfg`, and so is everything
-  # only the activity links. This job adds the APK around it — a cross-build of
-  # the shared libraries and then Gradle — which is the part with nothing left to
-  # tell a contributor that this check does not.
+  # `cfg(target_os = "android")` lints, which the host lint in `ci.yml` never
+  # reaches: the entry point is behind that `cfg`, and so is everything only
+  # the activity links. A `main` run skips that check, because this job runs the
+  # same `cargo ndk ... clippy` itself before it adds the APK around it — a
+  # cross-build of the shared libraries and then Gradle — which is the part with
+  # nothing left to tell a contributor that the check does not.
   build-android:
     name: Build android
     # A Gradle build downloads its own distribution and dependencies, and the

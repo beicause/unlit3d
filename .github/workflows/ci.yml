@@ -224,17 +224,18 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # What the light tier checks about the web build is that it compiles: the
-  # `wasm32` build of the workspace and the `wasm32` build of every test
-  # binary. `cargo check` is that and nothing more, where `build-wasm` in
-  # `ci-main.yml` goes on to bindgen the test binaries and drive a browser,
-  # which is most of its cost. The suites are the same files either way, so a
-  # change that breaks one still fails here — with the browser's own answer
-  # waiting on `main`.
+  # What the light tier checks about the web build is that it lints for the
+  # target: the `wasm32` build of the workspace and the `wasm32` build of every
+  # test binary. `build-wasm` in `ci-main.yml` goes on to bindgen the test
+  # binaries and drive a browser, which is most of its cost, and lints those same
+  # two builds on the way there — so `main` takes that job and skips this one.
+  # The suites are the same files either way, so a change that breaks one still
+  # fails here, with the browser's own answer waiting on `main`.
   check-wasm:
     name: Check wasm
-    # Compiles the workspace for the target, which is a smaller build than the
-    # host one, twice over — without a link and without a browser.
+    # Lints the workspace for the target, which is a smaller build than the host
+    # one, twice over — without a link and without a browser.
+    if: ${{ !inputs.full }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -249,7 +250,7 @@ jobs:
 
       - name: Install rust toolchain
         run: |
-          rustup toolchain install stable --no-self-update --profile=minimal
+          rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add wasm32-unknown-unknown
 
       # The cache is the one `build-wasm` keeps, not a key of this job's own:
@@ -266,7 +267,7 @@ jobs:
           cache-bin: false
           cache-on-failure: true
 
-      # The two builds `cargo xtask test-wasm` makes, as a check:
+      # The two builds `cargo xtask test-wasm` makes, as a lint:
       #
       # - The workspace under the default features, which is what the browser
       #   example and the Android library ship. `xtask` is excluded because it
@@ -278,19 +279,22 @@ jobs:
       # Both run under the default profile rather than `wasm-dev`: nothing here
       # is linked or run, so the optimization level only costs time, and the
       # browser job still compiles the same sources with the profile it runs in.
-      - name: Check the wasm workspace
+      - name: Lint the wasm workspace
         run: |
-          cargo check --workspace --exclude xtask \
+          cargo clippy --workspace --exclude xtask \
             --target wasm32-unknown-unknown \
-            --bins --tests --benches --examples
-          cargo check \
+            --bins --tests --benches --examples -- -D warnings
+          cargo clippy \
             -p unlit_wgpu -p unlit3d -p unlit3d_examples -p unlit3dx_examples \
-            --tests --all-features --target wasm32-unknown-unknown
+            --tests --all-features --target wasm32-unknown-unknown -- -D warnings
 
   check-android:
     name: Check android
     # The cross-lint is one compilation of the workspace, with the NDK the
-    # runner image already carries.
+    # runner image already carries. `build-android` in `ci-main.yml` runs the
+    # same `cargo ndk ... clippy` before it builds the APK, so `main` takes that
+    # job and skips this one.
+    if: ${{ !inputs.full }}
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:

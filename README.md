@@ -298,7 +298,7 @@ is not what starts the build.
 
 The light tier runs what a change can break on its own, within the time a
 reviewer spends reading it: one platform, and for the web and for Android the
-compile rather than the browser or the APK around it. `main` then runs the rest,
+lint rather than the browser or the APK around it. `main` then runs the rest,
 which is the part that proves a release ships.
 
 Every branch other than `main`, whether pushed on its own or opened as a pull
@@ -312,9 +312,9 @@ request:
   the WebGPU baseline's limits, once with every offscreen device narrowed to
   WebGL2's shape. Linux installs Mesa for `lavapipe`, since the runners have no
   GPU.
-- **check-wasm** — `cargo check` for `wasm32-unknown-unknown` over the
-  workspace and over the test binaries. It excludes `xtask`, a host-only task
-  runner whose HTTP server does not compile for that target.
+- **check-wasm** — clippy for `wasm32-unknown-unknown` over the workspace and
+  over the test binaries. It excludes `xtask`, a host-only task runner whose HTTP
+  server does not compile for that target.
 - **check-android** — clippy for `aarch64-linux-android`, the only thing that
   compiles the code behind `cfg(target_os = "android")`. The host clippy in
   `build` never reaches it.
@@ -322,10 +322,12 @@ request:
 `main` — every push to it, a merge queue run, and a manual run from it:
 
 - **build** runs on macOS and Windows as well as Linux.
-- **build-wasm** — clippy and a `wasm32-unknown-unknown` build, then every wasm
-  test binary bindgen'd into a page driven through a real browser.
-- **build-android** — the `aarch64-linux-android` cross-build of the shared
-  libraries, and Gradle around it for the APK.
+- **build-wasm** — the same two clippy passes over the `wasm32-unknown-unknown`
+  build, then every wasm test binary bindgen'd into a page driven through a real
+  browser. Linting those builds here is why `check-wasm` does not run on `main`.
+- **build-android** — the `aarch64-linux-android` clippy, then the cross-build of
+  the shared libraries and Gradle around it for the APK. It runs that clippy
+  itself, so `check-android` does not run on `main` either.
 
 Each `check-*` job shares its cache with the job that does the same subject on
 `main` (`shared-key` on Swatinem/rust-cache), so what the light tier compiles is
