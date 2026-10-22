@@ -105,7 +105,7 @@ pub struct ScenePoses(pub Vec<(Entity, Transform)>);
 /// applies what it is told and holds no mailbox of its own. An entity the
 /// render world has not spawned yet is not an error — it simply names
 /// nothing.
-pub fn pose_job(poses: ScenePoses) -> Job<()> {
+pub fn pose_job(poses: ScenePoses) -> Job {
     Box::new(move |world: &mut World| {
         // A render instance lives under the source that draws it, so the
         // scope that owns it is the one that reaches it.
@@ -207,7 +207,7 @@ pub fn setup_render_world(
 /// the projection matched to the frame's own aspect, and advances the
 /// orbit by each frame's delta, so the speed does not follow the redraw
 /// rate.
-pub fn camera_job() -> Job<()> {
+pub fn camera_job() -> Job {
     let mut azimuth = ORBIT_START;
     Box::new(move |world: &mut World| {
         // The camera belongs to the mesh source: a source frames what its own

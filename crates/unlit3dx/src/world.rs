@@ -67,7 +67,7 @@ pub struct WorldSender {
 
 impl WorldSender {
     /// Post a job to the world this component belongs to.
-    pub fn send(&self, job: Job<()>) -> Result<(), SendError> {
+    pub fn send(&self, job: Job) -> Result<(), SendError> {
         self.commands.send(job)
     }
 
@@ -91,7 +91,7 @@ struct SteppedWorld {
     /// The world itself.
     world: World,
     /// The commands queued for it.
-    commands: Receiver<Job<()>>,
+    commands: Receiver<Job>,
     /// The pacing and stop signal its tick reads.
     control: ThreadControl,
     /// The state the handle reports.
@@ -225,7 +225,7 @@ where
     S: 'static,
     T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
 {
-    let (commands, receiver) = bounded::<Job<()>>(command_capacity);
+    let (commands, receiver) = bounded::<Job>(command_capacity);
     let thread = WorldThread::spawn_with(name, init, move |world, control, state| {
         while let Ok(job) = receiver.try_recv() {
             job(world);
@@ -268,7 +268,7 @@ where
     S: 'static,
     T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + 'static,
 {
-    let (commands, receiver) = bounded::<Job<()>>(command_capacity);
+    let (commands, receiver) = bounded::<Job>(command_capacity);
     let mut world = World::new();
     // The world's async tasks are its own from here on: the setup may spawn
     // one, and every step drives them.

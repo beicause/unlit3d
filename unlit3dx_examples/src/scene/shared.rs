@@ -133,7 +133,7 @@ pub fn create_instance_job(
     mesh: Entity,
     material: Entity,
     created: Stream<(u64, Entity)>,
-) -> Job<()> {
+) -> Job {
     Box::new(move |world: &mut World| {
         let instance = hidden_instance_of(
             world,

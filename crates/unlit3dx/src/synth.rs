@@ -550,7 +550,7 @@ impl From<MidiFileError> for VoiceError {
 ///
 /// A voice that is gone ignores the job, and so does one that gave up on
 /// sounding: nothing would ever drain its queue.
-pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job<()> {
+pub fn midi_job(voice: Entity, kind: MidiEventKind, delay: f64) -> Job {
     Box::new(move |world| {
         let Some(mut guard) = world.root_scope().query_one::<&mut SynthVoice>(voice) else {
             return;
@@ -686,13 +686,13 @@ mod tests {
 
     /// The sending half of a command channel whose jobs this test drains by
     /// hand, so a sequence's sends can be counted with no audio thread.
-    fn channel() -> (JobSender, async_channel::Receiver<Job<()>>) {
+    fn channel() -> (JobSender, async_channel::Receiver<Job>) {
         let (sender, receiver) = async_channel::unbounded();
         (JobSender::new(sender), receiver)
     }
 
     /// Runs the jobs queued so far, answering how many there were.
-    fn drain(world: &mut World, receiver: &async_channel::Receiver<Job<()>>) -> usize {
+    fn drain(world: &mut World, receiver: &async_channel::Receiver<Job>) -> usize {
         let mut ran = 0;
         while let Ok(job) = receiver.try_recv() {
             job(world);

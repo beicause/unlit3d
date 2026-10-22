@@ -173,7 +173,7 @@ pub fn mount_controls(world: &mut World) {
 ///
 /// `pass` is the pass the source draws into: a pass records the sources below
 /// it, so a source spawned anywhere else would never reach the frame.
-pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job<()> {
+pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
         source.publish_target(panels.target);

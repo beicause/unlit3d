@@ -189,7 +189,7 @@ impl UiPanelHost {
 /// The job walks the world's frame sources and publishes into the first
 /// [`UiSource`] it finds, which draws that slot from then on. A world with no
 /// source drops the frame, and dropping it clears its texture deltas.
-pub fn panel_frame_job(slot: usize, frame: ExternalFrame) -> Job<()> {
+pub fn panel_frame_job(slot: usize, frame: ExternalFrame) -> Job {
     Box::new(move |world: &mut World| {
         for mut source in world.root_scope().query::<&mut Source>() {
             if let Some(ui) = source.as_mut::<UiSource>() {
@@ -217,9 +217,9 @@ mod tests {
         /// The world that draws, holding the source frames are published to.
         render: World,
         /// The queue a sent frame waits in until the test runs it.
-        jobs: async_channel::Receiver<Job<()>>,
+        jobs: async_channel::Receiver<Job>,
         /// The drawing world's end of that queue.
-        sender: async_channel::Sender<Job<()>>,
+        sender: async_channel::Sender<Job>,
         host: UiPanelHost,
         /// The target the drawing side publishes at.
         target: Snapshot<UiTarget>,

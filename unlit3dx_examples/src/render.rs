@@ -12,9 +12,9 @@
 //! [`GpuMesh`] or [`GpuMaterial`] component of its own asset entity — the
 //! GPU handles inside carry `Rc`, so they cannot cross a thread, but the
 //! entity can. A simulation world builds through a job that names the assets
-//! by entity, or asks for one asset at a time with [`create_mesh`] or
-//! [`create_material_from_texture`] and names the answer in
-//! [`spawn_instance`].
+//! by entity, or asks for an entity it does not have yet with an
+//! [`ask`](unlit3dx::prelude::JobSender::ask): the answer comes back as a
+//! snapshot the world published, and the next job names it.
 
 use glam::{Affine3A, Vec3};
 use unlit_ecs::{Entity, Scope, World};
@@ -88,17 +88,10 @@ pub(crate) fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
     Some((entity, key))
 }
 
-/// A job that allocates a mesh in the render world and answers with its
-/// asset entity, the one carrying the [`GpuMesh`].
-///
-/// Panics inside the render world when it carries no `MeshSource`.
-pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
-    Box::new(move |world: &mut World| allocate_mesh(world, &desc))
-}
-
 /// Allocate a mesh in the render world, answering its asset entity.
 ///
-/// This is [`create_mesh`] without the job around it, for a job that builds
+/// This is the mesh allocation a job that builds several things in one step
+/// makes for itself. Panics when the world carries no `MeshSource`.
 /// several things in one step. Panics when the world carries no
 /// `MeshSource`.
 pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedUnlitMeshDesc) -> Entity {
@@ -123,34 +116,11 @@ pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedUnlitMeshDesc) -> Ent
         .spawn(bundle![mesh])
 }
 
-/// A job that allocates one material whose base-color texture is the
-/// `size.0` by `size.1` RGBA image `pixels`, and answers with its asset
-/// entity, the one carrying the [`GpuMaterial`].
-///
-/// The sampler is created for this material alone and `descriptor`
-/// describes it. Panics inside the render world when it carries no
-/// `MeshSource`.
-///
-/// # Panics
-/// Panics when `pixels` does not hold exactly `size.0 * size.1` pixels.
-pub fn create_material_from_texture(
-    size: (u32, u32),
-    pixels: Vec<[u8; 4]>,
-    descriptor: wgpu::SamplerDescriptor<'static>,
-) -> Job<Entity> {
-    assert_eq!(
-        pixels.len(),
-        size.0 as usize * size.1 as usize,
-        "the pixels do not fill the texture"
-    );
-    Box::new(move |world: &mut World| allocate_rgba_material(world, size, &pixels, descriptor))
-}
-
 /// Allocate a material over the RGBA image `pixels`, answering its asset
 /// entity.
 ///
-/// This is [`create_material_from_texture`] without the job around it, for a
-/// job that builds several things in one step.
+/// This is the material a job that builds several things in one step
+/// allocates for itself.
 ///
 /// # Panics
 /// Panics when `pixels` does not hold exactly `size.0 * size.1` pixels, or
@@ -204,23 +174,12 @@ fn allocate_material(
         .spawn(bundle![material])
 }
 
-/// A job that spawns one render entity from asset entities: a [`GpuMesh`]
-/// cloned from `mesh`, a [`GpuMaterial`] cloned from `material`, and the
-/// `transform` it starts at. Answers with the new entity.
-///
-/// The assets are named by the entities [`create_mesh`] and
-/// [`create_material_from_texture`] answered. Panics inside the render world when it carries no
-/// `MeshSource`, or when an asset entity is gone.
-pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> Job<Entity> {
-    Box::new(move |world: &mut World| instance_of(world, mesh, material, transform))
-}
-
 /// Spawn one rendered instance from asset entities, answering the new
 /// entity.
 ///
-/// This is [`spawn_instance`] without the job around it, for a job that
-/// builds several things in one step. Panics when the world carries no
-/// `MeshSource`, or when an asset entity is gone.
+/// This is the instance a job that builds several things in one step spawns
+/// for itself. Panics when the world carries no `MeshSource`, or when an
+/// asset entity is gone.
 pub(crate) fn instance_of(
     world: &mut World,
     mesh: Entity,
@@ -281,7 +240,7 @@ pub(crate) fn hidden_instance_of(
 /// happens here: the gameplay world only names the live instances and reacts
 /// to the answer by despawning their bodies. An instance that is already gone
 /// is skipped.
-pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity>) -> Job<()> {
+pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity>) -> Job {
     Box::new(move |world: &mut World| {
         let Some(camera) = world
             .root_scope()
@@ -327,7 +286,7 @@ pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity
 }
 
 /// A job that despawns the instances it names.
-pub(crate) fn despawn_instances_job(instances: Vec<Entity>) -> Job<()> {
+pub(crate) fn despawn_instances_job(instances: Vec<Entity>) -> Job {
     Box::new(move |world: &mut World| {
         let Some((source, _)) = mesh_source(world) else {
             return;
@@ -348,7 +307,7 @@ pub(crate) fn show_instance_job(
     mesh: Entity,
     material: Entity,
     transform: Transform,
-) -> Job<()> {
+) -> Job {
     Box::new(move |world: &mut World| {
         let Some((source, _)) = mesh_source(world) else {
             return;

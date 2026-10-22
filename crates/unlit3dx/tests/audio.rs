@@ -525,7 +525,7 @@ fn note_off(key: u8) -> MidiMessage {
 }
 
 /// Runs the jobs a sequence has queued so far against its world.
-fn pump(world: &mut World, receiver: &async_channel::Receiver<Job<()>>) {
+fn pump(world: &mut World, receiver: &async_channel::Receiver<Job>) {
     while let Ok(job) = receiver.try_recv() {
         job(world);
     }

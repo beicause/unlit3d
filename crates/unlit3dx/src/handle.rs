@@ -39,10 +39,9 @@ pub struct WorldHandle {
 impl WorldHandle {
     /// Bind a handle to the entity carrying the world's proxy.
     ///
-    /// A world that shares its owner's thread passes a status made by
-    /// [`ThreadStatus::detached`]: it has no thread of its own to end, so
-    /// its state stays [`WorldState::Running`] until its owner says
-    /// otherwise.
+    /// A world that shares its owner's thread passes a status of its own: it
+    /// has no thread to end, so its state stays [`WorldState::Running`]
+    /// until its owner says otherwise.
     #[must_use]
     pub fn new(entity: Entity, sender: JobSender, status: ThreadStatus) -> Self {
         Self {

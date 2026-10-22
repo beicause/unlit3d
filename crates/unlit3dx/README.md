@@ -88,7 +88,7 @@ whole protocol.
 
 ## Jobs
 
-`Job<R>` is a boxed `FnOnce(&mut World) -> R`. `WorldHandle::sender` queues one and
+`Job` is a boxed `FnOnce(&mut World)`. `WorldHandle::sender` queues one and
 never blocks: a full queue returns `Err(SendError::Full)` and a stopped
 world `Err(SendError::Closed)`, so a world thread that sends to its own queue
 cannot deadlock against itself. The world thread drains its queue before

@@ -17,7 +17,7 @@ use unlit_ecs::bundle;
 /// [`drain_sub_world`] empties it. It is an implementation detail of the
 /// sub-world: callers reach the world through the [`WorldHandle`] the
 /// spawn returns, never through this component.
-struct SubWorldInbox(Receiver<Job<()>>);
+struct SubWorldInbox(Receiver<Job>);
 
 /// The sub-world's status, published the way a threaded world publishes its
 /// own, so a host learns that its sub-world ended.

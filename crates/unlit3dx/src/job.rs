@@ -16,7 +16,12 @@ use std::fmt;
 use unlit_ecs::World;
 
 /// A unit of work for a world: a boxed closure that runs against it.
-pub type Job<R = ()> = Box<dyn FnOnce(&mut World) -> R + Send + 'static>;
+///
+/// A job answers nothing: the queue is one way, and a value the caller
+/// wants back travels as state, published by the world that made it and
+/// read on the caller's own tick. [`JobSender::ask`] is that round trip,
+/// made of one job and one snapshot.
+pub type Job = Box<dyn FnOnce(&mut World) + Send + 'static>;
 
 /// Why a job was not handed to a world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,18 +59,18 @@ impl<T> From<async_channel::TrySendError<T>> for SendError {
 /// queue reports [`SendError`] and the job is dropped.
 #[derive(Clone)]
 pub struct JobSender {
-    commands: async_channel::Sender<Job<()>>,
+    commands: async_channel::Sender<Job>,
 }
 
 impl JobSender {
     /// Wrap a world's command channel.
     #[must_use]
-    pub fn new(commands: async_channel::Sender<Job<()>>) -> Self {
+    pub fn new(commands: async_channel::Sender<Job>) -> Self {
         Self { commands }
     }
 
     /// Queue a job. Never blocks.
-    pub fn send(&self, job: Job<()>) -> Result<(), SendError> {
+    pub fn send(&self, job: Job) -> Result<(), SendError> {
         self.commands.try_send(job).map_err(SendError::from)
     }
 }

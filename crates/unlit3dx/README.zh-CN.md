@@ -79,7 +79,7 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 
 ## Job
 
-`Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`WorldHandle::sender` 把一个 job 排入
+`Job` 是装箱的 `FnOnce(&mut World)`。`WorldHandle::sender` 把一个 job 排入
 队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
 远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
