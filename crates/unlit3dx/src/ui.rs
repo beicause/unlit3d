@@ -7,14 +7,17 @@
 //! **data**: the panel's world lays the frame out and tessellates it, and the
 //! drawing world uploads and records what comes back.
 //!
-//! The handover is one way and needs no reply: the panel world writes an
-//! [`unlit3d::ui::ExternalFrame`] into a slot of the
-//! [`unlit3d::ui::ExternalFrames`] both worlds hold,
-//! and the drawing world draws whatever a slot holds. Nothing is ever asked
-//! for, so a settled panel publishes nothing and the frame already there keeps
-//! being drawn. What comes back is only the target the drawing side draws at,
-//! carried by a [`unlit3d::ui::UiScreen`], so a frame is laid out at the size and density it
-//! will be drawn at.
+//! The handover is one way: the panel world sends a job carrying an
+//! [`unlit3d::ui::ExternalFrame`] to the world holding the
+//! [`unlit3d::ui::UiSource`], which keeps it in a slot and draws it. A settled
+//! panel sends nothing, so the frame already there keeps being drawn. What comes
+//! back is the target the drawing side draws at, published from the source into
+//! a [`Snapshot`](unlit3d::relay::Snapshot) the panel world subscribes to, so a
+//! frame is laid out at the size and density it will be drawn at.
+//!
+//! No frame is laid out before the drawing side has drawn once: until then
+//! there is no target, and a frame laid out at a guessed size would be dropped
+//! by the source rather than drawn.
 //!
 //! The two sides hold **separate** contexts. Sharing one would have both worlds
 //! writing egui's memory and its font atlas, and egui treats one `run_ui` call
@@ -26,19 +29,22 @@
 use core::time::Duration;
 
 use unlit_ecs::World;
-use unlit_wgpu::ui::ScreenDescriptor;
 use unlit3d::input::{InputEvent, InputEvents};
-use unlit3d::ui::{ExternalFrames, UiScreen, UiTarget, egui, lay_out, raw_input};
+use unlit3d::relay::SnapshotReader;
+use unlit3d::source::Source;
+use unlit3d::ui::{ExternalFrame, UiSource, UiTarget, egui, lay_out, raw_input};
 use web_time::Instant;
 
-/// A world's panel publishing: the context its panels are built in, the slots
-/// it writes and the screen it lays out against.
+use crate::job::{Job, JobSender, SendError};
+
+/// A world's panel publishing: the context its panels are built in, where its
+/// frames are sent and the target it lays out against.
 ///
 /// Spawn it in the world holding the panels. Nothing drives this from outside:
 /// the world ticks it, the way it ticks any other behaviour, and each tick that
-/// produced a frame publishes it into the slot the drawing side reads. A tick
-/// that could not change the picture — a settled panel, no input, the same
-/// target — publishes nothing, so an idle UI costs nothing.
+/// produced a frame sends it to the drawing world. A tick that could not change
+/// the picture — a settled panel, no input, the same target — sends nothing, so
+/// an idle UI costs nothing.
 ///
 /// The context, its font atlas and its memory belong to this world and stay
 /// there: what crosses to the drawing side is the laid-out frame, which carries
@@ -48,10 +54,10 @@ pub struct UiPanelHost {
     ctx: egui::Context,
     /// When the host was created, the origin of egui's frame clock.
     start: Instant,
-    /// The slots every frame is published into.
-    frames: ExternalFrames,
+    /// The queue of the world that draws the frames.
+    render: JobSender,
     /// The target the drawing side last drew at.
-    screen: UiScreen,
+    screen: SnapshotReader<UiTarget>,
     /// Which slot this world's frames go in.
     slot: usize,
     /// The events of the frame being laid out, reclaimed from egui once the
@@ -66,7 +72,8 @@ pub struct UiPanelHost {
     /// The first tick always lays a frame out, and a tick whose target
     /// differs lays one out again however settled the panel is: the drawing
     /// side drops a frame laid out at another size, and this is what replaces
-    /// it.
+    /// it. A frame the drawing world's queue refused leaves this behind, so
+    /// the next tick sends it again.
     laid_out_at: Option<UiTarget>,
     /// When the last frame laid out asked to be laid out again, for a frame
     /// that named a moment rather than asking for the next possible pass.
@@ -74,14 +81,14 @@ pub struct UiPanelHost {
 }
 
 impl UiPanelHost {
-    /// Publish `world`'s panels into `frames`' slot `slot`, against the target
-    /// `screen` carries.
+    /// Publish `world`'s panels into slot `slot` of the world behind
+    /// `render`, against the target `screen` carries.
     #[must_use]
-    pub fn new(frames: ExternalFrames, screen: UiScreen, slot: usize) -> Self {
+    pub fn new(render: JobSender, screen: SnapshotReader<UiTarget>, slot: usize) -> Self {
         Self {
             ctx: egui::Context::default(),
             start: Instant::now(),
-            frames,
+            render,
             screen,
             slot,
             event_scratch: Vec::new(),
@@ -91,21 +98,29 @@ impl UiPanelHost {
         }
     }
 
-    /// Lay out this tick's frame and publish it, if it could differ from the
-    /// one the drawing side holds.
+    /// Lay out this tick's frame and send it to the drawing world, if it could
+    /// differ from the one that world holds.
     ///
     /// The frame is laid out here rather than where it is drawn because only
-    /// this world holds the panels and their context. A tick publishes when
-    /// something could have changed the picture: there is no frame yet, the
-    /// target moved, input arrived, or the last frame asked to be laid out
-    /// again — either at once or once a delay it named has elapsed. Anything
-    /// else draws the same picture, so nothing is laid out and the slot keeps
-    /// the frame it has.
+    /// this world holds the panels and their context. A tick lays one out when
+    /// something could have changed the picture: the drawing side has not been
+    /// seen yet, the target moved, input arrived, or the last frame asked to be
+    /// laid out again — either at once or once a delay it named has elapsed.
+    /// Anything else draws the same picture, so nothing is laid out and
+    /// nothing is sent.
+    ///
+    /// A frame the drawing world's queue refused is sent again on the next
+    /// tick. A frame whose queue is closed has nowhere to go and is forgotten:
+    /// the drawing world is gone.
     ///
     /// The events are this world's own, read from its [`InputEvents`]: a panel
     /// sees exactly what the rest of the world sees on the same tick.
     pub fn publish(&mut self, world: &World) {
-        let target = self.screen.current(fallback_target(world));
+        // The drawing side is the only party that knows the frame's target, so
+        // there is nothing to lay out against until it has drawn once.
+        let Some(target) = self.screen.latest().map(|target| *target) else {
+            return;
+        };
         // Copied out before anything is laid out: a panel may read its world's
         // input, and the copy is what keeps that read from taking the same lock
         // twice.
@@ -157,44 +172,32 @@ impl UiPanelHost {
             // A delay the clock cannot place is one that never comes.
             delay => Instant::now().checked_add(delay),
         };
-        self.laid_out_at = Some(target);
-        self.frames.publish(self.slot, frame);
+        match self.render.send(panel_frame_job(self.slot, frame)) {
+            Ok(()) => self.laid_out_at = Some(target),
+            // The queue is full: nobody took the frame, and it was dropped
+            // with its texture deltas. Leaving the target unset sends it
+            // again on the next tick.
+            Err(SendError::Full) => {}
+            // The drawing world is gone; there is nothing left to draw.
+            Err(SendError::Closed) => self.laid_out_at = Some(target),
+        }
     }
 }
 
-/// The atlas size a frame is laid out for before any device has said what it
-/// can hold.
+/// Hand `frame` to the UI source of the world this job runs in.
 ///
-/// The fallback is the smallest atlas every backend accepts; the real limit
-/// arrives with the first target the drawing side publishes, and only the
-/// frames laid out before that one ever see it.
-const FALLBACK_TEXTURE_SIDE: u32 = 2048;
-
-/// The target to lay a frame out against before the drawing side has drawn one.
-///
-/// A world that publishes a frame before anything is on screen has no target to
-/// match yet. It lays the frame out at the size the frame loop reported, from
-/// the world's own `InputEvents`; the sizes agree on the first drawn frame, and
-/// from then on the published descriptor is what both sides use.
-fn fallback_target(world: &World) -> UiTarget {
-    let state = world
-        .root_scope()
-        .query::<&InputEvents>()
-        .next()
-        .map(|input_events| input_events.with_state(|state| (state.scale_factor, state.size_px)));
-    let (scale_factor, size_px) = state.unwrap_or((1.0, (0, 0)));
-    let pixels_per_point = if scale_factor > 0.0 {
-        scale_factor
-    } else {
-        1.0
-    };
-    UiTarget {
-        screen: ScreenDescriptor {
-            size_in_pixels: [size_px.0, size_px.1],
-            pixels_per_point,
-        },
-        max_texture_side: FALLBACK_TEXTURE_SIDE,
-    }
+/// The job walks the world's frame sources and publishes into the first
+/// [`UiSource`] it finds, which draws that slot from then on. A world with no
+/// source drops the frame, and dropping it clears its texture deltas.
+pub fn panel_frame_job(slot: usize, frame: ExternalFrame) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        for mut source in world.root_scope().query::<&mut Source>() {
+            if let Some(ui) = source.as_mut::<UiSource>() {
+                ui.frames.publish(slot, frame);
+                return;
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -203,18 +206,80 @@ mod tests {
     use core::cell::Cell;
     use std::rc::Rc;
     use unlit_ecs::bundle;
+    use unlit_wgpu::ui::ScreenDescriptor;
     use unlit3d::input::{InputWriter, Modifiers, refresh_input};
+    use unlit3d::relay::Snapshot;
     use unlit3d::ui::UiPanel;
 
-    /// A world holding a host, its slots and the screen the drawing side draws
-    /// at.
-    fn test_host() -> (World, UiPanelHost) {
-        let world = World::new();
-        let frames = ExternalFrames::new();
-        let screen = UiScreen::new();
-        screen.publish(test_target());
-        let host = UiPanelHost::new(frames, screen, 0);
-        (world, host)
+    /// The worlds a panel is split across: the one holding it, and the one
+    /// that draws what it sends.
+    struct TestUi {
+        /// The world that draws, holding the source frames are published to.
+        render: World,
+        /// The queue a sent frame waits in until the test runs it.
+        jobs: async_channel::Receiver<Job<()>>,
+        /// The drawing world's end of that queue.
+        sender: async_channel::Sender<Job<()>>,
+        host: UiPanelHost,
+        /// The target the drawing side publishes at.
+        target: Snapshot<UiTarget>,
+    }
+
+    impl TestUi {
+        fn new() -> Self {
+            let test = Self::without_target();
+            test.target.publish(test_target());
+            test
+        }
+
+        /// A drawing world that has not drawn yet, so it has published no
+        /// target.
+        fn without_target() -> Self {
+            Self::with_capacity(8)
+        }
+
+        fn with_capacity(capacity: usize) -> Self {
+            let mut render = World::new();
+            render
+                .root_scope_mut()
+                .spawn(bundle![Source::new(UiSource::new())]);
+            let (sender, jobs) = async_channel::bounded(capacity);
+            let target = Snapshot::new();
+            let host = UiPanelHost::new(JobSender::new(sender.clone()), target.reader(), 0);
+            Self {
+                render,
+                jobs,
+                sender,
+                host,
+                target,
+            }
+        }
+
+        /// Lay out and send a frame, then run what was sent in the drawing
+        /// world, the way a tick there would.
+        fn publish(&mut self, world: &World) {
+            self.host.publish(world);
+            self.drain();
+        }
+
+        fn drain(&mut self) {
+            while let Ok(job) = self.jobs.try_recv() {
+                job(&mut self.render);
+            }
+        }
+
+        fn published_slots(&mut self) -> usize {
+            self.frames(|slots| slots.iter().filter(|slot| slot.is_some()).count())
+        }
+
+        fn frames<R>(&mut self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
+            for mut source in self.render.root_scope().query::<&mut Source>() {
+                if let Some(ui) = source.as_mut::<UiSource>() {
+                    return ui.frames.with_frames(f);
+                }
+            }
+            panic!("the drawing world holds a UI source");
+        }
     }
 
     /// The target the drawing side draws at in these tests.
@@ -245,88 +310,66 @@ mod tests {
         (world, runs)
     }
 
-    /// How many slots hold a frame.
-    fn published_slots(host: &UiPanelHost) -> usize {
-        host.frames
-            .with_frames(|slots| slots.iter().filter(|slot| slot.is_some()).count())
-    }
-
     /// Publish until the panel stops asking to be laid out again.
-    fn settle(host: &mut UiPanelHost, world: &World) {
+    fn settle(test: &mut TestUi, world: &World) {
         for _ in 0..8 {
-            host.publish(world);
-            if host.repaint_at.is_none() {
+            test.publish(world);
+            if test.host.repaint_at.is_none() {
                 return;
             }
         }
         panic!("the panel never settles");
     }
 
-    /// The first tick always lays a frame out, so the drawing side has
-    /// something to draw instead of an empty slot.
+    /// Nothing is laid out before the drawing side has drawn once: until then
+    /// there is no target, and a frame at a guessed size would be dropped.
     #[test]
-    fn the_first_tick_publishes_a_frame() {
+    fn a_panel_waits_for_the_drawing_sides_target() {
         let (world, runs) = counting_world();
-        let (_, mut host) = test_host();
-        assert!(published_slots(&host) == 0, "no frame is published yet");
+        let mut test = TestUi::without_target();
 
-        host.publish(&world);
+        test.publish(&world);
+        assert_eq!(runs.get(), 0, "nothing was laid out");
+        assert_eq!(test.published_slots(), 0, "no frame was sent");
 
+        test.target.publish(test_target());
+        test.publish(&world);
         assert_eq!(runs.get(), 1, "the panel ran");
-        assert_eq!(published_slots(&host), 1, "the slot holds the frame");
+        assert_eq!(test.published_slots(), 1, "the slot holds the frame");
     }
 
-    /// A settled panel with no input publishes nothing: the drawing side keeps
+    /// A settled panel with no input sends nothing: the drawing side keeps
     /// drawing the frame it has.
     #[test]
-    fn a_settled_panel_stops_publishing() {
+    fn a_settled_panel_stops_sending() {
         let (world, runs) = counting_world();
-        let (_, mut host) = test_host();
-        settle(&mut host, &world);
+        let mut test = TestUi::new();
+        settle(&mut test, &world);
 
         let settled = runs.get();
         assert!(settled > 0, "the panel ran while settling");
         for _ in 0..4 {
-            host.publish(&world);
+            test.publish(&world);
         }
         assert_eq!(runs.get(), settled, "nothing was laid out again");
+        assert_eq!(test.published_slots(), 1, "the frame is still there");
     }
 
     /// Input brings a settled panel back: the frame could now differ.
     #[test]
-    fn input_publishes_a_new_frame() {
+    fn input_sends_a_new_frame() {
         let (mut world, runs) = counting_world();
-        let (_, mut host) = test_host();
+        let mut test = TestUi::new();
         let writer = InputWriter::new();
         world.root_scope_mut().spawn(bundle![writer.subscribe()]);
-        settle(&mut host, &world);
+        settle(&mut test, &world);
 
         let settled = runs.get();
         writer.push(InputEvent::ModifiersChanged(Modifiers::default()));
         assert!(refresh_input(&world), "the world has a buffer");
-        host.publish(&world);
+        test.publish(&world);
 
         assert!(runs.get() > settled, "the event was laid out");
-    }
-
-    /// A socket without input still publishes, and the frame it publishes is
-    /// laid out at the fallback target until the drawing side reports one.
-    #[test]
-    fn a_world_without_input_still_lays_out() {
-        let (world, runs) = counting_world();
-        let (_, mut host) = test_host();
-
-        host.publish(&world);
-
-        assert_eq!(runs.get(), 1);
-        host.frames.with_frames(|slots| {
-            let frame = slots[0].as_ref().expect("published");
-            assert_eq!(
-                frame.screen,
-                test_target().screen,
-                "laid out at the published target"
-            );
-        });
     }
 
     /// A target the frame was not laid out at is laid out again, however
@@ -335,8 +378,8 @@ mod tests {
     #[test]
     fn a_new_target_is_laid_out_at_once() {
         let (world, runs) = counting_world();
-        let (_, mut host) = test_host();
-        settle(&mut host, &world);
+        let mut test = TestUi::new();
+        settle(&mut test, &world);
 
         let settled = runs.get();
         let resized = UiTarget {
@@ -346,11 +389,11 @@ mod tests {
             },
             max_texture_side: 2048,
         };
-        host.screen.publish(resized);
-        host.publish(&world);
+        test.target.publish(resized);
+        test.publish(&world);
 
         assert!(runs.get() > settled, "the new target was laid out for");
-        host.frames.with_frames(|slots| {
+        test.frames(|slots| {
             let frame = slots[0].as_ref().expect("published");
             assert_eq!(
                 frame.screen, resized.screen,
@@ -373,7 +416,7 @@ mod tests {
                 ui.ctx()
                     .request_repaint_after(core::time::Duration::from_millis(50));
             }),]);
-        let (_, mut host) = test_host();
+        let mut test = TestUi::new();
 
         // egui answers a request for the next possible pass with a second
         // one, so the first passes are immediate; the delay is what the
@@ -381,8 +424,8 @@ mod tests {
         let before = Instant::now();
         (0..8)
             .find_map(|_| {
-                host.publish(&world);
-                host.repaint_at.filter(|at| *at > before)
+                test.publish(&world);
+                test.host.repaint_at.filter(|at| *at > before)
             })
             .expect("a pass named a moment to be laid out again");
 
@@ -390,15 +433,15 @@ mod tests {
         // rather than dropped by the tick that skipped. The deadline is put
         // out of reach first, so the check does not depend on how long a
         // pass takes.
-        host.repaint_at = Some(Instant::now() + Duration::from_secs(60));
+        test.host.repaint_at = Some(Instant::now() + Duration::from_secs(60));
         let laid_out = runs.get();
-        host.publish(&world);
+        test.publish(&world);
         assert_eq!(runs.get(), laid_out, "the deadline has not come due");
-        assert!(host.repaint_at.is_some(), "the moment is still kept");
+        assert!(test.host.repaint_at.is_some(), "the moment is still kept");
 
         // Stand in for the ticks until the deadline elapses.
-        host.repaint_at = Some(Instant::now());
-        host.publish(&world);
+        test.host.repaint_at = Some(Instant::now());
+        test.publish(&world);
         assert!(runs.get() > laid_out, "the deadline brought a frame");
     }
 
@@ -407,10 +450,10 @@ mod tests {
     #[test]
     fn texture_ids_are_not_rewritten() {
         let (world, _runs) = counting_world();
-        let (_, mut host) = test_host();
-        settle(&mut host, &world);
+        let mut test = TestUi::new();
+        settle(&mut test, &world);
 
-        host.frames.with_frames(|slots| {
+        test.frames(|slots| {
             let frame = slots[0].as_ref().expect("published");
             let managed = frame
                 .primitives
@@ -427,5 +470,29 @@ mod tests {
                 "a label samples the font atlas"
             );
         });
+    }
+
+    /// A frame the drawing world's queue refused is sent again rather than
+    /// counted as delivered: the drawing side still holds the older one.
+    #[test]
+    fn a_frame_the_queue_refuses_is_sent_again() {
+        let (world, runs) = counting_world();
+        let mut test = TestUi::with_capacity(1);
+        test.target.publish(test_target());
+        test.sender
+            .try_send(Box::new(|_: &mut World| {}))
+            .expect("the queue has room");
+
+        // The send, without the drain: the queue is still full when it is
+        // made, so the frame is refused rather than delivered.
+        test.host.publish(&world);
+        assert_eq!(test.jobs.len(), 1, "the placeholder is still queued");
+        assert_eq!(test.published_slots(), 0, "no frame reached the source");
+
+        test.drain();
+        let laid_out = runs.get();
+        test.publish(&world);
+        assert!(runs.get() > laid_out, "the frame was laid out again");
+        assert_eq!(test.published_slots(), 1, "the retry reached the source");
     }
 }

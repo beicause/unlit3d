@@ -58,6 +58,7 @@ name = "mcp_server"
 required-features = ["mcp"]
 
 [dependencies]
+arc-swap.workspace = true
 arrayvec.workspace = true
 # One unbounded channel per input subscriber: a world that reads input at its
 # own pace is exactly a channel consumer.

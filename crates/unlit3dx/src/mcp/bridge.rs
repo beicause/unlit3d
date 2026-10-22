@@ -368,14 +368,20 @@ mod tests {
             control.wait_timeout(Duration::from_millis(1));
             true
         });
-        let seeded = threaded.request(Box::new(|world: &mut World| {
-            world.root_scope_mut().spawn(bundle![Marker]);
-        }));
+        let seeded = crate::channel::Snapshot::new();
+        let reader = seeded.reader();
+        let publish = seeded.clone();
+        threaded
+            .send(Box::new(move |world: &mut World| {
+                world.root_scope_mut().spawn(bundle![Marker]);
+                publish.publish(());
+            }))
+            .expect("the thread accepts jobs");
         let deadline = Instant::now() + Duration::from_secs(2);
-        while !seeded.answered() && !seeded.dropped() && Instant::now() < deadline {
+        while reader.latest().is_none() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert_eq!(seeded.poll(), Some(()), "the thread ran the seeding job");
+        assert!(reader.latest().is_some(), "the thread ran the seeding job");
 
         let (command, reply) = McpCommand::new(|world| {
             let count = world.root_scope().query::<&Marker>().count();

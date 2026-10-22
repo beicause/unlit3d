@@ -148,11 +148,16 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     let _ = world.send(Box::new(|world: &mut World| {
         world.root_scope_mut().spawn(bundle![Marker]);
     }));
-    let marked = world.request(Box::new(|world: &mut World| {
-        world.root_scope().query::<&Marker>().next().is_some()
-    }));
+    let marked = Snapshot::new();
+    let reader = marked.reader();
+    let publish = marked.clone();
+    world
+        .send(Box::new(move |world: &mut World| {
+            publish.publish(world.root_scope().query::<&Marker>().next().is_some());
+        }))
+        .expect("the audio world accepts jobs");
     assert!(
-        wait_for(|| marked.poll() == Some(true)),
+        wait_for(|| reader.latest().is_some_and(|found| *found)),
         "the audio world never ran the marker job"
     );
 

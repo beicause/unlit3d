@@ -1,13 +1,10 @@
 //! The shape pool: the render instances the scene reuses, built once and
 //! handed out a slot at a time.
 //!
-//! Building it is the one part of the scene that is asynchronous — meshes and
-//! materials, then the instances that use them — so the build lands in a
-//! shared slot the tick polls, and the objects that need a slot ask this one
-//! for it rather than each keeping a copy.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! Building it happens in the render world, in one job: meshes and materials,
+//! then the instances that name them, so nothing waits for an answer in
+//! between. The job publishes the instances it built, and the tick here takes
+//! them up when they land.
 
 use unlit_ecs::{Entity, World};
 use unlit3d::components::Transform;
@@ -19,23 +16,11 @@ use super::shapes::{
     BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, ShapeKind, pattern_texture, shape_kind, shape_mesh,
 };
 use super::tick::Tick;
-use crate::render::{create_material_from_texture, create_mesh, linear_sampler, spawn_instance};
+use crate::render::{allocate_mesh, allocate_rgba_material, instance_of, linear_sampler};
 
 /// How many balls the scene keeps around. The pool never grows: the build
-/// requests the instances from the render world once, and a spawned ball
-/// reuses the first free entity.
+/// makes the instances once, and a spawned ball reuses the first free entity.
 pub const POOL_SIZE: usize = 48;
-
-/// The async build's outcome, filled by the build future and consumed by the
-/// first tick after it lands.
-enum BuildState {
-    /// The build future is still in flight.
-    Building,
-    /// Every instance answered; the shape pool is live.
-    Ready(Vec<(Entity, ShapeKind)>),
-    /// The render world dropped a request; the scene stays empty.
-    Failed,
-}
 
 /// The shape pool, living on its own entity in the gameplay world.
 ///
@@ -43,13 +28,11 @@ enum BuildState {
 /// are free: an object that needs a shape asks for a slot and gives it back
 /// when its body is gone, so no other object has to know what the pool holds.
 pub struct SceneState {
-    /// The render world's command channel: the build asks it for the
-    /// instances, and the objects move them through it.
+    /// The render world's command channel: the objects move their instances
+    /// through it.
     render: JobSender,
-    /// The build future's landing slot: it fills this, the tick reads it.
-    build: Rc<RefCell<BuildState>>,
-    /// Whether the build future still needs polling.
-    build_pending: bool,
+    /// The instances the build job published, read once they land.
+    instances: SnapshotReader<Vec<Entity>>,
     /// Every render entity the pool owns, for a scene restart: the free
     /// slots are [`SceneState::free`], this list is all of them.
     slots: Vec<(Entity, ShapeKind)>,
@@ -60,49 +43,24 @@ pub struct SceneState {
 }
 
 impl SceneState {
-    /// Start the pool's build against `server`.
+    /// Ask the render world for the pool.
     ///
-    /// The scene is built by an async task of the gameplay world itself: it
-    /// awaits the meshes and materials, then the instances that use them, and
-    /// leaves the pool for the tick to pick up. The answer
-    /// order matches the request order, which is how the build reads the
-    /// entities back.
-    pub fn new(world: &World, server: WorldHandle) -> Self {
-        let build = Rc::new(RefCell::new(BuildState::Building));
-        let slot = Rc::clone(&build);
+    /// The whole build is one job there: it allocates the meshes and
+    /// materials, then the instances that name them, and publishes the
+    /// instance entities in pool order. Until that lands the pool is empty
+    /// and every object that needs a shape stays unspawned.
+    pub fn new(server: WorldHandle) -> Self {
+        let instances = Snapshot::new();
         let render = server.sender();
-        log::info!("the gameplay world started; requesting the scene assets from the render world");
-        let spawned = LocalTasks::spawn(world, async move {
-            let assets = request_shape_assets(&server);
-            let answers = match try_join_all(assets).await {
-                Ok(answers) => answers,
-                Err(error) => {
-                    log::error!(
-                        "the render world dropped an asset request ({error}); the scene stays empty"
-                    );
-                    *slot.borrow_mut() = BuildState::Failed;
-                    return;
-                }
-            };
-            log::info!("the render assets landed; requesting the scene instances");
-            let instances = request_pool_instances(&server, &answers);
-            let answers = match try_join_all(instances).await {
-                Ok(answers) => answers,
-                Err(error) => {
-                    log::error!(
-                        "the render world dropped an instance request ({error}); the scene stays empty"
-                    );
-                    *slot.borrow_mut() = BuildState::Failed;
-                    return;
-                }
-            };
-            *slot.borrow_mut() = BuildState::Ready(pool_from_instances(answers));
-        });
-        debug_assert!(spawned, "the gameplay world carries its own tasks");
+        log::info!("the gameplay world started; asking the render world for the scene");
+        if let Err(error) = render.send(build_pool_job(instances.clone())) {
+            log::error!(
+                "the render world refused the scene build ({error:?}); the scene stays empty"
+            );
+        }
         Self {
             render,
-            build,
-            build_pending: true,
+            instances: instances.reader(),
             slots: Vec::new(),
             free: Vec::new(),
             ready: false,
@@ -150,32 +108,21 @@ impl SceneState {
         self.free = free;
     }
 
-    /// Take the pool once the build task has landed.
+    /// Take the pool once the build job has published it.
     ///
-    /// The task itself is driven by the pump that opens each tick; this only
-    /// reads what it left behind. The pool stays empty if the render world
-    /// dropped a request.
+    /// The pool stays empty if the render world refused the job.
     fn poll_build(&mut self) {
-        if !self.build_pending {
+        if self.ready {
             return;
         }
-        if matches!(&*self.build.borrow(), BuildState::Building) {
+        let Some(instances) = self.instances.latest() else {
             return;
-        }
-        self.build_pending = false;
-        let landed = core::mem::replace(&mut *self.build.borrow_mut(), BuildState::Failed);
-        match landed {
-            BuildState::Ready(pool) => {
-                self.slots = pool.clone();
-                self.free = pool;
-                self.ready = true;
-                log::info!("the shape pool is live: {} bodies", self.free.len());
-            }
-            BuildState::Failed => {
-                self.ready = false;
-            }
-            BuildState::Building => {}
-        }
+        };
+        let pool = pool_from_instances(instances.as_ref().clone());
+        self.slots = pool.clone();
+        self.free = pool;
+        self.ready = true;
+        log::info!("the shape pool is live: {} bodies", self.free.len());
     }
 }
 
@@ -185,62 +132,59 @@ impl Tick for SceneState {
     }
 }
 
-/// Read the instance answers into the shape pool: one slot per answer, each
-/// remembering the kind its index draws.
-pub fn pool_from_instances(answers: Vec<Entity>) -> Vec<(Entity, ShapeKind)> {
-    answers
+/// The job that builds the whole pool in the render world.
+///
+/// One step, so the instances can name meshes and materials this same job
+/// spawned. The entities go back through `instances`, in pool order.
+pub fn build_pool_job(instances: Snapshot<Vec<Entity>>) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        let mut meshes = Vec::with_capacity(SHAPE_KINDS.len());
+        for kind in SHAPE_KINDS {
+            meshes.push(allocate_mesh(world, &shape_mesh(kind)));
+        }
+        // One patterned material per shape kind and color, kind-major.
+        let mut materials = Vec::with_capacity(SHAPE_KINDS.len() * BALL_COLORS.len());
+        for kind in SHAPE_KINDS {
+            for color in BALL_COLORS {
+                materials.push(allocate_rgba_material(
+                    world,
+                    (PATTERN_SIZE, PATTERN_SIZE),
+                    &pattern_texture(kind, color),
+                    linear_sampler(),
+                ));
+            }
+        }
+        let mut pool = Vec::with_capacity(POOL_SIZE);
+        // Pool slot i wears the shape and tint its index picks, matching the
+        // pool's (entity, kind) pairs.
+        for index in 0..POOL_SIZE {
+            let kind = index % SHAPE_KINDS.len();
+            // The tint walks a diagonal over the pool, so the slots a drop
+            // pops back to back — a run of one kind — still carry every color
+            // between them.
+            let color = (index + index / SHAPE_KINDS.len()) % BALL_COLORS.len();
+            pool.push(instance_of(
+                world,
+                meshes[kind],
+                materials[kind * BALL_COLORS.len() + color],
+                Transform {
+                    translation: HIDDEN_POSITION,
+                    ..Default::default()
+                },
+            ));
+        }
+        instances.publish(pool);
+    })
+}
+
+/// Read the instances the build published into the shape pool: one slot per
+/// instance, each remembering the kind its index draws.
+pub fn pool_from_instances(instances: Vec<Entity>) -> Vec<(Entity, ShapeKind)> {
+    instances
         .into_iter()
         .enumerate()
         .map(|(index, slot)| (slot, shape_kind(index)))
         .collect()
-}
-
-/// Request the shapes' meshes and materials, in the order the build reads
-/// their answers back: one mesh per shape kind, then one patterned material
-/// per shape kind and color (kind-major).
-pub fn request_shape_assets(render: &WorldHandle) -> Vec<Request<Entity>> {
-    let mut requests =
-        Vec::with_capacity(SHAPE_KINDS.len() + SHAPE_KINDS.len() * BALL_COLORS.len());
-    for kind in SHAPE_KINDS {
-        requests.push(render.request(create_mesh(shape_mesh(kind))));
-    }
-    for kind in SHAPE_KINDS {
-        for color in BALL_COLORS {
-            requests.push(render.request(create_material_from_texture(
-                (PATTERN_SIZE, PATTERN_SIZE),
-                pattern_texture(kind, color),
-                linear_sampler(),
-            )));
-        }
-    }
-    requests
-}
-
-/// Request one instance per pool slot, reading the mesh and material
-/// entities out of the answers [`request_shape_assets`] produced.
-pub fn request_pool_instances(render: &WorldHandle, answers: &[Entity]) -> Vec<Request<Entity>> {
-    let shape_count = SHAPE_KINDS.len();
-    let materials = &answers[shape_count..];
-    let mut instances = Vec::with_capacity(POOL_SIZE);
-    // Pool slot i wears the shape and tint its index picks, matching the
-    // pool's (entity, kind) pairs.
-    for index in 0..POOL_SIZE {
-        let kind = index % SHAPE_KINDS.len();
-        // The tint walks a diagonal over the pool, so the slots a drop
-        // pops back to back — a run of one kind — still carry every color
-        // between them.
-        let color = (index + index / SHAPE_KINDS.len()) % BALL_COLORS.len();
-        let material = materials[kind * BALL_COLORS.len() + color];
-        instances.push(render.request(spawn_instance(
-            answers[kind],
-            material,
-            Transform {
-                translation: HIDDEN_POSITION,
-                ..Default::default()
-            },
-        )));
-    }
-    instances
 }
 
 #[cfg(test)]

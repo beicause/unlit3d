@@ -473,13 +473,14 @@ primitive 自身的属性推导（见 `UnlitGltf::pipeline_key`），所以它�
 面板只能在它自己的 egui context 所运行的地方构建，因为回调拿到的是属于正在构建它的那一趟
 pass 的 `&mut egui::Ui`。因此「面板住在一个 world、绘制属于另一个 world」的 UI 以**数据**
 的形式跨越这条边界：`ui::lay_out` 用调用方持有的 context 运行一个 world 的面板，返回
-`ui::ExternalFrame`——三角化后的图元、纹理更新与平台输出，全是普通的自有值。面板所在的
-world 把这些帧发布进 `ui::ExternalFrames`，绘制侧就绘制其中的内容，不需要回头去要。两侧的
-context 保持独立：共用会让两个 world 同时写同一份 memory 与字体图集，而 egui 把一次
+`ui::ExternalFrame`——三角化后的图元、纹理更新与平台输出，全是普通的自有值。之后帧按两个
+world 约定好的方式跨越边界：它落进 `ui::UiSource` 自己持有的
+`ui::ExternalFrame` 槽位，槽位因此留在负责绘制的那条线程上；绘制侧量出的目标则通过
+`relay::Snapshot` 回来，面板所在的 world 在布局下一帧时读取它。两侧的 context 保持独立：共用会让两个 world 同时写同一份 memory 与字体图集，而 egui 把一次
 `run_ui` 当作一个完整帧。纹理 id 则完全不改写：帧保留它那个 context 分配的 id，GPU 集成按
 （来源, id）建键，于是两侧都从零分配也不会撞车；一帧在其槽位被更新之前一直由同一份三角化
 结果绘制。`unlit3dx` 就在这两块之上搭建跨 world 的管线——面板所在 world 里的
-`UiPanelHost`，它在该 world 自己的 tick 上发布。
+`UiPanelHost`，它在该 world 自己的 tick 上以 job 的形式发送帧。
 
 <details>
 <summary>为什么面板是组件，以及最容易出错的单位约定</summary>

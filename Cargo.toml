@@ -50,12 +50,12 @@ flacenc = { version = "0.5.1", default-features = false }
 # crate's hash tables hash; its `FixedState` seeds deterministically, which a
 # per-instance hasher does not.
 foldhash = { version = "0.2.0", default-features = false }
-# The single-threaded executor that drives a batch of awaited requests. Only
-# its std pool is used: the optional thread-pool feature would add a thread
-# pool to a crate whose worlds already own their threads.
+# The single-threaded executor a world drives its own tasks with. Only its std
+# pool is used: the optional thread-pool feature would add a thread pool to a
+# crate whose worlds already own their threads.
 futures-executor = { version = "0.3.34", default-features = false, features = ["std"] }
-# The join combinator those requests are batched with. std implies alloc,
-# which is what try_join_all and the spawn extension trait need.
+# The spawn extension trait a local pool is used through. std implies alloc,
+# which is what the trait needs.
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 glam = { version = "0.33", default-features = false, features = ["std", "zerocopy"] }
 gltf = { version = "1.4.1", default-features = false, features = ["import", "names", "utils"] }

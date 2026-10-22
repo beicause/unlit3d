@@ -84,61 +84,68 @@ one world per concern, and never share one.
   audio and gameplay each run one.
 
 The worlds never call each other. A caller sends a **job** — a boxed closure
-that receives the remote world's `&mut World` — or **subscribes** to a
-snapshot, which installs a collector in that world and hands back a reader.
-That is the whole protocol.
+that receives the remote world's `&mut World` — and receives through a
+**subscription**: a snapshot for state, a stream for events. That is the
+whole protocol.
 
-## Jobs and requests
+## Jobs
 
 `Job<R>` is a boxed `FnOnce(&mut World) -> R`. `WorldHandle::send` queues one
 and never blocks: a full queue returns `Err(SendError::Full)` and a stopped
 world `Err(SendError::Closed)`, so a world thread that sends to its own queue
 cannot deadlock against itself. The remote thread drains its queue before
-every tick, so a job never races a tick. `WorldHandle::request` wraps a job
-with a reply channel and returns a `Request<R>` the caller may `poll`,
-`recv` or await: `poll` is `Option<R>`, `recv` is `Result<R, RequestError>`,
-and a request whose job was dropped (refused, or the world died, or the job
-panicked) reports `Err(RequestError::Dropped)` instead of blocking forever.
-`Request` is a `Future`, so a batch is joined rather than polled:
-`executor::try_join_all` turns one into a future of `Result<Vec<R>,
-RequestError>` in request order, and `executor::LocalTasks` drives it. Every
-world the framework builds carries a task set as a component, so a task
+every tick, so a job never races a tick.
+
+A job is also the only way one world changes another, and it answers nothing:
+a world that must report something publishes it through a subscription
+instead. A reply would have the sender waiting on a world that may be busy,
+stopped, or already gone, and what comes back is state, which has a channel
+of its own.
+
+Every world the framework builds carries a task set as a component, so a task
 lasts as long as the world and belongs to it rather than to the call that
-started it; whoever drives the world pumps it once per turn — a thread
-before its tick, a host before the dispatch. `LocalTasks::pump` runs its
-tasks until none can progress and never blocks, which is what lets a
-fixed-step tick or a frame behaviour own the await. The demo's scene build
-is that shape.
+started it; whoever drives the world pumps it once per turn — a thread before
+its tick, a host before the dispatch. `LocalTasks::pump` runs its tasks until
+none can progress and never blocks, which is what lets a fixed-step tick or a
+frame behaviour own the await. The GPU bridge drives its device setup that
+way.
 
-## Snapshots
+## Snapshots and streams
 
-A snapshot is state handed to whoever asked for it. `JobSender::subscribe`
-installs a collector in the target world and returns a `SnapshotReader<T>`;
-the world runs every collector it carries once per tick, after its state is
-current, and publishes what each returns. The payload is the caller's type —
-the library defines none — so a scene collects exactly the data it wants and
-pays for nothing else.
+Receiving is a subscription: `JobSender::subscribe` installs a collector in
+the target world and hands back a reader; the world runs every collector it
+carries once per tick, after its state is current. Which shape the collector
+fills is the caller's choice:
 
-A reader is a single-slot mailbox: `latest` peeks the newest snapshot, there
-is no backlog and no ordering to reason about, and an unread one is replaced.
-The slot is an `ArcSwapOption`, so neither side takes a lock the other
-contends on: the world swaps the newest snapshot in, and a reader that already
-holds one keeps reading that copy to the end. A world that collects per tick
-and a consumer that reads per frame meet in the middle without ever blocking.
-A collector that returns `None` leaves the newest snapshot in place, which is
-how a world that has not changed stays quiet.
+- `subscribe` returns a `SnapshotReader<T>`: state, where only the newest
+  value matters. The collector returns `Option<T>`.
+- `subscribe_stream` returns a `StreamReader<T>`: events, where every value
+  matters. The collector appends to the buffer it is handed, and every value
+  reaches every reader's queue.
+
+The payload is the caller's type — the library defines none — so a scene
+collects exactly the data it wants and pays for nothing else.
+
+A snapshot reader is a single-slot mailbox: `latest` peeks the newest
+snapshot, there is no backlog and no ordering to reason about, and an unread
+one is replaced. The slot is an `ArcSwapOption`, so neither side takes a lock
+the other contends on: the world swaps the newest snapshot in, and a reader
+that already holds one keeps reading that copy to the end. A world that
+collects per tick and a consumer that reads per frame meet in the middle
+without ever blocking. A collector that returns `None` leaves the newest
+snapshot in place, which is how a world that has not changed stays quiet.
+
+A stream reader keeps a queue of its own: `pump` once per tick folds
+whatever arrived into that tick's batch, and `with_batch` reads it. A reader
+that ticks slower than the producer still sees every event, in order, and one
+reader's pace cannot starve another's. That is what a collision or a sequence
+ending needs, and it is also how input reaches a world: `InputWriter` is a
+stream whose producer is the window rather than a world.
 
 Nothing is collected unasked, and a subscription lives exactly as long as its
-reader: dropping the last clone of a `SnapshotReader` prunes the collector on
-the next tick. Subscribing is a job, so it is refused with the queue's own
-error when the world is full or has stopped.
-
-Because a mailbox keeps only the newest snapshot, it carries state and not
-events. A contact that began and ended between two reads is gone; a caller
-that must see every one of them — bullet damage, say — has its collector
-push them into a queue of its own and return `None`. The collector is the
-only place that can see them: it runs on the producing world's thread, on
-every tick, before the next one overwrites the buffer.
+reader: dropping the last clone of a reader prunes the collector on the next
+tick. Subscribing is a job, so it is refused with the queue's own error when
+the world is full or has stopped.
 
 ## Threads and stepping
 
@@ -264,14 +271,18 @@ The bridges:
   is handed a `&mut egui::Ui` from the pass building it — so the panel's
   world lays the frame out and tessellates it, and the drawing world uploads
   and records what comes back. Spawn a [`ui::UiPanelHost`] beside the panels;
-  it holds the slots and the screen the drawing side draws at, and those go to
-  the drawing side's source with [`unlit3d::ui::UiSource::draw_published`].
-  The handover is one way: the
-  panel world publishes on its own tick and the drawing side draws whatever a
-  slot holds. A tick that could not change the picture — a settled panel, no
-  input, the same target, no repaint due — publishes nothing, so a still UI
-  costs nothing, and the frame already there is drawn until a newer one
-  replaces it. They keep separate contexts: sharing
+  it holds a sender to the drawing world and the
+  [`unlit3d::relay::SnapshotReader`] the target comes back through, and the
+  source is set up with [`unlit3d::ui::UiSource::publish_target`] to keep the
+  slots frames land in. A frame travels as a job, so the slots stay on the
+  thread that draws them; the target the drawing side measures travels the
+  other way as a snapshot, since a layout only ever needs the newest one. A
+  tick that could not change the picture — a settled panel, no input, the same
+  target, no repaint due — sends nothing, so a still UI costs nothing, and the
+  frame already there is drawn until a newer one replaces it. A frame the
+  drawing world's queue refused is sent again rather than counted as
+  delivered, so a full queue delays the picture instead of losing it. They
+  keep separate contexts: sharing
   one would have both worlds writing the same memory and font atlas, and egui
   treats one `run_ui` call as one whole frame. Their texture ids both start
   at zero, so a frame keeps the ids it was laid out with and the GPU

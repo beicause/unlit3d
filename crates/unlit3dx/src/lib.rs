@@ -1,5 +1,5 @@
 //! The multi-world runtime: one `unlit_ecs` world per thread, jobs in,
-//! snapshots back.
+//! subscriptions back.
 //!
 //! `unlit_ecs`'s world is `!Send`: components live behind `RefCell` and
 //! structural changes need `&mut World`, so a world cannot cross a thread.
@@ -7,15 +7,17 @@
 //!
 //! - A **remote world** runs its own world on a fresh thread, reached
 //!   through the [`handle::WorldHandle`] its spawn returns. Jobs move in through a
-//!   bounded channel and are drained between ticks; results come back
-//!   through a [`job::Request`].
+//!   bounded channel and are drained between ticks.
 //! - A **sub-world** runs a nested world on the host's thread, drained
 //!   with [`host::drain_sub_world`] between frames.
-//! - **Snapshots** are the way back, and they are opt-in: a world runs a
+//! - A **subscription** is the way back, and it is opt-in: a world runs a
 //!   collector for every subscription it carries and publishes what each
-//!   returns, so nothing is collected until someone asks. A subscriber
-//!   reads the newest `T` through a [`channel::SnapshotReader`] and never
-//!   blocks; dropping the reader unsubscribes.
+//!   returns, so nothing is collected until someone asks. A snapshot
+//!   subscription keeps the newest `T`; a stream subscription keeps every
+//!   one, folded into the reader's tick. Neither blocks; dropping the reader
+//!   unsubscribes. `unlit3d::relay` holds the two primitives, so a
+//!   world that never ticks — a render sub-world publishing the size it
+//!   draws with — publishes through the same handle a collector does.
 //!
 //! The runtime layer is small and complete: [`job`], [`channel`],
 //! [`thread`], [`host`], [`world`], and [`handle`] together are the whole
@@ -37,7 +39,7 @@
 pub mod audio;
 /// The snapshot subscriptions between worlds.
 pub mod channel;
-/// A single-threaded executor for awaiting batches of requests.
+/// A single-threaded executor for a world's async tasks.
 pub mod executor;
 #[cfg(feature = "render")]
 pub mod gpu;
@@ -97,11 +99,11 @@ pub mod prelude {
         load_midi_file_with_loop_type, load_soundfont, midi_file, midi_job,
     };
     pub use crate::{
-        channel::{SnapshotReader, publish_subscribed},
-        executor::{LocalPool, LocalSpawnExt, LocalTasks, try_join_all},
+        channel::{Snapshot, SnapshotReader, Stream, StreamReader, publish_subscribed},
+        executor::{LocalPool, LocalSpawnExt, LocalTasks},
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world},
-        job::{Job, JobSender, Request, RequestError, SendError},
+        job::{Job, JobSender, SendError},
         thread::{FixedClock, ThreadControl, ThreadStatus, WorldThread},
         world::{
             Stepped, Threaded, WorldName, WorldRunner, spawn_remote_world,

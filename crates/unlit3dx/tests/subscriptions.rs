@@ -113,13 +113,10 @@ fn dropping_the_reader_prunes_the_subscription() {
         "a dropped reader must stop its collector"
     );
 
-    let live = world.request(Box::new(|world: &mut World| publish_subscribed(world)));
     step_stepped_world(&host, world.entity());
-    assert_eq!(
-        live.poll(),
-        Some(0),
-        "the world carries no live subscription"
-    );
+    let live = with_stepped_world(&host, world.entity(), publish_subscribed)
+        .expect("the world is stepped");
+    assert_eq!(live, 0, "the world carries no live subscription");
 }
 
 /// A collector that answers nothing leaves the newest snapshot in place, so

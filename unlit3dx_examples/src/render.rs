@@ -11,10 +11,10 @@
 //! a material is allocated inside the render world and left there as the
 //! [`GpuMesh`] or [`GpuMaterial`] component of its own asset entity — the
 //! GPU handles inside carry `Rc`, so they cannot cross a thread, but the
-//! entity can. A simulation world requests an allocation with [`create_mesh`]
-//! or [`create_material_from_texture`], holds the entity that comes back, and
-//! names it again in [`spawn_instance`] to place a rendered instance of the
-//! assets.
+//! entity can. A simulation world builds through a job that names the assets
+//! by entity, or asks for one asset at a time with [`create_mesh`] or
+//! [`create_material_from_texture`] and names the answer in
+//! [`spawn_instance`].
 
 use glam::Vec3;
 use unlit_ecs::{Entity, Scope, World};
@@ -90,27 +90,34 @@ pub(crate) fn mesh_source(world: &World) -> Option<(Entity, UnlitPipelineKey)> {
 ///
 /// Panics inside the render world when it carries no `MeshSource`.
 pub fn create_mesh(desc: OwnedUnlitMeshDesc) -> Job<Entity> {
-    Box::new(move |world: &mut World| {
-        let Some((source_entity, key)) = mesh_source(world) else {
-            panic!("the render world carries no MeshSource");
-        };
-        let root = world.root_scope();
-        let mesh = root
-            .query_one::<&mut Source>(source_entity)
-            .map(|mut source| {
-                source
-                    .as_mut::<MeshSource>()
-                    .expect("the source carries a MeshSource")
-                    .allocate_unlit_mesh(&root, &key, desc.borrowed())
-            })
-            .expect("the mesh source entity exists");
-        // The asset hangs under the source that draws it, so the world holds
-        // one subtree per source rather than asset entities at its root.
-        world
-            .scope_mut(source_entity)
-            .expect("the mesh source entity exists")
-            .spawn(bundle![mesh])
-    })
+    Box::new(move |world: &mut World| allocate_mesh(world, &desc))
+}
+
+/// Allocate a mesh in the render world, answering its asset entity.
+///
+/// This is [`create_mesh`] without the job around it, for a job that builds
+/// several things in one step. Panics when the world carries no
+/// `MeshSource`.
+pub(crate) fn allocate_mesh(world: &mut World, desc: &OwnedUnlitMeshDesc) -> Entity {
+    let Some((source_entity, key)) = mesh_source(world) else {
+        panic!("the render world carries no MeshSource");
+    };
+    let root = world.root_scope();
+    let mesh = root
+        .query_one::<&mut Source>(source_entity)
+        .map(|mut source| {
+            source
+                .as_mut::<MeshSource>()
+                .expect("the source carries a MeshSource")
+                .allocate_unlit_mesh(&root, &key, desc.borrowed())
+        })
+        .expect("the mesh source entity exists");
+    // The asset hangs under the source that draws it, so the world holds
+    // one subtree per source rather than asset entities at its root.
+    world
+        .scope_mut(source_entity)
+        .expect("the mesh source entity exists")
+        .spawn(bundle![mesh])
 }
 
 /// A job that allocates one material whose base-color texture is the
@@ -133,10 +140,31 @@ pub fn create_material_from_texture(
         size.0 as usize * size.1 as usize,
         "the pixels do not fill the texture"
     );
-    Box::new(move |world: &mut World| {
-        allocate_material(world, descriptor, |source, world| {
-            rgba_texture(&source.device(world), &source.queue(world), size, &pixels)
-        })
+    Box::new(move |world: &mut World| allocate_rgba_material(world, size, &pixels, descriptor))
+}
+
+/// Allocate a material over the RGBA image `pixels`, answering its asset
+/// entity.
+///
+/// This is [`create_material_from_texture`] without the job around it, for a
+/// job that builds several things in one step.
+///
+/// # Panics
+/// Panics when `pixels` does not hold exactly `size.0 * size.1` pixels, or
+/// when the world carries no `MeshSource`.
+pub(crate) fn allocate_rgba_material(
+    world: &mut World,
+    size: (u32, u32),
+    pixels: &[[u8; 4]],
+    descriptor: wgpu::SamplerDescriptor<'static>,
+) -> Entity {
+    assert_eq!(
+        pixels.len(),
+        size.0 as usize * size.1 as usize,
+        "the pixels do not fill the texture"
+    );
+    allocate_material(world, descriptor, |source, world| {
+        rgba_texture(&source.device(world), &source.queue(world), size, pixels)
     })
 }
 
@@ -181,27 +209,40 @@ fn allocate_material(
 /// [`create_material_from_texture`] answered. Panics inside the render world when it carries no
 /// `MeshSource`, or when an asset entity is gone.
 pub fn spawn_instance(mesh: Entity, material: Entity, transform: Transform) -> Job<Entity> {
-    Box::new(move |world: &mut World| {
-        let Some((source_entity, key)) = mesh_source(world) else {
-            panic!("the render world carries no MeshSource");
-        };
-        let mesh = world
-            .root_scope()
-            .query_one::<&GpuMesh>(mesh)
-            .expect("the mesh asset entity exists")
-            .clone();
-        let material = world
-            .root_scope()
-            .query_one::<&GpuMaterial>(material)
-            .expect("the material asset entity exists")
-            .clone();
-        // The instance hangs under the source that draws it: a source draws
-        // the subtree it owns, so an instance spawned beside it is never seen.
-        world
-            .scope_mut(source_entity)
-            .expect("the mesh source entity exists")
-            .spawn(bundle![transform, mesh, material, UnlitPipeline::new(key)])
-    })
+    Box::new(move |world: &mut World| instance_of(world, mesh, material, transform))
+}
+
+/// Spawn one rendered instance from asset entities, answering the new
+/// entity.
+///
+/// This is [`spawn_instance`] without the job around it, for a job that
+/// builds several things in one step. Panics when the world carries no
+/// `MeshSource`, or when an asset entity is gone.
+pub(crate) fn instance_of(
+    world: &mut World,
+    mesh: Entity,
+    material: Entity,
+    transform: Transform,
+) -> Entity {
+    let Some((source_entity, key)) = mesh_source(world) else {
+        panic!("the render world carries no MeshSource");
+    };
+    let mesh = world
+        .root_scope()
+        .query_one::<&GpuMesh>(mesh)
+        .expect("the mesh asset entity exists")
+        .clone();
+    let material = world
+        .root_scope()
+        .query_one::<&GpuMaterial>(material)
+        .expect("the material asset entity exists")
+        .clone();
+    // The instance hangs under the source that draws it: a source draws
+    // the subtree it owns, so an instance spawned beside it is never seen.
+    world
+        .scope_mut(source_entity)
+        .expect("the mesh source entity exists")
+        .spawn(bundle![transform, mesh, material, UnlitPipeline::new(key)])
 }
 
 /// A texture of `size.0` by `size.1` RGBA pixels.

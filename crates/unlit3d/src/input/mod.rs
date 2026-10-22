@@ -73,9 +73,9 @@
 //! cells, so [`OnKey`] and [`OnInput`] never conflict.
 
 use core::ops::Deref;
-use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 
-use async_channel::{Receiver, Sender, unbounded};
+use crate::relay::{Stream, StreamReader};
 use bitflags::bitflags;
 use unlit_ecs::{Entity, World, bundle};
 
@@ -957,17 +957,11 @@ impl InputState {
     derive(facet::Facet),
     facet(opaque, proxy = crate::reflect::InputEventsProxy)
 )]
-pub struct InputEvents(Arc<RwLock<Buffer>>);
-
-/// What one world's [`InputEvents`] holds.
-#[derive(Debug)]
-struct Buffer {
+pub struct InputEvents {
+    /// The events fed since the last refresh, queued for this world alone.
+    events: StreamReader<InputEvent>,
     /// The state the events so far left behind.
-    state: InputState,
-    /// Events fed since the last refresh.
-    queue: Receiver<InputEvent>,
-    /// This tick's events, oldest first.
-    batch: Vec<InputEvent>,
+    state: Arc<RwLock<InputState>>,
 }
 
 impl InputEvents {
@@ -978,8 +972,8 @@ impl InputEvents {
     /// writer leaves the lock poisoned, and the value is still readable, so
     /// the poison is ignored rather than propagated.
     pub fn with_state<R>(&self, f: impl FnOnce(&InputState) -> R) -> R {
-        let buffer = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        f(&buffer.state)
+        let state = self.state.read().unwrap_or_else(PoisonError::into_inner);
+        f(&state)
     }
 
     /// Run `f` over this tick's events, oldest first.
@@ -988,21 +982,18 @@ impl InputEvents {
     /// reader can take an event away from the next one. A caller that only
     /// transforms the batch does it here, rather than copying it out first.
     pub fn with_batch<R>(&self, f: impl FnOnce(&[InputEvent]) -> R) -> R {
-        let buffer = self.0.read().unwrap_or_else(PoisonError::into_inner);
-        f(&buffer.batch)
+        self.events.with_batch(f)
     }
 
     /// Append this tick's events, oldest first, to `out`.
     pub fn copy_events_into(&self, out: &mut Vec<InputEvent>) {
-        self.with_batch(|batch| out.extend_from_slice(batch));
+        self.events.copy_into(out);
     }
 
     /// What this tick has, as its own list.
     #[must_use]
     pub fn to_vec(&self) -> Vec<InputEvent> {
-        let mut events = Vec::new();
-        self.copy_events_into(&mut events);
-        events
+        self.events.to_vec()
     }
 
     /// Start this world's input tick: take everything queued as the batch, and
@@ -1013,17 +1004,13 @@ impl InputEvents {
     /// input without dispatching anything calls it itself, once per tick,
     /// before anything reads the batch.
     pub fn refresh(&self) {
-        let mut buffer = self.0.write().unwrap_or_else(PoisonError::into_inner);
-        let Buffer {
-            state,
-            queue,
-            batch,
-        } = &mut *buffer;
-        batch.clear();
-        batch.extend(core::iter::from_fn(|| queue.try_recv().ok()));
-        for event in batch.iter() {
-            state.record(event);
-        }
+        self.events.pump();
+        let mut state = self.state.write().unwrap_or_else(PoisonError::into_inner);
+        self.events.with_batch(|batch| {
+            for event in batch {
+                state.record(event);
+            }
+        });
     }
 }
 
@@ -1039,7 +1026,7 @@ impl InputEvents {
 /// from the one feeding still ends up with the state its own events describe,
 /// and there is no shared lock for a reader to wait on.
 #[derive(Clone, Debug, Default)]
-pub struct InputWriter(Arc<Mutex<Vec<Sender<InputEvent>>>>);
+pub struct InputWriter(Stream<InputEvent>);
 
 impl InputWriter {
     /// A writer nothing is subscribed to yet.
@@ -1058,17 +1045,9 @@ impl InputWriter {
     /// device-agnostic one describing the same action reach every world
     /// together.
     pub fn push_all(&self, events: impl IntoIterator<Item = InputEvent>) {
-        let mut subscribers = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         // A world that dropped its buffer is pruned the next time input
         // arrives, rather than by whoever happens to notice.
-        subscribers.retain(|sender| !sender.is_closed());
-        for event in events {
-            for sender in subscribers.iter() {
-                // The channel is unbounded, so the only way this fails is a
-                // subscriber that went away since the prune above.
-                let _ = sender.try_send(event.clone());
-            }
-        }
+        self.0.push_all(events);
     }
 
     /// A buffer of this writer's future events, for one world.
@@ -1076,16 +1055,10 @@ impl InputWriter {
     /// The buffer lives as long as the component holding it: a world that drops
     /// it stops being fed on the next push.
     pub fn subscribe(&self) -> InputEvents {
-        let (sender, receiver) = unbounded();
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(sender);
-        InputEvents(Arc::new(RwLock::new(Buffer {
-            state: InputState::default(),
-            queue: receiver,
-            batch: Vec::new(),
-        })))
+        InputEvents {
+            events: self.0.subscribe(),
+            state: Arc::new(RwLock::new(InputState::default())),
+        }
     }
 }
 

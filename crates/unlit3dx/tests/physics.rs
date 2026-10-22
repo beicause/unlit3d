@@ -1,6 +1,8 @@
 //! Integration tests for the physics remote world: bodies built by jobs,
 //! snapshots subscribed to on the host, contacts reported as events.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use glam::{Quat, Vec3};
@@ -178,26 +180,30 @@ fn a_collector_sees_contacts_from_every_step() {
         .expect("the physics world accepts a subscription");
     // Two balls, far enough apart in height that their landings fall in
     // different steps.
-    let dropped = sender.request(Box::new(|world: &mut World| {
-        spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
-        let low = spawn_body(
-            world,
-            BodyDesc {
-                position: Vec3::new(-1.0, BALL_START.y, 0.0),
-                restitution: 0.6,
-                ..ball_desc()
-            },
-        );
-        let high = spawn_body(
-            world,
-            BodyDesc {
-                position: Vec3::new(1.0, BALL_START.y + 4.0, 0.0),
-                restitution: 0.6,
-                ..ball_desc()
-            },
-        );
-        (low, high)
-    }));
+    let built = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&built);
+    sender
+        .send(Box::new(move |world: &mut World| {
+            spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
+            let _ = spawn_body(
+                world,
+                BodyDesc {
+                    position: Vec3::new(-1.0, BALL_START.y, 0.0),
+                    restitution: 0.6,
+                    ..ball_desc()
+                },
+            );
+            let _ = spawn_body(
+                world,
+                BodyDesc {
+                    position: Vec3::new(1.0, BALL_START.y + 4.0, 0.0),
+                    restitution: 0.6,
+                    ..ball_desc()
+                },
+            );
+            seen.store(true, Ordering::SeqCst);
+        }))
+        .expect("the physics world accepts jobs");
 
     let mut landed: Vec<RigidBodyHandle> = Vec::new();
     for _ in 0..STEPS {
@@ -220,7 +226,7 @@ fn a_collector_sees_contacts_from_every_step() {
         "the collector saw {landed:?}, so a landing was dropped"
     );
     assert!(
-        dropped.poll().is_some(),
+        built.load(Ordering::SeqCst),
         "the bodies were built before the contacts arrived"
     );
 }
@@ -348,23 +354,25 @@ fn the_configured_gravity_reaches_the_world() {
     );
     // Sent before any snapshot has been published: the setup phase must
     // already have created the world, so this answers without waiting.
-    let probed = world.request(Box::new(|world: &mut World| {
-        world
-            .root_scope()
-            .query::<&PhysicsWorld>()
-            .next()
-            .expect("the setup creates the world before any job")
-            .gravity
-    }));
+    let probed = Snapshot::new();
+    let reader = probed.reader();
+    let publish = probed.clone();
+    world
+        .send(Box::new(move |world: &mut World| {
+            publish.publish(
+                world
+                    .root_scope()
+                    .query::<&PhysicsWorld>()
+                    .next()
+                    .expect("the setup creates the world before any job")
+                    .gravity,
+            );
+        }))
+        .expect("the physics world accepts jobs");
 
-    // Polling consumes the answer, so keep the first one around.
-    let mut answer = None;
     assert!(
-        wait_for(|| {
-            answer = probed.poll();
-            answer.is_some()
-        }),
-        "the gravity request never answered"
+        wait_for(|| reader.latest().is_some()),
+        "the gravity job never published"
     );
-    assert_eq!(answer, Some(gravity));
+    assert_eq!(reader.latest().map(|gravity| *gravity), Some(gravity));
 }

@@ -76,48 +76,54 @@ note job 与 MIDI 文件变成音色库音频。render 桥是调用方自己的�
   各运行一个。
 
 world 之间从不互相调用。调用者发送一个 **job**——一个接收远程 world 的
-`&mut World` 的装箱闭包——或者 **订阅** 一份快照，后者在那个 world 里装一个收集闭包
-并把 reader 交回来。这就是全部协议。
+`&mut World` 的装箱闭包——并通过 **订阅** 接收：状态用快照，事件用流。
+这就是全部协议。
 
-## Job 与请求
+## Job
 
 `Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`WorldHandle::send` 把一个 job 排入
 队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
 远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
-`WorldHandle::request` 给 job 配上回复通道，返回一个可以 `poll`、`recv` 或
-await 的 `Request<R>`：`poll` 得到 `Option<R>`，`recv` 得到
-`Result<R, RequestError>`，而 job 被丢弃（队列拒绝、world 已死，或 job 自己
-panic）的请求报告 `Err(RequestError::Dropped)`，而不是永久阻塞。`Request` 实现了
-`Future`，所以一批请求是被 join 而不是被轮询：`executor::try_join_all` 把一批合成
-一个按请求顺序给出 `Result<Vec<R>, RequestError>` 的 future，由
-`executor::LocalTasks` 驱动。框架创建的每个 world 都以组件形式携带一个任务集，
-因此任务与 world 同寿、属于 world 而不属于发起它的那次调用；谁驱动 world，谁就
-每回合泵它一次——线程在 tick 之前，宿主在分发之前。`LocalTasks::pump` 把集合里
-每个任务轮到无法再推进就返回、从不阻塞，因此固定步长的 tick 或帧行为都能持有
-这个 await。`unlit3dx_examples` 里搭建场景用的就是这个形状。
 
-## 快照
+job 也是世界改变另一个世界的唯一方式，而且它不回答任何东西：需要汇报什么的
+world 改为通过订阅发布。回复会让发送方等待一个可能正忙、已停止或已经消失的
+world，而回来的东西是状态，状态有自己的通道。
 
-快照是交给索要者自己的状态。`JobSender::subscribe` 在目标 world 里装一个收集闭包，
-并返回一个 `SnapshotReader<T>`；world 每 tick 在自身状态更新完毕后运行它携带的每个
-收集闭包，把各自的返回值发布出去。载荷是调用方自己的类型——本库不定义任何载荷——
-所以场景只收集它真正要的数据，不为别的付出代价。
+框架创建的每个 world 都以组件形式携带一个任务集，因此任务与 world 同寿、属于
+world 而不属于发起它的那次调用；谁驱动 world，谁就每回合泵它一次——线程在 tick
+之前，宿主在分发之前。`LocalTasks::pump` 把集合里每个任务轮到无法再推进就返回、
+从不阻塞，因此固定步长的 tick 或帧行为都能持有这个 await。GPU 桥就是这么驱动
+设备初始化的。
 
-reader 是一个单槽信箱：`latest` 窥视最新一份，没有积压，也没有需要推演的顺序，
-未被读取的那份直接被替换。槽是 `ArcSwapOption`，因此双方都不必去抢对方持有的锁：
-world 把最新一份换进去，已经持有旧快照的 reader 可以一直把那一份读完。按 tick 收集的
-世界与按帧读取的消费者在中间会合，谁也不阻塞谁。收集闭包返回 `None` 时保留最新一份
-快照，状态未变的世界因此保持安静。
+## 快照与流
 
-不订阅就什么都不收集，而订阅的寿命与 reader 相同：最后一个 `SnapshotReader` 克隆被
-丢弃后，收集闭包会在下一 tick 被清除。订阅本身是一个 job，因此队列已满或 world 已
-停止时，它按队列自身的错误被拒绝。
+接收就是订阅：`JobSender::subscribe` 在目标 world 里装一个收集闭包并交回一个
+reader；world 每 tick 在自身状态更新完毕后运行它携带的每个收集闭包。收集闭包填充
+哪种形状由调用方选择：
 
-由于信箱只保留最新一份，它承载的是状态而非事件。两次读取之间发生又结束的碰撞会
-消失；必须看到每一次碰撞的调用方——比如子弹伤害——要让收集闭包把它们推进自己的
-队列并返回 `None`。只有收集闭包能看到它们：它在产出 world 的线程上、每 tick 都运行，
-赶在下一次覆盖缓冲区之前。
+- `subscribe` 返回 `SnapshotReader<T>`：状态，只关心最新的值。收集闭包返回
+  `Option<T>`。
+- `subscribe_stream` 返回 `StreamReader<T>`：事件，每一个值都重要。收集闭包向
+  交给它的缓冲区追加，每个值都会进入每个 reader 的队列。
+
+载荷是调用方自己的类型——本库不定义任何载荷——所以场景只收集它真正要的数据，
+不为别的付出代价。
+
+快照 reader 是一个单槽信箱：`latest` 窥视最新一份，没有积压，也没有需要推演的
+顺序，未被读取的那份直接被替换。槽是 `ArcSwapOption`，因此双方都不必去抢对方持有
+的锁：world 把最新一份换进去，已经持有旧快照的 reader 可以一直把那一份读完。按 tick
+收集的世界与按帧读取的消费者在中间会合，谁也不阻塞谁。收集闭包返回 `None` 时保留
+最新一份快照，状态未变的世界因此保持安静。
+
+流 reader 持有自己的队列：每 tick `pump` 一次，把期间到达的值折成这一 tick 的批次，
+`with_batch` 读取它。tick 比生产者慢的 reader 仍会按顺序看到每一个事件，而且一个
+reader 的节奏拖不垮另一个。碰撞、序列结束需要的就是这个；输入也是这样到达 world 的：
+`InputWriter` 就是生产者不是 world 而是窗口的一条流。
+
+不订阅就什么都不收集，而订阅的寿命与 reader 相同：最后一个 reader 克隆被丢弃后，
+收集闭包会在下一 tick 被清除。订阅本身是一个 job，因此队列已满或 world 已停止时，
+它按队列自身的错误被拒绝。
 
 ## 线程与步进
 
@@ -204,12 +210,14 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 - **ui**（随 `render` 开启）：把 `ui::UiPanelHost` 生成在面板旁边，它把一个 world 的
   `UiPanel` 布局给另一个 world 里的 `UiSource` 绘制。面板只能在它自己的 egui context
   所运行的地方构建——回调拿到的是正在构建它的那一趟 pass 的 `&mut egui::Ui`——所以面板
-  所在的 world 负责布局并三角化，绘制它的 world 负责上传与记录回来的结果。它持有槽位与
-  绘制侧当前的屏幕尺寸，再用 `unlit3d::ui::UiSource::draw_published` 把这些交给绘制侧的
-  source。交接是单向的：面板
-  所在的 world 在自己的 tick 上发布，绘制侧直接绘制槽位里的内容。无事可画的一 tick——面板
-  静止且没有输入——不发布任何东西，所以静止的 UI 零开销；已有的那一帧会一直被绘制，直到
-  更新的一帧取代它。两侧保持独立的 context：共用会让两个 world 同时写同一份 memory 与字体
+  所在的 world 负责布局并三角化，绘制它的 world 负责上传与记录回来的结果。它持有通向绘制
+  world 的 sender，以及绘制侧报回的屏幕尺寸所经的 `unlit3d::relay::SnapshotReader`；绘制
+  侧的 source 用 `unlit3d::ui::UiSource::publish_target` 接收目标，槽位由它自己持有。帧以
+  job 的形式过去，槽位因此留在绘制它的那条线程上；绘制侧量出的目标反向以快照回来，因为
+  布局永远只需要最新的那一个。无事可画的一 tick——面板静止、没有输入、目标未变、没有到期
+  的重绘——什么都不发，所以静止的 UI 零开销；已有的那一帧会一直被绘制，直到更新的一帧
+  取代它。绘制 world 的队列拒收的帧会再次发送，而不是被当作已送达，因此队列满只会推迟
+  画面，不会丢帧。两侧保持独立的 context：共用会让两个 world 同时写同一份 memory 与字体
   图集，而 egui 把一次 `run_ui` 当作一个完整帧。两侧的纹理 id 都从零开始分配，所以帧保留
   它被布局时拿到的 id，GPU 集成按来源与 id 建键——不重编号任何东西。
 - **mcp**（默认关闭）：`serve_mcp` 把宿主 world 及其携带的每个 world——嵌套的

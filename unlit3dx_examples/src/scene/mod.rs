@@ -37,7 +37,7 @@ use unlit_wgpu::resources::ResourceGraph;
 use unlit3d::components::Transform;
 use unlit3d::frame::{Frame, dispatch_frame};
 use unlit3d::prelude::*;
-use unlit3d::ui::{ExternalFrames, UiScreen};
+use unlit3d::ui::UiTarget;
 use unlit3dx::physics::PhysicsWorld;
 use unlit3dx::prelude::*;
 use unlit3dx::ui::UiPanelHost;
@@ -57,9 +57,7 @@ pub use shapes::{
     BALL_COLORS, BALL_RADIUS, PATTERN_SIZE, SHAPE_KINDS, ShapeKind, pattern_texture, shape_body,
     shape_kind, shape_mesh,
 };
-pub use shared::{
-    POOL_SIZE, SceneState, pool_from_instances, request_pool_instances, request_shape_assets,
-};
+pub use shared::{POOL_SIZE, SceneState, pool_from_instances};
 pub use tick::{TICK_AUDIO, TICK_BALLS, TICK_FLOOR, TICK_SCENE, Tick, tick_behaviour};
 pub use ui::{control_panel_job, mount_controls};
 
@@ -373,19 +371,17 @@ pub struct SceneWorlds {
 /// The slot a panel publishes its frames into.
 const PANEL_SLOT: usize = 0;
 
-/// The one-way handover from the world holding the panels to the one drawing
-/// them.
+/// What the two worlds holding the panel share.
 ///
-/// The gameplay world writes its frames into `frames`; the render world reads
-/// them there. Neither asks the other for anything, so a settled panel costs
-/// nothing on the wire.
+/// A panel's frames travel the other way, as jobs to the source drawing them:
+/// the drawing side owns the slots, and no frame crosses a thread except in
+/// the job that carries it. What comes back this way is the target the
+/// drawing side measured, which a publisher has to match for its clip
+/// rectangles to be packed in the right pixels.
 #[derive(Clone, Default)]
 pub struct PanelSlots {
-    /// The slots frames are published into.
-    pub frames: ExternalFrames,
-    /// The target the drawing side last drew at, which a publisher has to
-    /// match for its clip rectangles to be packed in the right pixels.
-    pub screen: UiScreen,
+    /// The target the drawing side measures every frame it draws.
+    pub target: Snapshot<UiTarget>,
 }
 
 /// Build the scene's worlds with the runner `R`: on their own threads, or
@@ -469,7 +465,7 @@ pub fn spawn_scene<R: WorldRunner>(
                         dispatch_input(world);
                     },
                 ),]);
-                let state = SceneState::new(world, render.clone());
+                let state = SceneState::new(render.clone());
                 world
                     .root_scope_mut()
                     .spawn(bundle![state, tick_behaviour::<SceneState>(TICK_SCENE)]);
@@ -495,8 +491,8 @@ pub fn spawn_scene<R: WorldRunner>(
                 // shows has ticked, and the render world draws whatever is
                 // there.
                 world.root_scope_mut().spawn(bundle![UiPanelHost::new(
-                    panels.frames.clone(),
-                    panels.screen.clone(),
+                    render.sender(),
+                    panels.target.reader(),
                     PANEL_SLOT,
                 ),]);
                 mount_controls(world);
@@ -665,7 +661,22 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use unlit_wgpu::ui::ScreenDescriptor;
     use unlit3d::ui::{UiPanel, egui};
+
+    /// The target a drawing side publishes once it has measured its pass.
+    ///
+    /// These tests drive only the gameplay world, so nothing draws and
+    /// nothing would otherwise report a size to lay a frame out at.
+    fn measured_target() -> UiTarget {
+        UiTarget {
+            screen: ScreenDescriptor {
+                size_in_pixels: [WINDOW_SIZE.0, WINDOW_SIZE.1],
+                pixels_per_point: 1.0,
+            },
+            max_texture_side: 2048,
+        }
+    }
 
     /// The gameplay world is a sibling of the host, so nothing distributes
     /// the input writer into it: the world subscribes itself when it is set
@@ -676,13 +687,17 @@ mod tests {
         let mut host = World::new();
         let render = spawn_sub_world(&mut host, "render", 8);
         let input = InputWriter::new();
+        let panels = PanelSlots::default();
         let worlds = spawn_scene::<Stepped>(
             &mut host,
             render,
             AudioSetup::Silent,
-            PanelSlots::default(),
+            panels.clone(),
             &input,
         );
+        // The panel subscribes to the target while the scene is set up, so the
+        // drawing side's measurement lands on a slot that has a reader.
+        panels.target.publish(measured_target());
         let runs = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&runs);
         worlds
@@ -734,15 +749,18 @@ mod tests {
         let render = spawn_sub_world(&mut host, "render", 8);
         let input = InputWriter::new();
         let pressed = Arc::new(AtomicUsize::new(0));
+        let panels = PanelSlots::default();
         // The wiring is the scene's, but the panel is this test's: it counts
         // the space presses it saw, the way the real one reads a click.
         let worlds = spawn_scene::<Stepped>(
             &mut host,
             render,
             AudioSetup::Silent,
-            PanelSlots::default(),
+            panels.clone(),
             &input,
         );
+        // Subscribed to during the scene's setup, so this lands on a reader.
+        panels.target.publish(measured_target());
         let counted = Arc::clone(&pressed);
         worlds
             .gameplay

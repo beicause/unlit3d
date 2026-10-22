@@ -4,6 +4,8 @@
 //! The floor is the scene's only fixed body, and the only instance that never
 //! moves, so it is built once and then left alone: the tick that spawns it
 //! runs before anything can drop on it, and afterwards it has nothing to do.
+//! The instance is built by one job in the render world, so the mesh, the
+//! checker and the instance that names them need no round trip between them.
 
 use glam::Vec3;
 use unlit_ecs::World;
@@ -14,7 +16,7 @@ use unlit3dx::prelude::*;
 use super::SceneWiring;
 use super::tick::Tick;
 use crate::render::{
-    create_material_from_texture, create_mesh, cuboid_mesh, linear_sampler, spawn_instance,
+    allocate_mesh, allocate_rgba_material, cuboid_mesh, instance_of, linear_sampler,
 };
 
 /// The ground box's half extents, in metres.
@@ -70,7 +72,7 @@ pub struct Floor {
     /// The physics world's command channel.
     physics: JobSender,
     /// The render world, for the instance the ground draws as.
-    render: WorldHandle,
+    render: JobSender,
     /// Whether the one-time spawn has run.
     spawned: bool,
 }
@@ -81,60 +83,53 @@ impl Floor {
     pub fn new(wiring: &SceneWiring, render: WorldHandle) -> Self {
         Self {
             physics: wiring.physics_sender.clone(),
-            render,
+            render: render.sender(),
             spawned: false,
         }
     }
 
-    /// Queue the fixed body and start building the instance that draws it.
-    fn spawn(&mut self, world: &World) {
+    /// Queue the fixed body and the instance that draws it.
+    fn spawn(&mut self) {
         self.spawned = true;
         if let Err(error) = self.physics.send(Box::new(|world: &mut World| {
             spawn_fixed_cuboid(world, GROUND_POSITION, GROUND_HALF, GROUND_FRICTION);
         })) {
             log::error!("the physics world refused the ground ({error:?})");
         }
-        // The instance is built the way the pool is: the mesh and the
-        // checker first, then the instance that names them. Nothing waits
-        // for the answer — an instance that arrives a frame late is simply a
-        // frame without a floor.
-        let render = self.render.clone();
-        let spawned = LocalTasks::spawn(world, async move {
-            let assets = [
-                render.request(create_mesh(cuboid_mesh(GROUND_HALF))),
-                render.request(create_material_from_texture(
-                    (GROUND_CHECKER_SIZE, GROUND_CHECKER_SIZE),
-                    checker_ground(),
-                    linear_sampler(),
-                )),
-            ];
-            let answers = match try_join_all(assets).await {
-                Ok(answers) => answers,
-                Err(error) => {
-                    log::error!("the render world dropped a ground request ({error})");
-                    return;
-                }
-            };
-            let instance = render.request(spawn_instance(
-                answers[0],
-                answers[1],
-                Transform {
-                    translation: GROUND_POSITION,
-                    ..Default::default()
-                },
-            ));
-            if let Err(error) = instance.await {
-                log::error!("the render world dropped the ground instance ({error})");
-            }
-        });
-        debug_assert!(spawned, "the gameplay world carries its own tasks");
+        // Nothing waits for the instance: one that arrives a frame late is
+        // simply a frame without a floor.
+        if let Err(error) = self.render.send(ground_job()) {
+            log::error!("the render world refused the ground ({error:?})");
+        }
     }
 }
 
+/// The job that builds the ground's instance in the render world.
+fn ground_job() -> Job<()> {
+    Box::new(|world: &mut World| {
+        let mesh = allocate_mesh(world, &cuboid_mesh(GROUND_HALF));
+        let material = allocate_rgba_material(
+            world,
+            (GROUND_CHECKER_SIZE, GROUND_CHECKER_SIZE),
+            &checker_ground(),
+            linear_sampler(),
+        );
+        instance_of(
+            world,
+            mesh,
+            material,
+            Transform {
+                translation: GROUND_POSITION,
+                ..Default::default()
+            },
+        );
+    })
+}
+
 impl Tick for Floor {
-    fn tick(&mut self, world: &World, _frame: &Frame) {
+    fn tick(&mut self, _world: &World, _frame: &Frame) {
         if !self.spawned {
-            self.spawn(world);
+            self.spawn();
         }
     }
 }

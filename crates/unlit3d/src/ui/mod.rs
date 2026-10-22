@@ -38,7 +38,6 @@
 
 use core::ops::DerefMut;
 use core::time::Duration;
-use std::sync::{Arc, Mutex, PoisonError};
 
 use unlit_ecs::{Entity, Scope, World};
 use unlit_wgpu::globals::{Globals, View};
@@ -57,6 +56,7 @@ use zerocopy::IntoBytes;
 pub use crate::source::{OpenUrl, OpenUrls};
 
 use crate::input::InputEvents;
+use crate::relay::Snapshot;
 
 use crate::pass::PassInfo;
 use crate::source::{FrameSource, FrameSourceOrder, RenderContext};
@@ -172,12 +172,12 @@ pub struct UiSource {
     /// The events translated for the frame being laid out, reclaimed from egui
     /// once its pass is over so the next frame reuses the allocation.
     event_scratch: Vec<egui::Event>,
-    /// The slots other worlds publish their frames into, still drawn until a
-    /// newer frame arrives.
-    external: ExternalFrames,
+    /// The slots frames published by other worlds are drawn from, still drawn
+    /// until a newer frame arrives.
+    pub frames: ExternalFrames,
     /// The size and density this source draws at, published for the worlds
     /// laying frames out.
-    screen: UiScreen,
+    screen: Snapshot<UiTarget>,
     /// The URLs every frame drawn this frame asked to open, gathered before
     /// they are published together, reused across frames.
     url_scratch: Vec<OpenUrl>,
@@ -195,28 +195,26 @@ impl UiSource {
             start: Instant::now(),
             targets: Vec::new(),
             event_scratch: Vec::new(),
-            external: ExternalFrames::new(),
-            screen: UiScreen::new(),
+            frames: ExternalFrames::new(),
+            screen: Snapshot::new(),
             url_scratch: Vec::new(),
         }
     }
 
-    /// Draw the frames other worlds publish, as well as this world's own panels.
+    /// Publish this source's target for the worlds laying frames out.
     ///
     /// This is the seam for a UI that lives in another world: a panel can only
     /// be built where its egui context runs, so the world holding it lays the
-    /// frame out and publishes it into a slot of `frames`, and the source
-    /// draws whatever is there. Slots are drawn in order, under this world's
-    /// own panels, and a slot's frame is drawn again until a newer one
-    /// replaces it.
+    /// frame out against this target and sends it here, where it is drawn.
     ///
-    /// `screen` is the size and density the frame is drawn at, published by
-    /// this source for the worlds that lay frames out: a frame laid out at one
-    /// size and drawn at another would have its clip rectangles computed in
-    /// the wrong pixels, so the laying-out side reads the descriptor back from
-    /// here rather than deriving one of its own.
-    pub fn draw_published(&mut self, frames: ExternalFrames, screen: UiScreen) -> &mut Self {
-        self.external = frames;
+    /// The source is also the only party that knows the target it draws into:
+    /// its real pixel size, its density and the device's texture limit. A
+    /// frame laid out at one size and drawn at another would have its clip
+    /// rectangles computed in the wrong pixels, so the laying-out side reads
+    /// the descriptor back from here rather than deriving one of its own. It
+    /// is published on every frame drawn, so a resize or a density change
+    /// reaches the layout one frame later rather than never.
+    pub fn publish_target(&mut self, screen: Snapshot<UiTarget>) -> &mut Self {
         self.screen = screen;
         self
     }
@@ -421,7 +419,7 @@ impl FrameSource for UiSource {
         // own instead of overwriting them.
         let mut url_scratch = core::mem::take(&mut self.url_scratch);
         url_scratch.clear();
-        self.external.with_frames(|slots| {
+        self.frames.with_frames(|slots| {
             for slot in slots.iter().flatten() {
                 url_scratch.extend(open_urls(&slot.platform_output));
             }
@@ -468,7 +466,7 @@ impl FrameSource for UiSource {
         let own = self.ctx.tessellate(output.shapes, screen.pixels_per_point);
         let own_textures = core::mem::take(&mut output.textures_delta);
         let gpu = &mut self.targets[index].gpu;
-        self.external.with_frames(|slots| {
+        self.frames.with_frames(|slots| {
             let mut sources = Vec::with_capacity(slots.len() + 1);
             sources.push(UiFrame {
                 source: Source::LOCAL,
@@ -633,8 +631,9 @@ pub struct ExternalFrame {
     ///
     /// The drawing side packs this frame's clip rectangles into pixels with
     /// it, so it has to be the descriptor the frame was built against: the
-    /// laying-out side reads [`UiScreen`] rather than deriving one, and this
-    /// is that descriptor travelling with the frame it describes.
+    /// laying-out side reads the target the drawing side publishes rather than
+    /// deriving one, and this is that descriptor travelling with the frame it
+    /// describes.
     pub screen: ScreenDescriptor,
 }
 
@@ -649,19 +648,19 @@ impl Drop for ExternalFrame {
     }
 }
 
-/// The slots worlds publish frames into, drawn by a [`UiSource`] elsewhere.
+/// The slots frames are published into, drawn by a [`UiSource`].
 ///
-/// Each slot holds the newest frame its world published. A world holds a clone
-/// and writes its own slot when it has a new frame; the drawing side holds the
-/// same map and draws every slot's frame. Nothing is asked for in return: a
-/// slot that has not been written since the last frame draws the frame it
-/// already holds, so a settled UI costs nothing on the wire.
+/// Each slot holds the newest frame published to it. The frames belong to the
+/// source's own world: a job sent to that world writes a slot, and this map is
+/// what keeps it across frames. A slot that has not been written since the
+/// last frame draws the frame it already holds, so a settled UI costs nothing
+/// on the wire.
 ///
-/// The slots are numbered rather than named so a world needs no identity to
-/// publish under: whoever mounts the publishing side picks the slot and hands
-/// the number to the world that lays the frames out.
-#[derive(Clone, Default)]
-pub struct ExternalFrames(Arc<Mutex<Vec<Option<ExternalFrame>>>>);
+/// The slots are numbered rather than named so a publisher needs no identity:
+/// whoever mounts the publishing side picks the slot and hands the number to
+/// the world that lays the frames out.
+#[derive(Default)]
+pub struct ExternalFrames(Vec<Option<ExternalFrame>>);
 
 impl ExternalFrames {
     /// A map with no slots.
@@ -674,25 +673,23 @@ impl ExternalFrames {
     ///
     /// The frame replaces whatever the slot held, which is what the next
     /// frame drawn will show. Slots are grown on demand, so a publisher may
-    /// write a slot number before the drawing side has looked at any.
+    /// write a slot number the drawing side has never looked at.
     ///
     /// The displaced frame is dropped here, and a frame that is dropped
     /// without being drawn clears its own texture deltas.
-    pub fn publish(&self, slot: usize, frame: ExternalFrame) {
-        let mut slots = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if slots.len() <= slot {
-            slots.resize_with(slot + 1, || None);
+    pub fn publish(&mut self, slot: usize, frame: ExternalFrame) {
+        if self.0.len() <= slot {
+            self.0.resize_with(slot + 1, || None);
         }
-        slots[slot] = Some(frame);
+        self.0[slot] = Some(frame);
     }
 
     /// Run `f` over every slot's frame, in slot order.
     ///
     /// The frames stay where they are: drawing one does not consume it, so a
     /// slot published once is drawn until it is replaced.
-    pub fn with_frames<R>(&self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
-        let mut slots = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        f(&mut slots)
+    pub fn with_frames<R>(&mut self, f: impl FnOnce(&mut [Option<ExternalFrame>]) -> R) -> R {
+        f(&mut self.0)
     }
 }
 
@@ -714,41 +711,6 @@ pub struct UiTarget {
     pub screen: ScreenDescriptor,
     /// The largest texture the drawing side's device can hold, on either side.
     pub max_texture_side: u32,
-}
-
-/// The target frames are laid out against, published by the drawing side.
-///
-/// The drawing side publishes it on every frame it draws, and the world laying
-/// frames out reads it back, so a resize or a density change reaches the
-/// layout one frame later rather than never.
-#[derive(Clone, Default)]
-pub struct UiScreen(Arc<Mutex<Option<UiTarget>>>);
-
-impl UiScreen {
-    /// A screen nothing has been drawn at yet.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Publish the target the next frames are drawn at.
-    pub fn publish(&self, target: UiTarget) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(target);
-    }
-
-    /// The target to lay a frame out against, with `fallback` if nothing was
-    /// ever published.
-    ///
-    /// A world that lays frames out before anything has been drawn has no
-    /// target to match yet, so it lays out at the size it was given and the
-    /// drawing side picks that frame up only once the sizes agree.
-    #[must_use]
-    pub fn current(&self, fallback: UiTarget) -> UiTarget {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .unwrap_or(fallback)
-    }
 }
 
 /// The egui input for one frame laid out against `target`.
@@ -796,8 +758,8 @@ pub fn raw_input(
 /// `screen` is the descriptor the frame is laid out at, which travels with
 /// the frame: the drawing side packs its clip rectangles with that descriptor
 /// rather than with one of its own, so a frame is drawn exactly as it was laid
-/// out. Read it from [`UiScreen`] to work at the size the drawing side is
-/// about to draw at.
+/// out. Take it from the target the drawing side publishes to work at the size
+/// it is about to draw at.
 pub fn lay_out(
     world: &World,
     ctx: &egui::Context,
@@ -1293,8 +1255,7 @@ mod tests {
         );
 
         let mut source = UiSource::new();
-        source.draw_published(ExternalFrames::new(), UiScreen::new());
-        source.external.publish(0, frame);
+        source.frames.publish(0, frame);
         let mut encoder = encoder(&world, ctx);
         let mut scene = Scene::new();
 
@@ -1350,9 +1311,8 @@ mod tests {
         // The ids are whatever its context allocated: publishing rewrites
         // nothing, because the drawing side keys by (source, id).
         let mut source = UiSource::new();
-        source.draw_published(ExternalFrames::new(), UiScreen::new());
-        source.external.publish(0, frame);
-        let drawn = source.external.with_frames(|slots| {
+        source.frames.publish(0, frame);
+        let drawn = source.frames.with_frames(|slots| {
             slots[0]
                 .as_ref()
                 .expect("published")

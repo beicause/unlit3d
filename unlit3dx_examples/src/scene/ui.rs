@@ -168,15 +168,15 @@ pub fn mount_controls(world: &mut World) {
 /// A job that gives the render world the source drawing this scene's panel.
 ///
 /// The panel itself is not here: it lives in the gameplay world, which lays it
-/// out and publishes it. This world draws whatever the slots hold, so the two
-/// worlds share the slots and nothing else.
+/// out and sends the frame over. This world owns the slots those frames land
+/// in, and measures the target the publisher has to match.
 ///
 /// `pass` is the pass the source draws into: a pass records the sources below
 /// it, so a source spawned anywhere else would never reach the frame.
 pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job<()> {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
-        source.draw_published(panels.frames, panels.screen);
+        source.publish_target(panels.target);
         world
             .scope_mut(pass)
             .expect("the scene's pass is alive")

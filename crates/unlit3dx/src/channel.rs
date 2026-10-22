@@ -1,63 +1,32 @@
-//! Snapshot mailboxes: a world reports its state to whoever subscribed.
+//! Subscriptions: what a world reports to the others, and how they read it.
 //!
-//! A snapshot is how a world reports state to the others without ever calling
-//! back: the producer replaces the slot's contents, the consumers read
-//! whatever is newest, and no older snapshot is ever queued behind a slow
-//! reader. A reader that skips a snapshot misses nothing but history, which is
-//! what makes a mailbox right for state and wrong for events: an event that
-//! must not be missed belongs in a queue the collector fills, not in the slot.
+//! A subscription is a job that installs a collector in another world. That
+//! world runs the collector once per tick, after the state it reads has been
+//! updated, and the collector hands back what it found. Two kinds of thing can
+//! come back, and they differ in whether history matters:
 //!
-//! Nothing is published unasked: a world collects a snapshot only while
-//! someone holds the reader that subscribed for it. A subscription is a job
-//! like any other, so every world offers it the same way, built-in or not.
+//! - A **snapshot** keeps the newest value only. Publishing replaces the
+//!   slot, so a reader that skips a tick misses history, never the present.
+//!   That is the shape state wants: poses, a playback position, the size a UI
+//!   is laid out at.
+//! - A **stream** keeps every value, once per reader. The collector appends
+//!   what it found to each reader's queue, and the reader folds that queue
+//!   into its own tick with [`StreamReader::pump`](unlit3d::relay::StreamReader::pump). That is the shape events
+//!   want: input, collisions, a sequence ending. A reader that ticks slower
+//!   than the producer still sees every value, in order.
 //!
-//! The slot is an `ArcSwapOption`, so a producer never waits on a reader: it
-//! swaps the newest snapshot in, and a reader already holding the previous one
-//! keeps reading that one to the end.
+//! Nothing is collected unasked: a world runs the collectors of its
+//! subscriptions only while someone holds a reader, and a dropped reader is
+//! pruned on the next tick. Both kinds are installed with a job, so every
+//! world offers them the same way, built-in or not, and the reading side
+//! never blocks.
 
-use std::fmt;
-use std::sync::{Arc, Weak};
-
-use arc_swap::ArcSwapOption;
 use unlit_ecs::World;
-
-use crate::job::{JobSender, SendError};
 use unlit_ecs::{Entity, bundle};
 
-/// The reading half of a snapshot mailbox, and the subscription that fills it.
-///
-/// A world runs the collector its subscription carries once per tick and
-/// publishes what it returns. The subscription lives as long as this reader:
-/// once every clone of it is dropped, the world stops collecting for it.
-pub struct SnapshotReader<T> {
-    slot: Arc<ArcSwapOption<T>>,
-}
+use crate::job::{JobSender, SendError};
 
-// Both are hand-written: a reader is a handle to a slot, so it is cloneable
-// and debuggable whether or not the payload it carries is.
-impl<T> Clone for SnapshotReader<T> {
-    fn clone(&self) -> Self {
-        Self {
-            slot: Arc::clone(&self.slot),
-        }
-    }
-}
-
-impl<T> fmt::Debug for SnapshotReader<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SnapshotReader")
-            .field("published", &self.slot.load().is_some())
-            .finish()
-    }
-}
-
-impl<T> SnapshotReader<T> {
-    /// The newest snapshot, or [`None`] if none was ever published.
-    #[must_use]
-    pub fn latest(&self) -> Option<Arc<T>> {
-        self.slot.load_full()
-    }
-}
+pub use unlit3d::relay::{Snapshot, SnapshotReader, Stream, StreamReader};
 
 impl JobSender {
     /// Subscribe to a snapshot of this world.
@@ -81,15 +50,43 @@ impl JobSender {
         T: Send + Sync + 'static,
         F: FnMut(&World) -> Option<T> + Send + 'static,
     {
-        let slot = Arc::new(ArcSwapOption::empty());
-        let reader = SnapshotReader {
-            slot: Arc::clone(&slot),
-        };
-        let weak = Arc::downgrade(&slot);
+        let snapshot = Snapshot::new();
+        let reader = snapshot.reader();
         self.send(Box::new(move |world: &mut World| {
-            let entry: Box<dyn Entry> = Box::new(Collector {
+            let entry: Box<dyn Entry> = Box::new(SnapshotCollector { collect, snapshot });
+            install(world, entry);
+        }))?;
+        Ok(reader)
+    }
+
+    /// Subscribe to a stream of this world.
+    ///
+    /// `collect` runs on the world's own thread once per tick and appends
+    /// whatever it found to `out`, which is reused across ticks. Every value
+    /// reaches every reader's queue; the reader drains its queue in its own
+    /// tick with [`StreamReader::pump`].
+    ///
+    /// The subscription is a job: it is refused with the queue's error when
+    /// the queue is full or the world has stopped, and the returned reader
+    /// then never sees a value.
+    ///
+    /// # Panics
+    ///
+    /// A collector that publishes into its own world — by calling
+    /// [`publish_subscribed`] — panics on the borrow it takes of the
+    /// subscription list. A collector only reads the world.
+    pub fn subscribe_stream<T, F>(&self, collect: F) -> Result<StreamReader<T>, SendError>
+    where
+        T: Clone + Send + 'static,
+        F: FnMut(&World, &mut Vec<T>) + Send + 'static,
+    {
+        let stream = Stream::new();
+        let reader = stream.subscribe();
+        self.send(Box::new(move |world: &mut World| {
+            let entry: Box<dyn Entry> = Box::new(StreamCollector {
                 collect,
-                slot: weak,
+                stream,
+                buffer: Vec::new(),
             });
             install(world, entry);
         }))?;
@@ -116,29 +113,56 @@ pub fn publish_subscribed(world: &World) -> usize {
 
 /// One subscription inside a world: what to collect and where to put it.
 trait Entry {
-    /// Collect and publish one snapshot; answers whether the reader is alive.
+    /// Collect and publish one tick's worth; answers whether a reader is alive.
     fn publish(&mut self, world: &World) -> bool;
 }
 
-/// A subscription's collector and a way back to the mailbox it fills.
-struct Collector<T, F> {
+/// A subscription that keeps the newest value its collector returns.
+struct SnapshotCollector<T, F> {
     collect: F,
-    slot: Weak<ArcSwapOption<T>>,
+    snapshot: Snapshot<T>,
 }
 
-impl<T, F> Entry for Collector<T, F>
+impl<T, F> Entry for SnapshotCollector<T, F>
 where
     T: Send + Sync + 'static,
     F: FnMut(&World) -> Option<T> + 'static,
 {
     fn publish(&mut self, world: &World) -> bool {
-        let Some(slot) = self.slot.upgrade() else {
+        // Asked before the collector runs: a reader that is gone must not
+        // cost another collection.
+        if !self.snapshot.has_readers() {
             return false;
-        };
-        if let Some(snapshot) = (self.collect)(world) {
-            slot.store(Some(Arc::new(snapshot)));
+        }
+        if let Some(value) = (self.collect)(world) {
+            self.snapshot.publish(value);
         }
         true
+    }
+}
+
+/// A subscription that queues everything its collector appends.
+struct StreamCollector<T, F> {
+    collect: F,
+    stream: Stream<T>,
+    /// Reused across ticks so a collector never allocates its result.
+    buffer: Vec<T>,
+}
+
+impl<T, F> Entry for StreamCollector<T, F>
+where
+    T: Clone + Send + 'static,
+    F: FnMut(&World, &mut Vec<T>) + 'static,
+{
+    fn publish(&mut self, world: &World) -> bool {
+        // Asked before the collector runs: a reader that is gone must not
+        // cost another collection.
+        if !self.stream.has_readers() {
+            return false;
+        }
+        self.buffer.clear();
+        (self.collect)(world, &mut self.buffer);
+        self.stream.push_all(self.buffer.drain(..))
     }
 }
 
@@ -174,6 +198,7 @@ fn install(world: &mut World, entry: Box<dyn Entry>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use super::*;
@@ -183,17 +208,9 @@ mod tests {
         world: &mut World,
         collect: impl FnMut(&World) -> Option<u32> + 'static,
     ) -> SnapshotReader<u32> {
-        let slot = Arc::new(ArcSwapOption::empty());
-        let reader = SnapshotReader {
-            slot: Arc::clone(&slot),
-        };
-        install(
-            world,
-            Box::new(Collector {
-                collect,
-                slot: Arc::downgrade(&slot),
-            }),
-        );
+        let snapshot = Snapshot::new();
+        let reader = snapshot.reader();
+        install(world, Box::new(SnapshotCollector { collect, snapshot }));
         reader
     }
 
@@ -265,5 +282,36 @@ mod tests {
         let second = reader.latest().expect("the second snapshot");
         assert_eq!(*second, 2);
         assert_eq!(*first, 1, "the held snapshot did not change under it");
+    }
+
+    /// Every value a stream collector appends reaches every reader, and each
+    /// reader folds its own queue on its own tick.
+    #[test]
+    fn a_stream_subscription_delivers_every_value() {
+        let mut tick = 0;
+        let mut world = World::new();
+        let stream = Stream::new();
+        let reader = stream.subscribe();
+        install(
+            &mut world,
+            Box::new(StreamCollector {
+                collect: move |_world: &World, out: &mut Vec<u32>| {
+                    tick += 1;
+                    out.extend([tick, tick * 10]);
+                },
+                stream,
+                buffer: Vec::new(),
+            }),
+        );
+
+        publish_subscribed(&world);
+        publish_subscribed(&world);
+        reader.pump();
+        assert_eq!(reader.to_vec(), vec![1, 10, 2, 20]);
+
+        // A second pump with nothing new replaces the batch rather than
+        // repeating the events of the previous tick.
+        reader.pump();
+        assert!(reader.to_vec().is_empty());
     }
 }

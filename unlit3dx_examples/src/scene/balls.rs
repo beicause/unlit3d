@@ -40,10 +40,14 @@ pub const SPAWN_HEIGHT: f32 = 7.0;
 /// How far from the centre a ball may spawn, in metres.
 pub const SPAWN_SPREAD: f32 = 3.0;
 
-/// One body request in flight: the request itself, the pool slot its
-/// render entity was reserved for, the tick the request was made, and
-/// the scene generation it belongs to.
-type PendingBody = (Request<RigidBodyHandle>, (Entity, ShapeKind), u32, u32);
+/// One body request in flight: its id, the pool slot its render entity
+/// was reserved for, the tick the request was made, and the scene
+/// generation it belongs to.
+type PendingBody = (u32, (Entity, ShapeKind), u32, u32);
+
+/// One body answered by the physics world: the request it answers, the
+/// generation it belongs to, and the body the world spawned.
+type BodySpawned = (u32, u32, RigidBodyHandle);
 
 /// The shapes, living on their own entity in the gameplay world.
 ///
@@ -59,6 +63,12 @@ pub struct Balls {
     physics: SnapshotReader<GamePhysics>,
     /// The physics world's command channel.
     physics_sender: JobSender,
+    /// The answers the physics world pushes when a body is spawned, and
+    /// this world's reader of them.
+    spawns: Stream<BodySpawned>,
+    spawned: StreamReader<BodySpawned>,
+    /// The id the next body request is given.
+    next_request: u32,
     /// Body requests in flight, with the render entity reserved, the tick
     /// the request was made, and the generation it belongs to: a request
     /// from before a restart is despawned instead of mapped when it
@@ -99,10 +109,15 @@ impl Balls {
     /// The shapes, driving the worlds `wiring` reaches.
     #[must_use]
     pub fn new(wiring: &SceneWiring) -> Self {
+        let spawns = Stream::new();
+        let spawned = spawns.subscribe();
         Self {
             render: wiring.render_sender.clone(),
             physics: wiring.physics_reader.clone(),
             physics_sender: wiring.physics_sender.clone(),
+            spawns,
+            spawned,
+            next_request: 0,
             pending: Vec::new(),
             by_handle: HashMap::new(),
             live: VecDeque::new(),
@@ -173,12 +188,27 @@ impl Balls {
             restitution: 0.65,
             shape: shape_body(kind),
         };
-        let (job, request) = Request::wrap(Box::new(move |world: &mut World| {
-            spawn_body(world, description)
+        // The answer comes back over a stream rather than a reply slot: the
+        // physics world pushes it when it runs the job, and the tick below
+        // folds whatever arrived into its own state.
+        let id = self.next_request;
+        self.next_request = self.next_request.wrapping_add(1);
+        let born = self.generation;
+        let spawns = self.spawns.clone();
+        let sent = self.physics_sender.send(Box::new(move |world: &mut World| {
+            let handle = spawn_body(world, description);
+            let _ = spawns.push((id, born, handle));
         }));
-        self.physics_sender.send(job).ok();
+        if let Err(error) = sent {
+            log::warn!("the physics world refused a body request ({error:?})");
+            let _ = world
+                .root_scope()
+                .query_one::<&mut SceneState>(state)
+                .map(|mut state| state.give((slot, kind)));
+            return;
+        }
         self.pending
-            .push((request, (slot, kind), self.ticks, self.generation));
+            .push((id, (slot, kind), self.ticks, self.generation));
         log::debug!("a body was requested at {position:?}");
     }
 
@@ -221,44 +251,56 @@ impl Balls {
         );
     }
 
-    /// Retire the requests the physics world either ran long ago or never
-    /// will: the world died, and the reservation must not leak. A request
-    /// from before a restart is despawned instead of mapped, so its slot
-    /// returns to the pool.
+    /// Map the bodies the physics world spawned since the last tick, then
+    /// retire the requests it either ran long ago or never will: the world
+    /// died, and the reservation must not leak. A request from before a
+    /// restart is despawned instead of mapped, so its slot returns to the
+    /// pool.
     fn retire_stale(&mut self, world: &World, state: Entity) {
         let generation = self.generation;
         let ticks = self.ticks;
         let physics = &self.physics_sender;
-        self.pending
-            .retain_mut(|(request, (slot, kind), age, born)| {
-                if ticks - *age > PENDING_TIMEOUT_TICKS {
-                    let _ = world
-                        .root_scope()
-                        .query_one::<&mut SceneState>(state)
-                        .map(|mut state| state.give((*slot, *kind)));
-                    return false;
-                }
-                match request.poll() {
-                    Some(handle) => {
-                        if *born == generation {
-                            self.by_handle.insert(handle, *slot);
-                            self.live.push_back((handle, (*slot, *kind)));
-                        } else {
-                            physics
-                                .send(Box::new(move |world: &mut World| {
-                                    let _ = despawn_body(world, handle);
-                                }))
-                                .ok();
-                            let _ = world
-                                .root_scope()
-                                .query_one::<&mut SceneState>(state)
-                                .map(|mut state| state.give((*slot, *kind)));
-                        }
-                        false
-                    }
-                    None => true,
-                }
-            });
+        self.spawned.pump();
+        let mut answers = Vec::new();
+        self.spawned.copy_into(&mut answers);
+        for (id, born, handle) in answers {
+            // A request that already timed out has no entry left; its body
+            // still exists, so it has to be despawned rather than leaked.
+            let Some(position) = self.pending.iter().position(|(pending, ..)| *pending == id)
+            else {
+                physics
+                    .send(Box::new(move |world: &mut World| {
+                        let _ = despawn_body(world, handle);
+                    }))
+                    .ok();
+                continue;
+            };
+            let (_, (slot, kind), _, _) = self.pending.swap_remove(position);
+            if born == generation {
+                self.by_handle.insert(handle, slot);
+                self.live.push_back((handle, (slot, kind)));
+            } else {
+                physics
+                    .send(Box::new(move |world: &mut World| {
+                        let _ = despawn_body(world, handle);
+                    }))
+                    .ok();
+                let _ = world
+                    .root_scope()
+                    .query_one::<&mut SceneState>(state)
+                    .map(|mut state| state.give((slot, kind)));
+            }
+        }
+        self.pending.retain(|(_, (slot, kind), age, _)| {
+            if ticks - *age > PENDING_TIMEOUT_TICKS {
+                let _ = world
+                    .root_scope()
+                    .query_one::<&mut SceneState>(state)
+                    .map(|mut state| state.give((*slot, *kind)));
+                return false;
+            }
+            true
+        });
     }
 
     /// Publish the snapshot's poses onto every pool slot, the live bodies at
@@ -374,7 +416,7 @@ fn available_slots(
     slots
         .iter()
         .copied()
-        .filter(|slot| !pending.iter().any(|(_, reserved, _, _)| reserved == slot))
+        .filter(|slot| !pending.iter().any(|(_, reserved, ..)| reserved == slot))
         .collect()
 }
 
@@ -418,16 +460,7 @@ mod tests {
             .map(|index| (Entity::from_raw(index, 0), ShapeKind::Ball))
             .collect();
         // A request the physics world has not answered yet holds slot 2.
-        let (commands, _receiver) = async_channel::unbounded::<Job<()>>();
-        let sender = JobSender::new(commands);
-        let mut pending: Vec<PendingBody> = Vec::new();
-        {
-            let slot = slots[2];
-            let (job, request) =
-                Request::wrap(Box::new(move |_: &mut World| RigidBodyHandle::invalid()));
-            sender.send(job).unwrap();
-            pending.push((request, slot, 0, 0));
-        }
+        let pending: Vec<PendingBody> = vec![(0, slots[2], 0, 0)];
         let free = available_slots(&slots, &pending);
         assert_eq!(
             free.iter()

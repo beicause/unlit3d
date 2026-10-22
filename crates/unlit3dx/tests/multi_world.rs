@@ -30,8 +30,7 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
     false
 }
 
-/// Sub-world jobs drain in queue order, and a request queued behind them
-/// is answered by the same drain.
+/// Sub-world jobs drain in queue order.
 #[test]
 fn sub_world_jobs_drain_in_order() {
     let mut host = World::new();
@@ -44,7 +43,11 @@ fn sub_world_jobs_drain_in_order() {
             order.lock().expect("the order lock").push(step);
         }));
     }
-    let third = proxy.request(Box::new(|_: &mut World| "third"));
+    let last = Arc::new(std::sync::Mutex::new(None));
+    let seen = Arc::clone(&last);
+    let _ = proxy.send(Box::new(move |_: &mut World| {
+        *seen.lock().expect("the order lock") = Some("last");
+    }));
 
     let mut nested = host
         .root_scope()
@@ -53,20 +56,24 @@ fn sub_world_jobs_drain_in_order() {
     drain_sub_world(&mut nested);
 
     assert_eq!(*order.lock().expect("the order lock"), vec![0, 1, 2, 3]);
-    assert_eq!(third.poll(), Some("third"));
+    assert_eq!(*last.lock().expect("the order lock"), Some("last"));
 }
 
-/// A job that panics fails only its own request: the drain catches the
-/// panic, the request reports it, and the jobs queued behind it still run.
+/// A job that panics does not stop the jobs queued behind it: the drain
+/// catches the panic and carries on.
 #[test]
-fn a_panicking_job_fails_only_its_own_request() {
+fn a_panicking_job_does_not_stop_the_drain() {
     let mut host = World::new();
     let proxy = spawn_sub_world(&mut host, "nested", 16);
 
-    let doomed = proxy.request(Box::new(|_: &mut World| -> u64 {
+    let _ = proxy.send(Box::new(|_: &mut World| {
         panic!("this job cannot run");
     }));
-    let survivor = proxy.request(Box::new(|_: &mut World| 7u64));
+    let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen = Arc::clone(&ran);
+    let _ = proxy.send(Box::new(move |_: &mut World| {
+        seen.lock().expect("the order lock").push(7u64);
+    }));
 
     let mut nested = host
         .root_scope()
@@ -74,13 +81,7 @@ fn a_panicking_job_fails_only_its_own_request() {
         .expect("the nested world");
     drain_sub_world(&mut nested);
 
-    assert!(doomed.dropped(), "the failed request reports the drop");
-    assert_eq!(
-        doomed.recv(),
-        Err(RequestError::Dropped),
-        "a request whose job panicked answers with the failure"
-    );
-    assert_eq!(survivor.poll(), Some(7), "the queue kept draining");
+    assert_eq!(*ran.lock().expect("the order lock"), vec![7]);
 }
 
 /// A remote world's state persists between jobs: later jobs see what
@@ -102,25 +103,26 @@ fn remote_world_state_persists_between_jobs() {
                 .0 += 1;
         }));
     }
-    let count = remote.request(Box::new(|world: &mut World| {
-        world
-            .root_scope()
-            .query::<&Count>()
-            .next()
-            .expect("the counter")
-            .0
+    let counted = Snapshot::new();
+    let reader = counted.reader();
+    let publish = counted.clone();
+    let _ = remote.send(Box::new(move |world: &mut World| {
+        publish.publish(
+            world
+                .root_scope()
+                .query::<&Count>()
+                .next()
+                .expect("the counter")
+                .0,
+        );
     }));
 
-    // Polling consumes the answer, so keep the first one around.
-    let mut answer = None;
+    // The newest snapshot is kept, so the answer stays readable.
     assert!(
-        wait_for(|| {
-            answer = count.poll();
-            answer.is_some()
-        }),
-        "the counting request never answered"
+        wait_for(|| reader.latest().is_some()),
+        "the counting job never published"
     );
-    assert_eq!(answer, Some(5));
+    assert_eq!(reader.latest().map(|count| *count), Some(5));
 }
 
 /// A world's tick returning `false` stops the thread, and jobs sent

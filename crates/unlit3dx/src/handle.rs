@@ -8,7 +8,7 @@
 
 use unlit_ecs::Entity;
 
-use crate::job::{Job, JobSender, Request, SendError};
+use crate::job::{Job, JobSender, SendError};
 use crate::thread::ThreadStatus;
 
 /// A cloneable handle to a spawned world.
@@ -49,12 +49,6 @@ impl WorldHandle {
     /// [`SendError`] and hands the job back.
     pub fn send(&self, job: Job<()>) -> Result<(), SendError> {
         self.commands.send(job)
-    }
-
-    /// Queue a job that answers back through the returned request.
-    #[must_use = "the request carries the job's result"]
-    pub fn request<R: Send + 'static>(&self, job: Job<R>) -> Request<R> {
-        self.commands.request(job)
     }
 
     /// A cloneable handle to the command channel, for worlds that queue
@@ -108,12 +102,18 @@ mod tests {
     fn a_handle_queues_into_its_world() {
         let mut host = World::new();
         let handle = crate::host::spawn_sub_world(&mut host, "nested", 8);
-        let request = handle.request(Box::new(|_: &mut World| 5));
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = std::sync::Arc::clone(&ran);
+        handle
+            .send(Box::new(move |_: &mut World| {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+            }))
+            .expect("the queue has room");
         let mut nested = host
             .root_scope()
             .query_one::<&mut World>(handle.entity())
             .expect("the nested world");
         crate::host::drain_sub_world(&mut nested);
-        assert_eq!(request.poll(), Some(5));
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 }

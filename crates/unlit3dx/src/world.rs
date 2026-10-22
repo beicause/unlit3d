@@ -379,9 +379,10 @@ mod tests {
     use std::time::Duration;
     use unlit_ecs::bundle;
 
-    /// Jobs sent through the handle run, and a request answers back.
+    /// Jobs sent through the handle run, and what one leaves behind is
+    /// published to the sender's reader.
     #[test]
-    fn sent_jobs_run_and_requests_reply() {
+    fn sent_jobs_run_and_publish_back() {
         let mut host = World::new();
         let handle = spawn_remote_world(&mut host, "test", 8, |_, control| {
             control.wait_timeout(Duration::from_millis(1));
@@ -392,23 +393,29 @@ mod tests {
                 world.root_scope_mut().spawn(bundle![Count(0)]);
             }))
             .expect("the world accepts jobs");
-        let request = handle.request(Box::new(|world: &mut World| {
-            world
-                .root_scope()
-                .query::<&mut Count>()
-                .next()
-                .expect("the counter")
-                .0 += 1;
-            world
-                .root_scope()
-                .query::<&Count>()
-                .next()
-                .expect("the counter")
-                .0
-        }));
+        let counted = crate::channel::Snapshot::new();
+        let reader = counted.reader();
+        let publish = counted.clone();
+        handle
+            .send(Box::new(move |world: &mut World| {
+                world
+                    .root_scope()
+                    .query::<&mut Count>()
+                    .next()
+                    .expect("the counter")
+                    .0 += 1;
+                let count = world
+                    .root_scope()
+                    .query::<&Count>()
+                    .next()
+                    .expect("the counter")
+                    .0;
+                publish.publish(count);
+            }))
+            .expect("the world accepts jobs");
         let mut answer = None;
         for _ in 0..2_000 {
-            answer = request.poll();
+            answer = reader.latest().map(|count| *count);
             if answer.is_some() {
                 break;
             }
@@ -433,12 +440,17 @@ mod tests {
                 true
             },
         );
-        let request = handle.request(Box::new(|world: &mut World| {
-            world.root_scope().query::<&Count>().next().is_some()
-        }));
+        let seeded = crate::channel::Snapshot::new();
+        let reader = seeded.reader();
+        let publish = seeded.clone();
+        handle
+            .send(Box::new(move |world: &mut World| {
+                publish.publish(world.root_scope().query::<&Count>().next().is_some());
+            }))
+            .expect("the world accepts jobs");
         let mut answered = None;
         for _ in 0..2_000 {
-            answered = request.poll();
+            answered = reader.latest().map(|found| *found);
             if answered.is_some() {
                 break;
             }
@@ -483,48 +495,22 @@ mod tests {
                 true
             },
         );
+        let count = |host: &World| {
+            with_stepped_world(host, handle.entity(), |world| {
+                world
+                    .root_scope()
+                    .query::<&Count>()
+                    .next()
+                    .expect("the counter")
+                    .0
+            })
+        };
         // Nothing has run yet: the host has not stepped the world.
-        assert_eq!(
-            handle
-                .request(Box::new(|world: &mut World| {
-                    world
-                        .root_scope()
-                        .query::<&Count>()
-                        .next()
-                        .expect("the counter")
-                        .0
-                }))
-                .poll(),
-            None
-        );
+        assert_eq!(count(&host), Some(0));
         step_stepped_world(&host, handle.entity());
-        assert_eq!(
-            handle
-                .request(Box::new(|world: &mut World| {
-                    world
-                        .root_scope()
-                        .query::<&Count>()
-                        .next()
-                        .expect("the counter")
-                        .0
-                }))
-                .poll(),
-            None
-        );
+        assert_eq!(count(&host), Some(1));
         step_stepped_world(&host, handle.entity());
-        let request = handle.request(Box::new(|world: &mut World| {
-            world
-                .root_scope()
-                .query::<&Count>()
-                .next()
-                .expect("the counter")
-                .0
-        }));
-        // A step drains the queue before it ticks, exactly as a remote
-        // world's loop does, so this request reads the count of the two
-        // ticks that have already run.
-        step_stepped_world(&host, handle.entity());
-        assert_eq!(request.poll(), Some(2));
+        assert_eq!(count(&host), Some(2));
     }
 
     /// A stepped world's tick can end the world.

@@ -27,6 +27,8 @@ pub mod pipeline;
 /// through, and are reusable by a caller's own reflected components.
 #[cfg(feature = "reflect")]
 pub mod reflect;
+/// The handles a value takes when it leaves a world: a snapshot or a stream.
+pub mod relay;
 pub mod renderer;
 pub mod scene;
 pub mod source;
@@ -70,6 +72,7 @@ pub mod prelude {
             FamilyContext, GlobalResources, InstanceContext, InstanceData, InstanceStreamDesc,
             Rebuild, RegisteredRenderPipeline, RenderPipelineFactory, RenderPipelineKey,
         },
+        relay::{Snapshot, SnapshotReader, Stream, StreamReader},
         renderer::Renderer,
         source::{
             FrameSource, FrameSourceOrder, MaintainScope, OpenUrl, OpenUrls, RenderContext, Source,

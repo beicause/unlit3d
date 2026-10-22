@@ -703,16 +703,20 @@ handed a `&mut egui::Ui` that belongs to the pass building it. A UI whose
 panels live in one world and whose drawing belongs to another therefore crosses
 that boundary as data: `ui::lay_out` runs a world's panels against a context
 the caller owns and returns an `ui::ExternalFrame` — tessellated primitives,
-texture updates and the platform output, all plain owned values. The panel's
-world publishes those frames into `ui::ExternalFrames` and the drawing side
-draws whatever is there; nothing is asked for in return. The two contexts stay
+texture updates and the platform output, all plain owned values. The frame
+then crosses as whatever the two worlds agree on: it lands in the
+`ui::ExternalFrame` slots a `ui::UiSource` owns, so the slots stay on the
+thread that draws them, and the target the drawing side measures comes back
+through a `relay::Snapshot` the panel's world reads when it lays the next
+frame out. The two contexts stay
 separate: sharing one would have both worlds writing the same memory and font
 atlas, and egui treats one `run_ui` call as one whole frame. Their texture ids
 are never rewritten, though both contexts allocate from zero: a frame keeps the
 ids its context gave it and the GPU integration keys textures by (origin, id),
 so a published frame is drawn from the same tessellation until a newer one
 replaces it. `unlit3dx` builds the cross-world plumbing — a `UiPanelHost` in the
-panel's world, publishing on that world's own tick — on these pieces.
+panel's world, sending frames as jobs on that world's own tick — on these
+pieces.
 
 <details>
 <summary>Why the panel is a component, and the unit convention that is easy to get wrong</summary>

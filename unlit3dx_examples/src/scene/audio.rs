@@ -1,7 +1,7 @@
 //! The scene's music: the synthesizer's voice, and the sequences played into it.
 //!
 //! The audio world is a world of its own, so the scene reaches it through
-//! jobs. Installing the voice is one round trip: the job builds it and answers
+//! jobs. Installing the voice is one job: it builds the voice and publishes
 //! the entity that carries it, and every note the gameplay world plays is
 //! addressed to that entity afterwards. The sequences themselves live in the
 //! gameplay world, with the clocks that advance them, so a track's play state
@@ -52,10 +52,15 @@ pub fn install_synth(world: &mut World, soundfont: &[u8]) -> Option<Entity> {
     }
 }
 
-/// A job that installs the demo's synthesizer on an audio world, answering
-/// the entity that carries the voice.
-pub fn install_audio_job(soundfont: Arc<[u8]>) -> Job<Option<Entity>> {
-    Box::new(move |world: &mut World| install_synth(world, &soundfont))
+/// A job that installs the demo's synthesizer on an audio world and
+/// publishes the entity that carries the voice.
+///
+/// `None` means the soundfont failed to load; the scene then stays silent
+/// rather than asking again.
+pub fn install_audio_job(soundfont: Arc<[u8]>, ready: Snapshot<Option<Entity>>) -> Job<()> {
+    Box::new(move |world: &mut World| {
+        ready.publish(install_synth(world, &soundfont));
+    })
 }
 
 /// The tracks the control panel transports.
@@ -98,10 +103,13 @@ pub struct SceneAudio {
     audio: JobSender,
     /// The soundfont the voice is built from.
     soundfont: Arc<[u8]>,
-    /// The install round trip, until it answers.
-    install: Option<Request<Option<Entity>>>,
-    /// Whether the install has answered, so the round trip is not asked for
-    /// again once it has.
+    /// Where the install job publishes the voice it built.
+    ready: Snapshot<Option<Entity>>,
+    /// The installed voice, read once the job publishes it.
+    voice: SnapshotReader<Option<Entity>>,
+    /// Whether the install job has been sent, so it is not sent again.
+    requested: bool,
+    /// Whether the install has answered, so the scene stops looking.
     installed: bool,
 }
 
@@ -109,10 +117,13 @@ impl SceneAudio {
     /// The music for the worlds `wiring` reaches, playing `soundfont`.
     #[must_use]
     pub fn new(wiring: &SceneWiring, soundfont: Arc<[u8]>) -> Self {
+        let ready = Snapshot::new();
         Self {
             audio: wiring.audio_sender.clone(),
             soundfont,
-            install: None,
+            voice: ready.reader(),
+            ready,
+            requested: false,
             installed: false,
         }
     }
@@ -123,27 +134,24 @@ impl Tick for SceneAudio {
         if self.installed {
             return;
         }
-        if self.install.is_none() {
-            self.install = Some(
-                self.audio
-                    .request(install_audio_job(self.soundfont.clone())),
-            );
+        if !self.requested {
+            self.requested = true;
+            if let Err(error) = self.audio.send(install_audio_job(
+                self.soundfont.clone(),
+                self.ready.clone(),
+            )) {
+                self.installed = true;
+                log::error!("the audio world refused the synthesizer install ({error:?})");
+                return;
+            }
         }
-        let Some(install) = self.install.take() else {
+        let Some(voice) = self.voice.latest().map(|voice| *voice) else {
             return;
         };
-        match install.poll() {
-            Some(Some(voice)) => {
-                self.installed = true;
-                start_tracks(&world.root_scope(), &self.audio, voice);
-                log::info!("the background music is playing");
-            }
-            Some(None) => self.installed = true,
-            None if install.dropped() => {
-                self.installed = true;
-                log::error!("the audio world dropped the synthesizer install");
-            }
-            None => self.install = Some(install),
+        self.installed = true;
+        if let Some(voice) = voice {
+            start_tracks(&world.root_scope(), &self.audio, voice);
+            log::info!("the background music is playing");
         }
     }
 }
