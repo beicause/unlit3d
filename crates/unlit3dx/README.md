@@ -30,15 +30,14 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
     !control.stop_requested()
 });
 
-// Jobs run on the remote thread between ticks; a request brings its
-// answer back whenever it arrives.
+// Jobs run on the remote thread between ticks and answer nothing. A job
+// that produces a value to keep hands it back through a snapshot or a
+// stream.
 simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,))));
-// `spawned.poll()` is `Some(entity)` once the job has run.
 
-// Snapshots are the only data that flows back, and they are opt-in: the
-// world runs the collector this subscription carries once per tick and
-// publishes whatever it returns. The payload is the caller's type — the
+// A snapshot is one of the two ways data comes back (the other is a stream,
+// for events), and it is opt-in: the world runs the collector this
+// subscription carries once per tick and publishes whatever it returns. The payload is the caller's type — the
 // library defines none — so the collector is where a scene decides what it
 // wants to see.
 let reader = simulation.sender().subscribe(|world: &World| {
@@ -363,8 +362,8 @@ as `src/render.rs`.
 
 ## Tests
 
-`cargo nextest run -p unlit3dx` covers the core: job round trips, request
-replies, subscriptions — several readers each getting their own snapshot, a
+`cargo nextest run -p unlit3dx` covers the core: jobs and their queues,
+subscriptions — several readers each getting their own snapshot, a
 collector that answers nothing leaving the newest in place, a dropped reader
 pruning its subscription, and a full queue refusing one — thread stop and
 panic reporting, a remote world's sent jobs running, and the same for a
@@ -374,7 +373,7 @@ integration tests add the bridges: a physics world dropping a ball onto a
 floor and reporting the contact, a subscriber queueing the contacts of two
 separate landings that a mailbox would have collapsed into one, the audio
 world running jobs and reporting its output opening, multi-world job and
-snapshot traffic, and a job that panics failing only its own request.
+snapshot traffic, and a panicking job not stopping the jobs behind it.
 Recording is covered too: it captures the mix the device would play and lays
 the samples out as a RIFF/WAVE file, and the audio MCP tools drive both
 through the dispatch coverage below. With the `mcp` feature on, the MCP command dispatch

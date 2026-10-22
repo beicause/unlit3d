@@ -461,8 +461,7 @@ impl FrameSource for UiSource {
         //
         // A published frame's geometry is borrowed from its slot rather than
         // copied — it is drawn again on every frame that brings no newer one —
-        // so the gather runs under the slots' lock and the upload happens
-        // inside it.
+        // so the gather borrows the slots for as long as the upload takes.
         let own = self.ctx.tessellate(output.shapes, screen.pixels_per_point);
         let own_textures = core::mem::take(&mut output.textures_delta);
         let gpu = &mut self.targets[index].gpu;

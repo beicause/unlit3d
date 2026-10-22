@@ -43,11 +43,11 @@ pub const SPAWN_SPREAD: f32 = 3.0;
 /// One body request in flight: its id, the pool slot its render entity
 /// was reserved for, the tick the request was made, and the scene
 /// generation it belongs to.
-type PendingBody = (u32, (Entity, ShapeKind), u32, u32);
+type PendingBody = (u64, (Entity, ShapeKind), u32, u32);
 
 /// One body answered by the physics world: the request it answers, the
 /// generation it belongs to, and the body the world spawned.
-type BodySpawned = (u32, u32, RigidBodyHandle);
+type BodySpawned = (u64, u32, RigidBodyHandle);
 
 /// The shapes, living on their own entity in the gameplay world.
 ///
@@ -67,8 +67,10 @@ pub struct Balls {
     /// this world's reader of them.
     spawns: Stream<BodySpawned>,
     spawned: StreamReader<BodySpawned>,
-    /// The id the next body request is given.
-    next_request: u32,
+    /// The id the next body request is given. It is wide enough never to
+    /// come back around: an answer to a request that already timed out must
+    /// not be mistaken for a later request's.
+    next_request: u64,
     /// Body requests in flight, with the render entity reserved, the tick
     /// the request was made, and the generation it belongs to: a request
     /// from before a restart is despawned instead of mapped when it

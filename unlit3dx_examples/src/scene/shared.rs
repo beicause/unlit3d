@@ -51,16 +51,20 @@ impl SceneState {
     /// and every object that needs a shape stays unspawned.
     pub fn new(server: WorldHandle) -> Self {
         let instances = Snapshot::new();
+        // Subscribe before the job is queued: a snapshot keeps nothing until
+        // a reader exists, and the render world may run the build before this
+        // constructor returns.
+        let reader = instances.reader();
         let render = server.sender();
         log::info!("the gameplay world started; asking the render world for the scene");
-        if let Err(error) = render.send(build_pool_job(instances.clone())) {
+        if let Err(error) = render.send(build_pool_job(instances)) {
             log::error!(
                 "the render world refused the scene build ({error:?}); the scene stays empty"
             );
         }
         Self {
             render,
-            instances: instances.reader(),
+            instances: reader,
             slots: Vec::new(),
             free: Vec::new(),
             ready: false,

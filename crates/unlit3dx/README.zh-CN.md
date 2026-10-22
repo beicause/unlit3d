@@ -29,12 +29,10 @@ let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control
     !control.stop_requested()
 });
 
-// job 在远程线程的 tick 之间运行；request 会在答案就绪时把它带回来。
+// job 在远程线程的 tick 之间运行，且不回答任何东西：要带回的值由快照或流送出。
 simulation.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
-let spawned = simulation.request(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,))));
-// job 一旦运行过，`spawned.poll()` 就是 `Some(entity)`。
 
-// 快照是唯一回传的数据，而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
+// 快照是两种回传方式之一（另一种是承载事件的流），而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
 let reader = simulation.sender().subscribe(|world: &World| {
@@ -276,14 +274,14 @@ world.root_scope_mut().spawn((request_gpu(app, |world, gpu| {
 
 ## 测试
 
-`cargo nextest run -p unlit3dx` 覆盖核心：job 往返、请求回复、订阅——多个 reader 各自
+`cargo nextest run -p unlit3dx` 覆盖核心：job 及其队列、订阅——多个 reader 各自
 拿到自己的快照、收集闭包返回空时保留最新一份、reader 被丢弃后订阅被清除、队列满时
 订阅被拒绝——线程停止与 panic 报告、远程 world 的已发送 job 运行，以及步进 world 的
 同一批行为——它的 job 在步进时运行、走完终点的 tick 会结束它、步进一个不携带步进
 world 的实体什么也不做。集成测试补上各桥：物理 world
 把球丢到地板上并报告接触、订阅者把两次分别落地的碰撞都排进队列（信箱会把它们并成
 一次）、音频 world 运行 job 并报告输出已打开、多 world 的 job 与
-快照往来，以及 panic 的 job 只失败自己的请求。录音也有覆盖：它捕获设备本会播放的
+快照往来，以及 panic 的 job 不会打断排在它后面的 job。录音也有覆盖：它捕获设备本会播放的
 混音并把样本排成 RIFF/WAVE 文件，音频 MCP 工具则把两者串进下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
 world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，
 以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败；
