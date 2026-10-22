@@ -5,7 +5,7 @@
 //! structural changes need `&mut World`, so a world cannot cross a thread.
 //! This crate turns that constraint into the shape of a program:
 //!
-//! - A **remote world** runs its own world on a fresh thread, reached
+//! - A **threaded world** runs its own world on a fresh thread, reached
 //!   through the [`handle::WorldHandle`] its spawn returns. Jobs move in through a
 //!   bounded channel and are drained between ticks.
 //! - A **sub-world** runs a nested world on the host's thread, drained
@@ -99,15 +99,15 @@ pub mod prelude {
         load_midi_file_with_loop_type, load_soundfont, midi_file, midi_job,
     };
     pub use crate::{
-        channel::{Snapshot, SnapshotReader, Stream, StreamReader, publish_subscribed},
+        channel::{Snapshot, SnapshotReader, Stream, StreamReader, publish_collected},
         executor::{LocalPool, LocalSpawnExt, LocalTasks},
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world},
         job::{Job, JobSender, SendError},
         thread::{FixedClock, ThreadControl, ThreadStatus, WorldThread},
         world::{
-            Stepped, Threaded, WorldName, WorldRunner, spawn_remote_world,
-            spawn_remote_world_with_init, spawn_stepped_world_with_init, step_stepped_world,
+            Stepped, Threaded, WorldName, WorldRunner, spawn_stepped_world_with_init,
+            spawn_threaded_world, spawn_threaded_world_with_init, step_stepped_world,
             with_stepped_world,
         },
     };

@@ -1041,7 +1041,7 @@ impl InputWriter {
     pub fn push_all(&self, events: impl IntoIterator<Item = InputEvent>) {
         // A world that dropped its buffer is pruned the next time input
         // arrives, rather than by whoever happens to notice.
-        self.0.push_all(events);
+        self.0.publish_all(events);
     }
 
     /// A buffer of this writer's future events, for one world.

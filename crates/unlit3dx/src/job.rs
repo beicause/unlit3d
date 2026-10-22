@@ -4,10 +4,12 @@
 //! own thread. The sender never waits for it: a queue that is full or stopped
 //! reports [`SendError`](crate::job::SendError) and the job comes back.
 //!
-//! A job never answers back. What one world learns from another is state, and
-//! state travels the other way: a subscription publishes it, and the caller
-//! reads it on its own tick. A caller that needs the value a job produced
-//! publishes that value itself, through the snapshot its subscription fills.
+//! A job never answers back directly. What one world learns from another is
+//! state, and state travels the other way: a subscription publishes it, and the
+//! caller reads it on its own tick. A caller that needs the value one job
+//! produces asks for it — [`JobSender::ask`](crate::channel::JobSender::ask)
+//! sends the job and hands back the snapshot its answer lands in — or publishes
+//! that value itself, through the snapshot its subscription fills.
 
 use std::fmt;
 

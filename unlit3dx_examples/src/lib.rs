@@ -156,7 +156,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             &input,
         )
     };
-    let gameplay_sender = worlds.gameplay.commands.clone();
+    let gameplay_sender = worlds.gameplay.sender.clone();
 
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.

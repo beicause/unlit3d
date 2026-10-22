@@ -1,6 +1,6 @@
 //! The handle every spawn hands back.
 //!
-//! A spawned world — a sub-world on the host thread, a remote world on its
+//! A spawned world — a sub-world on the host thread, a threaded world on its
 //! own — is reached the same way: a bounded command channel that never
 //! blocks. [`crate::handle::WorldHandle`] is that uniform handle. The spawn
 //! functions return it instead of a bare entity, so a caller queues work
@@ -25,7 +25,7 @@ pub struct WorldHandle {
     /// The command queue. Queueing through [`send`](JobSender::send) never
     /// blocks: a full or stopped queue reports
     /// [`SendError`](crate::job::SendError) and hands the job back.
-    pub commands: JobSender,
+    pub sender: JobSender,
     status: Option<ThreadStatus>,
 }
 
@@ -35,10 +35,10 @@ impl WorldHandle {
     /// A sub-world passes `None` for the thread status: it shares the host's
     /// thread, so there is no separate thread to report on.
     #[must_use]
-    pub fn new(entity: Entity, commands: JobSender, status: Option<ThreadStatus>) -> Self {
+    pub fn new(entity: Entity, sender: JobSender, status: Option<ThreadStatus>) -> Self {
         Self {
             entity,
-            commands,
+            sender,
             status,
         }
     }
@@ -58,7 +58,7 @@ impl WorldHandle {
         self.status.as_ref().and_then(ThreadStatus::panic_message)
     }
 
-    /// Ask a remote world's thread to stop, without waiting for it.
+    /// Ask a threaded world's thread to stop, without waiting for it.
     pub fn stop(&self) {
         if let Some(status) = &self.status {
             status.stop();
@@ -78,7 +78,7 @@ mod tests {
         let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seen = std::sync::Arc::clone(&ran);
         handle
-            .commands
+            .sender
             .send(Box::new(move |_: &mut World| {
                 seen.store(true, std::sync::atomic::Ordering::SeqCst);
             }))

@@ -19,28 +19,27 @@ use unlit_ecs::World;
 
 let mut host = World::new();
 
-// A remote world: a `World` plus a thread, ticked by this closure.
+// A world on its own thread: a `World` plus a thread, ticked by this closure.
 // The spawn returns a `WorldHandle` — the entity the proxy lives on,
 // the command queue and the thread's status in one value.
-let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control| {
+let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, control| {
     // ... advance the simulation inside `world` ...
     // The world publishes to its subscribers once its state is current.
-    publish_subscribed(world);
+    publish_collected(world);
     control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
     !control.stop_requested()
 });
 
-// Jobs run on the remote thread between ticks and answer nothing. A job
-// that produces a value to keep hands it back through a snapshot or a
-// stream.
-simulation.commands.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+// Jobs run on the world's thread between ticks and answer nothing. A job
+// whose result is worth keeping publishes it, or asks for it.
+simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
 
 // A snapshot is one of the two ways data comes back (the other is a stream,
 // for events), and it is opt-in: the world runs the collector this
 // subscription carries once per tick and publishes whatever it returns. The payload is the caller's type — the
 // library defines none — so the collector is where a scene decides what it
 // wants to see.
-let reader = simulation.commands.subscribe(|world: &World| {
+let reader = simulation.sender.watch(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
@@ -51,7 +50,7 @@ if let Some(latest) = reader.latest() {
 ```
 
 The feature-gated modules build scenes on top of that core. A **sub-world**
-keeps its owner on the main thread but takes jobs like a remote world:
+keeps its owner on the main thread but takes jobs like a threaded world:
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 queued jobs
@@ -78,21 +77,21 @@ one world per concern, and never share one.
   host reaches into it only between events. It keeps a job inbox too:
   `spawn_sub_world` wires one up, other threads post jobs through the
   `WorldHandle` it returns, and the owner calls `drain_sub_world` between its
-  own steps — the same protocol as a remote world, minus the thread.
-- A **remote world** is a `World` that belongs to its own thread. Physics,
+  own steps — the same protocol as a threaded world, minus the thread.
+- A **threaded world** is a `World` that belongs to its own thread. Physics,
   audio and gameplay each run one.
 
 The worlds never call each other. A caller sends a **job** — a boxed closure
-that receives the remote world's `&mut World` — and receives through a
+that receives the target world's `&mut World` — and receives through a
 **subscription**: a snapshot for state, a stream for events. That is the
 whole protocol.
 
 ## Jobs
 
-`Job<R>` is a boxed `FnOnce(&mut World) -> R`. `WorldHandle::commands` queues one
-and never blocks: a full queue returns `Err(SendError::Full)` and a stopped
+`Job<R>` is a boxed `FnOnce(&mut World) -> R`. `WorldHandle::sender` queues one and
+never blocks: a full queue returns `Err(SendError::Full)` and a stopped
 world `Err(SendError::Closed)`, so a world thread that sends to its own queue
-cannot deadlock against itself. The remote thread drains its queue before
+cannot deadlock against itself. The world thread drains its queue before
 every tick, so a job never races a tick.
 
 A job is also the only way one world changes another, and it answers nothing:
@@ -100,6 +99,12 @@ a world that must report something publishes it through a subscription
 instead. A reply would have the sender waiting on a world that may be busy,
 stopped, or already gone, and what comes back is state, which has a channel
 of its own.
+
+One exception is worth its own name. A caller that wants one value once — the
+entity a build created, the handle an install returned — uses
+`JobSender::ask`: it sends a job that publishes its result into a snapshot and
+hands back the reader. Nothing waits, and a queue that refuses the job leaves
+the reader empty rather than blocking or fabricating an answer.
 
 Every world the framework builds carries a task set as a component, so a task
 lasts as long as the world and belongs to it rather than to the call that
@@ -111,16 +116,20 @@ way.
 
 ## Snapshots and streams
 
-Receiving is a subscription: `JobSender::subscribe` installs a collector in
-the target world and hands back a reader; the world runs every collector it
+Receiving is a subscription: `JobSender::watch` installs a collector in the
+target world and hands back a reader; the world runs every collector it
 carries once per tick, after its state is current. Which shape the collector
 fills is the caller's choice:
 
-- `subscribe` returns a `SnapshotReader<T>`: state, where only the newest
-  value matters. The collector returns `Option<T>`.
-- `subscribe_stream` returns a `StreamReader<T>`: events, where every value
-  matters. The collector appends to the buffer it is handed, and every value
-  reaches every reader's queue.
+- `watch` returns a `SnapshotReader<T>`: state, where only the newest value
+  matters. The collector returns `Option<T>`.
+- `subscribe` returns a `StreamReader<T>`: events, where every value matters.
+  The collector appends to the buffer it is handed, and every value reaches
+  every reader's queue.
+
+`JobSender::ask` is the third shape: one job, one answer, published once. A
+reader it returns never goes stale twice, and a world that refuses the job
+leaves it empty.
 
 The payload is the caller's type — the library defines none — so a scene
 collects exactly the data it wants and pays for nothing else.
@@ -368,7 +377,7 @@ as `src/render.rs`.
 subscriptions — several readers each getting their own snapshot, a
 collector that answers nothing leaving the newest in place, a dropped reader
 pruning its subscription, and a full queue refusing one — thread stop and
-panic reporting, a remote world's sent jobs running, and the same for a
+panic reporting, a threaded world's sent jobs running, and the same for a
 stepped world — its jobs run on the step, a tick past the end finishes it,
 and stepping an entity that carries no stepped world does nothing. The
 integration tests add the bridges: a physics world dropping a ball onto a

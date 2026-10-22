@@ -1,4 +1,4 @@
-//! The physics remote world: a fixed-step rapier simulation on its own thread.
+//! The physics threaded world: a fixed-step rapier simulation on its own thread.
 //!
 //! Gameplay sends jobs that build bodies; the thread steps the simulation at
 //! a fixed rate. A step drains rapier's contact events into
@@ -22,7 +22,7 @@ use rapier3d::prelude::*;
 pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
 use unlit_ecs::World;
 
-use crate::channel::publish_subscribed;
+use crate::channel::publish_collected;
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
 use crate::world::WorldRunner;
@@ -275,7 +275,7 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
                 return false;
             }
             step_once(world);
-            publish_subscribed(world);
+            publish_collected(world);
             clock.wait(control);
             true
         },

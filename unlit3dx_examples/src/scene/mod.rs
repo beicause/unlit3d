@@ -267,11 +267,11 @@ pub fn camera_job() -> Job<()> {
 /// gameplay world and nothing here reaches it: the source draws whatever the
 /// slots hold, and the world holding the panel fills them.
 pub fn mount_scene_content(render: &WorldHandle, pass: Entity, panels: Option<PanelSlots>) {
-    if let Err(error) = render.commands.send(camera_job()) {
+    if let Err(error) = render.sender.send(camera_job()) {
         log::error!("the render world refused its camera ({error:?})");
     }
     if let Some(panels) = panels
-        && let Err(error) = render.commands.send(control_panel_job(panels, pass))
+        && let Err(error) = render.sender.send(control_panel_job(panels, pass))
     {
         log::error!("the render world refused its control panel ({error:?})");
     }
@@ -331,7 +331,7 @@ pub struct SceneWiring {
 fn subscribe_physics(sender: &JobSender) -> SnapshotReader<GamePhysics> {
     let mut previous: Vec<(RigidBodyHandle, Vec3, Quat)> = Vec::new();
     sender
-        .subscribe(move |world: &World| {
+        .watch(move |world: &World| {
             let mut transforms = Vec::new();
             if let Some(physics) = world.root_scope().query::<(Entity, &PhysicsWorld)>().next() {
                 for (handle, body) in physics.1.bodies.iter() {
@@ -407,7 +407,7 @@ pub fn spawn_scene<R: WorldRunner>(
     // The physics world: fixed step, default gravity. The ground is queued
     // by the floor object before the first ball drops.
     let physics = spawn_physics_world_with::<R>(host, PhysicsConfig::default());
-    let physics_sender = physics.commands.clone();
+    let physics_sender = physics.sender.clone();
     // The demo asks for the poses it needs; the library collects nothing on
     // its own. The subscription lives in the physics world, so it runs
     // between that world's steps whatever drives it.
@@ -423,7 +423,7 @@ pub fn spawn_scene<R: WorldRunner>(
         ..AudioConfig::default()
     };
     let audio = spawn_audio_world_with::<R>(host, config);
-    let audio_sender = audio.commands.clone();
+    let audio_sender = audio.sender.clone();
     // The voice is installed from the gameplay world, as a job whose answer
     // is the entity the scenes' sequences address. The soundfont is kept for
     // that job rather than loaded here, so the decode runs where the job
@@ -435,7 +435,7 @@ pub fn spawn_scene<R: WorldRunner>(
     };
 
     let wiring = SceneWiring {
-        render_sender: render.commands.clone(),
+        render_sender: render.sender.clone(),
         physics_sender,
         physics_reader,
         audio_sender,
@@ -492,7 +492,7 @@ pub fn spawn_scene<R: WorldRunner>(
                 // shows has ticked, and the render world draws whatever is
                 // there.
                 world.root_scope_mut().spawn(bundle![UiPanelHost::new(
-                    render.commands.clone(),
+                    render.sender.clone(),
                     panels.target.reader(),
                     PANEL_SLOT,
                 ),]);
@@ -698,7 +698,7 @@ mod tests {
         let counted = Arc::clone(&runs);
         worlds
             .gameplay
-            .commands
+            .sender
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![UiPanel::new(
                     move |_, _, _ui: &mut egui::Ui| {
@@ -755,7 +755,7 @@ mod tests {
         let counted = Arc::clone(&pressed);
         worlds
             .gameplay
-            .commands
+            .sender
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![UiPanel::new(
                     move |world, _, _ui: &mut egui::Ui| {

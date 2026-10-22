@@ -1,4 +1,4 @@
-//! Integration tests for the physics remote world: bodies built by jobs,
+//! Integration tests for the physics threaded world: bodies built by jobs,
 //! snapshots subscribed to on the host, contacts reported as events.
 
 use std::sync::Arc;
@@ -46,12 +46,12 @@ fn floored_host<R: WorldRunner>() -> (World, WorldHandle, SnapshotReader<Poses>)
     let mut host = World::new();
     let world = spawn_physics_world_with::<R>(&mut host, PhysicsConfig::default());
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(collect_poses)
+        .watch(collect_poses)
         .expect("the physics world accepts a subscription");
     world
-        .commands
+        .sender
         .send(Box::new(move |world: &mut World| {
             spawn_fixed_cuboid(world, FLOOR_POSITION, FLOOR_HALF, 0.9);
         }))
@@ -85,7 +85,7 @@ fn wait_for(mut probe: impl FnMut() -> bool) -> bool {
 fn a_dropped_ball_settles_in_its_snapshots() {
     let (host, world, poses) = floored_host::<Stepped>();
     world
-        .commands
+        .sender
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
@@ -123,7 +123,7 @@ fn a_dropped_ball_settles_in_its_snapshots() {
 fn a_threaded_world_steps_what_a_job_builds() {
     let (_host, world, poses) = floored_host::<Threaded>();
     world
-        .commands
+        .sender
         .send(Box::new(move |world: &mut World| {
             let _ball = spawn_body(world, ball_desc());
         }))
@@ -167,13 +167,13 @@ fn ball_desc() -> BodyDesc {
 fn a_collector_sees_contacts_from_every_step() {
     let mut host = World::new();
     let world = spawn_physics_world_with::<Stepped>(&mut host, PhysicsConfig::default());
-    let sender = world.commands.clone();
+    let sender = world.sender.clone();
     let (queue, contacts) = std::sync::mpsc::channel();
     // The collector queues what it sees and publishes nothing: the
     // subscription's state is the queue, which is the app's to own. The
     // reader is only the subscription's liveness token here.
     let _events: SnapshotReader<()> = sender
-        .subscribe(move |world: &World| {
+        .watch(move |world: &World| {
             if let Some(contacts) = world.root_scope().query::<&PhysicsContacts>().next() {
                 for &contact in &contacts.started {
                     let _ = queue.send(contact);
@@ -328,9 +328,9 @@ fn an_empty_world_publishes_empty_contacts() {
     let mut host = World::new();
     let world = spawn_physics_world_with::<Threaded>(&mut host, PhysicsConfig::default());
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(|world: &World| {
+        .watch(|world: &World| {
             let contacts = world.root_scope().query::<&PhysicsContacts>().next()?;
             Some((contacts.started.len(), contacts.stopped.len()))
         })
@@ -363,7 +363,7 @@ fn the_configured_gravity_reaches_the_world() {
     let reader = probed.reader();
     let publish = probed.clone();
     world
-        .commands
+        .sender
         .send(Box::new(move |world: &mut World| {
             publish.publish(
                 world

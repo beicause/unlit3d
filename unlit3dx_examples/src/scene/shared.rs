@@ -54,11 +54,7 @@ impl SceneState {
         log::info!("the gameplay world started; asking the render world for the scene");
         // The reader comes after the job is queued: a snapshot keeps the
         // published value, so the build cannot land where nobody will see it.
-        if let Err(error) = server
-            .commands
-            .clone()
-            .send(build_assets_job(assets.clone()))
-        {
+        if let Err(error) = server.sender.clone().send(build_assets_job(assets.clone())) {
             log::error!(
                 "the render world refused the scene build ({error:?}); the scene stays empty"
             );
@@ -150,7 +146,7 @@ pub fn create_instance_job(
                 ..Default::default()
             },
         );
-        let _ = created.push((id, instance));
+        let _ = created.publish((id, instance));
     })
 }
 

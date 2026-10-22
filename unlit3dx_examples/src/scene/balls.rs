@@ -249,7 +249,7 @@ impl Balls {
         let spawns = self.spawns.clone();
         let sent = self.physics_sender.send(Box::new(move |world: &mut World| {
             let handle = spawn_body(world, description);
-            let _ = spawns.push((id, born, handle));
+            let _ = spawns.publish((id, born, handle));
         }));
         if let Err(error) = sent {
             log::warn!("the physics world refused a body request ({error:?})");

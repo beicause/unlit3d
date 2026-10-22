@@ -22,7 +22,7 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
             world.root_scope_mut().spawn(bundle![Marker(0)]);
         },
         |world: &mut World, _control: &ThreadControl, ()| {
-            publish_subscribed(world);
+            publish_collected(world);
             true
         },
     )
@@ -37,17 +37,17 @@ struct Marker(u32);
 fn several_subscribers_each_get_their_own_snapshot() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    let sender = world.commands.clone();
+    let sender = world.sender.clone();
     let mut first = 0u32;
     let one = sender
-        .subscribe(move |_| {
+        .watch(move |_| {
             first += 1;
             Some(first)
         })
         .expect("the world accepts a subscription");
     let mut second = 0u32;
     let two = sender
-        .subscribe(move |_| {
+        .watch(move |_| {
             second += 10;
             Some(second)
         })
@@ -68,9 +68,9 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
     step_stepped_world(&host, world.entity);
 
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(|world: &World| {
+        .watch(|world: &World| {
             world
                 .root_scope()
                 .query::<&Marker>()
@@ -97,9 +97,9 @@ fn dropping_the_reader_prunes_the_subscription() {
     let ran = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&ran);
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(move |_| {
+        .watch(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Some(1u32)
         })
@@ -117,7 +117,7 @@ fn dropping_the_reader_prunes_the_subscription() {
 
     step_stepped_world(&host, world.entity);
     let live =
-        with_stepped_world(&host, world.entity, publish_subscribed).expect("the world is stepped");
+        with_stepped_world(&host, world.entity, publish_collected).expect("the world is stepped");
     assert_eq!(live, 0, "the world carries no live subscription");
 }
 
@@ -129,9 +129,9 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
     let world = subscribed_world(&mut host, 8);
     let mut first = true;
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(move |_| {
+        .watch(move |_| {
             let value = if first { Some(1u32) } else { None };
             first = false;
             value
@@ -151,11 +151,11 @@ fn a_full_queue_refuses_a_subscription() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 1);
     world
-        .commands
+        .sender
         .send(Box::new(|_: &mut World| {}))
         .expect("the queue has room for one job");
 
-    let refused = world.commands.clone().subscribe(|_| Some(1u32));
+    let refused = world.sender.clone().watch(|_| Some(1u32));
 
     assert_eq!(refused.err(), Some(SendError::Full));
 }

@@ -144,7 +144,7 @@ impl WorldRunner for Threaded {
         S: 'static,
         T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
     {
-        spawn_remote_world_with_init(host, name, command_capacity, init, tick)
+        spawn_threaded_world_with_init(host, name, command_capacity, init, tick)
     }
 }
 
@@ -167,7 +167,7 @@ impl WorldRunner for Stepped {
     }
 }
 
-/// Spawn a remote world on a fresh thread, driven by `tick`.
+/// Spawn a threaded world on a fresh thread, driven by `tick`.
 ///
 /// The thread's loop drains the jobs queued for the world, then runs
 /// `tick` once; a tick that returns `false` ends the thread. A job that
@@ -177,7 +177,7 @@ impl WorldRunner for Stepped {
 ///
 /// `name` labels the world for a bridge that lists the host's worlds; it
 /// lands on the proxy entity as a [`WorldName`].
-pub fn spawn_remote_world<T>(
+pub fn spawn_threaded_world<T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
@@ -186,7 +186,7 @@ pub fn spawn_remote_world<T>(
 where
     T: FnMut(&mut World, &ThreadControl) -> bool + Send + 'static,
 {
-    spawn_remote_world_with_init(
+    spawn_threaded_world_with_init(
         host,
         name,
         command_capacity,
@@ -195,7 +195,7 @@ where
     )
 }
 
-/// Like [`spawn_remote_world`], with a one-time setup step.
+/// Like [`spawn_threaded_world`], with a one-time setup step.
 ///
 /// `init` runs on the world's thread before the first job is drained, so
 /// a world can create the components its jobs assume exist - its physics
@@ -206,7 +206,7 @@ where
 ///
 /// Panics when `command_capacity` is zero: a queue that can never hold
 /// a job would silently block every sender.
-pub fn spawn_remote_world_with_init<I, S, T>(
+pub fn spawn_threaded_world_with_init<I, S, T>(
     host: &mut World,
     name: &'static str,
     command_capacity: usize,
@@ -238,7 +238,7 @@ where
 /// Spawn a world the host steps, with a one-time setup step.
 ///
 /// The world and its command queue live in the proxy component on the host
-/// entity, exactly as a remote world's thread does, so the entity carries
+/// entity, exactly as a threaded world's thread does, so the entity carries
 /// the same data either way. Nothing here runs on its own: the host calls
 /// [`step_stepped_world`] to drain the queue and run the tick once.
 ///
@@ -303,7 +303,7 @@ fn spawn_proxy(
 ///
 /// Does nothing when `entity` does not name a world the host steps, or when
 /// that world has already stopped. A tick that returns `false` stops the
-/// world; a panic is caught, logged and recorded the way a remote world's
+/// world; a panic is caught, logged and recorded the way a threaded world's
 /// thread panic is, and ends the world too.
 pub fn step_stepped_world(host: &World, entity: Entity) {
     let Some(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
@@ -384,12 +384,12 @@ mod tests {
     #[test]
     fn sent_jobs_run_and_publish_back() {
         let mut host = World::new();
-        let handle = spawn_remote_world(&mut host, "test", 8, |_, control| {
+        let handle = spawn_threaded_world(&mut host, "test", 8, |_, control| {
             control.wait_timeout(Duration::from_millis(1));
             true
         });
         handle
-            .commands
+            .sender
             .send(Box::new(|world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Count(0)]);
             }))
@@ -398,7 +398,7 @@ mod tests {
         let reader = counted.reader();
         let publish = counted.clone();
         handle
-            .commands
+            .sender
             .send(Box::new(move |world: &mut World| {
                 world
                     .root_scope()
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn init_runs_before_the_first_job() {
         let mut host = World::new();
-        let handle = spawn_remote_world_with_init(
+        let handle = spawn_threaded_world_with_init(
             &mut host,
             "test",
             8,
@@ -446,7 +446,7 @@ mod tests {
         let reader = seeded.reader();
         let publish = seeded.clone();
         handle
-            .commands
+            .sender
             .send(Box::new(move |world: &mut World| {
                 publish.publish(world.root_scope().query::<&Count>().next().is_some());
             }))
@@ -466,10 +466,10 @@ mod tests {
     #[test]
     fn a_full_queue_fails_the_send() {
         let mut host = World::new();
-        let handle = spawn_remote_world(&mut host, "test", 1, |_, _| true);
+        let handle = spawn_threaded_world(&mut host, "test", 1, |_, _| true);
         let mut results = Vec::new();
         for _ in 0..64 {
-            results.push(handle.commands.send(Box::new(|_| {})));
+            results.push(handle.sender.send(Box::new(|_| {})));
         }
         assert!(
             results.contains(&Err(SendError::Full)),

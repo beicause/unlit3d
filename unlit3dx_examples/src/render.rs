@@ -321,7 +321,7 @@ pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity
             }
         }
         for instance in outside {
-            let _ = retired.push(instance);
+            let _ = retired.publish(instance);
         }
     })
 }

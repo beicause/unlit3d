@@ -83,7 +83,7 @@ impl Floor {
     pub fn new(wiring: &SceneWiring, render: WorldHandle) -> Self {
         Self {
             physics: wiring.physics_sender.clone(),
-            render: render.commands.clone(),
+            render: render.sender.clone(),
             spawned: false,
         }
     }

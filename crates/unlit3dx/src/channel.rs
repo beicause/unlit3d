@@ -15,6 +15,10 @@
 //!   want: input, collisions, a sequence ending. A reader that ticks slower
 //!   than the producer still sees every value, in order.
 //!
+//! A third shape is a question: [`JobSender::ask`] sends one job that
+//! publishes its answer once. That is the shape of something built on
+//! request rather than observed: an entity, a set of assets.
+//!
 //! Nothing is collected unasked: a world runs the collectors of its
 //! subscriptions only while someone holds a reader, and a dropped reader is
 //! pruned on the next tick. Both kinds are installed with a job, so every
@@ -29,7 +33,7 @@ use crate::job::{JobSender, SendError};
 pub use unlit3d::relay::{Snapshot, SnapshotReader, Stream, StreamReader};
 
 impl JobSender {
-    /// Subscribe to a snapshot of this world.
+    /// Watch a snapshot of this world.
     ///
     /// `collect` runs on the world's own thread once per tick, after its state
     /// has been updated, and whatever it returns is published to the reader.
@@ -43,9 +47,9 @@ impl JobSender {
     /// # Panics
     ///
     /// A collector that publishes into its own world — by calling
-    /// [`publish_subscribed`] — panics on the borrow it takes of the
+    /// [`publish_collected`] — panics on the borrow it takes of the
     /// subscription list. A collector only reads the world.
-    pub fn subscribe<T, F>(&self, collect: F) -> Result<SnapshotReader<T>, SendError>
+    pub fn watch<T, F>(&self, collect: F) -> Result<SnapshotReader<T>, SendError>
     where
         T: Send + Sync + 'static,
         F: FnMut(&World) -> Option<T> + Send + 'static,
@@ -73,9 +77,9 @@ impl JobSender {
     /// # Panics
     ///
     /// A collector that publishes into its own world — by calling
-    /// [`publish_subscribed`] — panics on the borrow it takes of the
+    /// [`publish_collected`] — panics on the borrow it takes of the
     /// subscription list. A collector only reads the world.
-    pub fn subscribe_stream<T, F>(&self, collect: F) -> Result<StreamReader<T>, SendError>
+    pub fn subscribe<T, F>(&self, collect: F) -> Result<StreamReader<T>, SendError>
     where
         T: Clone + Send + 'static,
         F: FnMut(&World, &mut Vec<T>) + Send + 'static,
@@ -92,6 +96,35 @@ impl JobSender {
         }))?;
         Ok(reader)
     }
+
+    /// Ask this world a question, and read its answer.
+    ///
+    /// `make` runs once, on the world's own thread, and whatever it returns is
+    /// published to the reader. That is the shape of something built on
+    /// request rather than observed: an entity, a set of assets. The reader
+    /// sees nothing until the job runs, and then sees the answer for as long
+    /// as it lives: the snapshot keeps the newest value, so a late read still
+    /// finds it.
+    ///
+    /// Where [`watch`](JobSender::watch) installs a collector that runs every
+    /// tick, this sends one job that publishes once.
+    ///
+    /// The question is a job: it is refused with the queue's error when the
+    /// queue is full or the world has stopped, and the returned reader then
+    /// never sees an answer.
+    pub fn ask<T, F>(&self, make: F) -> Result<SnapshotReader<T>, SendError>
+    where
+        T: Send + Sync + 'static,
+        F: FnOnce(&mut World) -> T + Send + 'static,
+    {
+        let snapshot = Snapshot::new();
+        let reader = snapshot.reader();
+        self.send(Box::new(move |world: &mut World| {
+            let value = make(world);
+            let _ = snapshot.publish(value);
+        }))?;
+        Ok(reader)
+    }
 }
 
 /// Run every subscription the world carries, publishing what each collects.
@@ -103,7 +136,7 @@ impl JobSender {
 ///
 /// Call this from the world's own tick, after the state a collector reads has
 /// been updated.
-pub fn publish_subscribed(world: &World) -> usize {
+pub fn publish_collected(world: &World) -> usize {
     let Some(mut outlet) = world.root_scope().query::<&mut SnapshotOutlet>().next() else {
         return 0;
     };
@@ -162,7 +195,7 @@ where
         }
         self.buffer.clear();
         (self.collect)(world, &mut self.buffer);
-        self.stream.push_all(self.buffer.drain(..))
+        self.stream.publish_all(self.buffer.drain(..)) > 0
     }
 }
 
@@ -217,7 +250,7 @@ mod tests {
     /// A world with no subscription has nothing to run.
     #[test]
     fn a_world_without_subscriptions_publishes_nothing() {
-        assert_eq!(publish_subscribed(&World::new()), 0);
+        assert_eq!(publish_collected(&World::new()), 0);
     }
 
     /// Each tick publishes what the collector returns, newest wins.
@@ -230,8 +263,8 @@ mod tests {
             Some(counted.fetch_add(1, Ordering::SeqCst))
         });
 
-        assert_eq!(publish_subscribed(&world), 1);
-        assert_eq!(publish_subscribed(&world), 1);
+        assert_eq!(publish_collected(&world), 1);
+        assert_eq!(publish_collected(&world), 1);
         assert_eq!(*reader.latest().expect("a snapshot"), 1);
         assert_eq!(ticks.load(Ordering::SeqCst), 2);
     }
@@ -247,8 +280,8 @@ mod tests {
             value
         });
 
-        publish_subscribed(&world);
-        publish_subscribed(&world);
+        publish_collected(&world);
+        publish_collected(&world);
         assert_eq!(*reader.latest().expect("the first snapshot"), 1);
     }
 
@@ -257,9 +290,9 @@ mod tests {
     fn dropping_the_reader_prunes_the_subscription() {
         let mut world = World::new();
         let reader = subscribe_in(&mut world, |_| Some(1));
-        assert_eq!(publish_subscribed(&world), 1);
+        assert_eq!(publish_collected(&world), 1);
         drop(reader);
-        assert_eq!(publish_subscribed(&world), 0);
+        assert_eq!(publish_collected(&world), 0);
     }
 
     /// A snapshot already read stays valid and unchanged while later ones are
@@ -274,11 +307,11 @@ mod tests {
             Some(tick)
         });
 
-        publish_subscribed(&world);
+        publish_collected(&world);
         let first = reader.latest().expect("the first snapshot");
         assert_eq!(*first, 1);
 
-        publish_subscribed(&world);
+        publish_collected(&world);
         let second = reader.latest().expect("the second snapshot");
         assert_eq!(*second, 2);
         assert_eq!(*first, 1, "the held snapshot did not change under it");
@@ -304,8 +337,8 @@ mod tests {
             }),
         );
 
-        publish_subscribed(&world);
-        publish_subscribed(&world);
+        publish_collected(&world);
+        publish_collected(&world);
         reader.pump();
         assert_eq!(
             reader.with_batch(|batch| batch.to_vec()),
@@ -316,5 +349,46 @@ mod tests {
         // repeating the events of the previous tick.
         reader.pump();
         assert!(reader.with_batch(|batch| batch.to_vec()).is_empty());
+    }
+
+    /// An ask runs its question once and publishes what it answered; the
+    /// answer stays readable afterwards, because the snapshot keeps the
+    /// newest value.
+    #[test]
+    fn an_ask_publishes_its_answer() {
+        let (sender, receiver) = async_channel::unbounded();
+        let jobs = JobSender::new(sender);
+        let mut world = World::new();
+
+        let answer = jobs
+            .ask(|world: &mut World| world.root_scope_mut().spawn(bundle![]))
+            .expect("the job was queued");
+        assert_eq!(answer.latest(), None, "the job has not run yet");
+
+        let job = receiver.try_recv().expect("the job was queued");
+        job(&mut world);
+        assert!(receiver.try_recv().is_err(), "the question ran once");
+
+        let entity = *answer.latest().expect("the answer");
+        assert!(
+            world
+                .root_scope()
+                .query::<(Entity,)>()
+                .any(|(spawned,)| spawned == entity)
+        );
+        // A second read still finds it: nothing is consumed by reading.
+        assert_eq!(*answer.latest().expect("the answer"), entity);
+    }
+
+    /// A world that stopped never answers: the reader is handed back so the
+    /// caller's shape stays the same, and it stays empty.
+    #[test]
+    fn an_ask_refused_by_a_stopped_world_never_answers() {
+        let (sender, receiver) = async_channel::unbounded();
+        let jobs = JobSender::new(sender);
+        drop(receiver);
+
+        let answer = jobs.ask(|_: &mut World| 1);
+        assert_eq!(answer.err(), Some(SendError::Closed));
     }
 }

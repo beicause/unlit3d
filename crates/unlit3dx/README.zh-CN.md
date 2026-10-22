@@ -18,24 +18,24 @@ use unlit_ecs::World;
 
 let mut host = World::new();
 
-// 远程 world：一个 `World` 加一条线程，由这个闭包驱动 tick。
+// 独占一条线程的 world：一个 `World` 加一条线程，由这个闭包驱动 tick。
 // spawn 返回一个 `WorldHandle`——代理所在的实体、命令队列与线程状态
 // 合于一身。
-let simulation = spawn_remote_world(&mut host, "simulation", 16, |world, control| {
+let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, control| {
     // ... 在 `world` 里推进模拟 ...
     // 状态更新完毕后，world 向订阅者发布快照。
-    publish_subscribed(world);
+    publish_collected(world);
     control.wait_timeout(Duration::from_secs_f64(1.0 / 64.0));
     !control.stop_requested()
 });
 
-// job 在远程线程的 tick 之间运行，且不回答任何东西：要带回的值由快照或流送出。
-simulation.commands.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+// job 在该 world 线程的 tick 之间运行，且不回答任何东西：要带回的值发布出去，或者用 ask 要回来。
+simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
 
 // 快照是两种回传方式之一（另一种是承载事件的流），而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
 // 所以场景想要什么，由收集闭包决定。
-let reader = simulation.commands.subscribe(|world: &World| {
+let reader = simulation.sender.watch(|world: &World| {
     let bodies: Vec<u64> = world.root_scope().query::<&u64>().map(|(_, id)| *id).collect();
     Some(bodies)
 }).expect("room in the queue");
@@ -70,7 +70,7 @@ note job 与 MIDI 文件变成音色库音频。render 桥是调用方自己的�
   job 收件箱：`spawn_sub_world` 把收件箱接好，其他线程通过它返回的
   `WorldHandle` 投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
   与远程 world 相同的协议，只是没有线程。
-- **远程 world（remote world）** 是属于自己的线程的 `World`。物理、音频与玩法
+- **独占线程的 world（threaded world）** 是属于自己的线程的 `World`。物理、音频与玩法
   各运行一个。
 
 world 之间从不互相调用。调用者发送一个 **job**——一个接收远程 world 的
@@ -79,7 +79,7 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 
 ## Job
 
-`Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`WorldHandle::commands` 把一个 job 排入
+`Job<R>` 是装箱的 `FnOnce(&mut World) -> R`。`WorldHandle::sender` 把一个 job 排入
 队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
 远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
@@ -87,6 +87,10 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 job 也是世界改变另一个世界的唯一方式，而且它不回答任何东西：需要汇报什么的
 world 改为通过订阅发布。回复会让发送方等待一个可能正忙、已停止或已经消失的
 world，而回来的东西是状态，状态有自己的通道。
+
+只有一个例外值得单独命名。只想要一次值的调用方——某次构建生成的实体、某次安装
+返回的句柄——用 `JobSender::ask`：它发出的 job 把自己的结果发布进一个快照，并把
+reader 交回来。没有人等待；队列拒收时 reader 保持为空，既不阻塞也不编造答案。
 
 框架创建的每个 world 都以组件形式携带一个任务集，因此任务与 world 同寿、属于
 world 而不属于发起它的那次调用；谁驱动 world，谁就每回合泵它一次——线程在 tick
@@ -96,14 +100,17 @@ world 而不属于发起它的那次调用；谁驱动 world，谁就每回合�
 
 ## 快照与流
 
-接收就是订阅：`JobSender::subscribe` 在目标 world 里装一个收集闭包并交回一个
+接收就是订阅：`JobSender::watch` 在目标 world 里装一个收集闭包并交回一个
 reader；world 每 tick 在自身状态更新完毕后运行它携带的每个收集闭包。收集闭包填充
 哪种形状由调用方选择：
 
-- `subscribe` 返回 `SnapshotReader<T>`：状态，只关心最新的值。收集闭包返回
+- `watch` 返回 `SnapshotReader<T>`：状态，只关心最新的值。收集闭包返回
   `Option<T>`。
-- `subscribe_stream` 返回 `StreamReader<T>`：事件，每一个值都重要。收集闭包向
+- `subscribe` 返回 `StreamReader<T>`：事件，每一个值都重要。收集闭包向
   交给它的缓冲区追加，每个值都会进入每个 reader 的队列。
+
+`JobSender::ask` 是第三种形状：一个 job，一个答案，只发布一次。它交回的 reader
+不会被第二次刷新，而拒收这个 job 的 world 只会让它保持为空。
 
 载荷是调用方自己的类型——本库不定义任何载荷——所以场景只收集它真正要的数据，
 不为别的付出代价。

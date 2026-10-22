@@ -93,7 +93,7 @@ impl ThreadControl {
 ///
 /// A [`WorldThread`] owns the join handle and stops its thread on drop;
 /// this shares only the flags, so a [`WorldHandle`](crate::handle::WorldHandle)
-/// can report a remote world's liveness and ask it to stop without owning
+/// can report a threaded world's liveness and ask it to stop without owning
 /// the thread.
 #[derive(Clone)]
 pub struct ThreadStatus {
@@ -142,7 +142,7 @@ impl ThreadStatus {
 /// One thread owning one `World`.
 ///
 /// Dropping the thread asks it to stop and waits for it to finish, so a
-/// remote world's lifetime is exactly the proxy's. A tick that ignores the
+/// threaded world's lifetime is exactly the proxy's. A tick that ignores the
 /// stop cannot hang the dropper: after a short grace period the thread is
 /// detached and the drop returns.
 pub struct WorldThread {
