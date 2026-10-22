@@ -7,6 +7,7 @@ use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
 use crate::handle::WorldHandle;
 use crate::job::{Job, JobSender};
+use crate::thread::ThreadStatus;
 use crate::thread::panic_message;
 use crate::world::WorldName;
 use unlit_ecs::bundle;
@@ -17,6 +18,10 @@ use unlit_ecs::bundle;
 /// sub-world: callers reach the world through the [`WorldHandle`] the
 /// spawn returns, never through this component.
 struct SubWorldInbox(Receiver<Job<()>>);
+
+/// The sub-world's status, published the way a threaded world publishes its
+/// own, so a host learns that its sub-world ended.
+struct SubWorldStatus(ThreadStatus);
 
 /// Spawn a sub-world that shares the host's thread, nested as a [`World`]
 /// component of the returned entity, with a command inbox of the given
@@ -46,14 +51,16 @@ pub fn spawn_sub_world(
     // The sub-world owns its async tasks, so a job that mounts something
     // asynchronous hands it a task instead of an executor.
     LocalTasks::install(&mut nested);
-    nested
-        .root_scope_mut()
-        .spawn(bundle![SubWorldInbox(receiver)]);
+    let status = ThreadStatus::detached();
+    nested.root_scope_mut().spawn(bundle![
+        SubWorldInbox(receiver),
+        SubWorldStatus(status.clone())
+    ]);
     let commands = JobSender::new(commands);
     let entity = host
         .root_scope_mut()
         .spawn(bundle![nested, WorldName(name)]);
-    WorldHandle::new(entity, commands, None)
+    WorldHandle::new(entity, commands, status)
 }
 
 /// Run every job queued for the sub-world so far, in queue order.
@@ -61,8 +68,9 @@ pub fn spawn_sub_world(
 /// Call this from the host thread before driving the world's frame: jobs
 /// arrive at any time and must land between frames, on the host's thread.
 ///
-/// A job that panics is reported and the drain continues, so one broken job
-/// cannot take the host down with it.
+/// A job that panics ends the sub-world: the drain stops where the panic
+/// was, and the world's state reports the panic. A world that has ended is
+/// left alone, so a later drain runs nothing.
 ///
 /// Once the jobs have run the drain publishes what the world's subscriptions
 /// collected, so a sub-world publishes on the host's thread the way a
@@ -71,19 +79,26 @@ pub fn drain_sub_world(nested: &mut World) {
     // The jobs take the world while they run, so the inbox borrow must end
     // before the first one starts. Cloning the receiver is cheap and lets the
     // drain run without collecting the jobs first.
-    let receiver = {
-        let Some(sub_world_inbox) = nested.root_scope().query::<&SubWorldInbox>().next() else {
+    let (receiver, status) = {
+        let Some((sub_world_inbox, sub_world_status)) = nested
+            .root_scope()
+            .query::<(&SubWorldInbox, &SubWorldStatus)>()
+            .next()
+        else {
             return;
         };
-        sub_world_inbox.0.clone()
+        (sub_world_inbox.0.clone(), sub_world_status.0.clone())
     };
+    if status.is_finished() {
+        return;
+    }
     while let Ok(job) = receiver.try_recv() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(nested)));
         if let Err(payload) = result {
-            log::error!(
-                "a sub-world job panicked: {}",
-                panic_message(payload.as_ref())
-            );
+            let message = panic_message(payload.as_ref());
+            log::error!("a sub-world job panicked: {message}");
+            status.record_panic(message);
+            break;
         }
     }
     publish_collected(nested);

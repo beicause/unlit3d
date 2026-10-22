@@ -59,10 +59,10 @@ fn sub_world_jobs_drain_in_order() {
     assert_eq!(*last.lock().expect("the order lock"), Some("last"));
 }
 
-/// A job that panics does not stop the jobs queued behind it: the drain
-/// catches the panic and carries on.
+/// A job that panics ends the world it ran in: the drain stops where the
+/// panic was, and the world's state says why.
 #[test]
-fn a_panicking_job_does_not_stop_the_drain() {
+fn a_panicking_job_ends_the_sub_world() {
     let mut host = World::new();
     let proxy = spawn_sub_world(&mut host, "nested", 16);
 
@@ -81,7 +81,18 @@ fn a_panicking_job_does_not_stop_the_drain() {
         .expect("the nested world");
     drain_sub_world(&mut nested);
 
-    assert_eq!(*ran.lock().expect("the order lock"), vec![7]);
+    assert!(
+        ran.lock().expect("the order lock").is_empty(),
+        "a job queued behind a panic must not run"
+    );
+    assert!(proxy.is_finished(), "the panic ended the sub-world");
+    assert!(
+        matches!(
+            proxy.state.latest().as_deref(),
+            Some(WorldState::Panicked(_))
+        ),
+        "the panic is the world's last state"
+    );
 }
 
 /// A threaded world's state persists between jobs: later jobs see what
@@ -136,7 +147,7 @@ fn a_finished_world_drops_jobs_quietly() {
         wait_for(|| world.is_finished()),
         "the thread kept running after its tick declined"
     );
-    assert!(world.panic_message().is_none());
+    assert_eq!(world.state.latest().as_deref(), Some(&WorldState::Stopped));
     // The channel's receiver dies with the thread, so the job is refused
     // instead of being queued for a world that will never run it.
     let refused = world.sender.send(Box::new(|_: &mut World| {

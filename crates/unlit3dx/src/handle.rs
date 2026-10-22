@@ -8,8 +8,9 @@
 
 use unlit_ecs::Entity;
 
+use crate::channel::SnapshotReader;
 use crate::job::JobSender;
-use crate::thread::ThreadStatus;
+use crate::thread::{ThreadStatus, WorldState};
 
 /// A cloneable handle to a spawned world.
 ///
@@ -26,43 +27,44 @@ pub struct WorldHandle {
     /// blocks: a full or stopped queue reports
     /// [`SendError`](crate::job::SendError) and hands the job back.
     pub sender: JobSender,
-    status: Option<ThreadStatus>,
+    /// What the world is doing, and how it ended.
+    ///
+    /// A world publishes its state, so a reader that arrives after the end
+    /// still learns how the world ended, and reading never takes the answer
+    /// away from another reader.
+    pub state: SnapshotReader<WorldState>,
+    status: ThreadStatus,
 }
 
 impl WorldHandle {
     /// Bind a handle to the entity carrying the world's proxy.
     ///
-    /// A sub-world passes `None` for the thread status: it shares the host's
-    /// thread, so there is no separate thread to report on.
+    /// A world that shares its owner's thread passes a status made by
+    /// [`ThreadStatus::detached`]: it has no thread of its own to end, so
+    /// its state stays [`WorldState::Running`] until its owner says
+    /// otherwise.
     #[must_use]
-    pub fn new(entity: Entity, sender: JobSender, status: Option<ThreadStatus>) -> Self {
+    pub fn new(entity: Entity, sender: JobSender, status: ThreadStatus) -> Self {
         Self {
             entity,
             sender,
+            state: status.state(),
             status,
         }
     }
 
-    /// Whether the world's thread has exited.
+    /// Whether the world has stopped or died.
     ///
     /// A sub-world shares the host's thread, so this is always `false` for
     /// one; the host itself decides when a sub-world is gone.
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.status.as_ref().is_some_and(ThreadStatus::is_finished)
-    }
-
-    /// The panic the world's thread died with, if it died with one.
-    #[must_use]
-    pub fn panic_message(&self) -> Option<String> {
-        self.status.as_ref().and_then(ThreadStatus::panic_message)
+        self.status.is_finished()
     }
 
     /// Ask a threaded world's thread to stop, without waiting for it.
     pub fn stop(&self) {
-        if let Some(status) = &self.status {
-            status.stop();
-        }
+        self.status.stop();
     }
 }
 

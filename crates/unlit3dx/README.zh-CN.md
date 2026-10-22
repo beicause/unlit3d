@@ -144,9 +144,10 @@ world 通过一个 *runner* 生成，由它决定谁来调用 tick 循环。`Wor
   `ThreadControl::stop_requested`，在 `catch_unwind` 里运行 tick，并在线程结束前
   报告 panic，于是宿主知道自己的 world 为何而死，而不是 join 到一具尸体。销毁代理
   实体会请求停止其线程并至多等待两秒；拒绝停止的 tick 会被遗弃（detach），而不是把
-  销毁方挂住。句柄负责汇报线程状态——`is_finished`、`panic_message`——`stop` 则
-  请求它结束；`join_timeout` 与 `detach` 在 `WorldThread` 本身之上，留给直接持有
-  它的调用方。
+  销毁方挂住。句柄负责汇报 world 的状态——`is_finished`，以及 `state`（一个
+  `SnapshotReader<WorldState>`，读到 `Running`、`Stopped` 或
+  `Panicked(message)`）——`stop` 则请求它结束；`join_timeout` 与 `detach` 在
+  `WorldThread` 本身之上，留给直接持有它的调用方。
 - **`Stepped`** 让 world 留在它被生成的地方。`spawn_stepped_world_with_init` 把嵌套的
   `World` 放进宿主实体上的代理组件里，`step_stepped_world` 在调用方的线程上跑一次
   迭代：先清空队列，再跑 tick，各自都在 `catch_unwind` 下——与线程版的顺序一致。

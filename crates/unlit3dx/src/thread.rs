@@ -2,13 +2,13 @@
 
 use core::time::Duration;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use unlit_ecs::World;
 use web_time::Instant;
 
+use crate::channel::{Snapshot, SnapshotReader};
 use crate::executor::LocalTasks;
 use crate::sync;
 
@@ -18,7 +18,7 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The stop signal a thread and its owner share.
 #[derive(Debug, Default)]
-struct Stop {
+pub(crate) struct Stop {
     /// Whether a stop has been requested.
     requested: Mutex<bool>,
     /// Signalled whenever `requested` turns true.
@@ -89,38 +89,82 @@ impl ThreadControl {
     }
 }
 
-/// A cloneable view of a world thread's state.
+/// What a spawned world is doing.
+///
+/// A world runs until it stops or dies, and the state it published last is
+/// the one a reader finds: a reader that arrives after the end still learns
+/// how the world ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorldState {
+    /// The world is being driven.
+    Running,
+    /// The world ended: its tick asked to stop, or its owner stopped it.
+    Stopped,
+    /// The world died with a panic, and this is the message it carried.
+    Panicked(Arc<str>),
+}
+
+/// A cloneable view of a world's state.
 ///
 /// A [`WorldThread`] owns the join handle and stops its thread on drop;
-/// this shares only the flags, so a [`WorldHandle`](crate::handle::WorldHandle)
-/// can report a threaded world's liveness and ask it to stop without owning
-/// the thread.
+/// this shares only the stop signal and the state, so a
+/// [`WorldHandle`](crate::handle::WorldHandle) can report a world's state and
+/// ask it to stop without owning the thread.
 #[derive(Clone)]
 pub struct ThreadStatus {
     /// The stop signal, sent on drop.
     stop: Arc<Stop>,
-    /// Whether the thread has been seen to exit.
-    finished: Arc<AtomicBool>,
-    /// The panic the thread died with, if it has died with one.
-    panics: Arc<Mutex<Option<String>>>,
+    /// What the world is doing, and how it ended.
+    state: Snapshot<WorldState>,
+    /// This status's own reading of the state, for the tests that ask it
+    /// directly instead of taking a reader.
+    own: SnapshotReader<WorldState>,
 }
 
 impl ThreadStatus {
-    /// The panic the thread died with, if it has died with one.
-    pub fn panic_message(&self) -> Option<String> {
-        sync::lock(&self.panics).take()
+    /// A status for a world on a thread of its own, running from here.
+    pub(crate) fn threaded(stop: Arc<Stop>) -> Self {
+        Self::at(stop)
     }
 
-    /// Whether the thread has exited.
+    /// A status for a world that shares its owner's thread.
     ///
-    /// A detached thread keeps reporting its own exit, so this stays
+    /// Such a world never ends on its own: the owner decides when it is
+    /// gone, so the state stays [`WorldState::Running`] and only the stop
+    /// signal is shared.
+    pub(crate) fn detached() -> Self {
+        Self::at(Arc::default())
+    }
+
+    fn at(stop: Arc<Stop>) -> Self {
+        let state = Snapshot::new();
+        let own = state.reader();
+        state.publish(WorldState::Running);
+        Self { stop, state, own }
+    }
+
+    /// A reader of the state this world publishes.
+    ///
+    /// Every reader sees the newest state, so one that arrives late still
+    /// learns how the world ended.
+    #[must_use]
+    pub fn state(&self) -> SnapshotReader<WorldState> {
+        self.state.reader()
+    }
+
+    /// Whether the world has stopped or died.
+    ///
+    /// A detached thread keeps reporting its own end, so this stays
     /// meaningful after [`WorldThread::detach`].
     #[must_use]
     pub fn is_finished(&self) -> bool {
-        self.finished.load(Ordering::Acquire)
+        !matches!(
+            self.own.latest().as_deref(),
+            None | Some(WorldState::Running)
+        )
     }
 
-    /// Ask the thread to stop, without waiting for it to finish.
+    /// Ask the world to stop, without waiting for it to finish.
     pub fn stop(&self) {
         self.stop.request();
     }
@@ -128,14 +172,14 @@ impl ThreadStatus {
     /// Mark the world as finished.
     ///
     /// A world on its own thread marks itself when its loop ends; a stepped
-    /// world's host calls this when its tick returns `false` or panics.
+    /// world's host calls this when its tick returns `false`.
     pub(crate) fn finish(&self) {
-        self.finished.store(true, Ordering::Release);
+        self.state.publish(WorldState::Stopped);
     }
 
-    /// Record the panic that ended the world.
+    /// Record the panic that ended the world, message and all.
     pub(crate) fn record_panic(&self, message: String) {
-        *sync::lock(&self.panics) = Some(message);
+        self.state.publish(WorldState::Panicked(message.into()));
     }
 }
 
@@ -157,7 +201,7 @@ impl WorldThread {
     ///
     /// The tick runs once per loop iteration and returns whether to keep
     /// running; a `false` return ends the thread as cleanly as a stop. A
-    /// tick panic is caught, reported to the panic slot and logged, and
+    /// tick panic is caught, logged and published as the world's state, and
     /// ends the thread: a world whose tick has panicked is not worth
     /// restarting blindly.
     pub fn spawn<T>(name: &str, mut tick: T) -> Self
@@ -181,12 +225,10 @@ impl WorldThread {
         T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
     {
         let stop = Arc::new(Stop::default());
-        let panics: Arc<Mutex<Option<String>>> = Arc::default();
-        let finished = Arc::new(AtomicBool::new(false));
-        let name = name.to_owned();
+        let status = ThreadStatus::threaded(Arc::clone(&stop));
+        let thread_status = status.clone();
         let thread_stop = Arc::clone(&stop);
-        let thread_panics = Arc::clone(&panics);
-        let thread_finished = Arc::clone(&finished);
+        let name = name.to_owned();
         let thread_name = name.clone();
         let joined = std::thread::Builder::new()
             .name(name)
@@ -208,20 +250,18 @@ impl WorldThread {
                         }
                     }
                 }));
-                if let Err(payload) = outcome {
-                    let message = panic_message(&*payload);
-                    log::error!("the world thread {thread_name} panicked: {message}");
-                    *sync::lock(&thread_panics) = Some(message);
+                match outcome {
+                    Ok(()) => thread_status.finish(),
+                    Err(payload) => {
+                        let message = panic_message(&*payload);
+                        log::error!("the world thread {thread_name} panicked: {message}");
+                        thread_status.record_panic(message);
+                    }
                 }
-                thread_finished.store(true, Ordering::Release);
             })
             .expect("the world thread spawns");
         Self {
-            status: ThreadStatus {
-                stop,
-                finished,
-                panics,
-            },
+            status,
             joined: Some(joined),
         }
     }
@@ -233,9 +273,10 @@ impl WorldThread {
         self.status.clone()
     }
 
-    /// The panic the thread died with, if it has died with one.
-    pub fn panic_message(&self) -> Option<String> {
-        self.status.panic_message()
+    /// A reader of the state the world publishes.
+    #[must_use]
+    pub fn state(&self) -> SnapshotReader<WorldState> {
+        self.status.state()
     }
 
     /// Whether the thread has exited.
@@ -348,11 +389,7 @@ impl FixedClock {
 /// once, and the host steps it whenever a step is due.
 pub(crate) fn stepped_control() -> (ThreadControl, ThreadStatus) {
     let stop = Arc::new(Stop::default());
-    let status = ThreadStatus {
-        stop: Arc::clone(&stop),
-        finished: Arc::default(),
-        panics: Arc::default(),
-    };
+    let status = ThreadStatus::threaded(Arc::clone(&stop));
     let control = ThreadControl {
         stop,
         self_driven: false,
@@ -407,20 +444,27 @@ mod tests {
     #[test]
     fn a_false_tick_ends_the_thread() {
         let thread = WorldThread::spawn("test", |_, _| false);
+        let state = thread.state();
         assert!(
             wait_until(|| thread.is_finished().then_some(())).is_some(),
             "the thread never finished"
         );
-        assert!(thread.panic_message().is_none());
+        assert_eq!(state.latest().as_deref(), Some(&WorldState::Stopped));
     }
 
-    /// A tick panic is reported through the panic slot.
+    /// A tick panic is reported through the state.
     #[test]
     fn a_tick_panic_is_reported() {
         let thread = WorldThread::spawn("test", |_, _| panic!("the tick died"));
-        let message =
-            wait_until(|| thread.panic_message()).expect("the tick never reported its panic");
-        assert_eq!(message, "the tick died");
+        let state = thread.state();
+        assert!(
+            wait_until(|| thread.is_finished().then_some(())).is_some(),
+            "the thread never finished"
+        );
+        assert_eq!(
+            state.latest().as_deref(),
+            Some(&WorldState::Panicked("the tick died".into()))
+        );
     }
 
     /// A panic in the setup step is reported like a tick panic.
@@ -431,9 +475,15 @@ mod tests {
             |_| -> () { panic!("the setup died") },
             |_, _, ()| false,
         );
-        let message =
-            wait_until(|| thread.panic_message()).expect("the setup never reported its panic");
-        assert_eq!(message, "the setup died");
+        let state = thread.state();
+        assert!(
+            wait_until(|| thread.is_finished().then_some(())).is_some(),
+            "the thread never finished"
+        );
+        assert_eq!(
+            state.latest().as_deref(),
+            Some(&WorldState::Panicked("the setup died".into()))
+        );
     }
 
     /// A stop ends the tick's wait early instead of sleeping it out.

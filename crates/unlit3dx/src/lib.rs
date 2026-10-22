@@ -104,7 +104,7 @@ pub mod prelude {
         handle::WorldHandle,
         host::{drain_sub_world, spawn_sub_world},
         job::{Job, JobSender, SendError},
-        thread::{FixedClock, ThreadControl, ThreadStatus, WorldThread},
+        thread::{FixedClock, ThreadControl, ThreadStatus, WorldState, WorldThread},
         world::{
             Stepped, Threaded, WorldName, WorldRunner, spawn_stepped_world_with_init,
             spawn_threaded_world, spawn_threaded_world_with_init, step_stepped_world,

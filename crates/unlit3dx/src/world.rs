@@ -241,7 +241,7 @@ where
         status: status.clone(),
     };
     let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, name, sender);
-    WorldHandle::new(entity, commands, Some(status))
+    WorldHandle::new(entity, commands, status)
 }
 
 /// Spawn a world the host steps, with a one-time setup step.
@@ -291,7 +291,7 @@ where
         status: status.clone(),
     };
     let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), name, sender);
-    WorldHandle::new(entity, JobSender::new(commands), Some(status))
+    WorldHandle::new(entity, JobSender::new(commands), status)
 }
 
 /// Spawn the proxy entity with the runner's components.
@@ -312,8 +312,8 @@ fn spawn_proxy(
 ///
 /// Does nothing when `entity` does not name a world the host steps, or when
 /// that world has already stopped. A tick that returns `false` stops the
-/// world; a panic is caught, logged and recorded the way a threaded world's
-/// thread panic is, and ends the world too.
+/// world; a panic, in a job or in the tick, is caught, logged and published
+/// as the world's state, and ends the world too.
 ///
 /// The step publishes what the world's subscriptions collected, the same as
 /// a threaded world's loop does, so a tick body never publishes by hand.
@@ -341,7 +341,6 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
             let message = panic_message(payload.as_ref());
             log::error!("the stepped world {} panicked: {message}", stepped.name);
             stepped.status.record_panic(message);
-            stepped.status.finish();
             return;
         }
     }
@@ -365,7 +364,6 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
             let message = panic_message(payload.as_ref());
             log::error!("the stepped world {name} panicked: {message}");
             status.record_panic(message);
-            status.finish();
             false
         }
     };

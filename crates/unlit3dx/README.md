@@ -175,9 +175,10 @@ tick body has to know which one it is under.
   why its world died rather than joining a corpse. Despawning the proxy entity
   stops its thread and waits at most two seconds for it; a tick that will not
   stop is left detached rather than hanging the dropper. The handle reports on
-  the thread — `is_finished`, `panic_message` — and `stop` asks it to end;
-  `join_timeout` and `detach` are on the `WorldThread` itself, for callers
-  that own one directly.
+  the world — `is_finished`, and `state`, a `SnapshotReader<WorldState>` that
+  reads `Running`, `Stopped` or `Panicked(message)` — and `stop` asks it to
+  end; `join_timeout` and `detach` are on the `WorldThread` itself, for
+  callers that own one directly.
 - **`Stepped`** keeps the world where it was spawned.
   `spawn_stepped_world_with_init` puts the nested `World` inside the proxy
   component on the host entity, and
