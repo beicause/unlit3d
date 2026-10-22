@@ -51,6 +51,14 @@ jobs:
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add wasm32-unknown-unknown
 
+      # The wasm side links nothing native, but `cargo xtask test-wasm` also
+      # builds the host test binaries it drives the browser through, and those
+      # take `--all-features`, where cpal links ALSA on Linux.
+      - name: Install ALSA headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev
+
       # One cache for the whole job: its three builds share this key, and the
       # features they differ in are the only reason there are more than one.
       - name: Caching

@@ -93,7 +93,8 @@ jobs:
 
       # `--all-features` below turns on the audio bridge, whose Linux backend
       # is built by `alsa-sys`; its build script needs ALSA's headers, which
-      # the runner image does not carry. The same install is in `ci.yml`.
+      # the runner image does not carry. The same install is in `ci.yml` and in
+      # `ci-main.yml`, both of which build the workspace's tests.
       - name: Install ALSA headers
         run: |
           sudo apt-get update
