@@ -7,11 +7,11 @@
 //! without a job or a reply.
 //!
 //! - A [`Snapshot`](crate::relay::Snapshot) holds one value. Publishing
-//!   replaces it, a reader that misses a publish never learns what was there,
-//!   and that is exactly right
-//!   for state: poses, a playback position, the size a UI is laid out at. A
-//!   reader of a snapshot is not a queue consumer, so a slow one cannot fall
-//!   behind.
+//!   replaces it, so a reader that misses a publish never learns what was
+//!   there, and that is exactly right for state: poses, a playback position,
+//!   the size a UI is laid out at. A reader is not a queue consumer, so a
+//!   slow one cannot fall behind, and one that subscribes late still sees the
+//!   newest publish.
 //! - A [`Stream`](crate::relay::Stream) holds every value, once per reader.
 //!   Publishing appends to each reader's queue, and a reader folds the queue
 //!   into its tick with [`StreamReader::pump`](crate::relay::StreamReader::pump).
@@ -20,8 +20,8 @@
 //!
 //! Neither side blocks: a publish swaps a pointer or pushes to an unbounded
 //! queue, and a reader takes what is there. Dropping a reader unsubscribes
-//! it; the producing side prunes it when it notices that nobody is left, so a
-//! world that nobody watches costs a pointer load per publish.
+//! it: a stream prunes it when nobody is left, and a snapshot keeps its value
+//! for whoever subscribes next.
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -33,9 +33,9 @@ use async_channel::{Receiver, Sender, unbounded};
 /// The producing end of a [`Snapshot`]: keeps the newest value for however
 /// many readers are subscribed.
 ///
-/// Cloning shares the slot. A producer that publishes while nobody reads
-/// stores nothing: the value would have no reader, and a later subscriber
-/// gets the next publish rather than a stale one.
+/// Cloning shares the slot. It keeps the newest value whether or not anyone
+/// is subscribed, so a reader that arrives after a publish still finds it
+/// instead of waiting for the next one.
 pub struct Snapshot<T> {
     slot: Arc<SnapshotSlot<T>>,
 }
@@ -56,17 +56,15 @@ impl<T> Snapshot<T> {
         }
     }
 
-    /// Replace the value, and answer whether anyone was there to read it.
+    /// Replace the value, and answer whether anyone is there to read it.
     ///
-    /// Nothing is stored when no reader is subscribed, so a world that
-    /// nobody watches does no work beyond the counter load. A collector
-    /// uses the answer to prune its own subscription.
+    /// The value is kept even with no reader subscribed, so one that
+    /// subscribes later still finds the newest publish. A collector uses the
+    /// answer to prune its own subscription.
     pub fn publish(&self, value: T) -> bool {
-        if !self.has_readers() {
-            return false;
-        }
+        let read = self.has_readers();
         self.slot.value.store(Some(Arc::new(value)));
-        true
+        read
     }
 
     /// A reader of this slot. The snapshot stays a slot as long as any
@@ -337,11 +335,13 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_nobody_reads_stores_nothing() {
+    fn a_late_reader_finds_the_value_published_before_it() {
         let snapshot = Snapshot::new();
         assert!(!snapshot.publish(1));
         let reader = snapshot.reader();
-        assert!(reader.latest().is_none());
+        assert_eq!(*reader.latest().expect("the publish was kept"), 1);
+        assert!(snapshot.publish(2));
+        assert_eq!(*reader.latest().expect("the newest publish"), 2);
     }
 
     #[test]
@@ -351,6 +351,7 @@ mod tests {
         assert!(snapshot.publish(1));
         drop(reader);
         assert!(!snapshot.publish(2));
+        assert_eq!(*snapshot.reader().latest().expect("the last publish"), 2);
     }
 
     #[test]

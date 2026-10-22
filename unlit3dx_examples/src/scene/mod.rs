@@ -688,16 +688,11 @@ mod tests {
         let render = spawn_sub_world(&mut host, "render", 8);
         let input = InputWriter::new();
         let panels = PanelSlots::default();
-        let worlds = spawn_scene::<Stepped>(
-            &mut host,
-            render,
-            AudioSetup::Silent,
-            panels.clone(),
-            &input,
-        );
-        // The panel subscribes to the target while the scene is set up, so the
-        // drawing side's measurement lands on a slot that has a reader.
+        // The target is published before the panel exists to subscribe to it:
+        // a snapshot keeps its newest value, so the panel finds it on its
+        // first tick instead of waiting for another draw.
         panels.target.publish(measured_target());
+        let worlds = spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input);
         let runs = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&runs);
         worlds
@@ -750,17 +745,12 @@ mod tests {
         let input = InputWriter::new();
         let pressed = Arc::new(AtomicUsize::new(0));
         let panels = PanelSlots::default();
+        // Published before the panel exists to subscribe to it, which a
+        // snapshot keeps for it.
+        panels.target.publish(measured_target());
         // The wiring is the scene's, but the panel is this test's: it counts
         // the space presses it saw, the way the real one reads a click.
-        let worlds = spawn_scene::<Stepped>(
-            &mut host,
-            render,
-            AudioSetup::Silent,
-            panels.clone(),
-            &input,
-        );
-        // Subscribed to during the scene's setup, so this lands on a reader.
-        panels.target.publish(measured_target());
+        let worlds = spawn_scene::<Stepped>(&mut host, render, AudioSetup::Silent, panels, &input);
         let counted = Arc::clone(&pressed);
         worlds
             .gameplay

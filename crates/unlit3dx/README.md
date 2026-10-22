@@ -133,6 +133,8 @@ that already holds one keeps reading that copy to the end. A world that
 collects per tick and a consumer that reads per frame meet in the middle
 without ever blocking. A collector that returns `None` leaves the newest
 snapshot in place, which is how a world that has not changed stays quiet.
+A value published before any reader subscribed is kept as well, so a reader
+that arrives late still sees it instead of waiting for the next publish.
 
 A stream reader keeps a queue of its own: `pump` once per tick folds
 whatever arrived into that tick's batch, and `with_batch` reads it. A reader
