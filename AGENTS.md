@@ -50,24 +50,16 @@
 
 `cargo xtask`约定含有一些常用命令，各命令及其解释见根目录 [`README.md`](./README.md) 的「常用命令」一节；更新`xtask`时，注意同步更新该列表。
 
-- **提交前检查**：让以下命令通过（不一定要最后才运行，若之前运行后没改动，则不必重复运行），尽量一次运行多个命令，减少会话步次：
-  1. `cargo fmt --all`。
-  2. `cargo xtask check`。
-  3. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --keep-going`。
-  4. `tombi format`、`typos`。
+由于Rust编译较慢且占用磁盘，本地机器负担不起，要注意：
+- **本地只跑检查类命令**：`cargo fmt --all`、`cargo xtask check`（clippy，含逐包那一趟）、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --keep-going`、`tombi format`、`typos`。让这些通过（不一定要最后才运行，若之前运行后没改动，则不必重复运行），尽量一次运行多个命令，减少会话步次。
+- **编译与测试一律交给 CI**：`cargo build`、`cargo nextest`、`cargo test`、`cargo xtask test`、`cargo xtask test-wasm`、`cargo xtask build-android`、`cargo bench` 都不在本地跑。需要编译或测试时，把改动推到一个远程分支上即可，`.github/workflows/ci.yml` 会在该分支的每次推送后跑轻量档，不必先开 PR；本地只看它给出的日志。轻量档是 Linux 上的检查与 nextest，加上 wasm 与 Android 的 `check`（不编译二进制、不进浏览器、不打 APK）；全量（macOS/Windows、wasm 浏览器测试、APK）只在 `main` 与 merge queue 上跑，由 `.github/workflows/ci-main.yml` 调用轻量档并补上这些。
 
-由于Rust编译可能较慢，要注意：
-- **先修复格式（`fmt`、`clippy`），再跑cargo编译或测试**，原因：`fmt`/`clippy`格式化速度比较快。`编译->格式化->编译`可能会破坏编译缓存再次全量编译，而`格式化->编译->编译`会命中编译缓存，更有利于再次运行或用户运行验证结果。
-- **使用`cargo nextest`，而不是`cargo test`**。
-- **针对特定改动、特定bug时，使用`cargo nextest`时要筛选**。不要总是跑全量`cargo nextest`或`cargo xtask test`测试。
-- **不要过度跑`cargo build`、`cargo nextest`**：
-  1. 开始任务时，假定所有测试均已通过，无需测试。
-  3. 对于仅文档的、非常简单的、非逻辑性的改动，不要重跑`cargo nextest`。
-  2. 整合多次改动后，再跑检查或测试，不要改一点测一点，减少检查或测试次数，尽可能减少会话轮次。
-  4. 优先用`cargo check`或`clippy`，尽量减少编译次数。
-  5. 尽量在当前平台上实现测试，不要依赖设备特定行为，使用运行时检测GPU设备功能、`DeviceTier`等配置切换代码路径。如果改动目标不是平台特定的，就绝不跑平台特定（如wasm，android）的检查或测试，特定平台的cargo冷构建通常很慢。
-- **不会自己结束的命令要放后台跑，且不要对其等待**：如 `cargo xtask run-wasm`（它启动的静态服务器一直运行到被停止）。这类命令用后台任务启动，之后正常做别的事、需要时再读它的输出，**绝不要对其调用带 `wait` 的读取**——它不会结束，等待只会白等到超时。
-- **构建目标为wasm时，使用`--profile wasm-dev`，绝不用默认的dev profile**。原因：dev profile下wasm文件大、构建慢、运行慢。`cargo xtask`对于wasm构建已使用`--profile wasm-dev`，只有你手动构建wasm时才需要记得添加该标志。
+开发验证流程遵循以下步骤：
+1. 先完成尽可能多的改动。
+2. 在本地就地解决检查和格式等问题。
+3. 如果远程分支不存在，获得用户许可后才能创建新分支，不要在本地先「试着编译一下」验证，也不要擅自创建新分支或开 PR。
+4. 一旦远程分支已经存在，后续推送、验证无需获得许可。
+5. CI 失败就从日志里读原因。用 `gh pr checks --watch` 跟进度、`gh run view --log-failed` 读失败的步骤，继续修改、检查、推送，迭代直到 CI 变绿。
 
 ## 关于本项目
 

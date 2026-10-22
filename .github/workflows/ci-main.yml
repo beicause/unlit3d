@@ -1,0 +1,213 @@
+name: Rust CI (main)
+
+# The full tier, which only a run on `main` needs: it is what proves a release
+# ships, and it is the last chance to prove it before one does. A merge queue
+# run arrives with `merge_group` and takes this tier as well.
+#
+# The jobs it shares with the light tier are not copied here: `ci.yml` is
+# called as a workflow with `full` set, which widens its `build` job to macOS
+# and Windows, and a call runs every job in that file. What only this tier has —
+# the browser's wasm suite and the APK — runs beside the call rather than after
+# it, so it starts alongside the light tier rather than once it is green.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  merge_group:
+
+concurrency:
+  # Keyed by the ref, as the single-workflow version was: a second push to the
+  # same branch cancels the run the first one started.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shared:
+    uses: ./.github/workflows/ci.yml
+    # Every platform, because a `main` run is the one that proves portability.
+    with:
+      full: true
+
+  build-wasm:
+    name: Build and test wasm
+    # The runner installs a browser, builds the workspace and every wasm test
+    # binary, and then drives one browser page per test. Software WebGL2 is what
+    # makes the last part slow rather than the build.
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # The snapshots live in the asset submodule, and the wasm test binaries
+      # embed them at compile time. Without it the build fails on the
+      # `include_bytes!` rather than comparing against a missing frame. The
+      # `--checkout` is what gets past the submodule's `update = none`, as in
+      # the `build` job in `ci.yml`.
+      - name: Check out the asset submodule
+        run: git submodule update --init --checkout
+
+      - name: Install rust toolchain
+        run: |
+          rustup toolchain install stable --no-self-update --profile=minimal --component clippy
+          rustup target add wasm32-unknown-unknown
+
+      # The Clippy step below builds for the host, where cpal links ALSA.
+      - name: Install ALSA headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libasound2-dev
+
+      # One cache for the whole job: its two builds share this key, and the
+      # features they differ in are the only reason there are two.
+      - name: Caching
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-wasm-${{ env.CACHE_SUFFIX }}
+          env-vars: ImageVersion
+          cache-bin: false
+          cache-on-failure: true
+
+      # Host-only, so it compiles the workspace for the machine the task runner
+      # itself runs on rather than for wasm.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --no-default-features -- -Dwarnings
+
+      # `cargo xtask test-wasm` checks this CLI against the `wasm-bindgen` the
+      # workspace resolves, so the version is taken from the workspace rather
+      # than pinned here — a bump then needs no edit to this file.
+      - name: Install wasm-bindgen
+        run: |
+          version=$(cargo metadata --format-version 1 --all-features \
+            | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          cargo install wasm-bindgen-cli --version="$version"
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # Builds the workspace for wasm, bindgens each test binary, and runs them
+      # in a browser. The runner's JS dependencies and a browser are installed
+      # by the subcommand before it starts anything.
+      - name: Test wasm
+        id: test-wasm
+        run: cargo xtask test-wasm
+
+      # The page has no filesystem, so a frame that fails a comparison is
+      # encoded in the browser and handed to the Node runner, which writes it
+      # under the wasm pass's own directory. A real WebGL2 rasterizer is a
+      # different implementation from any device tier, so this is where a frame
+      # is most likely to differ for reasons that are not a regression.
+      - name: Upload the mismatched snapshot frames
+        if: ${{ failure() && steps.test-wasm.outcome == 'failure' }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: snapshot-mismatches-wasm
+          path: target/snapshot-mismatches-wasm
+          if-no-files-found: ignore
+
+  # What the light tier checks about the Android build is that the code behind
+  # `cfg(target_os = "android")` compiles, which the host lint in `ci.yml`
+  # never reaches: the entry point is behind that `cfg`, and so is everything
+  # only the activity links. This job adds the APK around it — a cross-build of
+  # the shared libraries and then Gradle — which is the part with nothing left to
+  # tell a contributor that this check does not.
+  build-android:
+    name: Build android
+    # A Gradle build downloads its own distribution and dependencies, and the
+    # Rust cross-build walks the whole dependency tree; the caches make the
+    # runs after the first much shorter.
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # The example embeds the glTF assets with `include_bytes!`, and linting the
+      # workspace compiles it, so the cross-build needs them as much as the host
+      # one does. `.gitmodules` marks the submodule `update = none`, so
+      # `--checkout` is what gets past that setting; without it the step below
+      # fails on the missing assets rather than on anything this job is about.
+      - name: Check out the asset submodule
+        run: git submodule update --init --checkout
+
+      - name: Install rust toolchain
+        run: |
+          rustup toolchain install stable --no-self-update --profile=minimal --component clippy
+          rustup target add aarch64-linux-android
+
+      - name: Caching
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: build-android-${{ env.CACHE_SUFFIX }}
+          env-vars: ImageVersion
+          cache-bin: false
+          cache-on-failure: true
+
+      # AGP 9 requires JDK 17 or newer, and the runner image's default is not
+      # guaranteed to be one the wrapper accepts.
+      - name: Set up JDK
+        uses: actions/setup-java@v6.0.1
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # Caches the Gradle user home — the distribution and the dependency
+      # cache — through `actions/cache`, rather than the proprietary provider
+      # this action defaults to.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6.3.0
+        with:
+          cache-provider: basic
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.23.0
+
+      # The NDK is not installed here: the runner image already carries the
+      # version this project pins, and `cargo ndk` finds it by itself.
+      #
+      # `--strategies` is spelled out because cargo-ndk's own manifest disables
+      # two of the defaults (`disabled-strategies = ["quick-install", "compile"]`
+      # in its `[package.metadata.binstall]`), the source build among them. That
+      # leaves the prebuilt download as its only option, so a release lookup the
+      # API rate-limits into a `403` has nowhere to fall back to and fails the
+      # install outright — as it did here. Naming the strategies on the command
+      # line overrides the package's list and puts `cargo install` back behind
+      # the download, which is what nextest already has by default.
+      #
+      # `GITHUB_TOKEN` keeps the lookup authenticated so that fallback stays the
+      # rare path, as the `GITHUB_TOKEN` on the nextest install in the `build`
+      # job does for the same reason.
+      - name: Install cargo-ndk
+        run: cargo binstall --no-confirm --strategies crate-meta-data,quick-install,compile cargo-ndk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The `build` job lints the workspace for the host, which never compiles
+      # the code behind `cfg(target_os = "android")` — the entry point among it.
+      # Linting the target the APK ships is what covers that half, and it runs
+      # before the cross-build because it is the same compilation: a lint error
+      # here is a build error one step later, reported with a line.
+      - name: Clippy (Android target)
+        run: cargo ndk -t arm64-v8a -P 26 clippy --workspace --all-targets --all-features -- -D warnings
+
+      # One command for both halves: `cargo ndk` builds the example's shared
+      # library into the APK's `jniLibs` directory, then the task runs the
+      # Gradle wrapper on `android/`. A debug APK is what is published because
+      # it is the one the build signs: an unsigned release APK cannot be
+      # installed without a signing step of its own.
+      #
+      # `ANDROID_HOME` comes from the runner image rather than this workflow's
+      # `env`, so it is expanded by the shell: the `env` context only holds
+      # variables a workflow sets, not the ones the runner inherits.
+      - name: Build the APK
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
+          export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+          cargo xtask build-android
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: unlit3d-examples-apk
+          path: android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

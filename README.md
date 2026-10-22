@@ -284,21 +284,54 @@ and how to read its output, is in
 
 ## Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the checks above plus
-the lint gates, on every push to `main` and every pull request:
+The checks above plus the lint gates run in two tiers, split over two workflows
+so that the jobs they share are written once:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the light tier, and
+[`.github/workflows/ci-main.yml`](.github/workflows/ci-main.yml) is the full one,
+which calls the light tier's jobs with `full` set and adds what only a release
+needs. Which tier a run gets is decided by the ref it runs on, not by what
+started it: `main` and the merge queue, a `main` run whatever ref it names, take
+the whole thing, and every other branch takes the light one. That covers a pull
+request from the branch and also a branch pushed with no pull request at all, so
+pushing is enough to have a change compiled and tested; opening the pull request
+is not what starts the build.
+
+The light tier runs what a change can break on its own, within the time a
+reviewer spends reading it: one platform, and for the web and for Android the
+compile rather than the browser or the APK around it. `main` then runs the rest,
+which is the part that proves a release ships.
+
+Every branch other than `main`, whether pushed on its own or opened as a pull
+request:
 
 - **lint** — `typos`, `tombi lint --error-on-warnings` and `tombi format
   --check` over the TOML, and `cargo fmt --all -- --check`.
-- **build** (Linux, macOS, Windows) — clippy with and without the `unlit`
-  feature, `cargo build --workspace --all-targets`, `cargo xtask test`,
-  `cargo doc` with `-D warnings`, and the workspace's snapshot comparisons
-  twice: once at the WebGPU baseline's limits, once with every offscreen device
-  narrowed to WebGL2's shape. Linux installs Mesa for `lavapipe`, since the
-  runners have no GPU.
-- **build-wasm** — clippy and a `wasm32-unknown-unknown` build. The build
-  excludes `xtask`, a host-only task runner whose HTTP server does not compile
-  for that target.
-- **build-android** — the `aarch64-linux-android` cross-build and the Gradle APK.
+- **build** (Linux) — clippy with and without the `unlit` feature,
+  `cargo build --workspace --all-targets`, `cargo xtask test`, `cargo doc`
+  with `-D warnings`, and the workspace's snapshot comparisons twice: once at
+  the WebGPU baseline's limits, once with every offscreen device narrowed to
+  WebGL2's shape. Linux installs Mesa for `lavapipe`, since the runners have no
+  GPU.
+- **check-wasm** — `cargo check` for `wasm32-unknown-unknown` over the
+  workspace and over the test binaries. It excludes `xtask`, a host-only task
+  runner whose HTTP server does not compile for that target.
+- **check-android** — clippy for `aarch64-linux-android`, the only thing that
+  compiles the code behind `cfg(target_os = "android")`. The host clippy in
+  `build` never reaches it.
+
+`main` — every push to it, a merge queue run, and a manual run from it:
+
+- **build** runs on macOS and Windows as well as Linux.
+- **build-wasm** — clippy and a `wasm32-unknown-unknown` build, then every wasm
+  test binary bindgen'd into a page driven through a real browser.
+- **build-android** — the `aarch64-linux-android` cross-build of the shared
+  libraries, and Gradle around it for the APK.
+
+Each `check-*` job shares its cache with the job that does the same subject on
+`main` (`shared-key` on Swatinem/rust-cache), so what the light tier compiles is
+what the merge restores instead of recompiling. Every job also saves its caches
+even when it fails (`cache-on-failure`), so an iteration on a red branch still
+leaves the next run warmer than a cold one would be.
 
 The snapshot comparisons are the check that makes a rendering regression fail
 rather than pass unnoticed, which is why the example's scenes carry them. Their
@@ -318,8 +351,11 @@ to GitHub Pages on every push to `main`: a landing page at the root linking the
 two web examples and the API docs, each example in a directory of its own
 beside it, and the workspace's rustdoc under `docs/`. The `unlit3d` example's
 corner links to those docs as well. The docs build on nightly, because the
-page listing the crates and the `doc(cfg(...))` labels are nightly-only; `ci.yml` keeps checking them on stable
-so a break is caught on the pull request rather than at the deploy.
+page listing the crates and the `doc(cfg(...))` labels are nightly-only;
+`ci.yml` keeps checking them on stable so a break is caught on the branch
+rather than at the deploy. That check is where a doc warning fails a build — the
+deploy publishes the pages it has, since a page with a broken link is worth more
+than a site held back by it.
 
 ## Workspace layout
 

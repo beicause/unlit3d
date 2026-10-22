@@ -105,13 +105,18 @@ jobs:
       # nightly-only, so this is the one step that uses nightly. `--all-features`
       # shows the optional modules — glTF, reflection, UI and winit — rather than
       # the default set alone.
+      #
+      # Warnings are left alone here: a published page with a broken link is
+      # worth more than a site that a doc warning holds back, and
+      # `ci.yml` is where the same docs are built with `-D warnings` — on the
+      # branch, before a merge rather than after it.
       - name: Build the API docs
         run: |
           cargo +nightly doc --workspace --no-deps --document-private-items --all-features --keep-going
           mkdir -p target/generated/wasm-dev/docs
           cp -r target/doc/. target/generated/wasm-dev/docs/
         env:
-          RUSTDOCFLAGS: "-D warnings --cfg docsrs -Z unstable-options --enable-index-page"
+          RUSTDOCFLAGS: "--cfg docsrs -Z unstable-options --enable-index-page"
 
       - name: Upload the site
         uses: actions/upload-pages-artifact@v5.0.0

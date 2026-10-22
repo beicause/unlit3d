@@ -221,19 +221,45 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 
 ## 持续集成
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在每次推送到 `main` 和每个
-pull request 上运行上述检查以及各 lint 关卡：
+上述检查以及各 lint 关卡分成两档，并拆到两个 workflow 里，好让两档共有的任务只写一遍：
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 是轻量档，
+[`.github/workflows/ci-main.yml`](.github/workflows/ci-main.yml) 是整份，它带上 `full` 调用
+轻量档的任务，再补上只有发行才需要的部分。跑哪一档由这一次运行所在的 ref 决定，
+而不由是谁触发的决定：`main` 与合并队列（不论 ref 写成什么，那都是一次 `main` 的运行）
+跑整份，其余分支跑轻量档。因此，从分支开出的 pull request 算在内，没开 pull request、
+只是推上去的分支也算在内——推上去就够了，开 PR 并不是启动构建的那个动作。
+
+轻量档跑的是改动自己就能弄坏的东西，并且要落在审阅者读这一遍代码的时间里：只跑一个平台，
+web 与 Android 只跑到编译而不是它外围的浏览器或 APK。剩下的由 `main` 跑，那是证明一份
+发行物能出得去的那部分。
+
+`main` 以外的每个分支，无论是自己推上去的还是开成 pull request 的：
 
 - **lint** —— 对全部文件跑 `typos`；对 TOML 跑 `tombi lint --error-on-warnings` 与
   `tombi format --check`；以及 `cargo fmt --all -- --check`。
-- **build**（Linux、macOS、Windows）—— 带与不带 `unlit` feature 的 clippy、
+- **build**（Linux）—— 带与不带 `unlit` feature 的 clippy、
   `cargo build --workspace --all-targets`、`cargo xtask test`、带 `-D warnings` 的
   `cargo doc`，以及工作区的快照比较——该比较跑两遍：一遍用 WebGPU 基线的 limits，
   一遍把所有离屏设备收窄到 WebGL2 的形态。由于 runner 没有 GPU，Linux 会安装 Mesa
   以提供 `lavapipe`。
-- **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建。构建会排除
-  `xtask`：它是只在宿主机上运行的任务运行器，其 HTTP 服务器无法为该目标编译。
-- **build-android** —— `aarch64-linux-android` 交叉构建与 Gradle APK。
+- **check-wasm** —— 为 `wasm32-unknown-unknown` 对工作区与测试二进制各跑一遍
+  `cargo check`。它排除 `xtask`：那是只在宿主机上运行的任务运行器，其 HTTP 服务器
+  无法为该目标编译。
+- **check-android** —— 为 `aarch64-linux-android` 跑 clippy，这是唯一会编译
+  `cfg(target_os = "android")` 后面代码的检查；`build` 里的宿主 clippy 到不了那里。
+
+`main` 上——每次推送到它、合并队列的一次运行，以及从它手动触发的运行，都是整份：
+
+- **build** 除 Linux 外还在 macOS 与 Windows 上跑。
+- **build-wasm** —— clippy 与 `wasm32-unknown-unknown` 构建，然后把每个 wasm 测试
+  二进制 bindgen 成页面，在真实浏览器中驱动。
+- **build-android** —— `aarch64-linux-android` 交叉构建动态库，再在其外套上 Gradle
+  得到 APK。
+
+两个 `check-*` 任务各自与 `main` 上做同一件事的任务共用一个缓存
+（Swatinem/rust-cache 的 `shared-key`），因此轻量档编译出来的东西，合并后是
+被还原而不是被重编。每个任务即便失败也会保存它的缓存（`cache-on-failure`），
+因此在失败的分支上迭代时，下一次运行仍比冷启动要暖和。
 
 快照比较正是让渲染回归会失败而不是悄然通过的那道检查，这也是示例的场景承担它的原因。
 它的第二遍通过设置 `UNLIT3D_DEVICE_TIER=webgl2`（而不是为 Web 构建）来触达 WebGL2
@@ -248,8 +274,9 @@ pull request 上运行上述检查以及各 lint 关卡：
 把站点发布到 GitHub Pages：根目录是一个首页，链接两个 web 示例与 API 文档，每个示例
 各占旁边的一个目录，工作区的 rustdoc 放在 `docs/` 下；`unlit3d` 示例的页角也链接到这些
 文档。文档用 nightly 构建，因为列出各 crate 的索引页与 `doc(cfg(...))`
-标签都只存在于 nightly；`ci.yml` 仍在 stable 上检查文档，好让问题在 pull request 上
-就被发现，而不是等到发布时。
+标签都只存在于 nightly；`ci.yml` 仍在 stable 上检查文档，好让问题在分支上
+就被发现，而不是等到发布时。让文档警告弄挂构建的正是这道检查——发布这一侧只要它产出的
+页面，因为一个链接坏掉的页面也比被它挡下、什么都没发出去的站点有价值。
 
 ## 工作区结构
 
