@@ -385,7 +385,11 @@ mod tests {
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let answer = despawn_one(&mut scope, sibling).expect("refusing is not an error");
         assert_eq!(answer["despawned"], serde_json::json!(false));
-        assert_eq!(answer["name"], serde_json::json!(sibling.name()));
+        assert_eq!(
+            answer["name"],
+            serde_json::json!(""),
+            "an entity the scope cannot see has no name to report"
+        );
         assert!(world.root_scope().contains(sibling));
     }
 
@@ -395,7 +399,11 @@ mod tests {
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let answer = despawn_one(&mut scope, child).expect("its own descendant");
         assert_eq!(answer["despawned"], serde_json::json!(true));
-        assert_eq!(answer["name"], serde_json::json!(child.name()));
+        let name = answer["name"].as_str().expect("a name is a string");
+        assert!(
+            name.contains("mcp/tools.rs"),
+            "the reply names the entity as its spawn site called it: {name}"
+        );
         assert!(!world.root_scope().contains(child));
     }
 
