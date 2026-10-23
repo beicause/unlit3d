@@ -4,17 +4,24 @@
 //! own thread. The sender never waits for it: a queue that is full or stopped
 //! reports [`SendError`](crate::job::SendError) and the job comes back.
 //!
-//! A job never answers back. What one world learns from another is state, and
-//! state travels the other way: a subscription publishes it, and the caller
-//! reads it on its own tick. A caller that needs the value a job produced
-//! publishes that value itself, through the snapshot its subscription fills.
+//! A job never answers back directly. What one world learns from another is
+//! state, and state travels the other way: a subscription publishes it, and the
+//! caller reads it on its own tick. A caller that needs the value one job
+//! produces asks for it — [`JobSender::ask`](crate::job::JobSender::ask)
+//! sends the job and hands back the snapshot its answer lands in — or publishes
+//! that value itself, through the snapshot its subscription fills.
 
 use std::fmt;
 
 use unlit_ecs::World;
 
 /// A unit of work for a world: a boxed closure that runs against it.
-pub type Job<R = ()> = Box<dyn FnOnce(&mut World) -> R + Send + 'static>;
+///
+/// A job answers nothing: the queue is one way, and a value the caller
+/// wants back travels as state, published by the world that made it and
+/// read on the caller's own tick. [`JobSender::ask`] is that round trip,
+/// made of one job and one snapshot.
+pub type Job = Box<dyn FnOnce(&mut World) + Send + 'static>;
 
 /// Why a job was not handed to a world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,26 +52,32 @@ impl<T> From<async_channel::TrySendError<T>> for SendError {
     }
 }
 
-/// A cloneable handle to a world's command queue.
+/// A cloneable handle to a world's job queue.
 ///
-/// This is the sender half a [`WorldHandle`](crate::handle::WorldHandle)
-/// carries in its `commands` field. Sends never block: a full or stopped
-/// queue reports [`SendError`] and the job is dropped.
+/// A world is reached either through the [`WorldHandle`](crate::handle::WorldHandle)
+/// it was spawned with or through the [`WorldSender`](crate::world::WorldSender)
+/// its proxy entity carries; both hold one of these. Sends never block: a full
+/// or stopped queue reports [`SendError`] and the job is dropped.
 #[derive(Clone)]
 pub struct JobSender {
-    commands: async_channel::Sender<Job<()>>,
+    queue: async_channel::Sender<Job>,
 }
 
 impl JobSender {
     /// Wrap a world's command channel.
     #[must_use]
-    pub fn new(commands: async_channel::Sender<Job<()>>) -> Self {
-        Self { commands }
+    pub fn new(queue: async_channel::Sender<Job>) -> Self {
+        Self { queue }
     }
 
     /// Queue a job. Never blocks.
-    pub fn send(&self, job: Job<()>) -> Result<(), SendError> {
-        self.commands.try_send(job).map_err(SendError::from)
+    ///
+    /// An `Ok` means the job is in the queue; whether it runs is the world's
+    /// business. A world its owner has asked to stop keeps accepting jobs
+    /// until its driver's next turn, and drops them when it ends, so a caller
+    /// that must know the job ran reads the world's state instead.
+    pub fn send(&self, job: Job) -> Result<(), SendError> {
+        self.queue.try_send(job).map_err(SendError::from)
     }
 }
 

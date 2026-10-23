@@ -8,11 +8,12 @@ use unlit_ecs::World;
 use unlit_ecs::bundle;
 use unlit3dx::prelude::*;
 
-/// A stepped world whose tick publishes whatever its subscriptions collect.
+/// A stepped world with no tick of its own.
 ///
 /// A stepped world is the deterministic one: nothing runs until the test
 /// steps it, so the order of a subscription and the tick that serves it is
-/// the test's to fix.
+/// the test's to fix. The step publishes the subscriptions itself, so a
+/// world whose tick does nothing still answers them.
 fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
     spawn_stepped_world_with_init(
         host,
@@ -21,10 +22,7 @@ fn subscribed_world(host: &mut World, capacity: usize) -> WorldHandle {
         |world: &mut World| {
             world.root_scope_mut().spawn(bundle![Marker(0)]);
         },
-        |world: &mut World, _control: &ThreadControl, ()| {
-            publish_subscribed(world);
-            true
-        },
+        |_world: &mut World, _control: &ThreadControl, ()| true,
     )
 }
 
@@ -37,17 +35,17 @@ struct Marker(u32);
 fn several_subscribers_each_get_their_own_snapshot() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 8);
-    let sender = world.commands.clone();
+    let sender = world.sender.clone();
     let mut first = 0u32;
     let one = sender
-        .subscribe(move |_| {
+        .watch(move |_| {
             first += 1;
             Some(first)
         })
         .expect("the world accepts a subscription");
     let mut second = 0u32;
     let two = sender
-        .subscribe(move |_| {
+        .watch(move |_| {
             second += 10;
             Some(second)
         })
@@ -68,9 +66,9 @@ fn a_late_subscriber_sees_the_state_of_the_next_tick() {
     step_stepped_world(&host, world.entity);
 
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(|world: &World| {
+        .watch(|world: &World| {
             world
                 .root_scope()
                 .query::<&Marker>()
@@ -97,9 +95,9 @@ fn dropping_the_reader_prunes_the_subscription() {
     let ran = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&ran);
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(move |_| {
+        .watch(move |_| {
             counted.fetch_add(1, Ordering::SeqCst);
             Some(1u32)
         })
@@ -117,7 +115,7 @@ fn dropping_the_reader_prunes_the_subscription() {
 
     step_stepped_world(&host, world.entity);
     let live =
-        with_stepped_world(&host, world.entity, publish_subscribed).expect("the world is stepped");
+        with_stepped_world(&host, world.entity, publish_collected).expect("the world is stepped");
     assert_eq!(live, 0, "the world carries no live subscription");
 }
 
@@ -129,9 +127,9 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
     let world = subscribed_world(&mut host, 8);
     let mut first = true;
     let reader = world
-        .commands
+        .sender
         .clone()
-        .subscribe(move |_| {
+        .watch(move |_| {
             let value = if first { Some(1u32) } else { None };
             first = false;
             value
@@ -144,6 +142,46 @@ fn a_collector_that_returns_nothing_leaves_the_newest_snapshot() {
     assert_eq!(reader.latest().map(|value| *value), Some(1));
 }
 
+/// A sub-world publishes what it collects when its host drains it, so a
+/// world with no tick of its own still answers the subscriptions made of it.
+#[test]
+fn draining_a_sub_world_publishes_its_subscriptions() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 8);
+    let reader = proxy
+        .sender
+        .clone()
+        .watch(|world: &World| {
+            world
+                .root_scope()
+                .query::<&Marker>()
+                .next()
+                .map(|marker| marker.0)
+        })
+        .expect("the sub-world accepts a subscription");
+    assert_eq!(reader.latest(), None, "nothing ran before the drain");
+
+    // The sub-world gets its marker from a job: a nested world runs nothing
+    // until its host drains it.
+    proxy
+        .sender
+        .send(Box::new(|world: &mut World| {
+            world.root_scope_mut().spawn(bundle![Marker(0)]);
+        }))
+        .expect("the sub-world accepts a job");
+
+    let mut nested = host
+        .root_scope()
+        .query_one::<&mut World>(proxy.entity)
+        .expect("the nested world");
+    drain_sub_world(&mut nested);
+    assert_eq!(
+        reader.latest().map(|value| *value),
+        Some(0),
+        "the drain published what the collector collected"
+    );
+}
+
 /// A full command queue refuses the subscription instead of blocking, and
 /// the reader it would have filled never sees a snapshot.
 #[test]
@@ -151,11 +189,11 @@ fn a_full_queue_refuses_a_subscription() {
     let mut host = World::new();
     let world = subscribed_world(&mut host, 1);
     world
-        .commands
+        .sender
         .send(Box::new(|_: &mut World| {}))
         .expect("the queue has room for one job");
 
-    let refused = world.commands.clone().subscribe(|_| Some(1u32));
+    let refused = world.sender.clone().watch(|_| Some(1u32));
 
     assert_eq!(refused.err(), Some(SendError::Full));
 }

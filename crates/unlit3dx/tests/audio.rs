@@ -1,4 +1,4 @@
-//! Integration tests for the audio remote world: the fill-source contract,
+//! Integration tests for the audio threaded world: the fill-source contract,
 //! and the world's job channel with and without an output device.
 
 // The tests that need real samples read the workspace's own soundfont, which
@@ -140,20 +140,20 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
     // are answered whether or not a device exists, so a device-less world
     // runs silently but stays alive.
     world
-        .commands
+        .sender
         .send(Box::new(move |world: &mut World| {
             counting_source(world, 0.25, &counted);
         }))
         .expect("the audio world takes its source");
     // A marker job and a probe that waits for it.
-    let _ = world.commands.send(Box::new(|world: &mut World| {
+    let _ = world.sender.send(Box::new(|world: &mut World| {
         world.root_scope_mut().spawn(bundle![Marker]);
     }));
     let marked = Snapshot::new();
     let reader = marked.reader();
     let publish = marked.clone();
     world
-        .commands
+        .sender
         .send(Box::new(move |world: &mut World| {
             publish.publish(world.root_scope().query::<&Marker>().next().is_some());
         }))
@@ -185,12 +185,12 @@ fn the_audio_world_runs_jobs_and_drives_its_source() {
 fn the_audio_world_reports_its_output_opening() {
     let mut host = World::new();
     let world = spawn_audio_world_with::<Threaded>(&mut host, AudioConfig::default());
-    let sender = world.commands.clone();
+    let sender = world.sender.clone();
     // Both subscriptions are made the way a caller installs sources: the
     // format says which rate to build them at, the marker says the output
     // exists at all.
     let format = sender
-        .subscribe(|world: &World| {
+        .watch(|world: &World| {
             world
                 .root_scope()
                 .query::<&AudioFormat>()
@@ -199,7 +199,7 @@ fn the_audio_world_reports_its_output_opening() {
         })
         .expect("the audio world accepts a subscription");
     let opened = sender
-        .subscribe(|world: &World| {
+        .watch(|world: &World| {
             world
                 .root_scope()
                 .query::<&AudioOutputOpen>()
@@ -525,7 +525,7 @@ fn note_off(key: u8) -> MidiMessage {
 }
 
 /// Runs the jobs a sequence has queued so far against its world.
-fn pump(world: &mut World, receiver: &async_channel::Receiver<Job<()>>) {
+fn pump(world: &mut World, receiver: &async_channel::Receiver<Job>) {
     while let Ok(job) = receiver.try_recv() {
         job(world);
     }

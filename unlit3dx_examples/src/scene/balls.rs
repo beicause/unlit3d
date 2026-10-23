@@ -16,10 +16,11 @@ use unlit3d::components::Transform;
 use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
+use super::Scene;
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance_job, look};
 use super::tick::Tick;
-use super::{GAME_HZ, GamePhysics, ScenePoses, SceneWiring, pose_job};
+use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
 use crate::render::{despawn_instances_job, show_instance_job, sweep_instances_job};
 
 /// How long between automatic ball drops, in seconds.
@@ -78,20 +79,17 @@ type InstanceCreated = (u64, Entity);
 /// render world, so this object is the one place the two meet: it maps the
 /// handles the snapshot names onto the render instances it asked for, and
 /// publishes the resulting poses as a job.
+///
+/// It reaches the other worlds through the [`Scene`] its tick is handed, so
+/// it keeps no channel of its own: what it does keep is the requests in
+/// flight and the answers waiting to be folded in.
 pub struct Balls {
-    /// The render world's command channel: the instances and the poses go to
-    /// it as jobs, like every other change to that world.
-    render: JobSender,
-    /// The physics world's latest pose snapshot.
-    physics: SnapshotReader<GamePhysics>,
-    /// The physics world's command channel.
-    physics_sender: JobSender,
-    /// The answers the physics world pushes when a body is spawned, and
+    /// The answers the physics world publishes when a body is spawned, and
     /// this world's reader of them.
     spawns: Stream<BodySpawned>,
     spawned: StreamReader<BodySpawned>,
-    /// The answers the render world pushes when it creates an instance, and
-    /// this world's reader of them.
+    /// The answers the render world publishes when it creates an instance,
+    /// and this world's reader of them.
     creates: Stream<InstanceCreated>,
     created: StreamReader<InstanceCreated>,
     /// The instances the render world despawned because the camera lost sight
@@ -137,14 +135,18 @@ pub struct Balls {
     spawned_answers: Vec<BodySpawned>,
     /// Sweep answers reused across ticks.
     retired_answers: Vec<Entity>,
+    /// The bodies and instances a tick has to send away, reused across
+    /// ticks so a tick that retires nothing allocates nothing.
+    despawns: Vec<RigidBodyHandle>,
+    instances: Vec<Entity>,
     /// The xorshift state for spawn placement.
     rng: u64,
 }
 
 impl Balls {
-    /// The shapes, driving the worlds `wiring` reaches.
+    /// The shapes, driving the worlds their tick is handed.
     #[must_use]
-    pub fn new(wiring: &SceneWiring) -> Self {
+    pub fn new() -> Self {
         let spawns = Stream::new();
         let spawned = spawns.subscribe();
         let creates = Stream::new();
@@ -152,9 +154,6 @@ impl Balls {
         let retired = Stream::new();
         let retired_instances = retired.subscribe();
         Self {
-            render: wiring.render_sender.clone(),
-            physics: wiring.physics_reader.clone(),
-            physics_sender: wiring.physics_sender.clone(),
             spawns,
             spawned,
             creates,
@@ -174,17 +173,19 @@ impl Balls {
             created_answers: Vec::new(),
             spawned_answers: Vec::new(),
             retired_answers: Vec::new(),
+            despawns: Vec::new(),
+            instances: Vec::new(),
             rng: 0x853c49e6748fea9b,
         }
     }
 
     /// Ask for one more shape on the next tick.
-    pub fn request_drop(&mut self) {
+    pub fn queue_drop(&mut self) {
         self.requests += 1;
     }
 
     /// Ask the next tick to put every shape away.
-    pub fn request_clear(&mut self) {
+    pub fn queue_clear(&mut self) {
         self.clear = true;
     }
 
@@ -201,7 +202,7 @@ impl Balls {
     ///
     /// The look picks the collider shape as well as the mesh and material, so
     /// both worlds agree on what the drop is.
-    fn drop_ball(&mut self, world: &World, state: Entity) {
+    fn drop_ball(&mut self, world: &World, state: Entity, scene: &Scene) {
         let (kind, color) = look(self.next_request as usize);
         let id = self.next_request;
         self.next_request = self.next_request.wrapping_add(1);
@@ -221,7 +222,7 @@ impl Balls {
         let Some((mesh, material)) = selected else {
             return;
         };
-        if let Err(error) = self.render.send(create_instance_job(
+        if let Err(error) = scene.render.send(create_instance_job(
             id,
             mesh,
             material,
@@ -244,12 +245,12 @@ impl Balls {
             shape: shape_body(SHAPE_KINDS[kind]),
         };
         // The answer comes back over a stream rather than a reply slot: the
-        // physics world pushes it when it runs the job, and the tick below
+        // physics world publishes it when it runs the job, and the tick below
         // folds whatever arrived into its own state.
         let spawns = self.spawns.clone();
-        let sent = self.physics_sender.send(Box::new(move |world: &mut World| {
+        let sent = scene.physics.send(Box::new(move |world: &mut World| {
             let handle = spawn_body(world, description);
-            let _ = spawns.push((id, born, handle));
+            spawns.publish((id, born, handle));
         }));
         if let Err(error) = sent {
             log::warn!("the physics world refused a body request ({error:?})");
@@ -277,7 +278,7 @@ impl Balls {
     /// hidden: one the camera cannot see has no reason to stay. The music is
     /// left alone — the panel drives it, not the shapes. Requests still in
     /// flight are despawned when they answer, using the generation bump.
-    fn clear_shapes(&mut self) {
+    fn clear_shapes(&mut self, scene: &Scene) {
         self.generation = self.generation.wrapping_add(1);
         let live = self.by_handle.len();
         let requests = self.pending.len();
@@ -299,8 +300,8 @@ impl Balls {
         // A clear also cancels the drops the panel asked for but the tick
         // has not spent yet: they would repopulate the scene immediately.
         self.requests = 0;
-        self.despawn_bodies(handles);
-        self.despawn_instances(instances);
+        self.despawn_bodies(scene, &mut handles);
+        self.despawn_instances(scene, &mut instances);
         self.last_snapshot = None;
         self.poses_sent = 0;
         log::info!("the shapes were cleared: {live} bodies despawned, {requests} requests dropped");
@@ -309,9 +310,13 @@ impl Balls {
     /// Map the bodies, instances and view answers the other worlds sent since
     /// the last tick, then retire the requests that either ran long ago or
     /// never will: the world died, and their halves must not leak.
-    fn retire_stale(&mut self, world: &World, state: Entity) {
-        let mut despawns = Vec::new();
-        let mut instances = Vec::new();
+    fn retire_stale(&mut self, world: &World, state: Entity, scene: &Scene) {
+        // The buffers outlive the tick: a tick that retires nothing pays
+        // nothing, and the one that does hands the filled ones away.
+        let mut despawns = std::mem::take(&mut self.despawns);
+        let mut instances = std::mem::take(&mut self.instances);
+        despawns.clear();
+        instances.clear();
 
         // A retired instance is already gone from the render world: only its
         // body is left to despawn.
@@ -360,17 +365,20 @@ impl Balls {
         while index < self.pending.len() {
             if self.pending[index].handle.is_some() && self.pending[index].instance.is_some() {
                 let pending = self.pending.swap_remove(index);
-                self.finish(pending, world, state, &mut despawns, &mut instances);
+                self.finish(pending, world, state, scene, &mut despawns, &mut instances);
             } else {
                 index += 1;
             }
         }
 
-        // A request that never answered loses whatever half it did get.
+        // A request that never answered loses whatever half it did get. A
+        // world that ended answers nothing, so the wait is over at once
+        // instead of running out the timeout.
+        let stale = world_ended(&scene.physics_state) || world_ended(&scene.render_state);
         let ticks = self.ticks;
         let mut index = 0;
         while index < self.pending.len() {
-            if ticks.saturating_sub(self.pending[index].age) > PENDING_TIMEOUT_TICKS {
+            if stale || ticks.saturating_sub(self.pending[index].age) > PENDING_TIMEOUT_TICKS {
                 let pending = self.pending.swap_remove(index);
                 if let Some(handle) = pending.handle {
                     despawns.push(handle);
@@ -383,8 +391,10 @@ impl Balls {
             }
         }
 
-        self.despawn_bodies(despawns);
-        self.despawn_instances(instances);
+        self.despawn_bodies(scene, &mut despawns);
+        self.despawn_instances(scene, &mut instances);
+        self.despawns = despawns;
+        self.instances = instances;
     }
 
     /// Show one request's instance at its body's side and map the handle onto
@@ -395,6 +405,7 @@ impl Balls {
         pending: PendingBody,
         world: &World,
         state: Entity,
+        scene: &Scene,
         despawns: &mut Vec<RigidBodyHandle>,
         instances: &mut Vec<Entity>,
     ) {
@@ -422,7 +433,7 @@ impl Balls {
             instances.push(instance);
             return;
         };
-        match self.render.send(show_instance_job(
+        match scene.render.send(show_instance_job(
             instance,
             mesh,
             material,
@@ -443,11 +454,14 @@ impl Balls {
     }
 
     /// Despawn the bodies it names, in one job.
-    fn despawn_bodies(&self, handles: Vec<RigidBodyHandle>) {
-        if handles.is_empty() {
+    fn despawn_bodies(&self, scene: &Scene, despawns: &mut Vec<RigidBodyHandle>) {
+        if despawns.is_empty() {
             return;
         }
-        let sent = self.physics_sender.send(Box::new(move |world: &mut World| {
+        // The job takes the buffer with it: a job runs in another world and
+        // cannot give an allocation back.
+        let handles = std::mem::take(despawns);
+        let sent = scene.physics.send(Box::new(move |world: &mut World| {
             for handle in handles {
                 let _ = despawn_body(world, handle);
             }
@@ -458,11 +472,12 @@ impl Balls {
     }
 
     /// Despawn the instances it names, in one job.
-    fn despawn_instances(&self, instances: Vec<Entity>) {
+    fn despawn_instances(&self, scene: &Scene, instances: &mut Vec<Entity>) {
         if instances.is_empty() {
             return;
         }
-        if let Err(error) = self.render.send(despawn_instances_job(instances)) {
+        let instances = std::mem::take(instances);
+        if let Err(error) = scene.render.send(despawn_instances_job(instances)) {
             log::warn!("the render world refused a despawn job ({error:?})");
         }
     }
@@ -470,22 +485,20 @@ impl Balls {
     /// Ask the render world to despawn the live instances the camera can no
     /// longer see. The answers arrive on the retired stream, and the bodies
     /// they name go with them.
-    fn sweep_outside_view(&mut self) {
+    fn sweep_outside_view(&mut self, scene: &Scene) {
         if self.by_handle.is_empty() {
             return;
         }
         let instances: Vec<Entity> = self.by_handle.values().copied().collect();
-        if let Err(error) = self
-            .render
-            .send(sweep_instances_job(instances, self.retired.clone()))
-        {
+        let retired = self.retired.clone();
+        if let Err(error) = scene.render.send(sweep_instances_job(instances, retired)) {
             log::warn!("the render world refused a sweep job ({error:?})");
         }
     }
 
     /// Publish the snapshot's poses onto the live bodies.
-    fn publish(&mut self) {
-        let Some(snapshot) = self.physics.latest() else {
+    fn publish(&mut self, scene: &Scene) {
+        let Some(snapshot) = scene.poses.latest() else {
             return;
         };
         if self
@@ -518,7 +531,7 @@ impl Balls {
         // The poses travel as a job: what the render world shows is its own
         // to hold, so the shapes send the state rather than leaving it in a
         // mailbox for the world to apply.
-        match self.render.send(pose_job(ScenePoses(poses))) {
+        match scene.render.send(pose_job(ScenePoses(poses))) {
             Ok(()) => {}
             // A closed queue is the scene going away, not a fault: the render
             // world stops before the gameplay world's last tick, and a pose
@@ -529,14 +542,20 @@ impl Balls {
     }
 }
 
+impl Default for Balls {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Tick for Balls {
-    fn tick(&mut self, world: &World, _frame: &Frame) {
+    fn tick(&mut self, world: &World, _frame: &Frame, scene: &Scene) {
         self.ticks += 1;
         let Some((state, ready)) = world
             .root_scope()
             .query::<(&SceneState, Entity)>()
             .next()
-            .map(|(scene_state, entity)| (entity, scene_state.is_ready()))
+            .map(|(scene_state, entity)| (entity, scene_state.ready))
         else {
             return;
         };
@@ -547,26 +566,26 @@ impl Tick for Balls {
         // A clear first: every body goes away, and the instances are ready to
         // be despawned.
         if core::mem::take(&mut self.clear) {
-            self.clear_shapes();
+            self.clear_shapes(scene);
         }
 
-        self.retire_stale(world, state);
+        self.retire_stale(world, state, scene);
 
         // Consume manual requests first, then the automatic cadence. This
         // runs before the snapshot gate below: a drop is a request to the
         // physics world, not a reaction to its output.
         while self.requests > 0 {
             self.requests -= 1;
-            self.drop_ball(world, state);
+            self.drop_ball(world, state, scene);
         }
         if self.ticks.is_multiple_of(SPAWN_TICKS) {
-            self.drop_ball(world, state);
+            self.drop_ball(world, state, scene);
         }
 
-        self.publish();
+        self.publish(scene);
 
         if self.ticks.is_multiple_of(SWEEP_TICKS) {
-            self.sweep_outside_view();
+            self.sweep_outside_view(scene);
         }
     }
 }

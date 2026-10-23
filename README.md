@@ -112,7 +112,7 @@ Not supported: lighting and shadows, and post-processing.
 | [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.md) | The models `unlit3d_examples` draws, carried in the binary: `include_bytes!` sits in an `#[inline(never)]` function body, so those bytes stay out of every dependent's metadata. |
 | [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.md) | The soundfont `unlit3dx_examples` plays, carried the same way; its `build.rs` substitutes an empty stub when the file is absent. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | A command-line tool that renders glTF documents to an image, driven by a JSON configuration file and overridden by its own options; its `tests/gpu_cli.rs` is the end-to-end snapshot check. |
-| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: jobs and snapshot mailboxes joining a render sub-world with physics, audio and gameplay worlds, each on a thread of its own or stepped by the host's frames. |
+| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world runtime: one-way jobs out, subscriptions back — snapshots for state, streams for events — joining a render sub-world with physics, audio and gameplay worlds, each on a thread of its own or stepped by the host's frames. |
 | [`xtask`](xtask/README.md) | The repository task runner behind `cargo xtask`. |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.md) | The frame-path benchmarks: Criterion throughput numbers and the phase timings the `profiling` scopes report. |
 
@@ -264,7 +264,7 @@ Per-crate notes:
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | How the harness itself behaves — the snapshot comparison, and counting the pixels that differ. The GPU tests it makes possible live in the crates above. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`) and the fixed-step playback clock (`src/lib.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
-| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: job round trips, snapshot and stream subscriptions, thread stop and panic reporting, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
+| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: jobs reaching their world, snapshot and stream subscriptions, the state a world publishes about itself, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
 | [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule; the same worlds also run stepped in a browser and behind an Android activity. |
 
 A GPU is needed for the rendering crates' integration tests and for the example.

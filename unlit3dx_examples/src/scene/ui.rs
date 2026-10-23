@@ -7,7 +7,7 @@
 //! it.
 //!
 //! Everything the panel decides is decided here, beside the objects it acts
-//! on: the drop and clear buttons call the scene's own request helpers, and the
+//! on: the drop and clear buttons call the scene's own helpers, and the
 //! transport buttons write the [`MidiSequencer`] of the track they belong to.
 //! The sequences live in this world, so a button is a field write rather than a
 //! message to another world, and a row reads the transport state it shows
@@ -19,7 +19,7 @@ use unlit3d::prelude::*;
 use unlit3d::ui::{UiPanel, UiSource, egui};
 use unlit3dx::prelude::*;
 
-use super::{PanelSlots, SceneTracks, Track, request_clear_in, request_drop_in};
+use super::{PanelSlots, SceneTracks, Track, clear_balls_in, drop_ball_in};
 
 /// What one of the panel's two track rows shows.
 ///
@@ -155,10 +155,10 @@ pub fn mount_controls(world: &mut World) {
                 }
                 ui.horizontal(|ui| {
                     if ui.button("Drop the next shape").clicked() {
-                        request_drop_in(&world);
+                        drop_ball_in(&world);
                     }
                     if ui.button("Clear the shapes").clicked() {
-                        request_clear_in(&world);
+                        clear_balls_in(&world);
                     }
                 });
             });
@@ -173,7 +173,7 @@ pub fn mount_controls(world: &mut World) {
 ///
 /// `pass` is the pass the source draws into: a pass records the sources below
 /// it, so a source spawned anywhere else would never reach the frame.
-pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job<()> {
+pub fn control_panel_job(panels: PanelSlots, pass: Entity) -> Job {
     Box::new(move |world: &mut World| {
         let mut source = UiSource::new();
         source.publish_target(panels.target);

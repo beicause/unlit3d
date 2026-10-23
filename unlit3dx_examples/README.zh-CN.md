@@ -78,8 +78,8 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   玩法用 job 请求网格、材质与实例，每个生成实例的实体作为句柄传回。场景往里
   放的一切都以同样的方式到达：环绕的相机、绘制控制面板的那个 source、刚体所带的姿态也都是
   job，并在任何绘制之前被排空。这个 world 自身的初始化只有资源图、renderer
-  与 mesh source。资源服务器本身——`create_mesh`、`create_material_from_texture`、
-  `spawn_instance` 以及网格与相机辅助——就是本 crate 自己的 `src/render.rs`，
+  与 mesh source。资源服务器本身——网格、材质与实例的分配，回收镜头看不见的实例的
+  那一轮清扫，以及相机辅助——就是本 crate 自己的 `src/render.rs`，
   建立在 `unlit3d` 的通用 `MeshSource` 注册表之上；`unlit3dx` 不自带 render 桥。
 - **物理 world** 以 64 Hz 步进 rapier，每一步排空碰撞事件。球们用自己的收集闭包
   订阅它——`GamePhysics` 载荷属于本 crate，不属于库——闭包在姿态未变时什么都不
@@ -95,14 +95,20 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
 
   - `SceneState`（tick 100）用一个 job 搭出场景的资源——网格与带图案的材质。每次
     落球都向渲染 world 要一个自己的实例。
-  - `Floor`（tick 50）在第一次落球可能发生之前就排队地面这个固定刚体，随后搭建
-    绘制它的棋盘格实例。
+  - `spawn_floor` 在第一次落球可能发生之前排队地面这个固定刚体，并搭建绘制它的
+    棋盘格实例。
   - `Balls`（tick 200）向渲染 world 要为这次落球新建的实例、向物理要刚体、把快照里的
     句柄映射到自己的实例，再把姿态作为一个 job 发回去。镜头再也看不到的实例由渲染
     world despawn 并回报，刚体随之一起消失。
-  - `SceneAudio`（tick 300）发出一次安装 job，拿到答复后在本 world 里生成场景的
-    两条音轨：每条是一个 `MidiSequencer` 加它的时钟、它所弹入的音源，以及音源收取
-    消息用的发送端。背景音乐循环立刻开播，示例序列则暂停着等面板。
+  - `SceneAudio`（tick 300）向音频 world 索要合成器的音源，拿到答复后在本 world 里
+    生成场景的两条音轨：每条是一个 `MidiSequencer` 加它的时钟、它所弹入的音源，而
+    音频 world 的 sender 则来自 tick 时拿到的这个 `Scene`。背景音乐循环立刻开播，
+    示例序列则暂停着等面板。
+
+  每个对象都通过一个 `Scene` 值触达其余 world：render、physics、audio 三个
+  sender、物理快照，以及这三个 world 各自对自己状态的报告，交给每一次
+  tick。从不对音频 world 说话的对象也就不会持有它的 sender。
+
 
   它以固定 68 Hz 步进，独立于帧率。
 

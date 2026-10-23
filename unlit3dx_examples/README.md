@@ -102,8 +102,8 @@ it is paced differs.
   poses its bodies carry are jobs too, drained before anything draws. The
   world's own setup is
   only the resource graph, the renderer and the mesh source. The server
-  itself — `create_mesh`, `create_material_from_texture`, `spawn_instance`
-  and the mesh and camera helpers — is this crate's own `src/render.rs`,
+  itself — the mesh, material and instance allocations, the sweep that
+  retires what the camera cannot see, and the camera helpers — is this crate's own
   built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
   render bridge.
 - The **physics world** steps rapier at 64 Hz and drains its contacts each
@@ -127,18 +127,25 @@ it is paced differs.
   - `SceneState` (tick 100) builds the scene's assets — meshes and patterned
     materials — as one job of its own. Every drop asks the render world for an
     instance of its own.
-  - `Floor` (tick 50) queues the fixed ground body before the first drop can
-    happen, then builds the checker instance that draws it.
+  - `spawn_floor` queues the fixed ground body and builds the checker
+    instance that draws it, before the first drop can happen.
   - `Balls` (tick 200) asks the render world for the instance it drops, asks
     physics for a body, maps the handles the snapshot names onto its
     instances, and sends their poses back as a job. The render world despawns
     an instance the camera can no longer see and reports it back, and the body
     goes with it.
-  - `SceneAudio` (tick 300) sends the install job once, and on the answer
-    spawns the scene's two tracks in this world: each is a `MidiSequencer`
-    with a clock, the voice it plays into, and the sender that voice takes
-    messages through. The background loop starts playing at once; the demo
-    sequence waits, paused, for the panel.
+  - `SceneAudio` (tick 300) asks the audio world for the synthesizer's voice,
+    and on the answer spawns the scene's two tracks in this world: each is a
+    `MidiSequencer` with a clock and the voice it plays into, and it takes
+    the audio world's sender from the `Scene` it is ticked with. The
+    background loop starts playing at once; the demo sequence waits, paused,
+    for the panel.
+
+  Each object reaches the others' worlds through one `Scene` value: the
+  render, physics and audio senders, the physics snapshot, and what each of
+  those three worlds reports about itself, handed to every tick. An object
+  that never talks to the audio world keeps no sender for it.
+
 
   The world ticks at a fixed 68 Hz, independent of the frame rate.
 

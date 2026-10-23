@@ -156,7 +156,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
             &input,
         )
     };
-    let gameplay_sender = worlds.gameplay.commands.clone();
+    let gameplay_sender = worlds.gameplay.sender.clone();
 
     // The stepped worlds run before the draw, so the transforms they
     // publish are the ones this frame shows.
@@ -225,7 +225,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
                 return;
             }
             if key.key == Key::Space {
-                request_drop(&gameplay_sender);
+                drop_ball(&gameplay_sender);
             }
         },),]);
     // The frame's input: the host dispatches its own key behaviours before
@@ -247,7 +247,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
 /// would leave to them. The stepper follows the frame's own duration and
 /// carries the step remainders, so the worlds keep their rates whatever
 /// the display redraws at.
-fn stepped_frame(worlds: SceneWorlds, mut stepper: SceneStepper) -> OnFrame {
+fn stepped_frame(worlds: SceneHandles, mut stepper: SceneStepper) -> OnFrame {
     OnFrame::new(
         FrameBehaviourOrder(FRAME_INLINE_STEP),
         move |world, _entity, frame| {

@@ -192,7 +192,7 @@ mod tests {
 
     use super::*;
     use crate::thread::ThreadControl;
-    use crate::world::{spawn_remote_world, spawn_stepped_world_with_init, step_stepped_world};
+    use crate::world::{spawn_stepped_world_with_init, spawn_threaded_world, step_stepped_world};
 
     /// A component the host command counts.
     struct Marker;
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn list_worlds_names_a_world_on_its_own_thread() {
         let (mut host, transport) = host_with_inbox();
-        let threaded = spawn_remote_world(&mut host, "listed", 8, |_, control| {
+        let threaded = spawn_threaded_world(&mut host, "listed", 8, |_, control| {
             control.wait_timeout(Duration::from_millis(1));
             true
         });
@@ -364,7 +364,7 @@ mod tests {
     #[test]
     fn a_command_runs_against_a_world_on_its_own_thread() {
         let (mut host, transport) = host_with_inbox();
-        let threaded = spawn_remote_world(&mut host, "counted", 8, |_, control| {
+        let threaded = spawn_threaded_world(&mut host, "counted", 8, |_, control| {
             control.wait_timeout(Duration::from_millis(1));
             true
         });
@@ -372,7 +372,7 @@ mod tests {
         let reader = seeded.reader();
         let publish = seeded.clone();
         threaded
-            .commands
+            .sender
             .send(Box::new(move |world: &mut World| {
                 world.root_scope_mut().spawn(bundle![Marker]);
                 publish.publish(());
@@ -473,7 +473,7 @@ mod tests {
             |_, _: &ThreadControl, ()| true,
         );
         stepped
-            .commands
+            .sender
             .send(Box::new(|_: &mut World| {}))
             .expect("the first job fits");
 

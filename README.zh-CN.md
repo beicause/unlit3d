@@ -82,7 +82,7 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
 | [`unlit3d_asset_bytes`](unlit3d_examples/asset_bytes/README.zh-CN.md) | `unlit3d_examples` 所绘制的模型，随身带在二进制里：`include_bytes!` 写在 `#[inline(never)]` 的函数体内，这些字节因此不进任何下游的元数据。 |
 | [`unlit3dx_asset_bytes`](unlit3dx_examples/asset_bytes/README.zh-CN.md) | `unlit3dx_examples` 所演奏的音色库，同样随身携带；文件缺失时其 `build.rs` 换上一个空的 stub。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 把 glTF 文档渲染成图片的命令行工具，由 JSON 配置文件驱动、并可被自身选项覆盖；其 `tests/gpu_cli.rs` 是端到端快照检查。 |
-| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 运行时：以 job 与快照信箱连接渲染子 world 与物理、音频、玩法 world，各占一条线程或由宿主的帧步进。 |
+| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 运行时：job 单向发出、订阅把状态带回来——状态用快照、事件用流——连接渲染子 world 与物理、音频、玩法 world，各占一条线程或由宿主的帧步进。 |
 | [`xtask`](xtask/README.zh-CN.md) | `cargo xtask` 背后的任务执行器。 |
 | [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md) | 帧路径的基准测试：Criterion 吞吐量数字，以及 `profiling` 跨度报告的阶段耗时。 |
 
@@ -205,7 +205,7 @@ GPU 测试从不会启动示例，因此没有这一步的话，某个「能编�
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.zh-CN.md) | 骨架自身的行为——快照比较、以及差异像素如何计数。它支撑的 GPU 测试位于上述 crate 中。 |
 | [`unlit3d_examples`](unlit3d_examples/README.zh-CN.md) | 命令行（`src/cli.rs`）、固定步长播放时钟（`src/lib.rs`），以及 `tests/gpu_scenes.rs` 的渲染快照。 |
 | [`unlit3d_cli`](unlit3d_cli/README.zh-CN.md) | 参数解析与配置合并，以及端到端渲染测试：复现示例的参考 glTF 场景并与存储快照比较。 |
-| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 往返、请求回复、快照替换、线程停止与 panic 报告、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
+| [`unlit3dx`](crates/unlit3dx/README.zh-CN.md) | 多 world 核心：job 抵达目标 world、快照与流订阅、world 对自己状态的发布、render 桥的失败路径，以及物理、音频与 MCP 各桥的端到端测试。 |
 | [`unlit3dx_examples`](unlit3dx_examples/README.zh-CN.md) | 示例场景逻辑的单元测试，以及一次端到端的离屏运行：捕获的帧与混音同资产子模块下的快照基准比较；同一批 world 也会在浏览器中步进运行，并处在一条 Android activity 之后。 |
 
 渲染 crate 的集成测试与示例都需要可用的 GPU。在无头 CI runner 上，用 Mesa 的

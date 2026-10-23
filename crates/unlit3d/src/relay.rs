@@ -3,8 +3,8 @@
 //!
 //! A world is owned by the thread that ticks it, so nothing inside it can be
 //! read from another thread. What crosses is a handle: a producer keeps
-//! storing or pushing, and every reader sees the value on its own thread
-//! without a job or a reply.
+//! publishing, and every reader sees the value on its own thread without a
+//! job or a reply.
 //!
 //! - A [`Snapshot`](crate::relay::Snapshot) holds one value. Publishing
 //!   replaces it, so a reader that misses a publish never learns what was
@@ -16,9 +16,13 @@
 //!   Publishing appends to each reader's queue, and a reader folds the queue
 //!   into its tick with [`StreamReader::pump`](crate::relay::StreamReader::pump).
 //!   That is right for events: input, collisions, a sequence ending. A reader
-//!   that ticks slower than the producer still sees every value, in order.
+//!   that ticks slower than the producer still sees every value, in order. Its
+//!   queue is unbounded and a publish never waits, so a producer that outruns
+//!   its readers for a long time grows their queues for as long as it lives:
+//!   that is the bargain, and an event source paced by a device rather than by
+//!   a world is where it costs.
 //!
-//! Neither side blocks: a publish swaps a pointer or pushes to an unbounded
+//! Neither side blocks: a publish swaps a pointer or publishes to an unbounded
 //! queue, and a reader takes what is there. Dropping a reader unsubscribes
 //! it: a stream prunes it when nobody is left, and a snapshot keeps its value
 //! for whoever subscribes next.
@@ -56,15 +60,14 @@ impl<T> Snapshot<T> {
         }
     }
 
-    /// Replace the value, and answer whether anyone is there to read it.
+    /// Replace the value, and answer how many readers are subscribed.
     ///
-    /// The value is kept even with no reader subscribed, so one that
-    /// subscribes later still finds the newest publish. A collector uses the
-    /// answer to prune its own subscription.
-    pub fn publish(&self, value: T) -> bool {
-        let read = self.has_readers();
+    /// The value is kept even with none subscribed, so one that subscribes
+    /// later still finds the newest publish. A collector uses the answer to
+    /// prune its own subscription: at zero, nobody is left to read it.
+    pub fn publish(&self, value: T) -> usize {
         self.slot.value.store(Some(Arc::new(value)));
-        read
+        self.slot.readers.load(Ordering::Relaxed)
     }
 
     /// A reader of this slot. The snapshot stays a slot as long as any
@@ -141,10 +144,12 @@ impl<T> fmt::Debug for SnapshotReader<T> {
     }
 }
 
-/// The producing end of a [`Stream`]: pushes every value to every reader.
+/// The producing end of a [`Stream`]: publishes every value to every reader.
 ///
-/// Cloning shares the readers. A push to a stream nobody reads is dropped,
-/// and the dead senders are pruned then.
+/// Cloning shares the readers. A publish to a stream nobody reads is
+/// dropped, and the dead senders are pruned then. Publishing never blocks and
+/// never drops a value for a reader that is there: each reader's queue is
+/// unbounded, so a reader that falls behind falls behind in memory.
 pub struct Stream<T> {
     inner: Arc<StreamInner<T>>,
 }
@@ -165,6 +170,11 @@ impl<T: Clone> Stream<T> {
 
     /// A reader with its own queue, so one reader's pace cannot starve
     /// another's.
+    ///
+    /// The queue is unbounded: a reader that stops pumping holds every value
+    /// published since, and a publish never waits for it. A producer whose
+    /// pace comes from outside the worlds it serves - a device, say - is the
+    /// one to publish at a pace its readers keep up with.
     pub fn subscribe(&self) -> StreamReader<T> {
         let (sender, receiver) = unbounded();
         self.inner
@@ -180,16 +190,16 @@ impl<T: Clone> Stream<T> {
         }
     }
 
-    /// Push one value to every reader, and answer whether anyone is left.
+    /// Publish one value to every reader, and answer how many are left.
     ///
     /// A reader that dropped its queue is pruned here, so the producing
-    /// world learns that nobody is left the next time it pushes.
-    pub fn push(&self, value: T) -> bool {
-        self.push_all([value])
+    /// world learns that nobody is left the next time it publishes.
+    pub fn publish(&self, value: T) -> usize {
+        self.publish_all([value])
     }
 
-    /// Push several values, in the order given.
-    pub fn push_all(&self, values: impl IntoIterator<Item = T>) -> bool {
+    /// Publish several values, in the order given.
+    pub fn publish_all(&self, values: impl IntoIterator<Item = T>) -> usize {
         let mut senders = self
             .inner
             .senders
@@ -203,7 +213,10 @@ impl<T: Clone> Stream<T> {
                 let _ = sender.try_send(value.clone());
             }
         }
-        !senders.is_empty()
+        // A reader may have gone away while the values were being sent, so
+        // the count is taken after the sends rather than before them.
+        senders.retain(|sender| !sender.is_closed());
+        senders.len()
     }
 
     /// Whether a reader is subscribed, pruning the ones that went away.
@@ -318,18 +331,18 @@ mod tests {
         let snapshot = Snapshot::new();
         let reader = snapshot.reader();
         assert!(reader.latest().is_none());
-        assert!(snapshot.publish(1));
-        assert!(snapshot.publish(2));
+        assert_eq!(snapshot.publish(1), 1);
+        assert_eq!(snapshot.publish(2), 1);
         assert_eq!(*reader.latest().unwrap(), 2);
     }
 
     #[test]
     fn a_late_reader_finds_the_value_published_before_it() {
         let snapshot = Snapshot::new();
-        assert!(!snapshot.publish(1));
+        assert_eq!(snapshot.publish(1), 0);
         let reader = snapshot.reader();
         assert_eq!(*reader.latest().expect("the publish was kept"), 1);
-        assert!(snapshot.publish(2));
+        assert_eq!(snapshot.publish(2), 1);
         assert_eq!(*reader.latest().expect("the newest publish"), 2);
     }
 
@@ -337,9 +350,9 @@ mod tests {
     fn dropping_the_last_reader_unsubscribes() {
         let snapshot = Snapshot::new();
         let reader = snapshot.reader();
-        assert!(snapshot.publish(1));
+        assert_eq!(snapshot.publish(1), 1);
         drop(reader);
-        assert!(!snapshot.publish(2));
+        assert_eq!(snapshot.publish(2), 0);
         assert_eq!(*snapshot.reader().latest().expect("the last publish"), 2);
     }
 
@@ -348,8 +361,8 @@ mod tests {
         let stream = Stream::new();
         let one = stream.subscribe();
         let other = stream.subscribe();
-        assert!(stream.push(1));
-        assert!(stream.push(2));
+        assert_eq!(stream.publish(1), 2);
+        assert_eq!(stream.publish(2), 2);
         one.pump();
         other.pump();
         assert_eq!(one.with_batch(|batch| batch.to_vec()), vec![1, 2]);
@@ -360,9 +373,9 @@ mod tests {
     fn a_pump_replaces_the_previous_batch() {
         let stream = Stream::new();
         let reader = stream.subscribe();
-        stream.push(1);
+        stream.publish(1);
         reader.pump();
-        stream.push(2);
+        stream.publish(2);
         reader.pump();
         assert_eq!(reader.with_batch(|batch| batch.to_vec()), vec![2]);
     }
@@ -374,7 +387,7 @@ mod tests {
         assert!(stream.has_readers());
         drop(reader);
         assert!(!stream.has_readers());
-        assert!(!stream.push(1));
+        assert_eq!(stream.publish(1), 0);
     }
 
     #[test]
@@ -382,7 +395,7 @@ mod tests {
         let stream = Stream::new();
         let reader = stream.subscribe();
         let clone = reader.clone();
-        stream.push(1);
+        stream.publish(1);
         reader.pump();
         assert_eq!(clone.with_batch(|batch| batch.to_vec()), vec![1]);
         drop(reader);

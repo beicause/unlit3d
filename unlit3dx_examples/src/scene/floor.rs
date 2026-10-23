@@ -2,19 +2,17 @@
 //! the render world, wearing a checker so motion reads against it.
 //!
 //! The floor is the scene's only fixed body, and the only instance that never
-//! moves, so it is built once and then left alone: the tick that spawns it
-//! runs before anything can drop on it, and afterwards it has nothing to do.
-//! The instance is built by one job in the render world, so the mesh, the
-//! checker and the instance that names them need no round trip between them.
+//! moves, so it is built once and then left alone: the ground is queued before
+//! anything can drop on it, and afterwards there is nothing to do. The
+//! instance is built by one job in the render world, so the mesh, the checker
+//! and the instance that names them need no round trip between them.
 
 use glam::Vec3;
 use unlit_ecs::World;
 use unlit3d::components::Transform;
-use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
-use super::SceneWiring;
-use super::tick::Tick;
+use super::Scene;
 use crate::render::{
     allocate_mesh, allocate_rgba_material, cuboid_mesh, instance_of, linear_sampler,
 };
@@ -62,50 +60,24 @@ pub fn checker_ground() -> Vec<[u8; 4]> {
     pixels
 }
 
-/// The ground, living on its own entity in the gameplay world.
+/// Put the ground under the scene: one fixed body in physics, one instance in
+/// the render world.
 ///
-/// Its tick runs once: it queues the fixed body in physics, so the shapes have
-/// something to land on before the first one drops, and starts the task that
-/// builds the render instance. A scene that never ticks its floor has shapes
-/// falling through nothing.
-pub struct Floor {
-    /// The physics world's command channel.
-    physics: JobSender,
-    /// The render world, for the instance the ground draws as.
-    render: JobSender,
-    /// Whether the one-time spawn has run.
-    spawned: bool,
-}
-
-impl Floor {
-    /// The ground for the worlds `wiring` reaches, drawn through `render`.
-    #[must_use]
-    pub fn new(wiring: &SceneWiring, render: WorldHandle) -> Self {
-        Self {
-            physics: wiring.physics_sender.clone(),
-            render: render.commands.clone(),
-            spawned: false,
-        }
+/// Nothing waits for the instance: one that arrives a frame late is simply a
+/// frame without a floor.
+pub fn spawn_floor(scene: &Scene) {
+    if let Err(error) = scene.physics.send(Box::new(|world: &mut World| {
+        spawn_fixed_cuboid(world, GROUND_POSITION, GROUND_HALF, GROUND_FRICTION);
+    })) {
+        log::error!("the physics world refused the ground ({error:?})");
     }
-
-    /// Queue the fixed body and the instance that draws it.
-    fn spawn(&mut self) {
-        self.spawned = true;
-        if let Err(error) = self.physics.send(Box::new(|world: &mut World| {
-            spawn_fixed_cuboid(world, GROUND_POSITION, GROUND_HALF, GROUND_FRICTION);
-        })) {
-            log::error!("the physics world refused the ground ({error:?})");
-        }
-        // Nothing waits for the instance: one that arrives a frame late is
-        // simply a frame without a floor.
-        if let Err(error) = self.render.send(ground_job()) {
-            log::error!("the render world refused the ground ({error:?})");
-        }
+    if let Err(error) = scene.render.send(ground_job()) {
+        log::error!("the render world refused the ground ({error:?})");
     }
 }
 
 /// The job that builds the ground's instance in the render world.
-fn ground_job() -> Job<()> {
+fn ground_job() -> Job {
     Box::new(|world: &mut World| {
         let mesh = allocate_mesh(world, &cuboid_mesh(GROUND_HALF));
         let material = allocate_rgba_material(
@@ -124,14 +96,6 @@ fn ground_job() -> Job<()> {
             },
         );
     })
-}
-
-impl Tick for Floor {
-    fn tick(&mut self, _world: &World, _frame: &Frame) {
-        if !self.spawned {
-            self.spawn();
-        }
-    }
 }
 
 #[cfg(test)]

@@ -7,12 +7,12 @@
 
 use unlit_ecs::{Entity, World};
 use unlit3d::components::Transform;
-use unlit3d::frame::Frame;
 use unlit3dx::prelude::*;
 
 use super::HIDDEN_POSITION;
+use super::Scene;
 use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
-use super::tick::Tick;
+use super::world_ended;
 use crate::render::{allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler};
 
 /// The render entities a shape is built from, in kind-major order.
@@ -28,7 +28,7 @@ pub struct SceneAssets {
     pub materials: Vec<Entity>,
 }
 
-/// The scene's assets, on its own entity in the gameplay world.
+/// The scene's assets, on their own entity in the gameplay world.
 ///
 /// It owns the render entities every shape is built from, and whether the
 /// build has landed. It does not own instances: a drop asks the render world
@@ -40,50 +40,57 @@ pub struct SceneState {
     /// The assets once the build landed, for the jobs that name them.
     pub loaded: Option<SceneAssets>,
     /// Whether the build landed and the scene is live.
-    ready: bool,
+    pub ready: bool,
+    /// Whether the wait is over: the build landed, or the render world ended
+    /// before it answered.
+    given_up: bool,
 }
 
 impl SceneState {
     /// Ask the render world for the scene's assets.
     ///
-    /// The whole build is one job there: it allocates the meshes and the
-    /// materials, and publishes their entities. Until that lands the scene is
-    /// empty, and every object that needs a shape stays unspawned.
-    pub fn new(server: WorldHandle) -> Self {
-        let assets = Snapshot::new();
+    /// The whole build is one question there: it allocates the meshes and the
+    /// materials, and the answer is their entities. Until it lands the scene
+    /// is empty, and every object that needs a shape stays unspawned.
+    pub fn new(scene: &Scene) -> Self {
         log::info!("the gameplay world started; asking the render world for the scene");
-        // The reader comes after the job is queued: a snapshot keeps the
+        // The reader comes back before the job has run: a snapshot keeps the
         // published value, so the build cannot land where nobody will see it.
-        if let Err(error) = server
-            .commands
-            .clone()
-            .send(build_assets_job(assets.clone()))
-        {
-            log::error!(
-                "the render world refused the scene build ({error:?}); the scene stays empty"
-            );
-        }
+        let (assets, given_up) = match scene.render.ask(build) {
+            Ok(assets) => (assets, false),
+            Err(error) => {
+                log::error!(
+                    "the render world refused the scene build ({error:?}); the scene stays empty"
+                );
+                // The question was never accepted, so no answer is coming:
+                // the wait is over before it starts.
+                (Snapshot::new().reader(), true)
+            }
+        };
         Self {
-            assets: assets.reader(),
+            assets,
             loaded: None,
             ready: false,
+            given_up,
         }
-    }
-
-    /// Whether the build landed and the scene is live.
-    #[must_use]
-    pub fn is_ready(&self) -> bool {
-        self.ready
     }
 
     /// Take the assets once the build job has published them.
     ///
-    /// The scene stays empty if the render world refused the job.
-    fn poll_build(&mut self) {
-        if self.ready {
+    /// The scene stays empty if the render world refused the job, and it stops
+    /// waiting if the world that owed the answer is gone: a job that panicked
+    /// takes its answer with it, and no reader will ever see one.
+    fn poll_build(&mut self, scene: &Scene) {
+        if self.given_up {
             return;
         }
         let Some(assets) = self.assets.latest() else {
+            if world_ended(&scene.render_state) {
+                log::error!(
+                    "the render world ended before it built the scene; the scene stays empty"
+                );
+                self.given_up = true;
+            }
             return;
         };
         let assets = assets.as_ref().clone();
@@ -94,44 +101,41 @@ impl SceneState {
         );
         self.loaded = Some(assets);
         self.ready = true;
+        self.given_up = true;
     }
 }
 
-impl Tick for SceneState {
-    fn tick(&mut self, _world: &World, _frame: &Frame) {
-        self.poll_build();
+impl super::tick::Tick for SceneState {
+    fn tick(&mut self, _world: &World, _frame: &unlit3d::frame::Frame, scene: &Scene) {
+        self.poll_build(scene);
     }
 }
 
-/// The job that allocates the scene's meshes and materials in the render
-/// world.
+/// Allocate the scene's meshes and materials, and answer their entities.
 ///
-/// One step, so nothing waits for an answer in between. The entities go back
-/// through `assets`.
-pub fn build_assets_job(assets: Snapshot<SceneAssets>) -> Job<()> {
-    Box::new(move |world: &mut World| {
-        let mut meshes = Vec::with_capacity(SHAPE_KINDS.len());
-        for kind in SHAPE_KINDS {
-            meshes.push(allocate_mesh(world, &shape_mesh(kind)));
+/// One step, so nothing waits for an answer in between.
+fn build(world: &mut World) -> SceneAssets {
+    let mut meshes = Vec::with_capacity(SHAPE_KINDS.len());
+    for kind in SHAPE_KINDS {
+        meshes.push(allocate_mesh(world, &shape_mesh(kind)));
+    }
+    // One patterned material per shape kind and color, kind-major.
+    let mut materials = Vec::with_capacity(SHAPE_KINDS.len() * BALL_COLORS.len());
+    for kind in SHAPE_KINDS {
+        for color in BALL_COLORS {
+            materials.push(allocate_rgba_material(
+                world,
+                (PATTERN_SIZE, PATTERN_SIZE),
+                &pattern_texture(kind, color),
+                linear_sampler(),
+            ));
         }
-        // One patterned material per shape kind and color, kind-major.
-        let mut materials = Vec::with_capacity(SHAPE_KINDS.len() * BALL_COLORS.len());
-        for kind in SHAPE_KINDS {
-            for color in BALL_COLORS {
-                materials.push(allocate_rgba_material(
-                    world,
-                    (PATTERN_SIZE, PATTERN_SIZE),
-                    &pattern_texture(kind, color),
-                    linear_sampler(),
-                ));
-            }
-        }
-        assets.publish(SceneAssets { meshes, materials });
-    })
+    }
+    SceneAssets { meshes, materials }
 }
 
 /// The job that spawns one hidden instance wearing the assets it names, and
-/// pushes its entity back tagged with `id`.
+/// publishes its entity back tagged with `id`.
 ///
 /// It stays hidden until its body is ready and the show job puts it in place.
 pub fn create_instance_job(
@@ -139,7 +143,7 @@ pub fn create_instance_job(
     mesh: Entity,
     material: Entity,
     created: Stream<(u64, Entity)>,
-) -> Job<()> {
+) -> Job {
     Box::new(move |world: &mut World| {
         let instance = hidden_instance_of(
             world,
@@ -150,7 +154,7 @@ pub fn create_instance_job(
                 ..Default::default()
             },
         );
-        let _ = created.push((id, instance));
+        created.publish((id, instance));
     })
 }
 
