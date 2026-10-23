@@ -60,7 +60,7 @@ pub struct WorldName(pub &'static str);
 #[derive(Clone)]
 pub struct WorldSender {
     /// The queue the world's jobs are posted through.
-    commands: JobSender,
+    sender: JobSender,
     /// The liveness a sender checks before it posts.
     status: ThreadStatus,
 }
@@ -68,7 +68,7 @@ pub struct WorldSender {
 impl WorldSender {
     /// Post a job to the world this component belongs to.
     pub fn send(&self, job: Job) -> Result<(), SendError> {
-        self.commands.send(job)
+        self.sender.send(job)
     }
 
     /// Whether the world has stopped.
@@ -90,8 +90,8 @@ type Tick = Box<dyn FnMut(&mut World, &ThreadControl) -> bool>;
 struct SteppedWorld {
     /// The world itself.
     world: World,
-    /// The commands queued for it.
-    commands: Receiver<Job>,
+    /// The jobs queued for it.
+    inbox: Receiver<Job>,
     /// The pacing and stop signal its tick reads.
     control: ThreadControl,
     /// The state the handle reports.
@@ -100,6 +100,17 @@ struct SteppedWorld {
     tick: Tick,
     /// The name the world logs under, and the one a bridge reports.
     name: &'static str,
+}
+
+impl Drop for SteppedWorld {
+    fn drop(&mut self) {
+        // Dropping the proxy entity tears the world down, and a world that is
+        // gone says so: the state it leaves reads `Stopped`, and the queue
+        // closes so a later send is refused instead of landing in a queue no
+        // step will ever drain.
+        self.status.finish();
+        self.inbox.close();
+    }
 }
 
 /// How a world is driven: on its own thread, or by the host's frames.
@@ -225,23 +236,25 @@ where
     S: 'static,
     T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + Send + 'static,
 {
-    let (commands, receiver) = bounded::<Job>(command_capacity);
+    let (queue, inbox) = bounded::<Job>(command_capacity);
     let thread = WorldThread::spawn_with(name, init, move |world, control, state| {
-        while let Ok(job) = receiver.try_recv() {
+        while let Ok(job) = inbox.try_recv() {
             job(world);
         }
         let running = tick(world, control, state);
+        // The turn is over: the driver publishes what the world's collectors
+        // returned, so a tick body collects nothing by hand.
         publish_collected(world);
         running
     });
     let status: ThreadStatus = thread.status();
-    let commands = JobSender::new(commands);
-    let sender = WorldSender {
-        commands: commands.clone(),
+    let sender = JobSender::new(queue);
+    let port = WorldSender {
+        sender: sender.clone(),
         status: status.clone(),
     };
-    let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, name, sender);
-    WorldHandle::new(entity, commands, status)
+    let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, name, port);
+    WorldHandle::new(entity, sender, status)
 }
 
 /// Spawn a world the host steps, with a one-time setup step.
@@ -268,7 +281,7 @@ where
     S: 'static,
     T: FnMut(&mut World, &ThreadControl, &mut S) -> bool + 'static,
 {
-    let (commands, receiver) = bounded::<Job>(command_capacity);
+    let (queue, inbox) = bounded::<Job>(command_capacity);
     let mut world = World::new();
     // The world's async tasks are its own from here on: the setup may spawn
     // one, and every step drives them.
@@ -280,18 +293,19 @@ where
     });
     let stepped = SteppedWorld {
         world,
-        commands: receiver,
+        inbox,
         control,
         status: status.clone(),
         tick,
         name,
     };
-    let sender = WorldSender {
-        commands: JobSender::new(commands.clone()),
+    let sender = JobSender::new(queue);
+    let port = WorldSender {
+        sender: sender.clone(),
         status: status.clone(),
     };
-    let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), name, sender);
-    WorldHandle::new(entity, JobSender::new(commands), status)
+    let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), name, port);
+    WorldHandle::new(entity, sender, status)
 }
 
 /// Spawn the proxy entity with the runner's components.
@@ -328,12 +342,15 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
         return;
     }
     if stepped.control.stop_requested() {
+        // A stop is not a panic, so the world collects one last time: the
+        // state it had reached is the last its readers ever get.
+        publish_collected(&stepped.world);
         stepped.status.finish();
-        stepped.commands.close();
+        stepped.inbox.close();
         return;
     }
     loop {
-        let Ok(job) = stepped.commands.try_recv() else {
+        let Ok(job) = stepped.inbox.try_recv() else {
             break;
         };
         let outcome =
@@ -345,13 +362,13 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
             // The world is over. Close the queue so a sender learns it from
             // the send, as a threaded world's departed receiver already
             // taught it.
-            stepped.commands.close();
+            stepped.inbox.close();
             return;
         }
     }
     let SteppedWorld {
         world,
-        commands,
+        inbox,
         control,
         tick,
         status,
@@ -366,7 +383,7 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
             // is the last one its readers ever get.
             publish_collected(world);
             status.finish();
-            commands.close();
+            inbox.close();
             return;
         }
         Err(payload) => {
@@ -375,7 +392,7 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
             status.record_panic(message);
             // A collector is arbitrary code: running one now would hand its
             // panic to the host, so the world stops collecting here.
-            commands.close();
+            inbox.close();
             return;
         }
     }

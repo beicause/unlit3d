@@ -56,20 +56,22 @@ impl SceneState {
         log::info!("the gameplay world started; asking the render world for the scene");
         // The reader comes back before the job has run: a snapshot keeps the
         // published value, so the build cannot land where nobody will see it.
-        let assets = match scene.render.ask(build) {
-            Ok(assets) => assets,
+        let (assets, given_up) = match scene.render.ask(build) {
+            Ok(assets) => (assets, false),
             Err(error) => {
                 log::error!(
                     "the render world refused the scene build ({error:?}); the scene stays empty"
                 );
-                Snapshot::new().reader()
+                // The question was never accepted, so no answer is coming:
+                // the wait is over before it starts.
+                (Snapshot::new().reader(), true)
             }
         };
         Self {
             assets,
             loaded: None,
             ready: false,
-            given_up: false,
+            given_up,
         }
     }
 

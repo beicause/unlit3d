@@ -3,8 +3,8 @@
 //!
 //! A world is owned by the thread that ticks it, so nothing inside it can be
 //! read from another thread. What crosses is a handle: a producer keeps
-//! storing or pushing, and every reader sees the value on its own thread
-//! without a job or a reply.
+//! publishing, and every reader sees the value on its own thread without a
+//! job or a reply.
 //!
 //! - A [`Snapshot`](crate::relay::Snapshot) holds one value. Publishing
 //!   replaces it, so a reader that misses a publish never learns what was
@@ -202,6 +202,9 @@ impl<T: Clone> Stream<T> {
                 let _ = sender.try_send(value.clone());
             }
         }
+        // A reader may have gone away while the values were being sent, so
+        // the count is taken after the sends rather than before them.
+        senders.retain(|sender| !sender.is_closed());
         senders.len()
     }
 

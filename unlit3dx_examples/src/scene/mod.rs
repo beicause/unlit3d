@@ -298,10 +298,10 @@ pub struct GamePhysics {
 /// between its steps. Each subscription belongs to the world it reads, so a
 /// run that never asks for a snapshot pays nothing for it.
 ///
-/// A port also carries what its world is doing: [`render_state`](Self::render_state)
-/// and [`audio_state`](Self::audio_state) are how an object that asked a
-/// question learns that the world it asked is gone, instead of waiting for an
-/// answer that will never come.
+/// A port also carries what its world is doing: [`render_state`](Self::render_state),
+/// [`physics_state`](Self::physics_state) and [`audio_state`](Self::audio_state)
+/// are how an object that asked a question learns that the world it asked is
+/// gone, instead of waiting for an answer that will never come.
 ///
 /// Both run modes build one from the worlds they have — threaded worlds for
 /// the windowed show, stepped worlds for the headless capture — and both then
@@ -319,6 +319,8 @@ pub struct Scene {
     pub poses: SnapshotReader<GamePhysics>,
     /// Whether the render world is still running.
     pub render_state: SnapshotReader<WorldState>,
+    /// Whether the physics world is still running.
+    pub physics_state: SnapshotReader<WorldState>,
     /// Whether the audio world is still running.
     pub audio_state: SnapshotReader<WorldState>,
 }
@@ -449,6 +451,7 @@ pub fn spawn_scene<R: WorldRunner>(
         render: render.sender.clone(),
         render_state: render.state.clone(),
         physics: physics.sender.clone(),
+        physics_state: physics.state.clone(),
         audio: audio.sender.clone(),
         audio_state: audio.state.clone(),
         poses,

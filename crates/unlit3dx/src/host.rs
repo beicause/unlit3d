@@ -57,21 +57,21 @@ pub fn spawn_sub_world(
     name: &'static str,
     command_capacity: usize,
 ) -> WorldHandle {
-    let (commands, receiver) = bounded(command_capacity);
+    let (queue, inbox) = bounded(command_capacity);
     let mut nested = World::new();
     // The sub-world owns its async tasks, so a job that mounts something
     // asynchronous hands it a task instead of an executor.
     LocalTasks::install(&mut nested);
     let status = ThreadStatus::detached();
     nested.root_scope_mut().spawn(bundle![
-        SubWorldInbox(receiver),
+        SubWorldInbox(inbox),
         SubWorldStatus(status.clone())
     ]);
-    let commands = JobSender::new(commands);
+    let sender = JobSender::new(queue);
     let entity = host
         .root_scope_mut()
         .spawn(bundle![nested, WorldName(name)]);
-    WorldHandle::new(entity, commands, status)
+    WorldHandle::new(entity, sender, status)
 }
 
 /// Run every job queued for the sub-world so far, in queue order.
@@ -108,6 +108,9 @@ pub fn drain_sub_world(nested: &mut World) {
         return;
     }
     if status.stop_requested() {
+        // A stop is not a panic, so the world collects one last time: the
+        // state it had reached is the last its readers ever get.
+        publish_collected(nested);
         status.finish();
         receiver.close();
         return;

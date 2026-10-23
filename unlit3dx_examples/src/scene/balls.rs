@@ -20,7 +20,7 @@ use super::Scene;
 use super::shapes::{BALL_COLORS, SHAPE_KINDS, shape_body};
 use super::shared::{SceneState, create_instance_job, look};
 use super::tick::Tick;
-use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job};
+use super::{GAME_HZ, GamePhysics, ScenePoses, pose_job, world_ended};
 use crate::render::{despawn_instances_job, show_instance_job, sweep_instances_job};
 
 /// How long between automatic ball drops, in seconds.
@@ -361,11 +361,14 @@ impl Balls {
             }
         }
 
-        // A request that never answered loses whatever half it did get.
+        // A request that never answered loses whatever half it did get. A
+        // world that ended answers nothing, so the wait is over at once
+        // instead of running out the timeout.
+        let stale = world_ended(&scene.physics_state) || world_ended(&scene.render_state);
         let ticks = self.ticks;
         let mut index = 0;
         while index < self.pending.len() {
-            if ticks.saturating_sub(self.pending[index].age) > PENDING_TIMEOUT_TICKS {
+            if stale || ticks.saturating_sub(self.pending[index].age) > PENDING_TIMEOUT_TICKS {
                 let pending = self.pending.swap_remove(index);
                 if let Some(handle) = pending.handle {
                     despawns.push(handle);

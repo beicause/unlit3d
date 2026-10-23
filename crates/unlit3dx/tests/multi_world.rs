@@ -186,6 +186,70 @@ fn despawning_a_sub_world_ends_it() {
     assert_eq!(proxy.state.latest().as_deref(), Some(&WorldState::Stopped));
 }
 
+/// Dropping the entity that carries a stepped world ends it, the way it ends
+/// a sub-world: the state reads `Stopped` and the queue closes, so a sender
+/// does not go on posting to a world no step will ever drive.
+#[test]
+fn despawning_a_stepped_world_ends_it() {
+    let mut host = World::new();
+    let world = spawn_stepped_world_with_init(&mut host, "stepped", 8, |_| (), |_, _, ()| true);
+    step_stepped_world(&host, world.entity);
+    assert!(!world.is_finished(), "the world is still running");
+
+    assert!(
+        host.root_scope_mut().despawn(world.entity),
+        "the proxy entity despawns"
+    );
+
+    assert!(
+        world.is_finished(),
+        "the stepped world ended with its entity"
+    );
+    assert_eq!(world.state.latest().as_deref(), Some(&WorldState::Stopped));
+    assert_eq!(
+        world.sender.send(Box::new(|_: &mut World| {})),
+        Err(SendError::Closed)
+    );
+}
+
+/// Stopping a sub-world is not a panic, so the drain still collects once:
+/// whatever the world's subscriptions had at the stop is the last state their
+/// readers ever get.
+#[test]
+fn stopping_a_sub_world_publishes_its_last_state() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 16);
+    let reader = proxy
+        .sender
+        .watch(|world: &World| {
+            world
+                .root_scope()
+                .query::<&Count>()
+                .next()
+                .map(|count| count.0)
+        })
+        .expect("the world accepts a subscription");
+    let mut nested = host
+        .root_scope()
+        .query_one::<&mut World>(proxy.entity)
+        .expect("the nested world");
+    // The first drain installs the collector; the counter arrives afterwards,
+    // so the last publish is the only one that can see it.
+    drain_sub_world(&mut nested);
+    assert!(reader.latest().is_none(), "nothing was there to collect");
+    nested.root_scope_mut().spawn(bundle![Count(7)]);
+
+    proxy.stop();
+    drain_sub_world(&mut nested);
+
+    assert!(proxy.is_finished(), "the stop ended the sub-world");
+    assert_eq!(
+        reader.latest().map(|count| *count),
+        Some(7),
+        "a stopped world publishes one last time"
+    );
+}
+
 /// A stepped world that has ended closes its queue, so a send after the end
 /// is refused rather than queued for a step that will never come.
 #[test]
