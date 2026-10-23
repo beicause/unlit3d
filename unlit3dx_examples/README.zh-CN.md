@@ -106,7 +106,7 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
     示例序列则暂停着等面板。
 
   每个对象都通过一个 `Scene` 值触达其余 world：render、physics、audio 三个
-  sender、物理快照，以及 render 与 audio 两个 world 对自己状态的报告，交给每一次
+  sender、物理快照，以及这三个 world 各自对自己状态的报告，交给每一次
   tick。从不对音频 world 说话的对象也就不会持有它的 sender。
 
 

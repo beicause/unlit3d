@@ -67,7 +67,7 @@ pub mod thread;
 #[cfg(feature = "render")]
 /// UI panels laid out in one world and drawn in another.
 pub mod ui;
-/// Remote worlds, which run on their own thread.
+/// Threaded worlds, which run on their own thread.
 pub mod world;
 
 /// The types most callers of the multi-world model need.

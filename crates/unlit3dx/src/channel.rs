@@ -110,9 +110,13 @@ impl JobSender {
     /// Where [`watch`](JobSender::watch) installs a collector that runs every
     /// tick, this sends one job that publishes once.
     ///
-    /// The question is a job: it is refused with the queue's error when the
-    /// queue is full or the world has stopped, and the returned reader then
-    /// never sees an answer.
+    /// The question is a job, and the answer is only as good as its running:
+    /// the send is refused when the queue is full or the world has stopped.
+    /// If the job panics, or the world ends before its turn comes, the answer
+    /// never arrives and the reader stays empty forever. A caller that must
+    /// not wait on an answer that cannot come also reads the state the world
+    /// publishes ([`WorldState`](crate::thread::WorldState)), which says
+    /// whether the world it asked is still running.
     pub fn ask<T, F>(&self, make: F) -> Result<SnapshotReader<T>, SendError>
     where
         T: Send + Sync + 'static,
@@ -137,8 +141,10 @@ impl JobSender {
 ///
 /// A runner that drives a world — its thread, the host stepping it, or the
 /// host draining a sub-world — calls this itself at the end of every turn,
-/// after the state a collector reads has been updated. A tick body therefore
-/// publishes nothing by hand, and publishing twice in one turn is impossible.
+/// after the state a collector reads has been updated, so a tick body
+/// publishes nothing by hand. That is the runner's contract rather than a
+/// guard: a host that drives a world of its own calls this once per turn, and
+/// calling it twice would run every collector twice.
 pub fn publish_collected(world: &World) -> usize {
     let Some(mut outlet) = world.root_scope().query::<&mut SnapshotOutlet>().next() else {
         return 0;

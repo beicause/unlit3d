@@ -142,9 +142,9 @@ it is paced differs.
     for the panel.
 
   Each object reaches the others' worlds through one `Scene` value: the
-  render, physics and audio senders, the physics snapshot, and what the
-  render and audio worlds report about themselves, handed to every tick. An
-  object that never talks to the audio world keeps no sender for it.
+  render, physics and audio senders, the physics snapshot, and what each of
+  those three worlds reports about itself, handed to every tick. An object
+  that never talks to the audio world keeps no sender for it.
 
 
   The world ticks at a fixed 68 Hz, independent of the frame rate.

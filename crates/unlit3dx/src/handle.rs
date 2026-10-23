@@ -15,10 +15,10 @@ use crate::thread::{ThreadStatus, WorldState};
 /// A cloneable handle to a spawned world.
 ///
 /// It carries the host entity the world's proxy component lives on, a
-/// cloneable command sender, and — for a world on its own thread — a reading
-/// of that thread's liveness. It can be handed to the world that queues work
-/// without the host's `World` in hand. Cloning it does not spawn anything:
-/// the world lives on until the host drops the proxy entity.
+/// cloneable command sender, and the state the world publishes about itself.
+/// It can be handed to the world that queues work without the host's `World`
+/// in hand. Cloning it does not spawn anything: the world lives on until the
+/// host drops the proxy entity.
 #[derive(Clone)]
 pub struct WorldHandle {
     /// The host entity the world's proxy component lives on.
@@ -55,14 +55,23 @@ impl WorldHandle {
 
     /// Whether the world has stopped or died.
     ///
-    /// A sub-world shares the host's thread, so this is always `false` for
-    /// one; the host itself decides when a sub-world is gone.
+    /// It reads the same state the world publishes, so a world of any kind
+    /// answers it: a threaded world when its thread ends, a stepped world
+    /// when its tick ends or its owner despawns it, and a sub-world when its
+    /// host stops it or drops it.
     #[must_use]
     pub fn is_finished(&self) -> bool {
         self.status.is_finished()
     }
 
-    /// Ask a threaded world's thread to stop, without waiting for it.
+    /// Ask the world to stop, without waiting for it.
+    ///
+    /// The world ends on its driver's next turn — the thread's next loop, the
+    /// host's next [`step_stepped_world`](crate::world::step_stepped_world) or
+    /// [`drain_sub_world`](crate::host::drain_sub_world) — and only then does
+    /// its queue close. A job sent in between is accepted and then dropped,
+    /// so a caller that must know the job ran reads [`state`](Self::state)
+    /// rather than trusting the send.
     pub fn stop(&self) {
         self.status.stop();
     }

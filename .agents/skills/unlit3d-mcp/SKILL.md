@@ -64,7 +64,7 @@ python3 $D --bin ./target/debug/unlit3d-examples --args='--mcp --scene spin_cube
 `list_worlds` 再指名别的 world。**
 
 宿主暴露它携带的每一个可调度的 world：带 `&World` 组件的子 world（`spawn_sub_world`），
-以及由线程或步进驱动的 world（`spawn_remote_world*` / `spawn_stepped_world*`，它们把命令
+以及由线程或步进驱动的 world（`spawn_threaded_world*` / `spawn_stepped_world*`，它们把命令
 通道留在代理实体上的 `WorldSender` 里）。子 world 的命令在宿主线程上同步执行；其余 world
 的命令作为 job 投进它的执行者——它自己的线程，或 `step_stepped_world`。
 
