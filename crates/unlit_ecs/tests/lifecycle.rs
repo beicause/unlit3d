@@ -209,16 +209,20 @@ fn a_panicking_callback_leaves_the_component_registered() {
     let mut world = World::new();
     let entity = world.reserve_entity("reserved");
     let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        world.root_scope_mut().spawn_at(
-            entity,
-            bundle![
-                Marker(1),
-                OnSpawn::new(|_, _| panic!("this callback fails")),
-            ],
-        )
+        world
+            .root_scope_mut()
+            .spawn_at(
+                entity,
+                bundle![
+                    Marker(1),
+                    OnSpawn::new(|_, _| panic!("this callback fails")),
+                ],
+            )
+            .unwrap();
     }));
-    // The spawn is accepted; the panic comes from the callback it runs.
-    assert!(matches!(spawned, Ok(Ok(()))), "the spawn itself succeeds");
+    // The handle is reserved, so the spawn itself is accepted; the panic comes
+    // from the callback it runs.
+    assert!(spawned.is_err(), "the panic reaches the caller");
     assert!(
         world.root_scope().query_one::<&OnSpawn>(entity).is_ok(),
         "the callback is still on the row it was spawned with"
