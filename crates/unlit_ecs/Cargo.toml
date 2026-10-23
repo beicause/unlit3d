@@ -9,8 +9,8 @@ keywords = ["archetype", "ecs", "gamedev"]
 
 [dependencies]
 # Reflection is what a bridge serialises these structures through; the ECS
-# itself never reads it, so it is off by default and the crate keeps its
-# one-dependency shape for everyone else.
+# itself never reads it, so it is off by default. The unconditional
+# dependencies stay few: a hash map behind one trait and the access errors.
 facet = { workspace = true, features = ["reflect"], optional = true }
 facet-json = { workspace = true, optional = true }
 hashbrown.workspace = true

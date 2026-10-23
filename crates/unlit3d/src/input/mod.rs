@@ -1635,7 +1635,6 @@ mod tests {
             .root_scope_mut()
             .spawn(bundle![input.clone(), input.subscribe()]);
         input.push(key_event(Key::A));
-        input.push(key_event(Key::B));
 
         dispatch_input(&world);
         world.apply().unwrap();

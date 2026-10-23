@@ -233,12 +233,12 @@ pub struct SpawnedEntity {
     pub scope: Entity,
 }
 
-/// Whether a despawn removed anything.
+/// What a despawn removed.
 #[derive(facet::Facet)]
 pub struct Despawned {
-    /// Whether the entity was alive.
-    pub despawned: bool,
-    /// How the despawned entity was called.
+    /// How many entities the despawn took with it.
+    pub removed: usize,
+    /// How the last of them was called.
     pub name: &'static str,
 }
 

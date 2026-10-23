@@ -35,12 +35,8 @@ use crate::reflect;
 /// an assumption.
 fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext, String> {
     if let Some(entity) = handle {
-        return RenderContext::of(world, entity).map_err(|_| {
-            format!(
-                "entity {} carries no render context",
-                world.entity_label(entity)
-            )
-        });
+        return RenderContext::of(world, entity)
+            .map_err(|_| format!("entity {entity:?} carries no render context"));
     }
     let mut found: Option<RenderContext> = None;
     for render_context in world.root_scope().query::<&RenderContext>() {
@@ -66,7 +62,7 @@ fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, Stri
             .query_one::<Has<Renderer>>(entity)
             .unwrap_or(false)
             .then_some(entity)
-            .ok_or_else(|| format!("entity {} carries no renderer", world.entity_label(entity)));
+            .ok_or_else(|| format!("entity {entity:?} carries no renderer"));
     }
     let mut found: Option<Entity> = None;
     for (_renderer, entity) in world.root_scope().query::<(&Renderer, Entity)>() {
@@ -85,12 +81,9 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
             .root_scope()
             .query_one::<&Source>(entity)
             .is_ok_and(|source| source.as_ref::<MeshSource>().is_some());
-        return is_mesh_source.then_some(entity).ok_or_else(|| {
-            format!(
-                "entity {} carries no mesh source",
-                world.entity_label(entity)
-            )
-        });
+        return is_mesh_source
+            .then_some(entity)
+            .ok_or_else(|| format!("entity {entity:?} carries no mesh source"));
     }
     let mut found: Option<Entity> = None;
     for (source, entity) in world.root_scope().query::<(&Source, Entity)>() {
@@ -485,7 +478,7 @@ fn single_entity<T: 'static>(
             .query_one::<Has<T>>(entity)
             .unwrap_or(false)
             .then_some(entity)
-            .ok_or_else(|| format!("entity {} carries no {what}", world.entity_label(entity)));
+            .ok_or_else(|| format!("entity {entity:?} carries no {what}"));
     }
     let mut found: Option<Entity> = None;
     for (_t, entity) in world.root_scope().query::<(&T, Entity)>() {
@@ -573,17 +566,16 @@ pub fn create_mesh(
         Some(bits) => {
             let scope = Entity::from_bits(bits);
             if world.scope(scope).is_err() {
-                return Err(format!("no scope {}", world.entity_label(scope)));
+                return Err(format!("no scope {scope:?}"));
             }
             scope
         }
         None => mesh_source_entity(world, source)?,
     };
-    let label = world.entity_label(scope);
     let name = "mcp mesh";
     let entity = world
         .scope_mut(scope)
-        .map_err(|_| format!("no scope {label}"))?
+        .map_err(|_| format!("no scope {scope:?}"))?
         .spawn_named(name, builder);
     to_value(&SpawnedEntity {
         entity,
@@ -602,11 +594,14 @@ pub fn remove_mesh(
         .root_scope()
         .query_one::<&GpuMesh>(entity)
         .map(|mesh| mesh.clone())
-        .map_err(|_| format!("entity {} has no GpuMesh", world.entity_label(entity)))?;
+        .map_err(|_| format!("entity {entity:?} has no GpuMesh"))?;
     let name = world.entity_name(entity).unwrap_or("");
     with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
-    let despawned = world.root_scope_mut().despawn(entity);
-    to_value(&Despawned { despawned, name })
+    let removed = world
+        .root_scope_mut()
+        .despawn(entity)
+        .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
+    to_value(&Despawned { removed, name })
 }
 
 /// Render one frame from the world.
@@ -719,10 +714,9 @@ pub fn load_gltf(
         Some(scope) => scope,
         None => mesh_source_entity(world, source)?,
     };
-    let label = world.entity_label(scope);
     let mut scope = world
         .scope_mut(scope)
-        .map_err(|_| format!("no scope {label}"))?;
+        .map_err(|_| format!("no scope {scope:?}"))?;
     let nodes = gltf.spawn_default_scene(&mut scope, &resources);
     let entities: Vec<Entity> = nodes
         .iter()

@@ -523,10 +523,12 @@ pub fn spawn_shared<B: unlit_ecs::Bundle>(world: &mut World, bundle: B) -> Entit
 }
 
 /// Despawn `entity` and its subtree, through the scope that owns it.
-pub fn despawn_in(world: &mut World, scope: Entity, entity: Entity) -> bool {
+pub fn despawn_in(world: &mut World, scope: Entity, entity: Entity) {
     world
         .scope_mut(scope)
-        .is_ok_and(|mut scope| scope.despawn(entity))
+        .expect("the scope named in the scene")
+        .despawn(entity)
+        .expect("the scene owns the entity it despawns");
 }
 
 /// Run `f` on the world's `MeshSource`, which lives on the source entity.

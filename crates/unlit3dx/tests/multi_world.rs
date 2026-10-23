@@ -178,7 +178,7 @@ fn despawning_a_sub_world_ends_it() {
     let proxy = spawn_sub_world(&mut host, "nested", 16);
 
     assert!(
-        host.root_scope_mut().despawn(proxy.entity),
+        host.root_scope_mut().despawn(proxy.entity).is_ok(),
         "the proxy entity despawns"
     );
 
@@ -197,7 +197,7 @@ fn despawning_a_stepped_world_ends_it() {
     assert!(!world.is_finished(), "the world is still running");
 
     assert!(
-        host.root_scope_mut().despawn(world.entity),
+        host.root_scope_mut().despawn(world.entity).is_ok(),
         "the proxy entity despawns"
     );
 
@@ -337,7 +337,7 @@ fn despawning_the_proxy_stops_the_world() {
     });
     let sender = world.sender.clone();
     assert!(
-        host.root_scope_mut().despawn(world.entity),
+        host.root_scope_mut().despawn(world.entity).is_ok(),
         "the proxy entity despawns"
     );
 

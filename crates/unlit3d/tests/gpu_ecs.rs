@@ -224,7 +224,7 @@ async fn a_mesh_reusing_a_freed_range_draws_its_own_geometry() {
         .query_one::<&GpuMesh>(cube_entity)
         .expect("the cube carries a mesh")
         .clone();
-    assert!(gpu.despawn(&mut world, cube_entity));
+    gpu.despawn(&mut world, cube_entity);
     gpu.remove_mesh(&world, cube);
 
     // The replacement takes the ranges the cube vacated — one allocation per

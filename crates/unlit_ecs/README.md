@@ -67,13 +67,14 @@ It is at an **early stage of development** and its API changes freely.
   doing access analysis. An optional component is optional only about the
   component being absent: a cell that cannot be borrowed panics the same way
   instead of reading as `None`.
-- **A failed lookup is an error, not a `None`.** Every function that reaches an
+- **A failed access is an error, not a `None`.** Every function that reaches an
   entity answers [`Result`], and the [`EntityAccessError`] it fails with names
-  the handle that was asked about: the entity has gone, it is outside the
-  scope, it does not match the query, or it carries no such component. An
-  archetype named by id answers [`ArchetypeAccessError`] instead. `Option`
-  stays where absence is not a failed access — a query item `Option<&C>` is
-  absent for an entity that merely lacks `C`.
+  the handle that was asked about and the reason: the entity has gone, it is
+  outside the scope, it does not match the query, it was not reserved, or it
+  is not the caller's to move. An archetype named by id answers
+  [`ArchetypeAccessError`] instead. `Option` stays where absence is not a
+  failed access — a query item `Option<&C>` is absent for an entity that
+  merely lacks `C`.
 - **Two entities are scaffolding.** `World::new` creates [`World::root`] — a
   scope whose `ScopeOf` is itself, and the one the root scope opens — and
   [`World::shared`], whose subtree every scope sees. Both can carry components
@@ -149,11 +150,18 @@ is not a way to reach the rest of it.
 **Changing the tree.** [`ScopeMut::spawn`] puts the new entity in the scope
 itself, and `spawn_at` puts it on a handle reserved by
 [`World::reserve_entity`] — a handle that was released, already spawned on,
-or never reserved is answered with [`EntityAccessError::NotReserved`]. [`ScopeMut::despawn`] removes the entity and its
+or never reserved is answered with [`EntityAccessError::NotReserved`].
+[`ScopeMut::despawn`] removes the entity and its
 whole subtree, children first, so a child's [`OnDespawn`] still sees its living
-ancestors. [`ScopeMut::link`] and `unlink` re-parent an entity inside the
+ancestors, and answers how many entities it took with it. [`ScopeMut::link`]
+and `unlink` re-parent an entity inside the
 same scope, refusing to move a scope into its own descendant or to touch the
-scaffolding; they are pure structure changes and run no lifecycle callback. A
+scaffolding; they are pure structure changes and run no lifecycle callback.
+Each of the three answers [`Result`], and the error it fails with says which
+of the reasons it was: the entity has gone, it is outside the scope, it is
+shared so only the root may move it, it is scaffolding, or the move would cut
+the tree in two. A caller that holds a handle from somewhere else can ask the
+scope that owns it instead of guessing which of those it was. A
 read-only scope queues the same changes through [`Scope::queue`], and the
 driver applies them with [`World::apply`], which reports the first command that
 failed and still runs the ones behind it.
@@ -192,11 +200,11 @@ wants to walk it.
 
 ## Names
 
-An entity carries a name, and its derived `Debug` prints it beside the two
-parts that identify the handle — `Entity { index: 3, generation: 0, name: "cube" }`
-— so a panic or a log line names the object it is about instead of a bare
-number. The name is the source position of the `bundle!` that built the
-entity's bundle, filled in by the macro:
+An entity carries a name, and `{:?}` prints it beside the bits that identify
+the handle — `Entity { name: "cube", bits: 3 }` — so a panic or a log line
+names the object it is about instead of a bare number. The name is the source
+position of the `bundle!` that built the entity's bundle, filled in by the
+macro:
 
 ```rust
 use unlit_ecs::{World, bundle};
@@ -221,8 +229,10 @@ of the world it came from.
 
 A handle rebuilt from bare bits has nothing to print, so the row that stores the
 entity is the one lasting copy of the label: `Scope::entity_name` reads it back
-by handle, and `Scope::entity_label` renders it as `name@index (bits ...)`, which
-is what the MCP tools and the engine's own messages report. `EntityInfo::name`
+by handle. `{:?}` prints a handle as its name and its bits, and not the index
+and generation they are made of: those are the allocator's business, while the
+bits are the only part a caller holds when the handle came over a wire. The
+errors and the engine's own messages print it that way. `EntityInfo::name`
 carries the same label in a listing, where the handle itself travels as a bare
 integer.
 
@@ -321,7 +331,6 @@ components than a tuple impl covers is written by implementing [`Query`]
 yourself. [`Scope::query_one`] runs the same query over one entity, so a lookup
 by handle and a pass over a scope share one vocabulary; a handle that names no
 visible entity, or one the query does not match, is an [`EntityAccessError`].
-
 
 Spawning and despawning need a `&mut` scope, or a queued command:
 

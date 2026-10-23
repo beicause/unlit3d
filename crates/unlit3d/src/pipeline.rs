@@ -389,8 +389,8 @@ impl<'a> InstanceContext<'a> {
             .query_one::<&SkinPose>(binding.pose)
             .unwrap_or_else(|_| {
                 panic!(
-                    "the entity a skinned mesh binds to carries no `SkinPose`: {}",
-                    self.world.entity_label(binding.pose)
+                    "the entity a skinned mesh binds to carries no `SkinPose`: {:?}",
+                    binding.pose,
                 )
             });
         assert!(
@@ -429,8 +429,8 @@ impl<'a> InstanceContext<'a> {
             .query_one::<&MorphWeights>(binding.weights)
             .unwrap_or_else(|_| {
                 panic!(
-                    "the entity a morphed mesh binds to carries no `MorphWeights`: {}",
-                    self.world.entity_label(binding.weights)
+                    "the entity a morphed mesh binds to carries no `MorphWeights`: {:?}",
+                    binding.weights,
                 )
             });
         assert_eq!(

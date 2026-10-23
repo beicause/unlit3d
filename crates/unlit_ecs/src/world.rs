@@ -185,7 +185,31 @@ impl World {
     /// from everywhere but only the root may move or remove it.
     #[must_use]
     pub fn owns(&self, caller: Entity, entity: Entity) -> bool {
-        caller == self.root || entity == caller || self.is_descendant(caller, entity)
+        self.check_owns(caller, entity).is_ok()
+    }
+
+    /// Why a scope of `caller` may not despawn or relink `entity`.
+    ///
+    /// The same rule as [`World::owns`], answered with the reason instead of
+    /// one bit: an entity outside the subtree is another scope's to change, and
+    /// one in the shared subtree is the root's alone.
+    fn check_owns(&self, caller: Entity, entity: Entity) -> Result<(), EntityAccessError> {
+        if caller == self.root {
+            return Ok(());
+        }
+        if self.is_shared(entity) {
+            return Err(EntityAccessError::NotMovable {
+                entity,
+                scope: caller,
+            });
+        }
+        if entity != caller && !self.is_descendant(caller, entity) {
+            return Err(EntityAccessError::NotOwned {
+                entity,
+                scope: caller,
+            });
+        }
+        Ok(())
     }
 
     /// The parent of a live entity.
@@ -326,20 +350,27 @@ impl World {
         Ok(())
     }
 
-    /// Despawn `entity` and its whole subtree.
+    /// Despawn `entity` and its whole subtree, on behalf of `caller`.
     ///
     /// Children are removed before the parent they lived in, so a child's
-    /// despawn callback still sees living ancestors. Returns whether the entity
-    /// was alive.
-    pub(crate) fn despawn_in(&mut self, entity: Entity) -> bool {
-        if !self.entities_read().contains(entity) {
-            return false;
+    /// despawn callback still sees living ancestors. The answer is how many
+    /// entities the despawn took with it: the subtree is the scope's to know
+    /// about, and a caller that counts what it removed can say so.
+    pub(crate) fn despawn_in(
+        &mut self,
+        entity: Entity,
+        caller: Entity,
+    ) -> Result<usize, EntityAccessError> {
+        if self.is_scaffolding(entity) {
+            return Err(EntityAccessError::Scaffolding { entity });
         }
+        self.location(entity)?;
+        self.check_owns(caller, entity)?;
         let doomed = self.tree_read().subtree_post_order(entity);
-        for victim in doomed {
-            self.remove_entity(victim);
+        for victim in &doomed {
+            self.remove_entity(*victim);
         }
-        true
+        Ok(doomed.len())
     }
 
     /// Make `child` a child of `parent` on behalf of `caller`.
@@ -349,21 +380,27 @@ impl World {
     /// into its own descendant would cut the tree in two. The shared subtree is
     /// readable from everywhere but it is the root's to rearrange, so only a
     /// root caller may move an entity into or out of it.
-    pub(crate) fn link_in(&mut self, child: Entity, parent: Entity, caller: Entity) -> bool {
-        if child == parent || self.is_scaffolding(child) || self.is_scaffolding(parent) {
-            return false;
+    pub(crate) fn link_in(
+        &mut self,
+        child: Entity,
+        parent: Entity,
+        caller: Entity,
+    ) -> Result<(), EntityAccessError> {
+        if self.is_scaffolding(child) {
+            return Err(EntityAccessError::Scaffolding { entity: child });
         }
-        if caller != self.root && (self.is_shared(child) || self.is_shared(parent)) {
-            return false;
+        if self.is_scaffolding(parent) {
+            return Err(EntityAccessError::Scaffolding { entity: parent });
         }
-        if !self.entities_read().contains(child) || !self.entities_read().contains(parent) {
-            return false;
-        }
-        if self.is_descendant(child, parent) {
-            return false;
+        self.location(child)?;
+        self.location(parent)?;
+        self.check_owns(caller, child)?;
+        self.check_owns(caller, parent)?;
+        if child == parent || self.is_descendant(child, parent) {
+            return Err(EntityAccessError::WouldCycle { child, parent });
         }
         self.write_scope(child, parent);
-        true
+        Ok(())
     }
 
     /// Detach `child` from its parent and put it in `scope`, on behalf of
@@ -372,21 +409,30 @@ impl World {
     /// `child` may not be the scope itself: that would make it its own parent,
     /// which is how the tree says "this is a root". Scaffolding does not move,
     /// and only a root caller may take an entity out of the shared subtree.
-    pub(crate) fn unlink_in(&mut self, child: Entity, scope: Entity, caller: Entity) -> bool {
-        if child == scope || self.is_scaffolding(child) {
-            return false;
+    pub(crate) fn unlink_in(
+        &mut self,
+        child: Entity,
+        scope: Entity,
+        caller: Entity,
+    ) -> Result<(), EntityAccessError> {
+        if self.is_scaffolding(child) {
+            return Err(EntityAccessError::Scaffolding { entity: child });
         }
-        if caller != self.root && self.is_shared(child) {
-            return false;
+        if child == scope {
+            // Its own parent is how the tree says "this is a root".
+            return Err(EntityAccessError::WouldCycle {
+                child,
+                parent: scope,
+            });
         }
-        if !self.entities_read().contains(child) || !self.entities_read().contains(scope) {
-            return false;
-        }
-        if self.parent_scope(child).ok() == Some(scope) {
-            return false;
+        self.location(child)?;
+        self.location(scope)?;
+        self.check_owns(caller, child)?;
+        if self.parent_scope(child)? == scope {
+            return Ok(());
         }
         self.write_scope(child, scope);
-        true
+        Ok(())
     }
 
     /// Rewrite the [`ScopeOf`] component of a live entity and reindex it.
@@ -484,7 +530,7 @@ impl World {
         // Borrowed for the whole run, like every other behaviour component: a
         // callback that reaches for its own lifecycle component panics on the
         // borrow rather than silently missing its own registration.
-        let Ok(mut hooks) = self.get_mut::<C>(entity) else {
+        let Some(mut hooks) = self.get_mut::<C>(entity) else {
             return;
         };
         let scope = Scope::new(self, scope);
@@ -618,22 +664,6 @@ impl World {
         Ok(self.archetypes.get(location.archetype())?.entities()[location.row()].name())
     }
 
-    /// How a message names an entity: its label, and the bits it travels as.
-    ///
-    /// A handle that arrived as bare bits carries no name of its own, so the
-    /// label is read back from the row that stores the entity (see
-    /// [`World::entity_name`]). The bits stay in the message because that is
-    /// what a caller holding a handle over a wire has.
-    #[must_use]
-    pub fn entity_label(&self, entity: Entity) -> String {
-        match self.entity_name(entity) {
-            Ok(name) if !name.is_empty() => {
-                format!("{name}@{} (bits {})", entity.index(), entity.to_bits())
-            }
-            _ => format!("bits {}", entity.to_bits()),
-        }
-    }
-
     /// The archetypes, including the empty one.
     ///
     /// This is the storage itself, not a view of one scope: it holds every row
@@ -644,27 +674,27 @@ impl World {
         &self.archetypes
     }
 
-    /// The component of `entity`, exclusively.
+    /// The component of `entity`, exclusively, or `None` when the entity is
+    /// not alive or its archetype does not carry `C`.
+    ///
+    /// Crate-private, because it is the lookup the lifecycle callbacks run on:
+    /// a caller outside has no way to name the component type in an error, and
+    /// a hook that does not find its own component simply does not run.
     ///
     /// Panics when the component is already borrowed, shared or exclusive: a
     /// busy cell says nothing about the handle and is not an access error.
     #[inline]
-    pub(crate) fn get_mut<C: 'static>(
-        &self,
-        entity: Entity,
-    ) -> Result<RefMut<'_, C>, EntityAccessError> {
-        let location = self.entities_read().location(entity)?;
+    pub(crate) fn get_mut<C: 'static>(&self, entity: Entity) -> Option<RefMut<'_, C>> {
+        let location = self.entities_read().location(entity).ok()?;
         let cell = self
             .archetypes
-            .get(location.archetype())?
-            .cell::<C>(location.row())
-            .ok_or(EntityAccessError::MissingComponent {
-                entity,
-                component: core::any::type_name::<C>(),
-            })?;
-        Ok(cell
-            .try_borrow_mut()
-            .unwrap_or_else(|_| borrow_conflict::<C>("write")))
+            .get(location.archetype())
+            .ok()?
+            .cell::<C>(location.row())?;
+        Some(
+            cell.try_borrow_mut()
+                .unwrap_or_else(|_| borrow_conflict::<C>("write")),
+        )
     }
 
     /// Drop the row at `location`, keeping every other location correct.
@@ -729,23 +759,18 @@ mod tests {
             .spawn(crate::bundle![ScopeOf::new(root)]);
     }
 
-    /// The component lookup behind lifecycle hooks, which is its only caller:
-    /// a component the archetype does not carry is reported by name.
+    /// The lookup behind the lifecycle hooks, which is its only caller: an
+    /// archetype that does not carry the component simply has no hook to run.
     #[test]
-    fn a_component_the_archetype_does_not_carry_is_reported() {
+    fn a_component_the_archetype_does_not_carry_runs_no_hook() {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(crate::bundle![Marker]);
-        let error = world.get_mut::<Other>(entity).err().unwrap();
-        assert_eq!(
-            error,
-            EntityAccessError::MissingComponent {
-                entity,
-                component: core::any::type_name::<Other>(),
-            }
-        );
         assert!(
-            error.to_string().contains(core::any::type_name::<Other>()),
-            "the message names the component the caller asked for",
+            world.get_mut::<Other>(entity).is_none(),
+            "the archetype has no Other column",
         );
+        let dead = world.root_scope_mut().spawn(crate::bundle![Marker]);
+        world.root_scope_mut().despawn(dead).unwrap();
+        assert!(world.get_mut::<Other>(dead).is_none(), "the handle is dead");
     }
 }

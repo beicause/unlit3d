@@ -155,17 +155,11 @@ impl Command for RunInWorld {
             .query_one::<&WorldSender>(entity)
             .map(|sender| sender.clone())
         else {
-            command.fail(format!(
-                "entity {} carries no world",
-                world.entity_label(entity)
-            ));
+            command.fail(format!("entity {entity:?} carries no world"));
             return Ok(());
         };
         if sender.is_finished() {
-            command.fail(format!(
-                "the world on {} has stopped",
-                world.entity_label(entity)
-            ));
+            command.fail(format!("the world on {entity:?} has stopped"));
             return Ok(());
         }
         // The command rides inside the job, so a slot keeps it here: a
@@ -181,8 +175,7 @@ impl Command for RunInWorld {
             && let Some(command) = sync::lock(&pending).take()
         {
             command.fail(format!(
-                "the world on {} refused the command: {error}",
-                world.entity_label(entity)
+                "the world on {entity:?} refused the command: {error}"
             ));
         }
         Ok(())

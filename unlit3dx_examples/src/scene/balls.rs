@@ -968,10 +968,10 @@ mod tests {
         let gone = world
             .root_scope_mut()
             .spawn(bundle![ball(None, None, false)]);
-        assert!(
-            world.root_scope_mut().despawn(gone),
-            "the ball the answers are about is gone"
-        );
+        world
+            .root_scope_mut()
+            .despawn(gone)
+            .expect("the ball the answers are about is gone");
         let _ = world.apply();
 
         let mut balls = Balls::new();

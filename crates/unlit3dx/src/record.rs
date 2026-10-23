@@ -195,7 +195,7 @@ impl RecordingHandle {
     /// nothing to hand back.
     #[must_use]
     pub(crate) fn stop(self, world: &mut World) -> Option<RecordedAudio> {
-        world.root_scope_mut().despawn(self.entity);
+        world.root_scope_mut().despawn(self.entity).unwrap();
         let mut state = lock(&self.state);
         let format = state.format?;
         Some(RecordedAudio {
@@ -206,7 +206,7 @@ impl RecordingHandle {
 
     /// Stop recording, despawn the source and discard the captured samples.
     pub(crate) fn cancel(self, world: &mut World) {
-        world.root_scope_mut().despawn(self.entity);
+        world.root_scope_mut().despawn(self.entity).unwrap();
     }
 }
 

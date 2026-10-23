@@ -152,8 +152,14 @@ fn link_moves_an_entity_into_another_scope() {
     let (mut world, scene, child, sibling) = fixture();
     // The scene owns the child but not the sibling, so only the root may move
     // the child there.
-    assert!(!world.scope_mut(scene).unwrap().link(child, sibling));
-    assert!(world.root_scope_mut().link(child, sibling));
+    assert!(
+        world
+            .scope_mut(scene)
+            .unwrap()
+            .link(child, sibling)
+            .is_err()
+    );
+    assert!(world.root_scope_mut().link(child, sibling).is_ok());
     assert_eq!(world.parent_scope(child), Ok(sibling));
     assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 0);
     assert_eq!(world.scope(sibling).unwrap().query::<&Marker>().count(), 1);
@@ -161,9 +167,11 @@ fn link_moves_an_entity_into_another_scope() {
 
 #[test]
 fn link_keeps_the_component_set_so_the_archetype_is_unchanged() {
-    let (mut world, scene, child, sibling) = fixture();
+    let (mut world, _scene, child, sibling) = fixture();
     let before = world.root_scope().location(child).unwrap().archetype();
-    world.scope_mut(scene).unwrap().link(child, sibling);
+    // Only the root owns both ends, so the root is the one to ask. The
+    // archetype is a property of the component set, which a relink keeps.
+    world.root_scope_mut().link(child, sibling).unwrap();
     assert_eq!(
         world.root_scope().location(child).unwrap().archetype(),
         before
@@ -176,25 +184,25 @@ fn unlink_moves_an_entity_into_the_views_scope() {
     let (mut world, scene, child, _) = fixture();
     let root = world.root();
     assert!(
-        !world.scope_mut(scene).unwrap().unlink(child),
-        "it is already in this scope"
+        world.scope_mut(scene).unwrap().unlink(child).is_ok(),
+        "it is already in this scope, which is what was asked for"
     );
     assert!(
-        world.root_scope_mut().unlink(child),
+        world.root_scope_mut().unlink(child).is_ok(),
         "move it up to the root"
     );
     assert_eq!(world.parent_scope(child), Ok(root));
     assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 0);
     // Moving it back is the root's call now: the scene no longer owns it.
-    assert!(!world.scope_mut(scene).unwrap().unlink(child));
-    assert!(world.root_scope_mut().link(child, scene));
+    assert!(world.scope_mut(scene).unwrap().unlink(child).is_err());
+    assert!(world.root_scope_mut().link(child, scene).is_ok());
     assert_eq!(world.parent_scope(child), Ok(scene));
 }
 
 #[test]
 fn link_refuses_to_move_a_scope_into_its_own_descendant() {
     let (mut world, scene, child, _) = fixture();
-    assert!(!world.scope_mut(scene).unwrap().link(scene, child));
+    assert!(world.scope_mut(scene).unwrap().link(scene, child).is_err());
     assert_eq!(world.parent_scope(scene), Ok(world.root()));
 }
 
@@ -203,7 +211,13 @@ fn link_refuses_an_entity_the_view_does_not_own() {
     let (mut world, _, _, sibling) = fixture();
     let other = world.root_scope_mut().spawn(bundle![Name("third")]);
     // `sibling` does not own `other`, so it cannot pull it in.
-    assert!(!world.scope_mut(sibling).unwrap().link(other, sibling));
+    assert!(
+        world
+            .scope_mut(sibling)
+            .unwrap()
+            .link(other, sibling)
+            .is_err()
+    );
     assert_eq!(world.parent_scope(other), Ok(world.root()));
 }
 
@@ -212,9 +226,9 @@ fn the_roots_cannot_be_despawned_or_relinked() {
     let mut world = World::new();
     let root = world.root();
     let shared = world.shared();
-    assert!(!world.root_scope_mut().despawn(root));
-    assert!(!world.root_scope_mut().despawn(shared));
-    assert!(!world.root_scope_mut().link(root, shared));
+    assert!(world.root_scope_mut().despawn(root).is_err());
+    assert!(world.root_scope_mut().despawn(shared).is_err());
+    assert!(world.root_scope_mut().link(root, shared).is_err());
     assert!(world.root_scope().contains(root));
 }
 
@@ -222,7 +236,7 @@ fn the_roots_cannot_be_despawned_or_relinked() {
 fn despawning_a_scene_takes_its_whole_subtree() {
     let (mut world, scene, child, sibling) = fixture();
     let grandchild = world.scope_mut(child).unwrap().spawn(bundle![Marker(2)]);
-    assert!(world.root_scope_mut().despawn(scene));
+    assert!(world.root_scope_mut().despawn(scene).is_ok());
     assert!(!world.root_scope().contains(scene));
     assert!(!world.root_scope().contains(child));
     assert!(!world.root_scope().contains(grandchild));
@@ -234,14 +248,14 @@ fn a_scene_cannot_despawn_its_ancestor() {
     let (mut world, scene, _, _) = fixture();
     let root = world.root();
     let sibling = world.root_scope_mut().spawn(bundle![Name("sib")]);
-    assert!(!world.scope_mut(scene).unwrap().despawn(root));
-    assert!(!world.scope_mut(scene).unwrap().despawn(sibling));
+    assert!(world.scope_mut(scene).unwrap().despawn(root).is_err());
+    assert!(world.scope_mut(scene).unwrap().despawn(sibling).is_err());
 }
 
 #[test]
 fn a_view_does_not_see_a_dead_handle() {
     let (mut world, scene, child, _) = fixture();
-    world.root_scope_mut().despawn(child);
+    world.root_scope_mut().despawn(child).unwrap();
     assert!(!world.scope(scene).unwrap().contains(child));
     assert!(
         world
@@ -286,12 +300,14 @@ fn entity_infos_only_lists_what_the_view_sees() {
 
 #[test]
 fn the_tree_agrees_with_the_scope_components() {
-    let (mut world, scene, child, sibling) = fixture();
+    let (mut world, scene, child, _sibling) = fixture();
     let extra = world.scope_mut(scene).unwrap().spawn(bundle![Marker(2)]);
-    world.scope_mut(sibling).unwrap().link(child, extra);
+    // Only the root owns both ends, so the root is the one to ask: a scope
+    // rearranges its own subtree and leaves another scope's contents alone.
+    world.root_scope_mut().link(child, extra).unwrap();
     assert_invariants(&world);
 
-    world.root_scope_mut().despawn(extra);
+    world.root_scope_mut().despawn(extra).unwrap();
     assert_invariants(&world);
 }
 
@@ -415,9 +431,16 @@ fn assert_invariants(world: &World) {
 #[test]
 fn a_queued_despawn_of_something_the_scope_does_not_own_is_dropped() {
     let (mut world, scene, child, sibling) = fixture();
-    // `scene` neither owns nor even sees its sibling.
+    // `scene` neither owns nor even sees its sibling, so applying its queue
+    // says so and the sibling survives.
     world.scope(scene).unwrap().queue().despawn(sibling);
-    world.apply().unwrap();
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::NotOwned {
+            entity: sibling,
+            scope: scene,
+        }),
+    );
     assert!(
         world.root_scope().contains(sibling),
         "a sibling survives a queued despawn from another scene"
@@ -433,7 +456,11 @@ fn a_queued_despawn_cannot_remove_the_scaffolding() {
     let queue = world.root_scope().queue();
     queue.despawn(root);
     queue.despawn(shared);
-    world.apply().unwrap();
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::Scaffolding { entity: root }),
+        "the queue reports the one it refused and drops the rest"
+    );
     assert_eq!(
         world.root_scope().entity(),
         root,
@@ -448,7 +475,7 @@ fn a_queued_despawn_cannot_remove_the_scaffolding() {
 fn unlinking_a_scope_into_itself_is_refused() {
     let (mut world, scene, _, _) = fixture();
     assert!(
-        !world.scope_mut(scene).unwrap().unlink(scene),
+        world.scope_mut(scene).unwrap().unlink(scene).is_err(),
         "a scope cannot become its own parent"
     );
     assert_eq!(world.parent_scope(scene), Ok(world.root()));
@@ -462,7 +489,7 @@ fn a_shared_resource_is_the_root_s_to_despawn() {
     let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
     let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(1)]);
     assert!(
-        !world.scope_mut(scene).unwrap().despawn(resource),
+        world.scope_mut(scene).unwrap().despawn(resource).is_err(),
         "a scene cannot remove what the shared subtree lends it"
     );
     world.root_scope().queue().despawn(resource);
@@ -483,20 +510,31 @@ fn a_shared_resource_is_the_root_s_to_move() {
     let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
     let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(1)]);
     assert!(
-        !world.scope_mut(scene).unwrap().link(resource, scene),
+        world
+            .scope_mut(scene)
+            .unwrap()
+            .link(resource, scene)
+            .is_err(),
         "a scene cannot move what the shared subtree lends it"
     );
-    assert!(!world.scope_mut(scene).unwrap().unlink(resource));
-    // A queue of another scope drops the relink when it is applied.
+    assert!(world.scope_mut(scene).unwrap().unlink(resource).is_err());
+    // The scene's queue cannot move it either: the relink is refused when it
+    // is applied, and the queue keeps going.
     world.scope(scene).unwrap().queue().link(resource, scene);
-    world.apply().unwrap();
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::NotMovable {
+            entity: resource,
+            scope: scene,
+        }),
+    );
     assert_eq!(
         world.parent_scope(resource),
         Ok(shared),
         "a scene's queue cannot move it either"
     );
 
-    assert!(world.root_scope_mut().unlink(resource));
+    assert!(world.root_scope_mut().unlink(resource).is_ok());
     assert_eq!(world.parent_scope(resource), Ok(root));
     world.root_scope().queue().link(resource, scene);
     world.apply().unwrap();
@@ -506,9 +544,9 @@ fn a_shared_resource_is_the_root_s_to_move() {
     assert_eq!(world.parent_scope(resource), Ok(root));
 
     // The shared scope itself is scaffolding: it neither moves nor goes.
-    assert!(!world.root_scope_mut().link(shared, scene));
-    assert!(!world.root_scope_mut().unlink(shared));
-    assert!(!world.root_scope_mut().despawn(shared));
+    assert!(world.root_scope_mut().link(shared, scene).is_err());
+    assert!(world.root_scope_mut().unlink(shared).is_err());
+    assert!(world.root_scope_mut().despawn(shared).is_err());
     assert_eq!(world.parent_scope(shared), Ok(root));
     assert_invariants(&world);
 }
@@ -516,7 +554,7 @@ fn a_shared_resource_is_the_root_s_to_move() {
 #[test]
 fn spawning_at_a_dead_handle_is_refused() {
     let (mut world, scene, child, _) = fixture();
-    world.root_scope_mut().despawn(child);
+    world.root_scope_mut().despawn(child).unwrap();
     // A stale handle has no reservation left, so the spawn is refused rather
     // than writing a second row for the same index.
     assert_eq!(

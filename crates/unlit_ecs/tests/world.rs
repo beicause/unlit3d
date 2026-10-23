@@ -150,11 +150,11 @@ fn a_despawned_handle_never_resolves_to_the_next_entity() {
     let mut world = World::new();
     let first = world.root_scope_mut().spawn(bundle![Name("first")]);
 
-    assert!(world.root_scope_mut().despawn(first));
+    assert!(world.root_scope_mut().despawn(first).is_ok());
     assert!(!world.root_scope().contains(first));
     assert!(world.root_scope().query_one::<&Name>(first).is_err());
     assert!(
-        !world.root_scope_mut().despawn(first),
+        world.root_scope_mut().despawn(first).is_err(),
         "the second despawn is a no-op"
     );
     assert_eq!(world.root_scope().len(), 0);
@@ -184,7 +184,7 @@ fn despawning_drops_the_component_values() {
         .spawn(bundle![Tracked(drops.clone())]);
     assert_eq!(drops.get(), 0);
 
-    world.root_scope_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity).unwrap();
     assert_eq!(drops.get(), 1, "the component left with the entity");
 }
 
@@ -256,7 +256,7 @@ fn a_handle_no_world_produced_refers_to_nothing() {
     let alien = Entity::from_raw(u32::MAX, u32::MAX);
     assert!(!world.root_scope().contains(alien));
     assert!(world.root_scope().query_one::<&Name>(alien).is_err());
-    assert!(!world.root_scope_mut().despawn(alien));
+    assert!(world.root_scope_mut().despawn(alien).is_err());
 }
 
 #[test]
@@ -421,7 +421,7 @@ fn a_despawned_entity_has_no_location() {
         .root_scope_mut()
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
     assert!(world.root_scope().location(entity).is_ok());
-    world.root_scope_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity).unwrap();
     assert!(world.root_scope().location(entity).is_err());
 }
 

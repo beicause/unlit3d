@@ -146,7 +146,7 @@ fn a_custom_command_can_be_queued() {
                 .map(|(_, entity)| entity)
                 .collect();
             for entity in doomed {
-                world.root_scope_mut().despawn(entity);
+                world.root_scope_mut().despawn(entity).unwrap();
             }
             Ok(())
         }
@@ -201,4 +201,55 @@ fn a_spawn_on_a_released_handle_reports_the_lost_reservation() {
     );
     assert!(world.root_scope().contains(survivor));
     assert!(!world.root_scope().contains(doomed));
+}
+
+/// A refused command is reported rather than dropped silently, and it does not
+/// stop the rest of the queue: the caller asked for a batch, and the first
+/// failure is what it gets back.
+#[test]
+fn a_refused_command_leaves_the_rest_of_the_queue_applied() {
+    let mut world = World::new();
+    let shared = world.shared();
+    let scene = world.root_scope_mut().spawn(bundle![Marker(1)]);
+    let resource = world.scope_mut(shared).unwrap().spawn(bundle![Marker(2)]);
+
+    world.scope(scene).unwrap().queue().despawn(resource);
+    let late = world.root_scope().queue().spawn(bundle![Marker(3)]);
+    let error = world.apply().unwrap_err();
+    assert_eq!(
+        error,
+        EntityAccessError::NotMovable {
+            entity: resource,
+            scope: scene,
+        },
+        "the shared subtree is the root's alone"
+    );
+    assert!(world.root_scope().contains(resource));
+    assert!(
+        world.root_scope().contains(late),
+        "the batch ran to the end"
+    );
+}
+
+/// The queue answers one error even when several commands fail, so a caller
+/// that wants them all has to queue them one at a time.
+#[test]
+fn only_the_first_failure_is_reported() {
+    let mut world = World::new();
+    let shared = world.shared();
+    let scene = world.root_scope_mut().spawn(bundle![Marker(1)]);
+    let first = world.scope_mut(shared).unwrap().spawn(bundle![Marker(2)]);
+    let second = world.scope_mut(shared).unwrap().spawn(bundle![Marker(3)]);
+
+    let queue = world.scope(scene).unwrap().queue();
+    queue.despawn(first);
+    queue.despawn(second);
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::NotMovable {
+            entity: first,
+            scope: scene,
+        }),
+    );
+    assert!(world.root_scope().contains(second), "neither was removed");
 }

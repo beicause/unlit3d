@@ -260,10 +260,10 @@ async fn a_source_no_pass_reaches_draws_nowhere() {
     // With the only pass gone the frame has nothing to record at all, and
     // still has to render without complaint.
     let pass = gpu.pass();
-    assert!(
-        world.root_scope_mut().despawn(pass),
-        "the pass entity should be despawning"
-    );
+    world
+        .root_scope_mut()
+        .despawn(pass)
+        .expect("the pass entity should be despawning");
     gpu.render(&world);
     assert_eq!(builds.get(), 0, "a world with no pass reaches no source");
 }

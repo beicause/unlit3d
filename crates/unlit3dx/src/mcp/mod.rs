@@ -163,7 +163,7 @@ fn take(world: &mut World) -> Result<RecordingHandle, String> {
         .expect("the recording entity exists")
         .0
         .clone();
-    world.root_scope_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity).unwrap();
     Ok(handle)
 }
 

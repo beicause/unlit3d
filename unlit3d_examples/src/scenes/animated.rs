@@ -135,7 +135,7 @@ fn build(
             if step_index == 0 {
                 for entry in cells.iter_mut() {
                     if let Some((entity, mesh)) = entry.take() {
-                        assert!(super::despawn_in(world, source_entity, entity));
+                        super::despawn_in(world, source_entity, entity);
                         super::remove_mesh(world, source_entity, mesh);
                     }
                 }
@@ -147,7 +147,7 @@ fn build(
             // the world still names a mesh the renderer is about to free.
             for &cell in step.free {
                 let (entity, mesh) = cells[cell].take().expect("a freed cell holds a mesh");
-                assert!(super::despawn_in(world, source_entity, entity));
+                super::despawn_in(world, source_entity, entity);
                 super::remove_mesh(world, source_entity, mesh);
             }
 
@@ -156,7 +156,7 @@ fn build(
                 // the looped sequence — is retired first, so a mesh never
                 // outlives the entity that names it.
                 if let Some((entity, mesh)) = cells[cell].take() {
-                    assert!(super::despawn_in(world, source_entity, entity));
+                    super::despawn_in(world, source_entity, entity);
                     super::remove_mesh(world, source_entity, mesh);
                 }
                 // The allocation's offset is baked into the vertices, so every
