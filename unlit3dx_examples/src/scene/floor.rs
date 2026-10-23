@@ -1,4 +1,4 @@
-//! The ground the shapes land on: one fixed body in physics, one instance in
+//! The ground the balls land on: one fixed body in physics, one instance in
 //! the render world, wearing a checker so motion reads against it.
 //!
 //! The floor is the scene's only fixed body, and the only instance that never
@@ -37,7 +37,7 @@ pub const GROUND_CHECKER_SIZE: u32 = 256;
 /// The checker squares per texture side.
 const GROUND_CHECKER_SQUARES: u32 = 8;
 
-/// The friction the ground gives the shapes.
+/// The friction the ground gives the balls.
 const GROUND_FRICTION: f32 = 0.9;
 
 /// The ground's checker texture: `GROUND_CHECKER_SQUARES` squares per
@@ -113,7 +113,7 @@ mod tests {
     }
 
     /// The checker alternates both ways: a texture of one color would draw a
-    /// flat floor, and the tumbling shapes would read as sliding.
+    /// flat floor, and the tumbling balls would read as sliding.
     #[test]
     fn the_checker_alternates_both_ways() {
         let block = GROUND_CHECKER_SIZE / GROUND_CHECKER_SQUARES;

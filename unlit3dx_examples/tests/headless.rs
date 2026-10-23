@@ -3,7 +3,7 @@
 //! asset submodule.
 //!
 //! The headless run steps the windowed mode's very same worlds inline at
-//! fixed rates, so a run is reproducible: same spawn rolls, same shapes,
+//! fixed rates, so a run is reproducible: same spawn rolls, same balls,
 //! same music, same frames. The file is also the module the wasm suite's
 //! page loads, with the frame baselines embedded in the binary.
 //!

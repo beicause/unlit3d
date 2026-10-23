@@ -58,10 +58,10 @@ impl ScenePhase {
 /// before the objects that need the instances it hands out.
 pub const TICK_SCENE: i32 = 0;
 
-/// The place the shapes tick at: after the assets exist, before the music.
+/// The place the balls tick at: after the assets exist, before the music.
 pub const TICK_BALLS: i32 = 100;
 
-/// The place the music ticks at: last, once the shapes are out.
+/// The place the music ticks at: last, once the balls are out.
 pub const TICK_AUDIO: i32 = 200;
 
 /// The behaviour that ticks `T` for the entity it is spawned on, at `order`.

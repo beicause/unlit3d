@@ -384,7 +384,8 @@ mod tests {
         let (mut world, scene, _, sibling) = fixture();
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let answer = despawn_one(&mut scope, sibling).expect("refusing is not an error");
-        assert_eq!(answer, serde_json::json!({ "despawned": false }));
+        assert_eq!(answer["despawned"], serde_json::json!(false));
+        assert_eq!(answer["name"], serde_json::json!(sibling.name()));
         assert!(world.root_scope().contains(sibling));
     }
 
@@ -393,7 +394,8 @@ mod tests {
         let (mut world, scene, child, _) = fixture();
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let answer = despawn_one(&mut scope, child).expect("its own descendant");
-        assert_eq!(answer, serde_json::json!({ "despawned": true }));
+        assert_eq!(answer["despawned"], serde_json::json!(true));
+        assert_eq!(answer["name"], serde_json::json!(child.name()));
         assert!(!world.root_scope().contains(child));
     }
 

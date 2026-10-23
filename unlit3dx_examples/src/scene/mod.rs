@@ -10,7 +10,7 @@
 //!
 //! - [`SceneState`] builds the scene's assets once; every drop asks the render
 //!   world for an instance of its own.
-//! - [`spawn_floor`] puts the ground under the shapes, in physics and in the
+//! - [`spawn_floor`] puts the ground under the balls, in physics and in the
 //!   render world.
 //! - [`Balls`] drops the balls: each one is a [`Ball`] entity of its own, which
 //!   both the render world and the physics world answer by name, and the poses
@@ -48,7 +48,7 @@ use unlit3dx::ui::UiPanelHost;
 use crate::render::{camera_looking_at, mesh_source};
 
 pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_synth};
-pub use balls::{Ball, Balls, PENDING_TIMEOUT_TICKS, SPAWN_HEIGHT, SPAWN_SPREAD, SPAWN_TICKS};
+pub use balls::{Ball, Balls};
 pub use floor::{
     GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
     checker_ground, spawn_floor,
@@ -652,10 +652,10 @@ impl SceneStepper {
     }
 }
 
-/// Ask the shapes to drop the next one, from another world.
+/// Ask the balls to drop the next one, from another world.
 ///
 /// The host's keyboard behaviour lives outside the gameplay world, so it
-/// reaches the shapes through a job; the panel, which lives inside it, calls
+/// reaches the balls through a job; the panel, which lives inside it, calls
 /// [`drop_ball_in`] instead.
 pub fn drop_ball(sender: &JobSender) {
     sender
@@ -665,14 +665,14 @@ pub fn drop_ball(sender: &JobSender) {
         .ok();
 }
 
-/// Ask the shapes to drop the next one, from inside the gameplay world.
+/// Ask the balls to drop the next one, from inside the gameplay world.
 pub fn drop_ball_in(world: &Scope<'_>) {
     if let Some((_, mut balls)) = world.query::<(Entity, &mut Balls)>().next() {
         balls.queue_drop();
     }
 }
 
-/// Ask the shapes to go away, from inside the gameplay world.
+/// Ask the balls to go away, from inside the gameplay world.
 ///
 /// The music keeps playing; the panel drives it.
 pub fn clear_balls_in(world: &Scope<'_>) {

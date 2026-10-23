@@ -21,7 +21,7 @@
 //! Space drops a body. The render world's control panel drives two music
 //! tracks — a looping background piece and a one-shot MIDI sequence — each
 //! of which pauses, resumes and rewinds on its own, and it drops the next
-//! shape or puts every live shape away.
+//! ball or puts every live ball away.
 //! Bodies fall, bounce off the ground and each other while the music plays.
 //! The soundfont is embedded at
 //! build time: build.rs reads the FluidR3Mono_GM.sf3 file the repository
@@ -216,7 +216,7 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
     world.root_scope_mut().spawn(bundle![redraw]);
     world.root_scope_mut().spawn(bundle![resize_presented()]);
 
-    // Space drops a body; the music and the shapes are driven from the
+    // Space drops a ball; the music and the balls are driven from the
     // render world's control panel.
     world
         .root_scope_mut()

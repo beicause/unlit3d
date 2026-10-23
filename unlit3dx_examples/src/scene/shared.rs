@@ -13,7 +13,9 @@ use super::HIDDEN_POSITION;
 use super::Scene;
 use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
 use super::world_ended;
-use crate::render::{allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler};
+use crate::render::{
+    BallInstance, allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler,
+};
 
 /// The render entities a shape is built from, in kind-major order.
 ///
@@ -135,14 +137,14 @@ fn build(world: &mut World) -> SceneAssets {
 }
 
 /// The job that spawns one hidden instance wearing the assets it names, and
-/// publishes its entity back tagged with `ball`.
+/// publishes it back tagged with `ball`.
 ///
 /// It stays hidden until its body is ready and the show job puts it in place.
 pub fn create_instance_job(
     ball: Entity,
     mesh: Entity,
     material: Entity,
-    created: Stream<(Entity, Entity)>,
+    created: Stream<BallInstance>,
 ) -> Job {
     Box::new(move |world: &mut World| {
         let instance = hidden_instance_of(
@@ -154,7 +156,7 @@ pub fn create_instance_job(
                 ..Default::default()
             },
         );
-        created.publish((ball, instance));
+        created.publish(BallInstance { ball, instance });
     })
 }
 

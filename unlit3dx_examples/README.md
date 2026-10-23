@@ -11,10 +11,10 @@ snapshot tests.
 
 ## What you see
 
-A checkered ground plane and a stream of falling shapes — balls, cubes,
+A checkered ground plane and a stream of falling balls — spheres, cubes,
 cylinders and cones, each wearing its own patterned material. Space drops a
-shape from above at a random position; shapes fall and bounce off the ground
-and each other. Shapes also drop on their own, about one every 0.7 seconds.
+ball from above at a random position; balls fall and bounce off the ground
+and each other. Balls also drop on their own, about one every 0.7 seconds.
 The camera orbits the scene slowly.
 
 A background loop plays on its own track of the audio world from the
@@ -22,10 +22,10 @@ moment the world can sound. A second track holds a one-shot MIDI sequence —
 the pentatonic scale walked up and back down on a music box — which stays
 idle until its row's Play button starts it. That control panel — a small
 egui window — offers each track the buttons its state calls for, drops the
-next shape, and puts every live shape away: an idle sequence
+next ball, and puts every live ball away: an idle sequence
 shows Play alone, a started track shows Pause or Resume beside Rewind, and a
 sequence that plays to its end goes back to showing Play. Nothing about the
-music depends on the shapes: clearing the scene leaves the tracks playing.
+music depends on the balls: clearing the scene leaves the tracks playing.
 
 ## How to run
 
@@ -132,9 +132,10 @@ it is paced differs.
   - `Balls` (tick 200) spawns a `Ball` entity for every drop and asks the
     render world for an instance and physics for a body. Both answers name the
     ball, so the ball itself is the identity: it is shown once both halves
-    arrive, and an answer that no longer finds its ball cleans itself up. The
-    render world despawns an instance the camera can no longer see and reports
-    the ball back, and the ball goes away with it.
+    arrive and the render world confirms the show, and an answer that no longer
+    finds its ball cleans itself up. The render world despawns an instance the
+    camera can no longer see and reports the ball back, and the ball goes away
+    with it.
   - `SceneAudio` (tick 300) asks the audio world for the synthesizer's voice,
     and on the answer spawns the scene's two tracks in this world: each is a
     `MidiSequencer` with a clock and the voice it plays into, and it takes

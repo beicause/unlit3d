@@ -233,16 +233,30 @@ pub(crate) fn hidden_instance_of(
     instance
 }
 
+/// One ball and the render instance that stands for it.
+///
+/// Every answer between the two worlds carries one: the render world knows the
+/// instance, the gameplay world knows the ball, and a named pair says which is
+/// which at both ends. Two bare entities in a tuple would compile the same way
+/// round either way.
+#[derive(Clone, Copy, Debug)]
+pub struct BallInstance {
+    /// The ball, an entity of the gameplay world.
+    pub ball: Entity,
+    /// The render instance that stands for it, an entity of the render world.
+    pub instance: Entity,
+}
+
 /// A job that despawns the instances the camera cannot see, reporting each
-/// one back over `retired` with the entity the gameplay world knows it by.
+/// one back over `retired` with the ball it belonged to.
 ///
 /// The render world owns the camera and the instances, so the visibility test
 /// happens here: the gameplay world only names the live instances and reacts
 /// to the answer by despawning their bodies. An instance that is already gone
 /// is skipped.
 pub(crate) fn sweep_instances_job(
-    instances: Vec<(Entity, Entity)>,
-    retired: Stream<(Entity, Entity)>,
+    instances: Vec<BallInstance>,
+    retired: Stream<BallInstance>,
 ) -> Job {
     Box::new(move |world: &mut World| {
         let Some(camera) = world
@@ -264,12 +278,12 @@ pub(crate) fn sweep_instances_job(
             };
             // The list is reused as the outside set: every instance that is
             // still in view is dropped from it.
-            outside.retain(|(instance, _)| {
-                let Some(mesh) = scope.query_one::<&GpuMesh>(*instance) else {
+            outside.retain(|answer| {
+                let Some(mesh) = scope.query_one::<&GpuMesh>(answer.instance) else {
                     return false;
                 };
                 let model = scope
-                    .query_one::<&Transform>(*instance)
+                    .query_one::<&Transform>(answer.instance)
                     .map_or(Affine3A::IDENTITY, |transform| transform.compute_matrix());
                 is_culled(mesh.aabb, &model, &frustum)
             });
@@ -278,13 +292,11 @@ pub(crate) fn sweep_instances_job(
             return;
         }
         if let Some(mut scope) = world.scope_mut(source) {
-            for (instance, _) in &outside {
-                let _ = scope.despawn(*instance);
+            for answer in &outside {
+                let _ = scope.despawn(answer.instance);
             }
         }
-        for answer in outside {
-            retired.publish(answer);
-        }
+        retired.publish_all(outside);
     })
 }
 
@@ -303,13 +315,20 @@ pub(crate) fn despawn_instances_job(instances: Vec<Entity>) -> Job {
     })
 }
 
-/// A job that points one instance at a mesh and material and shows it at
-/// `transform`.
+/// A job that points one instance at a mesh and material, shows it at
+/// `transform`, and answers over `shown` with the ball it was asked for.
+///
+/// The answer is published only once the instance really wears the assets. A
+/// job whose source, assets or instance are gone answers nothing, and the ball
+/// that asked waits for its timeout and is reclaimed, rather than counting
+/// itself shown with nothing on screen.
 pub(crate) fn show_instance_job(
+    ball: Entity,
     instance: Entity,
     mesh: Entity,
     material: Entity,
     transform: Transform,
+    shown: Stream<BallInstance>,
 ) -> Job {
     Box::new(move |world: &mut World| {
         let Some((source, _)) = mesh_source(world) else {
@@ -330,7 +349,7 @@ pub(crate) fn show_instance_job(
         else {
             return;
         };
-        let _ = scope
+        let is_shown = scope
             .query_one::<(
                 &mut GpuMesh,
                 &mut GpuMaterial,
@@ -348,8 +367,13 @@ pub(crate) fn show_instance_job(
                     *instance_material = material;
                     instance_transform.clone_from(&transform);
                     visibility.visible = true;
+                    true
                 },
-            );
+            )
+            .unwrap_or(false);
+        if is_shown {
+            shown.publish(BallInstance { ball, instance });
+        }
     })
 }
 

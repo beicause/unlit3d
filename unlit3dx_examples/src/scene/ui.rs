@@ -127,9 +127,9 @@ fn track_controls(ui: &mut egui::Ui, label: &str, sequencer: &mut MidiSequencer)
 /// The background loop starts itself once the audio world can sound; the
 /// one-shot sequence waits for its row's Play button and plays once per
 /// press. Each track then pauses, resumes and rewinds on its own, and the
-/// shapes drop or clear without touching the music. A scene with no
+/// balls drop or clear without touching the music. A scene with no
 /// synthesizer has no [`SceneTracks`] and nothing to transport, so its panel
-/// shows the shapes alone.
+/// shows the balls alone.
 ///
 /// The panel owns no state: a row reads the sequence it draws, and pressing a
 /// button writes it. egui may run a panel more than once in a frame, and every
@@ -141,7 +141,7 @@ pub fn mount_controls(world: &mut World) {
             egui::Window::new("Controls").show(ui.ctx(), |ui| {
                 // The tracks are spawned once the audio world has answered
                 // with its voice, so a scene whose soundfont failed to load
-                // shows the shape buttons alone.
+                // shows the ball buttons alone.
                 if let Some(tracks) = world.query::<&SceneTracks>().next().map(|tracks| *tracks) {
                     // One row at a time: the borrow each one takes is given
                     // back before the next asks for its own.
@@ -154,10 +154,10 @@ pub fn mount_controls(world: &mut World) {
                     ui.separator();
                 }
                 ui.horizontal(|ui| {
-                    if ui.button("Drop the next shape").clicked() {
+                    if ui.button("Drop the next ball").clicked() {
                         drop_ball_in(&world);
                     }
-                    if ui.button("Clear the shapes").clicked() {
+                    if ui.button("Clear the balls").clicked() {
                         clear_balls_in(&world);
                     }
                 });
