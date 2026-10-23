@@ -268,12 +268,7 @@ fn dispatch<B: FrameBehaviour>(world: &World, frame: &mut Frame) {
             .root_scope()
             .query_one::<&mut B>(entity)
             .map(|mut behaviour| behaviour.run(world, entity, frame))
-            .unwrap_or_else(|_| {
-                panic!(
-                    "the behaviour entity exists: {}",
-                    world.entity_label(entity)
-                )
-            });
+            .unwrap_or_else(|_| panic!("the behaviour entity exists: {entity:?}"));
     }
 }
 

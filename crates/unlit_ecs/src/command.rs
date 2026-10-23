@@ -207,11 +207,7 @@ impl Command for Despawn {
         // The scope is what the queue saw at queue time; an entity that has
         // moved out of it since, or that turned out to be scaffolding, is not
         // this command's to remove.
-        if world.is_scaffolding(self.entity) || !world.owns(self.scope, self.entity) {
-            return Ok(());
-        }
-        world.despawn_in(self.entity);
-        Ok(())
+        world.despawn_in(self.entity, self.scope)
     }
 }
 
@@ -227,10 +223,7 @@ pub struct Link {
 
 impl Command for Link {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
-        if world.owns(self.scope, self.child) && world.owns(self.scope, self.parent) {
-            world.link_in(self.child, self.parent, self.scope);
-        }
-        Ok(())
+        world.link_in(self.child, self.parent, self.scope)
     }
 }
 
@@ -244,9 +237,6 @@ pub struct Unlink {
 
 impl Command for Unlink {
     fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
-        if world.owns(self.scope, self.child) {
-            world.unlink_in(self.child, self.scope, self.scope);
-        }
-        Ok(())
+        world.unlink_in(self.child, self.scope, self.scope)
     }
 }

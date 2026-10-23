@@ -6,6 +6,12 @@
 //! is alive but out of the scope's reach, or its archetype does not carry what
 //! was asked for. `Option` collapses all of them into one silence.
 //!
+//! A structural change is answered the same way. Despawning and relinking are
+//! turned down for reasons of their own - the entity is out of the subtree, it is
+//! shared, it is scaffolding - and a caller that was refused has to know which it
+//! was: the answer to "not yours" is to ask the scope that owns it, and the answer
+//! to "scaffolding" is to stop asking.
+//!
 //! A borrow conflict is deliberately not one of these. It says nothing about the
 //! handle, only that the cell is busy at the moment it was asked for, and it
 //! stays a panic; see the module documentation of [`crate`].
@@ -54,14 +60,51 @@ pub enum EntityAccessError {
         entity: Entity,
     },
 
-    /// The entity carries no component of type `C`.
-    #[error("{entity:?} carries no `{component}`")]
-    MissingComponent {
-        /// The handle that was looked up.
+    /// The entity is alive, but this scope's subtree does not reach it, so it
+    /// is not the scope's to remove or move.
+    ///
+    /// Despawning and relinking walk the subtree, so what a scope cannot reach
+    /// from inside it is also not its to change. The scope that owns the entity
+    /// - the root, for anything beside this one - is the one to ask.
+    #[error("{entity:?} is outside {scope:?}, so it is not its to move or remove")]
+    NotOwned {
+        /// The handle that was moved or removed.
         entity: Entity,
-        /// The component type that was asked for, as
-        /// [`core::any::type_name`] reports it.
-        component: &'static str,
+        /// The scope that tried.
+        scope: Entity,
+    },
+
+    /// The entity is visible here, but only the root may move or remove it.
+    ///
+    /// The shared subtree is readable from every scope and rearrangeable by none
+    /// but the root: a scope that reads a resource there is a borrower, not an
+    /// owner.
+    #[error("{entity:?} is shared, so only the root may move or remove it")]
+    NotMovable {
+        /// The handle that was moved or removed.
+        entity: Entity,
+        /// The scope that tried.
+        scope: Entity,
+    },
+
+    /// The entity is one of the tree's two scaffolding entities.
+    ///
+    /// The root and the shared scope are what the tree hangs from: they are
+    /// neither counted nor queried, and they do not move or go.
+    #[error("{entity:?} is scaffolding: it neither moves nor goes")]
+    Scaffolding {
+        /// The handle that was moved or removed.
+        entity: Entity,
+    },
+
+    /// Moving `child` under `parent` would put a scope inside its own subtree,
+    /// which would cut the tree in two.
+    #[error("{child:?} cannot be moved under {parent:?}, which it holds")]
+    WouldCycle {
+        /// The handle that would have moved.
+        child: Entity,
+        /// The parent it would have moved under.
+        parent: Entity,
     },
 
     /// The entity's archetype could not be reached.

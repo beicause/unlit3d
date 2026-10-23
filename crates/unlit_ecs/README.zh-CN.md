@@ -44,11 +44,11 @@
 - **借用冲突是 panic，而不是编译错误。** 请求一个已被借用的组件，或在同一个查询里两次
   以 `&mut` 取同一组件，都会报出组件名并终止。这是不做访问冲突分析的代价。可选组件只在
   「组件不存在」这件事上可选：借不到时同样 panic，而不会表现为 `None`。
-- **查找失败是 error，不是 `None`。** 每个触及实体的函数都回答 `Result`，出错时的
-  `EntityAccessError` 会指名被问到的那个句柄：实体已经没了、它在 scope 之外、它不匹配
-  该查询，或者它没有携带该组件。按 id 问 archetype 则回答 `ArchetypeAccessError`。
-  `Option` 只留在「缺席本身不算访问失败」的地方——查询项 `Option<&C>` 对缺 `C` 的实体
-  就是缺席。
+- **访问失败是 error，不是 `None`。** 每个触及实体的函数都回答 `Result`，出错时的
+  `EntityAccessError` 会指名被问到的那个句柄并给出原因：实体已经没了、它在 scope 之外、
+  它不匹配该查询、它未被预留，或者它不属于调用者去搬动。按 id 问 archetype 则回答
+  `ArchetypeAccessError`。`Option` 只留在「缺席本身不算访问失败」的地方——查询项
+  `Option<&C>` 对缺 `C` 的实体就是缺席。
 - **有两个实体是脚手架。** `World::new` 创建 `World::root`——它的 `ScopeOf` 指向自己，
   根 scope 打开的就是它——和 `World::shared`，后者的子树每个 scope 都看得见。两者都能
   携带组件、都能被当作 scope 打开；但它们都不被计数、不被查询、不可 despawn、不可重挂。
@@ -114,7 +114,10 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 `EntityAccessError::NotReserved`。`ScopeMut::despawn` 删除该实体及其整棵子树，
 子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先。`ScopeMut::link` 与
 `unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；
-它们是纯结构变更，不跑任何生命周期回调。只读 scope 通过 `Scope::queue` 排队做同样的
+它们是纯结构变更，不跑任何生命周期回调。三者都回答 `Result`，失败时给出的错误指明
+是哪一种原因：实体已不在、它在 scope 之外、它在 shared 子树里因而只有根能动、它是
+脚手架、或者这次搬动会把树切成两半。于是手里握着别处句柄的调用者不必猜，可以直接去问
+真正拥有它的那个 scope。只读 scope 通过 `Scope::queue` 排队做同样的
 变更，再由驱动器调用 `World::apply` 落盘；后者报告第一个失败的命令，并把其余命令照常跑完。
 
 `World::children` 与 `Scope::children` 对不活着的句柄报错，而不是给一个空列表——
@@ -166,8 +169,9 @@ assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 它来自的那个世界的名字。
 
 从裸 bits 还原的句柄没有名字可印，所以存储这个实体的那一行才是标签唯一长久的副本：
-`Scope::entity_name` 按句柄把它读回来，`Scope::entity_label` 把它渲染成
-`name@index (bits ...)`——MCP 工具与引擎自己的消息报的就是这个。列表里的
+`Scope::entity_name` 按句柄把它读回来。`{:?}` 只印句柄的名字和 bits，不印构成它们的
+索引与世代：那是分配器自己的事，而句柄过线到达调用者时，只剩 bits 这一份。
+报错与引擎自己的消息都这样印。列表里的
 `EntityInfo::name` 是同一个标签，因为句柄本身在那里只是一串整数。
 
 | 实体的来源 | 它的名字 |

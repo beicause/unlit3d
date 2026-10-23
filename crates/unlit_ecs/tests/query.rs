@@ -71,7 +71,7 @@ fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
     assert_eq!(world.root_scope().len(), 3);
 
     // The same archetype keeps the roots at the front while its content churns.
-    assert!(world.root_scope_mut().despawn(first));
+    assert!(world.root_scope_mut().despawn(first).is_ok());
     assert_eq!(world.root_scope().query::<Entity>().count(), 2);
     assert_eq!(world.root_scope().len(), 2);
 
@@ -353,7 +353,7 @@ fn a_query_skips_an_empty_archetype() {
         Position { x: 0.0, y: 0.0 },
         Velocity { dx: 1.0, dy: 1.0 },
     ]);
-    world.root_scope_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity).unwrap();
     world
         .root_scope_mut()
         .spawn(bundle![Position { x: 5.0, y: 5.0 }]);

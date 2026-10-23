@@ -400,8 +400,7 @@ impl InstanceData for UnlitInstance {
         let entity = context.entity;
         let mesh = world.query_one::<&GpuMesh>(entity).unwrap_or_else(|_| {
             panic!(
-                "every visible entity carries the mesh culling resolved, but {} does not",
-                world.entity_label(entity)
+                "every visible entity carries the mesh culling resolved, but {entity:?} does not"
             )
         });
         let base_color = world

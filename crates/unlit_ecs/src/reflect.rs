@@ -23,7 +23,7 @@ use facet::Partial;
 
 #[cfg(test)]
 use crate::World;
-use crate::{ArchetypeBuilder, Entity, Scope};
+use crate::{ArchetypeBuilder, Entity, EntityAccessError, Scope};
 
 /// One component the JSON bridge can address.
 ///
@@ -175,7 +175,7 @@ fn encode_component<C: Facet<'static>>(
 ) -> Result<String, String> {
     let component = scope
         .query_one::<&C>(entity)
-        .map_err(|_| missing::<C>(entity))?;
+        .map_err(|error| missing::<C>(entity, error))?;
     to_json(&*component)
 }
 
@@ -190,12 +190,12 @@ fn set_component<C: Facet<'static> + Clone>(
     let current = scope
         .query_one::<&C>(entity)
         .map(|component| (*component).clone())
-        .map_err(|_| missing::<C>(entity))?;
+        .map_err(|error| missing::<C>(entity, error))?;
     let value: C = apply(current, patch)?;
     scope
         .query_one::<&mut C>(entity)
         .map(|mut component| *component = value)
-        .map_err(|_| missing::<C>(entity))
+        .map_err(|error| missing::<C>(entity, error))
 }
 
 /// The value a patch produces over `base`.
@@ -253,9 +253,11 @@ fn materialize<C: Facet<'static>>(partial: Partial<'static, false>) -> Result<C,
     heap.materialize::<C>().map_err(|error| error.to_string())
 }
 
-fn missing<C: Facet<'static>>(entity: Entity) -> String {
+/// Says which component was asked for and why the lookup failed: the handle
+/// may be dead or out of the scope's reach, and each has its own reply.
+fn missing<C: Facet<'static>>(entity: Entity, error: EntityAccessError) -> String {
     format!(
-        "entity {entity:?} has no {} component",
+        "entity {entity:?} has no {} component: {error}",
         C::SHAPE.type_identifier
     )
 }
@@ -272,6 +274,9 @@ mod tests {
         x: f32,
         y: f32,
     }
+
+    #[derive(Clone, Copy, Debug, Default, facet::Facet)]
+    struct Name(&'static str);
 
     inventory::submit! { ComponentEntry::default::<Position>() }
 
@@ -342,6 +347,26 @@ mod tests {
         let error =
             encode(&world.root_scope(), entity, "Position").expect_err("the entity has nothing");
         assert!(error.contains("has no Position"), "{error}");
+    }
+
+    /// The reason the access was refused travels with the message, so a caller
+    /// can tell a dead handle from one the scope cannot see or one that lacks
+    /// the component: they have different replies.
+    #[test]
+    fn a_refused_access_names_its_reason() {
+        let mut world = World::new();
+        let scene = world.root_scope_mut().spawn(bundle![Name("scene")]);
+        let outside = world.root_scope_mut().spawn(bundle![Position::default()]);
+        let dead = world.root_scope_mut().spawn(bundle![Position::default()]);
+        world.root_scope_mut().despawn(dead).unwrap();
+
+        let hidden = encode(&world.scope(scene).unwrap(), outside, "Position")
+            .expect_err("the scene cannot see it");
+        assert!(hidden.contains("is not visible from"), "{hidden}");
+        assert!(!hidden.contains("has no Position"), "{hidden}");
+
+        let gone = encode(&world.root_scope(), dead, "Position").expect_err("it is gone");
+        assert!(gone.contains("names no live entity"), "{gone}");
     }
 
     /// Every submitted name is distinct, so addressing one component by name is

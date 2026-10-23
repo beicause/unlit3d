@@ -710,7 +710,7 @@ async fn node_hierarchy_translates_the_quad() {
         // closure starts from the same empty world.
         for node in entities {
             for entity in node.entities {
-                let _ = gpu.despawn(&mut world, entity);
+                gpu.despawn(&mut world, entity);
             }
         }
         // Giving up the handles is the unload; the next maintain collects.
@@ -890,7 +890,7 @@ async fn a_masked_material_discards_fragments_below_its_cutoff() {
         let px = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target_handle);
         for node in entities {
             for entity in node.entities {
-                let _ = gpu.despawn(&mut world, entity);
+                gpu.despawn(&mut world, entity);
             }
         }
         // Giving up the handles is the unload; the next maintain collects.
@@ -946,7 +946,7 @@ async fn unload_empties_the_frame() {
 
     for node in entities {
         for entity in node.entities {
-            let _ = gpu.despawn(&mut world, entity);
+            gpu.despawn(&mut world, entity);
         }
     }
     // Giving up the handles is the unload; the next maintain collects.

@@ -141,12 +141,13 @@ impl TestGpu {
     }
 
     /// Despawn `entity` through the mesh source's subtree.
-    pub fn despawn(&self, world: &mut World, entity: Entity) -> bool {
+    pub fn despawn(&self, world: &mut World, entity: Entity) {
         let source = self.mesh_source();
         world
             .scope_mut(source)
             .expect("the source entity is its own scope")
             .despawn(entity)
+            .expect("the mesh source owns what it drew");
     }
 
     /// Run `f` on the mesh source.

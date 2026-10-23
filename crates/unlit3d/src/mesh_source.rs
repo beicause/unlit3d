@@ -401,7 +401,7 @@ impl MeshSource {
     /// The world addresses this source draws through.
     ///
     /// Setup-time code that needs the resource graph reaches it with
-    /// `view.get_mut::<ResourceGraph>(source.context().graph)`, which is an
+    /// `view.query_one::<&ResourceGraph>(source.context().graph)`, which is an
     /// ordinary ECS access: the graph and the source live in different cells.
     pub fn context(&self) -> RenderContext {
         self.context
@@ -1169,10 +1169,7 @@ impl MeshSource {
                 let mesh = world
                     .query_one::<&GpuMesh>(entry.mesh.entity)
                     .unwrap_or_else(|_| {
-                        panic!(
-                            "visible entity has GpuMesh: {}",
-                            world.entity_label(entry.mesh.entity)
-                        )
+                        panic!("visible entity has GpuMesh: {:?}", entry.mesh.entity)
                     });
 
                 let mesh_bg = mesh
@@ -2505,8 +2502,8 @@ mod tests {
             .expect("the uv-less entity is visible")
             .pipeline_id;
         assert!(first_id < second_id);
-        assert!(h.world.root_scope_mut().despawn(warm_standard));
-        assert!(h.world.root_scope_mut().despawn(warm_alternative));
+        assert!(h.world.root_scope_mut().despawn(warm_standard).is_ok());
+        assert!(h.world.root_scope_mut().despawn(warm_alternative).is_ok());
 
         // Spawn the later-drawn entity first: draw order is the pipeline id,
         // not the spawn order.
@@ -3307,7 +3304,7 @@ mod tests {
         // Despawning the drawn entity and giving the local handle up leaves the
         // mesh root unheld, and dropping the source gives up everything it
         // registered itself.
-        h.world.root_scope_mut().despawn(drawn);
+        h.world.root_scope_mut().despawn(drawn).unwrap();
         drop(mesh);
         drop(h.source);
         ctx.graph(&h.world.root_scope()).maintain();

@@ -62,7 +62,7 @@ impl OrderKey for FrameSourceOrder {
 /// It holds [`Entity`] handles rather than borrows, so it is `Copy` and never
 /// conflicts with a source's own borrow of the world. A source fetches what it
 /// needs from the components those entities carry:
-/// `world.root_scope().get_mut::<ResourceGraph>(ctx.graph)`.
+/// `world.root_scope().query_one::<&ResourceGraph>(ctx.graph)`.
 ///
 /// The handles are spawned once by [`spawn_context`] and stay valid for the
 /// world's life; a resource entity is never despawned while frames are drawn.
@@ -561,7 +561,7 @@ mod tests {
 
         // An explicit order is the way to choose: the entity is only a
         // tie-break, and it does not survive a respawn reusing the index.
-        world.root_scope_mut().despawn(second);
+        world.root_scope_mut().despawn(second).unwrap();
         assert_eq!(
             record_order(&world).0,
             vec![first, third],
@@ -712,12 +712,9 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(entity)
                 .map(|mut source| {
-                    let scope = world.scope(entity).unwrap_or_else(|_| {
-                        panic!(
-                            "a source entity is its own scope: {}",
-                            world.entity_label(entity)
-                        )
-                    });
+                    let scope = world
+                        .scope(entity)
+                        .unwrap_or_else(|_| panic!("a source entity is its own scope: {entity:?}"));
                     source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
                 })
                 .unwrap();
@@ -775,12 +772,9 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(*entity)
                 .map(|mut source| {
-                    let scope = world.scope(*entity).unwrap_or_else(|_| {
-                        panic!(
-                            "a source entity is its own scope: {}",
-                            world.entity_label(*entity)
-                        )
-                    });
+                    let scope = world
+                        .scope(*entity)
+                        .unwrap_or_else(|_| panic!("a source entity is its own scope: {entity:?}"));
                     source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
                 })
                 .unwrap();
@@ -897,7 +891,7 @@ mod tests {
             .next()
             .expect("a source")
             .0;
-        world.root_scope_mut().despawn(first);
+        world.root_scope_mut().despawn(first).unwrap();
         resolved.resolve(
             world
                 .root_scope()
@@ -1281,15 +1275,12 @@ mod release_tests {
             .root_scope()
             .query_one::<&mut Source>(entity)
             .map(|mut source| {
-                let scope = world.scope(entity).unwrap_or_else(|_| {
-                    panic!(
-                        "a source entity is its own scope: {}",
-                        world.entity_label(entity)
-                    )
-                });
+                let scope = world
+                    .scope(entity)
+                    .unwrap_or_else(|_| panic!("a source entity is its own scope: {entity:?}"));
                 source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
             })
-            .unwrap_or_else(|_| panic!("the source entity exists: {}", world.entity_label(entity)));
+            .unwrap_or_else(|_| panic!("the source entity exists: {entity:?}"));
     }
 
     /// How many nodes the context's graph holds.
@@ -1332,7 +1323,7 @@ mod release_tests {
             "the source registered exactly the node it owns"
         );
 
-        world.root_scope_mut().despawn(entity);
+        world.root_scope_mut().despawn(entity).unwrap();
 
         // Giving up the id only moves a count: the node is still there, and
         // the graph resolves it until something maintains.
@@ -1363,7 +1354,7 @@ mod release_tests {
                 node: None,
             }),]);
 
-        world.root_scope_mut().despawn(entity);
+        world.root_scope_mut().despawn(entity).unwrap();
         assert!(!world.root_scope().contains(entity));
         maintain(&mut world, ctx);
         assert_eq!(graph_len(&world, ctx), 0);
@@ -1396,7 +1387,7 @@ mod release_tests {
         assert_eq!(graph_len(&world, ctx), 2, "each source registered a node");
 
         for &entity in &entities {
-            world.root_scope_mut().despawn(entity);
+            world.root_scope_mut().despawn(entity).unwrap();
         }
 
         // Both removals only moved counts: the nodes the two sources owned are

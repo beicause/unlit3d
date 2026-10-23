@@ -41,7 +41,7 @@ fn a_despawn_callback_runs_before_the_row_is_removed() {
             sink.borrow_mut().push(format!("despawn {marker}"));
         }),
     ]);
-    world.root_scope_mut().despawn(entity);
+    world.root_scope_mut().despawn(entity).unwrap();
     assert_eq!(*seen.borrow(), ["despawn 7"]);
 }
 
@@ -59,7 +59,7 @@ fn a_cascade_runs_children_before_their_parent() {
         Marker(2),
         OnDespawn::new(move |_view, _| inner.borrow_mut().push("child".to_owned())),
     ]);
-    world.root_scope_mut().despawn(scene);
+    world.root_scope_mut().despawn(scene).unwrap();
     assert_eq!(*seen.borrow(), ["child", "scene"]);
 }
 
@@ -105,7 +105,7 @@ fn a_callback_can_queue_a_spawn_that_runs_on_apply() {
 fn an_entity_without_lifecycle_components_runs_nothing() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(bundle![Marker(1)]);
-    assert!(world.root_scope_mut().despawn(entity));
+    assert!(world.root_scope_mut().despawn(entity).is_ok());
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn link_does_not_trigger_a_lifecycle_callback() {
         OnSpawn::new(move |_view, _| sink.borrow_mut().push("spawn".to_owned())),
     ]);
     seen.borrow_mut().clear();
-    world.scope_mut(scene).unwrap().link(child, scene);
+    world.scope_mut(scene).unwrap().link(child, scene).unwrap();
     assert!(seen.borrow().is_empty(), "relinking is not a spawn");
 }
 

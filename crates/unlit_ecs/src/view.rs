@@ -100,9 +100,11 @@ impl<'w> Scope<'w> {
     ///
     /// This is the one-entity form of [`Scope::query`]: the row the entity is
     /// stored at is looked up directly instead of the archetypes being walked.
-    /// A lookup that finds nothing says which of the three reasons it was: the
-    /// entity is not alive, out of this scope's reach, or its archetype does
-    /// not satisfy the query.
+    /// A lookup that finds nothing says why: the entity is not alive, out of
+    /// this scope's reach, or its row does not satisfy the query. The last one
+    /// covers two cases a caller answers the same way, so it is one error: the
+    /// archetype does not match `Q`, or the row is in the shared subtree, which
+    /// a non-root scope reads through [`Scope::query`] but not handle by handle.
     ///
     /// A lookup by handle does not filter the scaffolding: the root and the
     /// shared scope answer like any other entity, which is what lets the
@@ -168,7 +170,10 @@ impl<'w> Scope<'w> {
     /// visibility.
     pub fn archetype_of(&self, entity: Entity) -> Result<&'w Archetype, EntityAccessError> {
         let location = self.location(entity)?;
-        Ok(self.world.archetypes().get(location.archetype())?)
+        self.world
+            .archetypes()
+            .get(location.archetype())
+            .map_err(EntityAccessError::from)
     }
 
     /// Every archetype this scope sees in full, in id order.
@@ -286,13 +291,6 @@ impl<'w> Scope<'w> {
     pub fn entity_name(&self, entity: Entity) -> Result<&'static str, EntityAccessError> {
         self.location(entity)?;
         self.world.entity_name(entity)
-    }
-
-    /// How a message names a visible entity: its label and the bits it travels
-    /// as. See [`World::entity_label`].
-    #[must_use]
-    pub fn entity_label(&self, entity: Entity) -> String {
-        self.world.entity_label(entity)
     }
 
     /// A visible entity's location and component names.
@@ -475,18 +473,16 @@ impl<'w> ScopeMut<'w> {
 
     /// Despawn `entity` and its whole subtree.
     ///
-    /// Returns `false` when the entity is not alive, is not owned by this
-    /// scope, or is one of the tree's two scaffolding entities. A resource in
-    /// the shared subtree is the root's to remove, so only a root scope takes
-    /// it; the shared scope itself is scaffolding and stays.
-    pub fn despawn(&mut self, entity: Entity) -> bool {
-        if self.world.is_scaffolding(entity) {
-            return false;
-        }
-        if !self.world.owns(self.scope, entity) {
-            return false;
-        }
-        self.world.despawn_in(entity)
+    /// Children are removed before the parent they lived in, so a child's
+    /// despawn callback still sees living ancestors.
+    ///
+    /// Answers [`EntityAccessError::NotAlive`] for a handle that names no live
+    /// entity, `NotOwned` for one outside this scope's subtree, `NotMovable`
+    /// for one the shared subtree only lends this scope - the root is the
+    /// scope that may remove it - and `Scaffolding` for the root and the
+    /// shared scope themselves.
+    pub fn despawn(&mut self, entity: Entity) -> Result<(), EntityAccessError> {
+        self.world.despawn_in(entity, self.scope)
     }
 
     /// Make `child` a child of `parent`.
@@ -495,22 +491,24 @@ impl<'w> ScopeMut<'w> {
     /// scope, and `parent` may not be inside `child`'s subtree. An entity in
     /// the shared subtree is the root's to move, so only a root scope relinks
     /// it.
-    pub fn link(&mut self, child: Entity, parent: Entity) -> bool {
-        if !self.world.owns(self.scope, child) || !self.world.owns(self.scope, parent) {
-            return false;
-        }
+    ///
+    /// The same errors as [`ScopeMut::despawn`], plus
+    /// [`EntityAccessError::WouldCycle`] when `parent` is `child` itself or
+    /// sits inside its subtree: that move would cut the tree in two.
+    pub fn link(&mut self, child: Entity, parent: Entity) -> Result<(), EntityAccessError> {
         self.world.link_in(child, parent, self.scope)
     }
 
     /// Detach `child` from its parent and put it in this scope.
     ///
-    /// Returns `false` when the entity is not alive, is not owned by this
-    /// scope, or is scaffolding: an entity in the shared subtree moves only for
-    /// the root.
-    pub fn unlink(&mut self, child: Entity) -> bool {
-        if !self.world.owns(self.scope, child) {
-            return false;
-        }
+    /// An entity already in this scope has nowhere to move to, and that is
+    /// answered with `Ok(())` rather than an error: what the caller asked for
+    /// is already true.
+    ///
+    /// The same errors as [`ScopeMut::despawn`], plus
+    /// [`EntityAccessError::WouldCycle`] when `child` is this scope itself,
+    /// which would make it its own parent.
+    pub fn unlink(&mut self, child: Entity) -> Result<(), EntityAccessError> {
         self.world.unlink_in(child, self.scope, self.scope)
     }
 

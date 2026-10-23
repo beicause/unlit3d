@@ -50,6 +50,34 @@ fn a_reservation_names_the_handle_before_its_bundle_exists() {
     );
 }
 
+/// `Debug` prints the name the caller can act on and the bits the handle
+/// travels as, and not the index and generation it is made of.
+#[test]
+fn the_debug_print_names_the_bits_and_not_the_allocation() {
+    let mut world = World::new();
+    let named = world
+        .root_scope_mut()
+        .spawn_named("a name of its own", bundle![Cube]);
+    let printed = format!("{named:?}");
+    assert!(printed.contains("a name of its own"), "{printed}");
+    assert!(
+        printed.contains(&format!("{}", named.to_bits())),
+        "{printed} carries the bits"
+    );
+    assert!(!printed.contains("index"), "{printed}");
+    assert!(!printed.contains("generation"), "{printed}");
+
+    // A handle that came over the wire has no name, so the bits are all it
+    // can print, and the errors it appears in still say which entity it was.
+    let restored = unlit_ecs::Entity::from_bits(named.to_bits());
+    let printed = format!("{restored:?}");
+    assert!(
+        printed.contains(&format!("{}", restored.to_bits())),
+        "{printed}"
+    );
+    assert!(printed.contains("name: \"\""), "{printed}");
+}
+
 #[test]
 fn the_name_is_a_label_and_not_part_of_the_identity() {
     let mut world = World::new();

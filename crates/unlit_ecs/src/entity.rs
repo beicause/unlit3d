@@ -29,13 +29,24 @@ use crate::error::EntityAccessError;
 /// reservation. Two handles to one entity can carry different names and still be
 /// equal, because a handle restored from [`Entity::to_bits`] has no name to
 /// restore; [`crate::Scope::entity_name`] reads the one the row stores.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Entity {
     index: u32,
     generation: u32,
     name: &'static str,
 }
 
+/// Prints the name and the bits the handle travels as, and not the index and
+/// generation they are made of: those are the allocator's business, while the
+/// bits are the only part a caller holds when the handle came over a wire.
+impl core::fmt::Debug for Entity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Entity")
+            .field("name", &self.name)
+            .field("bits", &self.to_bits())
+            .finish()
+    }
+}
 impl PartialEq for Entity {
     fn eq(&self, other: &Self) -> bool {
         self.index == other.index && self.generation == other.generation
