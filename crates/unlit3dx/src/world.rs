@@ -329,6 +329,7 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
     }
     if stepped.control.stop_requested() {
         stepped.status.finish();
+        stepped.commands.close();
         return;
     }
     loop {
@@ -341,36 +342,44 @@ pub fn step_stepped_world(host: &World, entity: Entity) {
             let message = panic_message(payload.as_ref());
             log::error!("the stepped world {} panicked: {message}", stepped.name);
             stepped.status.record_panic(message);
+            // The world is over. Close the queue so a sender learns it from
+            // the send, as a threaded world's departed receiver already
+            // taught it.
+            stepped.commands.close();
             return;
         }
     }
     let SteppedWorld {
         world,
+        commands,
         control,
         tick,
         status,
         name,
-        ..
     } = &mut **stepped;
     LocalTasks::pump(world);
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(world, control)));
-    let running = match outcome {
-        Ok(true) => true,
+    match outcome {
+        Ok(true) => {}
         Ok(false) => {
+            // A tick that ends the world still publishes: the state it leaves
+            // is the last one its readers ever get.
+            publish_collected(world);
             status.finish();
-            false
+            commands.close();
+            return;
         }
         Err(payload) => {
             let message = panic_message(payload.as_ref());
             log::error!("the stepped world {name} panicked: {message}");
             status.record_panic(message);
-            false
+            // A collector is arbitrary code: running one now would hand its
+            // panic to the host, so the world stops collecting here.
+            commands.close();
+            return;
         }
-    };
-    // A tick that ended the world still publishes: the state it leaves is
-    // the last one its readers ever get.
+    }
     publish_collected(world);
-    let _ = running;
 }
 
 /// Run `f` against a stepped world's world, if `entity` names one.

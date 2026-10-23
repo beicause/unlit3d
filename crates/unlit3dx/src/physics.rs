@@ -264,6 +264,7 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
     config: PhysicsConfig,
 ) -> WorldHandle {
     let mut clock = FixedClock::new(Duration::from_secs_f64(1.0 / config.hz));
+    let mut started = false;
     R::spawn(
         host,
         "physics",
@@ -273,8 +274,15 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
             if control.stop_requested() {
                 return false;
             }
+            // Pace before stepping, so the step is the last thing a turn does
+            // and the runner publishes its poses at once. The first turn runs
+            // straight away: a world that came up with its geometry already
+            // queued does not wait a step to move it.
+            if started {
+                clock.wait(control);
+            }
+            started = true;
             step_once(world);
-            clock.wait(control);
             true
         },
     )

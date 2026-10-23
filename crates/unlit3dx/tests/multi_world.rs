@@ -93,6 +93,112 @@ fn a_panicking_job_ends_the_sub_world() {
         ),
         "the panic is the world's last state"
     );
+    // The queue closed with the world: a later send is refused instead of
+    // landing in a queue nothing will ever drain.
+    assert_eq!(
+        proxy.sender.send(Box::new(|_: &mut World| {})),
+        Err(SendError::Closed)
+    );
+}
+
+/// A collector is arbitrary code, so a world that has panicked runs none:
+/// the panic stays in the world that raised it instead of reaching the host.
+#[test]
+fn a_panicking_job_does_not_run_the_collectors() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 16);
+
+    let collected = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&collected);
+    let reader = proxy
+        .sender
+        .watch(move |_world: &World| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(1u32)
+        })
+        .expect("the world accepts a subscription");
+    let _ = proxy.sender.send(Box::new(|_: &mut World| {
+        panic!("this job cannot run");
+    }));
+
+    let mut nested = host
+        .root_scope()
+        .query_one::<&mut World>(proxy.entity)
+        .expect("the nested world");
+    drain_sub_world(&mut nested);
+
+    assert!(proxy.is_finished(), "the panic ended the sub-world");
+    assert_eq!(
+        collected.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "a collector must not run after the world panicked"
+    );
+    assert!(reader.latest().is_none(), "nothing was collected");
+}
+
+/// Stopping a sub-world ends it on the next drain, and the queue closes with
+/// it: the host is the one that drives it, so nothing else would ever stop
+/// accepting jobs.
+#[test]
+fn stopping_a_sub_world_ends_it_and_refuses_jobs() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 16);
+    proxy.stop();
+
+    let ran = Arc::new(std::sync::Mutex::new(false));
+    let seen = Arc::clone(&ran);
+    let _ = proxy.sender.send(Box::new(move |_: &mut World| {
+        *seen.lock().expect("the order lock") = true;
+    }));
+
+    let mut nested = host
+        .root_scope()
+        .query_one::<&mut World>(proxy.entity)
+        .expect("the nested world");
+    drain_sub_world(&mut nested);
+
+    assert!(
+        !*ran.lock().expect("the order lock"),
+        "a stopped sub-world runs nothing"
+    );
+    assert!(proxy.is_finished(), "the stop ended the sub-world");
+    assert_eq!(proxy.state.latest().as_deref(), Some(&WorldState::Stopped));
+    assert_eq!(
+        proxy.sender.send(Box::new(|_: &mut World| {})),
+        Err(SendError::Closed)
+    );
+}
+
+/// Dropping the entity that carries the sub-world ends it, so an owner that
+/// tears its worlds down is not left with one that reports `Running`
+/// forever.
+#[test]
+fn despawning_a_sub_world_ends_it() {
+    let mut host = World::new();
+    let proxy = spawn_sub_world(&mut host, "nested", 16);
+
+    assert!(
+        host.root_scope_mut().despawn(proxy.entity),
+        "the proxy entity despawns"
+    );
+
+    assert!(proxy.is_finished(), "the sub-world ended with its entity");
+    assert_eq!(proxy.state.latest().as_deref(), Some(&WorldState::Stopped));
+}
+
+/// A stepped world that has ended closes its queue, so a send after the end
+/// is refused rather than queued for a step that will never come.
+#[test]
+fn a_finished_stepped_world_refuses_jobs() {
+    let mut host = World::new();
+    let world = spawn_stepped_world_with_init(&mut host, "stepped", 8, |_| (), |_, _, ()| false);
+    step_stepped_world(&host, world.entity);
+
+    assert!(world.is_finished(), "the tick ended the world");
+    assert_eq!(
+        world.sender.send(Box::new(|_: &mut World| {})),
+        Err(SendError::Closed)
+    );
 }
 
 /// A threaded world's state persists between jobs: later jobs see what

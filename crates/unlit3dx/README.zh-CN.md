@@ -46,7 +46,7 @@ if let Some(latest) = reader.latest() {
 ```
 
 按 feature 划分的模块在这套核心之上搭场景。**子 world** 让持有者留在主线程上，
-但接收 job 的方式与远程 world 相同：
+但接收 job 的方式与独占线程的 world 相同：
 
 ```rust,ignore
 let render = spawn_sub_world(&mut host, "render", 64); // 64 个排队 job
@@ -69,11 +69,11 @@ note job 与 MIDI 文件变成音色库音频。render 桥是调用方自己的�
   绘制 world 就是其一：它在主线程上绘制，宿主只在事件之间进入它。它同样有一个
   job 收件箱：`spawn_sub_world` 把收件箱接好，其他线程通过它返回的
   `WorldHandle` 投递 job，持有者在自己的步骤之间调用 `drain_sub_world`——
-  与远程 world 相同的协议，只是没有线程。
+  与独占线程的 world 相同的协议，只是没有线程。
 - **独占线程的 world（threaded world）** 是属于自己的线程的 `World`。物理、音频与玩法
   各运行一个。
 
-world 之间从不互相调用。调用者发送一个 **job**——一个接收远程 world 的
+world 之间从不互相调用。调用者发送一个 **job**——一个接收目标 world 的
 `&mut World` 的装箱闭包——并通过 **订阅** 接收：状态用快照，事件用流。
 这就是全部协议。
 
@@ -82,7 +82,7 @@ world 之间从不互相调用。调用者发送一个 **job**——一个接收
 `Job` 是装箱的 `FnOnce(&mut World)`。`WorldHandle::sender` 把一个 job 排入
 队列且从不阻塞：队列满了返回 `Err(SendError::Full)`，world 已停返回
 `Err(SendError::Closed)`，因此一个向自己的队列发送的 world 线程不会与自己死锁。
-远程线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
+world 的线程在每次 tick 之前先清空队列，因此 job 永不与 tick 竞争。
 
 job 也是世界改变另一个世界的唯一方式，而且它不回答任何东西：需要汇报什么的
 world 改为通过订阅发布。回复会让发送方等待一个可能正忙、已停止或已经消失的
@@ -115,7 +115,8 @@ tick 跑完后代为发布，因此 tick 体自己什么也不发布，也不可
 
 该用哪一个，取决于调用方要的答案：
 
-- 只关心**最新**的值——相机的位姿、播放头的位置、面板绘制所用的目标——用 `watch`。
+- 只关心**最新**的值——移动过的刚体的位姿、播放头的位置、world 对自己状态的
+  报告——用 `watch`。
 - 每一个值都按顺序要——刚生成的一个刚体、渲染侧回收的一个实例、结束的一个音符——用
   `subscribe`。
 - 一次 job、一个值——某次安装创建的实体、某次构建产出的资源——用 `ask`。
@@ -299,12 +300,12 @@ world.root_scope_mut().spawn((request_gpu(app, |world, gpu| {
 
 `cargo nextest run -p unlit3dx` 覆盖核心：job 及其队列、订阅——多个 reader 各自
 拿到自己的快照、收集闭包返回空时保留最新一份、reader 被丢弃后订阅被清除、队列满时
-订阅被拒绝——线程停止与 panic 报告、远程 world 的已发送 job 运行，以及步进 world 的
+订阅被拒绝——线程停止与 panic 报告、独占线程的 world 的已发送 job 运行，以及步进 world 的
 同一批行为——它的 job 在步进时运行、走完终点的 tick 会结束它、步进一个不携带步进
 world 的实体什么也不做。集成测试补上各桥：物理 world
 把球丢到地板上并报告接触、订阅者把两次分别落地的碰撞都排进队列（信箱会把它们并成
 一次）、音频 world 运行 job 并报告输出已打开、多 world 的 job 与
-快照往来，以及 panic 的 job 不会打断排在它后面的 job。录音也有覆盖：它捕获设备本会播放的
+快照往来，以及一个 panic 的 job 结束它的 world、排在它后面的 job 不再运行。录音也有覆盖：它捕获设备本会播放的
 混音并把样本排成 RIFF/WAVE 文件，音频 MCP 工具则把两者串进下面这套分发覆盖。打开 `mcp` feature 后，MCP 命令分发也有覆盖：
 world 列表、路由到嵌套 world、路由到自有一条线程或由宿主步进的 world，
 以及指向不带 world 的实体、已经停止的 world、拒绝该 job 的队列时给出可读的失败；

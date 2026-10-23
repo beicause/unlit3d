@@ -21,7 +21,18 @@ struct SubWorldInbox(Receiver<Job>);
 
 /// The sub-world's status, published the way a threaded world publishes its
 /// own, so a host learns that its sub-world ended.
+///
+/// It is a component of the nested world, so dropping that world - the host
+/// despawning the entity — is what ends the sub-world: the state it leaves
+/// behind reads `Stopped`, and a reader that arrives afterwards still sees
+/// it.
 struct SubWorldStatus(ThreadStatus);
+
+impl Drop for SubWorldStatus {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
+}
 
 /// Spawn a sub-world that shares the host's thread, nested as a [`World`]
 /// component of the returned entity, with a command inbox of the given
@@ -69,12 +80,16 @@ pub fn spawn_sub_world(
 /// arrive at any time and must land between frames, on the host's thread.
 ///
 /// A job that panics ends the sub-world: the drain stops where the panic
-/// was, and the world's state reports the panic. A world that has ended is
-/// left alone, so a later drain runs nothing.
+/// was, the world's state reports the panic, and the queue closes so a
+/// later send is refused instead of queued for a world that will never run
+/// it. A world that has ended is left alone, collectors included: a
+/// collector is arbitrary code, and running one past a panic would hand the
+/// panic to the host.
 ///
 /// Once the jobs have run the drain publishes what the world's subscriptions
 /// collected, so a sub-world publishes on the host's thread the way a
-/// threaded world publishes on its own.
+/// threaded world publishes on its own. A world its owner has stopped
+/// publishes its last state and then ends.
 pub fn drain_sub_world(nested: &mut World) {
     // The jobs take the world while they run, so the inbox borrow must end
     // before the first one starts. Cloning the receiver is cheap and lets the
@@ -92,13 +107,22 @@ pub fn drain_sub_world(nested: &mut World) {
     if status.is_finished() {
         return;
     }
+    if status.stop_requested() {
+        status.finish();
+        receiver.close();
+        return;
+    }
     while let Ok(job) = receiver.try_recv() {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(nested)));
         if let Err(payload) = result {
             let message = panic_message(payload.as_ref());
             log::error!("a sub-world job panicked: {message}");
             status.record_panic(message);
-            break;
+            // The world is over. Close the queue so a sender learns it from
+            // the send, as a threaded world's departed receiver already
+            // taught it.
+            receiver.close();
+            return;
         }
     }
     publish_collected(nested);

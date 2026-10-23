@@ -127,12 +127,16 @@ impl ThreadStatus {
         Self::at(stop)
     }
 
-    /// A status for a world that shares its owner's thread.
+    /// A status for a world nothing drives on its own.
     ///
-    /// Such a world never ends on its own: the owner decides when it is
-    /// gone, so the state stays [`WorldState::Running`] and only the stop
-    /// signal is shared.
-    pub(crate) fn detached() -> Self {
+    /// A world that shares its owner's thread - a sub-world on the host, a
+    /// runner of the caller's own - ends when its owner says so, so the state
+    /// stays [`WorldState::Running`] until then, and the stop signal belongs
+    /// to that owner alone.
+    ///
+    /// A caller building a [`WorldHandle`](crate::handle::WorldHandle) for a
+    /// world of its own passes this.
+    pub fn detached() -> Self {
         Self::at(Arc::default())
     }
 
@@ -169,11 +173,24 @@ impl ThreadStatus {
         self.stop.request();
     }
 
+    /// Whether the world has been asked to stop.
+    ///
+    /// A world on its own thread reads this from its tick loop; a world the
+    /// host drives reads it when the host drains it.
+    pub(crate) fn stop_requested(&self) -> bool {
+        self.stop.requested()
+    }
+
     /// Mark the world as finished.
     ///
     /// A world on its own thread marks itself when its loop ends; a stepped
-    /// world's host calls this when its tick returns `false`.
+    /// world's host calls this when its tick returns `false`, and a world
+    /// dropped by its owner marks itself as it goes. A world that has already
+    /// ended keeps the state it ended with: a panic stays the last word.
     pub(crate) fn finish(&self) {
+        if self.is_finished() {
+            return;
+        }
         self.state.publish(WorldState::Stopped);
     }
 

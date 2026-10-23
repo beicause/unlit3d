@@ -264,7 +264,7 @@ Per-crate notes:
 | [`unlit_wgpu_test_util`](crates/unlit_wgpu_test_util/README.md) | How the harness itself behaves — the snapshot comparison, and counting the pixels that differ. The GPU tests it makes possible live in the crates above. |
 | [`unlit3d_examples`](unlit3d_examples/README.md) | The command line (`src/cli.rs`) and the fixed-step playback clock (`src/lib.rs`). Its rendering output is checked by the CI snapshot job, not by a `cargo test` target. |
 | [`unlit3d_cli`](unlit3d_cli/README.md) | The argument parser and configuration merging, plus the end-to-end render test that reproduces the example's reference glTF scene and compares it against the stored snapshots. |
-| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: job round trips, snapshot and stream subscriptions, the state a world publishes about itself, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
+| [`unlit3dx`](crates/unlit3dx/README.md) | The multi-world core: jobs reaching their world, snapshot and stream subscriptions, the state a world publishes about itself, the render bridge's failure paths, and the physics, audio and MCP bridges end to end. |
 | [`unlit3dx_examples`](unlit3dx_examples/README.md) | The demo's scene logic as unit tests, and an end-to-end headless run whose captured frames and audio mix compare against the snapshots under the asset submodule; the same worlds also run stepped in a browser and behind an Android activity. |
 
 A GPU is needed for the rendering crates' integration tests and for the example.

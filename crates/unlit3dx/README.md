@@ -135,8 +135,8 @@ leaves it empty.
 
 Which one to reach for follows from the answer the caller needs:
 
-- A value that is only ever *the newest* — the camera's pose, the playhead's
-  position, the target a panel drew into — is `watch`.
+- A value that is only ever *the newest* — the poses of the bodies that moved,
+  the playhead's position, what a world reports about itself — is `watch`.
 - Every value, in order — a body that spawned, an instance the renderer
   retired, a note that ended — is `subscribe`.
 - One value, once, from one job — the entity an install created, the assets
@@ -405,7 +405,8 @@ integration tests add the bridges: a physics world dropping a ball onto a
 floor and reporting the contact, a subscriber queueing the contacts of two
 separate landings that a mailbox would have collapsed into one, the audio
 world running jobs and reporting its output opening, multi-world job and
-snapshot traffic, and a panicking job not stopping the jobs behind it.
+snapshot traffic, and a panicking job ending its world with the jobs behind
+it left unrun.
 Recording is covered too: it captures the mix the device would play and lays
 the samples out as a RIFF/WAVE file, and the audio MCP tools drive both
 through the dispatch coverage below. With the `mcp` feature on, the MCP command dispatch
