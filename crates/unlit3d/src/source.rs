@@ -24,7 +24,7 @@ use core::any::Any;
 use core::ops::DerefMut;
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, Scope, World};
+use unlit_ecs::{Entity, EntityAccessError, Scope, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
@@ -135,9 +135,9 @@ impl RenderContext {
     /// The resource entities all carry the whole [`RenderContext`], so a
     /// caller that was handed a device, queue, graph, capabilities or clock
     /// address gets the rest without assuming the world holds exactly one
-    /// context. `None` when `anchor` carries no context.
-    #[must_use]
-    pub fn of(world: &World, anchor: Entity) -> Option<Self> {
+    /// context. [`EntityAccessError`] when `anchor` carries no context, which
+    /// also covers an entity that is not alive or not visible from the root.
+    pub fn of(world: &World, anchor: Entity) -> Result<Self, EntityAccessError> {
         world
             .root_scope()
             .query_one::<&RenderContext>(anchor)
@@ -162,7 +162,7 @@ impl Drop for MaintainScope<'_> {
     fn drop(&mut self) {
         // A missing graph is a caller error, and panicking here would be a
         // second panic on the way out of one, so the scope does nothing.
-        if let Some(mut graph) = self.scope.query_one::<&mut ResourceGraph>(self.ctx.graph) {
+        if let Ok(mut graph) = self.scope.query_one::<&mut ResourceGraph>(self.ctx.graph) {
             graph.maintain();
         }
     }
@@ -702,7 +702,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(entity)
                 .map(|mut source| {
-                    let scope = world.scope(entity).unwrap_or_else(|| {
+                    let scope = world.scope(entity).unwrap_or_else(|_| {
                         panic!(
                             "a source entity is its own scope: {}",
                             world.entity_label(entity)
@@ -765,7 +765,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(*entity)
                 .map(|mut source| {
-                    let scope = world.scope(*entity).unwrap_or_else(|| {
+                    let scope = world.scope(*entity).unwrap_or_else(|_| {
                         panic!(
                             "a source entity is its own scope: {}",
                             world.entity_label(*entity)
@@ -1271,7 +1271,7 @@ mod release_tests {
             .root_scope()
             .query_one::<&mut Source>(entity)
             .map(|mut source| {
-                let scope = world.scope(entity).unwrap_or_else(|| {
+                let scope = world.scope(entity).unwrap_or_else(|_| {
                     panic!(
                         "a source entity is its own scope: {}",
                         world.entity_label(entity)
@@ -1279,7 +1279,7 @@ mod release_tests {
                 });
                 source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
             })
-            .unwrap_or_else(|| panic!("the source entity exists: {}", world.entity_label(entity)));
+            .unwrap_or_else(|_| panic!("the source entity exists: {}", world.entity_label(entity)));
     }
 
     /// How many nodes the context's graph holds.

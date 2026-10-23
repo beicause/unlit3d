@@ -13,6 +13,7 @@ use crate::archetype::{Archetype, ScopeSummary};
 use crate::bundle::Bundle;
 use crate::command::Commands;
 use crate::entity::{Entity, Location};
+use crate::error::{ArchetypeAccessError, EntityAccessError};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
 #[cfg(debug_assertions)]
 use crate::query::assert_no_duplicates;
@@ -58,12 +59,19 @@ impl<'w> Scope<'w> {
     }
 
     /// Where a visible entity's components live.
-    #[must_use]
-    pub fn location(&self, entity: Entity) -> Option<Location> {
+    ///
+    /// Answers [`EntityAccessError::NotAlive`] for a handle that names no live
+    /// entity, and [`EntityAccessError::NotVisible`] for one that lives outside
+    /// this scope.
+    pub fn location(&self, entity: Entity) -> Result<Location, EntityAccessError> {
+        let location = self.world.location(entity)?;
         if !self.contains(entity) {
-            return None;
+            return Err(EntityAccessError::NotVisible {
+                entity,
+                scope: self.scope,
+            });
         }
-        self.world.location(entity)
+        Ok(location)
     }
 
     // -- queries -----------------------------------------------------------
@@ -92,8 +100,9 @@ impl<'w> Scope<'w> {
     ///
     /// This is the one-entity form of [`Scope::query`]: the row the entity is
     /// stored at is looked up directly instead of the archetypes being walked.
-    /// `None` means the entity is out of this scope's reach or its archetype
-    /// does not satisfy the query.
+    /// A lookup that finds nothing says which of the three reasons it was: the
+    /// entity is not alive, out of this scope's reach, or its archetype does
+    /// not satisfy the query.
     ///
     /// A lookup by handle does not filter the scaffolding: the root and the
     /// shared scope answer like any other entity, which is what lets the
@@ -108,37 +117,41 @@ impl<'w> Scope<'w> {
     /// assert_eq!(*world.root_scope().query_one::<&u32>(entity).unwrap(), 1);
     /// assert!(world.root_scope().query_one::<Has<u32>>(entity).unwrap());
     /// assert!(!world.root_scope().query_one::<Has<bool>>(entity).unwrap());
-    /// assert!(world.root_scope().query_one::<&bool>(entity).is_none());
+    /// assert!(world.root_scope().query_one::<&bool>(entity).is_err());
     /// ````
-    #[must_use]
-    pub fn query_one<Q: Query>(&self, entity: Entity) -> Option<Q::Item<'w>> {
+    pub fn query_one<Q: Query>(&self, entity: Entity) -> Result<Q::Item<'w>, EntityAccessError> {
         #[cfg(debug_assertions)]
         assert_no_duplicates::<Q>(core::panic::Location::caller());
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
         if !self.row_visible(archetype, location.row()) || !Q::matches(archetype) {
-            return None;
+            return Err(EntityAccessError::NotMatched { entity });
         }
         let state = Q::fetch_state(archetype);
-        Some(Q::fetch(&state, location.row()))
+        Ok(Q::fetch(&state, location.row()))
     }
 
     /// The archetype with this id, when this scope sees every row of it.
     ///
-    /// A partially visible archetype answers `None`: handing out its entity
-    /// list would report rows the scope cannot otherwise reach. So does an
-    /// empty one, which has no row to see. A caller that only wants the shape
-    /// of an archetype uses [`Scope::archetype_infos`], whose length is the
-    /// visible one; a caller that has an entity and wants the archetype its row
-    /// lives in uses [`Scope::archetype_of`], which asks about the row rather
-    /// than about the whole archetype.
-    #[must_use]
-    pub fn archetype(&self, id: u32) -> Option<&'w Archetype> {
+    /// A partially visible archetype is turned down: handing out its entity
+    /// list would report rows the scope cannot otherwise reach. So is an empty
+    /// one, which has no row to see. A caller that only wants the shape of an
+    /// archetype uses [`Scope::archetype_infos`], whose length is the visible
+    /// one; a caller that has an entity and wants the archetype its row lives
+    /// in uses [`Scope::archetype_of`], which asks about the row rather than
+    /// about the whole archetype.
+    pub fn archetype(&self, id: u32) -> Result<&'w Archetype, ArchetypeAccessError> {
         let archetype = self.world.archetypes().get(id)?;
-        if archetype.is_empty() || !self.fully_visible(archetype) {
-            return None;
+        if archetype.is_empty() {
+            return Err(ArchetypeAccessError::Empty { id });
         }
-        Some(archetype)
+        if !self.fully_visible(archetype) {
+            return Err(ArchetypeAccessError::NotVisible {
+                id,
+                scope: self.scope,
+            });
+        }
+        Ok(archetype)
     }
 
     /// The archetype an entity's row lives in, when the entity is visible here.
@@ -153,10 +166,9 @@ impl<'w> Scope<'w> {
     /// lists the rows of every scope, the ones this scope cannot see included.
     /// [`Scope::entity_info`] and [`Scope::entity_infos`] are what filter by
     /// visibility.
-    #[must_use]
-    pub fn archetype_of(&self, entity: Entity) -> Option<&'w Archetype> {
+    pub fn archetype_of(&self, entity: Entity) -> Result<&'w Archetype, EntityAccessError> {
         let location = self.location(entity)?;
-        self.world.archetypes().get(location.archetype())
+        Ok(self.world.archetypes().get(location.archetype())?)
     }
 
     /// Every archetype this scope sees in full, in id order.
@@ -175,21 +187,18 @@ impl<'w> Scope<'w> {
 
     // -- the tree ----------------------------------------------------------
 
-    /// The scope of a visible scope, or `None` when it is out of reach.
-    #[must_use]
-    pub fn scope(&self, scope: Entity) -> Option<Scope<'w>> {
-        if !self.contains(scope) {
-            return None;
-        }
-        Some(Scope::new(self.world, scope))
+    /// The scope of a visible scope.
+    ///
+    /// A scope is an entity like any other, so this is turned down the same way
+    /// [`Scope::location`] is.
+    pub fn scope(&self, scope: Entity) -> Result<Scope<'w>, EntityAccessError> {
+        self.location(scope)?;
+        Ok(Scope::new(self.world, scope))
     }
 
     /// The parent of a visible entity.
-    #[must_use]
-    pub fn parent_scope(&self, entity: Entity) -> Option<Entity> {
-        if !self.contains(entity) {
-            return None;
-        }
+    pub fn parent_scope(&self, entity: Entity) -> Result<Entity, EntityAccessError> {
+        self.location(entity)?;
         self.world.parent_scope(entity)
     }
 
@@ -272,10 +281,9 @@ impl<'w> Scope<'w> {
     /// What a visible entity is called, read from the row that stores it.
     ///
     /// A handle rebuilt from bare bits carries no name of its own; the row does.
-    /// `None` when the entity is not visible from this scope or not alive. See
-    /// [`World::entity_name`].
-    #[must_use]
-    pub fn entity_name(&self, entity: Entity) -> Option<&'static str> {
+    /// See [`World::entity_name`].
+    pub fn entity_name(&self, entity: Entity) -> Result<&'static str, EntityAccessError> {
+        self.location(entity)?;
         self.world.entity_name(entity)
     }
 
@@ -291,12 +299,14 @@ impl<'w> Scope<'w> {
     /// The handle reported, and the name beside it, both come from the row that
     /// stores the entity, so a handle that arrived as bare bits is answered with
     /// the label its spawn site gave it.
-    #[must_use]
-    pub fn entity_info(&self, entity: Entity) -> Option<EntityInfo> {
+    pub fn entity_info(&self, entity: Entity) -> Result<EntityInfo, EntityAccessError> {
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
-        let stored = *archetype.entities().get(location.row())?;
-        Some(EntityInfo {
+        let stored = *archetype
+            .entities()
+            .get(location.row())
+            .expect("a live entity's location names a row of its archetype");
+        Ok(EntityInfo {
             entity: stored,
             name: stored.name(),
             archetype: location.archetype(),
@@ -498,12 +508,9 @@ impl<'w> ScopeMut<'w> {
     }
 
     /// The mutable scope of a visible scope.
-    #[must_use]
-    pub fn scope_mut(&mut self, scope: Entity) -> Option<ScopeMut<'_>> {
-        if !self.world.visible(self.scope, scope) {
-            return None;
-        }
-        Some(ScopeMut::new(self.world, scope))
+    pub fn scope_mut(&mut self, scope: Entity) -> Result<ScopeMut<'_>, EntityAccessError> {
+        self.as_scope().location(scope)?;
+        Ok(ScopeMut::new(self.world, scope))
     }
 
     /// Apply every queued command.

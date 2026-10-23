@@ -90,7 +90,7 @@ pub fn create_window_on_resume() -> OnResumed {
         if window(world).is_some() {
             return;
         }
-        let Some(attributes) = world
+        let Ok(attributes) = world
             .root_scope()
             .query_one::<&WindowSpec>(entity)
             .map(|spec| spec.0.clone())
@@ -192,7 +192,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
                 .map(|request| request.0),
-            Some(true)
+            Ok(true)
         );
     }
 
@@ -208,7 +208,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
                 .map(|request| request.0),
-            Some(false)
+            Ok(false)
         );
     }
 
@@ -230,7 +230,9 @@ mod tests {
         let attributes = world
             .root_scope()
             .query_one::<&mut CreateWindowRequest>(entity)
-            .and_then(|mut request| request.0.take())
+            .map(|mut request| request.0.take())
+            .ok()
+            .flatten()
             .expect("the request is filled");
         assert_eq!(attributes.title, "unlit3d");
     }

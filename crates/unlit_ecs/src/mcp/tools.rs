@@ -39,7 +39,7 @@ fn summarize_entities(scope: &Scope<'_>, limit: usize) -> Result<Value, String> 
 fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, String> {
     let info = scope
         .entity_info(entity)
-        .ok_or_else(|| format!("no entity {}", scope.entity_label(entity)))?;
+        .map_err(|_| format!("no entity {}", scope.entity_label(entity)))?;
     to_value(&info)
 }
 
@@ -203,7 +203,7 @@ fn scoped(world: &World, scope: Option<u64>) -> Result<Scope<'_>, String> {
             let scope = Entity::from_bits(bits);
             world
                 .scope(scope)
-                .ok_or_else(|| format!("no scope {}", world.entity_label(scope)))
+                .map_err(|_| format!("no scope {}", world.entity_label(scope)))
         }
     }
 }
@@ -217,7 +217,7 @@ fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopeMut<'_>, Str
             let label = world.entity_label(scope);
             world
                 .scope_mut(scope)
-                .ok_or_else(|| format!("no scope {label}"))
+                .map_err(|_| format!("no scope {label}"))
         }
     }
 }
@@ -371,7 +371,7 @@ mod tests {
         let entity = spawned["entity"].clone();
         let reported = spawned["scope"].clone();
         let entity = Entity::from_bits(entity.as_u64().expect("bits"));
-        assert_eq!(world.parent_scope(entity), Some(scene));
+        assert_eq!(world.parent_scope(entity).unwrap(), scene);
         assert_eq!(
             Entity::from_bits(reported.as_u64().expect("bits")),
             scene,

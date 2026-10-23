@@ -265,7 +265,7 @@ impl QueryItem for Entity {}
 /// It narrows nothing: every archetype matches, and a row whose archetype lacks
 /// `T` yields `false`. That is what lets a query report presence for rows it was
 /// going to visit anyway, and what keeps `query_one::<Has<T>>` answering
-/// `Some(false)` rather than `None` for an entity that lacks `T`. To visit only
+/// `Ok(false)` rather than an error for an entity that lacks `T`. To visit only
 /// the archetypes carrying `T`, pair it with [`QueryIter::by`]:
 /// `.by(|archetype: &Archetype| archetype.has::<T>())`.
 #[derive(Clone, Copy, Debug)]

@@ -381,7 +381,7 @@ fn a_voice_builds_its_synthesizer_on_the_first_fill() {
         world
             .root_scope()
             .query_one::<&SynthVoice>(voice)
-            .is_some_and(|voice| voice.synthesizer.is_some())
+            .is_ok_and(|voice| voice.synthesizer.is_some())
     };
     assert!(
         !built(&world),

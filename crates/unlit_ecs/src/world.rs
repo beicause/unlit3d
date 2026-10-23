@@ -36,6 +36,7 @@ use crate::bundle::{ArchetypeBuilder, Bundle, BundleComponent};
 use crate::column::{AnyColumn, borrow_conflict};
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
+use crate::error::EntityAccessError;
 use crate::hash::TypeIdHashMap;
 use crate::lifecycle::Lifecycle;
 use crate::scope::{ScopeOf, ScopeTree};
@@ -187,9 +188,8 @@ impl World {
         caller == self.root || entity == caller || self.is_descendant(caller, entity)
     }
 
-    /// The parent of a live entity, or `None`.
-    #[must_use]
-    pub fn parent_scope(&self, entity: Entity) -> Option<Entity> {
+    /// The parent of a live entity.
+    pub fn parent_scope(&self, entity: Entity) -> Result<Entity, EntityAccessError> {
         self.tree_read().parent(entity)
     }
 
@@ -224,11 +224,10 @@ impl World {
         Scope::new(self, self.root)
     }
 
-    /// The scope of `scope`, or `None` when there is no such scope.
-    #[must_use]
-    pub fn scope(&self, scope: Entity) -> Option<Scope<'_>> {
+    /// The scope of `scope`.
+    pub fn scope(&self, scope: Entity) -> Result<Scope<'_>, EntityAccessError> {
         self.tree_read().parent(scope)?;
-        Some(Scope::new(self, scope))
+        Ok(Scope::new(self, scope))
     }
 
     /// The mutable scope of the root: everything in the world.
@@ -237,11 +236,10 @@ impl World {
         ScopeMut::new(self, self.root)
     }
 
-    /// The mutable scope of `scope`, or `None` when there is no such scope.
-    #[must_use]
-    pub fn scope_mut(&mut self, scope: Entity) -> Option<ScopeMut<'_>> {
+    /// The mutable scope of `scope`.
+    pub fn scope_mut(&mut self, scope: Entity) -> Result<ScopeMut<'_>, EntityAccessError> {
         self.tree_read().parent(scope)?;
-        Some(ScopeMut::new(self, scope))
+        Ok(ScopeMut::new(self, scope))
     }
 
     // -- handles -----------------------------------------------------------
@@ -377,7 +375,7 @@ impl World {
         if !self.entities_read().contains(child) || !self.entities_read().contains(scope) {
             return false;
         }
-        if self.parent_scope(child) == Some(scope) {
+        if self.parent_scope(child).ok() == Some(scope) {
             return false;
         }
         self.write_scope(child, scope);
@@ -388,7 +386,7 @@ impl World {
     fn write_scope(&mut self, entity: Entity, scope: Entity) {
         let location = self
             .location(entity)
-            .unwrap_or_else(|| panic!("{entity:?} has no row to move"));
+            .unwrap_or_else(|_| panic!("{entity:?} has no row to move"));
         let archetype = self
             .archetypes
             .get_mut(location.archetype())
@@ -453,7 +451,7 @@ impl World {
 
     /// Run the despawn callbacks of `entity` and drop its row and handle.
     fn remove_entity(&mut self, entity: Entity) {
-        let Some(location) = self.location(entity) else {
+        let Ok(location) = self.location(entity) else {
             return;
         };
         self.run_lifecycle::<crate::OnDespawn>(entity);
@@ -473,13 +471,13 @@ impl World {
     /// parent: a callback that wants the entity's own subtree descends into the
     /// entity itself.
     fn run_lifecycle<C: 'static + Lifecycle>(&mut self, entity: Entity) {
-        let Some(scope) = self.parent_scope(entity) else {
+        let Ok(scope) = self.parent_scope(entity) else {
             return;
         };
         // Borrowed for the whole run, like every other behaviour component: a
         // callback that reaches for its own lifecycle component panics on the
         // borrow rather than silently missing its own registration.
-        let Some(mut hooks) = self.get_mut::<C>(entity) else {
+        let Ok(mut hooks) = self.get_mut::<C>(entity) else {
             return;
         };
         let scope = Scope::new(self, scope);
@@ -592,25 +590,19 @@ impl World {
             .register(Archetype::new(types, names, columns))
     }
 
-    /// Where a live entity's components live, or `None` when it is not alive.
+    /// Where a live entity's components live.
     #[inline]
-    pub(crate) fn location(&self, entity: Entity) -> Option<Location> {
+    pub(crate) fn location(&self, entity: Entity) -> Result<Location, EntityAccessError> {
         self.entities_read().location(entity)
     }
 
     /// What a live entity is called, read from the row that stores it.
     ///
     /// This is the only durable copy of the label: the allocator keeps no name,
-    /// and a handle rebuilt from bare bits carries none. `None` when the entity
-    /// is not alive.
-    #[must_use]
-    pub fn entity_name(&self, entity: Entity) -> Option<&'static str> {
+    /// and a handle rebuilt from bare bits carries none.
+    pub fn entity_name(&self, entity: Entity) -> Result<&'static str, EntityAccessError> {
         let location = self.location(entity)?;
-        let archetype = self.archetypes.get(location.archetype())?;
-        archetype
-            .entities()
-            .get(location.row())
-            .map(|stored| stored.name())
+        Ok(self.archetypes.get(location.archetype())?.entities()[location.row()].name())
     }
 
     /// How a message names an entity: its label, and the bits it travels as.
@@ -622,7 +614,7 @@ impl World {
     #[must_use]
     pub fn entity_label(&self, entity: Entity) -> String {
         match self.entity_name(entity) {
-            Some(name) if !name.is_empty() => {
+            Ok(name) if !name.is_empty() => {
                 format!("{name}@{} (bits {})", entity.index(), entity.to_bits())
             }
             _ => format!("bits {}", entity.to_bits()),
@@ -641,20 +633,25 @@ impl World {
 
     /// The component of `entity`, exclusively.
     ///
-    /// Panics when the component is already borrowed, shared or exclusive.
-    #[must_use]
+    /// Panics when the component is already borrowed, shared or exclusive: a
+    /// busy cell says nothing about the handle and is not an access error.
     #[inline]
-    pub(crate) fn get_mut<C: 'static>(&self, entity: Entity) -> Option<RefMut<'_, C>> {
+    pub(crate) fn get_mut<C: 'static>(
+        &self,
+        entity: Entity,
+    ) -> Result<RefMut<'_, C>, EntityAccessError> {
         let location = self.entities_read().location(entity)?;
         let cell = self
             .archetypes
-            .get(location.archetype())
-            .expect("a live entity's location names a registered archetype")
-            .cell::<C>(location.row())?;
-        Some(
-            cell.try_borrow_mut()
-                .unwrap_or_else(|_| borrow_conflict::<C>("write")),
-        )
+            .get(location.archetype())?
+            .cell::<C>(location.row())
+            .ok_or(EntityAccessError::MissingComponent {
+                entity,
+                component: core::any::type_name::<C>(),
+            })?;
+        Ok(cell
+            .try_borrow_mut()
+            .unwrap_or_else(|_| borrow_conflict::<C>("write")))
     }
 
     /// Drop the row at `location`, keeping every other location correct.
@@ -700,6 +697,12 @@ impl core::fmt::Debug for World {
 mod tests {
     use super::*;
 
+    #[derive(Clone, Copy, Debug)]
+    struct Marker;
+
+    #[derive(Clone, Copy, Debug)]
+    struct Other;
+
     #[test]
     #[should_panic(expected = "a bundle cannot carry ScopeOf")]
     fn a_bundle_cannot_carry_the_scope_the_world_writes() {
@@ -711,5 +714,25 @@ mod tests {
         world
             .root_scope_mut()
             .spawn(crate::bundle![ScopeOf::new(root)]);
+    }
+
+    /// The component lookup behind lifecycle hooks, which is its only caller:
+    /// a component the archetype does not carry is reported by name.
+    #[test]
+    fn a_component_the_archetype_does_not_carry_is_reported() {
+        let mut world = World::new();
+        let entity = world.root_scope_mut().spawn(crate::bundle![Marker]);
+        let error = world.get_mut::<Other>(entity).err().unwrap();
+        assert_eq!(
+            error,
+            EntityAccessError::MissingComponent {
+                entity,
+                component: core::any::type_name::<Other>(),
+            }
+        );
+        assert!(
+            error.to_string().contains(core::any::type_name::<Other>()),
+            "the message names the component the caller asked for",
+        );
     }
 }

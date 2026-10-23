@@ -99,7 +99,7 @@ fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
     }];
     let push = |entity: Entity, worlds: &mut Vec<WorldEntry>| {
         let id = WorldId::handle(entity);
-        let Some(name) = world.root_scope().query_one::<&WorldName>(entity) else {
+        let Ok(name) = world.root_scope().query_one::<&WorldName>(entity) else {
             return;
         };
         if worlds.iter().any(|entry| entry.world == id) {
@@ -145,11 +145,11 @@ impl Command for RunInWorld {
     /// own channel, so nothing here waits for the other world to answer.
     fn apply(self: Box<Self>, world: &mut World) {
         let RunInWorld { entity, command } = *self;
-        if let Some(mut nested) = world.root_scope().query_one::<&mut World>(entity) {
+        if let Ok(mut nested) = world.root_scope().query_one::<&mut World>(entity) {
             command.dispatch(&mut nested);
             return;
         }
-        let Some(sender) = world
+        let Ok(sender) = world
             .root_scope()
             .query_one::<&WorldSender>(entity)
             .map(|sender| sender.clone())

@@ -24,12 +24,12 @@ fn every_entity_carries_the_scope_it_lives_in() {
     let root = world.root();
     assert_eq!(
         world.parent_scope(root),
-        Some(root),
+        Ok(root),
         "the root is its own scope"
     );
-    assert_eq!(world.parent_scope(world.shared()), Some(root));
-    assert_eq!(world.parent_scope(scene), Some(root));
-    assert_eq!(world.parent_scope(child), Some(scene));
+    assert_eq!(world.parent_scope(world.shared()), Ok(root));
+    assert_eq!(world.parent_scope(scene), Ok(root));
+    assert_eq!(world.parent_scope(child), Ok(scene));
     assert_eq!(
         world
             .root_scope()
@@ -94,8 +94,8 @@ fn a_sibling_scene_cannot_read_the_other_scenes_entities() {
     let (world, _, child, sibling) = fixture();
     let scope = world.scope(sibling).unwrap();
     assert!(!scope.contains(child));
-    assert!(scope.query_one::<&Marker>(child).is_none());
-    assert!(scope.query_one::<&mut Marker>(child).map(|_| ()).is_none());
+    assert!(scope.query_one::<&Marker>(child).is_err());
+    assert!(scope.query_one::<&mut Marker>(child).map(|_| ()).is_err());
     assert_eq!(scope.query::<&Marker>().count(), 0);
 }
 
@@ -121,7 +121,7 @@ fn two_scopes_share_an_archetype_and_still_do_not_mix() {
     // `Scope::archetype_of` answers for the row.
     let id = world.root_scope().location(child).unwrap().archetype();
     let scope = world.scope(scene).unwrap();
-    assert!(scope.archetype(id).is_none(), "not every row is visible");
+    assert!(scope.archetype(id).is_err(), "not every row is visible");
     let archetype = scope.archetype_of(child).expect("the row is visible");
     assert_eq!(
         archetype.types(),
@@ -135,7 +135,7 @@ fn two_scopes_share_an_archetype_and_still_do_not_mix() {
         archetype.entities().contains(&other),
         "the other scope's row"
     );
-    assert!(scope.archetype_of(sibling).is_none(), "not in this scope");
+    assert!(scope.archetype_of(sibling).is_err(), "not in this scope");
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn a_scene_can_be_spawned_before_its_content_and_used_as_a_scope() {
     let mut world = World::new();
     let scene = world.root_scope_mut().spawn(bundle![Name("late")]);
     let child = world.scope_mut(scene).unwrap().spawn(bundle![Marker(1)]);
-    assert_eq!(world.parent_scope(child), Some(scene));
+    assert_eq!(world.parent_scope(child), Ok(scene));
     assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 1);
 }
 
@@ -154,7 +154,7 @@ fn link_moves_an_entity_into_another_scope() {
     // the child there.
     assert!(!world.scope_mut(scene).unwrap().link(child, sibling));
     assert!(world.root_scope_mut().link(child, sibling));
-    assert_eq!(world.parent_scope(child), Some(sibling));
+    assert_eq!(world.parent_scope(child), Ok(sibling));
     assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 0);
     assert_eq!(world.scope(sibling).unwrap().query::<&Marker>().count(), 1);
 }
@@ -183,19 +183,19 @@ fn unlink_moves_an_entity_into_the_views_scope() {
         world.root_scope_mut().unlink(child),
         "move it up to the root"
     );
-    assert_eq!(world.parent_scope(child), Some(root));
+    assert_eq!(world.parent_scope(child), Ok(root));
     assert_eq!(world.scope(scene).unwrap().query::<&Marker>().count(), 0);
     // Moving it back is the root's call now: the scene no longer owns it.
     assert!(!world.scope_mut(scene).unwrap().unlink(child));
     assert!(world.root_scope_mut().link(child, scene));
-    assert_eq!(world.parent_scope(child), Some(scene));
+    assert_eq!(world.parent_scope(child), Ok(scene));
 }
 
 #[test]
 fn link_refuses_to_move_a_scope_into_its_own_descendant() {
     let (mut world, scene, child, _) = fixture();
     assert!(!world.scope_mut(scene).unwrap().link(scene, child));
-    assert_eq!(world.parent_scope(scene), Some(world.root()));
+    assert_eq!(world.parent_scope(scene), Ok(world.root()));
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn link_refuses_an_entity_the_view_does_not_own() {
     let other = world.root_scope_mut().spawn(bundle![Name("third")]);
     // `sibling` does not own `other`, so it cannot pull it in.
     assert!(!world.scope_mut(sibling).unwrap().link(other, sibling));
-    assert_eq!(world.parent_scope(other), Some(world.root()));
+    assert_eq!(world.parent_scope(other), Ok(world.root()));
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn a_view_does_not_see_a_dead_handle() {
             .scope(scene)
             .unwrap()
             .query_one::<&Marker>(child)
-            .is_none()
+            .is_err()
     );
 }
 
@@ -304,7 +304,7 @@ fn a_queued_spawn_lands_in_the_queue_s_scope() {
         .queue()
         .spawn(bundle![Marker(3)]);
     world.apply();
-    assert_eq!(world.parent_scope(queued), Some(scene));
+    assert_eq!(world.parent_scope(queued), Ok(scene));
 }
 
 #[test]
@@ -318,15 +318,15 @@ fn a_queued_despawn_removes_the_subtree() {
 #[test]
 fn a_view_of_an_unknown_scope_is_none() {
     let world = World::new();
-    assert!(world.scope(Entity::from_raw(999, 0)).is_none());
+    assert!(world.scope(Entity::from_raw(999, 0)).is_err());
 }
 
 #[test]
 fn a_view_cannot_descend_into_a_sibling() {
     let (world, _, _, sibling) = fixture();
     let scene = world.root_scope().children(world.root())[0];
-    assert!(world.scope(scene).unwrap().scope(sibling).is_none());
-    assert!(world.root_scope().scope(sibling).is_some());
+    assert!(world.scope(scene).unwrap().scope(sibling).is_err());
+    assert!(world.root_scope().scope(sibling).is_ok());
 }
 
 #[test]
@@ -356,7 +356,7 @@ fn the_shared_subtree_is_content_that_every_view_sees() {
     );
     assert_eq!(
         scope.query_one::<&Marker>(resource).map(|marker| marker.0),
-        Some(1)
+        Ok(1)
     );
     let mut found: Vec<u32> = scope.query::<&Marker>().map(|marker| marker.0).collect();
     found.sort_unstable();
@@ -376,11 +376,11 @@ fn assert_invariants(world: &World) {
         for &entity in archetype.entities() {
             let recorded = scope
                 .query_one::<&ScopeOf>(entity)
-                .unwrap_or_else(|| panic!("{entity:?} has no scope"))
+                .unwrap_or_else(|_| panic!("{entity:?} has no scope"))
                 .parent();
             assert_eq!(
                 world.parent_scope(entity),
-                Some(recorded),
+                Ok(recorded),
                 "{entity:?} disagrees with its ScopeOf"
             );
         }
@@ -391,13 +391,13 @@ fn assert_invariants(world: &World) {
             for &child in &world.children(entity) {
                 assert_eq!(
                     world.parent_scope(child),
-                    Some(entity),
+                    Ok(entity),
                     "{child:?} is listed under {entity:?}"
                 );
             }
         }
     }
-    assert_eq!(world.parent_scope(root), Some(root));
+    assert_eq!(world.parent_scope(root), Ok(root));
     // Counting, querying and the per-archetype lengths are one number.
     for scope in [
         scope,
@@ -439,7 +439,7 @@ fn a_queued_despawn_cannot_remove_the_scaffolding() {
         root,
         "the root is still a scope"
     );
-    assert_eq!(world.parent_scope(shared), Some(root));
+    assert_eq!(world.parent_scope(shared), Ok(root));
     assert!(world.root_scope().contains(root));
     assert_invariants(&world);
 }
@@ -451,7 +451,7 @@ fn unlinking_a_scope_into_itself_is_refused() {
         !world.scope_mut(scene).unwrap().unlink(scene),
         "a scope cannot become its own parent"
     );
-    assert_eq!(world.parent_scope(scene), Some(world.root()));
+    assert_eq!(world.parent_scope(scene), Ok(world.root()));
     assert_invariants(&world);
 }
 
@@ -471,7 +471,7 @@ fn a_shared_resource_is_the_root_s_to_despawn() {
         !world.root_scope().contains(resource),
         "the root removes it"
     );
-    assert_eq!(world.parent_scope(shared), Some(world.root()));
+    assert_eq!(world.parent_scope(shared), Ok(world.root()));
     assert_invariants(&world);
 }
 
@@ -492,24 +492,24 @@ fn a_shared_resource_is_the_root_s_to_move() {
     world.apply();
     assert_eq!(
         world.parent_scope(resource),
-        Some(shared),
+        Ok(shared),
         "a scene's queue cannot move it either"
     );
 
     assert!(world.root_scope_mut().unlink(resource));
-    assert_eq!(world.parent_scope(resource), Some(root));
+    assert_eq!(world.parent_scope(resource), Ok(root));
     world.root_scope().queue().link(resource, scene);
     world.apply();
-    assert_eq!(world.parent_scope(resource), Some(scene));
+    assert_eq!(world.parent_scope(resource), Ok(scene));
     world.root_scope().queue().unlink(resource);
     world.apply();
-    assert_eq!(world.parent_scope(resource), Some(root));
+    assert_eq!(world.parent_scope(resource), Ok(root));
 
     // The shared scope itself is scaffolding: it neither moves nor goes.
     assert!(!world.root_scope_mut().link(shared, scene));
     assert!(!world.root_scope_mut().unlink(shared));
     assert!(!world.root_scope_mut().despawn(shared));
-    assert_eq!(world.parent_scope(shared), Some(root));
+    assert_eq!(world.parent_scope(shared), Ok(root));
     assert_invariants(&world);
 }
 

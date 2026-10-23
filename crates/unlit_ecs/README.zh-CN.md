@@ -44,6 +44,11 @@
 - **借用冲突是 panic，而不是编译错误。** 请求一个已被借用的组件，或在同一个查询里两次
   以 `&mut` 取同一组件，都会报出组件名并终止。这是不做访问冲突分析的代价。可选组件只在
   「组件不存在」这件事上可选：借不到时同样 panic，而不会表现为 `None`。
+- **查找失败是 error，不是 `None`。** 每个触及实体的函数都回答 `Result`，出错时的
+  `EntityAccessError` 会指名被问到的那个句柄：实体已经没了、它在 scope 之外、它不匹配
+  该查询，或者它没有携带该组件。按 id 问 archetype 则回答 `ArchetypeAccessError`。
+  `Option` 只留在「缺席本身不算访问失败」的地方——查询项 `Option<&C>` 对缺 `C` 的实体
+  就是缺席。
 - **有两个实体是脚手架。** `World::new` 创建 `World::root`——它的 `ScopeOf` 指向自己，
   根 scope 打开的就是它——和 `World::shared`，后者的子树每个 scope 都看得见。两者都能
   携带组件、都能被当作 scope 打开；但它们都不被计数、不被查询、不可 despawn、不可重挂。
@@ -100,7 +105,7 @@ scope 都不能 despawn 或重挂它，根也不行。打开嵌套 scope 又是�
 scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那份资源是根的事，不是
 场景的事。
 
-**没有向上的路。** 对不是 scope 的实体，`World::scope` 回答 `None`；`Scope::scope`
+**没有向上的路。** 对不是 scope 的实体，`World::scope` 报错；`Scope::scope`
 只能向下——进入看得见的子实体，或进入 shared 子树。scope 说不出自己来自哪个 world，
 所以拿着一个 scope 并不是通往 world 其余部分的途径。
 
@@ -121,7 +126,7 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 `ScopeOf` 组件一并写入，两者不可能互相矛盾。这个组件属于 world：字段私有、bundle
 不能携带它，通过反射注册表写 `ScopeOf` 也会被拒绝，因为搬动实体是 `ScopeMut::link`
 的职责。查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
-看得见一部分的 archetype 都回答 `None`，`Scope::archetypes` 只给出非空且完整可见的
+看得见一部分的 archetype 都报错，`Scope::archetypes` 只给出非空且完整可见的
 archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::archetype_of` 是
 `Scope::archetype` 的逐行版本：它只问实体所在的那一行，不做整原型判断，所以在
 `Scope::archetype` 无法作答处作答——两个 scope 共用一个 archetype 时正是它派上用场
@@ -241,7 +246,8 @@ for (entity, has_spin) in world.root_scope().query::<(Entity, Has<Spin>)>() {
 `QueryIter::by`，即 `by(|archetype| archetype.has::<C>())`。项不可嵌套——`&(a, b)`
 是一个元组组件，`(&a, &b)` 才是两个——而组件数超出元组 impl 覆盖面时，由调用者自己
 `impl Query`。`Scope::query_one` 在单个实体上跑同一个查询，于是按句柄查找与遍历 scope
-共用同一套词汇。
+共用同一套词汇；句柄指不到可见实体、或实体不匹配该查询，都是一个
+`EntityAccessError`。
 
 spawn 与 despawn 需要 `&mut` scope，或者排入队列的命令：
 
@@ -293,8 +299,8 @@ let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
-assert_eq!(scope.query_one::<Has<u32>>(entity), Some(true));
-assert_eq!(scope.query_one::<Has<f32>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<u32>>(entity), Ok(true));
+assert_eq!(scope.query_one::<Has<f32>>(entity), Ok(true));
 ```
 
 ## MCP 服务器

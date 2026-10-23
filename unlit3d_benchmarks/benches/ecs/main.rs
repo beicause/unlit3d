@@ -270,7 +270,7 @@ fn query_one_three(world: &World, candidates: &[Entity]) -> u64 {
     let root = world.root_scope();
     let mut sum = 0u64;
     for &entity in candidates {
-        let Some((pipeline, mesh, material)) = root.query_one::<Resolve>(entity) else {
+        let Ok((pipeline, mesh, material)) = root.query_one::<Resolve>(entity) else {
             continue;
         };
         sum += read(&pipeline, &mesh, material.as_deref());

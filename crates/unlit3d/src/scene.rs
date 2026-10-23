@@ -199,14 +199,12 @@ where
         // The material is read once and both its uses come from it: it decides
         // how the draw is grouped and which bind group it binds.
         for &candidate in self.frame.meshes {
-            let Some((pipeline, gpu_mesh, material, z_sorted)) =
-                world.query_one::<(
-                    &GpuRenderPipeline<K>,
-                    &GpuMesh,
-                    Option<&GpuMaterial>,
-                    Has<ZSortedDrawing>,
-                )>(candidate.entity)
-            else {
+            let Ok((pipeline, gpu_mesh, material, z_sorted)) = world.query_one::<(
+                &GpuRenderPipeline<K>,
+                &GpuMesh,
+                Option<&GpuMaterial>,
+                Has<ZSortedDrawing>,
+            )>(candidate.entity) else {
                 continue;
             };
             let (sort_key, material_bg) = match &material {

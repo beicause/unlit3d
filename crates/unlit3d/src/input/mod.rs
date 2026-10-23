@@ -1075,7 +1075,7 @@ pub fn refresh_input(world: &World) -> bool {
         .collect();
     let present = !entities.is_empty();
     for entity in entities {
-        if let Some(buffer) = world.root_scope().query_one::<&InputEvents>(entity) {
+        if let Ok(buffer) = world.root_scope().query_one::<&InputEvents>(entity) {
             buffer.refresh();
         }
     }
@@ -1158,7 +1158,7 @@ fn distribute_into(world: &World, writer: &InputWriter) -> bool {
                 let subscribed = subscribe_input(&mut child);
                 (subscribed, distribute_into(&child, writer))
             });
-        if let Some((subscribed, nested)) = nested {
+        if let Ok((subscribed, nested)) = nested {
             changed |= !has || subscribed || nested;
         }
     }

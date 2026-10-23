@@ -14,6 +14,7 @@ use hashbrown::HashMap;
 
 use crate::column::{AnyColumn, Column, borrow_conflict_on};
 use crate::entity::Entity;
+use crate::error::ArchetypeAccessError;
 use crate::scope::ScopeOf;
 use crate::world::World;
 
@@ -46,7 +47,7 @@ impl ScopeSummary {
         match self {
             Self::Empty => false,
             Self::Uniform(scope) => {
-                world.visible(caller, scope) || world.parent_scope(caller) == Some(scope)
+                world.visible(caller, scope) || world.parent_scope(caller).ok() == Some(scope)
             }
             Self::Mixed => true,
         }
@@ -376,16 +377,24 @@ impl Archetypes {
         id
     }
 
-    /// The archetype with this id, or `None` when no archetype has it.
+    /// The archetype with this id.
+    ///
+    /// An id is only minted when an archetype is registered, so an id that names
+    /// nothing came from another world or from arithmetic on a `u32`; either
+    /// way it answers [`ArchetypeAccessError::NoSuchArchetype`] rather than
+    /// quietly naming no archetype.
     #[inline]
-    #[must_use]
-    pub fn get(&self, id: u32) -> Option<&Archetype> {
-        self.archetypes.get(id as usize)
+    pub fn get(&self, id: u32) -> Result<&Archetype, ArchetypeAccessError> {
+        self.archetypes
+            .get(id as usize)
+            .ok_or(ArchetypeAccessError::NoSuchArchetype { id })
     }
 
-    /// The archetype with this id, or `None` when no archetype has it.
-    pub(crate) fn get_mut(&mut self, id: u32) -> Option<&mut Archetype> {
-        self.archetypes.get_mut(id as usize)
+    /// The archetype with this id, mutably. See [`Archetypes::get`].
+    pub(crate) fn get_mut(&mut self, id: u32) -> Result<&mut Archetype, ArchetypeAccessError> {
+        self.archetypes
+            .get_mut(id as usize)
+            .ok_or(ArchetypeAccessError::NoSuchArchetype { id })
     }
 
     /// Every archetype, as a slice.
@@ -465,7 +474,13 @@ mod tests {
         let registered = archetypes.get(id).expect("just registered");
         assert_eq!(registered.types(), types);
         assert_eq!(registered.names(), names.as_slice());
-        assert!(archetypes.get(u32::MAX).is_none(), "no such archetype");
+        assert!(
+            matches!(
+                archetypes.get(u32::MAX),
+                Err(ArchetypeAccessError::NoSuchArchetype { id: u32::MAX })
+            ),
+            "no such archetype",
+        );
     }
 
     /// An archetype holding one `ScopeOf` column, as every spawned row has.

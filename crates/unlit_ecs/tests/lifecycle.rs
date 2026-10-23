@@ -71,7 +71,10 @@ fn a_spawn_callback_sees_its_own_components() {
     world.root_scope_mut().spawn(bundle![
         Marker(42),
         OnSpawn::new(move |scope, spawned| {
-            *sink.borrow_mut() = scope.query_one::<&Marker>(spawned).map(|marker| marker.0);
+            *sink.borrow_mut() = scope
+                .query_one::<&Marker>(spawned)
+                .map(|marker| marker.0)
+                .ok();
         }),
     ]);
     assert_eq!(*observed.borrow(), Some(42));
@@ -145,7 +148,7 @@ fn a_callback_can_descend_into_the_entity_it_sits_on() {
         OnSpawn::new(move |scope, spawned| {
             // The entity's own scope is its parent, so its subtree is one
             // level down.
-            *sink.borrow_mut() = scope.scope(spawned).map(|scene| scene.len());
+            *sink.borrow_mut() = scope.scope(spawned).map(|scene| scene.len()).ok();
         }),
     ]);
     // The scene's own scope counts the scene itself, so an empty subtree reads
@@ -216,7 +219,7 @@ fn a_panicking_callback_leaves_the_component_registered() {
     }));
     assert!(spawned.is_err(), "the panic reaches the caller");
     assert!(
-        world.root_scope().query_one::<&OnSpawn>(entity).is_some(),
+        world.root_scope().query_one::<&OnSpawn>(entity).is_ok(),
         "the callback is still on the row it was spawned with"
     );
 }

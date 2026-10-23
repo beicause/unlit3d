@@ -332,7 +332,7 @@ fn spawn_proxy(
 /// The step publishes what the world's subscriptions collected, the same as
 /// a threaded world's loop does, so a tick body never publishes by hand.
 pub fn step_stepped_world(host: &World, entity: Entity) {
-    let Some(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
+    let Ok(mut proxy) = host.root_scope().query_one::<&mut WorldProxy>(entity) else {
         return;
     };
     let WorldKind::Stepped(stepped) = &mut proxy.kind else {
@@ -409,7 +409,7 @@ pub fn with_stepped_world<R>(
     entity: Entity,
     f: impl FnOnce(&World) -> R,
 ) -> Option<R> {
-    let proxy = host.root_scope().query_one::<&WorldProxy>(entity)?;
+    let proxy = host.root_scope().query_one::<&WorldProxy>(entity).ok()?;
     let WorldKind::Stepped(stepped) = &proxy.kind else {
         return None;
     };

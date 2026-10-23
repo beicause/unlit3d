@@ -167,7 +167,7 @@ fn build(
 
                     let spinning = world
                         .query_one::<&Spin>(spin)
-                        .is_some_and(|state| state.spinning);
+                        .is_ok_and(|state| state.spinning);
                     let mut spinning_now = spinning;
                     if ui.checkbox(&mut spinning_now, "Spin").changed() {
                         let _ = world
@@ -205,11 +205,11 @@ fn build(
                         .is_some_and(|(_, events)| events.with_state(|state| state.pointer_down));
                     ui.label(if held { "pointer: down" } else { "pointer: up" });
                     match world.query_one::<&CameraOrbit>(orbit) {
-                        Some(orbit) => ui.label(format!(
+                        Ok(orbit) => ui.label(format!(
                             "azimuth {:.2}, elevation {:.2}",
                             orbit.azimuth, orbit.elevation
                         )),
-                        None => ui.label("no camera state"),
+                        Err(_) => ui.label("no camera state"),
                     };
                 });
         });
@@ -301,7 +301,7 @@ fn build(
                                 }
                                 Some(std::mem::replace(&mut tracked.position, position))
                             });
-                    let Some(Some(previous)) = previous else {
+                    let Ok(Some(previous)) = previous else {
                         return;
                     };
                     const RADIANS_PER_PIXEL: f32 = 0.01;

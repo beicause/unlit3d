@@ -250,6 +250,7 @@ impl Balls {
         let selected = world
             .root_scope()
             .query_one::<&SceneState>(state)
+            .ok()
             .and_then(|state| {
                 state.loaded.as_ref().map(|assets| {
                     (
@@ -366,6 +367,7 @@ impl Balls {
         for answer in retired.drain(..) {
             if let Some(handle) = scope
                 .query_one::<&Ball>(answer.ball)
+                .ok()
                 .and_then(|found| found.body)
             {
                 self.despawns.push(handle);
@@ -382,8 +384,8 @@ impl Balls {
         self.created.copy_into(&mut created);
         for answer in created.drain(..) {
             match scope.query_one::<&mut Ball>(answer.ball) {
-                Some(mut ball) => ball.instance = Some(answer.instance),
-                None => self.instances.push(answer.instance),
+                Ok(mut ball) => ball.instance = Some(answer.instance),
+                Err(_) => self.instances.push(answer.instance),
             }
         }
         self.created_answers = created;
@@ -394,8 +396,8 @@ impl Balls {
         self.spawned.copy_into(&mut spawned);
         for answer in spawned.drain(..) {
             match scope.query_one::<&mut Ball>(answer.ball) {
-                Some(mut ball) => ball.body = Some(answer.body),
-                None => self.despawns.push(answer.body),
+                Ok(mut ball) => ball.body = Some(answer.body),
+                Err(_) => self.despawns.push(answer.body),
             }
         }
         self.spawned_answers = spawned;
@@ -409,10 +411,10 @@ impl Balls {
         self.shown.copy_into(&mut shown);
         for answer in shown.drain(..) {
             match scope.query_one::<&mut Ball>(answer.ball) {
-                Some(mut ball) => ball.shown = true,
+                Ok(mut ball) => ball.shown = true,
                 // The ball went away while its show was in flight, so the
                 // instance it wore has nobody left to stand for.
-                None => self.instances.push(answer.instance),
+                Err(_) => self.instances.push(answer.instance),
             }
         }
         self.shown_answers = shown;
@@ -456,6 +458,7 @@ impl Balls {
         // The assets are read once for every ball that is ready to show.
         let assets = scope
             .query_one::<&SceneState>(state)
+            .ok()
             .and_then(|state| state.loaded.clone());
         if let Some(assets) = assets {
             for candidate in showing.drain(..) {
@@ -472,7 +475,7 @@ impl Balls {
                 );
                 match scene.render.send(job) {
                     Ok(()) => {
-                        if let Some(mut ball) = scope.query_one::<&mut Ball>(candidate.ball) {
+                        if let Ok(mut ball) = scope.query_one::<&mut Ball>(candidate.ball) {
                             ball.show_requested = true;
                         }
                     }

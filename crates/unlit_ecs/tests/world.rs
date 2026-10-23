@@ -79,7 +79,7 @@ fn an_empty_entity_has_no_components() {
             .query_one::<Has<Position>>(entity)
             .unwrap_or(false)
     );
-    assert!(world.root_scope().query_one::<&Position>(entity).is_none());
+    assert!(world.root_scope().query_one::<&Position>(entity).is_err());
 }
 
 #[test]
@@ -102,7 +102,7 @@ fn components_are_written_through_a_scoped_borrow() {
             position.x
         });
 
-    assert_eq!(moved_x, Some(1.0));
+    assert_eq!(moved_x, Ok(1.0));
     assert_eq!(
         world.root_scope().query_one::<&Position>(entity).unwrap().y,
         2.0
@@ -141,7 +141,7 @@ fn with_mut_is_none_without_the_component() {
             .root_scope()
             .query_one::<&mut Velocity>(entity)
             .map(|_| ())
-            .is_none()
+            .is_err()
     );
 }
 
@@ -152,7 +152,7 @@ fn a_despawned_handle_never_resolves_to_the_next_entity() {
 
     assert!(world.root_scope_mut().despawn(first));
     assert!(!world.root_scope().contains(first));
-    assert!(world.root_scope().query_one::<&Name>(first).is_none());
+    assert!(world.root_scope().query_one::<&Name>(first).is_err());
     assert!(
         !world.root_scope_mut().despawn(first),
         "the second despawn is a no-op"
@@ -251,7 +251,7 @@ fn a_handle_no_world_produced_refers_to_nothing() {
 
     let alien = Entity::from_raw(u32::MAX, u32::MAX);
     assert!(!world.root_scope().contains(alien));
-    assert!(world.root_scope().query_one::<&Name>(alien).is_none());
+    assert!(world.root_scope().query_one::<&Name>(alien).is_err());
     assert!(!world.root_scope_mut().despawn(alien));
 }
 
@@ -363,11 +363,11 @@ fn a_location_names_the_archetype_and_row_of_a_live_entity() {
     );
 
     assert!(
-        world.root_scope().archetype(u32::MAX).is_none(),
+        world.root_scope().archetype(u32::MAX).is_err(),
         "no such archetype"
     );
     assert!(
-        world.archetypes().get(u32::MAX).is_none(),
+        world.archetypes().get(u32::MAX).is_err(),
         "the pool answers the same"
     );
 }
@@ -416,9 +416,9 @@ fn a_despawned_entity_has_no_location() {
     let entity = world
         .root_scope_mut()
         .spawn(bundle![Position { x: 0.0, y: 0.0 }]);
-    assert!(world.root_scope().location(entity).is_some());
+    assert!(world.root_scope().location(entity).is_ok());
     world.root_scope_mut().despawn(entity);
-    assert!(world.root_scope().location(entity).is_none());
+    assert!(world.root_scope().location(entity).is_err());
 }
 
 #[test]
@@ -461,7 +461,8 @@ fn grouping_entities_by_archetype_reads_the_same_components_as_get() {
         let expected_velocity = world
             .root_scope()
             .query_one::<&Velocity>(entity)
-            .map(|velocity| velocity.dx);
+            .map(|velocity| velocity.dx)
+            .ok();
         let found = resolved
             .iter()
             .find(|(candidate, _, _)| *candidate == entity)

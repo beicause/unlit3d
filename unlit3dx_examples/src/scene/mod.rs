@@ -118,7 +118,7 @@ pub fn pose_job(poses: ScenePoses) -> Job {
         let Some((source, _)) = mesh_source(world) else {
             return;
         };
-        let Some(scope) = world.scope(source) else {
+        let Ok(scope) = world.scope(source) else {
             return;
         };
         for (entity, pose) in poses.0.iter() {
@@ -176,7 +176,7 @@ pub fn setup_render_world(
     queue: &wgpu::Queue,
     capabilities: DeviceCapabilities,
 ) -> (Entity, Entity) {
-    let Some(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
+    let Ok(mut nested) = host.root_scope().query_one::<&mut World>(render_world) else {
         unreachable!("the sub-world is a child of the host world");
     };
     let context = spawn_context(

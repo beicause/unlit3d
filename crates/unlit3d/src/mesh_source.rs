@@ -1168,7 +1168,7 @@ impl MeshSource {
 
                 let mesh = world
                     .query_one::<&GpuMesh>(entry.mesh.entity)
-                    .unwrap_or_else(|| {
+                    .unwrap_or_else(|_| {
                         panic!(
                             "visible entity has GpuMesh: {}",
                             world.entity_label(entry.mesh.entity)
@@ -1338,7 +1338,7 @@ impl FrameSource for MeshSource {
         // faster because a frame has more passes.
         {
             profiling::scope!("mesh_source.uniforms.upload");
-            if let Some(clock) = world.query_one::<&FrameClock>(ctx.clock) {
+            if let Ok(clock) = world.query_one::<&FrameClock>(ctx.clock) {
                 let clock = *clock;
                 self.globals.time = clock.time;
                 self.globals.delta_time = clock.delta_time;

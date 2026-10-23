@@ -224,7 +224,7 @@ pub(crate) fn hidden_instance_of(
     let Some((source, _)) = mesh_source(world) else {
         return instance;
     };
-    let Some(scope) = world.scope(source) else {
+    let Ok(scope) = world.scope(source) else {
         return instance;
     };
     let _ = scope
@@ -273,13 +273,13 @@ pub(crate) fn sweep_instances_job(
         };
         let mut outside = instances;
         {
-            let Some(scope) = world.scope(source) else {
+            let Ok(scope) = world.scope(source) else {
                 return;
             };
             // The list is reused as the outside set: every instance that is
             // still in view is dropped from it.
             outside.retain(|answer| {
-                let Some(mesh) = scope.query_one::<&GpuMesh>(answer.instance) else {
+                let Ok(mesh) = scope.query_one::<&GpuMesh>(answer.instance) else {
                     return false;
                 };
                 let model = scope
@@ -291,7 +291,7 @@ pub(crate) fn sweep_instances_job(
         if outside.is_empty() {
             return;
         }
-        if let Some(mut scope) = world.scope_mut(source) {
+        if let Ok(mut scope) = world.scope_mut(source) {
             for answer in &outside {
                 let _ = scope.despawn(answer.instance);
             }
@@ -306,7 +306,7 @@ pub(crate) fn despawn_instances_job(instances: Vec<Entity>) -> Job {
         let Some((source, _)) = mesh_source(world) else {
             return;
         };
-        let Some(mut scope) = world.scope_mut(source) else {
+        let Ok(mut scope) = world.scope_mut(source) else {
             return;
         };
         for instance in instances {
@@ -334,16 +334,16 @@ pub(crate) fn show_instance_job(
         let Some((source, _)) = mesh_source(world) else {
             return;
         };
-        let Some(scope) = world.scope(source) else {
+        let Ok(scope) = world.scope(source) else {
             return;
         };
-        let Some(mesh) = scope
+        let Ok(mesh) = scope
             .query_one::<&GpuMesh>(mesh)
             .map(|mesh| (*mesh).clone())
         else {
             return;
         };
-        let Some(material) = scope
+        let Ok(material) = scope
             .query_one::<&GpuMaterial>(material)
             .map(|material| (*material).clone())
         else {
