@@ -980,7 +980,7 @@ mod tests {
             "a queued spawn has not happened yet"
         );
 
-        world.borrow_mut().apply();
+        world.borrow_mut().apply().unwrap();
         assert_eq!(
             world.borrow().root_scope().query::<&Spawned>().count(),
             1,
@@ -990,7 +990,7 @@ mod tests {
         // A second frame sees the entity and does not queue another.
         let mut output = source.run_panels(&world.borrow().root_scope(), input);
         output.textures_delta.clear();
-        world.borrow_mut().apply();
+        world.borrow_mut().apply().unwrap();
         assert_eq!(
             world.borrow().root_scope().query::<&Spawned>().count(),
             1,

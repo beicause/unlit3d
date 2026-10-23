@@ -396,10 +396,18 @@ pub fn spawn_context(
     let mut shared_view = world
         .scope_mut(shared)
         .expect("the shared scope exists from the moment the world is built");
-    shared_view.spawn_at(context.device, bundle![device, context]);
-    shared_view.spawn_at(context.queue, bundle![queue, context]);
-    shared_view.spawn_at(context.capabilities, bundle![capabilities, context]);
-    shared_view.spawn_at(graph, bundle![graph_component, context]);
+    shared_view
+        .spawn_at(context.device, bundle![device, context])
+        .expect("the handle was just reserved");
+    shared_view
+        .spawn_at(context.queue, bundle![queue, context])
+        .expect("the handle was just reserved");
+    shared_view
+        .spawn_at(context.capabilities, bundle![capabilities, context])
+        .expect("the handle was just reserved");
+    shared_view
+        .spawn_at(graph, bundle![graph_component, context])
+        .expect("the handle was just reserved");
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
     shared_view.spawn_named("open_urls", bundle![OpenUrls::default()]);
@@ -407,7 +415,9 @@ pub fn spawn_context(
     // belongs to the world rather than to a source because a source may be
     // built once per pass: a clock each source counted for itself would run
     // faster on a frame with more passes.
-    shared_view.spawn_at(context.clock, bundle![FrameClock::default(), context]);
+    shared_view
+        .spawn_at(context.clock, bundle![FrameClock::default(), context])
+        .expect("the handle was just reserved");
     context
 }
 

@@ -397,7 +397,7 @@ struct DrawFrame {
 }
 
 impl Command for DrawFrame {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let now = web_time::Instant::now();
         let delta_time = self
             .last
@@ -430,6 +430,7 @@ impl Command for DrawFrame {
         dispatch_frame(world, &mut frame);
         // A frame has been dispatched, so the next producer may queue one.
         self.pending.store(false, Ordering::Release);
+        Ok(())
     }
 }
 

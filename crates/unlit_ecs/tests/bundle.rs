@@ -256,7 +256,7 @@ fn a_queued_spawn_applies() {
     };
 
     assert!(!world.root_scope().contains(entity), "queued, not spawned");
-    world.apply();
+    world.apply().unwrap();
 
     assert!(
         world
@@ -439,7 +439,7 @@ fn a_queued_spread_bundle_applies() {
     };
 
     assert!(!world.root_scope().contains(entity), "queued, not spawned");
-    world.apply();
+    world.apply().unwrap();
 
     assert!(
         world

@@ -4,7 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, Has, World};
+use unlit_ecs::{Entity, EntityAccessError, Has, World};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -198,7 +198,8 @@ fn a_reserved_handle_becomes_live_only_when_spawned() {
 
     world
         .root_scope_mut()
-        .spawn_at(entity, bundle![Name("late"), 7u32]);
+        .spawn_at(entity, bundle![Name("late"), 7u32])
+        .unwrap();
     assert!(world.root_scope().contains(entity));
     assert_eq!(
         world
@@ -228,13 +229,16 @@ fn a_reserved_handle_can_be_released_without_spawning() {
 }
 
 #[test]
-#[should_panic(expected = "is not a reserved handle")]
-fn spawning_twice_on_one_handle_panics() {
+fn spawning_twice_on_one_handle_is_refused() {
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(bundle![]);
-    world
-        .root_scope_mut()
-        .spawn_at(entity, bundle![Name("again")]);
+    assert_eq!(
+        world
+            .root_scope_mut()
+            .spawn_at(entity, bundle![Name("again")]),
+        Err(EntityAccessError::NotReserved { entity }),
+        "a live handle carries no reservation to spawn on"
+    );
 }
 
 #[test]

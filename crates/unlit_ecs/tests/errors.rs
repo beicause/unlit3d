@@ -133,7 +133,7 @@ fn an_archetype_with_rows_beyond_the_scope_is_reported() {
     // archetype, which the scene then sees only in part.
     world.scope_mut(sibling).unwrap().spawn(bundle![Marker(2)]);
     let scope = world.scope(scene).unwrap();
-    let child = scope.children(scene)[0];
+    let child = scope.children(scene).unwrap()[0];
     let id = scope.location(child).unwrap().archetype();
     assert_eq!(
         scope.archetype(id).unwrap_err(),

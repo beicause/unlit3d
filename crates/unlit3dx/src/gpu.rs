@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use unlit_ecs::{Command, Entity, World};
+use unlit_ecs::{Command, Entity, EntityAccessError, World};
 
 use crate::executor::LocalTasks;
 use unlit_wgpu::capabilities::{DeviceCapabilities, DeviceTier};
@@ -207,7 +207,7 @@ struct RunGpuReady<F> {
 }
 
 impl<F: FnOnce(&mut World, &Gpu) + 'static> Command for RunGpuReady<F> {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         match self.result {
             Ok(gpu) => (self.ready)(world, &gpu),
             Err(error) => {
@@ -218,5 +218,6 @@ impl<F: FnOnce(&mut World, &Gpu) + 'static> Command for RunGpuReady<F> {
                     .map(|mut request| request.0 = true);
             }
         }
+        Ok(())
     }
 }

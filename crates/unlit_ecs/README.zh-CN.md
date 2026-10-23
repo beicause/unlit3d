@@ -72,7 +72,7 @@ let scope = world.scope(scene).unwrap();
 assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
-assert_eq!(scope.children(scene).len(), 2);
+assert_eq!(scope.children(scene).unwrap().len(), 2);
 assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
 
 // 根也是一个 scope，它看得见所有 scope。
@@ -110,11 +110,15 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 所以拿着一个 scope 并不是通往 world 其余部分的途径。
 
 **改变树。** `ScopeMut::spawn` 把新实体放进 scope 自身，`spawn_at` 则把它放到
-`World::reserve_entity` 预留的句柄上。`ScopeMut::despawn` 删除该实体及其整棵子树，
+`World::reserve_entity` 预留的句柄上——已释放、已 spawn 过、或从未预留的句柄会得到
+`EntityAccessError::NotReserved`。`ScopeMut::despawn` 删除该实体及其整棵子树，
 子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先。`ScopeMut::link` 与
 `unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；
 它们是纯结构变更，不跑任何生命周期回调。只读 scope 通过 `Scope::queue` 排队做同样的
-变更，再由驱动器调用 `World::apply` 落盘。
+变更，再由驱动器调用 `World::apply` 落盘；后者报告第一个失败的命令，并把其余命令照常跑完。
+
+`World::children` 与 `Scope::children` 对不活着的句柄报错，而不是给一个空列表——
+空列表和没有子实体读起来是一样的。
 
 **回调落在哪里。** 生命周期回调拿到的是该实体父实体的 scope，所以场景子实体上的
 `OnSpawn` 看得见场景。它同样不能改结构——它也排队，和只读 scope 一样。回调运行期间
@@ -261,7 +265,7 @@ let entity = {
 };
 // 此时还什么都没发生。
 assert!(!world.root_scope().contains(entity));
-world.apply();
+world.apply().unwrap();
 assert!(world.root_scope().contains(entity));
 ```
 

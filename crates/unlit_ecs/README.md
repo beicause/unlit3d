@@ -100,7 +100,7 @@ let scope = world.scope(scene).unwrap();
 assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
-assert_eq!(scope.children(scene).len(), 2);
+assert_eq!(scope.children(scene).unwrap().len(), 2);
 assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
 
 // Root is a scope too, and it sees every scope.
@@ -148,13 +148,19 @@ is not a way to reach the rest of it.
 
 **Changing the tree.** [`ScopeMut::spawn`] puts the new entity in the scope
 itself, and `spawn_at` puts it on a handle reserved by
-[`World::reserve_entity`]. [`ScopeMut::despawn`] removes the entity and its
+[`World::reserve_entity`] — a handle that was released, already spawned on,
+or never reserved is answered with [`EntityAccessError::NotReserved`]. [`ScopeMut::despawn`] removes the entity and its
 whole subtree, children first, so a child's [`OnDespawn`] still sees its living
 ancestors. [`ScopeMut::link`] and `unlink` re-parent an entity inside the
 same scope, refusing to move a scope into its own descendant or to touch the
 scaffolding; they are pure structure changes and run no lifecycle callback. A
 read-only scope queues the same changes through [`Scope::queue`], and the
-driver applies them with [`World::apply`].
+driver applies them with [`World::apply`], which reports the first command that
+failed and still runs the ones behind it.
+
+[`World::children`] and [`Scope::children`] answer with an error for a handle
+that is not live, rather than an empty list that would read the same as a
+childless entity.
 
 **Where callbacks land.** A lifecycle callback receives the scope of the
 entity's parent, so an `OnSpawn` on a scene's child sees the scene. It cannot
@@ -329,7 +335,7 @@ let entity = {
 };
 // Nothing has happened yet.
 assert!(!world.root_scope().contains(entity));
-world.apply();
+world.apply().unwrap();
 assert!(world.root_scope().contains(entity));
 ```
 

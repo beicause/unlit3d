@@ -749,7 +749,7 @@ struct DrawFrame {
 }
 
 impl Command for DrawFrame {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let app = self.app;
         let now = Instant::now();
         let delta_time = world
@@ -766,6 +766,7 @@ impl Command for DrawFrame {
             size: (0, 0),
         };
         dispatch_frame(world, &mut frame);
+        Ok(())
     }
 }
 
@@ -797,7 +798,7 @@ struct RunSceneAdvance {
 }
 
 impl Command for RunSceneAdvance {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let Self { entity, frame } = *self;
         let advance = world
             .root_scope()
@@ -805,13 +806,14 @@ impl Command for RunSceneAdvance {
             .ok()
             .and_then(|mut slot| slot.0.take());
         let Some(mut advance) = advance else {
-            return;
+            return Ok(());
         };
         advance(world, frame.index, frame.delta_time, frame.size);
         let _ = world
             .root_scope()
             .query_one::<&mut SceneAdvance>(entity)
             .map(|mut slot| slot.0 = Some(advance));
+        Ok(())
     }
 }
 
@@ -826,16 +828,17 @@ struct RunInWorld {
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 impl Command for RunInWorld {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let Self { entity, command } = *self;
         let Ok(mut nested) = world.root_scope().query_one::<&mut World>(entity) else {
             command.fail(format!(
                 "host entity {} carries no world",
                 world.entity_label(entity)
             ));
-            return;
+            return Ok(());
         };
         command.dispatch(&mut nested);
+        Ok(())
     }
 }
 
@@ -848,8 +851,9 @@ struct RunInHost {
 
 #[cfg(all(not(target_arch = "wasm32"), not(target_os = "android")))]
 impl Command for RunInHost {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         self.command.dispatch(world);
+        Ok(())
     }
 }
 
@@ -1545,7 +1549,9 @@ fn present_frame(app: Entity) -> OnFrame {
             .root_scope()
             .query_one::<&mut Scene>(scene_entity)
             .map(|mut scene| {
-                scene.end_frame(&mut nested);
+                if let Err(error) = scene.end_frame(&mut nested) {
+                    log::error!("a command queued by a scene failed: {error}");
+                }
             });
     })
 }
@@ -2032,8 +2038,8 @@ impl Scene {
     ///
     /// Nothing is cleared: every consumer reads the events from its own
     /// subscription, and the dispatch that reads them takes them.
-    pub fn end_frame(&mut self, world: &mut World) {
-        world.apply();
+    pub fn end_frame(&mut self, world: &mut World) -> Result<(), EntityAccessError> {
+        world.apply()
     }
 }
 
@@ -2943,7 +2949,7 @@ mod tests {
 
         let next = scenes::by_id("ui_only").expect("the example ships a UI-only scene");
         switch_scene(&world, app, next);
-        world.apply();
+        world.apply().unwrap();
 
         assert!(
             world

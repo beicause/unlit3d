@@ -353,7 +353,7 @@ fn a_behaviour_can_queue_structural_changes() {
         .map(|mut behaviour| behaviour.run(&world, entity));
     assert_eq!(world.root_scope().len(), 1, "queued, not applied");
 
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(world.root_scope().len(), 2);
 }
 

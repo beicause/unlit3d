@@ -97,7 +97,7 @@ fn a_callback_can_queue_a_spawn_that_runs_on_apply() {
             ]);
         }),]);
     assert!(seen.borrow().is_empty(), "queued, not spawned");
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(*seen.borrow(), ["nested"]);
 }
 
@@ -171,7 +171,7 @@ fn a_queued_despawn_runs_the_callback_on_apply() {
     ]);
     world.root_scope().queue().despawn(entity);
     assert!(seen.borrow().is_empty(), "queued, not despawned");
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(*seen.borrow(), ["gone"]);
     assert!(!world.root_scope().contains(entity));
 }
@@ -186,7 +186,7 @@ fn a_queued_spawn_runs_the_callback_on_apply() {
         OnSpawn::new(move |_view, _| sink.borrow_mut().push("born".to_owned())),
     ]);
     assert!(seen.borrow().is_empty());
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(*seen.borrow(), ["born"]);
     assert!(world.root_scope().contains(queued));
 }
@@ -215,9 +215,10 @@ fn a_panicking_callback_leaves_the_component_registered() {
                 Marker(1),
                 OnSpawn::new(|_, _| panic!("this callback fails")),
             ],
-        );
+        )
     }));
-    assert!(spawned.is_err(), "the panic reaches the caller");
+    // The spawn is accepted; the panic comes from the callback it runs.
+    assert!(matches!(spawned, Ok(Ok(()))), "the spawn itself succeeds");
     assert!(
         world.root_scope().query_one::<&OnSpawn>(entity).is_ok(),
         "the callback is still on the row it was spawned with"

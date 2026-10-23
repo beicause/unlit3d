@@ -44,6 +44,7 @@ pub use world::World;
 /// The types most callers need.
 pub mod prelude {
     pub use crate::{
-        ArchetypeFilter, Entity, Has, Query, QueryIter, Scope, ScopeOf, World, bundle,
+        ArchetypeAccessError, ArchetypeFilter, Entity, EntityAccessError, Has, Query, QueryIter,
+        Scope, ScopeOf, World, bundle,
     };
 }

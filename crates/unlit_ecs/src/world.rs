@@ -194,9 +194,12 @@ impl World {
     }
 
     /// The direct children of `entity`.
-    #[must_use]
-    pub fn children(&self, entity: Entity) -> Vec<Entity> {
-        self.tree_read().children(entity).to_vec()
+    ///
+    /// Answers [`EntityAccessError::NotAlive`] for a handle that names no live
+    /// entity, which an empty list would otherwise hide.
+    pub fn children(&self, entity: Entity) -> Result<Vec<Entity>, EntityAccessError> {
+        self.location(entity)?;
+        Ok(self.tree_read().children(entity).to_vec())
     }
 
     /// The first row of `archetype` that holds content rather than scaffolding.
@@ -304,19 +307,23 @@ impl World {
     /// Spawn `bundle` on `entity`, a handle from [`World::reserve_entity`], in
     /// `scope`.
     ///
-    /// Panics when the handle is not a live reservation from
-    /// [`World::reserve_entity`]: spawning on a stale or never-reserved handle
-    /// would leave a row nobody can reach or free. This is a hard check rather
-    /// than a debug assertion.
-    pub(crate) fn spawn_at_in<B: Bundle>(&mut self, entity: Entity, scope: Entity, bundle: B) {
-        assert!(
-            self.entities_write().take_reserved(entity),
-            "{entity:?} is not a reserved handle"
-        );
+    /// Answers [`EntityAccessError::NotReserved`] when the handle is not a live
+    /// reservation from [`World::reserve_entity`]: spawning on a stale or
+    /// never-reserved handle would leave a row nobody can reach or free.
+    pub(crate) fn spawn_at_in<B: Bundle>(
+        &mut self,
+        entity: Entity,
+        scope: Entity,
+        bundle: B,
+    ) -> Result<(), EntityAccessError> {
+        if !self.entities_write().take_reserved(entity) {
+            return Err(EntityAccessError::NotReserved { entity });
+        }
         // The handle was named when it was reserved, which is where the caller
         // said what the entity is; the bundle does not rename it.
         self.insert_row(entity, scope, bundle);
         self.finish_spawn(entity);
+        Ok(())
     }
 
     /// Despawn `entity` and its whole subtree.
@@ -500,13 +507,19 @@ impl World {
     /// Apply every queued command, in order.
     ///
     /// Commands queued while applying are applied as well, after the ones
-    /// already in the queue.
-    pub fn apply(&mut self) {
+    /// already in the queue. A command that fails does not stop the ones after
+    /// it: the queue is drained either way, and the caller is answered with the
+    /// first error.
+    pub fn apply(&mut self) -> Result<(), EntityAccessError> {
+        let mut first = Ok(());
         loop {
             let Some(command) = self.commands_write().pop_front() else {
-                return;
+                return first;
             };
-            command.apply(self);
+            let result = command.apply(self);
+            if first.is_ok() {
+                first = result;
+            }
         }
     }
 

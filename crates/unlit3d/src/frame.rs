@@ -231,6 +231,9 @@ frame_behaviour!(
 /// Any [FrameSkip] is cleared first, so a frame that was short-circuited does
 /// not stay short-circuited for the next one. Every [`FrameClock`] then moves
 /// on to this frame, before the first behaviour reads it.
+///
+/// What the behaviours queued is applied afterwards. A command that fails is
+/// logged, because the frame loop has no caller to answer.
 pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
     FrameSkip::reset(world);
     world
@@ -238,7 +241,12 @@ pub fn dispatch_frame(world: &mut World, frame: &mut Frame) {
         .query::<&mut FrameClock>()
         .for_each(|mut clock| clock.advance(frame.delta_time, frame.index));
     dispatch::<OnFrame>(world, frame);
-    world.apply();
+    // A frame keeps coming whatever a queued command made of itself, and the
+    // caller of a frame has nowhere to report the failure to, so it is logged
+    // rather than dropped.
+    if let Err(error) = world.apply() {
+        log::error!("a command queued by a behaviour failed: {error}");
+    }
 }
 
 /// Run every `B` in `world`, in the order their components declare.

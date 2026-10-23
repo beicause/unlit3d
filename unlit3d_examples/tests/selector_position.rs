@@ -25,7 +25,7 @@ async fn selector_window_is_laid_out_after_a_frame() {
 
     scene.advance(&mut world, FIXED_STEP);
     scene.render(&world);
-    scene.end_frame(&mut world);
+    scene.end_frame(&mut world).unwrap();
 
     let laid_out = rect(&world);
     assert!(
@@ -47,7 +47,7 @@ async fn selector_window_opens_where_the_previous_scene_left_it() {
     bind(&mut first_world, &mut first, &ctx, size);
     first.advance(&mut first_world, FIXED_STEP);
     first.render(&first_world);
-    first.end_frame(&mut first_world);
+    first.end_frame(&mut first_world).unwrap();
     let laid_out = rect(&first_world).expect("the selector is laid out after a frame");
 
     // The rectangle the shell would read out of the dying scene's egui context.
@@ -60,7 +60,7 @@ async fn selector_window_opens_where_the_previous_scene_left_it() {
 
     scene.advance(&mut world, FIXED_STEP);
     scene.render(&world);
-    scene.end_frame(&mut world);
+    scene.end_frame(&mut world).unwrap();
 
     let opened = rect(&world);
     assert_eq!(
@@ -80,7 +80,7 @@ async fn the_gpu_info_panel_opens_where_the_previous_scene_left_it() {
 
     scene.advance(&mut world, FIXED_STEP);
     scene.render(&world);
-    scene.end_frame(&mut world);
+    scene.end_frame(&mut world).unwrap();
 
     let opened = gpu_info_rect(&world).expect("the GPU-info panel is laid out after a frame");
     assert_eq!(
@@ -99,7 +99,7 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
         for _ in 0..4 {
             first.advance(&mut first_world, FIXED_STEP);
             first.render(&first_world);
-            first.end_frame(&mut first_world);
+            first.end_frame(&mut first_world).unwrap();
         }
         let opened = rect(&first_world).expect("laid out");
 
@@ -108,7 +108,7 @@ async fn a_switched_scene_opens_where_the_selector_was_left() {
         for _ in 0..4 {
             second.advance(&mut second_world, FIXED_STEP);
             second.render(&second_world);
-            second.end_frame(&mut second_world);
+            second.end_frame(&mut second_world).unwrap();
         }
         let rebuilt = rect(&second_world).expect("laid out");
         assert_eq!(
@@ -125,7 +125,7 @@ async fn the_selector_re_seats_in_its_corner_when_the_screen_changes_shape() {
     for _ in 0..2 {
         scene.advance(&mut world, FIXED_STEP);
         scene.render(&world);
-        scene.end_frame(&mut world);
+        scene.end_frame(&mut world).unwrap();
     }
 
     // How far the selector's bottom-right corner sits from the frame's, which
@@ -140,7 +140,7 @@ async fn the_selector_re_seats_in_its_corner_when_the_screen_changes_shape() {
     for _ in 0..2 {
         scene.advance(&mut world, FIXED_STEP);
         scene.render(&world);
-        scene.end_frame(&mut world);
+        scene.end_frame(&mut world).unwrap();
     }
 
     let rotated = rect(&world).expect("the selector is laid out");

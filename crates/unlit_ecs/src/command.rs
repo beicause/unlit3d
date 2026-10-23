@@ -37,18 +37,25 @@
 //! };
 //! // Nothing has happened yet.
 //! assert!(!world.root_scope().contains(entity));
-//! world.apply();
+//! world.apply().unwrap();
 //! assert!(world.root_scope().contains(entity));
 //! `````
 
 use crate::bundle::Bundle;
 use crate::entity::Entity;
+use crate::error::EntityAccessError;
 use crate::world::World;
 
 /// A structural change that can be applied later.
 pub trait Command: 'static {
     /// Apply the change to the world.
-    fn apply(self: Box<Self>, world: &mut World);
+    ///
+    /// Most commands cannot fail: they check what they are allowed to touch
+    /// when they are queued and again when they are applied, and a change that
+    /// no longer applies is dropped. Only a command that spawns on a reserved
+    /// handle has something to report, so it answers the error instead of
+    /// panicking on it.
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError>;
 }
 
 /// Erases a command into the world's command storage.
@@ -181,9 +188,9 @@ pub struct Spawn<B> {
 }
 
 impl<B: Bundle + 'static> Command for Spawn<B> {
-    fn apply(mut self: Box<Self>, world: &mut World) {
+    fn apply(mut self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let bundle = self.bundle.take().expect("a command is applied only once");
-        world.spawn_at_in(self.entity, self.scope, bundle);
+        world.spawn_at_in(self.entity, self.scope, bundle)
     }
 }
 
@@ -196,14 +203,15 @@ pub struct Despawn {
 }
 
 impl Command for Despawn {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         // The scope is what the queue saw at queue time; an entity that has
         // moved out of it since, or that turned out to be scaffolding, is not
         // this command's to remove.
         if world.is_scaffolding(self.entity) || !world.owns(self.scope, self.entity) {
-            return;
+            return Ok(());
         }
         world.despawn_in(self.entity);
+        Ok(())
     }
 }
 
@@ -218,10 +226,11 @@ pub struct Link {
 }
 
 impl Command for Link {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         if world.owns(self.scope, self.child) && world.owns(self.scope, self.parent) {
             world.link_in(self.child, self.parent, self.scope);
         }
+        Ok(())
     }
 }
 
@@ -234,9 +243,10 @@ pub struct Unlink {
 }
 
 impl Command for Unlink {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         if world.owns(self.scope, self.child) {
             world.unlink_in(self.child, self.scope, self.scope);
         }
+        Ok(())
     }
 }

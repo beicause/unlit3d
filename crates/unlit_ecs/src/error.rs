@@ -43,6 +43,17 @@ pub enum EntityAccessError {
         entity: Entity,
     },
 
+    /// The handle was not reserved, so there is no row to spawn on.
+    ///
+    /// A handle from [`crate::World::reserve_entity`] can be spawned on once.
+    /// Spawning on it again, on a handle that was released, or on one that was
+    /// never reserved would leave a row nobody can reach or free.
+    #[error("{entity:?} was not reserved")]
+    NotReserved {
+        /// The handle that was spawned on.
+        entity: Entity,
+    },
+
     /// The entity carries no component of type `C`.
     #[error("{entity:?} carries no `{component}`")]
     MissingComponent {

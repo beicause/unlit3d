@@ -203,11 +203,12 @@ impl<'w> Scope<'w> {
     }
 
     /// The direct children of a visible entity.
-    #[must_use]
-    pub fn children(&self, entity: Entity) -> Vec<Entity> {
-        if !self.contains(entity) {
-            return Vec::new();
-        }
+    ///
+    /// Answers [`EntityAccessError::NotAlive`] or
+    /// [`EntityAccessError::NotVisible`] rather than an empty list when the
+    /// entity is not there to ask about.
+    pub fn children(&self, entity: Entity) -> Result<Vec<Entity>, EntityAccessError> {
+        self.location(entity)?;
         self.world.children(entity)
     }
 
@@ -461,9 +462,15 @@ impl<'w> ScopeMut<'w> {
 
     /// Spawn `bundle` on `entity`, a handle from [`World::reserve_entity`].
     ///
-    /// Panics when the handle already refers to a live entity.
-    pub fn spawn_at<B: Bundle>(&mut self, entity: Entity, bundle: B) {
-        self.world.spawn_at_in(entity, self.scope, bundle);
+    /// Answers [`EntityAccessError::NotReserved`] when the handle is not a live
+    /// reservation: it has already been spawned on, was released, or was never
+    /// reserved to begin with.
+    pub fn spawn_at<B: Bundle>(
+        &mut self,
+        entity: Entity,
+        bundle: B,
+    ) -> Result<(), EntityAccessError> {
+        self.world.spawn_at_in(entity, self.scope, bundle)
     }
 
     /// Despawn `entity` and its whole subtree.
@@ -514,7 +521,9 @@ impl<'w> ScopeMut<'w> {
     }
 
     /// Apply every queued command.
-    pub fn apply(&mut self) {
-        self.world.apply();
+    ///
+    /// See [`World::apply`] for what a failing command is answered with.
+    pub fn apply(&mut self) -> Result<(), EntityAccessError> {
+        self.world.apply()
     }
 }

@@ -1,7 +1,7 @@
 //! Scopes: which entities a scope can see, and which it may change.
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, Scope, ScopeOf, World};
+use unlit_ecs::{Entity, EntityAccessError, Scope, ScopeOf, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Marker(u32);
@@ -303,7 +303,7 @@ fn a_queued_spawn_lands_in_the_queue_s_scope() {
         .unwrap()
         .queue()
         .spawn(bundle![Marker(3)]);
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(world.parent_scope(queued), Ok(scene));
 }
 
@@ -311,7 +311,7 @@ fn a_queued_spawn_lands_in_the_queue_s_scope() {
 fn a_queued_despawn_removes_the_subtree() {
     let (mut world, scene, child, _) = fixture();
     world.scope(scene).unwrap().queue().despawn(scene);
-    world.apply();
+    world.apply().unwrap();
     assert!(!world.root_scope().contains(child));
 }
 
@@ -324,7 +324,7 @@ fn a_view_of_an_unknown_scope_is_none() {
 #[test]
 fn a_view_cannot_descend_into_a_sibling() {
     let (world, _, _, sibling) = fixture();
-    let scene = world.root_scope().children(world.root())[0];
+    let scene = world.root_scope().children(world.root()).unwrap()[0];
     assert!(world.scope(scene).unwrap().scope(sibling).is_err());
     assert!(world.root_scope().scope(sibling).is_ok());
 }
@@ -388,7 +388,7 @@ fn assert_invariants(world: &World) {
     // The child index is the parent index read the other way.
     for archetype in scope.archetypes() {
         for &entity in archetype.entities() {
-            for &child in &world.children(entity) {
+            for &child in &world.children(entity).unwrap() {
                 assert_eq!(
                     world.parent_scope(child),
                     Ok(entity),
@@ -417,7 +417,7 @@ fn a_queued_despawn_of_something_the_scope_does_not_own_is_dropped() {
     let (mut world, scene, child, sibling) = fixture();
     // `scene` neither owns nor even sees its sibling.
     world.scope(scene).unwrap().queue().despawn(sibling);
-    world.apply();
+    world.apply().unwrap();
     assert!(
         world.root_scope().contains(sibling),
         "a sibling survives a queued despawn from another scene"
@@ -433,7 +433,7 @@ fn a_queued_despawn_cannot_remove_the_scaffolding() {
     let queue = world.root_scope().queue();
     queue.despawn(root);
     queue.despawn(shared);
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(
         world.root_scope().entity(),
         root,
@@ -466,7 +466,7 @@ fn a_shared_resource_is_the_root_s_to_despawn() {
         "a scene cannot remove what the shared subtree lends it"
     );
     world.root_scope().queue().despawn(resource);
-    world.apply();
+    world.apply().unwrap();
     assert!(
         !world.root_scope().contains(resource),
         "the root removes it"
@@ -489,7 +489,7 @@ fn a_shared_resource_is_the_root_s_to_move() {
     assert!(!world.scope_mut(scene).unwrap().unlink(resource));
     // A queue of another scope drops the relink when it is applied.
     world.scope(scene).unwrap().queue().link(resource, scene);
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(
         world.parent_scope(resource),
         Ok(shared),
@@ -499,10 +499,10 @@ fn a_shared_resource_is_the_root_s_to_move() {
     assert!(world.root_scope_mut().unlink(resource));
     assert_eq!(world.parent_scope(resource), Ok(root));
     world.root_scope().queue().link(resource, scene);
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(world.parent_scope(resource), Ok(scene));
     world.root_scope().queue().unlink(resource);
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(world.parent_scope(resource), Ok(root));
 
     // The shared scope itself is scaffolding: it neither moves nor goes.
@@ -514,16 +514,18 @@ fn a_shared_resource_is_the_root_s_to_move() {
 }
 
 #[test]
-#[should_panic(expected = "is not a reserved handle")]
-fn spawning_at_a_dead_handle_panics() {
+fn spawning_at_a_dead_handle_is_refused() {
     let (mut world, scene, child, _) = fixture();
     world.root_scope_mut().despawn(child);
     // A stale handle has no reservation left, so the spawn is refused rather
     // than writing a second row for the same index.
-    world
-        .scope_mut(scene)
-        .unwrap()
-        .spawn_at(child, bundle![Marker(9)]);
+    assert_eq!(
+        world
+            .scope_mut(scene)
+            .unwrap()
+            .spawn_at(child, bundle![Marker(9)]),
+        Err(EntityAccessError::NotReserved { entity: child }),
+    );
 }
 
 #[test]
