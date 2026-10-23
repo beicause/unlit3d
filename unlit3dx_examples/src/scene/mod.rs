@@ -97,6 +97,10 @@ pub const RENDER_HZ: f64 = 60.0;
 /// for a body is not named: the show job already put it where it belongs.
 /// [`pose_job`] turns one into the job that writes them onto the entities
 /// they name.
+///
+/// The entities are the render world's own. Every world numbers its entities
+/// from zero, so an id from the world that sends the job names something
+/// unrelated in the world that runs it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScenePoses(pub Vec<(Entity, Transform)>);
 

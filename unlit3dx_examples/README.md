@@ -107,7 +107,7 @@ it is paced differs.
   built over `unlit3d`'s generic `MeshSource` registry; `unlit3dx` ships no
   render bridge.
 - The **physics world** steps rapier at 64 Hz and drains its contacts each
-  step. The shapes subscribe to it with a collector of their own — the
+  step. The balls subscribe to it with a collector of their own — the
   `GamePhysics` payload lives in this crate, not in the library — and the
   collector answers nothing while the poses are unchanged, so a scene whose
   bodies are asleep publishes no snapshot at all. The ground is its first job.

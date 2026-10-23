@@ -564,20 +564,25 @@ impl Tick for Balls {
 /// The poses a tick publishes: one per shown ball, at the pose the physics
 /// snapshot names for its body. A ball the snapshot has not named yet is left
 /// out, keeping the transform the show job gave it.
+///
+/// A pose names the ball's render instance, not the ball entity: the job that
+/// carries it runs in the render world, whose entities are its own. A ball
+/// entity from this world happens to share a number with some render entity,
+/// and writing a pose onto that one moves whatever it is.
 fn live_poses(scope: &Scope<'_>, snapshot: &GamePhysics) -> Vec<(Entity, Transform)> {
     let mut poses = Vec::new();
-    for (ball, entity) in scope.query::<(&Ball, Entity)>() {
+    for ball in scope.query::<&Ball>() {
         if !ball.shown {
             continue;
         }
-        let Some(handle) = ball.body else {
+        let (Some(handle), Some(instance)) = (ball.body, ball.instance) else {
             continue;
         };
         let Some((translation, rotation)) = snapshot.transforms.get(&handle) else {
             continue;
         };
         poses.push((
-            entity,
+            instance,
             Transform {
                 translation: *translation,
                 rotation: *rotation,
@@ -614,10 +619,10 @@ mod tests {
         let handle = RigidBodyHandle::from_raw_parts(7, 0);
         let waiting = RigidBodyHandle::from_raw_parts(8, 0);
         let instance = Entity::from_raw(10, 0);
-        let shown = {
+        {
             let mut scope = world.root_scope_mut();
-            scope.spawn(bundle![ball(Some(instance), Some(handle), true)])
-        };
+            scope.spawn(bundle![ball(Some(instance), Some(handle), true)]);
+        }
         {
             let mut scope = world.root_scope_mut();
             scope.spawn(bundle![ball(
@@ -639,7 +644,32 @@ mod tests {
         let poses = live_poses(&world.root_scope(), &snapshot);
 
         assert_eq!(poses.len(), 1, "only a shown ball with a body is posed");
-        assert_eq!(poses[0].0, shown);
         assert_eq!(poses[0].1.translation, Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    /// A pose names the ball's render instance: the job that carries it runs in
+    /// the render world, where a ball entity from this world means something
+    /// else entirely.
+    #[test]
+    fn a_pose_names_the_instance_not_the_ball() {
+        let mut world = World::new();
+        let handle = RigidBodyHandle::from_raw_parts(7, 0);
+        let instance = Entity::from_raw(10, 0);
+        let ball = {
+            let mut scope = world.root_scope_mut();
+            scope.spawn(bundle![ball(Some(instance), Some(handle), true)])
+        };
+        assert_ne!(ball, instance, "the fixture must not let them coincide");
+
+        let mut snapshot = GamePhysics::default();
+        snapshot
+            .transforms
+            .insert(handle, (Vec3::new(1.0, 2.0, 3.0), Quat::IDENTITY));
+
+        let poses = live_poses(&world.root_scope(), &snapshot);
+
+        assert_eq!(poses.len(), 1);
+        assert_eq!(poses[0].0, instance, "the pose names the render instance");
+        assert_ne!(poses[0].0, ball, "the pose must not name the ball entity");
     }
 }
