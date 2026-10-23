@@ -16,7 +16,11 @@
 //!   Publishing appends to each reader's queue, and a reader folds the queue
 //!   into its tick with [`StreamReader::pump`](crate::relay::StreamReader::pump).
 //!   That is right for events: input, collisions, a sequence ending. A reader
-//!   that ticks slower than the producer still sees every value, in order.
+//!   that ticks slower than the producer still sees every value, in order. Its
+//!   queue is unbounded and a publish never waits, so a producer that outruns
+//!   its readers for a long time grows their queues for as long as it lives:
+//!   that is the bargain, and an event source paced by a device rather than by
+//!   a world is where it costs.
 //!
 //! Neither side blocks: a publish swaps a pointer or publishes to an unbounded
 //! queue, and a reader takes what is there. Dropping a reader unsubscribes
@@ -140,10 +144,12 @@ impl<T> fmt::Debug for SnapshotReader<T> {
     }
 }
 
-/// The producing end of a [`Stream`]: pushes every value to every reader.
+/// The producing end of a [`Stream`]: publishes every value to every reader.
 ///
 /// Cloning shares the readers. A publish to a stream nobody reads is
-/// dropped, and the dead senders are pruned then.
+/// dropped, and the dead senders are pruned then. Publishing never blocks and
+/// never drops a value for a reader that is there: each reader's queue is
+/// unbounded, so a reader that falls behind falls behind in memory.
 pub struct Stream<T> {
     inner: Arc<StreamInner<T>>,
 }
@@ -164,6 +170,11 @@ impl<T: Clone> Stream<T> {
 
     /// A reader with its own queue, so one reader's pace cannot starve
     /// another's.
+    ///
+    /// The queue is unbounded: a reader that stops pumping holds every value
+    /// published since, and a publish never waits for it. A producer whose
+    /// pace comes from outside the worlds it serves - a device, say - is the
+    /// one to publish at a pace its readers keep up with.
     pub fn subscribe(&self) -> StreamReader<T> {
         let (sender, receiver) = unbounded();
         self.inner
