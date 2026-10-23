@@ -21,6 +21,20 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The same block `ci.yml` sets, and it has to stay the same: Swatinem/rust-cache
+# hashes every `CARGO*` and `RUST*` variable into the key, so a job here that
+# left one out would look for a cache the light tier never wrote. A called
+# workflow does not inherit the caller's `env`, so the shared jobs are covered by
+# `ci.yml`'s own copy either way — this one is for the two jobs below it.
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
+  RUSTFLAGS: "-C debuginfo=0 -D warnings"
+  ANDROID_NDK_VERSION: 29.0.14206865
+  CACHE_SUFFIX: e # cache busting
+
 jobs:
   shared:
     uses: ./.github/workflows/ci.yml
@@ -147,6 +161,18 @@ jobs:
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add aarch64-linux-android
 
+      # The image carries more than one NDK and points `ANDROID_NDK_HOME` at its
+      # default, which is not the version `android/app/build.gradle.kts` pins for
+      # the APK. `ANDROID_HOME` is inherited from the runner rather than set by
+      # this workflow, so the path is assembled in the shell and handed on: the
+      # `env` context only holds the variables a workflow sets. Doing it here
+      # rather than in the APK step is what makes the lint and the cross-build
+      # use the NDK the Gradle build strips with.
+      - name: Point the NDK at the pinned version
+        run: |
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
       - name: Caching
         uses: Swatinem/rust-cache@v2
         with:
@@ -175,7 +201,7 @@ jobs:
         uses: cargo-bins/cargo-binstall@v1.23.0
 
       # The NDK is not installed here: the runner image already carries the
-      # version this project pins, and `cargo ndk` finds it by itself.
+      # version this project pins, and the step above points `cargo ndk` at it.
       #
       # `--strategies` is spelled out because cargo-ndk's own manifest disables
       # two of the defaults (`disabled-strategies = ["quick-install", "compile"]`
@@ -208,14 +234,10 @@ jobs:
       # it is the one the build signs: an unsigned release APK cannot be
       # installed without a signing step of its own.
       #
-      # `ANDROID_HOME` comes from the runner image rather than this workflow's
-      # `env`, so it is expanded by the shell: the `env` context only holds
-      # variables a workflow sets, not the ones the runner inherits.
+      # The NDK is the one the step above pointed `ANDROID_NDK_HOME` at, which
+      # is what Gradle's own `ndkVersion` asks for.
       - name: Build the APK
-        run: |
-          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
-          export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
-          cargo xtask build-android
+        run: cargo xtask build-android
 
       - name: Upload the APK
         uses: actions/upload-artifact@v7.0.1
