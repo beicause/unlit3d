@@ -32,7 +32,7 @@ let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, contr
 
 // Jobs run on the world's thread between ticks and answer nothing. A job
 // whose result is worth keeping publishes it, or asks for it.
-simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle![0u8]))).expect("room in the queue");
 
 // A snapshot is one of the two ways data comes back (the other is a stream,
 // for events), and it is opt-in: the world runs the collector this
@@ -373,9 +373,9 @@ frame, and runs `ready` as a queued command once the answer lands — nothing
 blocks, wasm-safe:
 
 ```rust,ignore
-world.root_scope_mut().spawn((request_gpu(app, |world, gpu| {
+world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
     // ... build the scene where the request started ...
-}),));
+})]);
 ```
 
 `Gpu::headless` is the same request without a window, for tests and

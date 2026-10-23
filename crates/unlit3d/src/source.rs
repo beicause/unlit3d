@@ -381,13 +381,13 @@ pub fn spawn_context(
     // every one of the four entities carries the whole context: a reader handed
     // any single address can query the rest back instead of assuming the world
     // holds exactly one context.
-    let graph = world.reserve_entity();
+    let graph = world.reserve_entity("render_graph");
     let context = RenderContext {
-        device: world.reserve_entity(),
-        queue: world.reserve_entity(),
+        device: world.reserve_entity("gpu_device"),
+        queue: world.reserve_entity("gpu_queue"),
         graph,
-        capabilities: world.reserve_entity(),
-        clock: world.reserve_entity(),
+        capabilities: world.reserve_entity("device_capabilities"),
+        clock: world.reserve_entity("frame_clock"),
     };
     // Every one of these belongs to the shared subtree: a source reads the GPU
     // state from its own scope, and no scope may remove what every other scope
@@ -402,7 +402,7 @@ pub fn spawn_context(
     shared_view.spawn_at(graph, bundle![graph_component, context]);
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
-    shared_view.spawn(bundle![OpenUrls::default()]);
+    shared_view.spawn_named("open_urls", bundle![OpenUrls::default()]);
     // How much time has passed, advanced once per frame by the frame loop. It
     // belongs to the world rather than to a source because a source may be
     // built once per pass: a clock each source counted for itself would run

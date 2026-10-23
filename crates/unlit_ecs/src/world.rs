@@ -32,7 +32,7 @@ use core::cell::{Ref, RefCell, RefMut};
 use std::collections::VecDeque;
 
 use crate::archetype::{Archetype, Archetypes};
-use crate::bundle::{Bundle, BundleComponent};
+use crate::bundle::{ArchetypeBuilder, Bundle, BundleComponent};
 use crate::column::{AnyColumn, borrow_conflict};
 use crate::command::Command;
 use crate::entity::{Entities, Entity, Location};
@@ -105,10 +105,10 @@ impl World {
         // It is recorded before the shared scope is inserted, because that one
         // hangs from it. Neither goes through the spawn path, which reads the
         // root that is being written here.
-        let root = world.entities_write().alloc();
+        let root = world.entities_write().alloc("root");
         world.root = root;
         world.insert_row(root, root, crate::ArchetypeBuilder::new());
-        let shared = world.entities_write().alloc();
+        let shared = world.entities_write().alloc("shared");
         world.shared = shared;
         world.insert_row(shared, root, crate::ArchetypeBuilder::new());
         world.scaffolding = world
@@ -246,12 +246,14 @@ impl World {
 
     // -- handles -----------------------------------------------------------
 
-    /// A handle to an entity that does not exist yet.
+    /// A handle to an entity that does not exist yet, named `name`.
     ///
     /// The handle becomes live when a bundle is put on it, either with a
     /// scope's spawn or by applying a queued [`crate::Commands::spawn`].
-    pub fn reserve_entity(&self) -> Entity {
-        self.entities_write().reserve()
+    /// Reserving is where the caller says what the entity is, so the bundle
+    /// put on it later does not rename it.
+    pub fn reserve_entity(&self, name: &'static str) -> Entity {
+        self.entities_write().reserve(name)
     }
 
     /// Release a handle from [`World::reserve_entity`] that will never be
@@ -270,8 +272,32 @@ impl World {
     // -- structural changes ------------------------------------------------
 
     /// Spawn `bundle` in `scope`.
+    ///
+    /// The entity is named after the bundle, which for a `bundle!` is the
+    /// source position that wrote it. A builder made by hand carries no name,
+    /// so an entity spawned from one has none.
     pub(crate) fn spawn_in<B: Bundle>(&mut self, scope: Entity, bundle: B) -> Entity {
-        let entity = self.entities_write().alloc();
+        let bundle = bundle.into_builder();
+        self.spawn_builder_in(scope, bundle.name(), bundle)
+    }
+
+    /// Spawn a bundle under `name`, whatever name the bundle carries.
+    pub(crate) fn spawn_named_in<B: Bundle>(
+        &mut self,
+        scope: Entity,
+        name: &'static str,
+        bundle: B,
+    ) -> Entity {
+        self.spawn_builder_in(scope, name, bundle.into_builder())
+    }
+
+    fn spawn_builder_in(
+        &mut self,
+        scope: Entity,
+        name: &'static str,
+        bundle: ArchetypeBuilder,
+    ) -> Entity {
+        let entity = self.entities_write().alloc(name);
         self.insert_row(entity, scope, bundle);
         self.finish_spawn(entity);
         entity
@@ -289,6 +315,8 @@ impl World {
             self.entities_write().take_reserved(entity),
             "{entity:?} is not a reserved handle"
         );
+        // The handle was named when it was reserved, which is where the caller
+        // said what the entity is; the bundle does not rename it.
         self.insert_row(entity, scope, bundle);
         self.finish_spawn(entity);
     }

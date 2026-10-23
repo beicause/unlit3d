@@ -573,7 +573,7 @@ pub fn create_mesh(
     let entity = world
         .scope_mut(scope)
         .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?
-        .spawn(builder);
+        .spawn_named("mcp mesh", builder);
     to_value(&SpawnedEntity { entity, scope })
 }
 

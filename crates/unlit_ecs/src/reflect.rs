@@ -313,7 +313,7 @@ mod tests {
     /// the fields that matter have to be given.
     #[test]
     fn spawning_merges_over_the_default() {
-        let mut builder = ArchetypeBuilder::new();
+        let mut builder = ArchetypeBuilder::new().named("reflect test");
         push(&mut builder, "Position", r#"{"x":4.0}"#).expect("a partial value is accepted");
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(builder);

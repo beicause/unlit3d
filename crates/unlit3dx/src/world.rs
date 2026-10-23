@@ -315,7 +315,7 @@ fn spawn_proxy(
     name: &'static str,
     sender: WorldSender,
 ) -> Entity {
-    let mut bundle = ArchetypeBuilder::new();
+    let mut bundle = ArchetypeBuilder::new().named(name);
     bundle.push_component(WorldProxy { kind });
     bundle.push_component(WorldName(name));
     bundle.push_component(sender);

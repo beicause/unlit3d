@@ -204,7 +204,7 @@ fn a_callback_cannot_reborrow_its_own_lifecycle_component() {
 #[test]
 fn a_panicking_callback_leaves_the_component_registered() {
     let mut world = World::new();
-    let entity = world.reserve_entity();
+    let entity = world.reserve_entity("reserved");
     let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         world.root_scope_mut().spawn_at(
             entity,

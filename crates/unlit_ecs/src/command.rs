@@ -95,9 +95,27 @@ impl<'w> Commands<'w> {
     /// Queue a spawn of `bundle` in this scope and return its handle.
     ///
     /// The handle is reserved now and refers to a live entity once the queue is
-    /// applied.
+    /// applied. Its name comes from the `bundle!` that built it, so a
+    /// queued spawn names the code that wrote the bundle rather than the place
+    /// that queued it.
     pub fn spawn<B: Bundle + 'static>(&self, bundle: B) -> Entity {
-        let entity = self.world.reserve_entity();
+        let bundle = bundle.into_builder();
+        let entity = self.world.reserve_entity(bundle.name());
+        self.push(Spawn {
+            entity,
+            scope: self.scope,
+            bundle: Some(bundle),
+        });
+        entity
+    }
+
+    /// Queue a spawn of `bundle` in this scope under `name`.
+    ///
+    /// [`Commands::spawn`] names the entity after the `bundle!` that built it;
+    /// this is for the objects whose name has to say more than a source
+    /// position does.
+    pub fn spawn_named<B: Bundle + 'static>(&self, name: &'static str, bundle: B) -> Entity {
+        let entity = self.world.reserve_entity(name);
         self.push(Spawn {
             entity,
             scope: self.scope,

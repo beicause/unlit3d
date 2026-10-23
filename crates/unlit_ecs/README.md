@@ -84,7 +84,7 @@ holds is [`Scope`], an accessor narrowed to one entity's place in it.
 use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
-let scene = world.root_scope_mut().spawn_empty();
+let scene = world.root_scope_mut().spawn(bundle![]);
 let cube = world.scope_mut(scene).unwrap().spawn(bundle![0u32]);
 let camera = world.scope_mut(scene).unwrap().spawn(bundle![0f32]);
 
@@ -176,6 +176,44 @@ its own components, so a reader holding one can describe it without going back
 to [`World::type_name`]. A world keeps one copy of each name, not one per
 entity: [`World::archetypes`] hands out the pool itself for a caller that
 wants to walk it.
+
+## Names
+
+An entity carries a name, and its derived `Debug` prints it beside the two
+parts that identify the handle — `Entity { index: 3, generation: 0, name: "cube" }`
+— so a panic or a log line names the object it is about instead of a bare
+number. The name is the source position of the `bundle!` that built the
+entity's bundle, filled in by the macro:
+
+```rust
+use unlit_ecs::{World, bundle};
+
+let mut world = World::new();
+let cube = world.root_scope_mut().spawn(bundle![0u32]);
+assert!(!cube.name().is_empty(), "a bundle names the entity it builds");
+```
+
+A builder assembled at runtime has no such position to speak of, so
+`ArchetypeBuilder::named` gives it a label of its own, and `spawn_named` gives
+one straight to the spawn. A handle from `World::reserve_entity` is named where
+it is reserved, because the reservation is where the caller says what the entity
+is.
+
+The name is only a label. It takes no part in comparison, ordering or hashing,
+so two handles to one entity are equal however they were named, and a handle
+that went through `Entity::to_bits` comes back with no name at all. Names are
+also per handle rather than per entity: the same entity seen from two places can
+print two different labels, and a handle carried to another world keeps the name
+of the world it came from. `EntityInfo::name` reports the label over MCP, where
+the handle itself travels as a bare integer.
+
+| The entity was spawned by | Its name |
+| --- | --- |
+| `bundle!` | the source position of the macro, `crates/unlit3d/src/gltf.rs:1080` |
+| `ArchetypeBuilder::named` | the label given there |
+| `spawn_named` | the label given there |
+| `World::reserve_entity` | the label given at the reservation |
+| none of the above, a builder by hand | empty |
 
 ## What is in the box
 

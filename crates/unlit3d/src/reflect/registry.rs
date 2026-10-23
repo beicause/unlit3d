@@ -87,7 +87,7 @@ mod tests {
     /// the fields that matter have to be given.
     #[test]
     fn spawning_merges_over_the_default() {
-        let mut builder = ArchetypeBuilder::new();
+        let mut builder = ArchetypeBuilder::new().named("reflect test");
         push(
             &mut builder,
             "Transform",

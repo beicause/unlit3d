@@ -10,7 +10,7 @@
 //! operations are confined to the scope's own subtree.
 
 use crate::archetype::{Archetype, ScopeSummary};
-use crate::bundle::{ArchetypeBuilder, Bundle};
+use crate::bundle::Bundle;
 use crate::command::Commands;
 use crate::entity::{Entity, Location};
 use crate::info::{ArchetypeInfo, EntityInfo, WorldInfo};
@@ -276,6 +276,7 @@ impl<'w> Scope<'w> {
         let archetype = self.world.archetypes().get(location.archetype())?;
         Some(EntityInfo {
             entity,
+            name: entity.name(),
             archetype: location.archetype(),
             row: location.row(),
             components: archetype.names().to_vec(),
@@ -302,6 +303,7 @@ impl<'w> Scope<'w> {
                 }
                 infos.push(EntityInfo {
                     entity,
+                    name: entity.name(),
                     archetype: index as u32,
                     row,
                     components: components.clone(),
@@ -403,13 +405,21 @@ impl<'w> ScopeMut<'w> {
     }
 
     /// Spawn `bundle` in this scope.
+    ///
+    /// The entity is named after the source position of the `bundle!` that
+    /// built `bundle`, which is what its `Debug` prints.
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity {
         self.world.spawn_in(self.scope, bundle)
     }
 
-    /// Spawn an entity with no components in this scope.
-    pub fn spawn_empty(&mut self) -> Entity {
-        self.spawn(ArchetypeBuilder::new())
+    /// Spawn `bundle` in this scope under `name`, whatever the bundle was
+    /// built from.
+    ///
+    /// [`ScopeMut::spawn`] names the entity after the `bundle!` that built it,
+    /// so this is for the objects whose name has to say more than a source
+    /// position does.
+    pub fn spawn_named<B: Bundle>(&mut self, name: &'static str, bundle: B) -> Entity {
+        self.world.spawn_named_in(self.scope, name, bundle)
     }
 
     /// Spawn `bundle` on `entity`, a handle from [`World::reserve_entity`].

@@ -30,7 +30,7 @@ let simulation = spawn_threaded_world(&mut host, "simulation", 16, |world, contr
 });
 
 // job 在该 world 线程的 tick 之间运行，且不回答任何东西：要带回的值发布出去，或者用 ask 要回来。
-simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn((0u8,)))).expect("room in the queue");
+simulation.sender.send(Box::new(|world: &mut World| world.root_scope_mut().spawn(bundle![0u8]))).expect("room in the queue");
 
 // 快照是两种回传方式之一（另一种是承载事件的流），而且按需生成：world 每 tick 运行一次订阅携带的收集闭包，
 // 把它返回的内容发布出去。快照装什么是调用方自己的类型——本库不定义任何载荷——
@@ -282,9 +282,9 @@ world 的调用方自己拥有节奏——由它决定一帧值多少步，示�
 驱动，答案落地后把 `ready` 作为排队的 command 运行——什么都不阻塞，wasm 安全：
 
 ```rust,ignore
-world.root_scope_mut().spawn((request_gpu(app, |world, gpu| {
+world.root_scope_mut().spawn(bundle![request_gpu(app, |world, gpu| {
     // ... 在请求发起处搭建场景 ...
-}),));
+})]);
 ```
 
 `Gpu::headless` 是同一个请求的免窗口版本，供测试与工具使用。**present** 模块

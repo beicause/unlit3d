@@ -33,8 +33,12 @@ pub(crate) struct BundleComponent {
 pub(crate) type Components = Vec<BundleComponent>;
 
 /// Builds the components of one spawn; only [`Bundle`] implementations use it.
+///
+/// The builder also carries the name of the entity it will spawn, which by
+/// default is the source position of the [`crate::bundle!`] that built it.
 pub struct ArchetypeBuilder {
     components: Components,
+    name: &'static str,
 }
 
 impl Default for ArchetypeBuilder {
@@ -44,11 +48,36 @@ impl Default for ArchetypeBuilder {
 }
 
 impl ArchetypeBuilder {
-    /// An empty builder.
+    /// An empty builder with no name, for one built by hand.
+    ///
+    /// [`crate::bundle!`] is what supplies a name, so a builder filled in by
+    /// hand names its entity after nothing: give it one with
+    /// [`ArchetypeBuilder::named`], or spawn it with
+    /// [`ScopeMut::spawn_named`](crate::ScopeMut::spawn_named).
     pub fn new() -> Self {
         Self {
             components: Vec::new(),
+            name: "",
         }
+    }
+
+    /// Name the bundle, replacing the one [`crate::bundle!`] gave it.
+    ///
+    /// [`crate::bundle!`] names every bundle it builds after the source
+    /// position that wrote it, and a spawn gives that name to the entity. A
+    /// builder assembled at runtime has no such position to speak of, so it
+    /// names itself here instead.
+    #[must_use]
+    pub fn named(self, name: &'static str) -> Self {
+        Self {
+            components: self.components,
+            name,
+        }
+    }
+
+    /// The name the spawned entity takes, empty when nobody named the bundle.
+    pub(crate) const fn name(&self) -> &'static str {
+        self.name
     }
 
     /// Add one component.
@@ -185,7 +214,7 @@ impl Bundle for ArchetypeBuilder {
 /// A type that appears twice panics when the bundle is spawned.
 #[macro_export]
 macro_rules! bundle {
-    [] => { $crate::ArchetypeBuilder::new() };
+    [] => { $crate::ArchetypeBuilder::new().named(concat!(file!(), ":", line!())) };
     // A bundle written as `..value`, unwrapped into its own components. It is
     // matched before the `$leaf:expr` arms because `..value` is not an
     // expression.
@@ -203,7 +232,7 @@ macro_rules! bundle {
     [@list $builder:ident,] => {};
     [@list $builder:ident, $leaf:expr] => { $builder.push_component($leaf) };
     [$($item:tt)+] => {{
-        let mut builder = $crate::ArchetypeBuilder::new();
+        let mut builder = $crate::ArchetypeBuilder::new().named(concat!(file!(), ":", line!()));
         $crate::bundle![@list builder, $($item)+];
         builder
     }};

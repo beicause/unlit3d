@@ -70,7 +70,7 @@ fn a_fresh_world_is_empty() {
 #[test]
 fn an_empty_entity_has_no_components() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn_empty();
+    let entity = world.root_scope_mut().spawn(bundle![]);
 
     assert!(world.root_scope().contains(entity));
     assert!(
@@ -191,7 +191,7 @@ fn despawning_drops_the_component_values() {
 #[test]
 fn a_reserved_handle_becomes_live_only_when_spawned() {
     let mut world = World::new();
-    let entity = world.reserve_entity();
+    let entity = world.reserve_entity("reserved");
 
     assert!(!world.root_scope().contains(entity));
     assert_eq!(world.root_scope().len(), 0);
@@ -217,13 +217,13 @@ fn a_reserved_handle_becomes_live_only_when_spawned() {
 #[test]
 fn a_reserved_handle_can_be_released_without_spawning() {
     let mut world = World::new();
-    let reserved = world.reserve_entity();
+    let reserved = world.reserve_entity("reserved");
 
     assert!(world.release_entity(reserved));
     assert!(!world.release_entity(reserved), "already released");
 
     // Releasing returns the index to the pool.
-    let entity = world.root_scope_mut().spawn_empty();
+    let entity = world.root_scope_mut().spawn(bundle![]);
     assert_eq!(entity.index(), reserved.index());
 }
 
@@ -231,7 +231,7 @@ fn a_reserved_handle_can_be_released_without_spawning() {
 #[should_panic(expected = "is not a reserved handle")]
 fn spawning_twice_on_one_handle_panics() {
     let mut world = World::new();
-    let entity = world.root_scope_mut().spawn_empty();
+    let entity = world.root_scope_mut().spawn(bundle![]);
     world
         .root_scope_mut()
         .spawn_at(entity, bundle![Name("again")]);

@@ -3,15 +3,46 @@
 //! An [`Entity`] is an index plus a generation. Despawning bumps the
 //! generation, so a handle to a dead entity never resolves to a new entity that
 //! happened to reuse the index.
+//!
+//! A handle also carries a name, the source position that spawned it, which its
+//! [`Debug`] prints so that a message names the object it is about rather
+//! than a bare number. The name is only a label: it takes no part in
+//! comparison, hashing or [`Entity::to_bits`].
 
 /// A handle to an entity.
 ///
 /// The handle is a plain value: it stays valid across world mutations as long
 /// as the entity lives, and resolves to nothing once the entity is despawned.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+///
+/// It also carries a name, the source position of the [`crate::bundle!`]
+/// that spawned it, which [`Debug`] prints. Two handles to one entity can
+/// carry different names and still be equal, because a handle restored from
+/// [`Entity::to_bits`] has no name to restore.
+#[derive(Clone, Copy, Debug)]
 pub struct Entity {
     index: u32,
     generation: u32,
+    name: &'static str,
+}
+
+impl PartialEq for Entity {
+    fn eq(&self, other: &Self) -> bool {
+        self.index == other.index && self.generation == other.generation
+    }
+}
+
+impl Eq for Entity {}
+
+impl PartialOrd for Entity {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Entity {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        (self.index, self.generation).cmp(&(other.index, other.generation))
+    }
 }
 
 impl Entity {
@@ -21,7 +52,17 @@ impl Entity {
     /// world, so this is for restoring a handle that came from that world
     /// (a save file, for example).
     pub const fn from_raw(index: u32, generation: u32) -> Self {
-        Self { index, generation }
+        Self {
+            index,
+            generation,
+            name: "",
+        }
+    }
+
+    /// The name part, empty when the handle was restored rather than spawned.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.name
     }
 
     /// The index part.
@@ -49,13 +90,11 @@ impl Entity {
     /// The handle [`Entity::to_bits`] produced.
     ///
     /// The handle only refers to an entity if it was produced by the same
-    /// world, so this is for restoring a handle that came from that world.
+    /// world, so this is for restoring a handle that came from that world. The
+    /// restored handle carries no name.
     #[must_use]
     pub const fn from_bits(bits: u64) -> Self {
-        Self {
-            index: bits as u32,
-            generation: (bits >> 32) as u32,
-        }
+        Self::from_raw(bits as u32, (bits >> 32) as u32)
     }
 }
 
@@ -203,22 +242,24 @@ impl Entities {
     }
 
     /// Hand out a fresh handle and mark the index as reserved.
-    pub(crate) fn reserve(&mut self) -> Entity {
+    pub(crate) fn reserve(&mut self, name: &'static str) -> Entity {
         let index = self.index();
         self.meta[index].reserved = true;
         self.reserved += 1;
         Entity {
             index: index as u32,
             generation: self.meta[index].generation,
+            name,
         }
     }
 
     /// Hand out a handle for a new entity, reusing a free index when possible.
-    pub(crate) fn alloc(&mut self) -> Entity {
+    pub(crate) fn alloc(&mut self, name: &'static str) -> Entity {
         let index = self.index();
         Entity {
             index: index as u32,
             generation: self.meta[index].generation,
+            name,
         }
     }
 
@@ -275,7 +316,7 @@ mod tests {
     #[test]
     fn alloc_reuses_freed_indices_with_a_new_generation() {
         let mut entities = Entities::default();
-        let first = entities.alloc();
+        let first = entities.alloc("test");
         assert_eq!(first.index(), 0);
         assert_eq!(first.generation(), 0);
 
@@ -288,7 +329,7 @@ mod tests {
         );
         assert!(entities.free(first));
 
-        let second = entities.alloc();
+        let second = entities.alloc("test");
         assert_eq!(second.index(), 0, "the index is reused");
         assert_ne!(second.generation(), first.generation(), "but not the id");
         assert!(!entities.contains(first), "the old handle is dead");
@@ -297,7 +338,7 @@ mod tests {
     #[test]
     fn reserved_entities_are_not_alive_until_spawned() {
         let mut entities = Entities::default();
-        let entity = entities.reserve();
+        let entity = entities.reserve("test");
         assert!(entities.is_reserved(entity));
         assert!(!entities.contains(entity));
 
@@ -319,7 +360,7 @@ mod tests {
     #[test]
     fn freeing_a_stale_handle_fails() {
         let mut entities = Entities::default();
-        let entity = entities.alloc();
+        let entity = entities.alloc("test");
         entities.set_location(
             entity,
             Location {
@@ -334,8 +375,8 @@ mod tests {
     #[test]
     fn freeing_retires_a_handle_and_keeps_the_other() {
         let mut entities = Entities::default();
-        let first = entities.alloc();
-        let second = entities.alloc();
+        let first = entities.alloc("test");
+        let second = entities.alloc("test");
         entities.set_location(
             first,
             Location {
@@ -361,5 +402,28 @@ mod tests {
         assert_eq!(entity.index(), 7);
         assert_eq!(entity.generation(), 3);
         assert_eq!(entity.to_bits(), (3u64 << 32) | 7);
+    }
+
+    #[test]
+    fn the_name_is_a_label_and_not_part_of_the_identity() {
+        let mut entities = Entities::default();
+        let named = entities.reserve("ball");
+        let nameless = Entity::from_raw(named.index(), named.generation());
+        assert_eq!(named, nameless, "a name does not change the handle");
+        assert_eq!(named.to_bits(), nameless.to_bits(), "nor its bits");
+        assert_eq!(named.name(), "ball");
+        assert_eq!(nameless.name(), "", "a restored handle has no name");
+        assert_eq!(
+            Entity::from_bits(named.to_bits()).name(),
+            "",
+            "bits carry no name"
+        );
+    }
+
+    #[test]
+    fn a_debug_message_names_the_entity() {
+        let mut entities = Entities::default();
+        let printed = format!("{:?}", entities.reserve("ball"));
+        assert!(printed.contains("ball"), "{printed} names the entity");
     }
 }

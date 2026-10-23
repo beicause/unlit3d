@@ -2909,7 +2909,7 @@ mod tests {
         let ctx = block_on(Ctx::headless());
         let mut world = World::new();
 
-        let old_scene = world.root_scope_mut().spawn_empty();
+        let old_scene = world.root_scope_mut().spawn(bundle![]);
         let texture = create_color_target(&ctx.device, OFFSCREEN_FORMAT, 8, 8);
         let mut graph = ResourceGraph::new();
         let view = graph.insert(

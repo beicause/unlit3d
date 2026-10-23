@@ -30,6 +30,10 @@ pub struct EntityInfo {
     /// The entity's handle.
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]
     pub entity: Entity,
+    /// The entity's name, which its handle carries but its bits do not, so a
+    /// reader of this listing sees the label the entity was spawned with even
+    /// though the handle travels as a bare integer.
+    pub name: &'static str,
     /// The archetype the entity lives in, as [`Location::archetype`].
     ///
     /// [`Location::archetype`]: crate::Location::archetype

@@ -1093,7 +1093,7 @@ impl UnlitGltf {
                 // skin and blend mode, so the bundle is assembled rather than
                 // written as a tuple: an absent material is a component left
                 // out, not a `None` the renderer would have to look through.
-                let mut bundle = ArchetypeBuilder::new();
+                let mut bundle = ArchetypeBuilder::new().named("gltf primitive");
                 bundle.push_component(transform.clone());
                 bundle.push_component(mesh_handle.mesh.clone());
                 bundle.push_component(UnlitPipeline::new(mesh_handle.key.clone()));

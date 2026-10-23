@@ -78,7 +78,7 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
         reflect::push(&mut builder, name, &patch)?;
     }
     let spawned = scope.entity();
-    let entity = scope.spawn(builder);
+    let entity = scope.spawn_named("mcp spawned", builder);
     to_value(&SpawnedEntity {
         entity,
         scope: spawned,

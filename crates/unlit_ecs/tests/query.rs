@@ -57,11 +57,11 @@ fn the_scaffolding_the_archetypes_share_is_skipped_by_position() {
     let mut world = World::new();
     // Bare entities land in the same archetype as the two scaffolding roots, so
     // a query that visits it has to step over them without a per-row test.
-    let first = world.root_scope_mut().spawn_empty();
+    let first = world.root_scope_mut().spawn(bundle![]);
     let second = world
         .root_scope_mut()
         .spawn(bundle![Position { x: 1.0, y: 2.0 }]);
-    let third = world.root_scope_mut().spawn_empty();
+    let third = world.root_scope_mut().spawn(bundle![]);
 
     let mut found: Vec<Entity> = world.root_scope().query::<Entity>().collect();
     found.sort();

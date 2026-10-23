@@ -58,7 +58,7 @@ scope 就是一个实体。每个实体都带一个指向父实体的 `ScopeOf`�
 use unlit_ecs::{Entity, World, bundle};
 
 let mut world = World::new();
-let scene = world.root_scope_mut().spawn_empty();
+let scene = world.root_scope_mut().spawn(bundle![]);
 let cube = world.scope_mut(scene).unwrap().spawn(bundle![0u32]);
 let camera = world.scope_mut(scene).unwrap().spawn(bundle![0f32]);
 
@@ -130,6 +130,40 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::ar
 **不经过 world 也能命名组件。** `Archetype` 自带其组件名字，所以持有它的读取者不必
 回到 `World::type_name` 就能描述它。world 每个名字只存一份，不随实体数增长：
 `World::archetypes` 直接交出这个池子本身，供想遍历它的调用者使用。
+
+## 名字
+
+实体带一个名字，自动派生的 `Debug` 会把它印在标识句柄的那两个部分旁边——
+`Entity { index: 3, generation: 0, name: "cube" }`——于是 panic 与日志里写的是
+对象本身，而不是一个光秃秃的数字。名字是建该实体 bundle 的那个 `bundle!` 的源码
+位置，由宏填进去：
+
+```rust
+use unlit_ecs::{World, bundle};
+
+let mut world = World::new();
+let cube = world.root_scope_mut().spawn(bundle![0u32]);
+assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
+```
+
+运行时拼出来的 builder 没有这样的位置可言，所以由 `ArchetypeBuilder::named`
+自己给它一个标签，`spawn_named` 则把标签直接交给那次 spawn。
+`World::reserve_entity` 的句柄在预留处就已命名，因为预留正是调用者说明这个实体
+是什么的地方。
+
+名字只是标签。它不参与比较、排序与哈希，所以指向同一个实体的两个句柄无论叫什么
+都相等，而经过 `Entity::to_bits` 还原的句柄没有任何名字。名字也是跟着句柄而不是
+跟着实体的：同一个实体从两处看可以印出两个不同的标签，带到另一个世界的句柄仍带着
+它来自的那个世界的名字。`EntityInfo::name` 把标签经 MCP 报出去，因为句柄本身在那里
+只是一串整数。
+
+| 实体的来源 | 它的名字 |
+| --- | --- |
+| `bundle!` | 宏所在的源码位置，如 `crates/unlit3d/src/gltf.rs:1080` |
+| `ArchetypeBuilder::named` | 在那里给的标签 |
+| `spawn_named` | 在那里给的标签 |
+| `World::reserve_entity` | 预留时给的标签 |
+| 以上都不是，手搓 builder | 空 |
 
 ## 内容概览
 
