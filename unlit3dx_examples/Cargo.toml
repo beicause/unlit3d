@@ -44,6 +44,9 @@ wgpu.workspace = true
 winit.workspace = true
 
 [dev-dependencies]
+# The tests build a `Scene` without spawning a world, so they need the
+# queue a `JobSender` wraps themselves.
+async-channel.workspace = true
 # The headless run's snapshot tests compare captured frames and audio
 # against baselines kept in the asset submodule.
 unlit_wgpu_test_util = { path = "../crates/unlit_wgpu_test_util", version = "0.1.0-dev.2", features = ["snapshot"] }

@@ -48,7 +48,7 @@ use unlit3dx::ui::UiPanelHost;
 use crate::render::{camera_looking_at, mesh_source};
 
 pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_synth};
-pub use balls::{Ball, Balls};
+pub use balls::{Ball, BallPhase, Balls};
 pub use floor::{
     GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
     checker_ground, spawn_floor,
