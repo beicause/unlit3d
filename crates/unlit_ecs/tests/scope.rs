@@ -125,7 +125,11 @@ fn two_scopes_share_an_archetype_and_still_do_not_mix() {
     let archetype = scope.archetype_of(child).expect("the row is visible");
     assert_eq!(
         archetype.types(),
-        scope.archetype_of(other).unwrap().types()
+        world
+            .root_scope()
+            .archetype_of(other)
+            .expect("the other row is visible from the root")
+            .types()
     );
     assert!(
         archetype.entities().contains(&other),
