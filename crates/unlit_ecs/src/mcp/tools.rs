@@ -396,13 +396,15 @@ mod tests {
     #[test]
     fn a_scoped_despawn_takes_the_subtree() {
         let (mut world, scene, child, _) = fixture();
+        let name = world.root_scope().entity_name(child).unwrap();
+        assert!(!name.is_empty(), "the row names the entity");
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let answer = despawn_one(&mut scope, child).expect("its own descendant");
         assert_eq!(answer["despawned"], serde_json::json!(true));
-        let name = answer["name"].as_str().expect("a name is a string");
-        assert!(
-            name.contains("mcp/tools.rs"),
-            "the reply names the entity as its spawn site called it: {name}"
+        assert_eq!(
+            answer["name"],
+            serde_json::json!(name),
+            "the reply carries the name the row stores"
         );
         assert!(!world.root_scope().contains(child));
     }
