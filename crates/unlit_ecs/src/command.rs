@@ -133,15 +133,12 @@ impl<'w> Commands<'w> {
 
     /// Queue the despawn of `entity` and its subtree.
     ///
-    /// Does nothing when this queue's scope does not own `entity`, or when the
-    /// entity is one of the tree's two scaffolding entities: the command would
-    /// be refused when it was applied, and queueing it only to have it silently
-    /// dropped later is the worse of the two failures. A resource in the shared
-    /// subtree is the root's to remove, so a queue of any other scope drops it.
+    /// A refusal is answered when the queue is applied, not when it is
+    /// filled: the queue is filled from a callback that holds a shared world
+    /// and has nobody to answer, and the scope it was filled from is the only
+    /// thing it can say about ownership. [`World::apply`] reports the first
+    /// refusal it meets and keeps going.
     pub fn despawn(&self, entity: Entity) {
-        if self.world.is_scaffolding(entity) || !self.world.owns(self.scope, entity) {
-            return;
-        }
         self.push(Despawn {
             entity,
             scope: self.scope,
@@ -150,9 +147,10 @@ impl<'w> Commands<'w> {
 
     /// Queue a relink of `child` into `parent`.
     ///
-    /// Nothing happens when it is applied if this queue's scope does not own
-    /// both ends: the shared subtree is the root's to rearrange, and nobody
-    /// moves a root or the shared scope itself.
+    /// The refusal is answered when the queue is applied: both ends have to
+    /// be the queueing scope's to move, nobody moves a root or the shared
+    /// scope itself, and no relink may hang a scope under its own child.
+    /// [`World::apply`] reports the first refusal it meets and keeps going.
     pub fn link(&self, child: Entity, parent: Entity) {
         self.push(Link {
             child,
@@ -163,8 +161,10 @@ impl<'w> Commands<'w> {
 
     /// Queue a detach of `child` into this queue's scope.
     ///
-    /// Nothing happens when it is applied if this queue's scope does not own
-    /// `child`: an entity in the shared subtree moves only for the root.
+    /// The refusal is answered when the queue is applied: an entity in the
+    /// shared subtree moves only for the root, and the queueing scope may
+    /// only detach what it owns. Detaching what is already here is the thing
+    /// asked for, so it is answered with `Ok(())`.
     pub fn unlink(&self, child: Entity) {
         self.push(Unlink {
             child,
@@ -207,7 +207,8 @@ impl Command for Despawn {
         // The scope is what the queue saw at queue time; an entity that has
         // moved out of it since, or that turned out to be scaffolding, is not
         // this command's to remove.
-        world.despawn_in(self.entity, self.scope)
+        world.despawn_in(self.entity, self.scope)?;
+        Ok(())
     }
 }
 

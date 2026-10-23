@@ -471,7 +471,8 @@ impl<'w> ScopeMut<'w> {
         self.world.spawn_at_in(entity, self.scope, bundle)
     }
 
-    /// Despawn `entity` and its whole subtree.
+    /// Despawn `entity` and its whole subtree, answering how many entities
+    /// the despawn took with it.
     ///
     /// Children are removed before the parent they lived in, so a child's
     /// despawn callback still sees living ancestors.
@@ -481,7 +482,7 @@ impl<'w> ScopeMut<'w> {
     /// for one the shared subtree only lends this scope - the root is the
     /// scope that may remove it - and `Scaffolding` for the root and the
     /// shared scope themselves.
-    pub fn despawn(&mut self, entity: Entity) -> Result<(), EntityAccessError> {
+    pub fn despawn(&mut self, entity: Entity) -> Result<usize, EntityAccessError> {
         self.world.despawn_in(entity, self.scope)
     }
 

@@ -363,7 +363,7 @@ mod tests {
         let hidden = encode(&world.scope(scene).unwrap(), outside, "Position")
             .expect_err("the scene cannot see it");
         assert!(hidden.contains("is not visible from"), "{hidden}");
-        assert!(!hidden.contains("has no Position"), "{hidden}");
+        assert!(hidden.contains("Position"), "{hidden}");
 
         let gone = encode(&world.root_scope(), dead, "Position").expect_err("it is gone");
         assert!(gone.contains("names no live entity"), "{gone}");

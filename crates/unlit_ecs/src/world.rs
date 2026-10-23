@@ -353,22 +353,24 @@ impl World {
     /// Despawn `entity` and its whole subtree, on behalf of `caller`.
     ///
     /// Children are removed before the parent they lived in, so a child's
-    /// despawn callback still sees living ancestors.
+    /// despawn callback still sees living ancestors. The answer is how many
+    /// entities the despawn took with it: the subtree is the scope's to know
+    /// about, and a caller that counts what it removed can say so.
     pub(crate) fn despawn_in(
         &mut self,
         entity: Entity,
         caller: Entity,
-    ) -> Result<(), EntityAccessError> {
+    ) -> Result<usize, EntityAccessError> {
         if self.is_scaffolding(entity) {
             return Err(EntityAccessError::Scaffolding { entity });
         }
         self.location(entity)?;
         self.check_owns(caller, entity)?;
         let doomed = self.tree_read().subtree_post_order(entity);
-        for victim in doomed {
-            self.remove_entity(victim);
+        for victim in &doomed {
+            self.remove_entity(*victim);
         }
-        Ok(())
+        Ok(doomed.len())
     }
 
     /// Make `child` a child of `parent` on behalf of `caller`.

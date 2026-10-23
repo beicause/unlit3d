@@ -93,13 +93,10 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
 /// `false` beside a name: what to do about it depends on why.
 fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
     let name = scope.as_scope().entity_name(entity).unwrap_or("");
-    scope
+    let removed = scope
         .despawn(entity)
         .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
-    to_value(&Despawned {
-        despawned: true,
-        name,
-    })
+    to_value(&Despawned { removed, name })
 }
 
 /// Every world the host carries.
@@ -401,14 +398,13 @@ mod tests {
     fn a_scoped_despawn_refuses_what_the_scope_does_not_own() {
         let (mut world, scene, _, sibling) = fixture();
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
-        let answer = despawn_one(&mut scope, sibling).expect("refusing is not an error");
-        assert_eq!(answer["despawned"], serde_json::json!(false));
-        assert_eq!(
-            answer["name"],
-            serde_json::json!(""),
-            "an entity the scope cannot see has no name to report"
+        let error = despawn_one(&mut scope, sibling).expect_err("it is not its to remove");
+        assert!(error.contains("is not its to move or remove"), "{error}");
+        assert!(error.contains(&format!("{sibling:?}")), "{error}");
+        assert!(
+            world.root_scope().contains(sibling),
+            "the refusal removed nothing"
         );
-        assert!(world.root_scope().contains(sibling));
     }
 
     #[test]
@@ -418,7 +414,11 @@ mod tests {
         assert!(!name.is_empty(), "the row names the entity");
         let mut scope = scoped_mut(&mut world, Some(scene.to_bits())).unwrap();
         let answer = despawn_one(&mut scope, child).expect("its own descendant");
-        assert_eq!(answer["despawned"], serde_json::json!(true));
+        assert_eq!(
+            answer["removed"],
+            serde_json::json!(1),
+            "the child took no subtree with it"
+        );
         assert_eq!(
             answer["name"],
             serde_json::json!(name),

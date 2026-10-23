@@ -223,9 +223,9 @@ fn a_scope_that_does_not_own_the_entity_says_so() {
         "the sibling is beside it, not above it"
     );
     assert_eq!(
-        world.scope_mut(sibling).unwrap().link(child, sibling),
+        world.root_scope_mut().link(child, sibling),
         Ok(()),
-        "the sibling owns itself"
+        "only the root owns both ends"
     );
     assert_eq!(world.parent_scope(child), Ok(sibling));
 }

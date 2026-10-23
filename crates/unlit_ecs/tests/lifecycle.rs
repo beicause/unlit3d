@@ -119,7 +119,7 @@ fn link_does_not_trigger_a_lifecycle_callback() {
         OnSpawn::new(move |_view, _| sink.borrow_mut().push("spawn".to_owned())),
     ]);
     seen.borrow_mut().clear();
-    world.scope_mut(scene).unwrap().link(child, scene).unwrap();
+    world.root_scope_mut().link(child, scene).unwrap();
     assert!(seen.borrow().is_empty(), "relinking is not a spawn");
 }
 

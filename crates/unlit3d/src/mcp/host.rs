@@ -597,14 +597,11 @@ pub fn remove_mesh(
         .map_err(|_| format!("entity {entity:?} has no GpuMesh"))?;
     let name = world.entity_name(entity).unwrap_or("");
     with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
-    world
+    let removed = world
         .root_scope_mut()
         .despawn(entity)
         .map_err(|error| format!("cannot despawn {entity:?}: {error}"))?;
-    to_value(&Despawned {
-        despawned: true,
-        name,
-    })
+    to_value(&Despawned { removed, name })
 }
 
 /// Render one frame from the world.

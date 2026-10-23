@@ -167,13 +167,11 @@ fn link_moves_an_entity_into_another_scope() {
 
 #[test]
 fn link_keeps_the_component_set_so_the_archetype_is_unchanged() {
-    let (mut world, scene, child, sibling) = fixture();
+    let (mut world, _scene, child, sibling) = fixture();
     let before = world.root_scope().location(child).unwrap().archetype();
-    world
-        .scope_mut(scene)
-        .unwrap()
-        .link(child, sibling)
-        .unwrap();
+    // Only the root owns both ends, so the root is the one to ask. The
+    // archetype is a property of the component set, which a relink keeps.
+    world.root_scope_mut().link(child, sibling).unwrap();
     assert_eq!(
         world.root_scope().location(child).unwrap().archetype(),
         before
@@ -186,8 +184,8 @@ fn unlink_moves_an_entity_into_the_views_scope() {
     let (mut world, scene, child, _) = fixture();
     let root = world.root();
     assert!(
-        world.scope_mut(scene).unwrap().unlink(child).is_err(),
-        "it is already in this scope"
+        world.scope_mut(scene).unwrap().unlink(child).is_ok(),
+        "it is already in this scope, which is what was asked for"
     );
     assert!(
         world.root_scope_mut().unlink(child).is_ok(),
@@ -302,13 +300,11 @@ fn entity_infos_only_lists_what_the_view_sees() {
 
 #[test]
 fn the_tree_agrees_with_the_scope_components() {
-    let (mut world, scene, child, sibling) = fixture();
+    let (mut world, scene, child, _sibling) = fixture();
     let extra = world.scope_mut(scene).unwrap().spawn(bundle![Marker(2)]);
-    world
-        .scope_mut(sibling)
-        .unwrap()
-        .link(child, extra)
-        .unwrap();
+    // Only the root owns both ends, so the root is the one to ask: a scope
+    // rearranges its own subtree and leaves another scope's contents alone.
+    world.root_scope_mut().link(child, extra).unwrap();
     assert_invariants(&world);
 
     world.root_scope_mut().despawn(extra).unwrap();
@@ -435,9 +431,16 @@ fn assert_invariants(world: &World) {
 #[test]
 fn a_queued_despawn_of_something_the_scope_does_not_own_is_dropped() {
     let (mut world, scene, child, sibling) = fixture();
-    // `scene` neither owns nor even sees its sibling.
+    // `scene` neither owns nor even sees its sibling, so applying its queue
+    // says so and the sibling survives.
     world.scope(scene).unwrap().queue().despawn(sibling);
-    world.apply().unwrap();
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::NotOwned {
+            entity: sibling,
+            scope: scene,
+        }),
+    );
     assert!(
         world.root_scope().contains(sibling),
         "a sibling survives a queued despawn from another scene"
@@ -453,7 +456,11 @@ fn a_queued_despawn_cannot_remove_the_scaffolding() {
     let queue = world.root_scope().queue();
     queue.despawn(root);
     queue.despawn(shared);
-    world.apply().unwrap();
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::Scaffolding { entity: root }),
+        "the queue reports the one it refused and drops the rest"
+    );
     assert_eq!(
         world.root_scope().entity(),
         root,
@@ -511,9 +518,16 @@ fn a_shared_resource_is_the_root_s_to_move() {
         "a scene cannot move what the shared subtree lends it"
     );
     assert!(world.scope_mut(scene).unwrap().unlink(resource).is_err());
-    // A queue of another scope drops the relink when it is applied.
+    // The scene's queue cannot move it either: the relink is refused when it
+    // is applied, and the queue keeps going.
     world.scope(scene).unwrap().queue().link(resource, scene);
-    world.apply().unwrap();
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::NotMovable {
+            entity: resource,
+            scope: scene,
+        }),
+    );
     assert_eq!(
         world.parent_scope(resource),
         Ok(shared),

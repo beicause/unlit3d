@@ -112,7 +112,8 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 **改变树。** `ScopeMut::spawn` 把新实体放进 scope 自身，`spawn_at` 则把它放到
 `World::reserve_entity` 预留的句柄上——已释放、已 spawn 过、或从未预留的句柄会得到
 `EntityAccessError::NotReserved`。`ScopeMut::despawn` 删除该实体及其整棵子树，
-子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先。`ScopeMut::link` 与
+子先于父，因此子实体的 `OnDespawn` 仍然看得见活着的祖先，并回答这次带走了多少实体。
+`ScopeMut::link` 与
 `unlink` 在同一个 scope 内重挂实体，拒绝把 scope 搬进自己的后代，也拒绝碰脚手架；
 它们是纯结构变更，不跑任何生命周期回调。三者都回答 `Result`，失败时给出的错误指明
 是哪一种原因：实体已不在、它在 scope 之外、它在 shared 子树里因而只有根能动、它是
@@ -145,8 +146,8 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::ar
 
 ## 名字
 
-实体带一个名字，自动派生的 `Debug` 会把它印在标识句柄的那两个部分旁边——
-`Entity { index: 3, generation: 0, name: "cube" }`——于是 panic 与日志里写的是
+实体带一个名字，`{:?}` 会把它印在标识句柄的 bits 旁边——
+`Entity { name: "cube", bits: 3 }`——于是 panic 与日志里写的是
 对象本身，而不是一个光秃秃的数字。名字是建该实体 bundle 的那个 `bundle!` 的源码
 位置，由宏填进去：
 

@@ -153,7 +153,8 @@ itself, and `spawn_at` puts it on a handle reserved by
 or never reserved is answered with [`EntityAccessError::NotReserved`].
 [`ScopeMut::despawn`] removes the entity and its
 whole subtree, children first, so a child's [`OnDespawn`] still sees its living
-ancestors. [`ScopeMut::link`] and `unlink` re-parent an entity inside the
+ancestors, and answers how many entities it took with it. [`ScopeMut::link`]
+and `unlink` re-parent an entity inside the
 same scope, refusing to move a scope into its own descendant or to touch the
 scaffolding; they are pure structure changes and run no lifecycle callback.
 Each of the three answers [`Result`], and the error it fails with says which
@@ -199,11 +200,11 @@ wants to walk it.
 
 ## Names
 
-An entity carries a name, and its derived `Debug` prints it beside the two
-parts that identify the handle — `Entity { index: 3, generation: 0, name: "cube" }`
-— so a panic or a log line names the object it is about instead of a bare
-number. The name is the source position of the `bundle!` that built the
-entity's bundle, filled in by the macro:
+An entity carries a name, and `{:?}` prints it beside the bits that identify
+the handle — `Entity { name: "cube", bits: 3 }` — so a panic or a log line
+names the object it is about instead of a bare number. The name is the source
+position of the `bundle!` that built the entity's bundle, filled in by the
+macro:
 
 ```rust
 use unlit_ecs::{World, bundle};
