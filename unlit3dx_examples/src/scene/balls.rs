@@ -135,6 +135,10 @@ pub struct Balls {
     spawned_answers: Vec<BodySpawned>,
     /// Sweep answers reused across ticks.
     retired_answers: Vec<Entity>,
+    /// The bodies and instances a tick has to send away, reused across
+    /// ticks so a tick that retires nothing allocates nothing.
+    despawns: Vec<RigidBodyHandle>,
+    instances: Vec<Entity>,
     /// The xorshift state for spawn placement.
     rng: u64,
 }
@@ -169,6 +173,8 @@ impl Balls {
             created_answers: Vec::new(),
             spawned_answers: Vec::new(),
             retired_answers: Vec::new(),
+            despawns: Vec::new(),
+            instances: Vec::new(),
             rng: 0x853c49e6748fea9b,
         }
     }
@@ -294,8 +300,8 @@ impl Balls {
         // A clear also cancels the drops the panel asked for but the tick
         // has not spent yet: they would repopulate the scene immediately.
         self.requests = 0;
-        self.despawn_bodies(scene, handles);
-        self.despawn_instances(scene, instances);
+        self.despawn_bodies(scene, &mut handles);
+        self.despawn_instances(scene, &mut instances);
         self.last_snapshot = None;
         self.poses_sent = 0;
         log::info!("the shapes were cleared: {live} bodies despawned, {requests} requests dropped");
@@ -305,8 +311,12 @@ impl Balls {
     /// the last tick, then retire the requests that either ran long ago or
     /// never will: the world died, and their halves must not leak.
     fn retire_stale(&mut self, world: &World, state: Entity, scene: &Scene) {
-        let mut despawns = Vec::new();
-        let mut instances = Vec::new();
+        // The buffers outlive the tick: a tick that retires nothing pays
+        // nothing, and the one that does hands the filled ones away.
+        let mut despawns = std::mem::take(&mut self.despawns);
+        let mut instances = std::mem::take(&mut self.instances);
+        despawns.clear();
+        instances.clear();
 
         // A retired instance is already gone from the render world: only its
         // body is left to despawn.
@@ -381,8 +391,10 @@ impl Balls {
             }
         }
 
-        self.despawn_bodies(scene, despawns);
-        self.despawn_instances(scene, instances);
+        self.despawn_bodies(scene, &mut despawns);
+        self.despawn_instances(scene, &mut instances);
+        self.despawns = despawns;
+        self.instances = instances;
     }
 
     /// Show one request's instance at its body's side and map the handle onto
@@ -442,10 +454,13 @@ impl Balls {
     }
 
     /// Despawn the bodies it names, in one job.
-    fn despawn_bodies(&self, scene: &Scene, handles: Vec<RigidBodyHandle>) {
-        if handles.is_empty() {
+    fn despawn_bodies(&self, scene: &Scene, despawns: &mut Vec<RigidBodyHandle>) {
+        if despawns.is_empty() {
             return;
         }
+        // The job takes the buffer with it: a job runs in another world and
+        // cannot give an allocation back.
+        let handles = std::mem::take(despawns);
         let sent = scene.physics.send(Box::new(move |world: &mut World| {
             for handle in handles {
                 let _ = despawn_body(world, handle);
@@ -457,10 +472,11 @@ impl Balls {
     }
 
     /// Despawn the instances it names, in one job.
-    fn despawn_instances(&self, scene: &Scene, instances: Vec<Entity>) {
+    fn despawn_instances(&self, scene: &Scene, instances: &mut Vec<Entity>) {
         if instances.is_empty() {
             return;
         }
+        let instances = std::mem::take(instances);
         if let Err(error) = scene.render.send(despawn_instances_job(instances)) {
             log::warn!("the render world refused a despawn job ({error:?})");
         }
