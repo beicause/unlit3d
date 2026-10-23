@@ -39,14 +39,14 @@ fn summarize_entities(scope: &Scope<'_>, limit: usize) -> Result<Value, String> 
 fn summarize_entity(scope: &Scope<'_>, entity: Entity) -> Result<Value, String> {
     let info = scope
         .entity_info(entity)
-        .ok_or_else(|| format!("no entity with bits {}", entity.to_bits()))?;
+        .ok_or_else(|| format!("no entity {}", scope.entity_label(entity)))?;
     to_value(&info)
 }
 
 /// One component of one entity, encoded.
 fn read_component(scope: &Scope<'_>, entity: Entity, name: &str) -> Result<Value, String> {
     if !scope.contains(entity) {
-        return Err(format!("no entity with bits {}", entity.to_bits()));
+        return Err(format!("no entity {}", scope.entity_label(entity)));
     }
     let text = reflect::encode(scope, entity, name)?;
     serde_json::from_str(&text).map_err(|error| error.to_string())
@@ -60,7 +60,7 @@ fn write_component(
     value: &Value,
 ) -> Result<Value, String> {
     if !scope.contains(entity) {
-        return Err(format!("no entity with bits {}", entity.to_bits()));
+        return Err(format!("no entity {}", scope.entity_label(entity)));
     }
     let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
     reflect::set(scope, entity, name, &patch)?;
@@ -78,17 +78,20 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
         reflect::push(&mut builder, name, &patch)?;
     }
     let spawned = scope.entity();
-    let entity = scope.spawn_named("mcp spawned", builder);
+    let name = "mcp spawned";
+    let entity = scope.spawn_named(name, builder);
     to_value(&SpawnedEntity {
         entity,
+        name,
         scope: spawned,
     })
 }
 
 /// Despawn one entity and its subtree.
 fn despawn_one(scope: &mut ScopeMut<'_>, entity: Entity) -> Result<Value, String> {
+    let name = scope.as_scope().entity_name(entity).unwrap_or("");
     let despawned = scope.despawn(entity);
-    to_value(&Despawned { despawned })
+    to_value(&Despawned { despawned, name })
 }
 
 /// Every world the host carries.
@@ -200,7 +203,7 @@ fn scoped(world: &World, scope: Option<u64>) -> Result<Scope<'_>, String> {
             let scope = Entity::from_bits(bits);
             world
                 .scope(scope)
-                .ok_or_else(|| format!("no scope at bits {bits}"))
+                .ok_or_else(|| format!("no scope {}", world.entity_label(scope)))
         }
     }
 }
@@ -211,9 +214,10 @@ fn scoped_mut(world: &mut World, scope: Option<u64>) -> Result<ScopeMut<'_>, Str
         None => Ok(world.root_scope_mut()),
         Some(bits) => {
             let scope = Entity::from_bits(bits);
+            let label = world.entity_label(scope);
             world
                 .scope_mut(scope)
-                .ok_or_else(|| format!("no scope at bits {bits}"))
+                .ok_or_else(|| format!("no scope {label}"))
         }
     }
 }
@@ -324,7 +328,7 @@ mod tests {
         let bits = scene.to_bits();
         world.root_scope_mut().despawn(scene);
         let error = scoped(&world, Some(bits)).expect_err("the scope is gone");
-        assert_eq!(error, format!("no scope at bits {bits}"));
+        assert_eq!(error, format!("no scope bits {bits}"));
     }
 
     #[test]
@@ -334,7 +338,7 @@ mod tests {
         let world = World::new();
         let bits = 0x1234_5678_9abc_def0u64;
         let error = scoped(&world, Some(bits)).expect_err("no such scope");
-        assert_eq!(error, format!("no scope at bits {bits}"));
+        assert_eq!(error, format!("no scope bits {bits}"));
     }
 
     #[test]

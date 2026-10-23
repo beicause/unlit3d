@@ -70,7 +70,7 @@ pub fn spawn_sub_world(
     let sender = JobSender::new(queue);
     let entity = host
         .root_scope_mut()
-        .spawn(bundle![nested, WorldName(name)]);
+        .spawn_named(name, bundle![nested, WorldName(name)]);
     WorldHandle::with_status(entity, sender, status)
 }
 

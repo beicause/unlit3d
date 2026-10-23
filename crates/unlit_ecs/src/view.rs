@@ -269,14 +269,36 @@ impl<'w> Scope<'w> {
             .collect()
     }
 
+    /// What a visible entity is called, read from the row that stores it.
+    ///
+    /// A handle rebuilt from bare bits carries no name of its own; the row does.
+    /// `None` when the entity is not visible from this scope or not alive. See
+    /// [`World::entity_name`].
+    #[must_use]
+    pub fn entity_name(&self, entity: Entity) -> Option<&'static str> {
+        self.world.entity_name(entity)
+    }
+
+    /// How a message names a visible entity: its label and the bits it travels
+    /// as. See [`World::entity_label`].
+    #[must_use]
+    pub fn entity_label(&self, entity: Entity) -> String {
+        self.world.entity_label(entity)
+    }
+
     /// A visible entity's location and component names.
+    ///
+    /// The handle reported, and the name beside it, both come from the row that
+    /// stores the entity, so a handle that arrived as bare bits is answered with
+    /// the label its spawn site gave it.
     #[must_use]
     pub fn entity_info(&self, entity: Entity) -> Option<EntityInfo> {
         let location = self.location(entity)?;
         let archetype = self.world.archetypes().get(location.archetype())?;
+        let stored = *archetype.entities().get(location.row())?;
         Some(EntityInfo {
-            entity,
-            name: entity.name(),
+            entity: stored,
+            name: stored.name(),
             archetype: location.archetype(),
             row: location.row(),
             components: archetype.names().to_vec(),
@@ -407,7 +429,12 @@ impl<'w> ScopeMut<'w> {
     /// Spawn `bundle` in this scope.
     ///
     /// The entity is named after the source position of the `bundle!` that
-    /// built `bundle`, which is what its `Debug` prints.
+    /// built `bundle`, which is what its `Debug` prints. A builder put together
+    /// by hand carries no source position, so an entity spawned from one has no
+    /// name; build it with [`ArchetypeBuilder::named`], or spawn it with
+    /// [`ScopeMut::spawn_named`].
+    ///
+    /// [`ArchetypeBuilder::named`]: crate::ArchetypeBuilder::named
     pub fn spawn<B: Bundle>(&mut self, bundle: B) -> Entity {
         self.world.spawn_in(self.scope, bundle)
     }

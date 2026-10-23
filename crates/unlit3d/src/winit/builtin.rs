@@ -96,7 +96,8 @@ pub fn create_window_on_resume() -> OnResumed {
             .map(|spec| spec.0.clone())
         else {
             log::warn!(
-                "create_window_on_resume: the entity carries no WindowSpec, so no window is created"
+                "create_window_on_resume: {} carries no WindowSpec, so no window is created",
+                world.entity_label(entity)
             );
             return;
         };

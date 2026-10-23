@@ -1076,16 +1076,20 @@ impl UnlitGltf {
                 let z_sorted = mesh_handle.key.options.color_target.blend.is_some();
                 let skinned = mesh_handle.mesh.skinned;
                 let binding = skinned.then(|| {
-                    let pose = *pose
-                        .get_or_insert_with(|| world.spawn(bundle![self.skin_pose(node.index())]));
+                    let pose = *pose.get_or_insert_with(|| {
+                        world.spawn_named("gltf skin pose", bundle![self.skin_pose(node.index())])
+                    });
                     SkinBinding { pose }
                 });
                 let morphed = mesh_handle.mesh.morph_targets > 0;
                 let morph_binding = morphed.then(|| {
                     let weights = *morphs.get_or_insert_with(|| {
-                        world.spawn(bundle![MorphWeights {
-                            weights: self.morph_weights(node.index())
-                        }])
+                        world.spawn_named(
+                            "gltf morph weights",
+                            bundle![MorphWeights {
+                                weights: self.morph_weights(node.index())
+                            }],
+                        )
                     });
                     MorphBinding { weights }
                 });

@@ -398,9 +398,12 @@ impl InstanceData for UnlitInstance {
     fn write(&mut self, context: &mut InstanceContext<'_>, out: &mut [u8]) {
         let world = &context.world;
         let entity = context.entity;
-        let mesh = world
-            .query_one::<&GpuMesh>(entity)
-            .expect("every visible entity carries the mesh culling resolved");
+        let mesh = world.query_one::<&GpuMesh>(entity).unwrap_or_else(|| {
+            panic!(
+                "every visible entity carries the mesh culling resolved, but {} does not",
+                world.entity_label(entity)
+            )
+        });
         let base_color = world
             .query_one::<&InstanceColor>(entity)
             .map_or(glam::Vec4::ONE, |color| color.color);

@@ -387,7 +387,12 @@ impl<'a> InstanceContext<'a> {
         let pose = self
             .world
             .query_one::<&SkinPose>(binding.pose)
-            .unwrap_or_else(|| panic!("the entity a skinned mesh binds to carries no `SkinPose`"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "the entity a skinned mesh binds to carries no `SkinPose`: {}",
+                    self.world.entity_label(binding.pose)
+                )
+            });
         assert!(
             !pose.matrices.is_empty(),
             "a skinned mesh's pose needs at least one joint matrix"
@@ -423,7 +428,10 @@ impl<'a> InstanceContext<'a> {
             .world
             .query_one::<&MorphWeights>(binding.weights)
             .unwrap_or_else(|| {
-                panic!("the entity a morphed mesh binds to carries no `MorphWeights`")
+                panic!(
+                    "the entity a morphed mesh binds to carries no `MorphWeights`: {}",
+                    self.world.entity_label(binding.weights)
+                )
             });
         assert_eq!(
             weights.weights.len() as u32,

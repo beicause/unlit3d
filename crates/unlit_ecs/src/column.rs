@@ -12,6 +12,8 @@
 use core::any::Any;
 use core::cell::{Ref, RefCell, RefMut};
 
+use crate::entity::Entity;
+
 /// The shared borrow of a component value.
 pub type CellRef<'a, T> = Ref<'a, T>;
 
@@ -21,11 +23,21 @@ pub type CellRef<'a, T> = Ref<'a, T>;
 /// component: silently skipping the row would hide an entity the caller can
 /// still reach through the scope.
 pub(crate) fn borrow_conflict<C: 'static>(kind: &str) -> ! {
-    panic!(
-        "component `{}` is already borrowed while it is being {}",
-        core::any::type_name::<C>(),
-        kind,
-    )
+    borrow_conflict_on::<C>(kind, None)
+}
+
+/// The same panic for a caller that knows which entity's row it was reaching
+/// for, so the message names the entity instead of only the component.
+pub(crate) fn borrow_conflict_on<C: 'static>(kind: &str, entity: Option<Entity>) -> ! {
+    let component = core::any::type_name::<C>();
+    match entity {
+        Some(entity) => {
+            panic!(
+                "component `{component}` on {entity:?} is already borrowed while it is being {kind}"
+            )
+        }
+        None => panic!("component `{component}` is already borrowed while it is being {kind}"),
+    }
 }
 
 /// The exclusive borrow of a component value.

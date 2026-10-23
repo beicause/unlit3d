@@ -12,7 +12,7 @@ use core::any::{Any, TypeId};
 
 use hashbrown::HashMap;
 
-use crate::column::{AnyColumn, Column, borrow_conflict};
+use crate::column::{AnyColumn, Column, borrow_conflict_on};
 use crate::entity::Entity;
 use crate::scope::ScopeOf;
 use crate::world::World;
@@ -82,11 +82,12 @@ impl ScopeSummary {
                 world.visible(caller, scope) || archetype.entities()[row] == caller
             }
             Self::Mixed => {
-                archetype.entities()[row] == caller
+                let entity = archetype.entities()[row];
+                entity == caller
                     || archetype.cell::<ScopeOf>(row).is_some_and(|cell| {
                         let parent = cell
                             .try_borrow()
-                            .unwrap_or_else(|_| borrow_conflict::<ScopeOf>("read"))
+                            .unwrap_or_else(|_| borrow_conflict_on::<ScopeOf>("read", Some(entity)))
                             .parent();
                         world.visible(caller, parent)
                     })
@@ -282,7 +283,7 @@ impl Archetype {
         self.cell::<ScopeOf>(row)
             .expect("every spawned row carries its scope")
             .try_borrow()
-            .unwrap_or_else(|_| borrow_conflict::<ScopeOf>("read"))
+            .unwrap_or_else(|_| borrow_conflict_on::<ScopeOf>("read", Some(self.entities()[row])))
             .parent()
     }
 

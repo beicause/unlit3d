@@ -4,20 +4,29 @@
 //! generation, so a handle to a dead entity never resolves to a new entity that
 //! happened to reuse the index.
 //!
-//! A handle also carries a name, the source position that spawned it, which its
-//! [`Debug`] prints so that a message names the object it is about rather
-//! than a bare number. The name is only a label: it takes no part in
-//! comparison, hashing or [`Entity::to_bits`].
+//! A handle also carries a name, so that a message names the object it is about
+//! rather than a bare number. [`Debug`] prints it. The name is only a label: it
+//! takes no part in comparison, hashing or [`Entity::to_bits`].
+//!
+//! Where the name comes from is decided where the entity is made. A [`crate::bundle!`]
+//! names the entity after its own source position, [`crate::ArchetypeBuilder::named`]
+//! and [`crate::ScopeMut::spawn_named`] name it after the string the caller
+//! passed, and [`crate::World::reserve_entity`] names it at the reservation.
+//! A builder put together at run time by hand carries no source position, so an
+//! entity spawned from one is called by whatever the caller named it.
 
 /// A handle to an entity.
 ///
 /// The handle is a plain value: it stays valid across world mutations as long
 /// as the entity lives, and resolves to nothing once the entity is despawned.
 ///
-/// It also carries a name, the source position of the [`crate::bundle!`]
-/// that spawned it, which [`Debug`] prints. Two handles to one entity can
-/// carry different names and still be equal, because a handle restored from
-/// [`Entity::to_bits`] has no name to restore.
+/// It also carries a name, which [`Debug`] prints. A name is given where the
+/// entity is made: a [`crate::bundle!`] names it after its own source position,
+/// [`crate::ArchetypeBuilder::named`] and [`crate::ScopeMut::spawn_named`] after
+/// the string the caller passed, and [`crate::World::reserve_entity`] at the
+/// reservation. Two handles to one entity can carry different names and still be
+/// equal, because a handle restored from [`Entity::to_bits`] has no name to
+/// restore; [`crate::Scope::entity_name`] reads the one the row stores.
 #[derive(Clone, Copy, Debug)]
 pub struct Entity {
     index: u32,

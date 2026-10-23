@@ -1168,7 +1168,12 @@ impl MeshSource {
 
                 let mesh = world
                     .query_one::<&GpuMesh>(entry.mesh.entity)
-                    .expect("visible entity has GpuMesh");
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "visible entity has GpuMesh: {}",
+                            world.entity_label(entry.mesh.entity)
+                        )
+                    });
 
                 let mesh_bg = mesh
                     .parts

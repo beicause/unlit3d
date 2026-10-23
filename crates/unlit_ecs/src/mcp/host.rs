@@ -226,6 +226,8 @@ pub struct SpawnedEntity {
     /// The spawned entity.
     #[facet(opaque, proxy = crate::EntityProxy)]
     pub entity: Entity,
+    /// How the entity is called, so a reply read by a person names it.
+    pub name: &'static str,
     /// The scope it was spawned in, so a caller can use it as one.
     #[facet(opaque, proxy = crate::EntityProxy)]
     pub scope: Entity,
@@ -236,6 +238,8 @@ pub struct SpawnedEntity {
 pub struct Despawned {
     /// Whether the entity was alive.
     pub despawned: bool,
+    /// How the despawned entity was called.
+    pub name: &'static str,
 }
 
 /// A file a save tool wrote.

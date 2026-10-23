@@ -154,12 +154,16 @@ assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 名字只是标签。它不参与比较、排序与哈希，所以指向同一个实体的两个句柄无论叫什么
 都相等，而经过 `Entity::to_bits` 还原的句柄没有任何名字。名字也是跟着句柄而不是
 跟着实体的：同一个实体从两处看可以印出两个不同的标签，带到另一个世界的句柄仍带着
-它来自的那个世界的名字。`EntityInfo::name` 把标签经 MCP 报出去，因为句柄本身在那里
-只是一串整数。
+它来自的那个世界的名字。
+
+从裸 bits 还原的句柄没有名字可印，所以存储这个实体的那一行才是标签唯一长久的副本：
+`Scope::entity_name` 按句柄把它读回来，`Scope::entity_label` 把它渲染成
+`name@index (bits ...)`——MCP 工具与引擎自己的消息报的就是这个。列表里的
+`EntityInfo::name` 是同一个标签，因为句柄本身在那里只是一串整数。
 
 | 实体的来源 | 它的名字 |
 | --- | --- |
-| `bundle!` | 宏所在的源码位置，如 `crates/unlit3d/src/gltf.rs:1080` |
+| `bundle!` | 宏所在的源码位置，如 `crates/unlit3d/src/source.rs:514` |
 | `ArchetypeBuilder::named` | 在那里给的标签 |
 | `spawn_named` | 在那里给的标签 |
 | `World::reserve_entity` | 预留时给的标签 |

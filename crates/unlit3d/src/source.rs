@@ -702,9 +702,12 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(entity)
                 .map(|mut source| {
-                    let scope = world
-                        .scope(entity)
-                        .expect("a source entity is its own scope");
+                    let scope = world.scope(entity).unwrap_or_else(|| {
+                        panic!(
+                            "a source entity is its own scope: {}",
+                            world.entity_label(entity)
+                        )
+                    });
                     source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
                 })
                 .unwrap();
@@ -762,9 +765,12 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(*entity)
                 .map(|mut source| {
-                    let scope = world
-                        .scope(*entity)
-                        .expect("a source entity is its own scope");
+                    let scope = world.scope(*entity).unwrap_or_else(|| {
+                        panic!(
+                            "a source entity is its own scope: {}",
+                            world.entity_label(*entity)
+                        )
+                    });
                     source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
                 })
                 .unwrap();
@@ -1265,12 +1271,15 @@ mod release_tests {
             .root_scope()
             .query_one::<&mut Source>(entity)
             .map(|mut source| {
-                let scope = world
-                    .scope(entity)
-                    .expect("a source entity is its own scope");
+                let scope = world.scope(entity).unwrap_or_else(|| {
+                    panic!(
+                        "a source entity is its own scope: {}",
+                        world.entity_label(entity)
+                    )
+                });
                 source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
             })
-            .expect("the source entity exists");
+            .unwrap_or_else(|| panic!("the source entity exists: {}", world.entity_label(entity)));
     }
 
     /// How many nodes the context's graph holds.

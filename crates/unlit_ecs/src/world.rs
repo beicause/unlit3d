@@ -598,6 +598,37 @@ impl World {
         self.entities_read().location(entity)
     }
 
+    /// What a live entity is called, read from the row that stores it.
+    ///
+    /// This is the only durable copy of the label: the allocator keeps no name,
+    /// and a handle rebuilt from bare bits carries none. `None` when the entity
+    /// is not alive.
+    #[must_use]
+    pub fn entity_name(&self, entity: Entity) -> Option<&'static str> {
+        let location = self.location(entity)?;
+        let archetype = self.archetypes.get(location.archetype())?;
+        archetype
+            .entities()
+            .get(location.row())
+            .map(|stored| stored.name())
+    }
+
+    /// How a message names an entity: its label, and the bits it travels as.
+    ///
+    /// A handle that arrived as bare bits carries no name of its own, so the
+    /// label is read back from the row that stores the entity (see
+    /// [`World::entity_name`]). The bits stay in the message because that is
+    /// what a caller holding a handle over a wire has.
+    #[must_use]
+    pub fn entity_label(&self, entity: Entity) -> String {
+        match self.entity_name(entity) {
+            Some(name) if !name.is_empty() => {
+                format!("{name}@{} (bits {})", entity.index(), entity.to_bits())
+            }
+            _ => format!("bits {}", entity.to_bits()),
+        }
+    }
+
     /// The archetypes, including the empty one.
     ///
     /// This is the storage itself, not a view of one scope: it holds every row

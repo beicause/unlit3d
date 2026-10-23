@@ -35,8 +35,12 @@ use crate::reflect;
 /// an assumption.
 fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext, String> {
     if let Some(entity) = handle {
-        return RenderContext::of(world, entity)
-            .ok_or_else(|| format!("entity {} carries no render context", entity.to_bits()));
+        return RenderContext::of(world, entity).ok_or_else(|| {
+            format!(
+                "entity {} carries no render context",
+                world.entity_label(entity)
+            )
+        });
     }
     let mut found: Option<RenderContext> = None;
     for render_context in world.root_scope().query::<&RenderContext>() {
@@ -62,7 +66,7 @@ fn renderer_entity(world: &World, handle: Option<Entity>) -> Result<Entity, Stri
             .query_one::<Has<Renderer>>(entity)
             .unwrap_or(false)
             .then_some(entity)
-            .ok_or_else(|| format!("entity {} carries no renderer", entity.to_bits()));
+            .ok_or_else(|| format!("entity {} carries no renderer", world.entity_label(entity)));
     }
     let mut found: Option<Entity> = None;
     for (_renderer, entity) in world.root_scope().query::<(&Renderer, Entity)>() {
@@ -81,9 +85,12 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
             .root_scope()
             .query_one::<&Source>(entity)
             .is_some_and(|source| source.as_ref::<MeshSource>().is_some());
-        return is_mesh_source
-            .then_some(entity)
-            .ok_or_else(|| format!("entity {} carries no mesh source", entity.to_bits()));
+        return is_mesh_source.then_some(entity).ok_or_else(|| {
+            format!(
+                "entity {} carries no mesh source",
+                world.entity_label(entity)
+            )
+        });
     }
     let mut found: Option<Entity> = None;
     for (source, entity) in world.root_scope().query::<(&Source, Entity)>() {
@@ -168,9 +175,11 @@ struct Delivered {
 /// The entities a glTF scene spawned.
 #[derive(facet::Facet)]
 struct SpawnedEntities {
-    /// The spawned entities.
+    /// The spawned entities, as bare bits.
     #[facet(opaque, proxy = unlit_ecs::EntityVecProxy)]
     entities: Vec<Entity>,
+    /// The names of those entities, in the same order.
+    names: Vec<&'static str>,
 }
 
 /// The bytes read out of a buffer.
@@ -476,7 +485,7 @@ fn single_entity<T: 'static>(
             .query_one::<Has<T>>(entity)
             .unwrap_or(false)
             .then_some(entity)
-            .ok_or_else(|| format!("entity {} carries no {what}", entity.to_bits()));
+            .ok_or_else(|| format!("entity {} carries no {what}", world.entity_label(entity)));
     }
     let mut found: Option<Entity> = None;
     for (_t, entity) in world.root_scope().query::<(&T, Entity)>() {
@@ -564,17 +573,23 @@ pub fn create_mesh(
         Some(bits) => {
             let scope = Entity::from_bits(bits);
             if world.scope(scope).is_none() {
-                return Err(format!("no scope at bits {bits}"));
+                return Err(format!("no scope {}", world.entity_label(scope)));
             }
             scope
         }
         None => mesh_source_entity(world, source)?,
     };
+    let label = world.entity_label(scope);
+    let name = "mcp mesh";
     let entity = world
         .scope_mut(scope)
-        .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?
-        .spawn_named("mcp mesh", builder);
-    to_value(&SpawnedEntity { entity, scope })
+        .ok_or_else(|| format!("no scope {label}"))?
+        .spawn_named(name, builder);
+    to_value(&SpawnedEntity {
+        entity,
+        name,
+        scope,
+    })
 }
 
 /// Release a mesh and despawn the entity that drew it.
@@ -587,10 +602,11 @@ pub fn remove_mesh(
         .root_scope()
         .query_one::<&GpuMesh>(entity)
         .map(|mesh| mesh.clone())
-        .ok_or_else(|| format!("entity {} has no GpuMesh", entity.to_bits()))?;
+        .ok_or_else(|| format!("entity {} has no GpuMesh", world.entity_label(entity)))?;
+    let name = world.entity_name(entity).unwrap_or("");
     with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
     let despawned = world.root_scope_mut().despawn(entity);
-    to_value(&Despawned { despawned })
+    to_value(&Despawned { despawned, name })
 }
 
 /// Render one frame from the world.
@@ -703,16 +719,18 @@ pub fn load_gltf(
         Some(scope) => scope,
         None => mesh_source_entity(world, source)?,
     };
+    let label = world.entity_label(scope);
     let mut scope = world
         .scope_mut(scope)
-        .ok_or_else(|| format!("no scope at bits {}", scope.to_bits()))?;
+        .ok_or_else(|| format!("no scope {label}"))?;
     let nodes = gltf.spawn_default_scene(&mut scope, &resources);
     let entities: Vec<Entity> = nodes
         .iter()
         .flat_map(|node| node.entities.iter())
         .copied()
         .collect();
-    to_value(&SpawnedEntities { entities })
+    let names = entities.iter().map(|entity| entity.name()).collect();
+    to_value(&SpawnedEntities { entities, names })
 }
 
 /// An image's size, as structured output.

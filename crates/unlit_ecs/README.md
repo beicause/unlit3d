@@ -204,12 +204,18 @@ so two handles to one entity are equal however they were named, and a handle
 that went through `Entity::to_bits` comes back with no name at all. Names are
 also per handle rather than per entity: the same entity seen from two places can
 print two different labels, and a handle carried to another world keeps the name
-of the world it came from. `EntityInfo::name` reports the label over MCP, where
-the handle itself travels as a bare integer.
+of the world it came from.
+
+A handle rebuilt from bare bits has nothing to print, so the row that stores the
+entity is the one lasting copy of the label: `Scope::entity_name` reads it back
+by handle, and `Scope::entity_label` renders it as `name@index (bits ...)`, which
+is what the MCP tools and the engine's own messages report. `EntityInfo::name`
+carries the same label in a listing, where the handle itself travels as a bare
+integer.
 
 | The entity was spawned by | Its name |
 | --- | --- |
-| `bundle!` | the source position of the macro, `crates/unlit3d/src/gltf.rs:1080` |
+| `bundle!` | the source position of the macro, `crates/unlit3d/src/source.rs:514` |
 | `ArchetypeBuilder::named` | the label given there |
 | `spawn_named` | the label given there |
 | `World::reserve_entity` | the label given at the reservation |

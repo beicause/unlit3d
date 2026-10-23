@@ -825,7 +825,10 @@ impl Command for RunInWorld {
     fn apply(self: Box<Self>, world: &mut World) {
         let Self { entity, command } = *self;
         let Some(mut nested) = world.root_scope().query_one::<&mut World>(entity) else {
-            command.fail(format!("host entity {} carries no world", entity.to_bits()));
+            command.fail(format!(
+                "host entity {} carries no world",
+                world.entity_label(entity)
+            ));
             return;
         };
         command.dispatch(&mut nested);
