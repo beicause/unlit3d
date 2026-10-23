@@ -122,7 +122,14 @@ scope 能打开 shared 的 scope 并在那里 spawn 资源；之后 despawn 那�
 不能携带它，通过反射注册表写 `ScopeOf` 也会被拒绝，因为搬动实体是 `ScopeMut::link`
 的职责。查询与计数会跳过 scope 看不见的行；`Scope::archetype` 对空 archetype 和只
 看得见一部分的 archetype 都回答 `None`，`Scope::archetypes` 只给出非空且完整可见的
-archetype，`Scope::archetype_infos` 则报告各自的可见长度。
+archetype，`Scope::archetype_infos` 则报告各自的可见长度。`Scope::archetype_of` 是
+`Scope::archetype` 的逐行版本：它只问实体所在的那一行，不做整原型判断，所以在
+`Scope::archetype` 无法作答处作答——两个 scope 共用一个 archetype 时正是它派上用场
+的场合。
+
+**不经过 world 也能命名组件。** `Archetype` 自带其组件名字，所以持有它的读取者不必
+回到 `World::type_name` 就能描述它。world 每个名字只存一份，不随实体数增长：
+`World::archetypes` 直接交出这个池子本身，供想遍历它的调用者使用。
 
 ## 内容概览
 
@@ -131,8 +138,9 @@ archetype，`Scope::archetype_infos` 则报告各自的可见长度。
 `Scope` / `ScopeMut`、spawn 与 despawn 所跑的回调 `OnSpawn` / `OnDespawn`、
 `Query`（指明一行交出什么的类型参数，项可以是 `Entity` 与 `Has<C>`，
 archetype 谓词写作 `QueryIter::by`）、用于延迟结构变更的
-`Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`、用于给
-只知 `TypeId` 的擦除类型读取者命名组件类型的 `World::type_name`、用于把 world
+`Command` / `Commands`、用于直接检视存储的 `Archetype` / `Archetypes`（archetype
+自带其组件名字）、用于给只知 `TypeId` 的擦除类型读取者命名组件类型的
+`World::type_name`、用于把 world
 形态当作纯数据汇报的 `WorldInfo` / `ArchetypeInfo` / `EntityInfo`（实体字段反射时
 指名 `EntityProxy` 与 `EntityVecProxy`），以及
 专用哈希容器 `TypeIdHashMap`、`EntityHashMap` 等。

@@ -115,7 +115,7 @@ impl<'w> Scope<'w> {
         #[cfg(debug_assertions)]
         assert_no_duplicates::<Q>(core::panic::Location::caller());
         let location = self.location(entity)?;
-        let archetype = self.world.archetype_at(location.archetype())?;
+        let archetype = self.world.archetypes().get(location.archetype())?;
         if !self.row_visible(archetype, location.row()) || !Q::matches(archetype) {
             return None;
         }
@@ -129,14 +129,34 @@ impl<'w> Scope<'w> {
     /// list would report rows the scope cannot otherwise reach. So does an
     /// empty one, which has no row to see. A caller that only wants the shape
     /// of an archetype uses [`Scope::archetype_infos`], whose length is the
-    /// visible one.
+    /// visible one; a caller that has an entity and wants the archetype its row
+    /// lives in uses [`Scope::archetype_of`], which asks about the row rather
+    /// than about the whole archetype.
     #[must_use]
     pub fn archetype(&self, id: u32) -> Option<&'w Archetype> {
-        let archetype = self.world.archetype_at(id)?;
+        let archetype = self.world.archetypes().get(id)?;
         if archetype.is_empty() || !self.fully_visible(archetype) {
             return None;
         }
         Some(archetype)
+    }
+
+    /// The archetype an entity's row lives in, when the entity is visible here.
+    ///
+    /// This is the counterpart of [`Scope::location`]: it answers for one
+    /// visible row, so it also answers for an archetype [`Scope::archetype`]
+    /// turns down. Two scopes whose entities share a component set share the
+    /// archetype and each sees only its own rows of it; asking about one row is
+    /// well defined, while handing out the archetype as a whole is not.
+    ///
+    /// The archetype is the storage, not a view of it: [`Archetype::entities`]
+    /// lists the rows of every scope, the ones this scope cannot see included.
+    /// [`Scope::entity_info`] and [`Scope::entity_infos`] are what filter by
+    /// visibility.
+    #[must_use]
+    pub fn archetype_of(&self, entity: Entity) -> Option<&'w Archetype> {
+        let location = self.location(entity)?;
+        self.world.archetypes().get(location.archetype())
     }
 
     /// Every archetype this scope sees in full, in id order.
@@ -147,7 +167,8 @@ impl<'w> Scope<'w> {
     /// count.
     pub fn archetypes(&self) -> impl Iterator<Item = &'w Archetype> {
         self.world
-            .archetypes_slice()
+            .archetypes()
+            .as_slice()
             .iter()
             .filter(|archetype| !archetype.is_empty() && self.fully_visible(archetype))
     }
@@ -208,7 +229,7 @@ impl<'w> Scope<'w> {
     pub fn info(&self) -> WorldInfo {
         let mut components: Vec<&'static str> = Vec::new();
         let mut archetypes = 0;
-        for (index, archetype) in self.world.archetypes_slice().iter().enumerate() {
+        for (index, archetype) in self.world.archetypes().as_slice().iter().enumerate() {
             // Only an archetype with a row this scope can see has a shape to
             // report: an empty one, or one whose rows all live elsewhere,
             // would name components that nothing here carries.
@@ -216,11 +237,7 @@ impl<'w> Scope<'w> {
                 continue;
             }
             archetypes += 1;
-            for &type_id in archetype.types() {
-                if let Some(name) = self.world.type_name(type_id) {
-                    components.push(name);
-                }
-            }
+            components.extend_from_slice(archetype.names());
         }
         components.sort_unstable();
         components.dedup();
@@ -237,7 +254,8 @@ impl<'w> Scope<'w> {
     #[must_use]
     pub fn archetype_infos(&self) -> Vec<ArchetypeInfo> {
         self.world
-            .archetypes_slice()
+            .archetypes()
+            .as_slice()
             .iter()
             .enumerate()
             .filter_map(|(index, archetype)| {
@@ -245,11 +263,7 @@ impl<'w> Scope<'w> {
                 (len > 0).then(|| ArchetypeInfo {
                     index: index as u32,
                     len,
-                    components: archetype
-                        .types()
-                        .iter()
-                        .filter_map(|&type_id| self.world.type_name(type_id))
-                        .collect(),
+                    components: archetype.names().to_vec(),
                 })
             })
             .collect()
@@ -259,16 +273,12 @@ impl<'w> Scope<'w> {
     #[must_use]
     pub fn entity_info(&self, entity: Entity) -> Option<EntityInfo> {
         let location = self.location(entity)?;
-        let archetype = self.world.archetype_at(location.archetype())?;
+        let archetype = self.world.archetypes().get(location.archetype())?;
         Some(EntityInfo {
             entity,
             archetype: location.archetype(),
             row: location.row(),
-            components: archetype
-                .types()
-                .iter()
-                .filter_map(|&type_id| self.world.type_name(type_id))
-                .collect(),
+            components: archetype.names().to_vec(),
         })
     }
 
@@ -276,15 +286,11 @@ impl<'w> Scope<'w> {
     #[must_use]
     pub fn entity_infos(&self, limit: usize) -> Vec<EntityInfo> {
         let mut infos = Vec::new();
-        for (index, archetype) in self.world.archetypes_slice().iter().enumerate() {
+        for (index, archetype) in self.world.archetypes().as_slice().iter().enumerate() {
             if !self.archetype_visible(archetype) {
                 continue;
             }
-            let components: Vec<&'static str> = archetype
-                .types()
-                .iter()
-                .filter_map(|&type_id| self.world.type_name(type_id))
-                .collect();
+            let components: Vec<&'static str> = archetype.names().to_vec();
             let start = self.world.content_start(index as u32);
             for (row, &entity) in archetype.entities()[start..].iter().enumerate() {
                 let row = start + row;

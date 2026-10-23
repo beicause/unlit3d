@@ -307,18 +307,22 @@ fn entities_sharing_a_component_set_share_an_archetype() {
     world
         .root_scope_mut()
         .spawn(bundle![Position { x: 0.0, y: 0.0 }, Name("a")]);
-    let before = world.archetype_count();
+    let before = world.archetypes().as_slice().len();
 
     world
         .root_scope_mut()
         .spawn(bundle![Position { x: 1.0, y: 1.0 }, Name("b")]);
-    assert_eq!(world.archetype_count(), before, "same set, same archetype");
+    assert_eq!(
+        world.archetypes().as_slice().len(),
+        before,
+        "same set, same archetype"
+    );
 
     world
         .root_scope_mut()
         .spawn(bundle![Position { x: 2.0, y: 2.0 }]);
     assert_eq!(
-        world.archetype_count(),
+        world.archetypes().as_slice().len(),
         before + 1,
         "a wider set is its own"
     );
@@ -362,6 +366,48 @@ fn a_location_names_the_archetype_and_row_of_a_live_entity() {
         world.root_scope().archetype(u32::MAX).is_none(),
         "no such archetype"
     );
+    assert!(
+        world.archetypes().get(u32::MAX).is_none(),
+        "the pool answers the same"
+    );
+}
+
+#[test]
+fn an_archetype_names_its_own_components() {
+    let mut world = World::new();
+    world
+        .root_scope_mut()
+        .spawn(bundle![Position { x: 0.0, y: 0.0 }, Name("a")]);
+    let entity = world
+        .root_scope_mut()
+        .spawn(bundle![Position { x: 1.0, y: 1.0 }, Name("b")]);
+
+    let archetype = world.root_scope().archetype_of(entity).expect("spawned");
+    let mut names = archetype.names().to_vec();
+    names.sort_unstable();
+    let mut expected = vec![
+        core::any::type_name::<Position>(),
+        core::any::type_name::<Name>(),
+        core::any::type_name::<unlit_ecs::ScopeOf>(),
+    ];
+    expected.sort_unstable();
+    assert_eq!(names, expected);
+    assert_eq!(
+        archetype.names().len(),
+        archetype.types().len(),
+        "one name per type"
+    );
+    for (name, type_id) in archetype.names().iter().zip(archetype.types()) {
+        assert_eq!(Some(*name), world.type_name(*type_id), "the two agree");
+    }
+
+    // The pool hands out the same archetype by id.
+    let location = world.root_scope().location(entity).unwrap();
+    let by_id = world
+        .archetypes()
+        .get(location.archetype())
+        .expect("the location names one");
+    assert_eq!(by_id.names(), archetype.names());
 }
 
 #[test]

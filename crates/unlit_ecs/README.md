@@ -166,7 +166,16 @@ entity is [`ScopeMut::link`]'s job. Queries and counts skip the rows a scope
 cannot see; [`Scope::archetype`] answers `None` for an empty archetype and for
 one the scope only partly sees, [`Scope::archetypes`] yields only the non-empty
 archetypes the scope sees in full, and [`Scope::archetype_infos`] reports the
-visible length of each.
+visible length of each. [`Scope::archetype_of`] is the per-row counterpart of
+[`Scope::archetype`]: it asks about the one row an entity occupies and skips
+the whole-archetype test, so it answers where [`Scope::archetype`] cannot —
+two scopes sharing an archetype are the case that needs it.
+
+**Naming a component without the world.** An [`Archetype`] carries the names of
+its own components, so a reader holding one can describe it without going back
+to [`World::type_name`]. A world keeps one copy of each name, not one per
+entity: [`World::archetypes`] hands out the pool itself for a caller that
+wants to walk it.
 
 ## What is in the box
 
@@ -177,9 +186,10 @@ visible length of each.
 [`Query`] (the type parameter naming what a row yields, with [`Entity`] and
 [`Has<C>`] as items and [`QueryIter::by`] as the archetype predicate),
 [`Command`] / [`Commands`] for queued structural changes, [`Archetype`] /
-[`Archetypes`] for direct storage inspection, [`World::type_name`] for naming a
-component type a type-erased reader only knows by
-[`TypeId`](core::any::TypeId), [`WorldInfo`] / [`ArchetypeInfo`] / [`EntityInfo`]
+[`Archetypes`] for direct storage inspection (an archetype names its own
+components), [`World::type_name`] for naming a component type a type-erased
+reader only knows by [`TypeId`](core::any::TypeId), [`WorldInfo`] /
+[`ArchetypeInfo`] / [`EntityInfo`]
 for reporting a world's shape as plain data (with `EntityProxy` and
 `EntityVecProxy` as the reflection an entity field names), and the specialized
 hash containers

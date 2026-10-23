@@ -110,7 +110,7 @@ impl<'w, Q: Query, F: ArchetypeFilter> Iterator for QueryIter<'w, Q, F> {
     type Item = Q::Item<'w>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let archetypes = self.world.archetypes_slice();
+        let archetypes = self.world.archetypes().as_slice();
         loop {
             let archetype = archetypes.get(self.archetype)?;
             if self.row >= archetype.len() {

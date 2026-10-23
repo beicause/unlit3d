@@ -115,6 +115,23 @@ fn two_scopes_share_an_archetype_and_still_do_not_mix() {
         .map(|marker| marker.0)
         .collect();
     assert_eq!(in_scene, [1], "the sibling's row is filtered out");
+
+    // The archetype is shared, so neither scope sees all of it and
+    // `Scope::archetype` turns it down. Each row is still in an archetype, and
+    // `Scope::archetype_of` answers for the row.
+    let id = world.root_scope().location(child).unwrap().archetype();
+    let scope = world.scope(scene).unwrap();
+    assert!(scope.archetype(id).is_none(), "not every row is visible");
+    let archetype = scope.archetype_of(child).expect("the row is visible");
+    assert_eq!(
+        archetype.types(),
+        scope.archetype_of(other).unwrap().types()
+    );
+    assert!(
+        archetype.entities().contains(&other),
+        "the other scope's row"
+    );
+    assert!(scope.archetype_of(sibling).is_none(), "not in this scope");
 }
 
 #[test]

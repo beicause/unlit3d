@@ -98,6 +98,11 @@ impl ScopeSummary {
 /// One archetype: the entities that share a component set.
 pub struct Archetype {
     types: Box<[TypeId]>,
+    /// The name of each component type, in the same order as `types`.
+    ///
+    /// Cached here rather than looked up in the world so that an archetype can
+    /// describe itself without reaching back into the world it came from.
+    names: Box<[&'static str]>,
     columns: Box<[Box<dyn AnyColumn>]>,
     entities: Vec<Entity>,
     /// How many rows live in each scope, one entry per distinct scope.
@@ -109,17 +114,24 @@ pub struct Archetype {
 }
 
 impl Archetype {
-    /// Build an archetype from its component types and their columns.
+    /// Build an archetype from its component types, their names and their
+    /// columns.
     ///
-    /// `types` must be sorted and unique, and `columns` must line up with
-    /// it. Sorting is what makes one component set one archetype: the types are
-    /// the key the pool looks an archetype up by, so two spawns of the same set
-    /// have to arrive in the same order.
-    pub(crate) fn new(types: Box<[TypeId]>, columns: Box<[Box<dyn AnyColumn>]>) -> Self {
+    /// `types` must be sorted and unique, and `names` and `columns` must line
+    /// up with it. Sorting is what makes one component set one archetype: the
+    /// types are the key the pool looks an archetype up by, so two spawns of the
+    /// same set have to arrive in the same order.
+    pub(crate) fn new(
+        types: Box<[TypeId]>,
+        names: Box<[&'static str]>,
+        columns: Box<[Box<dyn AnyColumn>]>,
+    ) -> Self {
+        debug_assert_eq!(types.len(), names.len());
         debug_assert_eq!(types.len(), columns.len());
         debug_assert!(types.windows(2).all(|pair| pair[0] < pair[1]));
         Self {
             types,
+            names,
             columns,
             entities: Vec::new(),
             scope_counts: Vec::new(),
@@ -129,6 +141,17 @@ impl Archetype {
     /// The component types, sorted.
     pub fn types(&self) -> &[TypeId] {
         &self.types
+    }
+
+    /// The names of the component types, in the same order as
+    /// [`Archetype::types`].
+    ///
+    /// Each name is what [`core::any::type_name`] reported for the type when it
+    /// first entered the world, so the two slices answer for the same types in
+    /// the same order and an archetype names its own shape without consulting
+    /// the world it came from.
+    pub fn names(&self) -> &[&'static str] {
+        &self.names
     }
 
     /// The entities, one per row.
@@ -279,6 +302,22 @@ impl Archetype {
     }
 }
 
+impl core::fmt::Debug for Archetype {
+    /// Reports the shape and the row count, not the rows.
+    ///
+    /// An archetype can hold tens of thousands of entities, and printing them
+    /// would bury the one fact a caller is usually after: which components the
+    /// rows carry. The entity list is reachable through
+    /// [`Archetype::entities`].
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Archetype")
+            .field("components", &self.names)
+            .field("len", &self.entities.len())
+            .field("scopes", &self.scope_counts.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Every archetype of a world.
 pub struct Archetypes {
     archetypes: Vec<Archetype>,
@@ -292,7 +331,7 @@ impl Archetypes {
             archetypes: Vec::new(),
             by_types: HashMap::new(),
         };
-        pool.register(Archetype::new(Box::new([]), Box::new([])));
+        pool.register(Archetype::new(Box::new([]), Box::new([]), Box::new([])));
         pool
     }
 
@@ -336,27 +375,37 @@ impl Archetypes {
         id
     }
 
-    /// The archetype with this id.
+    /// The archetype with this id, or `None` when no archetype has it.
     #[inline]
-    pub(crate) fn get(&self, id: u32) -> &Archetype {
-        &self.archetypes[id as usize]
+    #[must_use]
+    pub fn get(&self, id: u32) -> Option<&Archetype> {
+        self.archetypes.get(id as usize)
     }
 
-    /// The archetype with this id.
-    pub(crate) fn get_mut(&mut self, id: u32) -> &mut Archetype {
-        &mut self.archetypes[id as usize]
-    }
-
-    /// The number of archetypes.
-    pub(crate) fn len(&self) -> usize {
-        self.archetypes.len()
+    /// The archetype with this id, or `None` when no archetype has it.
+    pub(crate) fn get_mut(&mut self, id: u32) -> Option<&mut Archetype> {
+        self.archetypes.get_mut(id as usize)
     }
 
     /// Every archetype, as a slice.
-    pub(crate) fn as_slice(&self) -> &[Archetype] {
+    ///
+    /// An archetype's id is its position in this slice, which is what
+    /// [`crate::Location::archetype`] and [`Archetype::names`] are read
+    /// against.
+    pub fn as_slice(&self) -> &[Archetype] {
         &self.archetypes
     }
 }
+
+impl core::fmt::Debug for Archetypes {
+    /// Reports the number of archetypes, not the archetypes themselves.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Archetypes")
+            .field("len", &self.archetypes.len())
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,13 +414,16 @@ mod tests {
     #[test]
     fn the_empty_archetype_exists_first() {
         let archetypes: Archetypes = Archetypes::new();
-        assert!(archetypes.get(0).is_empty());
-        assert!(archetypes.get(0).types().is_empty());
+        let empty = archetypes.get(0).expect("the empty archetype");
+        assert!(empty.is_empty());
+        assert!(empty.types().is_empty());
+        assert!(empty.names().is_empty());
     }
 
     #[test]
     fn an_archetype_is_looked_up_by_its_component_set() {
-        // Archetypes keep their component types sorted, so the fixture is too.
+        // Archetypes keep their component types sorted, so the fixture is too,
+        // and the names are built after the sort so that the two stay aligned.
         let mut types = [TypeId::of::<u32>(), TypeId::of::<bool>()];
         types.sort_unstable();
         let columns: Vec<Box<dyn AnyColumn>> = types
@@ -384,8 +436,22 @@ mod tests {
                 }
             })
             .collect();
+        let names: Vec<&'static str> = types
+            .iter()
+            .map(|type_id| {
+                if *type_id == TypeId::of::<u32>() {
+                    core::any::type_name::<u32>()
+                } else {
+                    core::any::type_name::<bool>()
+                }
+            })
+            .collect();
         let mut archetypes: Archetypes = Archetypes::new();
-        let id = archetypes.register(Archetype::new(types.into(), columns.into_boxed_slice()));
+        let id = archetypes.register(Archetype::new(
+            types.into(),
+            names.clone().into_boxed_slice(),
+            columns.into_boxed_slice(),
+        ));
         let found = archetypes.find_with(types.iter().copied(), |stored| stored == types);
         assert_eq!(found, Some(id));
         let other = [TypeId::of::<u32>()];
@@ -394,14 +460,18 @@ mod tests {
             None,
             "a shorter type sequence is another archetype",
         );
-        assert_eq!(archetypes.len(), 2);
-        assert_eq!(archetypes.get(id).types(), types);
+        assert_eq!(archetypes.as_slice().len(), 2);
+        let registered = archetypes.get(id).expect("just registered");
+        assert_eq!(registered.types(), types);
+        assert_eq!(registered.names(), names.as_slice());
+        assert!(archetypes.get(u32::MAX).is_none(), "no such archetype");
     }
 
     /// An archetype holding one `ScopeOf` column, as every spawned row has.
     fn scoped_archetype() -> Archetype {
         Archetype::new(
             Box::new([TypeId::of::<ScopeOf>()]),
+            Box::new([core::any::type_name::<ScopeOf>()]),
             Box::new([Column::<ScopeOf>::new().erase()]),
         )
     }
@@ -448,7 +518,11 @@ mod tests {
     fn component_values_are_stored_and_read_back() {
         let types = [TypeId::of::<u32>()];
         let columns: Vec<Box<dyn AnyColumn>> = vec![Column::<u32>::new().erase()];
-        let mut archetype: Archetype = Archetype::new(types.into(), columns.into_boxed_slice());
+        let mut archetype: Archetype = Archetype::new(
+            types.into(),
+            Box::new([core::any::type_name::<u32>()]),
+            columns.into_boxed_slice(),
+        );
         archetype.push_erased(TypeId::of::<u32>(), Box::new(7u32));
         archetype.push_entity(Entity::from_raw(0, 0), Entity::from_raw(9, 0));
         let value = archetype.cell::<u32>(0).unwrap().try_borrow().unwrap();

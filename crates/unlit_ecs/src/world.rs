@@ -116,7 +116,7 @@ impl World {
             .expect("the root has a row")
             .archetype();
         debug_assert_eq!(
-            world.archetypes_slice()[world.scaffolding as usize].entities(),
+            world.archetypes().as_slice()[world.scaffolding as usize].entities(),
             &[root, shared][..],
             "the scaffolding takes the first rows of its archetype",
         );
@@ -358,8 +358,13 @@ impl World {
 
     /// Rewrite the [`ScopeOf`] component of a live entity and reindex it.
     fn write_scope(&mut self, entity: Entity, scope: Entity) {
-        let location = self.location(entity).expect("a live entity has a location");
-        let archetype = self.archetypes.get_mut(location.archetype());
+        let location = self
+            .location(entity)
+            .unwrap_or_else(|| panic!("{entity:?} has no row to move"));
+        let archetype = self
+            .archetypes
+            .get_mut(location.archetype())
+            .expect("a live entity's location names a registered archetype");
         let cell = archetype
             .cell::<ScopeOf>(location.row())
             .expect("every spawned row carries its scope");
@@ -404,7 +409,10 @@ impl World {
         }
 
         let archetype = self.archetype_for_components(&components);
-        let target = self.archetypes.get_mut(archetype);
+        let target = self
+            .archetypes
+            .get_mut(archetype)
+            .expect("the archetype was just found or registered");
         for component in components {
             target.push_erased(component.type_id, component.value);
         }
@@ -452,12 +460,6 @@ impl World {
     }
 
     // -- queries and diagnostics -------------------------------------------
-
-    /// The number of archetypes, including the empty one.
-    #[must_use]
-    pub fn archetype_count(&self) -> usize {
-        self.archetypes.len()
-    }
 
     /// The name of a component type that has entered the world, as
     /// [`core::any::type_name`] reported it, or `None` when no entity has ever
@@ -544,22 +546,22 @@ impl World {
             .iter()
             .map(|component| component.type_id)
             .collect();
+        let names: Box<[&'static str]> =
+            components.iter().map(|component| component.name).collect();
         let columns: Box<[Box<dyn AnyColumn>]> = types
             .iter()
             .map(|type_id| {
-                let ctor = self
-                    .ctors
-                    .get(type_id)
-                    .expect("every component type is registered before its archetype exists");
+                let ctor = self.ctors.get(type_id).unwrap_or_else(|| {
+                    panic!(
+                        "no column constructor is registered for `{}`",
+                        self.type_name(*type_id).unwrap_or("an unnamed type"),
+                    )
+                });
                 ctor()
             })
             .collect();
-        self.archetypes.register(Archetype::new(types, columns))
-    }
-
-    /// The archetype with this id, or `None` when there is no such archetype.
-    pub(crate) fn archetype_at(&self, id: u32) -> Option<&Archetype> {
-        self.archetypes.as_slice().get(id as usize)
+        self.archetypes
+            .register(Archetype::new(types, names, columns))
     }
 
     /// Where a live entity's components live, or `None` when it is not alive.
@@ -568,9 +570,14 @@ impl World {
         self.entities_read().location(entity)
     }
 
-    /// The archetypes, including the empty one, as a slice.
-    pub(crate) fn archetypes_slice(&self) -> &[Archetype] {
-        self.archetypes.as_slice()
+    /// The archetypes, including the empty one.
+    ///
+    /// This is the storage itself, not a view of one scope: it holds every row
+    /// of every scope. Reading it through a [`Scope`] is what filters by
+    /// visibility.
+    #[must_use]
+    pub fn archetypes(&self) -> &Archetypes {
+        &self.archetypes
     }
 
     /// The component of `entity`, exclusively.
@@ -583,6 +590,7 @@ impl World {
         let cell = self
             .archetypes
             .get(location.archetype())
+            .expect("a live entity's location names a registered archetype")
             .cell::<C>(location.row())?;
         Some(
             cell.try_borrow_mut()
@@ -592,7 +600,10 @@ impl World {
 
     /// Drop the row at `location`, keeping every other location correct.
     pub(crate) fn remove_row(&mut self, location: Location) {
-        let archetype = self.archetypes.get_mut(location.archetype());
+        let archetype = self
+            .archetypes
+            .get_mut(location.archetype())
+            .expect("a live entity's location names a registered archetype");
         if let Some(moved) = archetype.swap_remove(location.row()) {
             self.entities_write().set_location(
                 moved,
@@ -606,6 +617,23 @@ impl World {
 
     pub(crate) fn free_entity(&mut self, entity: Entity) -> bool {
         self.entities_write().free(entity)
+    }
+}
+
+impl core::fmt::Debug for World {
+    /// Reports the tree's roots and the archetype pool, not the entities.
+    ///
+    /// The entity table, the scope tree and the command queue live in cells,
+    /// and a debug print is most likely to run while one of them is already
+    /// borrowed. Borrowing them here would panic inside the panic message that
+    /// is being built, so they are left out rather than read on a best effort.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("World")
+            .field("root", &self.root)
+            .field("shared", &self.shared)
+            .field("scaffolding", &self.scaffolding)
+            .field("archetypes", &self.archetypes)
+            .finish_non_exhaustive()
     }
 }
 

@@ -66,11 +66,12 @@ pub struct WorldInfo {
     pub entities: usize,
     /// The number of archetypes with at least one visible row.
     pub archetypes: usize,
-    /// The names of the component types that have entered the world, sorted.
+    /// The names of the component types this scope can see, sorted.
     ///
-    /// This is the world's own inventory, not a registry of types a bridge can
-    /// encode: a type no entity has ever carried is absent, and a type that
-    /// entered but has no entity left is still present.
+    /// A type is named here when an archetype holding at least one visible row
+    /// carries it, which is the same rule as [`WorldInfo::archetypes`]: the two
+    /// describe the rows the scope reaches, not the types that ever entered the
+    /// world.
     pub components: Vec<&'static str>,
     /// The root entity, which owns everything.
     #[cfg_attr(feature = "reflect", facet(opaque, proxy = crate::EntityProxy))]

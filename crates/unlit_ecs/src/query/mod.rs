@@ -45,7 +45,7 @@ use core::any::TypeId;
 use core::marker::PhantomData;
 
 use crate::archetype::Archetype;
-use crate::column::{CellRef, CellRefMut, Column};
+use crate::column::{CellRef, CellRefMut, Column, borrow_conflict};
 use crate::entity::Entity;
 
 mod iter;
@@ -60,15 +60,6 @@ fn missing<C: 'static>() -> ! {
     panic!(
         "component `{}` is missing from an archetype the query matched",
         core::any::type_name::<C>(),
-    )
-}
-
-/// Panics when a component is already borrowed in a conflicting way.
-fn borrowed<C: 'static>(kind: &str) -> ! {
-    panic!(
-        "component `{}` is already borrowed while it is being {}",
-        core::any::type_name::<C>(),
-        kind,
     )
 }
 
@@ -146,7 +137,7 @@ impl<T: 'static> Query for &T {
             .cell(row)
             .unwrap_or_else(|| missing::<T>())
             .try_borrow()
-            .unwrap_or_else(|_| borrowed::<T>("read"))
+            .unwrap_or_else(|_| borrow_conflict::<T>("read"))
     }
 
     fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
@@ -174,7 +165,7 @@ impl<T: 'static> Query for &mut T {
             .cell(row)
             .unwrap_or_else(|| missing::<T>())
             .try_borrow_mut()
-            .unwrap_or_else(|_| borrowed::<T>("write"))
+            .unwrap_or_else(|_| borrow_conflict::<T>("write"))
     }
 
     fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
@@ -199,7 +190,10 @@ impl<T: 'static> Query for Option<&T> {
 
     fn fetch<'a>(state: &Self::Fetch<'a>, row: usize) -> Self::Item<'a> {
         let cell = (*state)?.cell(row)?;
-        Some(cell.try_borrow().unwrap_or_else(|_| borrowed::<T>("read")))
+        Some(
+            cell.try_borrow()
+                .unwrap_or_else(|_| borrow_conflict::<T>("read")),
+        )
     }
 
     fn type_ids(visit: &mut dyn FnMut(TypeId, &'static str)) {
@@ -226,7 +220,7 @@ impl<T: 'static> Query for Option<&mut T> {
         let cell = (*state)?.cell(row)?;
         Some(
             cell.try_borrow_mut()
-                .unwrap_or_else(|_| borrowed::<T>("write")),
+                .unwrap_or_else(|_| borrow_conflict::<T>("write")),
         )
     }
 
