@@ -311,6 +311,18 @@ jobs:
           rustup toolchain install stable --no-self-update --profile=minimal --component clippy
           rustup target add aarch64-linux-android
 
+      # The image carries more than one NDK and points `ANDROID_NDK_HOME` at its
+      # default, which is not the version this project pins. `build-android` in
+      # `ci-main.yml` points at the pinned one, and the two have to agree for the
+      # cache they share to be worth sharing: a different NDK is a different
+      # clang, and every C dependency is rebuilt for it. `ANDROID_HOME` is
+      # inherited from the runner rather than set by this workflow, so the path
+      # is assembled in the shell.
+      - name: Point the NDK at the pinned version
+        run: |
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+
       # As in `check-wasm`: the same cache `build-android` keeps, so the
       # cross-build behind a merge finds the dependency tree this lint already
       # compiled for the target.
@@ -326,7 +338,7 @@ jobs:
         uses: cargo-bins/cargo-binstall@v1.23.0
 
       # The NDK is not installed here: the runner image already carries the
-      # version this project pins, and `cargo ndk` finds it by itself.
+      # version this project pins, and the step above points `cargo ndk` at it.
       #
       # `--strategies` is spelled out because cargo-ndk's own manifest disables
       # two of the defaults, the source build among them, which leaves the

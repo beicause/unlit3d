@@ -331,9 +331,12 @@ request:
 
 Each `check-*` job shares its cache with the job that does the same subject on
 `main` (`shared-key` on Swatinem/rust-cache), so what the light tier compiles is
-what the merge restores instead of recompiling. Every job also saves its caches
-even when it fails (`cache-on-failure`), so an iteration on a red branch still
-leaves the next run warmer than a cold one would be.
+what the merge restores instead of recompiling. The two workflows set the same
+`env` block for that reason: rust-cache hashes every `CARGO*` and `RUST*`
+variable into the key, so a variable set on one side and not on the other splits
+the cache it was meant to share. Every job also saves its caches even when it
+fails (`cache-on-failure`), so an iteration on a red branch still leaves the next
+run warmer than a cold one would be.
 
 The snapshot comparisons are the check that makes a rendering regression fail
 rather than pass unnoticed, which is why the example's scenes carry them. Their
