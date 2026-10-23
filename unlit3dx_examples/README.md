@@ -134,16 +134,18 @@ it is paced differs.
     instances, and sends their poses back as a job. The render world despawns
     an instance the camera can no longer see and reports it back, and the body
     goes with it.
-  - `SceneAudio` (tick 300) sends the install job once, and on the answer
-    spawns the scene's two tracks in this world: each is a `MidiSequencer`
-    with a clock, the voice it plays into, and the sender that voice takes
-    messages through. The background loop starts playing at once; the demo
-    sequence waits, paused, for the panel.
+  - `SceneAudio` (tick 300) asks the audio world for the synthesizer's voice,
+    and on the answer spawns the scene's two tracks in this world: each is a
+    `MidiSequencer` with a clock and the voice it plays into, and it takes
+    the audio world's sender from the `Scene` it is ticked with. The
+    background loop starts playing at once; the demo sequence waits, paused,
+    for the panel.
 
   Each object reaches the others' worlds through one `Scene` value: the
-  render, physics and audio senders and the physics snapshot, handed to
-  every tick. An object that never talks to the audio world keeps no
-  sender for it.
+  render, physics and audio senders, the physics snapshot, and what the
+  render and audio worlds report about themselves, handed to every tick. An
+  object that never talks to the audio world keeps no sender for it.
+
 
   The world ticks at a fixed 68 Hz, independent of the frame rate.
 

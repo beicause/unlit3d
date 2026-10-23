@@ -16,6 +16,7 @@ use unlit3dx::prelude::*;
 use super::Scene;
 use super::music::{bgm_midi, sequence_midi};
 use super::tick::{ScenePhase, TICK_AUDIO, Tick, tick_behaviour};
+use super::world_ended;
 
 /// How a scene's audio world gets its synthesizer and its output.
 pub enum AudioSetup {
@@ -71,14 +72,12 @@ pub struct Track {
     pub midi: MidiSequencer,
     /// The voice in the audio world the messages go to.
     pub voice: Entity,
-    /// The audio world's command channel.
-    pub audio: JobSender,
 }
 
 impl Tick for Track {
-    fn tick(&mut self, _world: &World, frame: &Frame, _scene: &Scene) {
+    fn tick(&mut self, _world: &World, frame: &Frame, scene: &Scene) {
         self.midi
-            .advance(f64::from(frame.delta_time), self.voice, &self.audio);
+            .advance(f64::from(frame.delta_time), self.voice, &scene.audio);
     }
 }
 
@@ -90,8 +89,9 @@ impl Tick for Track {
 pub struct SceneAudio {
     /// The soundfont the voice is built from.
     soundfont: Arc<[u8]>,
-    /// The voice the install answered with, once it has.
-    voice: SnapshotReader<Option<Entity>>,
+    /// The voice the install answered with, once it has: no answer until the
+    /// question is asked.
+    voice: Option<SnapshotReader<Option<Entity>>>,
     /// Whether the question has been asked, so it is not asked again.
     requested: bool,
     /// Whether the answer has landed, so the scene stops looking.
@@ -104,7 +104,7 @@ impl SceneAudio {
     pub fn new(soundfont: Arc<[u8]>) -> Self {
         Self {
             soundfont,
-            voice: Snapshot::new().reader(),
+            voice: None,
             requested: false,
             installed: false,
         }
@@ -123,7 +123,7 @@ impl Tick for SceneAudio {
                 .audio
                 .ask(move |world: &mut World| install_synth(world, &soundfont))
             {
-                Ok(voice) => self.voice = voice,
+                Ok(voice) => self.voice = Some(voice),
                 Err(error) => {
                     self.installed = true;
                     log::error!("the audio world refused the synthesizer install ({error:?})");
@@ -131,7 +131,16 @@ impl Tick for SceneAudio {
                 }
             }
         }
-        let Some(voice) = self.voice.latest().map(|voice| *voice) else {
+        let Some(reader) = self.voice.as_ref() else {
+            return;
+        };
+        let Some(voice) = reader.latest().map(|voice| *voice) else {
+            // The world that owes the answer is gone: the install job died with
+            // it, and no reader will ever see a voice.
+            if world_ended(&scene.audio_state) {
+                self.installed = true;
+                log::error!("the audio world ended before it installed the synthesizer");
+            }
             return;
         };
         self.installed = true;
@@ -147,7 +156,6 @@ impl Tick for SceneAudio {
 /// The background loop runs from the first frame it can; the one-shot
 /// sequence is spawned paused, so the panel's Play is what starts it.
 fn start_tracks(world: &Scope<'_>, scene: &Scene, voice: Entity) {
-    let audio = scene.audio.clone();
     let commands = world.queue();
     let mut background = MidiSequencer::new(bgm_midi());
     background.loop_play = true;
@@ -155,7 +163,6 @@ fn start_tracks(world: &Scope<'_>, scene: &Scene, voice: Entity) {
         Track {
             midi: background,
             voice,
-            audio: audio.clone(),
         },
         tick_behaviour::<Track>(scene.clone(), ScenePhase::Objects.at(TICK_AUDIO)),
     ]);
@@ -165,7 +172,6 @@ fn start_tracks(world: &Scope<'_>, scene: &Scene, voice: Entity) {
         Track {
             midi: sequence,
             voice,
-            audio: audio.clone(),
         },
         tick_behaviour::<Track>(scene.clone(), ScenePhase::Objects.at(TICK_AUDIO)),
     ]);

@@ -298,6 +298,11 @@ pub struct GamePhysics {
 /// between its steps. Each subscription belongs to the world it reads, so a
 /// run that never asks for a snapshot pays nothing for it.
 ///
+/// A port also carries what its world is doing: [`render_state`](Self::render_state)
+/// and [`audio_state`](Self::audio_state) are how an object that asked a
+/// question learns that the world it asked is gone, instead of waiting for an
+/// answer that will never come.
+///
 /// Both run modes build one from the worlds they have — threaded worlds for
 /// the windowed show, stepped worlds for the headless capture — and both then
 /// spawn the same objects with it, so the wiring is written once.
@@ -312,6 +317,10 @@ pub struct Scene {
     pub audio: JobSender,
     /// The physics world's latest pose snapshot.
     pub poses: SnapshotReader<GamePhysics>,
+    /// Whether the render world is still running.
+    pub render_state: SnapshotReader<WorldState>,
+    /// Whether the audio world is still running.
+    pub audio_state: SnapshotReader<WorldState>,
 }
 
 /// Watch the physics world's body poses.
@@ -342,6 +351,18 @@ fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
             Some(GamePhysics { transforms })
         })
         .expect("the physics world accepts a subscription")
+}
+
+/// Whether the world behind a port has ended.
+///
+/// A question asked of a world that panicked is never answered, and neither is
+/// one asked of a world that stopped: the job is gone with the turn it ran in.
+/// An object that asked waits on this instead of waiting forever.
+pub(super) fn world_ended(state: &SnapshotReader<WorldState>) -> bool {
+    matches!(
+        state.latest().as_deref(),
+        Some(WorldState::Stopped | WorldState::Panicked(_))
+    )
 }
 
 /// The scene's worlds, however they are driven.
@@ -426,8 +447,10 @@ pub fn spawn_scene<R: WorldRunner>(
 
     let scene = Scene {
         render: render.sender.clone(),
+        render_state: render.state.clone(),
         physics: physics.sender.clone(),
         audio: audio.sender.clone(),
+        audio_state: audio.state.clone(),
         poses,
     };
 

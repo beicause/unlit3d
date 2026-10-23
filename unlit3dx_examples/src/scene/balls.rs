@@ -536,7 +536,7 @@ impl Tick for Balls {
             .root_scope()
             .query::<(&SceneState, Entity)>()
             .next()
-            .map(|(scene_state, entity)| (entity, scene_state.is_ready()))
+            .map(|(scene_state, entity)| (entity, scene_state.ready))
         else {
             return;
         };

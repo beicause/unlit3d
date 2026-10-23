@@ -12,6 +12,7 @@ use unlit3dx::prelude::*;
 use super::HIDDEN_POSITION;
 use super::Scene;
 use super::shapes::{BALL_COLORS, PATTERN_SIZE, SHAPE_KINDS, pattern_texture, shape_mesh};
+use super::world_ended;
 use crate::render::{allocate_mesh, allocate_rgba_material, hidden_instance_of, linear_sampler};
 
 /// The render entities a shape is built from, in kind-major order.
@@ -39,7 +40,10 @@ pub struct SceneState {
     /// The assets once the build landed, for the jobs that name them.
     pub loaded: Option<SceneAssets>,
     /// Whether the build landed and the scene is live.
-    ready: bool,
+    pub ready: bool,
+    /// Whether the wait is over: the build landed, or the render world ended
+    /// before it answered.
+    given_up: bool,
 }
 
 impl SceneState {
@@ -65,23 +69,26 @@ impl SceneState {
             assets,
             loaded: None,
             ready: false,
+            given_up: false,
         }
-    }
-
-    /// Whether the build landed and the scene is live.
-    #[must_use]
-    pub fn is_ready(&self) -> bool {
-        self.ready
     }
 
     /// Take the assets once the build job has published them.
     ///
-    /// The scene stays empty if the render world refused the job.
-    fn poll_build(&mut self) {
-        if self.ready {
+    /// The scene stays empty if the render world refused the job, and it stops
+    /// waiting if the world that owed the answer is gone: a job that panicked
+    /// takes its answer with it, and no reader will ever see one.
+    fn poll_build(&mut self, scene: &Scene) {
+        if self.given_up {
             return;
         }
         let Some(assets) = self.assets.latest() else {
+            if world_ended(&scene.render_state) {
+                log::error!(
+                    "the render world ended before it built the scene; the scene stays empty"
+                );
+                self.given_up = true;
+            }
             return;
         };
         let assets = assets.as_ref().clone();
@@ -92,12 +99,13 @@ impl SceneState {
         );
         self.loaded = Some(assets);
         self.ready = true;
+        self.given_up = true;
     }
 }
 
 impl super::tick::Tick for SceneState {
-    fn tick(&mut self, _world: &World, _frame: &unlit3d::frame::Frame, _scene: &Scene) {
-        self.poll_build();
+    fn tick(&mut self, _world: &World, _frame: &unlit3d::frame::Frame, scene: &Scene) {
+        self.poll_build(scene);
     }
 }
 

@@ -100,13 +100,15 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
   - `Balls`（tick 200）向渲染 world 要为这次落球新建的实例、向物理要刚体、把快照里的
     句柄映射到自己的实例，再把姿态作为一个 job 发回去。镜头再也看不到的实例由渲染
     world despawn 并回报，刚体随之一起消失。
-  - `SceneAudio`（tick 300）发出一次安装 job，拿到答复后在本 world 里生成场景的
-    两条音轨：每条是一个 `MidiSequencer` 加它的时钟、它所弹入的音源，以及音源收取
-    消息用的发送端。背景音乐循环立刻开播，示例序列则暂停着等面板。
+  - `SceneAudio`（tick 300）向音频 world 索要合成器的音源，拿到答复后在本 world 里
+    生成场景的两条音轨：每条是一个 `MidiSequencer` 加它的时钟、它所弹入的音源，而
+    音频 world 的 sender 则来自 tick 时拿到的这个 `Scene`。背景音乐循环立刻开播，
+    示例序列则暂停着等面板。
 
   每个对象都通过一个 `Scene` 值触达其余 world：render、physics、audio 三个
-  sender 与物理快照，交给每一次 tick。从不对音频 world 说话的对象也就不会持有
-  它的 sender。
+  sender、物理快照，以及 render 与 audio 两个 world 对自己状态的报告，交给每一次
+  tick。从不对音频 world 说话的对象也就不会持有它的 sender。
+
 
   它以固定 68 Hz 步进，独立于帧率。
 
