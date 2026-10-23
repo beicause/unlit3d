@@ -161,6 +161,15 @@ fn draining_a_sub_world_publishes_its_subscriptions() {
         .expect("the sub-world accepts a subscription");
     assert_eq!(reader.latest(), None, "nothing ran before the drain");
 
+    // The sub-world gets its marker from a job: a nested world runs nothing
+    // until its host drains it.
+    proxy
+        .sender
+        .send(Box::new(|world: &mut World| {
+            world.root_scope_mut().spawn(bundle![Marker(0)]);
+        }))
+        .expect("the sub-world accepts a job");
+
     let mut nested = host
         .root_scope()
         .query_one::<&mut World>(proxy.entity)
