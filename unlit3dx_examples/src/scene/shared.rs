@@ -135,14 +135,14 @@ fn build(world: &mut World) -> SceneAssets {
 }
 
 /// The job that spawns one hidden instance wearing the assets it names, and
-/// publishes its entity back tagged with `id`.
+/// publishes its entity back tagged with `ball`.
 ///
 /// It stays hidden until its body is ready and the show job puts it in place.
 pub fn create_instance_job(
-    id: u64,
+    ball: Entity,
     mesh: Entity,
     material: Entity,
-    created: Stream<(u64, Entity)>,
+    created: Stream<(Entity, Entity)>,
 ) -> Job {
     Box::new(move |world: &mut World| {
         let instance = hidden_instance_of(
@@ -154,7 +154,7 @@ pub fn create_instance_job(
                 ..Default::default()
             },
         );
-        created.publish((id, instance));
+        created.publish((ball, instance));
     })
 }
 

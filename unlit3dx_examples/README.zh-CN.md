@@ -97,9 +97,10 @@ cargo run -p unlit3dx_examples -- --headless --frames 300 --out headless
     落球都向渲染 world 要一个自己的实例。
   - `spawn_floor` 在第一次落球可能发生之前排队地面这个固定刚体，并搭建绘制它的
     棋盘格实例。
-  - `Balls`（tick 200）向渲染 world 要为这次落球新建的实例、向物理要刚体、把快照里的
-    句柄映射到自己的实例，再把姿态作为一个 job 发回去。镜头再也看不到的实例由渲染
-    world despawn 并回报，刚体随之一起消失。
+  - `Balls`（tick 200）每次落球都 spawn 一个 `Ball` 实体，向渲染 world 要实例、向物理
+    要刚体。两份答复都点名这个球，因此球本身就是身份：两半都到齐才显示，而找不到自己球
+    的答复会自行清理。镜头再也看不到的实例由渲染 world despawn 并把球回报，球随之一起
+    消失。
   - `SceneAudio`（tick 300）向音频 world 索要合成器的音源，拿到答复后在本 world 里
     生成场景的两条音轨：每条是一个 `MidiSequencer` 加它的时钟、它所弹入的音源，而
     音频 world 的 sender 则来自 tick 时拿到的这个 `Scene`。背景音乐循环立刻开播，

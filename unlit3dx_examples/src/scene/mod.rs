@@ -12,8 +12,9 @@
 //!   world for an instance of its own.
 //! - [`spawn_floor`] puts the ground under the shapes, in physics and in the
 //!   render world.
-//! - [`Balls`] drops the shapes, maps physics bodies onto render instances,
-//!   and publishes their poses.
+//! - [`Balls`] drops the balls: each one is a [`Ball`] entity of its own, which
+//!   both the render world and the physics world answer by name, and the poses
+//!   the physics world reports are published from it.
 //! - [`SceneAudio`] installs the synthesizer's voice and starts the music: the
 //!   [`Track`]s it spawns own their clocks here, and each tick sends the audio
 //!   world the messages that came due.
@@ -32,6 +33,7 @@
 use std::time::Duration;
 
 use glam::{Quat, Vec3};
+use hashbrown::HashMap;
 use unlit_ecs::bundle;
 use unlit_ecs::{Entity, World};
 use unlit_wgpu::resources::ResourceGraph;
@@ -46,7 +48,7 @@ use unlit3dx::ui::UiPanelHost;
 use crate::render::{camera_looking_at, mesh_source};
 
 pub use audio::{AudioSetup, SceneAudio, SceneTracks, Track, install_synth};
-pub use balls::{Balls, PENDING_TIMEOUT_TICKS, SPAWN_HEIGHT, SPAWN_SPREAD, SPAWN_TICKS};
+pub use balls::{Ball, Balls, PENDING_TIMEOUT_TICKS, SPAWN_HEIGHT, SPAWN_SPREAD, SPAWN_TICKS};
 pub use floor::{
     GROUND_CHECKER_DARK, GROUND_CHECKER_SIZE, GROUND_COLOR, GROUND_HALF, GROUND_POSITION,
     checker_ground, spawn_floor,
@@ -95,6 +97,10 @@ pub const RENDER_HZ: f64 = 60.0;
 /// for a body is not named: the show job already put it where it belongs.
 /// [`pose_job`] turns one into the job that writes them onto the entities
 /// they name.
+///
+/// The entities are the render world's own. Every world numbers its entities
+/// from zero, so an id from the world that sends the job names something
+/// unrelated in the world that runs it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScenePoses(pub Vec<(Entity, Transform)>);
 
@@ -280,13 +286,14 @@ fn orbit_eye(azimuth: f32) -> Vec3 {
 /// The physics state the demo subscribes to: where every body is.
 ///
 /// The library defines no snapshot payload of its own, so this one belongs to
-/// the demo: the collector the shapes subscribe with fills it from the rapier
+/// the demo: the collector the balls subscribe with fills it from the rapier
 /// world. It holds the newest poses, not a history — a body that moved twice
-/// between two reads appears once, where it is now.
+/// between two reads appears once, where it is now. A handle is the key
+/// because it is what a ball names once its body is spawned.
 #[derive(Default)]
 pub struct GamePhysics {
-    /// Every moving body's transform.
-    pub transforms: Vec<(RigidBodyHandle, Vec3, Quat)>,
+    /// Every moving body's pose, by the handle it was spawned with.
+    pub transforms: HashMap<RigidBodyHandle, (Vec3, Quat)>,
 }
 
 /// The other worlds, as the scene's objects reach them.
@@ -333,14 +340,14 @@ pub struct Scene {
 /// snapshot carries state, not history: a body that moved twice between two
 /// reads is seen once, where it is now.
 fn watch_poses(sender: &JobSender) -> SnapshotReader<GamePhysics> {
-    let mut previous: Vec<(RigidBodyHandle, Vec3, Quat)> = Vec::new();
+    let mut previous: HashMap<RigidBodyHandle, (Vec3, Quat)> = HashMap::new();
     sender
         .watch(move |world: &World| {
-            let mut transforms = Vec::new();
+            let mut transforms = HashMap::new();
             if let Some(physics) = world.root_scope().query::<(Entity, &PhysicsWorld)>().next() {
                 for (handle, body) in physics.1.bodies.iter() {
                     if body.is_dynamic() || body.is_kinematic() {
-                        transforms.push((handle, body.translation(), *body.rotation()));
+                        transforms.insert(handle, (body.translation(), *body.rotation()));
                     }
                 }
             }
