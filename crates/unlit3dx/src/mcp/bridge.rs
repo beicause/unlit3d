@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, unbounded};
 use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId};
-use unlit_ecs::{Command, Entity, World, bundle};
+use unlit_ecs::{Command, Entity, EntityAccessError, World, bundle};
 use unlit3d::winit::event::OnAboutToWait;
 
 use crate::sync;
@@ -99,7 +99,7 @@ fn reachable_worlds(world: &World) -> Vec<WorldEntry> {
     }];
     let push = |entity: Entity, worlds: &mut Vec<WorldEntry>| {
         let id = WorldId::handle(entity);
-        let Some(name) = world.root_scope().query_one::<&WorldName>(entity) else {
+        let Ok(name) = world.root_scope().query_one::<&WorldName>(entity) else {
             return;
         };
         if worlds.iter().any(|entry| entry.world == id) {
@@ -125,8 +125,9 @@ struct RunInHost {
 }
 
 impl Command for RunInHost {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         self.command.dispatch(world);
+        Ok(())
     }
 }
 
@@ -143,13 +144,13 @@ impl Command for RunInWorld {
     /// instead: its queue is shared with the handle its spawn returned, so
     /// the sender beside the proxy is enough. The reply rides the command's
     /// own channel, so nothing here waits for the other world to answer.
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let RunInWorld { entity, command } = *self;
-        if let Some(mut nested) = world.root_scope().query_one::<&mut World>(entity) {
+        if let Ok(mut nested) = world.root_scope().query_one::<&mut World>(entity) {
             command.dispatch(&mut nested);
-            return;
+            return Ok(());
         }
-        let Some(sender) = world
+        let Ok(sender) = world
             .root_scope()
             .query_one::<&WorldSender>(entity)
             .map(|sender| sender.clone())
@@ -158,14 +159,14 @@ impl Command for RunInWorld {
                 "entity {} carries no world",
                 world.entity_label(entity)
             ));
-            return;
+            return Ok(());
         };
         if sender.is_finished() {
             command.fail(format!(
                 "the world on {} has stopped",
                 world.entity_label(entity)
             ));
-            return;
+            return Ok(());
         }
         // The command rides inside the job, so a slot keeps it here: a
         // refused job hands it back, and can then be failed with the reason.
@@ -184,6 +185,7 @@ impl Command for RunInWorld {
                 world.entity_label(entity)
             ));
         }
+        Ok(())
     }
 }
 
@@ -221,7 +223,7 @@ mod tests {
         for mut on_about_to_wait in host.root_scope().query::<&mut OnAboutToWait>() {
             on_about_to_wait.run(host, Entity::from_bits(0), &());
         }
-        host.apply();
+        host.apply().unwrap();
     }
 
     /// The host answers a world list with itself and every entity that

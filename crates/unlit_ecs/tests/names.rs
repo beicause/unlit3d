@@ -34,7 +34,10 @@ fn a_reservation_names_the_handle_before_its_bundle_exists() {
     let mut world = World::new();
     let reserved = world.reserve_entity("reserved by hand");
     assert_eq!(reserved.name(), "reserved by hand");
-    world.root_scope_mut().spawn_at(reserved, bundle![Cube]);
+    world
+        .root_scope_mut()
+        .spawn_at(reserved, bundle![Cube])
+        .unwrap();
     assert_eq!(
         reserved.name(),
         "reserved by hand",

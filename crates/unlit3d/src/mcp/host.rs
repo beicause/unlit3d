@@ -35,7 +35,7 @@ use crate::reflect;
 /// an assumption.
 fn render_context(world: &World, handle: Option<Entity>) -> Result<RenderContext, String> {
     if let Some(entity) = handle {
-        return RenderContext::of(world, entity).ok_or_else(|| {
+        return RenderContext::of(world, entity).map_err(|_| {
             format!(
                 "entity {} carries no render context",
                 world.entity_label(entity)
@@ -84,7 +84,7 @@ fn mesh_source_entity(world: &World, handle: Option<Entity>) -> Result<Entity, S
         let is_mesh_source = world
             .root_scope()
             .query_one::<&Source>(entity)
-            .is_some_and(|source| source.as_ref::<MeshSource>().is_some());
+            .is_ok_and(|source| source.as_ref::<MeshSource>().is_some());
         return is_mesh_source.then_some(entity).ok_or_else(|| {
             format!(
                 "entity {} carries no mesh source",
@@ -115,10 +115,10 @@ fn with_mesh_source<R>(
     // source only ever sees the subtree it draws.
     let scope = world
         .scope(entity)
-        .ok_or_else(|| "the mesh source entity is gone".to_string())?;
+        .map_err(|_| "the mesh source entity is gone".to_string())?;
     let mut source = scope
         .query_one::<&mut Source>(entity)
-        .ok_or_else(|| "the mesh source entity is gone".to_string())?;
+        .map_err(|_| "the mesh source entity is gone".to_string())?;
     let mesh_source = source
         .as_mut::<MeshSource>()
         .ok_or_else(|| "the source entity is not a mesh source".to_string())?;
@@ -131,7 +131,7 @@ fn device_of(world: &World, context: RenderContext) -> Result<wgpu::Device, Stri
         .root_scope()
         .query_one::<&wgpu::Device>(context.device)
         .map(|device| device.clone())
-        .ok_or_else(|| "the render context has no device".to_string())
+        .map_err(|_| "the render context has no device".to_string())
 }
 
 /// The queue the context names, cloned out of the world.
@@ -140,7 +140,7 @@ fn queue_of(world: &World, context: RenderContext) -> Result<wgpu::Queue, String
         .root_scope()
         .query_one::<&wgpu::Queue>(context.queue)
         .map(|queue| queue.clone())
-        .ok_or_else(|| "the render context has no queue".to_string())
+        .map_err(|_| "the render context has no queue".to_string())
 }
 
 /// The graph the context names, borrowed from the world.
@@ -151,7 +151,7 @@ fn graph_of<'w>(
     world
         .root_scope()
         .query_one::<&ResourceGraph>(context.graph)
-        .ok_or_else(|| "the render context has no resource graph".to_string())
+        .map_err(|_| "the render context has no resource graph".to_string())
 }
 
 /// The graph the context names, mutably borrowed from the world.
@@ -162,7 +162,7 @@ fn graph_of_mut<'w>(
     world
         .root_scope()
         .query_one::<&mut ResourceGraph>(context.graph)
-        .ok_or_else(|| "the render context has no resource graph".to_string())
+        .map_err(|_| "the render context has no resource graph".to_string())
 }
 
 /// Whether input events were delivered.
@@ -572,7 +572,7 @@ pub fn create_mesh(
     let scope = match args.scope {
         Some(bits) => {
             let scope = Entity::from_bits(bits);
-            if world.scope(scope).is_none() {
+            if world.scope(scope).is_err() {
                 return Err(format!("no scope {}", world.entity_label(scope)));
             }
             scope
@@ -583,7 +583,7 @@ pub fn create_mesh(
     let name = "mcp mesh";
     let entity = world
         .scope_mut(scope)
-        .ok_or_else(|| format!("no scope {label}"))?
+        .map_err(|_| format!("no scope {label}"))?
         .spawn_named(name, builder);
     to_value(&SpawnedEntity {
         entity,
@@ -602,7 +602,7 @@ pub fn remove_mesh(
         .root_scope()
         .query_one::<&GpuMesh>(entity)
         .map(|mesh| mesh.clone())
-        .ok_or_else(|| format!("entity {} has no GpuMesh", world.entity_label(entity)))?;
+        .map_err(|_| format!("entity {} has no GpuMesh", world.entity_label(entity)))?;
     let name = world.entity_name(entity).unwrap_or("");
     with_mesh_source(world, source, |source, _| source.remove_mesh(mesh))?;
     let despawned = world.root_scope_mut().despawn(entity);
@@ -722,7 +722,7 @@ pub fn load_gltf(
     let label = world.entity_label(scope);
     let mut scope = world
         .scope_mut(scope)
-        .ok_or_else(|| format!("no scope {label}"))?;
+        .map_err(|_| format!("no scope {label}"))?;
     let nodes = gltf.spawn_default_scene(&mut scope, &resources);
     let entities: Vec<Entity> = nodes
         .iter()

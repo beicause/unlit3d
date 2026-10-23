@@ -145,10 +145,10 @@ pub fn mount_controls(world: &mut World) {
                 if let Some(tracks) = world.query::<&SceneTracks>().next().map(|tracks| *tracks) {
                     // One row at a time: the borrow each one takes is given
                     // back before the next asks for its own.
-                    if let Some(mut track) = world.query_one::<&mut Track>(tracks.background) {
+                    if let Ok(mut track) = world.query_one::<&mut Track>(tracks.background) {
                         track_controls(ui, "Background music", &mut track.midi);
                     }
-                    if let Some(mut track) = world.query_one::<&mut Track>(tracks.sequence) {
+                    if let Ok(mut track) = world.query_one::<&mut Track>(tracks.sequence) {
                         track_controls(ui, "MIDI sequence", &mut track.midi);
                     }
                     ui.separator();

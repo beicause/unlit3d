@@ -8,6 +8,7 @@ mod column;
 mod command;
 mod component;
 mod entity;
+mod error;
 mod hash;
 mod info;
 mod lifecycle;
@@ -29,6 +30,7 @@ pub use component::Component;
 pub use entity::{Entity, Location};
 #[cfg(feature = "reflect")]
 pub use entity::{EntityProxy, EntityVecProxy};
+pub use error::{ArchetypeAccessError, EntityAccessError};
 pub use hash::{EntityHashMap, EntityHashSet, TypeIdHashMap, TypeIdHashSet};
 pub use info::{ArchetypeInfo, EntityInfo, WorldInfo};
 pub use lifecycle::{Lifecycle, LifecycleCallback, OnDespawn, OnSpawn};
@@ -42,6 +44,7 @@ pub use world::World;
 /// The types most callers need.
 pub mod prelude {
     pub use crate::{
-        ArchetypeFilter, Entity, Has, Query, QueryIter, Scope, ScopeOf, World, bundle,
+        ArchetypeAccessError, ArchetypeFilter, Entity, EntityAccessError, Has, Query, QueryIter,
+        Scope, ScopeOf, World, bundle,
     };
 }

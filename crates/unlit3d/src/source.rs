@@ -24,7 +24,7 @@ use core::any::Any;
 use core::ops::DerefMut;
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, Scope, World};
+use unlit_ecs::{Entity, EntityAccessError, Scope, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
@@ -135,9 +135,9 @@ impl RenderContext {
     /// The resource entities all carry the whole [`RenderContext`], so a
     /// caller that was handed a device, queue, graph, capabilities or clock
     /// address gets the rest without assuming the world holds exactly one
-    /// context. `None` when `anchor` carries no context.
-    #[must_use]
-    pub fn of(world: &World, anchor: Entity) -> Option<Self> {
+    /// context. [`EntityAccessError`] when `anchor` carries no context, which
+    /// also covers an entity that is not alive or not visible from the root.
+    pub fn of(world: &World, anchor: Entity) -> Result<Self, EntityAccessError> {
         world
             .root_scope()
             .query_one::<&RenderContext>(anchor)
@@ -162,7 +162,7 @@ impl Drop for MaintainScope<'_> {
     fn drop(&mut self) {
         // A missing graph is a caller error, and panicking here would be a
         // second panic on the way out of one, so the scope does nothing.
-        if let Some(mut graph) = self.scope.query_one::<&mut ResourceGraph>(self.ctx.graph) {
+        if let Ok(mut graph) = self.scope.query_one::<&mut ResourceGraph>(self.ctx.graph) {
             graph.maintain();
         }
     }
@@ -396,10 +396,18 @@ pub fn spawn_context(
     let mut shared_view = world
         .scope_mut(shared)
         .expect("the shared scope exists from the moment the world is built");
-    shared_view.spawn_at(context.device, bundle![device, context]);
-    shared_view.spawn_at(context.queue, bundle![queue, context]);
-    shared_view.spawn_at(context.capabilities, bundle![capabilities, context]);
-    shared_view.spawn_at(graph, bundle![graph_component, context]);
+    shared_view
+        .spawn_at(context.device, bundle![device, context])
+        .expect("the handle was just reserved");
+    shared_view
+        .spawn_at(context.queue, bundle![queue, context])
+        .expect("the handle was just reserved");
+    shared_view
+        .spawn_at(context.capabilities, bundle![capabilities, context])
+        .expect("the handle was just reserved");
+    shared_view
+        .spawn_at(graph, bundle![graph_component, context])
+        .expect("the handle was just reserved");
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
     shared_view.spawn_named("open_urls", bundle![OpenUrls::default()]);
@@ -407,7 +415,9 @@ pub fn spawn_context(
     // belongs to the world rather than to a source because a source may be
     // built once per pass: a clock each source counted for itself would run
     // faster on a frame with more passes.
-    shared_view.spawn_at(context.clock, bundle![FrameClock::default(), context]);
+    shared_view
+        .spawn_at(context.clock, bundle![FrameClock::default(), context])
+        .expect("the handle was just reserved");
     context
 }
 
@@ -702,7 +712,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(entity)
                 .map(|mut source| {
-                    let scope = world.scope(entity).unwrap_or_else(|| {
+                    let scope = world.scope(entity).unwrap_or_else(|_| {
                         panic!(
                             "a source entity is its own scope: {}",
                             world.entity_label(entity)
@@ -765,7 +775,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut Source>(*entity)
                 .map(|mut source| {
-                    let scope = world.scope(*entity).unwrap_or_else(|| {
+                    let scope = world.scope(*entity).unwrap_or_else(|_| {
                         panic!(
                             "a source entity is its own scope: {}",
                             world.entity_label(*entity)
@@ -1271,7 +1281,7 @@ mod release_tests {
             .root_scope()
             .query_one::<&mut Source>(entity)
             .map(|mut source| {
-                let scope = world.scope(entity).unwrap_or_else(|| {
+                let scope = world.scope(entity).unwrap_or_else(|_| {
                     panic!(
                         "a source entity is its own scope: {}",
                         world.entity_label(entity)
@@ -1279,7 +1289,7 @@ mod release_tests {
                 });
                 source.build_scene(&scope, ctx, test_info(), &mut scene, &mut encoder)
             })
-            .unwrap_or_else(|| panic!("the source entity exists: {}", world.entity_label(entity)));
+            .unwrap_or_else(|_| panic!("the source entity exists: {}", world.entity_label(entity)));
     }
 
     /// How many nodes the context's graph holds.

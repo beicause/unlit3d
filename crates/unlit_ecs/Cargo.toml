@@ -15,6 +15,7 @@ facet = { workspace = true, features = ["reflect"], optional = true }
 facet-json = { workspace = true, optional = true }
 hashbrown.workspace = true
 inventory = { workspace = true, optional = true }
+thiserror.workspace = true
 
 # The MCP server speaks the protocol over a native stdio pipe through rmcp and
 # tokio. A browser drives the world directly, so on wasm these stay out of the

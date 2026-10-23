@@ -59,7 +59,7 @@
 //! // End of the tick: take what arrived as this tick's batch, deliver it,
 //! // and land what the callbacks queued. The state the events left stays.
 //! assert!(dispatch_input(&world));
-//! world.apply();
+//! world.apply().unwrap();
 //! // A second dispatch has nothing left to deliver.
 //! assert!(!dispatch_input(&world));
 //! ```
@@ -1075,7 +1075,7 @@ pub fn refresh_input(world: &World) -> bool {
         .collect();
     let present = !entities.is_empty();
     for entity in entities {
-        if let Some(buffer) = world.root_scope().query_one::<&InputEvents>(entity) {
+        if let Ok(buffer) = world.root_scope().query_one::<&InputEvents>(entity) {
             buffer.refresh();
         }
     }
@@ -1158,7 +1158,7 @@ fn distribute_into(world: &World, writer: &InputWriter) -> bool {
                 let subscribed = subscribe_input(&mut child);
                 (subscribed, distribute_into(&child, writer))
             });
-        if let Some((subscribed, nested)) = nested {
+        if let Ok((subscribed, nested)) = nested {
             changed |= !has || subscribed || nested;
         }
     }
@@ -1239,7 +1239,7 @@ behaviour!(OnIme, ImeEvent, "Runs for every [`ImeEvent`].");
 /// # use unlit3d::prelude::*;
 /// # let mut world = World::new();
 /// if dispatch_input(&world) {
-///     world.apply();
+///     world.apply().unwrap();
 /// }
 /// ```
 pub fn dispatch_input(world: &World) -> bool {
@@ -1618,7 +1618,7 @@ mod tests {
         assert!(dispatch_input(&world));
         assert_eq!(world.root_scope().len(), 2, "queued, not applied");
 
-        world.apply();
+        world.apply().unwrap();
         assert_eq!(world.root_scope().len(), 3);
     }
 
@@ -1638,7 +1638,7 @@ mod tests {
         input.push(key_event(Key::B));
 
         dispatch_input(&world);
-        world.apply();
+        world.apply().unwrap();
 
         assert!(
             !world
@@ -1977,7 +1977,7 @@ mod tests {
         input.push(key_event(Key::S));
 
         assert!(dispatch_input(&world));
-        world.apply();
+        world.apply().unwrap();
 
         let input_events = world
             .root_scope()

@@ -526,7 +526,7 @@ pub fn spawn_shared<B: unlit_ecs::Bundle>(world: &mut World, bundle: B) -> Entit
 pub fn despawn_in(world: &mut World, scope: Entity, entity: Entity) -> bool {
     world
         .scope_mut(scope)
-        .is_some_and(|mut scope| scope.despawn(entity))
+        .is_ok_and(|mut scope| scope.despawn(entity))
 }
 
 /// Run `f` on the world's `MeshSource`, which lives on the source entity.

@@ -88,6 +88,9 @@ schemars = "1.0"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 smallvec = { version = "1.16.1", default-features = false, features = ["const_generics", "const_new", "union"] }
+# Derives the access errors an entity lookup answers with. Each variant carries
+# the handle it was asked about, so a caller reads its own misuse back.
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
 tokio = { version = "1.53", default-features = false }
 ureq = { version = "3.4.0", default-features = false }
 uuid = { version = "1.26.1", default-features = false, features = ["v4"] }

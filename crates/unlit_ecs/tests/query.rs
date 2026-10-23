@@ -209,7 +209,7 @@ fn an_optional_mutable_component_writes_only_where_present() {
         12.0
     );
     assert!(
-        world.root_scope().query_one::<&Velocity>(still).is_none(),
+        world.root_scope().query_one::<&Velocity>(still).is_err(),
         "the still entity has no velocity to write"
     );
 }
@@ -383,7 +383,7 @@ fn has_reports_a_component_without_borrowing_it() {
     // rather than dropping the row.
     assert_eq!(
         world.root_scope().query_one::<Has<Velocity>>(still),
-        Some(false)
+        Ok(false)
     );
     position.x = 42.0;
 }
@@ -456,7 +456,7 @@ fn query_one_yields_the_row_of_one_entity() {
             .1,
         hidden
     );
-    assert!(world.root_scope().query_one::<&Velocity>(still).is_none());
+    assert!(world.root_scope().query_one::<&Velocity>(still).is_err());
     assert!(world.root_scope().query_one::<Has<Visible>>(mover).unwrap());
 }
 
@@ -471,9 +471,9 @@ fn query_one_answers_none_for_an_entity_out_of_reach() {
         .spawn(bundle![2u32]);
 
     let child_scope = world.root_scope().scope(child).unwrap();
-    assert!(child_scope.query_one::<&u32>(child).is_some());
+    assert!(child_scope.query_one::<&u32>(child).is_ok());
     assert!(
-        child_scope.query_one::<&u32>(parent).is_none(),
+        child_scope.query_one::<&u32>(parent).is_err(),
         "a scope does not see upwards"
     );
 }

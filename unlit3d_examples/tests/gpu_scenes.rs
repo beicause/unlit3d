@@ -184,7 +184,7 @@ async fn compare_scene(def: &'static SceneDef, tolerance: Tolerance, frames: &[S
     for frame in 0..def.frames {
         scene.advance(&mut world, FIXED_STEP);
         scene.render(&world);
-        scene.end_frame(&mut world);
+        scene.end_frame(&mut world).unwrap();
 
         let Some(name) = (scene.snapshot)(frame) else {
             continue;
@@ -262,7 +262,7 @@ async fn compare_letterboxed(def: &'static SceneDef, size: (u32, u32), snapshot:
     for _ in 0..def.frames {
         scene.advance(&mut world, FIXED_STEP);
         scene.render(&world);
-        scene.end_frame(&mut world);
+        scene.end_frame(&mut world).unwrap();
     }
 
     let bytes = unlit_wgpu::readback::readback_texture(&ctx.device, &ctx.queue, &target.texture);

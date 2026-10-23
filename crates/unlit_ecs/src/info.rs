@@ -21,7 +21,11 @@ use crate::entity::Entity;
 /// A live entity's location and component names.
 ///
 /// Only a live, visible entity has one: [`Scope::entity_info`] answers
-/// `None` for a handle that is neither, so there is no `alive` field to report.
+/// [`EntityAccessError::NotAlive`] or [`EntityAccessError::NotVisible`] for a
+/// handle that is neither, so there is no `alive` field to report.
+///
+/// [`EntityAccessError::NotAlive`]: crate::EntityAccessError::NotAlive
+/// [`EntityAccessError::NotVisible`]: crate::EntityAccessError::NotVisible
 ///
 /// [`Scope::entity_info`]: crate::Scope::entity_info
 #[derive(Clone, Debug, PartialEq, Eq)]

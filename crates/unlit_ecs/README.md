@@ -67,6 +67,13 @@ It is at an **early stage of development** and its API changes freely.
   doing access analysis. An optional component is optional only about the
   component being absent: a cell that cannot be borrowed panics the same way
   instead of reading as `None`.
+- **A failed lookup is an error, not a `None`.** Every function that reaches an
+  entity answers [`Result`], and the [`EntityAccessError`] it fails with names
+  the handle that was asked about: the entity has gone, it is outside the
+  scope, it does not match the query, or it carries no such component. An
+  archetype named by id answers [`ArchetypeAccessError`] instead. `Option`
+  stays where absence is not a failed access — a query item `Option<&C>` is
+  absent for an entity that merely lacks `C`.
 - **Two entities are scaffolding.** `World::new` creates [`World::root`] — a
   scope whose `ScopeOf` is itself, and the one the root scope opens — and
   [`World::shared`], whose subtree every scope sees. Both can carry components
@@ -93,7 +100,7 @@ let scope = world.scope(scene).unwrap();
 assert_eq!(scope.entity(), scene);
 assert_eq!(scope.len(), 3);
 assert!(scope.contains(cube) && scope.contains(camera));
-assert_eq!(scope.children(scene).len(), 2);
+assert_eq!(scope.children(scene).unwrap().len(), 2);
 assert!(scope.query::<(&u32, Entity)>().any(|(_, entity)| entity == cube));
 
 // Root is a scope too, and it sees every scope.
@@ -134,20 +141,26 @@ visibility test again, so a scene scope can open the shared one and spawn a
 resource there; despawning that resource afterwards is the root's call, not the
 scene's.
 
-**There is no way up.** [`World::scope`] answers `None` for an entity that is
-not a scope, and [`Scope::scope`] only descends — into a visible child or into
+**There is no way up.** [`World::scope`] fails for an entity that is not a
+scope, and [`Scope::scope`] only descends — into a visible child or into
 the shared subtree. A scope cannot name the world it came from, so holding one
 is not a way to reach the rest of it.
 
 **Changing the tree.** [`ScopeMut::spawn`] puts the new entity in the scope
 itself, and `spawn_at` puts it on a handle reserved by
-[`World::reserve_entity`]. [`ScopeMut::despawn`] removes the entity and its
+[`World::reserve_entity`] — a handle that was released, already spawned on,
+or never reserved is answered with [`EntityAccessError::NotReserved`]. [`ScopeMut::despawn`] removes the entity and its
 whole subtree, children first, so a child's [`OnDespawn`] still sees its living
 ancestors. [`ScopeMut::link`] and `unlink` re-parent an entity inside the
 same scope, refusing to move a scope into its own descendant or to touch the
 scaffolding; they are pure structure changes and run no lifecycle callback. A
 read-only scope queues the same changes through [`Scope::queue`], and the
-driver applies them with [`World::apply`].
+driver applies them with [`World::apply`], which reports the first command that
+failed and still runs the ones behind it.
+
+[`World::children`] and [`Scope::children`] answer with an error for a handle
+that is not live, rather than an empty list that would read the same as a
+childless entity.
 
 **Where callbacks land.** A lifecycle callback receives the scope of the
 entity's parent, so an `OnSpawn` on a scene's child sees the scene. It cannot
@@ -163,8 +176,8 @@ the world alongside the `ScopeOf` component, so the two cannot disagree. The
 component is the world's: its field is private, a bundle cannot carry it, and a
 `ScopeOf` written through the reflection registry is refused, because moving an
 entity is [`ScopeMut::link`]'s job. Queries and counts skip the rows a scope
-cannot see; [`Scope::archetype`] answers `None` for an empty archetype and for
-one the scope only partly sees, [`Scope::archetypes`] yields only the non-empty
+cannot see; [`Scope::archetype`] fails for an empty archetype and for one the
+scope only partly sees, [`Scope::archetypes`] yields only the non-empty
 archetypes the scope sees in full, and [`Scope::archetype_infos`] reports the
 visible length of each. [`Scope::archetype_of`] is the per-row counterpart of
 [`Scope::archetype`]: it asks about the one row an entity occupies and skips
@@ -306,7 +319,9 @@ query that should visit only the carriers pairs it with [`QueryIter::by`],
 `&(a, b)` is one tuple component and `(&a, &b)` is two — and a query with more
 components than a tuple impl covers is written by implementing [`Query`]
 yourself. [`Scope::query_one`] runs the same query over one entity, so a lookup
-by handle and a pass over a scope share one vocabulary.
+by handle and a pass over a scope share one vocabulary; a handle that names no
+visible entity, or one the query does not match, is an [`EntityAccessError`].
+
 
 Spawning and despawning need a `&mut` scope, or a queued command:
 
@@ -320,7 +335,7 @@ let entity = {
 };
 // Nothing has happened yet.
 assert!(!world.root_scope().contains(entity));
-world.apply();
+world.apply().unwrap();
 assert!(world.root_scope().contains(entity));
 ```
 
@@ -362,8 +377,8 @@ let mut world = World::new();
 let entity = world.root_scope_mut().spawn(bundle![..gathered, 2.0f32]);
 
 let scope = world.root_scope();
-assert_eq!(scope.query_one::<Has<u32>>(entity), Some(true));
-assert_eq!(scope.query_one::<Has<f32>>(entity), Some(true));
+assert_eq!(scope.query_one::<Has<u32>>(entity), Ok(true));
+assert_eq!(scope.query_one::<Has<f32>>(entity), Ok(true));
 ```
 
 ## The MCP server

@@ -15,6 +15,7 @@
 //! subtree is visible to every scope.
 
 use crate::entity::Entity;
+use crate::error::EntityAccessError;
 use crate::hash::EntityHashMap;
 
 /// The parent entity of the entity that carries it: the scope it lives in.
@@ -84,10 +85,15 @@ impl ScopeTree {
         }
     }
 
-    /// The parent of `entity`, or `None` when it is not in the tree.
-    #[must_use]
-    pub(crate) fn parent(&self, entity: Entity) -> Option<Entity> {
-        self.parents.get(&entity).copied()
+    /// The parent of `entity`.
+    ///
+    /// Every live entity is attached to the tree in the same step that gives it
+    /// a row, so a handle missing from it names no live entity.
+    pub(crate) fn parent(&self, entity: Entity) -> Result<Entity, EntityAccessError> {
+        self.parents
+            .get(&entity)
+            .copied()
+            .ok_or(EntityAccessError::NotAlive { entity })
     }
 
     /// The direct children of `entity`.
@@ -177,15 +183,19 @@ mod tests {
     fn the_root_walks_up_to_itself_and_stops() {
         let tree = fixture();
         assert!(!tree.is_descendant(entity(0), entity(0)));
-        assert_eq!(tree.parent(entity(0)), Some(entity(0)));
+        assert_eq!(tree.parent(entity(0)).unwrap(), entity(0));
     }
 
     #[test]
     fn detaching_keeps_the_children_of_the_moved_entity() {
         let mut tree = fixture();
         tree.detach(entity(1));
-        assert_eq!(tree.parent(entity(1)), None);
-        assert_eq!(tree.parent(entity(2)), Some(entity(1)), "the child stays");
+        assert!(tree.parent(entity(1)).is_err(), "detached");
+        assert_eq!(
+            tree.parent(entity(2)).unwrap(),
+            entity(1),
+            "the child stays"
+        );
         assert!(!tree.children(entity(0)).contains(&entity(1)));
     }
 
@@ -193,7 +203,7 @@ mod tests {
     fn attaching_again_moves_the_entity_to_its_new_parent() {
         let mut tree = fixture();
         tree.attach(entity(2), entity(3));
-        assert_eq!(tree.parent(entity(2)), Some(entity(3)));
+        assert_eq!(tree.parent(entity(2)).unwrap(), entity(3));
         assert_eq!(tree.children(entity(1)), &[] as &[Entity]);
         assert_eq!(tree.children(entity(3)), [entity(2)]);
     }
@@ -212,7 +222,7 @@ mod tests {
         let mut tree = fixture();
         // 2 moves from under 1 to under 3, and 1 keeps no children.
         tree.attach(entity(2), entity(3));
-        assert_eq!(tree.parent(entity(2)), Some(entity(3)));
+        assert_eq!(tree.parent(entity(2)).unwrap(), entity(3));
         assert_eq!(tree.children(entity(1)), &[] as &[Entity]);
         assert_eq!(tree.children(entity(3)), [entity(2)]);
         assert!(tree.is_descendant(entity(0), entity(2)), "still reachable");

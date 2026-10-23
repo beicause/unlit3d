@@ -90,7 +90,7 @@ pub fn create_window_on_resume() -> OnResumed {
         if window(world).is_some() {
             return;
         }
-        let Some(attributes) = world
+        let Ok(attributes) = world
             .root_scope()
             .query_one::<&WindowSpec>(entity)
             .map(|spec| spec.0.clone())
@@ -184,7 +184,7 @@ mod tests {
     fn exit_on_close_requested_asks_the_host_to_exit() {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
-        world.apply();
+        world.apply().unwrap();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::CloseRequested));
         assert_eq!(
@@ -192,7 +192,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
                 .map(|request| request.0),
-            Some(true)
+            Ok(true)
         );
     }
 
@@ -200,7 +200,7 @@ mod tests {
     fn exit_on_close_requested_ignores_other_events() {
         let mut world = World::new();
         let entity = world.root_scope_mut().spawn(bundle![ExitRequest(false)]);
-        world.apply();
+        world.apply().unwrap();
         let mut behaviour = exit_on_close_requested();
         behaviour.run(&world, entity, &window_event(WindowEvent::Focused(true)));
         assert_eq!(
@@ -208,7 +208,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&mut ExitRequest>(entity)
                 .map(|request| request.0),
-            Some(false)
+            Ok(false)
         );
     }
 
@@ -221,7 +221,7 @@ mod tests {
             CreateWindowRequest(None),
             create_window_on_resume(),
         ]);
-        world.apply();
+        world.apply().unwrap();
         let mut behaviour = world
             .root_scope()
             .query_one::<&mut OnResumed>(entity)
@@ -230,7 +230,9 @@ mod tests {
         let attributes = world
             .root_scope()
             .query_one::<&mut CreateWindowRequest>(entity)
-            .and_then(|mut request| request.0.take())
+            .map(|mut request| request.0.take())
+            .ok()
+            .flatten()
             .expect("the request is filled");
         assert_eq!(attributes.title, "unlit3d");
     }
@@ -241,7 +243,7 @@ mod tests {
         let entity = world
             .root_scope_mut()
             .spawn(bundle![Resumed(false), request_redraw_while_foreground()]);
-        world.apply();
+        world.apply().unwrap();
         let mut behaviour = world
             .root_scope()
             .query_one::<&mut OnAboutToWait>(entity)

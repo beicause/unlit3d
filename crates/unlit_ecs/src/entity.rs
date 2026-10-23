@@ -15,6 +15,8 @@
 //! A builder put together at run time by hand carries no source position, so an
 //! entity spawned from one is called by whatever the caller named it.
 
+use crate::error::EntityAccessError;
+
 /// A handle to an entity.
 ///
 /// The handle is a plain value: it stays valid across world mutations as long
@@ -207,16 +209,23 @@ pub(crate) struct Entities {
 impl Entities {
     /// Whether the handle refers to a live entity.
     pub(crate) fn contains(&self, entity: Entity) -> bool {
-        self.location(entity).is_some()
+        self.location(entity).is_ok()
     }
 
-    /// Where the entity lives, if it is live.
+    /// Where the entity lives.
+    ///
+    /// A handle whose index was never allocated, whose generation was bumped by
+    /// a despawn, or whose index is reserved but not spawned yet answers
+    /// [`EntityAccessError::NotAlive`].
     #[inline]
-    pub(crate) fn location(&self, entity: Entity) -> Option<Location> {
-        let meta = self.meta.get(entity.index as usize)?;
-        (meta.generation == entity.generation)
-            .then_some(meta.location)
-            .flatten()
+    pub(crate) fn location(&self, entity: Entity) -> Result<Location, EntityAccessError> {
+        let Some(meta) = self.meta.get(entity.index as usize) else {
+            return Err(EntityAccessError::NotAlive { entity });
+        };
+        if meta.generation != entity.generation {
+            return Err(EntityAccessError::NotAlive { entity });
+        }
+        meta.location.ok_or(EntityAccessError::NotAlive { entity })
     }
 
     /// Record where an entity lives, replacing any earlier location.

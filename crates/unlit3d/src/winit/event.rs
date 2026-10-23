@@ -242,7 +242,9 @@ impl<U: 'static> WinitHost<U> {
     /// 4. Subscribe this world to the events, so whatever it dispatches next
     ///    reads them.
     fn settle(&mut self, event_loop: &ActiveEventLoop) {
-        self.world.apply();
+        if let Err(error) = self.world.apply() {
+            log::error!("a command queued by a callback failed: {error}");
+        }
         self.create_windows(event_loop);
         self.exit_requested(event_loop);
         distribute_input(&self.world);

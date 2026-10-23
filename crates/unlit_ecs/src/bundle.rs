@@ -259,21 +259,21 @@ mod tests {
                 .root_scope()
                 .query_one::<&u32>(entity)
                 .map(|value| *value),
-            Some(1)
+            Ok(1)
         );
         assert_eq!(
             world
                 .root_scope()
                 .query_one::<&f32>(entity)
                 .map(|value| *value),
-            Some(2.0)
+            Ok(2.0)
         );
         assert_eq!(
             world
                 .root_scope()
                 .query_one::<&bool>(entity)
                 .map(|value| *value),
-            Some(true)
+            Ok(true)
         );
         // The pair went in as one component, the way spawning it alone would
         // have.
@@ -282,7 +282,7 @@ mod tests {
                 .root_scope()
                 .query_one::<&(u8, u8)>(entity)
                 .map(|value| *value),
-            Some((7, 8))
+            Ok((7, 8))
         );
     }
 

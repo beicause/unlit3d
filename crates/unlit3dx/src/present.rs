@@ -20,7 +20,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Command, Entity, World};
+use unlit_ecs::{Command, Entity, EntityAccessError, World};
 use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::attachments::FrameAttachments;
@@ -114,7 +114,7 @@ impl Presenter {
     /// the pass that draws into the surface takes the frame's view just
     /// before the renderer walks the passes in order.
     fn present(&mut self, host: &World) {
-        let Some(nested) = host.root_scope().query_one::<&World>(self.render) else {
+        let Ok(nested) = host.root_scope().query_one::<&World>(self.render) else {
             return;
         };
         let presenting = self.presenting();
@@ -149,7 +149,7 @@ impl Presenter {
     /// input, which makes the source rebuild its bind group on the next
     /// frame.
     fn resize(&mut self, host: &World, size: (u32, u32)) {
-        let Some(nested) = host.root_scope().query_one::<&World>(self.render) else {
+        let Ok(nested) = host.root_scope().query_one::<&World>(self.render) else {
             return;
         };
         let Some(size) = nested
@@ -159,6 +159,7 @@ impl Presenter {
                 self.surface.resize(&nested, &mut renderer, size.0, size.1);
                 self.surface.size()
             })
+            .ok()
             .filter(|size| size.0 > 0 && size.1 > 0)
         else {
             return;
@@ -167,14 +168,14 @@ impl Presenter {
         let Some(blit) = self.blit.as_ref() else {
             return;
         };
-        let Some(context) = nested
+        let Ok(context) = nested
             .root_scope()
             .query_one::<&Renderer>(self.renderer)
             .map(|renderer| renderer.context())
         else {
             return;
         };
-        let Some(offscreen) =
+        let Ok(offscreen) =
             bind_offscreen(&nested, context, self.scene_pass, &self.gpu.device, size)
         else {
             return;
@@ -216,7 +217,7 @@ pub fn bind_offscreen(
     pass: Entity,
     device: &wgpu::Device,
     size: (u32, u32),
-) -> Option<OffscreenTarget> {
+) -> Result<OffscreenTarget, EntityAccessError> {
     let color = create_color_target(device, OFFSCREEN_FORMAT, size.0, size.1);
     // The texture is registered as a resource in its own right, and the
     // view depends on it, so whoever holds the view keeps the texture
@@ -243,7 +244,7 @@ pub fn bind_offscreen(
             pass.set_attachments(&attachments, view.clone());
         })
         .expect("the bound pass exists");
-    Some(OffscreenTarget {
+    Ok(OffscreenTarget {
         texture: color,
         view,
     })
@@ -262,7 +263,7 @@ fn open_surface(
     surface: wgpu::Surface<'static>,
     samples: u32,
     with_depth: bool,
-) -> Option<(WindowSurface, FrameAttachments)> {
+) -> Result<(WindowSurface, FrameAttachments), EntityAccessError> {
     world
         .root_scope()
         .query_one::<&mut Renderer>(renderer)
@@ -325,18 +326,18 @@ pub fn setup_presenter(
         let mut nested = world
             .root_scope()
             .query_one::<&mut World>(render)
-            .ok_or("the scene setup found no render world")?;
+            .map_err(|_| "the scene setup found no render world")?;
         let context = nested
             .root_scope()
             .query_one::<&Renderer>(renderer)
-            .ok_or("the scene setup found no renderer")
+            .map_err(|_| "the scene setup found no renderer")
             .map(|renderer| renderer.context())?;
         // The offscreen path keeps the scene away from the swap chain: the
         // scene's pass draws into a target of its own, and a pass added
         // after it copies that target over the surface.
         if offscreen {
             let target = bind_offscreen(&nested, context, scene_pass, &gpu.device, size)
-                .ok_or("failed to bind the offscreen target: the resource graph was gone")?;
+                .map_err(|_| "failed to bind the offscreen target: the resource graph was gone")?;
             let blit_pass = nested.root_scope_mut().spawn(bundle![
                 FramePass::new(BLIT_PASS_ORDER),
                 RenderLoadOps::default(),
@@ -349,7 +350,7 @@ pub fn setup_presenter(
             // [`Presenter::present`], which is the only place that knows it.
             let (surface, attachments) =
                 open_surface(&nested, renderer, gpu, window, surface, 1, false)
-                    .ok_or("failed to open the window surface: the renderer was gone")?;
+                    .map_err(|_| "failed to open the window surface: the renderer was gone")?;
             (
                 Some(Blit {
                     pass: blit_pass,
@@ -361,7 +362,7 @@ pub fn setup_presenter(
         } else {
             let (surface, attachments) =
                 open_surface(&nested, renderer, gpu, window, surface, FRAME_SAMPLES, true)
-                    .ok_or("failed to open the window surface: the renderer was gone")?;
+                    .map_err(|_| "failed to open the window surface: the renderer was gone")?;
             (None, surface, attachments)
         }
     };
@@ -396,7 +397,7 @@ struct DrawFrame {
 }
 
 impl Command for DrawFrame {
-    fn apply(self: Box<Self>, world: &mut World) {
+    fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
         let now = web_time::Instant::now();
         let delta_time = self
             .last
@@ -429,6 +430,7 @@ impl Command for DrawFrame {
         dispatch_frame(world, &mut frame);
         // A frame has been dispatched, so the next producer may queue one.
         self.pending.store(false, Ordering::Release);
+        Ok(())
     }
 }
 
@@ -454,7 +456,7 @@ pub fn draw_presented() -> OnFrame {
                 return;
             };
             let render = presenter.render;
-            let Some(mut nested) = world.root_scope().query_one::<&mut World>(render) else {
+            let Ok(mut nested) = world.root_scope().query_one::<&mut World>(render) else {
                 return;
             };
             drain_sub_world(&mut nested);

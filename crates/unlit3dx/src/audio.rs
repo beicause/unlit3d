@@ -186,7 +186,7 @@ pub fn dispatch_audio_fill(world: &World, out: &mut [f32], sample_rate: u32, cha
         channels,
     };
     for (_, entity) in &sources {
-        if let Some(mut fill) = world.root_scope().query_one::<&mut OnAudioFill>(*entity) {
+        if let Ok(mut fill) = world.root_scope().query_one::<&mut OnAudioFill>(*entity) {
             fill.run(world, *entity, &mut chunk);
         }
     }

@@ -75,6 +75,7 @@
 //! let root = world.root_scope();
 //! let Some(frame) = root
 //!     .query_one::<&mut Renderer>(renderer_entity)
+//!     .ok()
 //!     .and_then(|mut r| window_surface.acquire(world, &mut r))
 //! else {
 //!     return;

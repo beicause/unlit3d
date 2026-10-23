@@ -1,7 +1,7 @@
 //! Deferred structural changes, from a callback that only has `&World`.
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Commands, Entity, Has, World};
+use unlit_ecs::{Commands, Entity, EntityAccessError, Has, World};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Spawned;
@@ -32,7 +32,7 @@ fn a_queued_spawn_does_nothing_until_apply() {
     assert!(!world.root_scope().contains(child), "queued, not spawned");
     assert_eq!(world.root_scope().len(), 0);
 
-    world.apply();
+    world.apply().unwrap();
     assert!(world.root_scope().contains(child));
     assert_eq!(
         world.root_scope().query_one::<&Marker>(child).unwrap().0,
@@ -56,7 +56,7 @@ fn a_queued_handle_is_usable_before_apply() {
     let child = world.root_scope().queue().spawn(bundle![Marker(7)]);
     let owner = world.root_scope_mut().spawn(bundle![Marker(0), child]);
 
-    world.apply();
+    world.apply().unwrap();
 
     assert!(world.root_scope().contains(child));
     assert_eq!(
@@ -76,7 +76,7 @@ fn a_queued_despawn_only_takes_effect_on_apply() {
         "still alive until apply"
     );
 
-    world.apply();
+    world.apply().unwrap();
     assert!(!world.root_scope().contains(entity));
 }
 
@@ -86,7 +86,7 @@ fn commands_apply_in_the_order_they_were_queued() {
     let first = world.root_scope().queue().spawn(bundle![Marker(1)]);
     let second = world.root_scope().queue().spawn(bundle![Marker(2)]);
 
-    world.apply();
+    world.apply().unwrap();
 
     assert!(world.root_scope().contains(first));
     assert!(world.root_scope().contains(second));
@@ -107,13 +107,13 @@ fn commands_queued_while_applying_are_applied_too() {
         commands.spawn(bundle![Marker(2)]);
         seed
     };
-    world.apply();
+    world.apply().unwrap();
     assert!(world.root_scope().contains(seed));
     assert_eq!(world.root_scope().len(), 2);
 
     // A later batch is a fresh queue and applies on its own `apply`.
     let third = world.root_scope().queue().spawn(bundle![Marker(3)]);
-    world.apply();
+    world.apply().unwrap();
     assert!(world.root_scope().contains(third));
     assert_eq!(world.root_scope().len(), 3);
 }
@@ -121,12 +121,12 @@ fn commands_queued_while_applying_are_applied_too() {
 #[test]
 fn applying_an_empty_queue_changes_nothing() {
     let mut world = World::new();
-    world.apply();
+    world.apply().unwrap();
     assert!(world.root_scope().is_empty());
 
     world.root_scope_mut().spawn(bundle![Marker(1)]);
     let before = world.root_scope().len();
-    world.apply();
+    world.apply().unwrap();
     assert_eq!(world.root_scope().len(), before);
 }
 
@@ -138,7 +138,7 @@ fn a_custom_command_can_be_queued() {
     struct DespawnBelow(u32);
 
     impl Command for DespawnBelow {
-        fn apply(self: Box<Self>, world: &mut World) {
+        fn apply(self: Box<Self>, world: &mut World) -> Result<(), EntityAccessError> {
             let doomed: Vec<Entity> = world
                 .root_scope()
                 .query::<(&Marker, Entity)>()
@@ -148,6 +148,7 @@ fn a_custom_command_can_be_queued() {
             for entity in doomed {
                 world.root_scope_mut().despawn(entity);
             }
+            Ok(())
         }
     }
 
@@ -158,7 +159,7 @@ fn a_custom_command_can_be_queued() {
     world.root_scope().queue().push(DespawnBelow(5));
     assert!(world.root_scope().contains(low), "not applied yet");
 
-    world.apply();
+    world.apply().unwrap();
     assert!(!world.root_scope().contains(low));
     assert!(world.root_scope().contains(high));
 }
@@ -173,7 +174,7 @@ fn many_commands_apply_without_losing_any() {
             .collect()
     };
 
-    world.apply();
+    world.apply().unwrap();
 
     assert_eq!(world.root_scope().len(), 256);
     for (expected, entity) in (0..256u32).zip(&handles) {
@@ -182,4 +183,22 @@ fn many_commands_apply_without_losing_any() {
             expected
         );
     }
+}
+
+#[test]
+fn a_spawn_on_a_released_handle_reports_the_lost_reservation() {
+    let mut world = World::new();
+    let doomed = world.root_scope().queue().spawn(bundle![Marker(1)]);
+    let survivor = world.root_scope().queue().spawn(bundle![Marker(2)]);
+
+    // Handing the reservation back before the queue runs leaves the `Spawn`
+    // with nothing to spawn on: the error names the handle, and the rest of the
+    // queue still applies.
+    assert!(world.release_entity(doomed));
+    assert_eq!(
+        world.apply(),
+        Err(EntityAccessError::NotReserved { entity: doomed })
+    );
+    assert!(world.root_scope().contains(survivor));
+    assert!(!world.root_scope().contains(doomed));
 }

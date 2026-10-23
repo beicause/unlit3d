@@ -175,7 +175,7 @@ fn encode_component<C: Facet<'static>>(
 ) -> Result<String, String> {
     let component = scope
         .query_one::<&C>(entity)
-        .ok_or_else(|| missing::<C>(entity))?;
+        .map_err(|_| missing::<C>(entity))?;
     to_json(&*component)
 }
 
@@ -190,12 +190,12 @@ fn set_component<C: Facet<'static> + Clone>(
     let current = scope
         .query_one::<&C>(entity)
         .map(|component| (*component).clone())
-        .ok_or_else(|| missing::<C>(entity))?;
+        .map_err(|_| missing::<C>(entity))?;
     let value: C = apply(current, patch)?;
     scope
         .query_one::<&mut C>(entity)
         .map(|mut component| *component = value)
-        .ok_or_else(|| missing::<C>(entity))
+        .map_err(|_| missing::<C>(entity))
 }
 
 /// The value a patch produces over `base`.
