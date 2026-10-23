@@ -129,11 +129,12 @@ it is paced differs.
     instance of its own.
   - `spawn_floor` queues the fixed ground body and builds the checker
     instance that draws it, before the first drop can happen.
-  - `Balls` (tick 200) asks the render world for the instance it drops, asks
-    physics for a body, maps the handles the snapshot names onto its
-    instances, and sends their poses back as a job. The render world despawns
-    an instance the camera can no longer see and reports it back, and the body
-    goes with it.
+  - `Balls` (tick 200) spawns a `Ball` entity for every drop and asks the
+    render world for an instance and physics for a body. Both answers name the
+    ball, so the ball itself is the identity: it is shown once both halves
+    arrive, and an answer that no longer finds its ball cleans itself up. The
+    render world despawns an instance the camera can no longer see and reports
+    the ball back, and the ball goes away with it.
   - `SceneAudio` (tick 300) asks the audio world for the synthesizer's voice,
     and on the answer spawns the scene's two tracks in this world: each is a
     `MidiSequencer` with a clock and the voice it plays into, and it takes

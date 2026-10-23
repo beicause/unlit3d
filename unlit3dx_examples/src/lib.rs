@@ -13,7 +13,7 @@
 //! through one runner, so the host carries the same entities and components
 //! whether they run on threads of their own or are stepped by the host's
 //! frames. The gameplay world holds the scene's objects: one entity each for
-//! the scene's assets, the floor, the shapes and the music, every one of them
+//! the scene's assets, the floor, the balls and the music, every one of them
 //! ticking itself. The panel is the fifth object, and lives in the gameplay
 //! world with the rest: it lays its frames out there and sends them to the
 //! render world, which holds and draws them.

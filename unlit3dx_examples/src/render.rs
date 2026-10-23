@@ -234,13 +234,16 @@ pub(crate) fn hidden_instance_of(
 }
 
 /// A job that despawns the instances the camera cannot see, reporting each
-/// one back over `retired`.
+/// one back over `retired` with the entity the gameplay world knows it by.
 ///
 /// The render world owns the camera and the instances, so the visibility test
 /// happens here: the gameplay world only names the live instances and reacts
 /// to the answer by despawning their bodies. An instance that is already gone
 /// is skipped.
-pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity>) -> Job {
+pub(crate) fn sweep_instances_job(
+    instances: Vec<(Entity, Entity)>,
+    retired: Stream<(Entity, Entity)>,
+) -> Job {
     Box::new(move |world: &mut World| {
         let Some(camera) = world
             .root_scope()
@@ -261,7 +264,7 @@ pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity
             };
             // The list is reused as the outside set: every instance that is
             // still in view is dropped from it.
-            outside.retain(|instance| {
+            outside.retain(|(instance, _)| {
                 let Some(mesh) = scope.query_one::<&GpuMesh>(*instance) else {
                     return false;
                 };
@@ -275,12 +278,12 @@ pub(crate) fn sweep_instances_job(instances: Vec<Entity>, retired: Stream<Entity
             return;
         }
         if let Some(mut scope) = world.scope_mut(source) {
-            for instance in &outside {
+            for (instance, _) in &outside {
                 let _ = scope.despawn(*instance);
             }
         }
-        for instance in outside {
-            retired.publish(instance);
+        for answer in outside {
+            retired.publish(answer);
         }
     })
 }
