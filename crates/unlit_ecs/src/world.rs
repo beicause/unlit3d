@@ -53,9 +53,14 @@ pub struct World {
     /// The scope tree, derived from the [`ScopeOf`] components.
     tree: RefCell<ScopeTree>,
     /// The entity that owns the world, whose scope sees everything.
-    root: Entity,
-    /// The entity whose subtree every scope sees.
-    shared: Entity,
+    ///
+    /// Empty only while `World::new` is building it: the two scaffolding
+    /// entities are inserted through the same path as any other row, which
+    /// needs a world to insert into.
+    root: Option<Entity>,
+    /// The entity whose subtree every scope sees, empty for the same reason as
+    /// `root`.
+    shared: Option<Entity>,
     /// The archetype holding the two scaffolding entities.
     ///
     /// They are the only entities that exist without being content, so a scope
@@ -95,17 +100,17 @@ impl World {
             names: TypeIdHashMap::default(),
             commands: RefCell::new(VecDeque::new()),
             tree: RefCell::new(ScopeTree::default()),
-            root: Entity::PLACEHOLDER,
-            shared: Entity::PLACEHOLDER,
+            root: None,
+            shared: None,
             scaffolding: 0,
         };
         // The root's scope is itself, which is where walking up the tree stops.
         // It is recorded before the shared scope is inserted, because that one
         // hangs from it.
         let root = world.insert_root_row();
-        world.root = root;
+        world.root = Some(root);
         let shared = world.insert_root_row();
-        world.shared = shared;
+        world.shared = Some(shared);
         world.scaffolding = world
             .location(root)
             .expect("the root has a row")
@@ -124,11 +129,9 @@ impl World {
     /// here rather than through the spawn path, which reads it.
     fn insert_root_row(&mut self) -> Entity {
         let entity = self.entities_write().alloc();
-        let scope = if self.root == Entity::PLACEHOLDER {
-            entity
-        } else {
-            self.root
-        };
+        // The root's scope is itself, so the first of the pair is its own
+        // parent; the shared scope hangs from it.
+        let scope = self.root.unwrap_or(entity);
         self.insert_row(entity, scope, crate::ArchetypeBuilder::new());
         entity
     }
@@ -138,19 +141,20 @@ impl World {
     /// The entity that owns the world, whose scope sees everything.
     #[must_use]
     pub fn root(&self) -> Entity {
-        self.root
+        self.root.expect("a world always has its root")
     }
 
     /// The entity whose subtree every scope sees.
     #[must_use]
     pub fn shared(&self) -> Entity {
-        self.shared
+        self.shared.expect("a world always has its shared scope")
     }
 
     /// Whether `entity` is in the shared subtree, itself included.
     #[must_use]
     pub fn is_shared(&self, entity: Entity) -> bool {
-        entity == self.shared || self.is_descendant(self.shared, entity)
+        let shared = self.shared();
+        entity == shared || self.is_descendant(shared, entity)
     }
 
     /// Whether `entity` is one of the tree's two scaffolding entities.
@@ -160,7 +164,7 @@ impl World {
     /// scope counts and queries them like any other.
     #[must_use]
     pub fn is_scaffolding(&self, entity: Entity) -> bool {
-        entity == self.root || entity == self.shared
+        entity == self.root() || entity == self.shared()
     }
 
     /// Whether `entity` is strictly below `ancestor` in the tree.
@@ -182,7 +186,7 @@ impl World {
         }
         // The root is the hot case: it sees everything, so it is answered
         // before the parent-chain walks below.
-        caller == self.root
+        caller == self.root()
             || candidate == caller
             || self.is_shared(candidate)
             || self.is_descendant(caller, candidate)
@@ -194,7 +198,7 @@ impl World {
     /// from everywhere but only the root may move or remove it.
     #[must_use]
     pub fn owns(&self, caller: Entity, entity: Entity) -> bool {
-        caller == self.root || entity == caller || self.is_descendant(caller, entity)
+        caller == self.root() || entity == caller || self.is_descendant(caller, entity)
     }
 
     /// The parent of a live entity, or `None`.
@@ -231,7 +235,7 @@ impl World {
     /// The scope of the root: everything in the world.
     #[must_use]
     pub fn root_scope(&self) -> Scope<'_> {
-        Scope::new(self, self.root)
+        Scope::new(self, self.root())
     }
 
     /// The scope of `scope`, or `None` when there is no such scope.
@@ -244,7 +248,7 @@ impl World {
     /// The mutable scope of the root: everything in the world.
     #[must_use]
     pub fn root_scope_mut(&mut self) -> ScopeMut<'_> {
-        ScopeMut::new(self, self.root)
+        ScopeMut::new(self, self.root())
     }
 
     /// The mutable scope of `scope`, or `None` when there is no such scope.
@@ -330,7 +334,7 @@ impl World {
         if child == parent || self.is_scaffolding(child) || self.is_scaffolding(parent) {
             return false;
         }
-        if caller != self.root && (self.is_shared(child) || self.is_shared(parent)) {
+        if caller != self.root() && (self.is_shared(child) || self.is_shared(parent)) {
             return false;
         }
         if !self.entities_read().contains(child) || !self.entities_read().contains(parent) {
@@ -353,7 +357,7 @@ impl World {
         if child == scope || self.is_scaffolding(child) {
             return false;
         }
-        if caller != self.root && self.is_shared(child) {
+        if caller != self.root() && self.is_shared(child) {
             return false;
         }
         if !self.entities_read().contains(child) || !self.entities_read().contains(scope) {

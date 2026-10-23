@@ -245,18 +245,14 @@ fn a_bundle_cannot_repeat_a_component() {
 }
 
 #[test]
-fn the_placeholder_handle_refers_to_nothing() {
+fn a_handle_no_world_produced_refers_to_nothing() {
     let mut world = World::new();
     world.root_scope_mut().spawn(bundle![Name("real")]);
 
-    assert!(!world.root_scope().contains(Entity::PLACEHOLDER));
-    assert!(
-        world
-            .root_scope()
-            .query_one::<&Name>(Entity::PLACEHOLDER)
-            .is_none()
-    );
-    assert!(!world.root_scope_mut().despawn(Entity::PLACEHOLDER));
+    let alien = Entity::from_raw(u32::MAX, u32::MAX);
+    assert!(!world.root_scope().contains(alien));
+    assert!(world.root_scope().query_one::<&Name>(alien).is_none());
+    assert!(!world.root_scope_mut().despawn(alien));
 }
 
 #[test]

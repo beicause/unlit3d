@@ -15,12 +15,6 @@ pub struct Entity {
 }
 
 impl Entity {
-    /// A handle that never refers to a spawned entity.
-    pub const PLACEHOLDER: Self = Self {
-        index: u32::MAX,
-        generation: u32::MAX,
-    };
-
     /// Build a handle from raw parts.
     ///
     /// The handle only refers to an entity if it was produced by the same
