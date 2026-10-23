@@ -254,7 +254,7 @@ where
         status: status.clone(),
     };
     let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, name, port);
-    WorldHandle::new(entity, sender, status)
+    WorldHandle::with_status(entity, sender, status)
 }
 
 /// Spawn a world the host steps, with a one-time setup step.
@@ -305,7 +305,7 @@ where
         status: status.clone(),
     };
     let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), name, port);
-    WorldHandle::new(entity, sender, status)
+    WorldHandle::with_status(entity, sender, status)
 }
 
 /// Spawn the proxy entity with the runner's components.

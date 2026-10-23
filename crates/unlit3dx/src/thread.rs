@@ -109,9 +109,10 @@ pub enum WorldState {
 /// A [`WorldThread`] owns the join handle and stops its thread on drop;
 /// this shares only the stop signal and the state, so a
 /// [`WorldHandle`](crate::handle::WorldHandle) can report a world's state and
-/// ask it to stop without owning the thread.
+/// ask it to stop without owning the thread. A caller reads that state through
+/// the handle, so this stays an implementation detail of the spawn functions.
 #[derive(Clone)]
-pub struct ThreadStatus {
+pub(crate) struct ThreadStatus {
     /// The stop signal, sent on drop.
     stop: Arc<Stop>,
     /// What the world is doing, and how it ended.
@@ -127,16 +128,13 @@ impl ThreadStatus {
         Self::at(stop)
     }
 
-    /// A status for a world nothing drives on its own.
+    /// A status for a world that shares its owner's thread.
     ///
-    /// A world that shares its owner's thread - a sub-world on the host, a
-    /// runner of the caller's own - ends when its owner says so, so the state
-    /// stays [`WorldState::Running`] until then, and the stop signal belongs
-    /// to that owner alone.
-    ///
-    /// A caller building a [`WorldHandle`](crate::handle::WorldHandle) for a
-    /// world of its own passes this.
-    pub fn detached() -> Self {
+    /// Such a world - a sub-world on the host, a runner of the caller's own -
+    /// ends when its owner says so, so the state stays
+    /// [`WorldState::Running`] until then, and the stop signal belongs to
+    /// that owner alone.
+    pub(crate) fn detached() -> Self {
         Self::at(Arc::default())
     }
 
@@ -152,7 +150,7 @@ impl ThreadStatus {
     /// Every reader sees the newest state, so one that arrives late still
     /// learns how the world ended.
     #[must_use]
-    pub fn state(&self) -> SnapshotReader<WorldState> {
+    pub(crate) fn state(&self) -> SnapshotReader<WorldState> {
         self.state.reader()
     }
 
@@ -161,7 +159,7 @@ impl ThreadStatus {
     /// A detached thread keeps reporting its own end, so this stays
     /// meaningful after [`WorldThread::detach`].
     #[must_use]
-    pub fn is_finished(&self) -> bool {
+    pub(crate) fn is_finished(&self) -> bool {
         !matches!(
             self.own.latest().as_deref(),
             None | Some(WorldState::Running)
@@ -169,7 +167,7 @@ impl ThreadStatus {
     }
 
     /// Ask the world to stop, without waiting for it to finish.
-    pub fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.stop.request();
     }
 
@@ -283,10 +281,10 @@ impl WorldThread {
         }
     }
 
-    /// A cloneable view of the thread's state, for handles that outlive the
-    /// proxy entity.
+    /// A cloneable view of the thread's state, for the handle the spawn hands
+    /// back.
     #[must_use]
-    pub fn status(&self) -> ThreadStatus {
+    pub(crate) fn status(&self) -> ThreadStatus {
         self.status.clone()
     }
 

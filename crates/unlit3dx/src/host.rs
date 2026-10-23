@@ -71,7 +71,7 @@ pub fn spawn_sub_world(
     let entity = host
         .root_scope_mut()
         .spawn(bundle![nested, WorldName(name)]);
-    WorldHandle::new(entity, sender, status)
+    WorldHandle::with_status(entity, sender, status)
 }
 
 /// Run every job queued for the sub-world so far, in queue order.

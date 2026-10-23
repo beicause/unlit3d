@@ -39,12 +39,17 @@ pub struct WorldHandle {
 impl WorldHandle {
     /// Bind a handle to the entity carrying the world's proxy.
     ///
-    /// A world the runtime does not drive passes
-    /// [`ThreadStatus::detached`], which keeps it running until its owner
-    /// says otherwise; a runner of the caller's own builds its handle this
-    /// way.
+    /// A runner of the caller's own builds its handle this way: the world it
+    /// drives shares its thread, so it stays running until that runner ends
+    /// it.
     #[must_use]
-    pub fn new(entity: Entity, sender: JobSender, status: ThreadStatus) -> Self {
+    pub fn new(entity: Entity, sender: JobSender) -> Self {
+        Self::with_status(entity, sender, ThreadStatus::detached())
+    }
+
+    /// Bind a handle to a world the spawn functions drive themselves.
+    #[must_use]
+    pub(crate) fn with_status(entity: Entity, sender: JobSender, status: ThreadStatus) -> Self {
         Self {
             entity,
             sender,
