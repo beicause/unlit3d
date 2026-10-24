@@ -37,10 +37,7 @@ fn offscreen_world(ctx: &Ctx) -> World {
     );
     // The pass carries the load ops the frame is opened with, so the MCP
     // client can patch them on the entity it finds them on.
-    let pass = world.root_scope_mut().spawn(bundle![
-        FramePass::new(FramePassOrder(0)),
-        RenderLoadOps::default(),
-    ]);
+    let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
     world
         .root_scope_mut()
         .spawn(bundle![Renderer::new(context)]);

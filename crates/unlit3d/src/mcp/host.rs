@@ -16,7 +16,7 @@ use unlit_ecs::mcp::host::{
 };
 use unlit_ecs::mcp::serde_json::{self, Value};
 use unlit_ecs::mcp::{CreateMesh, EncodedImage, Output};
-use unlit_ecs::{ArchetypeBuilder, Entity, Scope, World};
+use unlit_ecs::{DynamicBundle, Entity, Scope, World};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit_wgpu::readback::{readback_buffer, readback_texture};
 use unlit_wgpu::resources::{
@@ -551,7 +551,7 @@ pub fn create_mesh(
         None => Transform::default(),
     };
     let color = args.color.map_or(glam::Vec4::ONE, glam::Vec4::from_array);
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component(transform);
     builder.push_component(mesh);
     builder.push_component(UnlitPipeline::new(key));

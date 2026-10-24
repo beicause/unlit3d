@@ -35,7 +35,7 @@ inventory::submit! { ComponentEntry::new::<InputEvents>() }
 mod tests {
     use super::*;
     use unlit_ecs::reflect::{contains, encode, entry, names, push, set};
-    use unlit_ecs::{ArchetypeBuilder, Entity, World, bundle};
+    use unlit_ecs::{DynamicBundle, Entity, World, bundle};
 
     /// The reflected fields are the codec: a component's own struct is the only
     /// place its field list is written down, so reading and writing cannot
@@ -87,7 +87,7 @@ mod tests {
     /// the fields that matter have to be given.
     #[test]
     fn spawning_merges_over_the_default() {
-        let mut builder = ArchetypeBuilder::new().named("reflect test");
+        let mut builder = DynamicBundle::new().named("reflect test");
         push(
             &mut builder,
             "Transform",

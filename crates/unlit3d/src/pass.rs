@@ -16,7 +16,7 @@
 //! nothing, which is how a caller parks one while its target is gone.
 //!
 //! What a pass loads and clears is a
-//! [`RenderLoadOps`](crate::components::RenderLoadOps) on the same entity
+//! [`RenderLoadOps`] on the same entity
 //! rather than a field here: it is the one part of a pass a tool may want to
 //! set from outside, so it stays a component of its own, reflected like the
 //! rest.
@@ -24,13 +24,14 @@
 //! [`PassInfo`] is what a pass tells its sources: the target's specialization
 //! key, the target's size, and the region of it the pass letterboxes to.
 
-use unlit_ecs::World;
+use unlit_ecs::{Bundle, DynamicBundle, World, bundle};
 use unlit_wgpu::render_attachments::RenderAttachments;
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureView};
 use unlit_wgpu::scene::ViewportRect;
 use unlit_wgpu::specialize::SurfaceKey;
 
 use crate::attachments::FrameAttachments;
+use crate::components::RenderLoadOps;
 use crate::order::OrderKey;
 use crate::source::RenderContext;
 
@@ -63,12 +64,14 @@ impl OrderKey for FramePassOrder {
 /// is the caller's.
 ///
 /// The load ops are a
-/// [`RenderLoadOps`](crate::components::RenderLoadOps) on the same entity, so
-/// spawning a pass states both halves at once:
+/// [`RenderLoadOps`] on the same entity, so
+/// spawning a pass states both halves at once — which is what [`Pass`] does:
 ///
 /// ```rust
 /// # use unlit3d::prelude::*;
-/// let pass = (FramePass::new(FramePassOrder(0)), RenderLoadOps::default());
+/// let mut world = World::new();
+/// let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
+/// # let _ = pass;
 /// ```
 #[derive(Debug)]
 pub struct FramePass {
@@ -162,6 +165,44 @@ impl FramePass {
         // silently parking itself.
         (color.is_some() || depth.is_some() || msaa.is_some())
             .then(|| RenderAttachments::from_views(color, depth, msaa))
+    }
+}
+
+/// A pass as one entity: the [`FramePass`] itself and the
+/// [`RenderLoadOps`] it opens the frame with.
+///
+/// Spawning it is how a caller states a pass; the two components land on the
+/// same entity, which is what makes the load ops reachable on their own — a
+/// tool can patch them without touching the pass.
+///
+/// State the load ops of your own with a struct update:
+///
+/// ```rust
+/// # use unlit3d::prelude::*;
+/// let load = RenderLoadOps { depth: wgpu::LoadOp::Load, ..RenderLoadOps::default() };
+/// let pass = Pass { load, ..Pass::new(FramePassOrder(0)) };
+/// # let _ = pass;
+/// ```
+pub struct Pass {
+    /// The pass itself.
+    pub pass: FramePass,
+    /// What the pass loads and clears when it opens the frame.
+    pub load: RenderLoadOps,
+}
+
+impl Pass {
+    /// A pass recording at `order`, clearing every attachment it draws into.
+    pub fn new(order: FramePassOrder) -> Self {
+        Self {
+            pass: FramePass::new(order),
+            load: RenderLoadOps::default(),
+        }
+    }
+}
+
+impl Bundle for Pass {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.pass, self.load]
     }
 }
 

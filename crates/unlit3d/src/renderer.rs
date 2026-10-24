@@ -53,7 +53,7 @@ use crate::source::{FrameSourceOrder, RenderContext, Source};
 /// // One pass, drawing the mesh source under it.
 /// let pass = world
 ///     .root_scope_mut()
-///     .spawn(bundle![FramePass::new(FramePassOrder(0)), RenderLoadOps::default()]);
+///     .spawn(Pass::new(FramePassOrder(0)));
 /// world
 ///     .scope_mut(pass)
 ///     .expect("the pass entity is spawned")
@@ -402,9 +402,8 @@ impl Renderer {
 mod tests {
     use super::*;
     use unlit_ecs::Scope;
-    use unlit_ecs::bundle;
 
-    use crate::pass::FramePassOrder;
+    use crate::pass::{FramePassOrder, Pass};
     use crate::source::{FrameSource, spawn_context};
 
     use unlit_wgpu::capabilities::DeviceCapabilities;
@@ -439,9 +438,7 @@ mod tests {
             unlit_wgpu::resources::ResourceGraph::new(),
             DeviceCapabilities::default(),
         );
-        let pass = world
-            .root_scope_mut()
-            .spawn(bundle![FramePass::new(FramePassOrder(0))]);
+        let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
         (world, Renderer::new(ctx), pass)
     }
 

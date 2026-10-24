@@ -37,7 +37,7 @@
 //! // The handle feeds the events in; the buffer is the world's own, holding
 //! // what arrived since its last tick.
 //! let input = InputWriter::new();
-//! world.root_scope_mut().spawn(bundle![input.clone(), input.subscribe()]);
+//! world.root_scope_mut().spawn(InputFeed(input.clone()));
 //! // A behaviour that reacts to the keyboard.
 //! world.root_scope_mut().spawn(bundle![
 //!     Presses(0),
@@ -77,7 +77,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use crate::relay::{Stream, StreamReader};
 use bitflags::bitflags;
-use unlit_ecs::{Entity, World, bundle};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
 
 use crate::behaviour::behaviour;
 
@@ -722,7 +722,7 @@ pub enum InputEvent {
 ///
 /// let mut world = World::new();
 /// let input = InputWriter::new();
-/// world.root_scope_mut().spawn(bundle![input.clone(), input.subscribe()]);
+/// world.root_scope_mut().spawn(InputFeed(input.clone()));
 /// let observer = world.root_scope_mut().spawn(bundle![
 ///     CtrlPresses(0),
 ///     OnInput::new(|world, entity, _event| {
@@ -1053,6 +1053,20 @@ impl InputWriter {
             events: self.0.subscribe(),
             state: Arc::new(RwLock::new(InputState::default())),
         }
+    }
+}
+
+/// One world's input feed: the writer it is fed through, and the buffer that
+/// receives what the writer publishes.
+///
+/// Spawning it gives a world both halves at once, so the caller keeps feeding
+/// through its own handle while the world's tick reads the events out of the
+/// buffer beside it.
+pub struct InputFeed(pub InputWriter);
+
+impl Bundle for InputFeed {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.0.clone(), self.0.subscribe()]
     }
 }
 
@@ -1425,7 +1439,7 @@ mod tests {
         let input_handle = InputWriter::new();
         world
             .root_scope_mut()
-            .spawn(bundle![input_handle.clone(), input_handle.subscribe()]);
+            .spawn(InputFeed(input_handle.clone()));
         let events = [
             key_event(Key::W),
             mouse_event(),
@@ -1468,9 +1482,7 @@ mod tests {
             OnInput::new(move |_, _, _| all.set(all.get() + 1)),
         ]);
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
         input.push(mouse_event());
 
@@ -1492,9 +1504,7 @@ mod tests {
         }
 
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);
@@ -1521,9 +1531,7 @@ mod tests {
             .spawn(bundle![9u32, OnKey::new(|_, _, _| {})]);
 
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);
@@ -1537,9 +1545,7 @@ mod tests {
         // runs, so a callback reads the state its own event produced.
         let mut world = World::new();
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         let (held, seen) = counter();
         world
             .root_scope_mut()
@@ -1591,9 +1597,7 @@ mod tests {
             .spawn(bundle![OnKey::new(|_, _, _| {})]);
 
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);
@@ -1610,9 +1614,7 @@ mod tests {
                 world.root_scope().queue().spawn(bundle![42u32]);
             }),]);
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
 
         assert!(dispatch_input(&world));
@@ -1631,9 +1633,7 @@ mod tests {
                 world.root_scope().queue().despawn(entity);
             }),]);
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);
@@ -1676,9 +1676,7 @@ mod tests {
     fn events_without_behaviours_are_delivered_to_nobody() {
         let mut world = World::new();
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
 
         // Events did arrive, so the caller still owes an `apply`.
@@ -1965,9 +1963,7 @@ mod tests {
         // state a later frame reads is still there.
         let mut world = World::new();
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(InputEvent::Resized {
             size_px: (800, 600),
         });
@@ -2000,9 +1996,7 @@ mod tests {
             move |_, _, _| count.set(count.get() + 1)
         ),]);
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
 
         // Three frames of input arrive before the world dispatches once.
         input.push(key_event(Key::A));
@@ -2105,9 +2099,7 @@ mod tests {
                 let _ = world.root_scope().query_one::<&OnKey>(entity);
             }),]);
         let input = InputWriter::new();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), input.subscribe()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(key_event(Key::A));
 
         dispatch_input(&world);

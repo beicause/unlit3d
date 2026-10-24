@@ -776,7 +776,9 @@ mod tests {
     use unlit_ecs::bundle;
     use unlit_wgpu::capabilities::DeviceCapabilities;
 
-    use crate::input::{InputEvent, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent};
+    use crate::input::{
+        InputEvent, InputFeed, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent,
+    };
     use crate::pass::PassInfo;
     use crate::source::spawn_context;
 
@@ -1112,9 +1114,7 @@ mod tests {
         // The pointer and a typed key arrive in the world's own event types.
         let input = InputWriter::new();
         let events = input.subscribe();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), events.clone()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(InputEvent::Resized { size_px: (128, 96) });
         events.refresh();
 
@@ -1163,9 +1163,7 @@ mod tests {
 
         let input = InputWriter::new();
         let events = input.subscribe();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), events.clone()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(InputEvent::Resized { size_px: (128, 96) });
         events.refresh();
 

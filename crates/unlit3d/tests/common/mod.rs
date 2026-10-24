@@ -87,10 +87,7 @@ impl TestGpu {
         let key = UnlitPipelineKey::new(unlit_options(&ctx.device));
         // One pass, cleared every frame: what every test that states no
         // load ops of its own gets.
-        let pass = world.root_scope_mut().spawn(bundle![
-            FramePass::new(FramePassOrder(0)),
-            RenderLoadOps::default(),
-        ]);
+        let pass = world.root_scope_mut().spawn(Pass::new(FramePassOrder(0)));
         let renderer = world
             .root_scope_mut()
             .spawn(bundle![Renderer::new(context)]);

@@ -552,7 +552,7 @@ let renderer = world.root_scope_mut().spawn(bundle![Renderer::new(ctx)]);
 //    scope of its own, so everything a source draws lives under its entity.
 let pass = world
     .root_scope_mut()
-    .spawn(bundle![FramePass::new(FramePassOrder(0)), RenderLoadOps::default()]);
+    .spawn(Pass::new(FramePassOrder(0)));
 let source = world
     .scope_mut(pass)
     .unwrap()
@@ -746,23 +746,19 @@ UI 是否想独占指针/键盘是**egui 自己的答案**，不由源再写回�
 变更的行为把变更排队，因为回调只持有 `&World`。
 
 ```rust,no_run
-# use unlit_ecs::bundle;
-# use unlit3d::winit::builtin::{
-#     CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume,
-#     exit_on_close_requested,
-# };
+# use unlit3d::winit::builtin::{ExitOn, ExitTrigger, WindowSetup};
 # use unlit3d::winit::event::WinitHost;
 # use winit::event_loop::EventLoop;
 # use winit::window::Window;
 # fn main() -> Result<(), winit::error::EventLoopError> {
 let event_loop = EventLoop::new()?;
 let mut host = WinitHost::new();
-host.world_mut().root_scope_mut().spawn(bundle![
-    WindowSpec(Window::default_attributes().with_title("unlit3d")),
-    CreateWindowRequest(None),
-    create_window_on_resume(),
-]);
-host.world_mut().root_scope_mut().spawn(bundle![ExitRequest(false), exit_on_close_requested()]);
+host.world_mut().root_scope_mut().spawn(WindowSetup {
+    attributes: Window::default_attributes().with_title("unlit3d"),
+});
+host.world_mut()
+    .root_scope_mut()
+    .spawn(ExitOn(ExitTrigger::CloseRequested));
 host.run(event_loop)
 # }
 ```
