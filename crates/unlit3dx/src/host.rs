@@ -37,10 +37,10 @@ impl Drop for SubWorldStatus {
 /// The sub-world's own state: the inbox its jobs arrive in and the status it
 /// publishes.
 ///
-/// The two are spawned on the nested world's root entity, and
-/// [`drain_sub_world`] reads them as one: a world with an inbox but no status
-/// could take jobs it never reports on, and one with a status but no inbox
-/// could never take a job at all.
+/// The two are spawned together on one entity of the nested world's root scope,
+/// and [`drain_sub_world`] reads them as one: a world with an inbox but no
+/// status could take jobs it never reports on, and one with a status but no
+/// inbox could never take a job at all.
 struct SubWorld {
     inbox: Receiver<Job>,
     status: ThreadStatus,

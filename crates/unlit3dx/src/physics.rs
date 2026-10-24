@@ -128,6 +128,10 @@ impl PhysicsEvents {
 /// nowhere to put what it found.
 pub struct Physics {
     /// The rapier world the bodies live in.
+    ///
+    /// The one field a caller reaches into, because the body API takes it. The
+    /// other two are the plumbing [`step_once`] drives, and a caller reads the
+    /// contacts back as a component rather than through the bundle it spawned.
     pub world: PhysicsWorld,
     events: PhysicsEvents,
     contacts: PhysicsContacts,
