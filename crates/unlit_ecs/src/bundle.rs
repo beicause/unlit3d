@@ -54,9 +54,9 @@ impl Default for DynamicBundle {
 }
 
 impl DynamicBundle {
-    /// An empty builder with no name, for one built by hand.
+    /// An empty bundle with no name, for one built by hand.
     ///
-    /// [`crate::bundle!`] is what supplies a name, so a builder filled in by
+    /// [`crate::bundle!`] is what supplies a name, so a bundle filled in by
     /// hand names its entity after nothing: give it one with
     /// [`DynamicBundle::named`], or spawn it with
     /// [`ScopeMut::spawn_named`](crate::ScopeMut::spawn_named).
@@ -71,7 +71,7 @@ impl DynamicBundle {
     ///
     /// [`crate::bundle!`] names every bundle it builds after the source
     /// position that wrote it, and a spawn gives that name to the entity. A
-    /// builder assembled at runtime has no such position to speak of, so it
+    /// bundle assembled at runtime has no such position to speak of, so it
     /// names itself here instead.
     #[must_use]
     pub fn named(self, name: &'static str) -> Self {
@@ -94,7 +94,7 @@ impl DynamicBundle {
         });
     }
 
-    /// Add every component of `bundle` to this builder.
+    /// Add every component of `bundle` to this one.
     ///
     /// This is how a caller gathers several bundles into one spawn: the
     /// components keep their own types, so a bundle that holds a tuple
@@ -175,7 +175,8 @@ pub trait Bundle {
     /// [`crate::bundle!`] that wrote it, or the label [`DynamicBundle::named`]
     /// gave it — and answers with that. A type of the caller's own has no such
     /// label to speak of, so it names the entity after itself, which is the
-    /// object the entity is.
+    /// object the entity is. A bundle that names itself after something else
+    /// overrides this.
     fn name(&self) -> &'static str {
         core::any::type_name::<Self>()
     }
@@ -253,23 +254,23 @@ macro_rules! bundle {
     // A bundle written as `..value`, unwrapped into its own components. It is
     // matched before the `$leaf:expr` arms because `..value` is not an
     // expression.
-    [@list $builder:ident, ..$bundle:expr, $($rest:tt)*] => {
-        $builder.push_bundle($bundle);
-        $crate::bundle![@list $builder, $($rest)*];
+    [@list $bundle:ident, ..$spread:expr, $($rest:tt)*] => {
+        $bundle.push_bundle($spread);
+        $crate::bundle![@list $bundle, $($rest)*];
     };
-    [@list $builder:ident, ..$bundle:expr] => { $builder.push_bundle($bundle) };
+    [@list $bundle:ident, ..$spread:expr] => { $bundle.push_bundle($spread) };
     // One component. It is matched opaquely, so a tuple is one component and a
     // group is never taken apart.
-    [@list $builder:ident, $leaf:expr, $($rest:tt)*] => {
-        $builder.push_component($leaf);
-        $crate::bundle![@list $builder, $($rest)*];
+    [@list $bundle:ident, $leaf:expr, $($rest:tt)*] => {
+        $bundle.push_component($leaf);
+        $crate::bundle![@list $bundle, $($rest)*];
     };
-    [@list $builder:ident,] => {};
-    [@list $builder:ident, $leaf:expr] => { $builder.push_component($leaf) };
+    [@list $bundle:ident,] => {};
+    [@list $bundle:ident, $leaf:expr] => { $bundle.push_component($leaf) };
     [$($item:tt)+] => {{
-        let mut builder = $crate::DynamicBundle::new().named(concat!(file!(), ":", line!()));
-        $crate::bundle![@list builder, $($item)+];
-        builder
+        let mut bundle = $crate::DynamicBundle::new().named(concat!(file!(), ":", line!()));
+        $crate::bundle![@list bundle, $($item)+];
+        bundle
     }};
 }
 
@@ -284,11 +285,11 @@ mod tests {
     #[test]
     fn push_bundle_gathers_bundles() {
         let mut world = World::new();
-        let mut builder = DynamicBundle::new();
-        builder.push_component(1u32);
-        builder.push_bundle(crate::bundle![2.0f32, true]);
-        builder.push_component((7u8, 8u8));
-        let entity = world.root_scope_mut().spawn(builder);
+        let mut bundle = DynamicBundle::new();
+        bundle.push_component(1u32);
+        bundle.push_bundle(crate::bundle![2.0f32, true]);
+        bundle.push_component((7u8, 8u8));
+        let entity = world.root_scope_mut().spawn(bundle);
         assert_eq!(
             world
                 .root_scope()
@@ -326,27 +327,27 @@ mod tests {
     #[test]
     #[should_panic(expected = "same component twice")]
     fn a_duplicate_panics_when_the_bundle_is_finished() {
-        let mut builder = DynamicBundle::new();
-        builder.push_component(1u32);
-        builder.push_bundle(crate::bundle![2u32]);
-        builder.finish();
+        let mut bundle = DynamicBundle::new();
+        bundle.push_component(1u32);
+        bundle.push_bundle(crate::bundle![2u32]);
+        bundle.finish();
     }
 
     /// A wide bundle still finishes in type order, each component whole.
     #[test]
     fn a_wide_bundle_finishes_in_type_order() {
-        let mut builder = DynamicBundle::new();
-        builder.push_component(1u8);
-        builder.push_component(2u16);
-        builder.push_component(3u32);
-        builder.push_component(4u64);
-        builder.push_component(5i8);
-        builder.push_component(6i16);
-        builder.push_component(7i32);
-        builder.push_component(8i64);
-        builder.push_component(9.0f32);
-        builder.push_component(10.0f64);
-        let finished = builder.finish();
+        let mut bundle = DynamicBundle::new();
+        bundle.push_component(1u8);
+        bundle.push_component(2u16);
+        bundle.push_component(3u32);
+        bundle.push_component(4u64);
+        bundle.push_component(5i8);
+        bundle.push_component(6i16);
+        bundle.push_component(7i32);
+        bundle.push_component(8i64);
+        bundle.push_component(9.0f32);
+        bundle.push_component(10.0f64);
+        let finished = bundle.finish();
         assert_eq!(finished.len(), 10);
         assert!(
             finished

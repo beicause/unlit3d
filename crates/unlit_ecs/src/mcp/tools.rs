@@ -72,14 +72,14 @@ fn spawn_from_value(scope: &mut ScopeMut<'_>, components: &Value) -> Result<Valu
     let object = components
         .as_object()
         .ok_or_else(|| "components must be an object".to_string())?;
-    let mut builder = DynamicBundle::new();
+    let mut bundle = DynamicBundle::new();
     for (name, value) in object {
         let patch = serde_json::to_string(value).map_err(|error| error.to_string())?;
-        reflect::push(&mut builder, name, &patch)?;
+        reflect::push(&mut bundle, name, &patch)?;
     }
     let spawned = scope.entity();
     let name = "mcp spawned";
-    let entity = scope.spawn_named(name, builder);
+    let entity = scope.spawn_named(name, bundle);
     to_value(&SpawnedEntity {
         entity,
         name,

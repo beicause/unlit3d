@@ -178,7 +178,7 @@ assert!(!cube.name().is_empty(), "bundle 会给它建出的实体起名");
 
 | 实体的来源 | 它的名字 |
 | --- | --- |
-| 实现了 `Bundle` 的自定义类型 | 该类型自己的名字，如 `unlit3d_examples::scenes::spin_cube::Cube` |
+| 实现了 `Bundle` 的自定义类型 | 该类型自己的名字，如 `unlit3d_examples::scenes::spin_cube::TexturedCube` |
 | `bundle!` | 宏所在的源码位置，如 `crates/unlit3d/src/source.rs:514` |
 | `DynamicBundle::named` | 在那里给的标签 |
 | `spawn_named` | 在那里给的标签 |

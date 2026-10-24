@@ -240,7 +240,7 @@ integer.
 
 | The entity was spawned by | Its name |
 | --- | --- |
-| a type implementing `Bundle` | the type's own name, `unlit3d_examples::scenes::spin_cube::Cube` |
+| a type implementing `Bundle` | the type's own name, `unlit3d_examples::scenes::spin_cube::TexturedCube` |
 | `bundle!` | the source position of the macro, `crates/unlit3d/src/source.rs:514` |
 | `DynamicBundle::named` | the label given there |
 | `spawn_named` | the label given there |
