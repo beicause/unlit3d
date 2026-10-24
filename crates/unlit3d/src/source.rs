@@ -24,7 +24,7 @@ use core::any::Any;
 use core::ops::DerefMut;
 
 use unlit_ecs::bundle;
-use unlit_ecs::{Entity, EntityAccessError, Scope, World};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, EntityAccessError, Scope, World};
 use unlit_wgpu::capabilities::DeviceCapabilities;
 use unlit_wgpu::resources::ResourceGraph;
 use unlit_wgpu::scene::Scene;
@@ -365,6 +365,24 @@ impl core::fmt::Debug for Source {
     }
 }
 
+/// One of the frame's GPU resources, together with the context that addresses
+/// the rest.
+///
+/// Every entity the context names carries the whole context, so a reader handed
+/// any single address can query the rest back instead of assuming the world
+/// holds exactly one context. A resource without it would be reachable only by
+/// guessing which entity holds what.
+struct ContextRow<T> {
+    resource: T,
+    context: RenderContext,
+}
+
+impl<T: 'static> Bundle for ContextRow<T> {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.resource, self.context]
+    }
+}
+
 /// Spawn the frame's GPU state as resources and return its addresses.
 ///
 /// The device and queue are `Clone` handles on a shared context, so the world
@@ -397,16 +415,40 @@ pub fn spawn_context(
         .scope_mut(shared)
         .expect("the shared scope exists from the moment the world is built");
     shared_view
-        .spawn_at(context.device, bundle![device, context])
+        .spawn_at(
+            context.device,
+            ContextRow {
+                resource: device,
+                context,
+            },
+        )
         .expect("the handle was just reserved");
     shared_view
-        .spawn_at(context.queue, bundle![queue, context])
+        .spawn_at(
+            context.queue,
+            ContextRow {
+                resource: queue,
+                context,
+            },
+        )
         .expect("the handle was just reserved");
     shared_view
-        .spawn_at(context.capabilities, bundle![capabilities, context])
+        .spawn_at(
+            context.capabilities,
+            ContextRow {
+                resource: capabilities,
+                context,
+            },
+        )
         .expect("the handle was just reserved");
     shared_view
-        .spawn_at(graph, bundle![graph_component, context])
+        .spawn_at(
+            graph,
+            ContextRow {
+                resource: graph_component,
+                context,
+            },
+        )
         .expect("the handle was just reserved");
     // The URLs the frame's sources asked to open, drained by the host after
     // the frame.
@@ -416,7 +458,13 @@ pub fn spawn_context(
     // built once per pass: a clock each source counted for itself would run
     // faster on a frame with more passes.
     shared_view
-        .spawn_at(context.clock, bundle![FrameClock::default(), context])
+        .spawn_at(
+            context.clock,
+            ContextRow {
+                resource: FrameClock::default(),
+                context,
+            },
+        )
         .expect("the handle was just reserved");
     context
 }
