@@ -9,7 +9,7 @@
 //! takes no part in comparison, hashing or [`Entity::to_bits`].
 //!
 //! Where the name comes from is decided where the entity is made. A [`crate::bundle!`]
-//! names the entity after its own source position, [`crate::ArchetypeBuilder::named`]
+//! names the entity after its own source position, [`crate::DynamicBundle::named`]
 //! and [`crate::ScopeMut::spawn_named`] name it after the string the caller
 //! passed, and [`crate::World::reserve_entity`] names it at the reservation.
 //! A builder put together at run time by hand carries no source position, so an
@@ -24,7 +24,7 @@ use crate::error::EntityAccessError;
 ///
 /// It also carries a name, which [`Debug`] prints. A name is given where the
 /// entity is made: a [`crate::bundle!`] names it after its own source position,
-/// [`crate::ArchetypeBuilder::named`] and [`crate::ScopeMut::spawn_named`] after
+/// [`crate::DynamicBundle::named`] and [`crate::ScopeMut::spawn_named`] after
 /// the string the caller passed, and [`crate::World::reserve_entity`] at the
 /// reservation. Two handles to one entity can carry different names and still be
 /// equal, because a handle restored from [`Entity::to_bits`] has no name to

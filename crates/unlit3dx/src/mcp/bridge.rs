@@ -9,16 +9,25 @@ use std::sync::{Arc, Mutex};
 
 use async_channel::{Receiver, unbounded};
 use unlit_ecs::mcp::{McpCommand, WorldEntry, WorldId};
-use unlit_ecs::{Command, Entity, EntityAccessError, World, bundle};
+use unlit_ecs::{Bundle, Command, DynamicBundle, Entity, EntityAccessError, World, bundle};
 use unlit3d::winit::event::OnAboutToWait;
 
 use crate::sync;
 use crate::world::{WorldName, WorldSender};
 
 /// The commands the transport thread has posted for the host to run.
+///
+/// Spawned with the behaviour that drains it: an inbox nothing drains fills up
+/// and is never read, and a drain behaviour without one has nothing to read.
 #[derive(Clone)]
 struct McpInbox {
     receiver: Arc<Receiver<McpCommand>>,
+}
+
+impl Bundle for McpInbox {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self, drain_mcp()]
+    }
 }
 
 /// Serve the MCP stdio transport against `world`.
@@ -37,12 +46,9 @@ pub fn serve_mcp(world: &mut World) {
         });
     match started {
         Ok(_) => {
-            world.root_scope_mut().spawn(bundle![
-                McpInbox {
-                    receiver: Arc::new(receiver),
-                },
-                drain_mcp(),
-            ]);
+            world.root_scope_mut().spawn(McpInbox {
+                receiver: Arc::new(receiver),
+            });
         }
         Err(error) => log::error!("the MCP transport thread failed to start: {error}"),
     }
@@ -200,12 +206,9 @@ mod tests {
     fn host_with_inbox() -> (World, async_channel::Sender<McpCommand>) {
         let mut host = World::new();
         let (sender, receiver) = unbounded::<McpCommand>();
-        host.root_scope_mut().spawn(bundle![
-            McpInbox {
-                receiver: Arc::new(receiver),
-            },
-            drain_mcp(),
-        ]);
+        host.root_scope_mut().spawn(McpInbox {
+            receiver: Arc::new(receiver),
+        });
         (host, sender)
     }
 

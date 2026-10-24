@@ -16,7 +16,7 @@
 //! round and fail the snapshot rather than happening to look right.
 
 use super::{SceneControl, SceneDef, SceneOptions, TEST_SIZE, camera_looking_at};
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
 
 /// How far in front of the panes the camera sits.
@@ -51,6 +51,57 @@ const PANES: [(glam::Vec4, f32, f32); 3] = [
 /// The opaque cube behind the panes, tinted so the composite has something to
 /// blend against that is not the clear colour alone.
 const BACKDROP_TINT: glam::Vec4 = glam::Vec4::new(0.85, 0.8, 0.35, 1.0);
+
+/// The opaque cube the panes composite over.
+///
+/// It is drawn with depth writes, so it sits behind the panes rather than
+/// blending with them.
+struct Backdrop {
+    mesh: GpuMesh,
+    pipeline: UnlitPipeline,
+}
+
+impl Bundle for Backdrop {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            Transform {
+                translation: glam::Vec3::new(0.0, 0.0, -1.6),
+                scale: glam::Vec3::splat(1.1),
+                ..Default::default()
+            },
+            InstanceColor::new(BACKDROP_TINT),
+            self.mesh,
+            self.pipeline,
+        ]
+    }
+}
+
+/// One translucent pane: the shared mesh, tinted and placed where it blends.
+///
+/// The pane is sorted by camera distance, which is what [`ZSortedDrawing`] asks
+/// for; without it the panes would composite in registration order.
+struct Pane {
+    tint: glam::Vec4,
+    translation: glam::Vec3,
+    mesh: GpuMesh,
+    pipeline: UnlitPipeline,
+}
+
+impl Bundle for Pane {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            Transform {
+                translation: self.translation,
+                rotation: glam::Quat::from_rotation_y(0.35),
+                scale: glam::Vec3::new(1.05, 1.05, 0.05),
+            },
+            InstanceColor::new(self.tint),
+            self.mesh,
+            self.pipeline,
+            ZSortedDrawing,
+        ]
+    }
+}
 
 /// The scene: opaque cubes behind three overlapping translucent panes.
 pub static SCENE: SceneDef = SceneDef {
@@ -168,16 +219,10 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        bundle![
-            Transform {
-                translation: glam::Vec3::new(0.0, 0.0, -1.6),
-                scale: glam::Vec3::splat(1.1),
-                ..Default::default()
-            },
-            InstanceColor::new(BACKDROP_TINT),
-            backdrop,
-            UnlitPipeline::new(opaque_key),
-        ],
+        Backdrop {
+            mesh: backdrop,
+            pipeline: UnlitPipeline::new(opaque_key),
+        },
     );
 
     // Spawned nearest-first on purpose: registration order is not draw order
@@ -187,17 +232,12 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            bundle![
-                Transform {
-                    translation: glam::Vec3::new(*x, 0.0, *z),
-                    rotation: glam::Quat::from_rotation_y(0.35),
-                    scale: glam::Vec3::new(1.05, 1.05, 0.05),
-                },
-                InstanceColor::new(*tint),
-                pane_mesh.clone(),
-                UnlitPipeline::new(translucent_key.clone()),
-                ZSortedDrawing,
-            ],
+            Pane {
+                tint: *tint,
+                translation: glam::Vec3::new(*x, 0.0, *z),
+                mesh: pane_mesh.clone(),
+                pipeline: UnlitPipeline::new(translucent_key.clone()),
+            },
         );
     }
 

@@ -1,7 +1,7 @@
 //! Host helpers: the sub-world that shares the host's thread.
 
 use async_channel::{Receiver, bounded};
-use unlit_ecs::World;
+use unlit_ecs::{Bundle, DynamicBundle, World};
 
 use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
@@ -34,6 +34,41 @@ impl Drop for SubWorldStatus {
     }
 }
 
+/// The sub-world's own state: the inbox its jobs arrive in and the status it
+/// publishes.
+///
+/// The two are spawned together on one entity of the nested world's root scope,
+/// and [`drain_sub_world`] reads them as one: a world with an inbox but no
+/// status could take jobs it never reports on, and one with a status but no
+/// inbox could never take a job at all.
+struct SubWorld {
+    inbox: Receiver<Job>,
+    status: ThreadStatus,
+}
+
+impl Bundle for SubWorld {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![SubWorldInbox(self.inbox), SubWorldStatus(self.status)]
+    }
+}
+
+/// The host entity a nested world hangs on: the world itself, under the name a
+/// bridge lists it by.
+struct HostWorld {
+    world: World,
+    name: &'static str,
+}
+
+impl Bundle for HostWorld {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.world, WorldName(self.name)]
+    }
+}
+
 /// Spawn a sub-world that shares the host's thread, nested as a [`World`]
 /// component of the returned entity, with a command inbox of the given
 /// capacity.
@@ -63,14 +98,15 @@ pub fn spawn_sub_world(
     // asynchronous hands it a task instead of an executor.
     LocalTasks::install(&mut nested);
     let status = ThreadStatus::detached();
-    nested.root_scope_mut().spawn(bundle![
-        SubWorldInbox(inbox),
-        SubWorldStatus(status.clone())
-    ]);
+    nested.root_scope_mut().spawn(SubWorld {
+        inbox,
+        status: status.clone(),
+    });
     let sender = JobSender::new(queue);
-    let entity = host
-        .root_scope_mut()
-        .spawn_named(name, bundle![nested, WorldName(name)]);
+    let entity = host.root_scope_mut().spawn(HostWorld {
+        world: nested,
+        name,
+    });
     WorldHandle::with_status(entity, sender, status)
 }
 

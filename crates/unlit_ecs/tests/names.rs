@@ -1,6 +1,6 @@
 //! Entity names: the label a handle carries for `Debug` and for MCP.
 
-use unlit_ecs::{ArchetypeBuilder, World, bundle};
+use unlit_ecs::{DynamicBundle, World, bundle};
 
 #[derive(Clone, Copy, Debug)]
 struct Cube;
@@ -24,7 +24,7 @@ fn spawn_named_and_the_builder_name_the_entity() {
         .spawn_named("a name of its own", bundle![Cube]);
     assert_eq!(named.name(), "a name of its own");
 
-    let built = ArchetypeBuilder::new().named("assembled at runtime");
+    let built = DynamicBundle::new().named("assembled at runtime");
     let assembled = world.root_scope_mut().spawn(built);
     assert_eq!(assembled.name(), "assembled at runtime");
 }
@@ -95,4 +95,23 @@ fn a_queued_spawn_keeps_the_name_its_bundle_carries() {
     let world = World::new();
     let queued = world.root_scope().queue().spawn(bundle![Cube]);
     assert!(queued.name().contains("names.rs:"), "{}", queued.name());
+}
+
+#[test]
+fn a_custom_bundle_names_the_entity_after_its_type() {
+    struct Pane;
+
+    impl unlit_ecs::Bundle for Pane {
+        fn into_bundle(self) -> DynamicBundle {
+            bundle![0u32]
+        }
+    }
+
+    let mut world = World::new();
+    let pane = world.root_scope_mut().spawn(Pane);
+    assert!(
+        pane.name().ends_with("::Pane"),
+        "{} names the type that spawned the entity",
+        pane.name()
+    );
 }

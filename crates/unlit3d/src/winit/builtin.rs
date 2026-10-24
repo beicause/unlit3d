@@ -10,13 +10,17 @@
 //! component ([`CreateWindowRequest`], [`ExitRequest`]) that the host executes
 //! after the dispatch.
 //!
+//! A request and the behaviour that writes it are one thing, so each pair has a
+//! bundle that spawns both: [`WindowSetup`] opens a window, and [`ExitOn`]
+//! exits on a trigger.
+//!
 //! Two behaviours of the same family must sit on two entities, because a
 //! behaviour is borrowed while it runs. Two behaviours of different families
 //! never conflict.
 
 use std::sync::Arc;
 
-use unlit_ecs::World;
+use unlit_ecs::{Bundle, DynamicBundle, World, bundle};
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{EventLoopProxy, OwnedDisplayHandle};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -56,8 +60,11 @@ pub struct CreateWindowRequest(pub Option<WindowAttributes>);
 
 /// Asks the host to exit the event loop.
 ///
-/// The host clears the flag once it has acted, so a behaviour may set it again
-/// later.
+/// The flag is per entity: the host scans every entity of the root scope, exits
+/// if any of them is set, and clears the ones it read, so a behaviour may set
+/// its own again later. Nothing writes another entity's request, so an
+/// application holding a handle of its own sets that entity's flag instead of
+/// reaching for the one a behaviour watches.
 pub struct ExitRequest(pub bool);
 
 /// Whether the window system has resumed the application.
@@ -165,6 +172,50 @@ pub fn winit_input_behaviour(input: WinitInput) -> OnWindowEvent {
     })
 }
 
+/// A window to open, and the behaviour that opens it.
+///
+/// The behaviour reads the spec and writes the request on its own entity, so
+/// the three components only mean anything together: spawning this states the
+/// whole setup in one value.
+pub struct WindowSetup {
+    /// The attributes the host builds the window from.
+    pub attributes: WindowAttributes,
+}
+
+impl Bundle for WindowSetup {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            WindowSpec(self.attributes),
+            CreateWindowRequest(None),
+            create_window_on_resume(),
+        ]
+    }
+}
+
+/// What asks the application to exit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExitTrigger {
+    /// The window's close button.
+    CloseRequested,
+    /// The Escape key.
+    Escape,
+}
+
+/// Exit the application on a window event.
+///
+/// The behaviour writes the [`ExitRequest`] on its own entity, so the two only
+/// mean anything together: an entity carrying the behaviour alone never exits.
+pub struct ExitOn(pub ExitTrigger);
+
+impl Bundle for ExitOn {
+    fn into_bundle(self) -> DynamicBundle {
+        match self.0 {
+            ExitTrigger::CloseRequested => bundle![ExitRequest(false), exit_on_close_requested()],
+            ExitTrigger::Escape => bundle![ExitRequest(false), exit_on_escape()],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,12 +265,9 @@ mod tests {
     #[test]
     fn create_window_on_resume_copies_the_spec_into_the_request() {
         let mut world = World::new();
-        let spec = WindowSpec(Window::default_attributes().with_title("unlit3d"));
-        let entity = world.root_scope_mut().spawn(bundle![
-            spec,
-            CreateWindowRequest(None),
-            create_window_on_resume(),
-        ]);
+        let entity = world.root_scope_mut().spawn(WindowSetup {
+            attributes: Window::default_attributes().with_title("unlit3d"),
+        });
         world.apply().unwrap();
         let mut behaviour = world
             .root_scope()

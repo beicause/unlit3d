@@ -20,7 +20,7 @@ use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 
 pub use rapier3d::prelude::{PhysicsWorld, RigidBodyHandle};
-use unlit_ecs::World;
+use unlit_ecs::{Bundle, DynamicBundle, World};
 
 use crate::handle::WorldHandle;
 use crate::thread::FixedClock;
@@ -117,6 +117,43 @@ impl PhysicsEvents {
             .iter()
             .find(|(known, _)| *known == body)
             .map_or(Vec3::ZERO, |(_, velocity)| *velocity)
+    }
+}
+
+/// A physics world, its event plumbing and the contacts its last step found.
+///
+/// The three are spawned together and read together: the collector is what
+/// lets a step report contacts at all, and the buffer is where those contacts
+/// land, so a world carrying only some of them either reports nothing or has
+/// nowhere to put what it found.
+pub struct Physics {
+    /// The rapier world the bodies live in.
+    ///
+    /// The one field a caller reaches into, because the body API takes it. The
+    /// other two are the plumbing [`step_once`] drives, and a caller reads the
+    /// contacts back as a component rather than through the bundle it spawned.
+    pub world: PhysicsWorld,
+    events: PhysicsEvents,
+    contacts: PhysicsContacts,
+}
+
+impl Physics {
+    /// A physics world under the given gravity, with empty event plumbing.
+    #[must_use]
+    pub fn new(gravity: Vec3) -> Self {
+        let mut world = PhysicsWorld::new();
+        world.gravity = gravity;
+        Self {
+            world,
+            events: PhysicsEvents::new(),
+            contacts: PhysicsContacts::default(),
+        }
+    }
+}
+
+impl Bundle for Physics {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.world, self.events, self.contacts]
     }
 }
 
@@ -295,13 +332,7 @@ pub fn spawn_physics_world_with<R: WorldRunner>(
 /// deterministic tests, offline rendering — call this to get the world
 /// [`spawn_physics_world_with`] builds, contact events included.
 pub fn init_physics_world(world: &mut World, config: &PhysicsConfig) {
-    let mut physics = PhysicsWorld::new();
-    physics.gravity = config.gravity;
-    world.root_scope_mut().spawn(bundle![
-        physics,
-        PhysicsEvents::new(),
-        PhysicsContacts::default(),
-    ]);
+    world.root_scope_mut().spawn(Physics::new(config.gravity));
 }
 
 /// Step the rapier world once, draining its contacts into

@@ -776,7 +776,10 @@ mod tests {
     use unlit_ecs::bundle;
     use unlit_wgpu::capabilities::DeviceCapabilities;
 
-    use crate::input::{InputEvent, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent};
+    use crate::input::{
+        InputEvent, InputFeed, InputWriter, Modifiers, MouseButton, MouseEvent, TextEvent,
+        refresh_input,
+    };
     use crate::pass::PassInfo;
     use crate::source::spawn_context;
 
@@ -1111,12 +1114,9 @@ mod tests {
 
         // The pointer and a typed key arrive in the world's own event types.
         let input = InputWriter::new();
-        let events = input.subscribe();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), events.clone()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(InputEvent::Resized { size_px: (128, 96) });
-        events.refresh();
+        refresh_input(&world);
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -1125,7 +1125,7 @@ mod tests {
         // first frame establishes them; the text is then this tick's batch.
         source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
         input.push(InputEvent::Text(TextEvent("hi".to_string())));
-        events.refresh();
+        refresh_input(&world);
         source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
 
         assert_eq!(
@@ -1162,12 +1162,9 @@ mod tests {
             }),]);
 
         let input = InputWriter::new();
-        let events = input.subscribe();
-        world
-            .root_scope_mut()
-            .spawn(bundle![input.clone(), events.clone()]);
+        world.root_scope_mut().spawn(InputFeed(input.clone()));
         input.push(InputEvent::Resized { size_px: (128, 96) });
-        events.refresh();
+        refresh_input(&world);
 
         let mut source = UiSource::new();
         let mut encoder = encoder(&world, ctx);
@@ -1200,7 +1197,7 @@ mod tests {
             input.push(InputEvent::Mouse(event));
         }
         // The tick's batch: what the pointer did since the last frame.
-        events.refresh();
+        refresh_input(&world);
         source.build_scene(&world.root_scope(), ctx, target, &mut scene, &mut encoder);
 
         assert!(

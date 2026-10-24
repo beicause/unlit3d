@@ -102,12 +102,13 @@ impl<'w> Commands<'w> {
     /// Queue a spawn of `bundle` in this scope and return its handle.
     ///
     /// The handle is reserved now and refers to a live entity once the queue is
-    /// applied. Its name comes from the `bundle!` that built it, so a
-    /// queued spawn names the code that wrote the bundle rather than the place
-    /// that queued it.
+    /// applied. Its name comes from the bundle: a type of the caller's own names
+    /// it after itself, and a `bundle!` after the source position that wrote the
+    /// bundle, so a queued spawn names the code that wrote the bundle rather
+    /// than the place that queued it.
     pub fn spawn<B: Bundle + 'static>(&self, bundle: B) -> Entity {
-        let bundle = bundle.into_builder();
         let entity = self.world.reserve_entity(bundle.name());
+        let bundle = bundle.into_bundle();
         self.push(Spawn {
             entity,
             scope: self.scope,
@@ -118,9 +119,8 @@ impl<'w> Commands<'w> {
 
     /// Queue a spawn of `bundle` in this scope under `name`.
     ///
-    /// [`Commands::spawn`] names the entity after the `bundle!` that built it;
-    /// this is for the objects whose name has to say more than a source
-    /// position does.
+    /// [`Commands::spawn`] names the entity after the bundle itself; this is for
+    /// the objects whose name has to say more than that does.
     pub fn spawn_named<B: Bundle + 'static>(&self, name: &'static str, bundle: B) -> Entity {
         let entity = self.world.reserve_entity(name);
         self.push(Spawn {

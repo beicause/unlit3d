@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 pub use rustysynth_ext::{MidiFile, MidiFileLoopType, MidiMessage, SoundFont, Synthesizer};
 use rustysynth_ext::{MidiFileError, SoundFontError, SynthesizerError, SynthesizerSettings};
-use unlit_ecs::{Entity, World, bundle};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
 
 use crate::audio::{AudioChunk, AudioFillOrder, OnAudioFill};
 use crate::job::{Job, JobSender};
@@ -247,11 +247,13 @@ fn synthesizer(font: &Arc<SoundFont>, rate: i32) -> Result<Synthesizer, Synthesi
     Ok(synthesizer)
 }
 
-/// A loaded soundfont and the synthesizer playing it, as one component.
+/// A loaded soundfont and the synthesizer playing it, as one object.
 ///
-/// Spawned with the [`OnAudioFill`] that renders it, so the voice is a source
-/// of the world's mix: [`midi_job`] presses its keys and the audio thread
-/// turns them into samples.
+/// Spawning it also spawns the [`OnAudioFill`] that renders it, so the voice is
+/// a source of the world's mix: [`midi_job`] presses its keys and the audio
+/// thread turns them into samples. A voice on its own would never be asked for
+/// samples, and a fill source without one would have nothing to render, so the
+/// two are spawned together.
 pub struct SynthVoice {
     /// The soundfont to build the synthesizer from, until it is built. Taken
     /// away when building fails, which is what makes a voice that cannot sound
@@ -271,6 +273,15 @@ pub struct SynthVoice {
     gave_up: bool,
 }
 
+impl Bundle for SynthVoice {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            self,
+            OnAudioFill::new(AudioFillOrder::default(), fill_voice)
+        ]
+    }
+}
+
 impl SynthVoice {
     /// Spawns a voice playing `font`, and its fill source.
     pub fn from_font(world: &mut World, font: &Arc<SoundFont>) -> Entity {
@@ -282,8 +293,7 @@ impl SynthVoice {
             right: Vec::new(),
             gave_up: false,
         };
-        let fill = OnAudioFill::new(AudioFillOrder::default(), fill_voice);
-        world.root_scope_mut().spawn(bundle![voice, fill])
+        world.root_scope_mut().spawn(voice)
     }
 
     /// Parses `bytes` as a soundfont and spawns a voice playing it.

@@ -25,9 +25,8 @@ use unlit_wgpu::render_attachments::create_color_target;
 use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureExt, TextureView};
 use unlit3d::attachments::FrameAttachments;
 use unlit3d::blit::BlitSource;
-use unlit3d::components::RenderLoadOps;
 use unlit3d::frame::{Frame, FrameBehaviourOrder, OnFrame, dispatch_frame};
-use unlit3d::pass::{FramePass, FramePassOrder};
+use unlit3d::pass::{FramePass, FramePassOrder, Pass};
 
 use crate::executor::LocalTasks;
 use unlit3d::renderer::Renderer;
@@ -338,10 +337,7 @@ pub fn setup_presenter(
         if offscreen {
             let target = bind_offscreen(&nested, context, scene_pass, &gpu.device, size)
                 .map_err(|_| "failed to bind the offscreen target: the resource graph was gone")?;
-            let blit_pass = nested.root_scope_mut().spawn(bundle![
-                FramePass::new(BLIT_PASS_ORDER),
-                RenderLoadOps::default(),
-            ]);
+            let blit_pass = nested.root_scope_mut().spawn(Pass::new(BLIT_PASS_ORDER));
             let blit_source = nested
                 .scope_mut(blit_pass)
                 .expect("the blit pass is alive")

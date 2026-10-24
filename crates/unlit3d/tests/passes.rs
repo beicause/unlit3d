@@ -114,10 +114,7 @@ fn spawn_pass(world: &mut World, parent: Entity, order: i32) -> Entity {
     world
         .scope_mut(parent)
         .expect("the parent entity is its own scope")
-        .spawn(bundle![
-            FramePass::new(FramePassOrder(order)),
-            RenderLoadOps::default(),
-        ])
+        .spawn(Pass::new(FramePassOrder(order)))
 }
 
 /// A source that draws nothing and counts how many times it was built.

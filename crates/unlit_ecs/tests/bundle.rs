@@ -1,6 +1,6 @@
 //! The bundle! macro: every item is one component, and ..value spreads a bundle.
 
-use unlit_ecs::{ArchetypeBuilder, Bundle, Commands, Entity, Has, World, bundle};
+use unlit_ecs::{Bundle, Commands, DynamicBundle, Entity, Has, World, bundle};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Position {
@@ -79,7 +79,7 @@ fn a_parenthesised_group_is_one_component() {
 #[test]
 fn a_tuple_pushed_whole_is_one_component() {
     let mut world = World::new();
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component((1u32, 2.0f32));
     builder.push_component(true);
     let entity = world.root_scope_mut().spawn(builder);
@@ -228,7 +228,7 @@ fn a_parenthesised_bundle_matches_the_equivalent_composite() {
         .spawn(bundle![(1u32, 2.0f32), (true,)]);
 
     let mut pushed_world = World::new();
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component((1u32, 2.0f32));
     builder.push_component((true,));
     let pushed = pushed_world.root_scope_mut().spawn(builder);
@@ -280,7 +280,7 @@ fn a_queued_spawn_applies() {
 
 #[test]
 fn a_built_bundle_is_a_bundle() {
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component(1u32);
     builder.push_component(2.0f32);
 
@@ -302,8 +302,8 @@ fn a_built_bundle_is_a_bundle() {
 }
 
 #[test]
-fn into_builder_returns_exactly_the_bundles_components() {
-    let builder = bundle![(1u32, 2.0f32), true].into_builder();
+fn into_bundle_returns_exactly_the_bundles_components() {
+    let builder = bundle![(1u32, 2.0f32), true].into_bundle();
 
     let mut world = World::new();
     let entity = world.root_scope_mut().spawn(builder);
@@ -335,7 +335,7 @@ fn into_builder_returns_exactly_the_bundles_components() {
 
 #[test]
 fn a_builder_is_spread_with_a_dot_dot() {
-    let mut gathered = ArchetypeBuilder::new();
+    let mut gathered = DynamicBundle::new();
     gathered.push_component(Position { x: 1.0, y: 2.0 });
     gathered.push_component(7u32);
 
@@ -360,7 +360,7 @@ fn a_builder_is_spread_with_a_dot_dot() {
     assert!(
         !world
             .root_scope()
-            .query_one::<Has<ArchetypeBuilder>>(entity)
+            .query_one::<Has<DynamicBundle>>(entity)
             .unwrap_or(false),
         "the builder is not stored as a component"
     );
@@ -371,11 +371,8 @@ fn a_custom_bundle_is_spread_with_a_dot_dot() {
     struct Pose(Position);
 
     impl Bundle for Pose {
-        fn into_builder(self) -> ArchetypeBuilder {
-            let mut builder = ArchetypeBuilder::new();
-            builder.push_component(self.0);
-            builder.push_component(Velocity { dx: 0.0, dy: 1.0 });
-            builder
+        fn into_bundle(self) -> DynamicBundle {
+            bundle![self.0, Velocity { dx: 0.0, dy: 1.0 }]
         }
     }
 
@@ -405,7 +402,7 @@ fn a_custom_bundle_is_spread_with_a_dot_dot() {
 
 #[test]
 fn a_bundle_spread_keeps_a_tuple_component_whole() {
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component(1u32);
     builder.push_component((2.0f32, true));
 
@@ -429,7 +426,7 @@ fn a_bundle_spread_keeps_a_tuple_component_whole() {
 
 #[test]
 fn a_queued_spread_bundle_applies() {
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component(1u32);
 
     let mut world = World::new();
@@ -458,7 +455,7 @@ fn a_queued_spread_bundle_applies() {
 #[test]
 #[should_panic(expected = "same component twice")]
 fn a_duplicate_across_a_spread_panics() {
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component(1u32);
 
     let mut world = World::new();
@@ -468,10 +465,40 @@ fn a_duplicate_across_a_spread_panics() {
 #[test]
 #[should_panic(expected = "same component twice")]
 fn a_component_pushed_twice_panics() {
-    let mut builder = ArchetypeBuilder::new();
+    let mut builder = DynamicBundle::new();
     builder.push_component(1u32);
     builder.push_component(2u32);
 
     let mut world = World::new();
     world.root_scope_mut().spawn(builder);
+}
+
+#[test]
+fn a_custom_bundle_is_spawned_on_its_own() {
+    struct Marker(u32);
+
+    impl Bundle for Marker {
+        fn into_bundle(self) -> DynamicBundle {
+            bundle![Position { x: 1.0, y: 2.0 }, self]
+        }
+    }
+
+    let mut world = World::new();
+    let entity = world.root_scope_mut().spawn(Marker(9));
+
+    assert_eq!(
+        world.root_scope().query_one::<&Marker>(entity).unwrap().0,
+        9
+    );
+    assert_eq!(
+        world.root_scope().query_one::<&Position>(entity).unwrap().y,
+        2.0
+    );
+    assert!(
+        !world
+            .root_scope()
+            .query_one::<Has<DynamicBundle>>(entity)
+            .unwrap_or(false),
+        "the bundle is not stored as a component"
+    );
 }

@@ -230,8 +230,8 @@ The bridges:
   It publishes no payload of its own: a caller subscribes with the collector
   that names the state it wants, and whoever drives the world publishes it.
   `spawn_body` (a `BodyDesc` with a `BodyShape`) and `spawn_fixed_cuboid` are
-  the building blocks; `init_physics_world` builds the same world for a
-  caller that steps it inline with `step_once`.
+  the building blocks; `init_physics_world` spawns the same world as a
+  `Physics` bundle for a caller that steps it inline with `step_once`.
 - **audio** (on by default): `spawn_audio_world_with::<R>` opens the output
   device and owns its stream on the audio thread. Its `OnAudioFill` components are
   the sources, and one entity may hold several layers in one component, each

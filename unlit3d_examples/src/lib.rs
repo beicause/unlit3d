@@ -14,7 +14,7 @@ mod fullscreen;
 use std::collections::VecDeque;
 use std::io::Write;
 use std::process::ExitCode;
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 
 use cli::{Args, Parsed};
 use scenes::{Advance, SceneControl};
@@ -24,8 +24,7 @@ use unlit3d::prelude::*;
 use unlit3d::ui::{UiSource, egui};
 use unlit3d::winit::WindowSurface;
 use unlit3d::winit::builtin::{
-    CreateWindowRequest, DisplayHandle, ExitRequest, Resumed, WindowSpec, WinitProxy,
-    create_window_on_resume, exit_on_close_requested, exit_on_escape,
+    DisplayHandle, ExitOn, ExitRequest, ExitTrigger, Resumed, WindowSetup, WinitProxy,
     request_redraw_while_foreground, window, winit_input_behaviour,
 };
 #[cfg(target_os = "android")]
@@ -38,7 +37,7 @@ use unlit_wgpu::resources::{ResHandle, ResourceGraph, TextureView};
 use unlit_wgpu::scene::ViewportRect;
 use web_time::Instant;
 use winit::event::WindowEvent;
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::Window;
 
 /// The number of samples the windowed loop presents every frame with.
@@ -241,10 +240,7 @@ pub fn bind_offscreen_target(
 /// carries the frame. It is given the default load ops, clearing the surface
 /// before the fullscreen triangle covers it.
 fn mount_blit(world: &mut World, view: ResHandle<TextureView>) -> Blit {
-    let pass = world.root_scope_mut().spawn(bundle![
-        FramePass::new(BLIT_ORDER),
-        RenderLoadOps::default(),
-    ]);
+    let pass = world.root_scope_mut().spawn(Pass::new(BLIT_ORDER));
     let source = world
         .scope_mut(pass)
         .expect("the pass was just spawned")
@@ -370,18 +366,12 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
         use winit::platform::web::WindowAttributesExtWebSys;
         attributes = attributes.with_append(true);
     }
-    world.root_scope_mut().spawn(bundle![
-        WindowSpec(attributes),
-        CreateWindowRequest(None),
-        create_window_on_resume(),
-    ]);
+    world.root_scope_mut().spawn(WindowSetup { attributes });
 
     world
         .root_scope_mut()
-        .spawn(bundle![ExitRequest(false), exit_on_close_requested()]);
-    world
-        .root_scope_mut()
-        .spawn(bundle![ExitRequest(false), exit_on_escape()]);
+        .spawn(ExitOn(ExitTrigger::CloseRequested));
+    world.root_scope_mut().spawn(ExitOn(ExitTrigger::Escape));
     world
         .root_scope_mut()
         .spawn(bundle![request_redraw_while_foreground()]);
@@ -389,22 +379,11 @@ fn windowed(args: Args, event_loop: EventLoop<UserEvent>) {
     // The application's state and its per-callback behaviours share one
     // entity: every component is its own cell, so a callback writing a sibling
     // state component never conflicts with the behaviour being run.
-    let app = world.root_scope_mut().spawn(bundle![
-        GpuState::Idle,
-        SceneEntity(None),
-        Offscreen(None),
-        SurfaceSlot(None),
-        AttachmentsSlot(None),
-        LastFrame(Instant::now()),
-        InitialScene(scene),
-        SelectorPos(None),
-        GpuInfoPos(None),
-        McpEnabled(args.mcp && MCP_SUPPORTED),
-        ExitRequest(false),
-        WinitProxy(proxy),
-        FrameSkip::default(),
-        draw_on_redraw(),
-    ]);
+    let app = world.root_scope_mut().spawn(App {
+        scene,
+        proxy,
+        mcp: args.mcp && MCP_SUPPORTED,
+    });
     // The frame's own behaviours, in order: request the GPU, build the scene
     // and its surface, serve the controls, advance the scene, present it.
     world.root_scope_mut().spawn(bundle![request_gpu(app)]);
@@ -654,6 +633,31 @@ struct FullscreenActive(bool);
 /// scene's state survives one.
 struct SceneEntity(Option<Entity>);
 
+/// The render world an application presents through, under the name it reports
+/// to the MCP tools.
+///
+/// A world is reachable from the host only as a component of an entity, and the
+/// name is what the report lists it by: spawning the two together is what makes
+/// the scene findable at all.
+struct RenderWorld {
+    /// The world the scene draws in.
+    world: World,
+    /// The scene driving it.
+    scene: Scene,
+    /// The name the MCP tools list it under.
+    name: &'static str,
+}
+
+impl Bundle for RenderWorld {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.world, self.scene, WorldName(self.name)]
+    }
+}
+
 /// The name this example reports a host world under to the MCP tools.
 ///
 /// The example keeps its own component rather than borrowing the core's: it
@@ -696,6 +700,43 @@ struct SelectorPos(Option<egui::Rect>);
 /// The GPU-info panel's rectangle the last time a scene was live, so a scene
 /// switch can rebuild it where the user left it.
 struct GpuInfoPos(Option<egui::Rect>);
+
+/// The application's state, spawned as one object.
+///
+/// Every component is its own cell, so a callback writing a sibling state
+/// component never conflicts with the behaviour being run. The behaviours are
+/// spawned beside this entity rather than in it, each handed the handle back, so
+/// a callback reaches the state it reads and the proxy it posts its own events
+/// through from one place.
+struct App {
+    /// The scene the application starts with.
+    scene: &'static scenes::SceneDef,
+    /// The proxy a callback posts an event to the loop it runs on with.
+    proxy: EventLoopProxy<UserEvent>,
+    /// Whether to serve the world over the Model Context Protocol.
+    mcp: bool,
+}
+
+impl Bundle for App {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            GpuState::Idle,
+            SceneEntity(None),
+            Offscreen(None),
+            SurfaceSlot(None),
+            AttachmentsSlot(None),
+            LastFrame(Instant::now()),
+            InitialScene(self.scene),
+            SelectorPos(None),
+            GpuInfoPos(None),
+            McpEnabled(self.mcp),
+            ExitRequest(false),
+            WinitProxy(self.proxy),
+            FrameSkip::default(),
+            draw_on_redraw(),
+        ]
+    }
+}
 
 /// Where the scene's draggable panels opened, carried from the scene a switch
 /// replaced.
@@ -788,6 +829,31 @@ struct SequenceStepped(bool);
 /// component cannot be borrowed mutably and handed the world it lives in at the
 /// same time, so it is taken out, called, and put back.
 struct SceneAdvance(Option<Advance>);
+
+/// The scene's per-frame state, spawned with its own advance.
+///
+/// The state and the behaviour that moves it live on one entity so a frame
+/// advances the scene without `&mut Scene`: the index the sequence step keeps
+/// and the clock it accumulates into are read by the advance beside them, and
+/// neither half means anything without the other.
+struct SceneFrame {
+    /// The scene's own per-frame behaviour.
+    advance: Advance,
+    /// The interval the scene's index advances at, or `None` to advance it once
+    /// per drawn frame.
+    step: Option<f32>,
+}
+
+impl Bundle for SceneFrame {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            SceneAdvance(Some(self.advance)),
+            SequenceStep(self.step),
+            SequenceClock(0.0),
+            SequenceStepped(true),
+        ]
+    }
+}
 
 /// Run the scene's own per-frame behaviour, which needs `&mut World`.
 struct RunSceneAdvance {
@@ -926,11 +992,11 @@ fn present(world: &World, app: Entity) {
                 def,
                 PanelRects::read(world, app),
             );
-            let entity =
-                world
-                    .root_scope()
-                    .queue()
-                    .spawn(bundle![scene_world, scene, WorldName("render")]);
+            let entity = world.root_scope().queue().spawn(RenderWorld {
+                world: scene_world,
+                scene,
+                name: "render",
+            });
             let _ = world
                 .root_scope()
                 .query_one::<&mut SceneEntity>(app)
@@ -1802,9 +1868,10 @@ impl Scene {
             },
             ..RenderLoadOps::default()
         };
-        let pass = world
-            .root_scope_mut()
-            .spawn(bundle![FramePass::new(SCENE_ORDER), load]);
+        let pass = world.root_scope_mut().spawn(Pass {
+            load,
+            ..Pass::new(SCENE_ORDER)
+        });
         // The scene's content is built for the region it will be drawn into,
         // not for the whole target: a camera built for the target's aspect
         // would be sheared back out to it by the viewport. A run that does not
@@ -1862,12 +1929,10 @@ impl Scene {
         // frame's behaviours advance them without `&mut Scene`. One entity
         // carries them so the behaviour that advances the scene and the state
         // it reads are reached together.
-        let frame_entity = world.root_scope_mut().spawn(bundle![
-            SceneAdvance(Some(advance)),
-            SequenceStep(options.sequence_step),
-            SequenceClock(0.0),
-            SequenceStepped(true),
-        ]);
+        let frame_entity = world.root_scope_mut().spawn(SceneFrame {
+            advance,
+            step: options.sequence_step,
+        });
         // The frame's own dispatch, in order: run the frame's input, step the
         // index a fixed sequence holds each frame for, then advance the scene
         // by the frame the index names.

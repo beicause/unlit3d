@@ -11,7 +11,12 @@
 //! be called from a test — winit offers no way to build one. Instead the host
 //! turns loop actions into request components: a behaviour writes
 //! [`CreateWindowRequest`] or [`ExitRequest`] into the world, and the host reads
-//! and executes it after the whole dispatch. This keeps every callback
+//! and executes it after the whole dispatch. Each request belongs to the entity
+//! that carries it: the host scans the root scope rather than reading one
+//! entity's slot, so an application may keep a flag of its own beside the ones
+//! the behaviours write. [`WindowSetup`](super::builtin::WindowSetup) and
+//! [`ExitOn`](super::builtin::ExitOn) spawn a request together with its
+//! behaviour. This keeps every callback
 //! unit-testable and gives a built-in behaviour no path an application cannot
 //! take.
 //!
@@ -137,8 +142,7 @@ pub struct WinitDeviceEvent {
 /// hand the host to [`WinitHost::run`].
 ///
 /// ```rust,no_run
-/// use unlit_ecs::bundle;
-/// use unlit3d::winit::builtin::{WindowSpec, create_window_on_resume, exit_on_close_requested};
+/// use unlit3d::winit::builtin::{ExitOn, ExitTrigger, WindowSetup};
 /// use unlit3d::winit::event::WinitHost;
 /// use winit::event_loop::EventLoop;
 /// use winit::window::Window;
@@ -146,11 +150,12 @@ pub struct WinitDeviceEvent {
 /// # fn main() -> Result<(), winit::error::EventLoopError> {
 /// let event_loop = EventLoop::new()?;
 /// let mut host = WinitHost::new();
-/// host.world_mut().root_scope_mut().spawn(bundle![
-///     WindowSpec(Window::default_attributes().with_title("unlit3d")),
-///     create_window_on_resume(),
-///     exit_on_close_requested(),
-/// ]);
+/// host.world_mut().root_scope_mut().spawn(WindowSetup {
+///     attributes: Window::default_attributes().with_title("unlit3d"),
+/// });
+/// host.world_mut()
+///     .root_scope_mut()
+///     .spawn(ExitOn(ExitTrigger::CloseRequested));
 /// host.run(event_loop)
 /// # }
 /// ```

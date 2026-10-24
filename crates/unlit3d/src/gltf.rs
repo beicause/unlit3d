@@ -130,7 +130,7 @@ use crate::unlit::{
 use gltf::animation::util::ReadOutputs;
 use gltf::animation::{Interpolation, Property};
 use unlit_ecs::bundle;
-use unlit_ecs::{ArchetypeBuilder, Scope, ScopeMut, prelude::Entity};
+use unlit_ecs::{DynamicBundle, Scope, ScopeMut, prelude::Entity};
 use unlit_wgpu::pipeline::{BaseColorChannels, UnlitOptions};
 use unlit_wgpu::resources::{ResHandle, TextureExt, TextureView};
 
@@ -1097,7 +1097,7 @@ impl UnlitGltf {
                 // skin and blend mode, so the bundle is assembled rather than
                 // written as a tuple: an absent material is a component left
                 // out, not a `None` the renderer would have to look through.
-                let mut bundle = ArchetypeBuilder::new().named("gltf primitive");
+                let mut bundle = DynamicBundle::new().named("gltf primitive");
                 bundle.push_component(transform.clone());
                 bundle.push_component(mesh_handle.mesh.clone());
                 bundle.push_component(UnlitPipeline::new(mesh_handle.key.clone()));

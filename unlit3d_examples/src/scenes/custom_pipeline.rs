@@ -25,7 +25,7 @@
 //! hard-edged sun rather than any attempt at a photographic sky.
 
 use std::sync::Arc;
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_FORMAT, TEST_SIZE, camera_looking_at,
@@ -227,6 +227,40 @@ struct Particle {
     shape: f32,
     /// The sprite's colour.
     tint: glam::Vec4,
+}
+
+/// The scene's sky: the mesh that covers the target and the pipeline that
+/// shades it.
+///
+/// The pipeline is compiled for the mesh's vertex layout, so the two are
+/// spawned as one object rather than as two independent components.
+struct Sky {
+    mesh: GpuMesh,
+    pipeline: GpuRenderPipeline<SkyKey>,
+}
+
+impl Bundle for Sky {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.mesh, self.pipeline]
+    }
+}
+
+/// One particle of the cloud.
+///
+/// The mesh, the pipeline and the material are shared by the whole cloud — one
+/// of each, so the renderer folds every sprite into a single instanced draw —
+/// while the record is what places this one; a spawn states all four together.
+struct Sprite {
+    mesh: GpuMesh,
+    pipeline: GpuRenderPipeline<ParticleKey>,
+    material: GpuMaterial,
+    particle: Particle,
+}
+
+impl Bundle for Sprite {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![self.mesh, self.pipeline, self.material, self.particle]
+    }
 }
 
 /// The sky's shader.
@@ -1179,7 +1213,14 @@ fn build(
         ),],
     );
 
-    super::spawn_in(world, source_entity, bundle![sky_mesh, sky_pipeline]);
+    super::spawn_in(
+        world,
+        source_entity,
+        Sky {
+            mesh: sky_mesh,
+            pipeline: sky_pipeline,
+        },
+    );
     // One mesh, one pipeline and one material for the whole cloud, so the
     // renderer folds the particles into a single instanced draw and every
     // sprite's placement comes from its own record.
@@ -1187,12 +1228,12 @@ fn build(
         super::spawn_in(
             world,
             source_entity,
-            bundle![
-                particle_mesh.clone(),
-                particle_pipeline.clone(),
-                particle_material.clone(),
+            Sprite {
+                mesh: particle_mesh.clone(),
+                pipeline: particle_pipeline.clone(),
+                material: particle_material.clone(),
                 particle,
-            ],
+            },
         );
     }
 

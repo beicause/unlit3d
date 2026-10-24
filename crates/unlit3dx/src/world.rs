@@ -11,7 +11,7 @@
 //! cannot publish twice.
 
 use async_channel::{Receiver, bounded};
-use unlit_ecs::{ArchetypeBuilder, Entity, World};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, World, bundle};
 
 use crate::channel::publish_collected;
 use crate::executor::LocalTasks;
@@ -253,7 +253,11 @@ where
         sender: sender.clone(),
         status: status.clone(),
     };
-    let entity = spawn_proxy(host, WorldKind::Threaded { _thread: thread }, name, port);
+    let entity = host.root_scope_mut().spawn(WorldEntity {
+        kind: WorldKind::Threaded { _thread: thread },
+        name,
+        sender: port,
+    });
     WorldHandle::with_status(entity, sender, status)
 }
 
@@ -304,22 +308,37 @@ where
         sender: sender.clone(),
         status: status.clone(),
     };
-    let entity = spawn_proxy(host, WorldKind::Stepped(Box::new(stepped)), name, port);
+    let entity = host.root_scope_mut().spawn(WorldEntity {
+        kind: WorldKind::Stepped(Box::new(stepped)),
+        name,
+        sender: port,
+    });
     WorldHandle::with_status(entity, sender, status)
 }
 
-/// Spawn the proxy entity with the runner's components.
-fn spawn_proxy(
-    host: &mut World,
+/// The entity a spawned world lives on: what drives it, the name it answers
+/// to, and the queue its jobs are posted through.
+struct WorldEntity {
+    /// What drives the world.
     kind: WorldKind,
+    /// The name the world answers to.
     name: &'static str,
+    /// The host-side view of its command queue.
     sender: WorldSender,
-) -> Entity {
-    let mut bundle = ArchetypeBuilder::new().named(name);
-    bundle.push_component(WorldProxy { kind });
-    bundle.push_component(WorldName(name));
-    bundle.push_component(sender);
-    host.root_scope_mut().spawn(bundle)
+}
+
+impl Bundle for WorldEntity {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            WorldProxy { kind: self.kind },
+            WorldName(self.name),
+            self.sender,
+        ]
+    }
 }
 
 /// Drain a stepped world's jobs and run its tick once.

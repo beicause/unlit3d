@@ -51,8 +51,8 @@ use image::ImageEncoder;
 use unlit3d::input::winit::WinitInput;
 use unlit3d::prelude::*;
 use unlit3d::winit::builtin::{
-    CreateWindowRequest, ExitRequest, WindowSpec, create_window_on_resume, exit_on_close_requested,
-    exit_on_escape, request_redraw_while_foreground, winit_input_behaviour,
+    ExitOn, ExitRequest, ExitTrigger, WindowSetup, request_redraw_while_foreground,
+    winit_input_behaviour,
 };
 use unlit3d::winit::event::WinitHost;
 use unlit3dx::prelude::*;
@@ -115,17 +115,11 @@ pub fn windowed(mcp: bool, stepped: bool, event_loop: EventLoop<()>) {
         use winit::platform::web::WindowAttributesExtWebSys;
         attributes.with_append(true)
     };
-    world.root_scope_mut().spawn(bundle![
-        WindowSpec(attributes),
-        CreateWindowRequest(None),
-        create_window_on_resume(),
-    ]);
+    world.root_scope_mut().spawn(WindowSetup { attributes });
     world
         .root_scope_mut()
-        .spawn(bundle![ExitRequest(false), exit_on_close_requested()]);
-    world
-        .root_scope_mut()
-        .spawn(bundle![ExitRequest(false), exit_on_escape()]);
+        .spawn(ExitOn(ExitTrigger::CloseRequested));
+    world.root_scope_mut().spawn(ExitOn(ExitTrigger::Escape));
     request_redraw_while_foreground();
 
     // The render sub-world: spawned empty, on the main thread, before

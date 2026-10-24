@@ -9,7 +9,7 @@
 use super::{
     SEQUENCE_STEP, SceneControl, SceneDef, SceneOptions, TEST_SIZE, morph_deltas, unlit_options,
 };
-use unlit_ecs::bundle;
+use unlit_ecs::{Bundle, DynamicBundle, bundle};
 use unlit3d::prelude::*;
 
 /// The frames rendered, one snapshot each.
@@ -32,6 +32,34 @@ pub static SCENE: SceneDef = SceneDef {
     reproducible_ui: false,
     build,
 };
+
+/// The scene's one visible object: a cube blended by its own weights.
+///
+/// The mesh and the entity that carries the weights are what a spawn has to
+/// name, so they are the fields; the transform and the tint belong to the
+/// scene, so they are the bundle's own.
+struct MorphedCube {
+    mesh: GpuMesh,
+    pipeline: UnlitPipeline,
+    weights: Entity,
+}
+
+impl Bundle for MorphedCube {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            Transform {
+                scale: glam::Vec3::splat(0.9),
+                ..Default::default()
+            },
+            InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
+            self.mesh,
+            self.pipeline,
+            MorphBinding {
+                weights: self.weights
+            },
+        ]
+    }
+}
 
 /// Build the morphed-cube scene's world content.
 fn build(
@@ -83,18 +111,11 @@ fn build(
     super::spawn_in(
         world,
         source_entity,
-        bundle![
-            Transform {
-                scale: glam::Vec3::splat(0.9),
-                ..Default::default()
-            },
-            InstanceColor::new(glam::Vec4::new(0.55, 0.85, 1.0, 1.0)),
+        MorphedCube {
             mesh,
-            UnlitPipeline::new(key),
-            MorphBinding {
-                weights: weights_entity
-            },
-        ],
+            pipeline: UnlitPipeline::new(key),
+            weights: weights_entity,
+        },
     );
 
     SceneControl {

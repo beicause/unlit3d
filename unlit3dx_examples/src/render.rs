@@ -17,7 +17,7 @@
 //! snapshot the world published, and the next job names it.
 
 use glam::{Affine3A, Vec3};
-use unlit_ecs::{Entity, Scope, World};
+use unlit_ecs::{Bundle, DynamicBundle, Entity, Scope, World};
 use unlit_wgpu::pipeline::UnlitOptions;
 use unlit3d::bounds::FrustumPlanes;
 use unlit3d::components::{Camera, GpuMaterial, GpuMesh, InstanceVisibility, Transform};
@@ -204,13 +204,42 @@ pub(crate) fn instance_of(
     world
         .scope_mut(source_entity)
         .expect("the mesh source entity exists")
-        .spawn(bundle![
+        .spawn(Rendered {
             transform,
             mesh,
             material,
-            UnlitPipeline::new(key),
+            pipeline: UnlitPipeline::new(key),
+        })
+}
+
+/// One thing the render world draws: a mesh, the material bound to it, the
+/// pipeline that draws it and where it stands.
+///
+/// A job names the assets it built and the transform to place them at, and the
+/// four components are what that one instance is; spawning them apart would let
+/// a mesh reach the world without the material or the pipeline that make it
+/// visible.
+struct Rendered {
+    /// Where the instance stands in the scene.
+    transform: Transform,
+    /// The mesh allocated for it.
+    mesh: GpuMesh,
+    /// The material bound to that mesh.
+    material: GpuMaterial,
+    /// The pipeline family the mesh's vertex layout was compiled for.
+    pipeline: UnlitPipeline,
+}
+
+impl Bundle for Rendered {
+    fn into_bundle(self) -> DynamicBundle {
+        bundle![
+            self.transform,
+            self.mesh,
+            self.material,
+            self.pipeline,
             InstanceVisibility::default(),
-        ])
+        ]
+    }
 }
 
 /// Spawn one rendered instance that starts hidden, until its body is ready.
