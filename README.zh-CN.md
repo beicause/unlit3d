@@ -106,46 +106,6 @@ ECS 层。内置**无光照（unlit）**渲染管线，移动端优先；不支�
   自定义和拓展。本库的一些内置实现（如 unlit 渲染）不应该拥有特权和内部专用实现，
   内部实现应该挪到外部以保证本库的可自定义性和可拓展性。
 
-## 常用命令
-
-常用命令遵循`cargo xtask`约定：
-
-- **`cargo xtask check`** — 先以默认 features、再以全 feature 对全工作区跑 clippy，
-  另外每个包各自以默认 features 单独跑（`-D warnings`）；随后 `cargo fmt --check`。
-  提交前的门槛。逐包那一趟能抓出某个 crate 自身代码已不再使用的可选 feature——
-  全工作区一起跑会因 feature 统一而掩盖它。加 `--release` 走 release profile。
-- **`cargo xtask test`** — 用 `cargo nextest run` 覆盖单元与集成测试，随后
-  `cargo test --doc` 补上 nextest 不跑的 doctest。加 `--release` 走 release profile。
-- **`cargo xtask test-wasm`** — 把 GPU 测试构建到 `wasm32-unknown-unknown`、做
-  bindgen，再经由 WebGL2 在真实浏览器里逐个测试各开一个页面运行；随后加载每个示例并
-  检查它确实画出了东西。需要与工作区解析版本一致的 `wasm-bindgen-cli`、`cargo nextest`
-  与 Node；它会自行安装 runner 的依赖与一个浏览器，除非用 `CHROME_PATH` 指定现成的。
-  `--show` 打开可见窗口以观察失败。
-- **`cargo xtask run-wasm`** — 构建 web 示例并用内置静态服务器提供（WebGPU 需要 secure
-  context，`file://` 不行）。`--app` 选择构建哪些——`unlit3d`、`unlit3dx` 或默认的
-  `all`——根目录的首页会链接已经构建出来的那些；`--no-serve` 只构建。这里和
-  `test-wasm` 的每一次 wasm
-  构建都用工作区的 `wasm-dev` cargo profile：沿用 release 的设定，但 `opt-level`
-  以体积为目标，因为二进制是要被浏览器下载的。
-- **`cargo xtask build-android`** — 先 `cargo ndk` 交叉编译两个示例的动态库
-  （`unlit3d_examples_android` 与 `unlit3dx_examples_android`，两者只放 Android
-  入口）放进 `android/app/src/main/jniLibs`，再调 Gradle 构建 APK。默认 debug，
-  `--release` 构建未签名的 release APK。需 JDK 17+ 与 `ANDROID_HOME`
-  （NDK 由 cargo-ndk 自动探测）。
-- **`cargo xtask publish`** — 按依赖顺序把可发布的 crate（`unlit_ecs`、`unlit_wgpu`、
-  `unlit3d`）上传到 crates.io，每个都等到它出现在索引里再打包下一个。
-  `--` 之后的参数会透传给每次 `cargo publish`，因此 `-- --dry-run` 只做全部检查、
-  不上传。
-- **`cargo nextest run`** — 需要按名筛选或重跑单个测试时直接用（`-p <crate>`、
-  `-E 'test(<name>)'`）。nextest 不跑 doctest，也别用它代替 `cargo xtask test`。
-- **`cargo bench -p unlit3d_benchmarks`** — 把渲染路径的一帧按每秒实体数计时。
-  用 `--bench ecs` 则单独测量 ECS 的组件访问路径；加 `--features profile-tracing`
-  并以 `--bench profile -- <实体数> <帧数>` 运行时，改为每帧每个阶段打印一行。各目标
-  覆盖什么见 [`unlit3d_benchmarks`](unlit3d_benchmarks/README.zh-CN.md)。
-- **`typos`** — 拼写检查，扫全仓库。
-- **`tombi lint --error-on-warnings`** 与 **`tombi format`** — TOML 的 lint 与格式检查。
-  改过任何 `Cargo.toml` 后务必跑。
-
 ## 测试与基准
 
 测试按「离被测代码有多近」分三层：

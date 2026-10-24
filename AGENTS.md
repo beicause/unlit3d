@@ -46,21 +46,6 @@
 - 对于仅文档的任何改动（包括错别字、`cargo doc`修复），一律使用`docs`，不用`fix`。
 - 冒号前一律不使用`!`，即 Conventional Commits 里的「破坏性变更」标记。原因：项目处于早期，完全不管兼容性破坏。
 
-## 常用命令
-
-`cargo xtask`约定含有一些常用命令，各命令及其解释见根目录 [`README.md`](./README.md) 的「常用命令」一节；更新`xtask`时，注意同步更新该列表。
-
-由于Rust编译较慢且占用磁盘，本地机器负担不起，要注意：
-- **本地只跑检查类命令**：`cargo fmt --all`、`cargo xtask check`（clippy，含逐包那一趟）、`RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --document-private-items --keep-going`、`tombi format`、`typos`。让这些通过（不一定要最后才运行，若之前运行后没改动，则不必重复运行），尽量一次运行多个命令，减少会话步次。
-- **编译与测试一律交给 CI**：`cargo build`、`cargo nextest`、`cargo test`、`cargo xtask test`、`cargo xtask test-wasm`、`cargo xtask build-android`、`cargo bench` 都不在本地跑。需要编译或测试时，把改动推到一个远程分支上即可，`.github/workflows/ci.yml` 会在该分支的每次推送后跑轻量档，不必先开 PR；本地只看它给出的日志。轻量档是 Linux 上的检查与 nextest，加上 wasm 与 Android 的 lint（不编译二进制、不进浏览器、不打 APK）；全量（macOS/Windows、wasm 浏览器测试、APK）只在 `main` 与 merge queue 上跑，由 `.github/workflows/ci-main.yml` 调用轻量档并补上这些。
-
-开发验证流程遵循以下步骤：
-1. 先完成尽可能多的改动。
-2. 在本地就地解决检查和格式等问题。
-3. 如果远程分支不存在，获得用户许可后才能创建新分支，不要在本地先「试着编译一下」验证，也不要擅自创建新分支或开 PR。
-4. 一旦远程分支已经存在，后续推送、验证无需获得许可。
-5. CI 失败就从日志里读原因。用 `gh pr checks --watch` 跟进度、`gh run view --log-failed` 读失败的步骤，继续修改、检查、推送，迭代直到 CI 变绿。
-
 ## 关于本项目
 
 - **设计文档分散在各`README`中**：根[`README.md`](./README.md)记动机、功能与编码原则，各 crate 的`README.md`记该 crate 的设计抉择与架构。
@@ -70,3 +55,4 @@
 - **不要看docs/internal/**。这里面是WIP的实施细节，极易过时且可能存在错误。
 - **测试生成的二进制快照文件一律放`unlit3d_asset_files`子模块中**。
 - **调试examples时，可以用 unlit3d-mcp 技能，绝不用截屏软件**。
+- **常用命令**。见`xtask`包目录 [`README.md`](./README.md) 。
